@@ -1,0 +1,6 @@
+/target
+.env
+.env.local
+.env.*.local
+*.phantom.json
+.DS_Store

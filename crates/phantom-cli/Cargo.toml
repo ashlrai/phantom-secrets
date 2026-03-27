@@ -1,0 +1,21 @@
+[package]
+name = "phantom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Open-source CLI that prevents AI coding agents from leaking your API keys"
+
+[[bin]]
+name = "phantom"
+path = "src/main.rs"
+
+[dependencies]
+phantom-core = { workspace = true }
+phantom-vault = { workspace = true }
+phantom-proxy = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+colored = "2"

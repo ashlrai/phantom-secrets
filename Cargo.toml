@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/phantom-cli",
+    "crates/phantom-core",
+    "crates/phantom-vault",
+    "crates/phantom-proxy",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/AshlarAI/phantom"
+description = "Open-source CLI that prevents AI coding agents from leaking your API keys"
+
+[workspace.dependencies]
+# Shared dependencies
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Crypto & security
+rand = "0.8"
+hex = "0.4"
+zeroize = { version = "1", features = ["derive"] }
+
+# Internal crates
+phantom-core = { path = "crates/phantom-core" }
+phantom-vault = { path = "crates/phantom-vault" }
+phantom-proxy = { path = "crates/phantom-proxy" }
