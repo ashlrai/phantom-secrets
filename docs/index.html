@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phantom — Prevent AI agents from leaking your API keys</title>
+    <meta name="description" content="Open-source CLI that replaces real secrets with phantom tokens. A local proxy injects credentials at the network layer. The AI never sees a real secret.">
+    <meta property="og:title" content="Phantom Secrets">
+    <meta property="og:description" content="Prevent AI coding agents from leaking your API keys">
+    <meta property="og:type" content="website">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #12121a;
+            --border: #1e1e2e;
+            --text: #e0e0e8;
+            --muted: #8888a0;
+            --accent: #7c6cf0;
+            --accent-light: #9d8ff5;
+            --green: #4ade80;
+            --red: #f87171;
+            --yellow: #fbbf24;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        /* Hero */
+        .hero {
+            padding: 80px 0 60px;
+            text-align: center;
+        }
+
+        .hero h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            margin-bottom: 16px;
+        }
+
+        .hero h1 span {
+            background: linear-gradient(135deg, var(--accent-light), var(--green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero .subtitle {
+            font-size: 1.25rem;
+            color: var(--muted);
+            max-width: 600px;
+            margin: 0 auto 40px;
+        }
+
+        .hero .install-block {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px 28px;
+            display: inline-block;
+            text-align: left;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.95rem;
+        }
+
+        .hero .install-block .comment { color: var(--muted); }
+        .hero .install-block .cmd { color: var(--green); }
+
+        /* Problem */
+        .problem {
+            padding: 60px 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .problem h2 {
+            font-size: 1.75rem;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 30px 0;
+        }
+
+        @media (max-width: 640px) {
+            .comparison { grid-template-columns: 1fr; }
+            .hero h1 { font-size: 2rem; }
+        }
+
+        .comparison .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+        }
+
+        .comparison .card.bad { border-color: rgba(248, 113, 113, 0.3); }
+        .comparison .card.good { border-color: rgba(74, 222, 128, 0.3); }
+
+        .comparison .card h3 {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 12px;
+        }
+
+        .comparison .card.bad h3 { color: var(--red); }
+        .comparison .card.good h3 { color: var(--green); }
+
+        .comparison .card pre {
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.85rem;
+            line-height: 1.8;
+            color: var(--muted);
+            white-space: pre-wrap;
+        }
+
+        .comparison .card pre .highlight { color: var(--text); font-weight: 600; }
+        .comparison .card pre .danger { color: var(--red); }
+        .comparison .card pre .safe { color: var(--green); }
+
+        /* Stats */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            padding: 40px 0;
+            text-align: center;
+        }
+
+        @media (max-width: 640px) {
+            .stats { grid-template-columns: 1fr; }
+        }
+
+        .stats .stat-num {
+            font-size: 2rem;
+            font-weight: 800;
+            color: var(--accent-light);
+        }
+
+        .stats .stat-label {
+            font-size: 0.85rem;
+            color: var(--muted);
+            margin-top: 4px;
+        }
+
+        /* How it works */
+        .how {
+            padding: 60px 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .how h2 {
+            font-size: 1.75rem;
+            margin-bottom: 32px;
+            text-align: center;
+        }
+
+        .steps {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .step {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+        }
+
+        .step-num {
+            flex-shrink: 0;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.9rem;
+        }
+
+        .step-content h3 {
+            font-size: 1.1rem;
+            margin-bottom: 4px;
+        }
+
+        .step-content p {
+            color: var(--muted);
+            font-size: 0.95rem;
+        }
+
+        .step-content code {
+            background: var(--surface);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.85rem;
+            color: var(--green);
+        }
+
+        /* Features */
+        .features {
+            padding: 60px 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .features h2 {
+            font-size: 1.75rem;
+            margin-bottom: 32px;
+            text-align: center;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        @media (max-width: 640px) {
+            .feature-grid { grid-template-columns: 1fr; }
+        }
+
+        .feature {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+        }
+
+        .feature h3 {
+            font-size: 1rem;
+            margin-bottom: 8px;
+        }
+
+        .feature p {
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        /* CTA */
+        .cta {
+            padding: 80px 0;
+            text-align: center;
+            border-top: 1px solid var(--border);
+        }
+
+        .cta h2 {
+            font-size: 2rem;
+            margin-bottom: 16px;
+        }
+
+        .cta p {
+            color: var(--muted);
+            margin-bottom: 32px;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 14px 32px;
+            background: var(--accent);
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 1rem;
+            transition: background 0.2s;
+        }
+
+        .btn:hover { background: var(--accent-light); }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text);
+            margin-left: 12px;
+        }
+
+        .btn-secondary:hover {
+            background: var(--surface);
+        }
+
+        /* Footer */
+        footer {
+            padding: 40px 0;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.85rem;
+            border-top: 1px solid var(--border);
+        }
+
+        footer a { color: var(--accent-light); text-decoration: none; }
+        footer a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <section class="hero">
+            <h1><span>Phantom</span></h1>
+            <p class="subtitle">
+                Prevent AI coding agents from leaking your API keys.
+                Open-source CLI for developers who use Claude Code, Cursor, and Copilot.
+            </p>
+            <div class="install-block">
+                <div><span class="comment"># Install</span></div>
+                <div><span class="cmd">brew tap ashlrai/phantom && brew install phantom</span></div>
+                <br>
+                <div><span class="comment"># Protect your secrets</span></div>
+                <div><span class="cmd">phantom init</span></div>
+                <div><span class="cmd">phantom exec -- claude</span></div>
+            </div>
+        </section>
+
+        <section class="problem">
+            <h2>The Problem</h2>
+            <p style="color: var(--muted); text-align: center; margin-bottom: 30px;">
+                AI coding tools read your .env file. Your secrets enter the LLM context window.
+                They can leak via prompt injection, session logs, or training data.
+            </p>
+
+            <div class="stats">
+                <div>
+                    <div class="stat-num">28.6M</div>
+                    <div class="stat-label">Secrets leaked on GitHub in 2025</div>
+                </div>
+                <div>
+                    <div class="stat-num">2x</div>
+                    <div class="stat-label">Higher leak rate with AI-assisted commits</div>
+                </div>
+                <div>
+                    <div class="stat-num">+81%</div>
+                    <div class="stat-label">YoY increase in AI service key leaks</div>
+                </div>
+            </div>
+
+            <div class="comparison">
+                <div class="card bad">
+                    <h3>Without Phantom</h3>
+                    <pre><span class="highlight">.env:</span>
+OPENAI_API_KEY=<span class="danger">sk-real-secret-key</span>
+
+<span class="highlight">AI sees:</span> <span class="danger">sk-real-secret-key</span>
+<span class="highlight">Risk:</span> <span class="danger">Leaked in context window</span></pre>
+                </div>
+                <div class="card good">
+                    <h3>With Phantom</h3>
+                    <pre><span class="highlight">.env:</span>
+OPENAI_API_KEY=<span class="safe">phm_a7f3b9e2...</span>
+
+<span class="highlight">AI sees:</span> <span class="safe">phm_a7f3b9e2...</span> (worthless)
+<span class="highlight">Proxy injects:</span> <span class="safe">real key at network layer</span></pre>
+                </div>
+            </div>
+        </section>
+
+        <section class="how">
+            <h2>How It Works</h2>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-num">1</div>
+                    <div class="step-content">
+                        <h3>Initialize</h3>
+                        <p>Run <code>phantom init</code> in your project. Real secrets are stored in your OS keychain. Your .env is rewritten with worthless phantom tokens.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">2</div>
+                    <div class="step-content">
+                        <h3>Code with AI</h3>
+                        <p>Run <code>phantom exec -- claude</code>. The AI reads your .env and only sees <code>phm_</code> tokens. If they leak, nothing happens.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">3</div>
+                    <div class="step-content">
+                        <h3>Proxy injects secrets</h3>
+                        <p>A local HTTP proxy intercepts API calls, replaces phantom tokens with real credentials, and forwards over TLS. The AI never sees the real secret.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="features">
+            <h2>Features</h2>
+            <div class="feature-grid">
+                <div class="feature">
+                    <h3>MCP Server</h3>
+                    <p>Native Claude Code integration. Manage secrets without values entering the AI context.</p>
+                </div>
+                <div class="feature">
+                    <h3>Pre-commit Hook</h3>
+                    <p>Block commits containing unprotected secrets. Catches hardcoded API keys in code.</p>
+                </div>
+                <div class="feature">
+                    <h3>OS Keychain</h3>
+                    <p>Secrets stored in macOS Keychain or Linux Secret Service. Protected by your login password.</p>
+                </div>
+                <div class="feature">
+                    <h3>Smart Detection</h3>
+                    <p>Automatically identifies secrets vs config. Leaves NODE_ENV and PORT untouched.</p>
+                </div>
+                <div class="feature">
+                    <h3>Open Source</h3>
+                    <p>MIT licensed. Written in Rust. Auditable, forkable, free forever for individuals.</p>
+                </div>
+                <div class="feature">
+                    <h3>Built-in Services</h3>
+                    <p>OpenAI, Anthropic, Stripe, Supabase, PlanetScale. Custom services via .phantom.toml.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="cta">
+            <h2>Start protecting your secrets</h2>
+            <p>Two commands. Two minutes. Zero leaked API keys.</p>
+            <a href="https://github.com/ashlrai/phantom-secrets" class="btn">View on GitHub</a>
+            <a href="https://github.com/ashlrai/phantom-secrets/releases" class="btn btn-secondary">Download</a>
+        </section>
+
+        <footer>
+            <p>
+                Built by <a href="https://ashlar.ai">Ashlar AI</a> &middot;
+                <a href="https://github.com/ashlrai/phantom-secrets">GitHub</a> &middot;
+                <a href="https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md">Security</a> &middot;
+                MIT License
+            </p>
+        </footer>
+    </div>
+</body>
+</html>
