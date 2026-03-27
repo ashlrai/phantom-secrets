@@ -80,6 +80,9 @@ enum Commands {
 
     /// Stop the background proxy server
     Stop,
+
+    /// Check for unprotected secrets (pre-commit hook)
+    Check,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -109,5 +112,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Exec { cmd } => commands::exec::run(&cmd),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
+        Commands::Check => commands::check::run(),
     }
 }

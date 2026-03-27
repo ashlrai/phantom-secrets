@@ -53,6 +53,7 @@ phantom exec -- claude
 | `phantom status` | Show proxy status and mapped secrets |
 | `phantom rotate` | Regenerate phantom tokens |
 | `phantom doctor` | Check configuration and vault health |
+| `phantom check` | Scan for unprotected secrets (pre-commit hook) |
 
 ## Architecture
 
@@ -131,6 +132,45 @@ pattern = "api.example.com"
 header = "X-Api-Key"
 header_format = "{secret}"
 secret_type = "api_key"
+```
+
+## Pre-commit Hook
+
+Phantom includes a pre-commit hook that blocks commits containing unprotected secrets.
+
+### With [pre-commit](https://pre-commit.com/)
+
+Add to your `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/ashlrai/phantom-secrets
+    rev: v0.1.0
+    hooks:
+      - id: phantom-check
+```
+
+### Manual git hook
+
+```bash
+# Add to .git/hooks/pre-commit:
+#!/bin/sh
+phantom check
+```
+
+### What it catches
+
+- Real API keys in `.env` files (should be phantom tokens)
+- Hardcoded secrets in staged code files (`sk-*`, `ghp_*`, `AKIA*`, etc.)
+
+```
+$ phantom check
+BLOCKED Unprotected secrets detected!
+
+  ! .env has 1 unprotected secret(s):
+    - OPENAI_API_KEY
+
+fix Run phantom init to protect your secrets.
 ```
 
 ## MCP Server (Claude Code Integration)

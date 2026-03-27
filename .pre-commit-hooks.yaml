@@ -1,0 +1,7 @@
+- id: phantom-check
+  name: Phantom Secrets Check
+  description: Check for unprotected secrets in .env files and staged code
+  entry: phantom check
+  language: system
+  always_run: true
+  pass_filenames: false

@@ -1,4 +1,5 @@
 pub mod add;
+pub mod check;
 pub mod doctor;
 pub mod exec;
 pub mod init;
