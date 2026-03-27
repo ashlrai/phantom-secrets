@@ -12,7 +12,6 @@ pub fn run(cmd: &[String]) -> Result<()> {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
-    // Use tokio runtime for async proxy
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_async(cmd))
 }
@@ -32,19 +31,29 @@ async fn run_async(cmd: &[String]) -> Result<()> {
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
-    // Build the token-to-secret mapping by reading .env for phantom tokens
-    // and resolving real values from the vault
-    let mut token_to_secret: HashMap<String, String> = HashMap::new();
+    // Session-scoped token rotation:
+    // Instead of using the persistent phantom tokens from .env directly,
+    // we generate FRESH session tokens for this exec session.
+    // If a session token leaks (from logs, AI context, etc.), it becomes
+    // worthless as soon as this exec session ends.
+    let mut session_token_to_secret: HashMap<String, String> = HashMap::new();
+    let mut env_key_to_session_token: HashMap<String, String> = HashMap::new();
+    let mut secret_count = 0;
 
     if env_path.exists() {
         let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env")?;
 
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
-                // This is a phantom token — look up the real value
                 match vault.retrieve(&entry.key) {
                     Ok(real_value) => {
-                        token_to_secret.insert(entry.value.clone(), real_value);
+                        // Generate a fresh session token for this secret
+                        let session_token = PhantomToken::generate();
+                        session_token_to_secret
+                            .insert(session_token.as_str().to_string(), real_value);
+                        env_key_to_session_token
+                            .insert(entry.key.clone(), session_token.as_str().to_string());
+                        secret_count += 1;
                     }
                     Err(_) => {
                         eprintln!(
@@ -58,7 +67,7 @@ async fn run_async(cmd: &[String]) -> Result<()> {
         }
     }
 
-    if token_to_secret.is_empty() {
+    if session_token_to_secret.is_empty() {
         eprintln!(
             "{} No phantom tokens found to proxy. Running command directly.",
             "warn".yellow()
@@ -68,12 +77,12 @@ async fn run_async(cmd: &[String]) -> Result<()> {
 
     // Build service registry from config
     let registry = ServiceRegistry::from_config(&config.services);
-    let interceptor = Interceptor::new(token_to_secret);
+    let interceptor = Interceptor::new(session_token_to_secret);
 
     println!(
-        "{} Starting proxy with {} secret(s) mapped...",
+        "{} Starting proxy with {} secret(s) (session-scoped tokens)...",
         "->".blue().bold(),
-        interceptor.len()
+        secret_count
     );
 
     // Generate proxy session token
@@ -104,7 +113,7 @@ async fn run_async(cmd: &[String]) -> Result<()> {
         println!("   {} {} = {}", "->".dimmed(), env_var.bold(), url.cyan());
     }
 
-    // Also inject connection string secrets as env vars
+    // Inject connection string secrets as env vars (with real values, not proxied)
     let conn_services = config.connection_string_services();
     let mut conn_env_vars: Vec<(String, String)> = Vec::new();
     for (_name, svc) in &conn_services {
@@ -116,6 +125,14 @@ async fn run_async(cmd: &[String]) -> Result<()> {
                 svc.secret_key.bold()
             );
         }
+    }
+
+    // Override .env vars with session tokens for the subprocess
+    // This way the subprocess sees session tokens (not the persistent ones),
+    // and the proxy maps session tokens to real secrets
+    let mut session_env_overrides: Vec<(String, String)> = Vec::new();
+    for (key, session_token) in &env_key_to_session_token {
+        session_env_overrides.push((key.clone(), session_token.clone()));
     }
 
     println!(
@@ -132,6 +149,11 @@ async fn run_async(cmd: &[String]) -> Result<()> {
         .args(args)
         .envs(overrides.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .envs(conn_env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .envs(
+            session_env_overrides
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        )
         .env("PHANTOM_PROXY_PORT", port.to_string())
         .env("PHANTOM_PROXY_TOKEN", &proxy_token)
         .stdin(Stdio::inherit())
@@ -143,7 +165,7 @@ async fn run_async(cmd: &[String]) -> Result<()> {
     // Wait for the child to exit
     let status = child.wait().await?;
 
-    // Shut down the proxy
+    // Shut down the proxy — session tokens are now invalid
     println!("\n{} Shutting down proxy...", "->".blue().bold());
     proxy.shutdown().await;
 

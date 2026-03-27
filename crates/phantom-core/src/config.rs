@@ -1,4 +1,5 @@
 use crate::error::{PhantomError, Result};
+use crate::sync::SyncTarget;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -10,6 +11,9 @@ pub struct PhantomConfig {
     /// Service pattern mappings: service name -> ServiceConfig
     #[serde(default)]
     pub services: BTreeMap<String, ServiceConfig>,
+    /// Deployment platform sync targets
+    #[serde(default)]
+    pub sync: Vec<SyncTarget>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -129,6 +133,7 @@ impl PhantomConfig {
                 project_id,
             },
             services,
+            sync: Vec::new(),
         }
     }
 

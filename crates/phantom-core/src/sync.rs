@@ -1,0 +1,318 @@
+use crate::error::{PhantomError, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// Supported deployment platforms for secret syncing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Platform {
+    Vercel,
+    Railway,
+}
+
+impl std::fmt::Display for Platform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Platform::Vercel => write!(f, "vercel"),
+            Platform::Railway => write!(f, "railway"),
+        }
+    }
+}
+
+impl std::str::FromStr for Platform {
+    type Err = PhantomError;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "vercel" => Ok(Platform::Vercel),
+            "railway" => Ok(Platform::Railway),
+            _ => Err(PhantomError::ConfigParseError(format!(
+                "Unknown platform: {s}. Supported: vercel, railway"
+            ))),
+        }
+    }
+}
+
+/// Configuration for syncing to a deployment platform.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncTarget {
+    pub platform: Platform,
+    /// Platform API token env var name (e.g., "VERCEL_TOKEN")
+    pub token_env: String,
+    /// Project identifier on the platform
+    pub project_id: String,
+    /// Target environments (e.g., ["production", "preview"])
+    #[serde(default = "default_targets")]
+    pub targets: Vec<String>,
+    /// Railway-specific: service ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    /// Railway-specific: environment ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+}
+
+fn default_targets() -> Vec<String> {
+    vec!["production".to_string(), "preview".to_string()]
+}
+
+/// Result of a sync operation for a single secret.
+#[derive(Debug)]
+pub struct SyncResult {
+    pub key: String,
+    pub status: SyncStatus,
+}
+
+#[derive(Debug)]
+pub enum SyncStatus {
+    Created,
+    Updated,
+    Unchanged,
+    Error(String),
+}
+
+impl std::fmt::Display for SyncStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncStatus::Created => write!(f, "created"),
+            SyncStatus::Updated => write!(f, "updated"),
+            SyncStatus::Unchanged => write!(f, "unchanged"),
+            SyncStatus::Error(e) => write!(f, "error: {e}"),
+        }
+    }
+}
+
+/// Sync secrets to Vercel using their REST API.
+pub async fn sync_to_vercel(
+    token: &str,
+    project_id: &str,
+    secrets: &BTreeMap<String, String>,
+    targets: &[String],
+) -> Vec<SyncResult> {
+    let client = reqwest::Client::new();
+    let mut results = Vec::new();
+
+    // First, list existing env vars to know what to update vs create
+    let existing = list_vercel_env_vars(&client, token, project_id).await;
+
+    for (key, value) in secrets {
+        let target_array: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
+
+        // Check if this key already exists
+        let existing_id = existing
+            .as_ref()
+            .ok()
+            .and_then(|vars| vars.iter().find(|v| v.key == *key).map(|v| v.id.clone()));
+
+        let result = if let Some(env_id) = existing_id {
+            // Update existing
+            match update_vercel_env_var(&client, token, project_id, &env_id, value).await {
+                Ok(()) => SyncResult {
+                    key: key.clone(),
+                    status: SyncStatus::Updated,
+                },
+                Err(e) => SyncResult {
+                    key: key.clone(),
+                    status: SyncStatus::Error(e),
+                },
+            }
+        } else {
+            // Create new
+            match create_vercel_env_var(&client, token, project_id, key, value, &target_array).await
+            {
+                Ok(()) => SyncResult {
+                    key: key.clone(),
+                    status: SyncStatus::Created,
+                },
+                Err(e) => SyncResult {
+                    key: key.clone(),
+                    status: SyncStatus::Error(e),
+                },
+            }
+        };
+
+        results.push(result);
+    }
+
+    results
+}
+
+#[derive(Debug, Deserialize)]
+struct VercelEnvVar {
+    id: String,
+    key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VercelEnvListResponse {
+    envs: Vec<VercelEnvVar>,
+}
+
+async fn list_vercel_env_vars(
+    client: &reqwest::Client,
+    token: &str,
+    project_id: &str,
+) -> std::result::Result<Vec<VercelEnvVar>, String> {
+    let resp = client
+        .get(format!(
+            "https://api.vercel.com/v9/projects/{project_id}/env"
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Vercel API error ({status}): {body}"));
+    }
+
+    let data: VercelEnvListResponse = resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+    Ok(data.envs)
+}
+
+async fn create_vercel_env_var(
+    client: &reqwest::Client,
+    token: &str,
+    project_id: &str,
+    key: &str,
+    value: &str,
+    targets: &[&str],
+) -> std::result::Result<(), String> {
+    let body = serde_json::json!({
+        "key": key,
+        "value": value,
+        "type": "encrypted",
+        "target": targets,
+    });
+
+    let resp = client
+        .post(format!(
+            "https://api.vercel.com/v10/projects/{project_id}/env"
+        ))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Vercel API error ({status}): {body}"));
+    }
+
+    Ok(())
+}
+
+async fn update_vercel_env_var(
+    client: &reqwest::Client,
+    token: &str,
+    project_id: &str,
+    env_id: &str,
+    value: &str,
+) -> std::result::Result<(), String> {
+    let body = serde_json::json!({
+        "value": value,
+    });
+
+    let resp = client
+        .patch(format!(
+            "https://api.vercel.com/v9/projects/{project_id}/env/{env_id}"
+        ))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Vercel API error ({status}): {body}"));
+    }
+
+    Ok(())
+}
+
+/// Sync secrets to Railway using their GraphQL API.
+pub async fn sync_to_railway(
+    token: &str,
+    project_id: &str,
+    environment_id: &str,
+    service_id: Option<&str>,
+    secrets: &BTreeMap<String, String>,
+) -> Vec<SyncResult> {
+    let client = reqwest::Client::new();
+
+    // Railway supports bulk upsert — use variableCollectionUpsert
+    let variables_json = serde_json::to_string(secrets).unwrap_or_default();
+
+    let mutation = if let Some(svc_id) = service_id {
+        format!(
+            r#"mutation {{ variableCollectionUpsert(input: {{ projectId: "{project_id}", environmentId: "{environment_id}", serviceId: "{svc_id}", variables: {variables_json} }}) }}"#
+        )
+    } else {
+        format!(
+            r#"mutation {{ variableCollectionUpsert(input: {{ projectId: "{project_id}", environmentId: "{environment_id}", variables: {variables_json} }}) }}"#
+        )
+    };
+
+    let body = serde_json::json!({
+        "query": mutation,
+    });
+
+    let resp = client
+        .post("https://backboard.railway.com/graphql/v2")
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) => {
+            if r.status().is_success() {
+                let body_text = r.text().await.unwrap_or_default();
+
+                // Check for GraphQL errors
+                if body_text.contains("\"errors\"") {
+                    return secrets
+                        .keys()
+                        .map(|key| SyncResult {
+                            key: key.clone(),
+                            status: SyncStatus::Error(format!("GraphQL error: {body_text}")),
+                        })
+                        .collect();
+                }
+
+                // All secrets synced in one request
+                secrets
+                    .keys()
+                    .map(|key| SyncResult {
+                        key: key.clone(),
+                        status: SyncStatus::Updated, // Upsert = create or update
+                    })
+                    .collect()
+            } else {
+                let status = r.status();
+                let body_text = r.text().await.unwrap_or_default();
+                secrets
+                    .keys()
+                    .map(|key| SyncResult {
+                        key: key.clone(),
+                        status: SyncStatus::Error(format!(
+                            "Railway API error ({status}): {body_text}"
+                        )),
+                    })
+                    .collect()
+            }
+        }
+        Err(e) => secrets
+            .keys()
+            .map(|key| SyncResult {
+                key: key.clone(),
+                status: SyncStatus::Error(format!("Request failed: {e}")),
+            })
+            .collect(),
+    }
+}

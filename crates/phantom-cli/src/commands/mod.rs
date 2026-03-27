@@ -1,6 +1,7 @@
 pub mod add;
 pub mod check;
 pub mod doctor;
+pub mod env;
 pub mod exec;
 pub mod init;
 pub mod list;
@@ -9,3 +10,4 @@ pub mod rotate;
 pub mod start;
 pub mod status;
 pub mod stop;
+pub mod sync;

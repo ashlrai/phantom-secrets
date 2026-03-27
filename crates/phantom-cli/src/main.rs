@@ -83,6 +83,23 @@ enum Commands {
 
     /// Check for unprotected secrets (pre-commit hook)
     Check,
+
+    /// Sync secrets to deployment platforms (Vercel, Railway)
+    Sync {
+        /// Platform to sync to (vercel, railway). Syncs all configured targets if omitted.
+        #[arg(short, long)]
+        platform: Option<String>,
+        /// Override project ID for this sync
+        #[arg(long)]
+        project: Option<String>,
+    },
+
+    /// Generate .env.example for team onboarding
+    Env {
+        /// Output file name (defaults to .env.example)
+        #[arg(short, long, default_value = ".env.example")]
+        output: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -113,5 +130,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
         Commands::Check => commands::check::run(),
+        Commands::Sync { platform, project } => commands::sync::run(platform, project),
+        Commands::Env { output } => commands::env::run(&output),
     }
 }
