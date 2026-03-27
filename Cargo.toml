@@ -4,6 +4,7 @@ members = [
     "crates/phantom-core",
     "crates/phantom-vault",
     "crates/phantom-proxy",
+    "crates/phantom-mcp",
 ]
 resolver = "2"
 
@@ -11,7 +12,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/AshlarAI/phantom"
+repository = "https://github.com/ashlrai/phantom-secrets"
 description = "Open-source CLI that prevents AI coding agents from leaking your API keys"
 
 [workspace.dependencies]

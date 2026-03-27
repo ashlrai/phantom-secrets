@@ -1,0 +1,23 @@
+[package]
+name = "phantom-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP server for Phantom Secrets — lets AI tools manage secrets safely"
+
+[[bin]]
+name = "phantom-mcp"
+path = "src/main.rs"
+
+[dependencies]
+phantom-core = { workspace = true }
+phantom-vault = { workspace = true }
+rmcp = { version = "1", features = ["server", "transport-io"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = "1"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+colored = "2"

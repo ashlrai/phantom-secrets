@@ -133,6 +133,51 @@ header_format = "{secret}"
 secret_type = "api_key"
 ```
 
+## MCP Server (Claude Code Integration)
+
+Phantom includes an MCP server so Claude Code can natively manage secrets without ever seeing real values.
+
+### Setup
+
+Add to your Claude Code MCP config (`.claude/settings.json` or global settings):
+
+```json
+{
+  "mcpServers": {
+    "phantom": {
+      "command": "phantom-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Or if installed via cargo:
+
+```json
+{
+  "mcpServers": {
+    "phantom": {
+      "command": "/path/to/phantom-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `phantom_list_secrets` | List secret names (never shows values) |
+| `phantom_status` | Show vault, config, and proxy status |
+| `phantom_init` | Initialize Phantom and protect .env secrets |
+| `phantom_add_secret` | Add a secret to the vault |
+| `phantom_remove_secret` | Remove a secret from the vault |
+| `phantom_rotate` | Regenerate all phantom tokens |
+
+Claude Code can call these tools to manage secrets safely — the MCP server ensures no real secret values ever enter the AI's context window.
+
 ## Development
 
 ```bash
@@ -144,6 +189,9 @@ cargo test
 
 # Run with verbose logging
 cargo run -- --verbose exec -- echo "test"
+
+# Test MCP server (stdio)
+cargo run --bin phantom-mcp
 ```
 
 ## License

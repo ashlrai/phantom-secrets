@@ -29,6 +29,7 @@ Note: `~/.cargo/bin/` prefix is needed because cargo is not in PATH on this mach
 - **phantom-vault** — `VaultBackend` trait with OS keychain (macOS Keychain, Linux Secret Service) and encrypted file fallback
 - **phantom-proxy** — HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, replaces phantom tokens in headers/body with real secrets, forwards over TLS. Uses `hyper` for server, `reqwest` for outbound HTTPS
 - **phantom-cli** — `clap`-based CLI binary. Commands: init, exec, start/stop, list, add, remove, rotate, status, doctor
+- **phantom-mcp** — MCP server binary for Claude Code integration. Uses `rmcp` 1.3 SDK. Stdio transport (JSON-RPC over stdin/stdout). Exposes tools for listing secrets, status, init, add/remove, rotate
 
 ### How the proxy works
 
