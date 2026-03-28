@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use zeroize::Zeroize;
 
 /// Reveal a single secret value from the vault.
-/// Requires explicit confirmation to prevent accidental exposure.
-pub fn run(name: &str, clipboard: bool) -> Result<()> {
+/// Requires --yes flag or interactive TTY to prevent AI agents from extracting secrets.
+pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -15,22 +16,43 @@ pub fn run(name: &str, clipboard: bool) -> Result<()> {
         );
     }
 
+    // Safety gate: refuse to reveal in non-interactive contexts unless --yes is passed.
+    // This prevents AI agents from calling `phantom reveal` to extract real secrets.
+    if !yes {
+        // Check if stdout is a TTY (interactive terminal)
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let is_tty = unsafe { libc::isatty(std::io::stdout().as_raw_fd()) } != 0;
+            if !is_tty {
+                anyhow::bail!(
+                    "Refusing to reveal secret in non-interactive context.\n\
+                     Pass --yes to override. This prevents AI agents from extracting secrets."
+                );
+            }
+        }
+
+        eprintln!(
+            "{} About to reveal the real value of {}",
+            "!".yellow().bold(),
+            name.bold()
+        );
+    }
+
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
-    let value = vault
+    let mut value = vault
         .retrieve(name)
         .context(format!("Secret '{}' not found in vault", name))?;
 
     if clipboard {
-        // Try to copy to clipboard using pbcopy (macOS) or xclip (Linux)
         if copy_to_clipboard(&value) {
             println!(
                 "{} Copied {} to clipboard (clears in 30 seconds)",
                 "ok".green().bold(),
                 name.bold()
             );
-            // Spawn a background process to clear the clipboard after 30 seconds
             #[cfg(target_os = "macos")]
             {
                 let _ = std::process::Command::new("bash")
@@ -47,9 +69,11 @@ pub fn run(name: &str, clipboard: bool) -> Result<()> {
             println!("{}", value);
         }
     } else {
-        // Print to stdout (for piping)
         println!("{}", value);
     }
+
+    // Zeroize the secret from memory
+    value.zeroize();
 
     Ok(())
 }
@@ -72,7 +96,6 @@ fn copy_to_clipboard(text: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
         use std::io::Write;
-        // Try xclip first, then xsel
         for cmd in &["xclip", "xsel"] {
             if let Ok(mut child) = std::process::Command::new(cmd)
                 .args(["-selection", "clipboard"])

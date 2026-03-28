@@ -165,10 +165,21 @@ async fn handle_request(
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+    // Strip phantom_token from query before forwarding to upstream
     let query = req
         .uri()
         .query()
-        .map(|q| format!("?{q}"))
+        .map(|q| {
+            let filtered: Vec<&str> = q
+                .split('&')
+                .filter(|p| !p.starts_with("phantom_token="))
+                .collect();
+            if filtered.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", filtered.join("&"))
+            }
+        })
         .unwrap_or_default();
 
     debug!("{} {}{}", method, path, query);

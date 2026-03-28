@@ -62,6 +62,9 @@ enum Commands {
         /// Copy to clipboard instead of printing (auto-clears after 30s)
         #[arg(short, long)]
         clipboard: bool,
+        /// Skip confirmation (required for non-interactive use)
+        #[arg(short, long)]
+        yes: bool,
     },
 
     /// Show proxy status and mapped secrets
@@ -154,7 +157,11 @@ fn main() -> anyhow::Result<()> {
         Commands::List => commands::list::run(),
         Commands::Add { name, value } => commands::add::run(&name, &value),
         Commands::Remove { name } => commands::remove::run(&name),
-        Commands::Reveal { name, clipboard } => commands::reveal::run(&name, clipboard),
+        Commands::Reveal {
+            name,
+            clipboard,
+            yes,
+        } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status => commands::status::run(),
         Commands::Rotate => commands::rotate::run(),
         Commands::Doctor => commands::doctor::run(),

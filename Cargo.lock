@@ -1170,6 +1170,7 @@ dependencies = [
  "anyhow",
  "clap",
  "colored",
+ "libc",
  "phantom-core",
  "phantom-proxy",
  "phantom-vault",
@@ -1177,6 +1178,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]

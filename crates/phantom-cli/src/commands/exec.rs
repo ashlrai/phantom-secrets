@@ -139,8 +139,8 @@ async fn run_async(cmd: &[String]) -> Result<()> {
 
         // Detect Next.js: check if the command starts with "next" or package.json
         // lists "next" as a dependency
-        let is_nextjs = cmd[0].starts_with("next")
-            || cmd.iter().any(|arg| arg.contains("next"))
+        let is_nextjs = cmd[0] == "next"
+            || (cmd[0] == "npx" && cmd.get(1) == Some(&"next".to_string()))
             || detect_next_dependency(&package_json_path);
 
         if is_nextjs {
@@ -170,14 +170,6 @@ async fn run_async(cmd: &[String]) -> Result<()> {
         }
     }
 
-    // Override .env vars with session tokens for the subprocess
-    // This way the subprocess sees session tokens (not the persistent ones),
-    // and the proxy maps session tokens to real secrets
-    let mut session_env_overrides: Vec<(String, String)> = Vec::new();
-    for (key, session_token) in &env_key_to_session_token {
-        session_env_overrides.push((key.clone(), session_token.clone()));
-    }
-
     // Summary: proxied secrets vs injected env vars
     let injected_count = conn_env_vars.len() + framework_env_vars.len();
     println!(
@@ -202,7 +194,7 @@ async fn run_async(cmd: &[String]) -> Result<()> {
         .envs(overrides.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .envs(conn_env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .envs(
-            session_env_overrides
+            env_key_to_session_token
                 .iter()
                 .map(|(k, v)| (k.as_str(), v.as_str())),
         )

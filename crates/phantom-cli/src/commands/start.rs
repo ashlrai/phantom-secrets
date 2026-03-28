@@ -181,9 +181,11 @@ async fn run_async() -> Result<()> {
 
     let port = proxy.port();
 
-    // Write PID file with port and proxy token so daemon parent can read them.
+    // Write PID file atomically (temp + rename) so daemon parent never reads partial data.
     let pid_info = format!("{}:{}:{}", std::process::id(), port, proxy_token);
-    std::fs::write(&pid_path, &pid_info)?;
+    let tmp_pid = pid_path.with_extension("tmp");
+    std::fs::write(&tmp_pid, &pid_info)?;
+    std::fs::rename(&tmp_pid, &pid_path)?;
 
     println!(
         "{} Proxy started on {}",
