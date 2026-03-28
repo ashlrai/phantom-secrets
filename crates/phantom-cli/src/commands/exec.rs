@@ -91,8 +91,9 @@ async fn run_async(cmd: &[String]) -> Result<()> {
     // Start the proxy
     let proxy = ProxyServer::start(
         ProxyConfig {
-            port: 0, // ephemeral port
+            port: 0,
             proxy_token: proxy_token.clone(),
+            ..ProxyConfig::default()
         },
         registry.clone(),
         interceptor,

@@ -13,6 +13,12 @@ thiserror = { workspace = true }
 zeroize = { workspace = true }
 keyring = { version = "3", features = ["apple-native", "linux-native"] }
 directories = "5"
+rand = { workspace = true }
+hex = { workspace = true }
+
+# Encryption for file vault
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
 
 [dev-dependencies]
 tempfile = "3"

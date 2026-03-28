@@ -67,6 +67,7 @@ async fn run_async(daemon: bool) -> Result<()> {
         ProxyConfig {
             port: 0,
             proxy_token: proxy_token.clone(),
+            ..ProxyConfig::default()
         },
         registry.clone(),
         interceptor,

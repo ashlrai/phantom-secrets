@@ -20,6 +20,24 @@ pub struct ProxyConfig {
     pub port: u16,
     /// Session token for proxy authentication (defense-in-depth)
     pub proxy_token: String,
+    /// Maximum request body size in bytes (default: 10MB)
+    pub max_body_size: usize,
+    /// Upstream request timeout in seconds (default: 30)
+    pub upstream_timeout_secs: u64,
+    /// Connection timeout in seconds (default: 5)
+    pub connect_timeout_secs: u64,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            port: 0,
+            proxy_token: String::new(),
+            max_body_size: 10 * 1024 * 1024, // 10MB
+            upstream_timeout_secs: 30,
+            connect_timeout_secs: 5,
+        }
+    }
 }
 
 /// The running proxy server handle.
@@ -49,8 +67,11 @@ impl ProxyServer {
             registry,
             interceptor,
             proxy_token: config.proxy_token,
+            max_body_size: config.max_body_size,
             http_client: reqwest::Client::builder()
                 .danger_accept_invalid_certs(false)
+                .timeout(std::time::Duration::from_secs(config.upstream_timeout_secs))
+                .connect_timeout(std::time::Duration::from_secs(config.connect_timeout_secs))
                 .build()?,
         });
 
@@ -92,6 +113,7 @@ struct ProxyState {
     registry: ServiceRegistry,
     interceptor: Interceptor,
     proxy_token: String,
+    max_body_size: usize,
     http_client: reqwest::Client,
 }
 
@@ -238,6 +260,23 @@ async fn handle_request(
         }
     };
 
+    // Enforce body size limit
+    if body_bytes.len() > state.max_body_size {
+        warn!(
+            "Request body too large: {} bytes (limit: {})",
+            body_bytes.len(),
+            state.max_body_size
+        );
+        return Ok(Response::builder()
+            .status(StatusCode::PAYLOAD_TOO_LARGE)
+            .body(Full::new(Bytes::from(format!(
+                r#"{{"error":"request body too large","size":{},"limit":{}}}"#,
+                body_bytes.len(),
+                state.max_body_size
+            ))))
+            .unwrap());
+    }
+
     if !body_bytes.is_empty() {
         let (replaced_body, did_replace) = state.interceptor.replace_in_bytes(&body_bytes);
         if did_replace {
@@ -325,6 +364,7 @@ mod tests {
         let config = ProxyConfig {
             port: 0, // ephemeral
             proxy_token: String::new(),
+            ..ProxyConfig::default()
         };
 
         let server = ProxyServer::start(config, registry, interceptor)
@@ -353,6 +393,7 @@ mod tests {
         let config = ProxyConfig {
             port: 0,
             proxy_token: String::new(),
+            ..ProxyConfig::default()
         };
 
         let server = ProxyServer::start(config, registry, interceptor)
@@ -396,6 +437,7 @@ mod tests {
             ProxyConfig {
                 port: 0,
                 proxy_token: String::new(),
+                ..ProxyConfig::default()
             },
             registry,
             interceptor,
@@ -455,6 +497,7 @@ mod tests {
             ProxyConfig {
                 port: 0,
                 proxy_token: String::new(),
+                ..ProxyConfig::default()
             },
             registry,
             interceptor,
@@ -513,6 +556,7 @@ mod tests {
             ProxyConfig {
                 port: 0,
                 proxy_token: String::new(),
+                ..ProxyConfig::default()
             },
             registry,
             interceptor,
@@ -534,6 +578,54 @@ mod tests {
 
         let requests = mock.get_requests();
         assert_eq!(requests[0].path, "/v1/search?q=test&limit=10");
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_body_size_limit_returns_413() {
+        let mock = crate::test_server::MockServer::start().await;
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+
+        let interceptor = Interceptor::new(HashMap::new());
+
+        // Set a tiny body limit (100 bytes)
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                max_body_size: 100,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+
+        // Send a request with body exceeding the limit
+        let large_body = "x".repeat(200);
+        let resp = client
+            .post(format!("http://127.0.0.1:{}/testapi/v1/data", proxy.port()))
+            .body(large_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 413);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("request body too large"));
 
         proxy.shutdown().await;
         mock.shutdown().await;
