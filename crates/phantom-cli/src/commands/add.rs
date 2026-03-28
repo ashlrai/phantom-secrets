@@ -48,7 +48,8 @@ pub fn run(name: &str, value: &str) -> Result<()> {
                     }
                 })
                 .collect::<Vec<_>>()
-                .join("\n");
+                .join("\n")
+                + "\n";
             std::fs::write(&env_path, new_content)?;
         } else {
             // Append new entry

@@ -89,7 +89,17 @@ impl ServiceRegistry {
 
     /// Get the base URL env var overrides for all services.
     /// Returns pairs of (env_var_name, local_url).
+    /// If proxy_token is provided, it's included as a query parameter for auth.
     pub fn base_url_overrides(&self, proxy_port: u16) -> Vec<(String, String)> {
+        self.base_url_overrides_with_token(proxy_port, None)
+    }
+
+    /// Get base URL overrides with optional proxy token in query params.
+    pub fn base_url_overrides_with_token(
+        &self,
+        proxy_port: u16,
+        proxy_token: Option<&str>,
+    ) -> Vec<(String, String)> {
         let mut overrides = Vec::new();
 
         for (name, route) in &self.routes {
@@ -108,7 +118,13 @@ impl ServiceRegistry {
                 ),
             };
 
-            let local_url = format!("http://127.0.0.1:{}/{}", proxy_port, name);
+            let local_url = match proxy_token {
+                Some(token) => format!(
+                    "http://127.0.0.1:{}/{}?phantom_token={}",
+                    proxy_port, name, token
+                ),
+                None => format!("http://127.0.0.1:{}/{}", proxy_port, name),
+            };
             overrides.push((env_var, local_url));
         }
 

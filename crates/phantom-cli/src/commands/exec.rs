@@ -109,7 +109,7 @@ async fn run_async(cmd: &[String]) -> Result<()> {
     );
 
     // Print service routes
-    let overrides = registry.base_url_overrides(port);
+    let overrides = registry.base_url_overrides_with_token(port, Some(&proxy_token));
     for (env_var, url) in &overrides {
         println!("   {} {} = {}", "->".dimmed(), env_var.bold(), url.cyan());
     }

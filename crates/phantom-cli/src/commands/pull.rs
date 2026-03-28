@@ -139,7 +139,8 @@ async fn run_async(
                             }
                         })
                         .collect::<Vec<_>>()
-                        .join("\n");
+                        .join("\n")
+                        + "\n";
                 } else {
                     // Append new entry
                     if !env_content.is_empty() && !env_content.ends_with('\n') {

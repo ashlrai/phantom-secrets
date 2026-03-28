@@ -247,21 +247,19 @@ pub async fn sync_to_railway(
 ) -> Vec<SyncResult> {
     let client = reqwest::Client::new();
 
-    // Railway supports bulk upsert — use variableCollectionUpsert
-    let variables_json = serde_json::to_string(secrets).unwrap_or_default();
-
-    let mutation = if let Some(svc_id) = service_id {
-        format!(
-            r#"mutation {{ variableCollectionUpsert(input: {{ projectId: "{project_id}", environmentId: "{environment_id}", serviceId: "{svc_id}", variables: {variables_json} }}) }}"#
-        )
-    } else {
-        format!(
-            r#"mutation {{ variableCollectionUpsert(input: {{ projectId: "{project_id}", environmentId: "{environment_id}", variables: {variables_json} }}) }}"#
-        )
-    };
+    // Use GraphQL variables (not string interpolation) to prevent injection
+    let mut input = serde_json::json!({
+        "projectId": project_id,
+        "environmentId": environment_id,
+        "variables": secrets,
+    });
+    if let Some(svc_id) = service_id {
+        input["serviceId"] = serde_json::json!(svc_id);
+    }
 
     let body = serde_json::json!({
-        "query": mutation,
+        "query": "mutation($input: VariableCollectionUpsertInput!) { variableCollectionUpsert(input: $input) }",
+        "variables": { "input": input },
     });
 
     let resp = client
@@ -367,15 +365,22 @@ pub async fn pull_from_railway(
 ) -> std::result::Result<BTreeMap<String, String>, String> {
     let client = reqwest::Client::new();
 
-    let query = if let Some(svc_id) = service_id {
-        format!(
-            r#"{{ variables(projectId: "{project_id}", environmentId: "{environment_id}", serviceId: "{svc_id}") }}"#
-        )
+    // Use GraphQL variables to prevent injection
+    let mut vars = serde_json::json!({
+        "projectId": project_id,
+        "environmentId": environment_id,
+    });
+    if let Some(svc_id) = service_id {
+        vars["serviceId"] = serde_json::json!(svc_id);
+    }
+
+    let query = if service_id.is_some() {
+        "query($projectId: String!, $environmentId: String!, $serviceId: String!) { variables(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) }"
     } else {
-        format!(r#"{{ variables(projectId: "{project_id}", environmentId: "{environment_id}") }}"#)
+        "query($projectId: String!, $environmentId: String!) { variables(projectId: $projectId, environmentId: $environmentId) }"
     };
 
-    let body = serde_json::json!({ "query": query });
+    let body = serde_json::json!({ "query": query, "variables": vars });
 
     let resp = client
         .post("https://backboard.railway.com/graphql/v2")

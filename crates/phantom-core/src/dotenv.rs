@@ -118,7 +118,11 @@ impl DotenvFile {
             }
         }
 
-        (output_lines.join("\n"), original_values)
+        let mut content = output_lines.join("\n");
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        (content, original_values)
     }
 
     /// Write the rewritten content to a file.

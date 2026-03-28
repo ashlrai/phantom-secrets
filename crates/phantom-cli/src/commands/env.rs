@@ -64,7 +64,10 @@ pub fn run(output: &str) -> Result<()> {
         }
     }
 
-    let content = output_lines.join("\n");
+    let mut content = output_lines.join("\n");
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
     std::fs::write(&output_path, &content)?;
 
     let secret_count = entries

@@ -183,7 +183,7 @@ async fn handle_request(
             .unwrap());
     }
 
-    // Verify proxy token (defense-in-depth)
+    // Verify proxy token (defense-in-depth — prevents other local processes from using the proxy)
     if !state.proxy_token.is_empty() {
         let provided_token = req
             .headers()
@@ -192,9 +192,22 @@ async fn handle_request(
             .unwrap_or("");
 
         if provided_token != state.proxy_token {
-            // Don't require the token — some API clients don't support custom headers.
-            // Instead, just log a debug warning. The proxy is localhost-only anyway.
-            debug!("Request without proxy token from {}", path);
+            // Also check query param as fallback (for clients that can't set custom headers)
+            let query_token = req
+                .uri()
+                .query()
+                .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("phantom_token=")))
+                .unwrap_or("");
+
+            if query_token != state.proxy_token {
+                warn!("Rejected request without valid proxy token from {}", path);
+                return Ok(Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .body(Full::new(Bytes::from(
+                        r#"{"error":"missing or invalid proxy token"}"#,
+                    )))
+                    .unwrap());
+            }
         }
     }
 
@@ -246,10 +259,25 @@ async fn handle_request(
         }
     }
 
-    // Read and transform the body
-    let body_bytes = match req.collect().await {
+    // Read body with size limit enforced during read (prevents OOM on large payloads)
+    let limited_body = http_body_util::Limited::new(req.into_body(), state.max_body_size);
+    let body_bytes = match limited_body.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("length limit exceeded") {
+                warn!(
+                    "Request body too large (limit: {} bytes)",
+                    state.max_body_size
+                );
+                return Ok(Response::builder()
+                    .status(StatusCode::PAYLOAD_TOO_LARGE)
+                    .body(Full::new(Bytes::from(format!(
+                        r#"{{"error":"request body too large","limit":{}}}"#,
+                        state.max_body_size
+                    ))))
+                    .unwrap());
+            }
             error!("Failed to read request body: {}", e);
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
@@ -259,23 +287,6 @@ async fn handle_request(
                 .unwrap());
         }
     };
-
-    // Enforce body size limit
-    if body_bytes.len() > state.max_body_size {
-        warn!(
-            "Request body too large: {} bytes (limit: {})",
-            body_bytes.len(),
-            state.max_body_size
-        );
-        return Ok(Response::builder()
-            .status(StatusCode::PAYLOAD_TOO_LARGE)
-            .body(Full::new(Bytes::from(format!(
-                r#"{{"error":"request body too large","size":{},"limit":{}}}"#,
-                body_bytes.len(),
-                state.max_body_size
-            ))))
-            .unwrap());
-    }
 
     if !body_bytes.is_empty() {
         let (replaced_body, did_replace) = state.interceptor.replace_in_bytes(&body_bytes);

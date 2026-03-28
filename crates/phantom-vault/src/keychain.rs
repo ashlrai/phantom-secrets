@@ -35,8 +35,8 @@ impl KeychainVault {
         })
     }
 
-    fn entry_key(&self, _name: &str) -> String {
-        format!("{SERVICE_PREFIX}:{}", self.project_id)
+    fn entry_key(&self, name: &str) -> String {
+        format!("{SERVICE_PREFIX}:{}:{}", self.project_id, name)
     }
 
     fn entry_for(&self, name: &str) -> Result<keyring::Entry> {

@@ -51,9 +51,13 @@ fn get_or_create_passphrase(project_id: &str) -> String {
         return passphrase;
     }
 
-    // 4. Keychain not available at all — generate deterministic passphrase from project_id
-    // This is less secure but ensures the vault works without any setup
-    format!("phantom-fallback-{project_id}")
+    // 4. Keychain not available — generate a random passphrase and warn the user.
+    // The passphrase won't persist across sessions, but the vault file is still encrypted.
+    // Users in CI/Docker should set PHANTOM_VAULT_PASSPHRASE.
+    eprintln!(
+        "phantom: WARNING — OS keychain unavailable. Set PHANTOM_VAULT_PASSPHRASE env var for persistent encrypted vault access."
+    );
+    generate_passphrase()
 }
 
 fn generate_passphrase() -> String {

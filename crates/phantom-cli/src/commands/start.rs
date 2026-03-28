@@ -97,7 +97,7 @@ async fn run_async(daemon: bool) -> Result<()> {
         "\n{} Set these env vars in your shell:\n",
         "->".blue().bold()
     );
-    let overrides = registry.base_url_overrides(port);
+    let overrides = registry.base_url_overrides_with_token(port, Some(&proxy_token));
     for (env_var, url) in &overrides {
         println!("  export {}={}", env_var, url);
     }
