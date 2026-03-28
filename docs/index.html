@@ -52,26 +52,51 @@
         .n-gh svg{width:15px;height:15px;fill:currentColor}
 
         /* HERO */
-        .hero{padding:130px 0 40px;text-align:center;position:relative;overflow:hidden}
-        .hero::before{content:'';position:absolute;top:-200px;left:50%;width:1000px;height:800px;transform:translateX(-50%);background:radial-gradient(ellipse at 50% 40%,rgba(59,130,246,.07) 0%,transparent 65%);pointer-events:none}
+        .hero{padding:130px 0 60px;text-align:center;position:relative;overflow:hidden}
+        .hero::before{content:'';position:absolute;top:-200px;left:50%;width:1200px;height:900px;transform:translateX(-50%);background:radial-gradient(ellipse at 50% 35%,rgba(59,130,246,.06) 0%,transparent 60%);pointer-events:none}
 
-        .hero h1{font-size:clamp(2.8rem,7vw,4.8rem);font-weight:900;letter-spacing:-.06em;line-height:.95;margin-bottom:20px;color:#fff}
-        .hero h1 em{font-style:normal;color:var(--blue-b)}
+        .hero h1{font-size:clamp(3rem,7.5vw,5.2rem);font-weight:900;letter-spacing:-.06em;line-height:1;margin-bottom:20px;color:#fff}
+        .hero h1 em{font-style:normal;color:var(--blue-b);display:block}
 
-        .hero-sub{font-size:1.05rem;color:var(--t2);max-width:460px;margin:0 auto 28px;line-height:1.75}
-        .hero-sub strong{color:var(--t1);font-weight:600}
+        .hero-sub{font-size:1.05rem;color:var(--t2);max-width:480px;margin:0 auto 32px;line-height:1.75}
 
-        .hero-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:48px}
+        .hero-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:56px}
         .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 24px;border-radius:8px;font-size:.9rem;font-weight:600;text-decoration:none;transition:all .2s;border:1px solid transparent;letter-spacing:-.01em}
         .btn-p{background:var(--blue);color:#fff;border-color:var(--blue)}
         .btn-p:hover{background:var(--blue-d);transform:translateY(-1px);box-shadow:0 4px 24px rgba(59,130,246,.3);text-decoration:none}
         .btn-s{background:transparent;color:var(--t1);border-color:var(--border-l)}
         .btn-s:hover{border-color:var(--t3);text-decoration:none}
 
-        /* HERO ANIMATION — the live demo */
-        .hero-demo{max-width:700px;margin:0 auto;position:relative}
-        .hero-demo .term{margin-bottom:0}
-        .hero-demo .term-body{min-height:200px;font-size:.84rem;line-height:2.1}
+        /* HERO VISUAL — animated flow diagram */
+        .flow{max-width:860px;margin:0 auto;position:relative}
+        .flow-row{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:0;align-items:center}
+        .flow-node{background:var(--s1);border:1px solid var(--border);border-radius:14px;padding:24px 20px;text-align:left;position:relative}
+        .flow-node.center{border-color:var(--blue-d);box-shadow:0 0 40px rgba(59,130,246,.1),0 0 0 1px rgba(59,130,246,.15) inset}
+        .flow-label{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--t3);margin-bottom:10px}
+        .flow-node.center .flow-label{color:var(--blue-b)}
+        .flow-code{font-family:'SF Mono','Fira Code',monospace;font-size:.75rem;line-height:1.9}
+        .flow-code .k{color:var(--t3)}.flow-code .vb{color:var(--blue-b)}.flow-code .vg{color:var(--green)}
+
+        /* Animated connectors */
+        .flow-conn{display:flex;flex-direction:column;align-items:center;gap:4px;padding:0 8px}
+        .flow-arrow{width:48px;height:2px;background:linear-gradient(90deg,var(--border),var(--blue),var(--border));position:relative;border-radius:1px}
+        .flow-arrow::after{content:'';position:absolute;right:-1px;top:-3px;border:4px solid transparent;border-left:6px solid var(--blue)}
+        .flow-dot{width:6px;height:6px;border-radius:50%;background:var(--blue);animation:pulse-dot 2s ease-in-out infinite}
+        .flow-conn:nth-child(4) .flow-dot{animation-delay:.5s}
+        @keyframes pulse-dot{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.2)}}
+        .flow-tag{font-size:.65rem;color:var(--t3);white-space:nowrap;margin-top:2px}
+        .flow-tag span{color:var(--blue-b);font-weight:600}
+
+        /* Bottom caption */
+        .flow-caption{text-align:center;margin-top:20px;font-size:.82rem;color:var(--t3)}
+        .flow-caption strong{color:var(--green);font-weight:600}
+
+        @media(max-width:768px){
+            .flow-row{grid-template-columns:1fr;gap:12px}
+            .flow-conn{flex-direction:row;padding:4px 0;justify-content:center}
+            .flow-arrow{width:2px;height:32px;background:linear-gradient(180deg,var(--border),var(--blue),var(--border))}
+            .flow-arrow::after{right:auto;bottom:-1px;top:auto;left:-3px;border:4px solid transparent;border-top:6px solid var(--blue);border-left:4px solid transparent}
+        }
 
         /* SECTIONS */
         section{padding:100px 0}
@@ -169,19 +194,61 @@
 
 <!-- HERO -->
 <header class="hero">
-    <h1 class="sr">Delegate everything<br><em>to AI.</em></h1>
-    <p class="sr sr-d1 hero-sub">You paste API keys into Claude Code. You know it's risky. <strong>Phantom makes it safe</strong> &mdash; AI uses your real keys without ever seeing them.</p>
+    <h1 class="sr">AI uses your keys.<em>Safely.</em></h1>
+    <p class="sr sr-d1 hero-sub">Phantom replaces your API keys with worthless tokens. A local proxy injects real credentials at the network layer. Your code works. The AI never sees real secrets.</p>
     <div class="sr sr-d2 hero-btns">
         <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-p">Get started &mdash; it's free</a>
         <a href="#how" class="btn btn-s">How it works</a>
     </div>
 
-    <!-- LIVE ANIMATED DEMO — the product IS the hero -->
-    <div class="sr sr-d3 hero-demo">
-        <div class="term">
-            <div class="term-bar"><span class="td td-r"></span><span class="td td-y"></span><span class="td td-g"></span><span class="term-t">~/my-app</span></div>
-            <div class="term-body" id="hero-body"></div>
+    <!-- VISUAL FLOW DIAGRAM — the product explained at a glance -->
+    <div class="sr sr-d3 flow">
+        <div class="flow-row">
+            <!-- Node 1: .env file -->
+            <div class="flow-node">
+                <div class="flow-label">Your .env file</div>
+                <div class="flow-code">
+                    <span class="k">OPENAI_API_KEY=</span><span class="vb">phm_d9f1c1...</span><br>
+                    <span class="k">STRIPE_SECRET=</span><span class="vb">phm_2ccb5a...</span><br>
+                    <span class="k">DATABASE_URL=</span><span class="vb">phm_99a8d2...</span>
+                </div>
+            </div>
+
+            <!-- Connector 1 -->
+            <div class="flow-conn">
+                <div class="flow-dot"></div>
+                <div class="flow-arrow"></div>
+                <div class="flow-tag">AI sees: <span>phm_</span> tokens</div>
+            </div>
+
+            <!-- Node 2: Phantom Proxy -->
+            <div class="flow-node center">
+                <div class="flow-label">Phantom Proxy</div>
+                <div class="flow-code">
+                    <span class="vb">phm_d9f1c1...</span> <span class="k">&rarr;</span> <span class="vg">sk-proj-real...</span><br>
+                    <span class="vb">phm_2ccb5a...</span> <span class="k">&rarr;</span> <span class="vg">sk_live-real...</span><br>
+                    <span class="vb">phm_99a8d2...</span> <span class="k">&rarr;</span> <span class="vg">postgres://...</span>
+                </div>
+            </div>
+
+            <!-- Connector 2 -->
+            <div class="flow-conn">
+                <div class="flow-dot"></div>
+                <div class="flow-arrow"></div>
+                <div class="flow-tag">API gets: <span>real keys</span></div>
+            </div>
+
+            <!-- Node 3: APIs -->
+            <div class="flow-node">
+                <div class="flow-label">Upstream APIs</div>
+                <div class="flow-code">
+                    <span class="vg">api.openai.com</span> <span class="k">&#10003;</span><br>
+                    <span class="vg">api.stripe.com</span> <span class="k">&#10003;</span><br>
+                    <span class="vg">db.example.com</span> <span class="k">&#10003;</span>
+                </div>
+            </div>
         </div>
+        <div class="flow-caption"><strong>&#10003;</strong> Real keys never enter the AI context window. Injected at network layer only.</div>
     </div>
 </header>
 
@@ -293,27 +360,6 @@ function typeT(id,lines,spd){
     }
     next();
 }
-
-// Hero animation — shows the full story: init protects secrets, exec runs safely
-const heroLines=[
-    {cmd:'cat .env'},
-    {out:'<span class="td2"># Your real API keys — exposed to AI</span>'},
-    {out:'<span class="tc">OPENAI_API_KEY</span>=<span style="color:var(--red)">sk-proj-a8Kx9mR7v2...real-key</span>',d:30},
-    {out:'<span class="tc">STRIPE_SECRET</span>=<span style="color:var(--red)">sk_live_4eC39HJf8...real-key</span>',d:30},
-    {out:'<span class="tc">DATABASE_URL</span>=<span style="color:var(--red)">postgres://admin:s3cret@db.io/prod</span>',d:400},
-    {cmd:'phantom init'},
-    {out:'<span class="ti">-></span> <span class="td2">Found 3 secret(s) to protect</span>'},
-    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">OPENAI_API_KEY</span>  <span style="color:var(--red)">sk-proj...</span> <span class="td2">&rarr;</span> <span class="ti">phm_d9f1c157...</span>',d:50},
-    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">STRIPE_SECRET</span>   <span style="color:var(--red)">sk_live...</span> <span class="td2">&rarr;</span> <span class="ti">phm_2ccb5a6c...</span>',d:50},
-    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">DATABASE_URL</span>    <span style="color:var(--red)">postgres...</span> <span class="td2">&rarr;</span> <span class="ti">phm_99a8d2fe...</span>',d:50},
-    {out:'<span class="to">ok</span> <span class="td2">.env rewritten &mdash; real keys moved to encrypted vault</span>',d:250},
-    {cmd:'phantom exec -- claude'},
-    {out:'<span class="to">ok</span> <span class="td2">Proxy on</span> <span class="ti">127.0.0.1:54321</span> <span class="td2">&mdash; 3 secrets proxied</span>'},
-    {out:'<span class="ti">-></span> <span class="td2">AI sees</span> <span class="ti">phm_</span> <span class="td2">tokens. Proxy injects real keys at network layer.</span>'},
-    {out:'<span class="to">-></span> <span class="td2">Launching:</span> <span class="ti">claude</span><span class="cursor"></span>'},
-];
-// Auto-start hero animation on page load
-setTimeout(()=>typeT('hero-body',heroLines,22),600);
 
 // Demo terminal
 const demoLines=[
