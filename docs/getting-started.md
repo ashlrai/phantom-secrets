@@ -13,7 +13,7 @@ cargo install --git https://github.com/ashlrai/phantom-secrets phantom
 Or, if you prefer Homebrew (macOS/Linux):
 
 ```bash
-brew install phantom-secrets/tap/phantom
+brew tap ashlrai/phantom && brew install phantom
 ```
 
 Verify the install:

@@ -25,7 +25,7 @@ After phantom:
 
 ```bash
 # Install
-cargo install phantom  # or: brew install phantom-secrets/tap/phantom
+cargo install phantom  # or: brew tap ashlrai/phantom && brew install phantom
 
 # In your project
 cd my-project
