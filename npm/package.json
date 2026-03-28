@@ -1,0 +1,31 @@
+{
+  "name": "phantom-secrets",
+  "version": "0.2.0",
+  "description": "Prevent AI coding agents from leaking your API keys",
+  "bin": {
+    "phantom-secrets": "bin/cli.js",
+    "phantom": "bin/cli.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ashlrai/phantom-secrets"
+  },
+  "keywords": [
+    "security",
+    "secrets",
+    "api-keys",
+    "ai-safety",
+    "env",
+    "dotenv",
+    "proxy",
+    "claude",
+    "cursor",
+    "copilot"
+  ],
+  "author": "Ashlar AI",
+  "license": "MIT",
+  "homepage": "https://ashlrai.github.io/phantom-secrets/"
+}

@@ -1173,6 +1173,7 @@ dependencies = [
  "phantom-core",
  "phantom-proxy",
  "phantom-vault",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

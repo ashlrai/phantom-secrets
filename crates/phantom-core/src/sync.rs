@@ -140,6 +140,8 @@ pub async fn sync_to_vercel(
 struct VercelEnvVar {
     id: String,
     key: String,
+    #[serde(default)]
+    value: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,4 +317,102 @@ pub async fn sync_to_railway(
             })
             .collect(),
     }
+}
+
+// ── Pull Functions ───────────────────────────────────────────────────
+
+/// Pull secrets from Vercel into a local map.
+pub async fn pull_from_vercel(
+    token: &str,
+    project_id: &str,
+) -> std::result::Result<BTreeMap<String, String>, String> {
+    let client = reqwest::Client::new();
+
+    // Use decrypt=true to get actual values
+    let resp = client
+        .get(format!(
+            "https://api.vercel.com/v9/projects/{project_id}/env?decrypt=true"
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Vercel API error ({status}): {body}"));
+    }
+
+    let data: VercelEnvListResponse = resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    let mut secrets = BTreeMap::new();
+    for env_var in data.envs {
+        if let Some(value) = env_var.value {
+            if !value.is_empty() {
+                secrets.insert(env_var.key, value);
+            }
+        }
+    }
+
+    Ok(secrets)
+}
+
+/// Pull secrets from Railway into a local map.
+pub async fn pull_from_railway(
+    token: &str,
+    project_id: &str,
+    environment_id: &str,
+    service_id: Option<&str>,
+) -> std::result::Result<BTreeMap<String, String>, String> {
+    let client = reqwest::Client::new();
+
+    let query = if let Some(svc_id) = service_id {
+        format!(
+            r#"{{ variables(projectId: "{project_id}", environmentId: "{environment_id}", serviceId: "{svc_id}") }}"#
+        )
+    } else {
+        format!(r#"{{ variables(projectId: "{project_id}", environmentId: "{environment_id}") }}"#)
+    };
+
+    let body = serde_json::json!({ "query": query });
+
+    let resp = client
+        .post("https://backboard.railway.com/graphql/v2")
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Railway API error ({status}): {body_text}"));
+    }
+
+    let resp_body: serde_json::Value =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    // Check for GraphQL errors
+    if let Some(errors) = resp_body.get("errors") {
+        return Err(format!("GraphQL errors: {errors}"));
+    }
+
+    // Railway returns variables as a flat JSON object: { "KEY": "value", ... }
+    let variables = resp_body
+        .get("data")
+        .and_then(|d| d.get("variables"))
+        .ok_or_else(|| "Missing 'data.variables' in response".to_string())?;
+
+    let mut secrets = BTreeMap::new();
+    if let Some(obj) = variables.as_object() {
+        for (key, value) in obj {
+            if let Some(v) = value.as_str() {
+                secrets.insert(key.clone(), v.to_string());
+            }
+        }
+    }
+
+    Ok(secrets)
 }

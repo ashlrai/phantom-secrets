@@ -94,6 +94,28 @@ enum Commands {
         project: Option<String>,
     },
 
+    /// Pull secrets from a deployment platform into the vault
+    Pull {
+        /// Platform to pull from (vercel, railway)
+        #[arg(long)]
+        from: String,
+        /// Project ID on the platform
+        #[arg(long)]
+        project: String,
+        /// Environment (Railway only, defaults to "production")
+        #[arg(long)]
+        environment: Option<String>,
+        /// Service ID (Railway only)
+        #[arg(long)]
+        service: Option<String>,
+        /// Overwrite existing local secrets
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Set up Phantom auto-mode for Claude Code (MCP server + hooks)
+    Setup,
+
     /// Generate .env.example for team onboarding
     Env {
         /// Output file name (defaults to .env.example)
@@ -130,6 +152,14 @@ fn main() -> anyhow::Result<()> {
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
         Commands::Check => commands::check::run(),
+        Commands::Pull {
+            from,
+            project,
+            environment,
+            service,
+            force,
+        } => commands::pull::run(&from, &project, environment, service, force),
+        Commands::Setup => commands::setup::run(),
         Commands::Sync { platform, project } => commands::sync::run(platform, project),
         Commands::Env { output } => commands::env::run(&output),
     }
