@@ -1,4 +1,4 @@
-# Phantom Secrets — Development Guide
+# Phantom — Development Guide
 
 ## Quick Reference
 
@@ -28,8 +28,8 @@ Note: `~/.cargo/bin/` prefix is needed because cargo is not in PATH on this mach
 - **phantom-core** — Config (.phantom.toml), .env parsing/rewriting, phantom token generation (256-bit CSPRNG, `phm_` prefix), error types
 - **phantom-vault** — `VaultBackend` trait with OS keychain (macOS Keychain, Linux Secret Service) and encrypted file fallback
 - **phantom-proxy** — HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, replaces phantom tokens in headers/body with real secrets, forwards over TLS. Uses `hyper` for server, `reqwest` for outbound HTTPS
-- **phantom-cli** — `clap`-based CLI binary. Commands: init, exec, start/stop, list, add, remove, rotate, status, doctor
-- **phantom-mcp** — MCP server binary for Claude Code integration. Uses `rmcp` 1.3 SDK. Stdio transport (JSON-RPC over stdin/stdout). Exposes tools for listing secrets, status, init, add/remove, rotate
+- **phantom-cli** — `clap`-based CLI binary. 19 commands: init, exec, start/stop, list, add, remove, reveal, rotate, status, doctor, check, sync, pull, env, setup
+- **phantom-mcp** — MCP server binary for Claude Code integration. Uses `rmcp` 1.3 SDK. Stdio transport (JSON-RPC over stdin/stdout). 6 tools: list, status, init, add/remove, rotate
 
 ### How the proxy works
 

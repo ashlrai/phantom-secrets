@@ -1,8 +1,8 @@
 # Phantom
 
-**Prevent AI coding agents from leaking your API keys.**
+**AI uses your keys. Safely.**
 
-Phantom replaces real secrets in your `.env` with worthless phantom tokens. A local proxy intercepts API calls, swaps in real credentials at the network layer. The AI agent never sees a real secret.
+Tell Claude to integrate Stripe. Let Cursor build your OpenAI pipeline. Phantom lets AI use your real API keys to do real work — without the keys ever being exposed. It also manages your secrets across local dev and deployment platforms like Vercel and Railway.
 
 ## The Problem
 
