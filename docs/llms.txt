@@ -1,0 +1,32 @@
+# Phantom
+
+> Open-source CLI that lets AI coding agents use your API keys safely. Replaces real secrets in .env files with worthless phantom tokens (phm_...) and injects real credentials at the network layer via a local HTTP proxy. The AI never sees real secrets.
+
+Phantom solves the problem of AI coding tools (Claude Code, Cursor, Copilot) reading .env files and leaking API keys via LLM context windows, session logs, or training data. It uses a "phantom token proxy" pattern: real secrets are stored in an encrypted vault (OS keychain or ChaCha20-Poly1305 encrypted file), the .env is rewritten with worthless phm_ tokens, and a local reverse proxy intercepts API calls to swap tokens for real credentials before forwarding over TLS.
+
+Key features: session-scoped tokens (fresh per exec session), auto-detection of 13+ API services, platform sync (push/pull to Vercel and Railway), MCP server for native Claude Code integration, pre-commit hook, encrypted vault, and npm install support (npx phantom-secrets).
+
+## Documentation
+
+- [Getting Started Guide](https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md): Step-by-step setup for Next.js + Claude Code + Vercel
+- [Troubleshooting & FAQ](https://github.com/ashlrai/phantom-secrets/blob/main/docs/troubleshooting.md): Common issues, CI/CD usage, team workflows
+- [Security Model](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md): Threat model, mitigations, and security principles
+- [README](https://github.com/ashlrai/phantom-secrets/blob/main/README.md): Full feature list, architecture, and CLI reference
+
+## Installation
+
+- npm: `npx phantom-secrets init`
+- Homebrew: `brew tap ashlrai/phantom && brew install phantom`
+- Cargo: `cargo install phantom --git https://github.com/ashlrai/phantom-secrets`
+
+## CLI Commands
+
+- `phantom init` — Import .env secrets into vault, rewrite with phantom tokens
+- `phantom exec -- <cmd>` — Start proxy + run command with session-scoped tokens
+- `phantom sync --platform vercel` — Push secrets to deployment platforms
+- `phantom pull --from vercel` — Pull secrets from platforms into local vault
+- `phantom setup` — Configure Claude Code MCP server automatically
+- `phantom check` — Pre-commit hook to block leaked secrets
+- `phantom reveal <KEY>` — View a secret value (requires --yes in non-interactive)
+- `phantom list` — Show secret names (never values)
+- `phantom doctor` — Health check for config, vault, and .env status

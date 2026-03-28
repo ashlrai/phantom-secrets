@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phantom — Pricing</title>
+    <meta name="description" content="Phantom pricing. Free forever for individuals. Pro for teams at $8/user/month. Enterprise with SSO and compliance.">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        :root{--bg:#050508;--s1:#0a0a12;--s2:#101018;--border:#1a1a2c;--border-l:#252538;--t1:#f5f5f7;--t2:#a1a1b5;--t3:#65657a;--blue:#3b82f6;--blue-b:#60a5fa;--blue-d:#1d4ed8;--green:#22c55e}
+        body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t1);-webkit-font-smoothing:antialiased}
+        a{color:var(--blue-b);text-decoration:none}
+        .w{max-width:1060px;margin:0 auto;padding:0 28px}
+
+        nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(5,5,8,.82);backdrop-filter:blur(20px) saturate(180%);border-bottom:1px solid rgba(26,26,44,.5)}
+        nav .w{display:flex;align-items:center;justify-content:space-between;height:56px}
+        .n-logo{display:flex;align-items:center;gap:9px;text-decoration:none;color:var(--t1)}
+        .n-logo img{width:22px;height:22px}
+        .n-logo span{font-weight:700;font-size:.95rem;letter-spacing:-.02em}
+        .n-r{display:flex;gap:20px;align-items:center}
+        .n-r a{color:var(--t2);text-decoration:none;font-size:.85rem;font-weight:500;transition:color .15s}
+        .n-r a:hover{color:var(--t1)}
+        .n-r a.active{color:var(--t1)}
+        .n-gh{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--s2);border:1px solid var(--border);border-radius:6px;font-size:.82rem;font-weight:600;color:var(--t1);transition:border-color .2s}
+        .n-gh:hover{border-color:var(--blue);text-decoration:none}
+        .n-gh svg{width:15px;height:15px;fill:currentColor}
+
+        .hero{padding:140px 0 60px;text-align:center}
+        .hero h1{font-size:2.8rem;font-weight:900;letter-spacing:-.05em;margin-bottom:12px;color:#fff}
+        .hero p{color:var(--t2);font-size:1.1rem;max-width:480px;margin:0 auto}
+
+        .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;padding:48px 0 100px}
+        .card{background:var(--s1);border:1px solid var(--border);border-radius:14px;padding:36px;display:flex;flex-direction:column}
+        .card.featured{border-color:var(--blue-d);box-shadow:0 0 40px rgba(59,130,246,.08)}
+        .card-badge{display:inline-block;background:var(--blue);color:#fff;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:3px 10px;border-radius:100px;margin-bottom:16px;width:fit-content}
+        .card-badge.soon{background:var(--s2);color:var(--t2);border:1px solid var(--border)}
+        .card h2{font-size:1.3rem;font-weight:800;margin-bottom:4px}
+        .card .price{font-size:2.4rem;font-weight:900;letter-spacing:-.04em;margin:12px 0 4px;color:#fff}
+        .card .price span{font-size:.9rem;font-weight:500;color:var(--t2)}
+        .card .desc{color:var(--t2);font-size:.88rem;margin-bottom:24px;line-height:1.6}
+        .card ul{list-style:none;flex:1;margin-bottom:24px}
+        .card li{font-size:.88rem;color:var(--t2);padding:6px 0;display:flex;gap:8px;align-items:flex-start}
+        .card li::before{content:"✓";color:var(--green);font-weight:700;flex-shrink:0}
+        .btn{display:block;text-align:center;padding:12px 24px;border-radius:8px;font-size:.9rem;font-weight:600;text-decoration:none;transition:all .2s;border:1px solid transparent}
+        .btn-p{background:var(--blue);color:#fff;border-color:var(--blue)}
+        .btn-p:hover{background:var(--blue-d);text-decoration:none}
+        .btn-s{background:var(--s2);color:var(--t1);border-color:var(--border-l)}
+        .btn-s:hover{border-color:var(--t3);text-decoration:none}
+
+        footer{padding:32px 0;text-align:center;border-top:1px solid var(--border);color:var(--t3);font-size:.8rem}
+        footer a{color:var(--t2);text-decoration:none}
+        footer a:hover{color:var(--blue-b)}
+
+        @media(max-width:768px){.grid{grid-template-columns:1fr}.hero h1{font-size:2.2rem}.n-r a:not(.n-gh){display:none}}
+    </style>
+</head>
+<body>
+<nav><div class="w">
+    <a href="/" class="n-logo"><img src="favicon.svg" alt=""><span>Phantom</span></a>
+    <div class="n-r">
+        <a href="/">Home</a>
+        <a href="pricing.html" class="active">Pricing</a>
+        <a href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md">Docs</a>
+        <a href="https://github.com/ashlrai/phantom-secrets" class="n-gh"><svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
+    </div>
+</div></nav>
+
+<div class="w">
+    <div class="hero">
+        <h1>Simple, transparent pricing</h1>
+        <p>Free forever for individuals. Pay only when your team needs cloud sync and collaboration.</p>
+    </div>
+
+    <div class="grid">
+        <!-- Free -->
+        <div class="card">
+            <h2>Free</h2>
+            <div class="price">$0<span> forever</span></div>
+            <div class="desc">Everything you need for solo development with AI coding tools.</div>
+            <ul>
+                <li>phantom init / exec / proxy</li>
+                <li>Local encrypted vault (OS keychain)</li>
+                <li>MCP server for Claude Code</li>
+                <li>Pre-commit hook (phantom check)</li>
+                <li>Session-scoped tokens</li>
+                <li>Smart detection (13+ services)</li>
+                <li>phantom reveal / rotate / doctor</li>
+                <li>Unlimited secrets</li>
+            </ul>
+            <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-s">Get started</a>
+        </div>
+
+        <!-- Pro -->
+        <div class="card featured">
+            <div class="card-badge">Most popular</div>
+            <h2>Pro</h2>
+            <div class="price">$8<span> /user/month</span></div>
+            <div class="desc">Cloud sync, team sharing, and deployment platform integration.</div>
+            <ul>
+                <li>Everything in Free</li>
+                <li>Cloud-synced vault across machines</li>
+                <li>phantom sync (Vercel, Railway, AWS)</li>
+                <li>phantom pull from platforms</li>
+                <li>Team vault sharing (up to 10 users)</li>
+                <li>Secret history (30 days)</li>
+                <li>Audit log (who accessed what)</li>
+                <li>CI/CD integration</li>
+                <li>Priority support</li>
+            </ul>
+            <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-p">Join waitlist</a>
+            <div style="text-align:center;margin-top:8px;font-size:.75rem;color:var(--t3)">Coming soon</div>
+        </div>
+
+        <!-- Enterprise -->
+        <div class="card">
+            <div class="card-badge soon">Enterprise</div>
+            <h2>Enterprise</h2>
+            <div class="price">Custom</div>
+            <div class="desc">SSO, compliance, and advanced access controls for large teams.</div>
+            <ul>
+                <li>Everything in Pro</li>
+                <li>SSO / SAML authentication</li>
+                <li>RBAC (role-based access)</li>
+                <li>SCIM provisioning</li>
+                <li>Compliance reports (SOC 2)</li>
+                <li>Unlimited team size</li>
+                <li>Self-hosted cloud option</li>
+                <li>Dedicated support + SLA</li>
+                <li>AI access controls</li>
+            </ul>
+            <a href="mailto:mason@ashlr.ai" class="btn btn-s">Contact us</a>
+            <div style="text-align:center;margin-top:8px;font-size:.75rem;color:var(--t3)">Coming soon</div>
+        </div>
+    </div>
+</div>
+
+<footer><p>Built by <a href="https://ashlar.ai">Ashlar AI</a> &middot; <a href="https://github.com/ashlrai/phantom-secrets">GitHub</a> &middot; <a href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md">Docs</a> &middot; <a href="https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md">Security</a> &middot; MIT License</p></footer>
+</body>
+</html>

@@ -1,0 +1,157 @@
+# Phantom — Delegate Everything to AI
+
+Phantom is an open-source CLI tool that lets AI coding agents (Claude Code, Cursor, Copilot) use your real API keys without the security risk. It replaces secrets in .env files with worthless "phantom tokens" and injects real credentials at the network layer via a local HTTP proxy.
+
+Website: https://phm.dev
+GitHub: https://github.com/ashlrai/phantom-secrets
+License: MIT
+Language: Rust
+Install: `npx phantom-secrets init` or `brew tap ashlrai/phantom && brew install phantom`
+
+## The Problem
+
+AI coding tools read your .env file. Your API keys enter the LLM context window. They can leak via:
+- Session logs and transcripts
+- Prompt injection attacks
+- Malicious MCP servers
+- Training data
+- Code generation (AI writes keys into files)
+
+GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits leak at 2x the baseline rate. AI service key leaks increased 81% year-over-year.
+
+## How Phantom Works
+
+1. `phantom init` reads your .env, stores real secrets in an encrypted vault (OS keychain or ChaCha20-Poly1305 encrypted file), and rewrites .env with worthless phantom tokens (phm_...).
+2. `phantom exec -- claude` starts a local HTTP reverse proxy on 127.0.0.1, sets BASE_URL environment variables (e.g., OPENAI_BASE_URL=http://127.0.0.1:PORT/openai) so API calls route through the proxy, and launches the specified command.
+3. When code makes an API call, the proxy intercepts it, replaces phantom tokens with real credentials in headers and body, and forwards over TLS to the real API endpoint.
+4. Session-scoped tokens: each `phantom exec` session generates fresh phantom tokens. If tokens leak from AI logs, they're already invalid.
+
+## CLI Commands
+
+- `phantom init` — Import .env secrets into vault, rewrite with phantom tokens. Auto-detects 13+ services (OpenAI, Anthropic, Stripe, Supabase, Resend, SendGrid, Twilio, Cloudflare, GitHub, Pinecone, Replicate, plus connection strings).
+- `phantom exec -- <cmd>` — Start proxy with session-scoped tokens, run command, shut down proxy on exit. Primary daily-use command.
+- `phantom start` / `phantom stop` — Standalone proxy lifecycle. `--daemon` mode for background operation.
+- `phantom list` — Show secret names stored in vault (never shows values).
+- `phantom add <KEY> <VALUE>` — Add a secret to the vault.
+- `phantom remove <KEY>` — Remove a secret from the vault.
+- `phantom reveal <KEY>` — View a secret value. Requires `--yes` flag in non-interactive contexts to prevent AI agents from extracting secrets.
+- `phantom rotate` — Regenerate all phantom tokens in .env.
+- `phantom status` — Show project ID, vault backend, secret count, service mappings.
+- `phantom doctor` — Health check: config, vault access, .env status, .gitignore, Claude Code MCP config, pre-commit hook, sync targets.
+- `phantom check` — Pre-commit hook. Scans .env files for unprotected secrets and staged code for hardcoded API keys. Returns exit code 1 if found.
+- `phantom sync --platform vercel --project <id>` — Push vault secrets to Vercel or Railway deployment platforms.
+- `phantom pull --from vercel --project <id>` — Pull secrets from deployment platforms into local vault. Supports --force to overwrite.
+- `phantom env` — Generate .env.example with secret values masked and non-secret config preserved.
+- `phantom setup` — Configure Claude Code MCP server and hooks automatically.
+
+## Installation
+
+### npm (recommended)
+```
+npx phantom-secrets init
+```
+Downloads the correct platform binary automatically. No Rust toolchain needed.
+
+### Homebrew (macOS)
+```
+brew tap ashlrai/phantom
+brew install phantom
+```
+
+### Cargo (from source)
+```
+cargo install phantom --git https://github.com/ashlrai/phantom-secrets
+```
+
+## MCP Server for Claude Code
+
+Phantom includes a native MCP server (`phantom-mcp`) that lets Claude Code manage secrets without ever seeing real values.
+
+Setup: `phantom setup` or manually add to `.claude/settings.local.json`:
+```json
+{
+  "mcpServers": {
+    "phantom": {
+      "command": "phantom-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+MCP Tools:
+- `phantom_list_secrets` — List secret names (never values)
+- `phantom_status` — Show vault and config status
+- `phantom_init` — Initialize Phantom and protect .env
+- `phantom_add_secret` — Add a secret to the vault
+- `phantom_remove_secret` — Remove a secret
+- `phantom_rotate` — Regenerate phantom tokens
+
+## Security Model
+
+- Real secrets never on disk in project directory — only in OS keychain or encrypted vault
+- Vault encryption: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key)
+- Phantom tokens: 256-bit CSPRNG with phm_ prefix (never collide with real API key formats)
+- Proxy binds to 127.0.0.1 only — never exposed to network
+- Proxy token authentication prevents other local processes from using the proxy
+- Secrets zeroized from memory after use
+- Allowlist model: proxy only injects for configured service patterns
+- Session-scoped tokens: fresh per exec session, invalid after session ends
+- Body size limit (10MB) prevents OOM, upstream timeout (30s), connect timeout (5s)
+- HTTP redirects followed (up to 5 hops)
+
+## Platform Sync
+
+Push secrets to deployment platforms:
+```
+phantom sync --platform vercel --project prj_xxx
+phantom sync --platform railway --project xxx
+```
+
+Pull secrets from platforms (for new machine onboarding):
+```
+phantom pull --from vercel --project prj_xxx
+phantom pull --from railway --project xxx --environment production
+```
+
+## Smart Secret Detection
+
+Phantom automatically identifies secrets vs config values using heuristics:
+- Key patterns: *_API_KEY, *_SECRET*, *_TOKEN, *_PASSWORD, DATABASE_URL, REDIS_URL
+- Value patterns: sk-*, sk_*, ghp_*, github_pat_*, glpat-*, xoxb-*, AKIA*, Bearer, eyJ
+- Connection strings with @ in URLs
+- High-entropy strings (32+ chars of hex/base64)
+- Non-secrets left untouched: NODE_ENV, PORT, DEBUG, APP_NAME
+
+## Comparison with Alternatives
+
+| Feature | Phantom | 1Password | Doppler | Infisical |
+|---------|---------|-----------|---------|-----------|
+| AI-agent-aware | Core feature | Bolt-on | No | No |
+| Phantom token proxy | Yes | No | No | No |
+| Session-scoped tokens | Yes | No | No | No |
+| Open source | Yes (MIT) | No | No | Yes |
+| Free for individuals | Yes (unlimited) | No | 5 users | 5 users |
+| MCP server | Yes | Planned | No | No |
+| Setup time | 2 minutes | 15+ minutes | 10+ minutes | 10+ minutes |
+| Pre-commit hook | Built-in | No | No | No |
+
+## Architecture
+
+5-crate Rust workspace:
+- phantom-core: Config, .env parsing, token generation, sync module
+- phantom-vault: VaultBackend trait, OS keychain + encrypted file backends
+- phantom-proxy: HTTP reverse proxy, request interceptor, token replacement
+- phantom-cli: 19 CLI commands via clap
+- phantom-mcp: MCP server via rmcp SDK (stdio transport)
+
+52 tests, zero clippy warnings, MIT licensed.
+
+## Common Use Cases
+
+1. **Solo developer with Claude Code**: `phantom init` → `phantom exec -- claude` → code safely
+2. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
+3. **New machine onboarding**: `phantom pull --from vercel --project prj_xxx`
+4. **Team onboarding**: `phantom env` generates .env.example with placeholders
+5. **CI/CD**: Set PHANTOM_VAULT_PASSPHRASE env var, use phantom in GitHub Actions
+6. **Pre-commit safety**: Add `phantom check` to git hooks or pre-commit framework

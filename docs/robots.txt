@@ -1,3 +1,16 @@
 User-agent: *
 Allow: /
 Sitemap: https://phm.dev/sitemap.xml
+
+# Allow AI crawlers to index this site
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Amazonbot
+Allow: /

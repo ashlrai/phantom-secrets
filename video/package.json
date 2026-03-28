@@ -1,0 +1,17 @@
+{
+  "name": "phantom-video",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "studio": "remotion studio src/index.js",
+    "render": "remotion render src/index.js PhantomDemo --output out/phantom-demo.mp4",
+    "render-gif": "remotion render src/index.js PhantomDemo --output out/phantom-demo.gif --image-format png"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.441",
+    "@remotion/player": "^4.0.441",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "remotion": "^4.0.441"
+  }
+}
