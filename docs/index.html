@@ -52,48 +52,26 @@
         .n-gh svg{width:15px;height:15px;fill:currentColor}
 
         /* HERO */
-        .hero{padding:140px 0 60px;text-align:center;position:relative}
-        .hero::before{content:'';position:absolute;top:-150px;left:50%;width:900px;height:700px;transform:translateX(-50%);background:radial-gradient(ellipse at 50% 30%,rgba(59,130,246,.08) 0%,rgba(59,130,246,.02) 40%,transparent 70%);pointer-events:none}
+        .hero{padding:130px 0 40px;text-align:center;position:relative;overflow:hidden}
+        .hero::before{content:'';position:absolute;top:-200px;left:50%;width:1000px;height:800px;transform:translateX(-50%);background:radial-gradient(ellipse at 50% 40%,rgba(59,130,246,.07) 0%,transparent 65%);pointer-events:none}
 
-        .hero h1{font-size:clamp(3.2rem,8vw,5.6rem);font-weight:900;letter-spacing:-.06em;line-height:.95;margin-bottom:24px;color:#fff}
-        .hero h1 span{color:var(--blue-b)}
+        .hero h1{font-size:clamp(2.8rem,7vw,4.8rem);font-weight:900;letter-spacing:-.06em;line-height:.95;margin-bottom:20px;color:#fff}
+        .hero h1 em{font-style:normal;color:var(--blue-b)}
 
-        .hero-sub{font-size:1.1rem;color:var(--t2);max-width:440px;margin:0 auto 32px;line-height:1.75}
+        .hero-sub{font-size:1.05rem;color:var(--t2);max-width:460px;margin:0 auto 28px;line-height:1.75}
         .hero-sub strong{color:var(--t1);font-weight:600}
 
-        .hero-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:20px}
+        .hero-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:48px}
         .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 24px;border-radius:8px;font-size:.9rem;font-weight:600;text-decoration:none;transition:all .2s;border:1px solid transparent;letter-spacing:-.01em}
         .btn-p{background:var(--blue);color:#fff;border-color:var(--blue)}
         .btn-p:hover{background:var(--blue-d);transform:translateY(-1px);box-shadow:0 4px 24px rgba(59,130,246,.3);text-decoration:none}
         .btn-s{background:transparent;color:var(--t1);border-color:var(--border-l)}
         .btn-s:hover{border-color:var(--t3);text-decoration:none}
 
-        .hero-install{font-size:.82rem;color:var(--t3);margin-bottom:56px}
-        .hero-install code{background:var(--s1);border:1px solid var(--border);padding:4px 10px;border-radius:5px;color:var(--t2);cursor:pointer;transition:border-color .15s}
-        .hero-install code:hover{border-color:var(--blue)}
-
-        /* HERO VISUAL — the centerpiece */
-        .hero-viz{position:relative;max-width:820px;margin:0 auto}
-
-        /* The two env cards side by side */
-        .env-row{display:grid;grid-template-columns:1fr 1fr;gap:2px;background:var(--border);border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:0 32px 80px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.03) inset}
-        .env-card{background:var(--s1)}
-        .env-hdr{padding:14px 20px;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;display:flex;align-items:center;gap:8px}
-        .env-hdr .dot{width:7px;height:7px;border-radius:50%}
-        .env-bad .env-hdr{color:var(--red)}.env-bad .env-hdr .dot{background:var(--red)}
-        .env-good .env-hdr{color:var(--blue-b)}.env-good .env-hdr .dot{background:var(--blue-b)}
-        .env-body{padding:4px 20px 20px;font-family:'SF Mono','Fira Code',monospace;font-size:.78rem;line-height:2.1}
-        .env-body .k{color:var(--t3)}
-        .env-body .vr{color:var(--red)}
-        .env-body .vb{color:var(--blue-b)}
-        .env-body .c{color:var(--t3);opacity:.6}
-
-        /* Floating label on the visual */
-        .env-label{position:absolute;bottom:-20px;left:50%;transform:translateX(-50%);background:var(--s2);border:1px solid var(--border);border-radius:100px;padding:6px 16px;font-size:.75rem;color:var(--t2);white-space:nowrap;display:flex;align-items:center;gap:6px}
-        .env-label strong{color:var(--t1)}
-
-        /* Arrow between cards */
-        .env-arrow{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2;width:40px;height:40px;background:var(--bg);border:1px solid var(--border-l);border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--blue-b);font-size:1.1rem;box-shadow:0 4px 16px rgba(0,0,0,.5)}
+        /* HERO ANIMATION — the live demo */
+        .hero-demo{max-width:700px;margin:0 auto;position:relative}
+        .hero-demo .term{margin-bottom:0}
+        .hero-demo .term-body{min-height:200px;font-size:.84rem;line-height:2.1}
 
         /* SECTIONS */
         section{padding:100px 0}
@@ -191,40 +169,19 @@
 
 <!-- HERO -->
 <header class="hero">
-    <h1 class="sr">Delegate everything<br><span>to AI.</span></h1>
-    <p class="sr sr-d1 hero-sub">Your API keys work through AI agents without ever being exposed. All the convenience of pasting secrets into Claude. <strong>None of the risk.</strong></p>
+    <h1 class="sr">Delegate everything<br><em>to AI.</em></h1>
+    <p class="sr sr-d1 hero-sub">You paste API keys into Claude Code. You know it's risky. <strong>Phantom makes it safe</strong> &mdash; AI uses your real keys without ever seeing them.</p>
     <div class="sr sr-d2 hero-btns">
-        <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-p">Get started</a>
+        <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-p">Get started &mdash; it's free</a>
         <a href="#how" class="btn btn-s">How it works</a>
     </div>
-    <div class="sr sr-d3 hero-install">
-        <code onclick="cc('npx phantom-secrets init')">npx phantom-secrets init</code>
-    </div>
 
-    <!-- THE PRODUCT IS THE HERO -->
-    <div class="sr sr-d4 hero-viz">
-        <div class="env-row">
-            <div class="env-card env-bad">
-                <div class="env-hdr"><span class="dot"></span> Today &mdash; AI sees your real keys</div>
-                <div class="env-body">
-                    <span class="c"># .env</span><br>
-                    <span class="k">OPENAI_API_KEY</span>=<span class="vr">sk-proj-a8Kx9mR...real</span><br>
-                    <span class="k">STRIPE_SECRET</span>=<span class="vr">sk_live_4eC39HJ...real</span><br>
-                    <span class="k">DATABASE_URL</span>=<span class="vr">postgres://u:pass@db/prod</span>
-                </div>
-            </div>
-            <div class="env-card env-good">
-                <div class="env-hdr"><span class="dot"></span> With Phantom &mdash; AI works, keys stay safe</div>
-                <div class="env-body">
-                    <span class="c"># .env</span><br>
-                    <span class="k">OPENAI_API_KEY</span>=<span class="vb">phm_d9f1c157e32c39...</span><br>
-                    <span class="k">STRIPE_SECRET</span>=<span class="vb">phm_2ccb5a6ce67517...</span><br>
-                    <span class="k">DATABASE_URL</span>=<span class="vb">phm_99a8d2fe93c561...</span>
-                </div>
-            </div>
+    <!-- LIVE ANIMATED DEMO — the product IS the hero -->
+    <div class="sr sr-d3 hero-demo">
+        <div class="term">
+            <div class="term-bar"><span class="td td-r"></span><span class="td td-y"></span><span class="td td-g"></span><span class="term-t">~/my-app</span></div>
+            <div class="term-body" id="hero-body"></div>
         </div>
-        <div class="env-arrow">&rarr;</div>
-        <div class="env-label"><span style="color:var(--green)">&#10003;</span> AI uses your keys through a <strong>local proxy</strong> &mdash; never sees the real values</div>
     </div>
 </header>
 
@@ -337,24 +294,40 @@ function typeT(id,lines,spd){
     next();
 }
 
-const demoLines=[
+// Hero animation — shows the full story: init protects secrets, exec runs safely
+const heroLines=[
+    {cmd:'cat .env'},
+    {out:'<span class="td2"># Your real API keys — exposed to AI</span>'},
+    {out:'<span class="tc">OPENAI_API_KEY</span>=<span style="color:var(--red)">sk-proj-a8Kx9mR7v2...real-key</span>',d:30},
+    {out:'<span class="tc">STRIPE_SECRET</span>=<span style="color:var(--red)">sk_live_4eC39HJf8...real-key</span>',d:30},
+    {out:'<span class="tc">DATABASE_URL</span>=<span style="color:var(--red)">postgres://admin:s3cret@db.io/prod</span>',d:400},
     {cmd:'phantom init'},
-    {out:'<span class="ti">-></span> <span class="td2">Found 4 secret(s) to protect:</span>'},
-    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">OPENAI_API_KEY</span> <span class="td2">&rarr; phm_d9f1c1...</span>',d:40},
-    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">ANTHROPIC_API_KEY</span> <span class="td2">&rarr; phm_dbd868...</span>',d:40},
-    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">STRIPE_SECRET_KEY</span> <span class="td2">&rarr; phm_2ccb5a...</span>',d:40},
-    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">DATABASE_URL</span> <span class="td2">&rarr; phm_99a8d2...</span>',d:40},
-    {out:'<span class="to">ok</span> <span class="td2">Rewrote .env with phantom tokens</span>'},
-    {out:'<span class="to">done</span> <span class="td2">4 secret(s) are now protected!</span>',d:300},
-    {cmd:'phantom exec -- npm run dev'},
-    {out:'<span class="to">ok</span> <span class="td2">Proxy running on</span> <span class="ti">127.0.0.1:62488</span>'},
-    {out:'<span class="ti">-></span> <span class="td2">4 secret(s) proxied, 1 env var(s) injected</span>'},
-    {out:'<span class="ti">-></span> <span class="td2">Launching:</span> <span class="ti">npm run dev</span>',d:350},
+    {out:'<span class="ti">-></span> <span class="td2">Found 3 secret(s) to protect</span>'},
+    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">OPENAI_API_KEY</span>  <span style="color:var(--red)">sk-proj...</span> <span class="td2">&rarr;</span> <span class="ti">phm_d9f1c157...</span>',d:50},
+    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">STRIPE_SECRET</span>   <span style="color:var(--red)">sk_live...</span> <span class="td2">&rarr;</span> <span class="ti">phm_2ccb5a6c...</span>',d:50},
+    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">DATABASE_URL</span>    <span style="color:var(--red)">postgres...</span> <span class="td2">&rarr;</span> <span class="ti">phm_99a8d2fe...</span>',d:50},
+    {out:'<span class="to">ok</span> <span class="td2">.env rewritten &mdash; real keys moved to encrypted vault</span>',d:250},
+    {cmd:'phantom exec -- claude'},
+    {out:'<span class="to">ok</span> <span class="td2">Proxy on</span> <span class="ti">127.0.0.1:54321</span> <span class="td2">&mdash; 3 secrets proxied</span>'},
+    {out:'<span class="ti">-></span> <span class="td2">AI sees</span> <span class="ti">phm_</span> <span class="td2">tokens. Proxy injects real keys at network layer.</span>'},
+    {out:'<span class="to">-></span> <span class="td2">Launching:</span> <span class="ti">claude</span><span class="cursor"></span>'},
+];
+// Auto-start hero animation on page load
+setTimeout(()=>typeT('hero-body',heroLines,22),600);
+
+// Demo terminal
+const demoLines=[
     {cmd:'phantom sync --platform vercel'},
-    {out:'<span class="ti">-></span> <span class="td2">Syncing 4 secret(s) to</span> <span class="ti">vercel</span><span class="td2">...</span>'},
-    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">OPENAI_API_KEY</span> <span class="td2">(created)</span>',d:40},
-    {out:'<span class="td2">   </span><span class="to">~</span> <span class="tc">STRIPE_SECRET_KEY</span> <span class="td2">(updated)</span>',d:40},
-    {out:'<span class="to">ok</span> <span class="td2">vercel: 2 created, 1 updated</span><span class="cursor"></span>'},
+    {out:'<span class="ti">-></span> <span class="td2">Syncing 3 secret(s) to</span> <span class="ti">vercel</span><span class="td2">...</span>'},
+    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">OPENAI_API_KEY</span> <span class="td2">(created)</span>',d:50},
+    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">STRIPE_SECRET</span> <span class="td2">(created)</span>',d:50},
+    {out:'<span class="td2">   </span><span class="to">~</span> <span class="tc">DATABASE_URL</span> <span class="td2">(updated)</span>',d:50},
+    {out:'<span class="to">ok</span> <span class="td2">vercel: 2 created, 1 updated</span>',d:300},
+    {cmd:'phantom pull --from vercel --project prj_new_machine'},
+    {out:'<span class="ti">-></span> <span class="td2">Pulling secrets from</span> <span class="ti">vercel</span><span class="td2">...</span>'},
+    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">OPENAI_API_KEY</span> <span class="td2">(new)</span>',d:40},
+    {out:'<span class="td2">   </span><span class="to">+</span> <span class="tc">STRIPE_SECRET</span> <span class="td2">(new)</span>',d:40},
+    {out:'<span class="to">ok</span> <span class="td2">3 new, 0 updated, 0 skipped</span><span class="cursor"></span>'},
 ];
 const dObs=new IntersectionObserver(e=>{e.forEach(x=>{if(x.isIntersecting){typeT('demo-body',demoLines,25);dObs.disconnect()}})},{threshold:.15});
 dObs.observe(document.getElementById('demo-term'));
