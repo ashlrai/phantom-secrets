@@ -222,17 +222,26 @@ Or if installed via cargo:
 
 Claude Code can call these tools to manage secrets safely — the MCP server ensures no real secret values ever enter the AI's context window.
 
+## Documentation
+
+- [Getting Started Guide](docs/getting-started.md) — Step-by-step walkthrough for Next.js + Claude Code + Vercel
+- [Security Model](SECURITY.md) — Threat model and security architecture
+- [Troubleshooting](docs/troubleshooting.md) — Common issues, CI/CD setup, FAQ
+
 ## Development
 
 ```bash
 # Build
 cargo build
 
-# Run tests
+# Run tests (52 tests)
 cargo test
 
+# Lint (must pass with zero warnings)
+cargo clippy --all-targets -- -D warnings
+
 # Run with verbose logging
-cargo run -- --verbose exec -- echo "test"
+cargo run --bin phantom -- --verbose exec -- echo "test"
 
 # Test MCP server (stdio)
 cargo run --bin phantom-mcp
