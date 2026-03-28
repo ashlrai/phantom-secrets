@@ -53,6 +53,7 @@ phantom exec -- claude
 | `phantom status` | Show proxy status and mapped secrets |
 | `phantom rotate` | Regenerate phantom tokens |
 | `phantom doctor` | Check configuration and vault health |
+| `phantom reveal <KEY>` | View a secret value (stdout or `--clipboard`) |
 | `phantom check` | Scan for unprotected secrets (pre-commit hook) |
 | `phantom sync` | Push secrets to Vercel/Railway |
 | `phantom pull` | Pull secrets from Vercel/Railway into vault |
@@ -234,7 +235,7 @@ Claude Code can call these tools to manage secrets safely — the MCP server ens
 # Build
 cargo build
 
-# Run tests (52 tests)
+# Run tests
 cargo test
 
 # Lint (must pass with zero warnings)

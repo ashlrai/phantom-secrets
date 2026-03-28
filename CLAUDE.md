@@ -6,7 +6,7 @@
 # Build
 ~/.cargo/bin/cargo build
 
-# Test (42 tests)
+# Test
 ~/.cargo/bin/cargo test
 
 # Lint (must pass with zero warnings)

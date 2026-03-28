@@ -1,53 +1,36 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" fill="none">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#0a0a0f"/>
-      <stop offset="100%" style="stop-color:#12121a"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#9d8ff5"/>
-      <stop offset="100%" style="stop-color:#7c6cf0"/>
+      <stop offset="0%" style="stop-color:#06060b"/>
+      <stop offset="100%" style="stop-color:#0c0c14"/>
     </linearGradient>
     <linearGradient id="fade" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="50%" style="stop-color:#7c6cf0;stop-opacity:1"/>
-      <stop offset="100%" style="stop-color:#7c6cf0;stop-opacity:0"/>
+      <stop offset="50%" style="stop-color:#3b82f6;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0"/>
     </linearGradient>
     <radialGradient id="glow" cx="50%" cy="50%" r="40%">
-      <stop offset="0%" style="stop-color:#7c6cf0;stop-opacity:0.15"/>
-      <stop offset="100%" style="stop-color:#7c6cf0;stop-opacity:0"/>
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.12"/>
+      <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0"/>
     </radialGradient>
   </defs>
-
-  <!-- Background -->
   <rect width="1200" height="630" fill="url(#bg)"/>
-
-  <!-- Subtle glow -->
   <ellipse cx="600" cy="315" rx="500" ry="300" fill="url(#glow)"/>
-
-  <!-- Ghost icon (left side) -->
   <g transform="translate(120, 165) scale(0.6)">
     <path d="M256 48c-88.4 0-160 71.6-160 160v120c0 8.8 7.2 16 16 16h32c0-24 16-40 32-40s32 16 32 40h16c0-24 16-40 32-40s32 16 32 40h16c0-24 16-40 32-40s32 16 32 40h32c8.8 0 16-7.2 16-16V208c0-88.4-71.6-160-160-160z" fill="url(#fade)"/>
-    <circle cx="208" cy="224" r="28" fill="#0a0a0f"/>
-    <circle cx="304" cy="224" r="28" fill="#0a0a0f"/>
-    <circle cx="216" cy="218" r="10" fill="#e0e0e8"/>
-    <circle cx="312" cy="218" r="10" fill="#e0e0e8"/>
+    <circle cx="208" cy="224" r="28" fill="#06060b"/>
+    <circle cx="304" cy="224" r="28" fill="#06060b"/>
+    <circle cx="216" cy="218" r="10" fill="#f0f0f4"/>
+    <circle cx="312" cy="218" r="10" fill="#f0f0f4"/>
   </g>
-
-  <!-- Text -->
-  <text x="460" y="260" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="80" font-weight="800" fill="url(#accent)">Phantom</text>
-  <text x="460" y="330" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="32" fill="#8888a0">Prevent AI coding agents</text>
-  <text x="460" y="375" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="32" fill="#8888a0">from leaking your API keys</text>
-
-  <!-- Terminal snippet -->
-  <rect x="460" y="410" width="580" height="130" rx="10" fill="#12121a" stroke="#1e1e2e" stroke-width="1"/>
-  <circle cx="482" cy="430" r="5" fill="#f87171" opacity="0.8"/>
-  <circle cx="498" cy="430" r="5" fill="#fbbf24" opacity="0.8"/>
-  <circle cx="514" cy="430" r="5" fill="#4ade80" opacity="0.8"/>
-  <text x="482" y="468" font-family="'SF Mono', 'Fira Code', monospace" font-size="16" fill="#8888a0">$ </text><text x="500" y="468" font-family="'SF Mono', 'Fira Code', monospace" font-size="16" fill="#e0e0e8">phantom init</text>
-  <text x="482" y="492" font-family="'SF Mono', 'Fira Code', monospace" font-size="16" fill="#4ade80">ok</text><text x="510" y="492" font-family="'SF Mono', 'Fira Code', monospace" font-size="16" fill="#8888a0"> .env rewritten with phantom tokens</text>
-  <text x="482" y="520" font-family="'SF Mono', 'Fira Code', monospace" font-size="16" fill="#8888a0">$ </text><text x="500" y="520" font-family="'SF Mono', 'Fira Code', monospace" font-size="16" fill="#e0e0e8">phantom exec -- claude</text>
-
-  <!-- Bottom bar -->
-  <rect x="0" y="610" width="1200" height="20" fill="#7c6cf0" opacity="0.3"/>
-  <text x="600" y="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="16" fill="#8888a0">github.com/ashlrai/phantom-secrets</text>
+  <text x="460" y="260" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="80" font-weight="800" fill="#f0f0f4">Phantom</text>
+  <text x="460" y="330" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="32" fill="#9898b0">Your API keys are</text>
+  <text x="460" y="375" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="32" font-weight="600" fill="#3b82f6">invisible to AI</text>
+  <rect x="460" y="410" width="580" height="130" rx="10" fill="#0c0c14" stroke="#1a1a2e" stroke-width="1"/>
+  <circle cx="482" cy="430" r="5" fill="#ef4444" opacity="0.7"/>
+  <circle cx="498" cy="430" r="5" fill="#eab308" opacity="0.7"/>
+  <circle cx="514" cy="430" r="5" fill="#22c55e" opacity="0.7"/>
+  <text x="482" y="468" font-family="monospace" font-size="16" fill="#5a5a72">$ </text><text x="500" y="468" font-family="monospace" font-size="16" fill="#f0f0f4">phantom init</text>
+  <text x="482" y="492" font-family="monospace" font-size="16" fill="#22c55e">ok</text><text x="510" y="492" font-family="monospace" font-size="16" fill="#9898b0"> .env rewritten with phantom tokens</text>
+  <text x="482" y="520" font-family="monospace" font-size="16" fill="#5a5a72">$ </text><text x="500" y="520" font-family="monospace" font-size="16" fill="#f0f0f4">phantom exec -- claude</text>
+  <text x="600" y="600" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="16" fill="#5a5a72">github.com/ashlrai/phantom-secrets</text>
 </svg>
