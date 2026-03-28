@@ -70,6 +70,7 @@ impl ProxyServer {
             max_body_size: config.max_body_size,
             http_client: reqwest::Client::builder()
                 .danger_accept_invalid_certs(false)
+                .redirect(reqwest::redirect::Policy::limited(5))
                 .timeout(std::time::Duration::from_secs(config.upstream_timeout_secs))
                 .connect_timeout(std::time::Duration::from_secs(config.connect_timeout_secs))
                 .build()?,
@@ -312,12 +313,20 @@ async fn handle_request(
     let response = match outgoing.send().await {
         Ok(resp) => resp,
         Err(e) => {
-            error!("Upstream request failed: {}", e);
+            // Log full error for debugging, but sanitize response to avoid leaking internal details
+            error!("Upstream request failed for {}: {}", route.name, e);
+            let user_msg = if e.is_timeout() {
+                "upstream request timed out"
+            } else if e.is_connect() {
+                "could not connect to upstream service"
+            } else {
+                "upstream request failed"
+            };
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
                 .body(Full::new(Bytes::from(format!(
-                    r#"{{"error":"upstream request failed","details":"{}"}}"#,
-                    e
+                    r#"{{"error":"{user_msg}","service":"{}"}}"#,
+                    route.name
                 ))))
                 .unwrap());
         }

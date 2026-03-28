@@ -85,6 +85,22 @@ impl FileVault {
             return Ok(VaultData::default());
         }
 
+        // Warn if file permissions are too open
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&self.vault_path) {
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode != 0o600 {
+                    eprintln!(
+                        "phantom: WARNING — vault file has permissions {:o} (expected 600): {}",
+                        mode,
+                        self.vault_path.display()
+                    );
+                }
+            }
+        }
+
         let encrypted = std::fs::read(&self.vault_path)?;
 
         if encrypted.len() < SALT_LEN + NONCE_LEN + 1 {

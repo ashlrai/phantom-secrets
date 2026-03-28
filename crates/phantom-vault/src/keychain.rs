@@ -53,7 +53,11 @@ impl KeychainVault {
         .map_err(|e| PhantomError::VaultError(format!("Keychain error: {e}")))?;
 
         match entry.get_password() {
-            Ok(data) => Ok(serde_json::from_str(&data).unwrap_or_default()),
+            Ok(data) => serde_json::from_str(&data).map_err(|e| {
+                PhantomError::VaultError(format!(
+                    "Corrupt keychain index (try `phantom init` to rebuild): {e}"
+                ))
+            }),
             Err(keyring::Error::NoEntry) => Ok(Vec::new()),
             Err(e) => Err(PhantomError::VaultError(format!(
                 "Failed to read index: {e}"

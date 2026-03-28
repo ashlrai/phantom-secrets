@@ -16,6 +16,15 @@ pub fn run(name: &str, value: &str) -> Result<()> {
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
+    // Warn if secret already exists
+    if vault.exists(name).unwrap_or(false) {
+        eprintln!(
+            "{} Secret {} already exists — overwriting with new value",
+            "warn".yellow(),
+            name.bold()
+        );
+    }
+
     vault
         .store(name, value)
         .context(format!("Failed to store secret: {name}"))?;

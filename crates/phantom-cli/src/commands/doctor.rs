@@ -95,6 +95,51 @@ pub fn run() -> Result<()> {
         issues += 1;
     }
 
+    // Check 5: Claude Code MCP configuration
+    let claude_settings = project_dir.join(".claude/settings.local.json");
+    if claude_settings.exists() {
+        let content = std::fs::read_to_string(&claude_settings).unwrap_or_default();
+        if content.contains("phantom") {
+            check_pass("Claude Code MCP server configured");
+        } else {
+            check_info("Claude Code settings exist but no Phantom MCP — run `phantom setup`");
+        }
+    } else {
+        check_info("No Claude Code config — run `phantom setup` for auto-mode");
+    }
+
+    // Check 6: Pre-commit hook
+    let pre_commit_config = project_dir.join(".pre-commit-config.yaml");
+    let git_hook = project_dir.join(".git/hooks/pre-commit");
+    if pre_commit_config.exists() {
+        let content = std::fs::read_to_string(&pre_commit_config).unwrap_or_default();
+        if content.contains("phantom") {
+            check_pass("Pre-commit hook configured");
+        } else {
+            check_info("pre-commit config exists but no phantom hook");
+        }
+    } else if git_hook.exists() {
+        let content = std::fs::read_to_string(&git_hook).unwrap_or_default();
+        if content.contains("phantom") {
+            check_pass("Git pre-commit hook includes phantom check");
+        } else {
+            check_info("Git pre-commit hook exists but no phantom check");
+        }
+    } else {
+        check_info("No pre-commit hook — run `phantom check` before commits");
+    }
+
+    // Check 7: Sync targets
+    if config_path.exists() {
+        if let Ok(config) = PhantomConfig::load(&config_path) {
+            if !config.sync.is_empty() {
+                check_pass(&format!("{} sync target(s) configured", config.sync.len()));
+            } else {
+                check_info("No sync targets — add [[sync]] to .phantom.toml for deployment");
+            }
+        }
+    }
+
     println!();
     if issues == 0 {
         println!("{} All checks passed!", "ok".green().bold());

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Phantom — Prevent AI agents from leaking your API keys</title>
-    <meta name="description" content="Open-source CLI that replaces real secrets with phantom tokens. A local proxy injects credentials at the network layer. The AI never sees a real secret.">
+    <meta name="description" content="Open-source Rust CLI that replaces real secrets with phantom tokens. A local proxy injects credentials at the network layer. The AI never sees a real secret.">
     <meta property="og:title" content="Phantom Secrets">
     <meta property="og:description" content="Prevent AI coding agents from leaking your API keys">
     <meta property="og:type" content="website">
@@ -12,453 +12,1219 @@
         :root {
             --bg: #0a0a0f;
             --surface: #12121a;
+            --surface-raised: #16161f;
             --border: #1e1e2e;
+            --border-light: #2a2a3e;
             --text: #e0e0e8;
             --muted: #8888a0;
             --accent: #7c6cf0;
             --accent-light: #9d8ff5;
+            --accent-glow: rgba(124, 108, 240, 0.15);
             --green: #4ade80;
+            --green-dim: rgba(74, 222, 128, 0.12);
             --red: #f87171;
+            --red-dim: rgba(248, 113, 113, 0.12);
             --yellow: #fbbf24;
+            --blue: #60a5fa;
+            --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html { scroll-behavior: smooth; }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
             background: var(--bg);
             color: var(--text);
             line-height: 1.6;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
 
+        /* --- Nav --- */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            padding: 0 24px;
+            backdrop-filter: blur(16px) saturate(1.2);
+            -webkit-backdrop-filter: blur(16px) saturate(1.2);
+            background: rgba(10, 10, 15, 0.8);
+            border-bottom: 1px solid var(--border);
+        }
+
+        nav .nav-inner {
+            max-width: 1120px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 56px;
+        }
+
+        nav .logo {
+            font-weight: 800;
+            font-size: 1.1rem;
+            letter-spacing: -0.02em;
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        nav .logo span { color: var(--accent-light); }
+
+        nav .nav-links {
+            display: flex;
+            gap: 32px;
+            list-style: none;
+        }
+
+        nav .nav-links a {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        nav .nav-links a:hover { color: var(--text); }
+
+        nav .nav-cta {
+            background: var(--accent);
+            color: white;
+            padding: 7px 16px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 600;
+            transition: background 0.2s, transform 0.15s;
+        }
+
+        nav .nav-cta:hover {
+            background: var(--accent-light);
+            transform: translateY(-1px);
+        }
+
+        /* --- Container --- */
         .container {
+            max-width: 1120px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        .container-sm {
             max-width: 800px;
             margin: 0 auto;
             padding: 0 24px;
         }
 
-        /* Hero */
-        .hero {
-            padding: 80px 0 60px;
-            text-align: center;
+        /* --- Section base --- */
+        section {
+            padding: 100px 0;
         }
 
-        .hero h1 {
-            font-size: 3rem;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            margin-bottom: 16px;
-        }
-
-        .hero h1 span {
-            background: linear-gradient(135deg, var(--accent-light), var(--green));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .hero .subtitle {
-            font-size: 1.25rem;
-            color: var(--muted);
-            max-width: 600px;
-            margin: 0 auto 40px;
-        }
-
-        .hero .install-block {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px 28px;
-            display: inline-block;
-            text-align: left;
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 0.95rem;
-        }
-
-        .hero .install-block .comment { color: var(--muted); }
-        .hero .install-block .cmd { color: var(--green); }
-
-        /* Problem */
-        .problem {
-            padding: 60px 0;
-            border-top: 1px solid var(--border);
-        }
-
-        .problem h2 {
-            font-size: 1.75rem;
-            margin-bottom: 24px;
-            text-align: center;
-        }
-
-        .comparison {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin: 30px 0;
-        }
-
-        @media (max-width: 640px) {
-            .comparison { grid-template-columns: 1fr; }
-            .hero h1 { font-size: 2rem; }
-        }
-
-        .comparison .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 24px;
-        }
-
-        .comparison .card.bad { border-color: rgba(248, 113, 113, 0.3); }
-        .comparison .card.good { border-color: rgba(74, 222, 128, 0.3); }
-
-        .comparison .card h3 {
-            font-size: 0.85rem;
+        .section-label {
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            color: var(--accent-light);
             margin-bottom: 12px;
         }
 
-        .comparison .card.bad h3 { color: var(--red); }
-        .comparison .card.good h3 { color: var(--green); }
-
-        .comparison .card pre {
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 0.85rem;
-            line-height: 1.8;
-            color: var(--muted);
-            white-space: pre-wrap;
-        }
-
-        .comparison .card pre .highlight { color: var(--text); font-weight: 600; }
-        .comparison .card pre .danger { color: var(--red); }
-        .comparison .card pre .safe { color: var(--green); }
-
-        /* Stats */
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 20px;
-            padding: 40px 0;
-            text-align: center;
-        }
-
-        @media (max-width: 640px) {
-            .stats { grid-template-columns: 1fr; }
-        }
-
-        .stats .stat-num {
-            font-size: 2rem;
+        .section-title {
+            font-size: 2.5rem;
             font-weight: 800;
-            color: var(--accent-light);
-        }
-
-        .stats .stat-label {
-            font-size: 0.85rem;
-            color: var(--muted);
-            margin-top: 4px;
-        }
-
-        /* How it works */
-        .how {
-            padding: 60px 0;
-            border-top: 1px solid var(--border);
-        }
-
-        .how h2 {
-            font-size: 1.75rem;
-            margin-bottom: 32px;
-            text-align: center;
-        }
-
-        .steps {
-            display: flex;
-            flex-direction: column;
-            gap: 24px;
-        }
-
-        .step {
-            display: flex;
-            gap: 20px;
-            align-items: flex-start;
-        }
-
-        .step-num {
-            flex-shrink: 0;
-            width: 36px;
-            height: 36px;
-            border-radius: 50%;
-            background: var(--accent);
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 0.9rem;
-        }
-
-        .step-content h3 {
-            font-size: 1.1rem;
-            margin-bottom: 4px;
-        }
-
-        .step-content p {
-            color: var(--muted);
-            font-size: 0.95rem;
-        }
-
-        .step-content code {
-            background: var(--surface);
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 0.85rem;
-            color: var(--green);
-        }
-
-        /* Features */
-        .features {
-            padding: 60px 0;
-            border-top: 1px solid var(--border);
-        }
-
-        .features h2 {
-            font-size: 1.75rem;
-            margin-bottom: 32px;
-            text-align: center;
-        }
-
-        .feature-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-
-        @media (max-width: 640px) {
-            .feature-grid { grid-template-columns: 1fr; }
-        }
-
-        .feature {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 24px;
-        }
-
-        .feature h3 {
-            font-size: 1rem;
-            margin-bottom: 8px;
-        }
-
-        .feature p {
-            color: var(--muted);
-            font-size: 0.9rem;
-        }
-
-        /* CTA */
-        .cta {
-            padding: 80px 0;
-            text-align: center;
-            border-top: 1px solid var(--border);
-        }
-
-        .cta h2 {
-            font-size: 2rem;
+            letter-spacing: -0.03em;
+            line-height: 1.15;
             margin-bottom: 16px;
         }
 
-        .cta p {
+        .section-subtitle {
+            font-size: 1.125rem;
+            color: var(--muted);
+            max-width: 560px;
+            line-height: 1.7;
+        }
+
+        /* --- Fade-in animation --- */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(24px);
+            transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+                        transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .fade-in.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .fade-in-delay-1 { transition-delay: 0.1s; }
+        .fade-in-delay-2 { transition-delay: 0.2s; }
+        .fade-in-delay-3 { transition-delay: 0.3s; }
+        .fade-in-delay-4 { transition-delay: 0.4s; }
+
+        /* --- Terminal component --- */
+        .terminal {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255,255,255,0.03);
+        }
+
+        .terminal-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 18px;
+            background: var(--surface-raised);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .terminal-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .terminal-dot.red { background: #ff5f57; }
+        .terminal-dot.yellow { background: #febc2e; }
+        .terminal-dot.green { background: #28c840; }
+
+        .terminal-title {
+            flex: 1;
+            text-align: center;
+            font-size: 0.75rem;
+            color: var(--muted);
+            font-family: var(--mono);
+            margin-right: 52px;
+        }
+
+        .terminal-body {
+            padding: 20px 22px;
+            font-family: var(--mono);
+            font-size: 0.85rem;
+            line-height: 1.85;
+            overflow-x: auto;
+        }
+
+        .terminal-body .prompt { color: #555570; user-select: none; }
+        .terminal-body .cmd { color: var(--text); font-weight: 500; }
+        .terminal-body .flag { color: var(--accent-light); }
+        .terminal-body .arg { color: var(--blue); }
+        .terminal-body .output { color: var(--muted); }
+        .terminal-body .success { color: var(--green); }
+        .terminal-body .info { color: var(--blue); }
+        .terminal-body .warn { color: var(--yellow); }
+        .terminal-body .danger { color: var(--red); }
+        .terminal-body .dim { color: #444460; }
+        .terminal-body .token { color: var(--accent-light); }
+        .terminal-body .line { display: block; min-height: 1.85em; }
+        .terminal-body .blank { display: block; height: 0.9em; }
+
+        /* --- HERO --- */
+        .hero {
+            padding: 140px 0 80px;
+            text-align: center;
+            position: relative;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px 6px 10px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 100px;
+            font-size: 0.8rem;
             color: var(--muted);
             margin-bottom: 32px;
         }
 
-        .btn {
-            display: inline-block;
-            padding: 14px 32px;
+        .hero-badge .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 8px var(--green);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .hero h1 {
+            font-size: 4.5rem;
+            font-weight: 900;
+            letter-spacing: -0.05em;
+            margin-bottom: 20px;
+            line-height: 1;
+        }
+
+        .hero h1 .gradient {
+            background: linear-gradient(135deg, var(--accent-light) 0%, #a78bfa 30%, var(--green) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero .tagline {
+            font-size: 1.3rem;
+            color: var(--muted);
+            max-width: 540px;
+            margin: 0 auto 48px;
+            line-height: 1.6;
+        }
+
+        .hero-terminal {
+            max-width: 580px;
+            margin: 0 auto;
+            text-align: left;
+        }
+
+        .hero-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            margin-bottom: 48px;
+        }
+
+        .btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 24px;
             background: var(--accent);
             color: white;
             text-decoration: none;
             border-radius: 8px;
             font-weight: 600;
-            font-size: 1rem;
-            transition: background 0.2s;
+            font-size: 0.95rem;
+            transition: all 0.2s;
+            border: none;
+            cursor: pointer;
         }
 
-        .btn:hover { background: var(--accent-light); }
+        .btn-primary:hover {
+            background: var(--accent-light);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px rgba(124, 108, 240, 0.3);
+        }
 
-        .btn-secondary {
+        .btn-ghost {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 24px;
             background: transparent;
-            border: 1px solid var(--border);
             color: var(--text);
-            margin-left: 12px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            border: 1px solid var(--border);
+            transition: all 0.2s;
+            cursor: pointer;
         }
 
-        .btn-secondary:hover {
+        .btn-ghost:hover {
             background: var(--surface);
+            border-color: var(--border-light);
+            transform: translateY(-1px);
         }
 
-        /* Footer */
-        footer {
-            padding: 40px 0;
-            text-align: center;
-            color: var(--muted);
-            font-size: 0.85rem;
+        /* --- PROBLEM --- */
+        .problem {
             border-top: 1px solid var(--border);
         }
 
-        footer a { color: var(--accent-light); text-decoration: none; }
-        footer a:hover { text-decoration: underline; }
+        .problem-header {
+            text-align: center;
+            margin-bottom: 56px;
+        }
+
+        .problem-header .section-subtitle {
+            margin: 0 auto;
+        }
+
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+            margin-bottom: 56px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 32px 24px;
+            text-align: center;
+            transition: border-color 0.3s, transform 0.3s;
+        }
+
+        .stat-card:hover {
+            border-color: var(--border-light);
+            transform: translateY(-2px);
+        }
+
+        .stat-number {
+            font-size: 2.75rem;
+            font-weight: 900;
+            letter-spacing: -0.03em;
+            background: linear-gradient(135deg, var(--accent-light), var(--red));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .comparison-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        .comparison-card {
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .comparison-label {
+            padding: 14px 20px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .comparison-card.danger .comparison-label {
+            background: var(--red-dim);
+            color: var(--red);
+            border-bottom: 1px solid rgba(248, 113, 113, 0.15);
+        }
+
+        .comparison-card.safe .comparison-label {
+            background: var(--green-dim);
+            color: var(--green);
+            border-bottom: 1px solid rgba(74, 222, 128, 0.15);
+        }
+
+        .comparison-card.danger { border: 1px solid rgba(248, 113, 113, 0.2); background: var(--surface); }
+        .comparison-card.safe { border: 1px solid rgba(74, 222, 128, 0.2); background: var(--surface); }
+
+        .comparison-body {
+            padding: 20px;
+            font-family: var(--mono);
+            font-size: 0.82rem;
+            line-height: 2;
+        }
+
+        .comparison-body .key { color: var(--muted); }
+        .comparison-body .val-bad { color: var(--red); }
+        .comparison-body .val-good { color: var(--green); }
+        .comparison-body .label { color: #555570; }
+        .comparison-body .note { color: var(--muted); font-style: italic; }
+
+        /* --- HOW IT WORKS --- */
+        .how-it-works {
+            border-top: 1px solid var(--border);
+        }
+
+        .how-header {
+            text-align: center;
+            margin-bottom: 64px;
+        }
+
+        .how-header .section-subtitle { margin: 0 auto; }
+
+        .flow-steps {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 2px;
+            position: relative;
+        }
+
+        .flow-steps::before {
+            content: '';
+            position: absolute;
+            top: 40px;
+            left: 60px;
+            right: 60px;
+            height: 2px;
+            background: linear-gradient(90deg, var(--accent), var(--green));
+            opacity: 0.3;
+            z-index: 0;
+        }
+
+        .flow-step {
+            text-align: center;
+            position: relative;
+            z-index: 1;
+            padding: 0 12px;
+        }
+
+        .flow-step-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 20px;
+            border-radius: 16px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.8rem;
+            transition: border-color 0.3s, transform 0.3s, box-shadow 0.3s;
+        }
+
+        .flow-step:hover .flow-step-icon {
+            border-color: var(--accent);
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(124, 108, 240, 0.15);
+        }
+
+        .flow-step-num {
+            font-family: var(--mono);
+            font-size: 0.7rem;
+            color: var(--accent-light);
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .flow-step h3 {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .flow-step p {
+            font-size: 0.85rem;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .flow-step code {
+            font-family: var(--mono);
+            font-size: 0.78rem;
+            color: var(--green);
+            background: rgba(74, 222, 128, 0.08);
+            padding: 2px 7px;
+            border-radius: 4px;
+        }
+
+        /* --- FEATURES --- */
+        .features {
+            border-top: 1px solid var(--border);
+        }
+
+        .features-header {
+            text-align: center;
+            margin-bottom: 56px;
+        }
+
+        .features-header .section-subtitle { margin: 0 auto; }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+        }
+
+        .feature-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 28px 22px;
+            transition: border-color 0.3s, transform 0.3s;
+        }
+
+        .feature-card:hover {
+            border-color: var(--border-light);
+            transform: translateY(-2px);
+        }
+
+        .feature-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.1rem;
+            margin-bottom: 16px;
+            background: var(--accent-glow);
+            border: 1px solid rgba(124, 108, 240, 0.15);
+        }
+
+        .feature-card h3 {
+            font-size: 0.95rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .feature-card p {
+            font-size: 0.83rem;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        /* --- TERMINAL DEMO --- */
+        .demo {
+            border-top: 1px solid var(--border);
+        }
+
+        .demo-header {
+            text-align: center;
+            margin-bottom: 48px;
+        }
+
+        .demo-header .section-subtitle { margin: 0 auto; }
+
+        .demo-terminal {
+            max-width: 720px;
+            margin: 0 auto;
+        }
+
+        /* --- INSTALL --- */
+        .install {
+            border-top: 1px solid var(--border);
+        }
+
+        .install-header {
+            text-align: center;
+            margin-bottom: 48px;
+        }
+
+        .install-header .section-subtitle { margin: 0 auto; }
+
+        .install-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            max-width: 840px;
+            margin: 0 auto;
+        }
+
+        .install-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 28px 24px;
+            text-align: center;
+            transition: border-color 0.3s, transform 0.3s;
+        }
+
+        .install-card:hover {
+            border-color: var(--accent);
+            transform: translateY(-2px);
+        }
+
+        .install-card .install-icon {
+            font-size: 1.6rem;
+            margin-bottom: 14px;
+        }
+
+        .install-card h3 {
+            font-size: 0.95rem;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .install-card .install-label {
+            font-size: 0.75rem;
+            color: var(--muted);
+            margin-bottom: 16px;
+        }
+
+        .install-cmd {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px 14px;
+            font-family: var(--mono);
+            font-size: 0.8rem;
+            color: var(--green);
+            text-align: left;
+            word-break: break-all;
+            cursor: pointer;
+            transition: border-color 0.2s;
+            position: relative;
+        }
+
+        .install-cmd:hover { border-color: var(--accent); }
+
+        .install-cmd .copy-hint {
+            position: absolute;
+            top: -8px;
+            right: 8px;
+            font-size: 0.65rem;
+            color: var(--muted);
+            background: var(--surface);
+            padding: 1px 6px;
+            border-radius: 4px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .install-cmd:hover .copy-hint { opacity: 1; }
+
+        /* --- CTA --- */
+        .cta-section {
+            border-top: 1px solid var(--border);
+            text-align: center;
+            position: relative;
+        }
+
+        .cta-section::before {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 500px;
+            height: 400px;
+            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .cta-section .section-title {
+            font-size: 2.75rem;
+        }
+
+        .cta-section .section-subtitle {
+            margin: 0 auto 40px;
+        }
+
+        .cta-buttons {
+            display: flex;
+            gap: 14px;
+            justify-content: center;
+            position: relative;
+        }
+
+        .btn-large {
+            padding: 16px 32px;
+            font-size: 1.05rem;
+            border-radius: 10px;
+        }
+
+        /* --- Footer --- */
+        footer {
+            padding: 48px 24px;
+            text-align: center;
+            border-top: 1px solid var(--border);
+        }
+
+        .footer-inner {
+            max-width: 1120px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .footer-left {
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+
+        .footer-left a {
+            color: var(--accent-light);
+            text-decoration: none;
+        }
+
+        .footer-left a:hover { text-decoration: underline; }
+
+        .footer-links {
+            display: flex;
+            gap: 24px;
+            list-style: none;
+        }
+
+        .footer-links a {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            transition: color 0.2s;
+        }
+
+        .footer-links a:hover { color: var(--text); }
+
+        /* --- Responsive --- */
+        @media (max-width: 900px) {
+            .features-grid { grid-template-columns: repeat(2, 1fr); }
+            .flow-steps { grid-template-columns: repeat(2, 1fr); gap: 32px; }
+            .flow-steps::before { display: none; }
+            .hero h1 { font-size: 3.2rem; }
+            .section-title { font-size: 2rem; }
+        }
+
+        @media (max-width: 640px) {
+            section { padding: 64px 0; }
+            .hero { padding: 110px 0 56px; }
+            .hero h1 { font-size: 2.5rem; }
+            .hero .tagline { font-size: 1.1rem; }
+            .hero-actions { flex-direction: column; align-items: center; }
+            .stats-row { grid-template-columns: 1fr; gap: 16px; }
+            .comparison-grid { grid-template-columns: 1fr; }
+            .features-grid { grid-template-columns: 1fr; }
+            .flow-steps { grid-template-columns: 1fr; gap: 24px; }
+            .install-grid { grid-template-columns: 1fr; }
+            .footer-inner { flex-direction: column; gap: 16px; }
+            nav .nav-links { display: none; }
+            .cta-buttons { flex-direction: column; align-items: center; }
+            .section-title { font-size: 1.75rem; }
+            .cta-section .section-title { font-size: 2rem; }
+            .stat-number { font-size: 2.2rem; }
+            .terminal-body { font-size: 0.78rem; padding: 16px; }
+        }
+
+        /* Typing cursor animation */
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 16px;
+            background: var(--accent-light);
+            animation: blink 1s step-end infinite;
+            vertical-align: text-bottom;
+            margin-left: 2px;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <section class="hero">
-            <h1><span>Phantom</span></h1>
-            <p class="subtitle">
-                Prevent AI coding agents from leaking your API keys.
-                Open-source CLI for developers who use Claude Code, Cursor, and Copilot.
-            </p>
-            <div class="install-block">
-                <div><span class="comment"># npm (recommended)</span></div>
-                <div><span class="cmd">npx phantom-secrets init</span></div>
-                <br>
-                <div><span class="comment"># or Homebrew</span></div>
-                <div><span class="cmd">brew tap ashlrai/phantom && brew install phantom</span></div>
-                <br>
-                <div><span class="comment"># Protect your secrets</span></div>
-                <div><span class="cmd">phantom init</span></div>
-                <div><span class="cmd">phantom exec -- claude</span></div>
-            </div>
-        </section>
 
-        <section class="problem">
-            <h2>The Problem</h2>
-            <p style="color: var(--muted); text-align: center; margin-bottom: 30px;">
-                AI coding tools read your .env file. Your secrets enter the LLM context window.
-                They can leak via prompt injection, session logs, or training data.
-            </p>
-
-            <div class="stats">
-                <div>
-                    <div class="stat-num">39.6M</div>
-                    <div class="stat-label">Secrets leaked on GitHub in 2025</div>
-                </div>
-                <div>
-                    <div class="stat-num">2x</div>
-                    <div class="stat-label">Higher leak rate with AI-assisted commits</div>
-                </div>
-                <div>
-                    <div class="stat-num">+81%</div>
-                    <div class="stat-label">YoY increase in AI service key leaks</div>
-                </div>
-            </div>
-
-            <div class="comparison">
-                <div class="card bad">
-                    <h3>Without Phantom</h3>
-                    <pre><span class="highlight">.env:</span>
-OPENAI_API_KEY=<span class="danger">sk-real-secret-key</span>
-
-<span class="highlight">AI sees:</span> <span class="danger">sk-real-secret-key</span>
-<span class="highlight">Risk:</span> <span class="danger">Leaked in context window</span></pre>
-                </div>
-                <div class="card good">
-                    <h3>With Phantom</h3>
-                    <pre><span class="highlight">.env:</span>
-OPENAI_API_KEY=<span class="safe">phm_a7f3b9e2...</span>
-
-<span class="highlight">AI sees:</span> <span class="safe">phm_a7f3b9e2...</span> (worthless)
-<span class="highlight">Proxy injects:</span> <span class="safe">real key at network layer</span></pre>
-                </div>
-            </div>
-        </section>
-
-        <section class="how">
-            <h2>How It Works</h2>
-            <div class="steps">
-                <div class="step">
-                    <div class="step-num">1</div>
-                    <div class="step-content">
-                        <h3>Initialize</h3>
-                        <p>Run <code>phantom init</code> in your project. Real secrets are stored in your OS keychain. Your .env is rewritten with worthless phantom tokens.</p>
-                    </div>
-                </div>
-                <div class="step">
-                    <div class="step-num">2</div>
-                    <div class="step-content">
-                        <h3>Code with AI</h3>
-                        <p>Run <code>phantom exec -- claude</code>. The AI reads your .env and only sees <code>phm_</code> tokens. If they leak, nothing happens.</p>
-                    </div>
-                </div>
-                <div class="step">
-                    <div class="step-num">3</div>
-                    <div class="step-content">
-                        <h3>Proxy injects secrets</h3>
-                        <p>A local HTTP proxy intercepts API calls, replaces phantom tokens with real credentials, and forwards over TLS. The AI never sees the real secret.</p>
-                    </div>
-                </div>
-                <div class="step">
-                    <div class="step-num">4</div>
-                    <div class="step-content">
-                        <h3>Deploy anywhere</h3>
-                        <p>Run <code>phantom sync --platform vercel</code> to push secrets to deployment. No more manual env var editing.</p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section class="features">
-            <h2>Features</h2>
-            <div class="feature-grid">
-                <div class="feature">
-                    <h3>MCP Server</h3>
-                    <p>Native Claude Code integration. Manage secrets without values entering the AI context.</p>
-                </div>
-                <div class="feature">
-                    <h3>Pre-commit Hook</h3>
-                    <p>Block commits containing unprotected secrets. Catches hardcoded API keys in code.</p>
-                </div>
-                <div class="feature">
-                    <h3>OS Keychain</h3>
-                    <p>Secrets stored in macOS Keychain or Linux Secret Service. Protected by your login password.</p>
-                </div>
-                <div class="feature">
-                    <h3>Smart Detection</h3>
-                    <p>Automatically identifies secrets vs config. Leaves NODE_ENV and PORT untouched.</p>
-                </div>
-                <div class="feature">
-                    <h3>Open Source</h3>
-                    <p>MIT licensed. Written in Rust. Auditable, forkable, free forever for individuals.</p>
-                </div>
-                <div class="feature">
-                    <h3>Built-in Services</h3>
-                    <p>OpenAI, Anthropic, Stripe, Supabase, PlanetScale. Custom services via .phantom.toml.</p>
-                </div>
-                <div class="feature">
-                    <h3>Platform Sync</h3>
-                    <p>Push secrets to Vercel and Railway. Pull to onboard new machines. One source of truth.</p>
-                </div>
-                <div class="feature">
-                    <h3>npm Install</h3>
-                    <p><code>npx phantom-secrets init</code> — instant setup for JS/TS developers. No Rust needed.</p>
-                </div>
-            </div>
-        </section>
-
-        <section class="cta">
-            <h2>Start protecting your secrets</h2>
-            <p>Two commands. Two minutes. Zero leaked API keys.</p>
-            <a href="https://github.com/ashlrai/phantom-secrets" class="btn">View on GitHub</a>
-            <a href="https://github.com/ashlrai/phantom-secrets/releases" class="btn btn-secondary">Download</a>
-        </section>
-
-        <footer>
-            <p>
-                Built by <a href="https://ashlar.ai">Ashlar AI</a> &middot;
-                <a href="https://github.com/ashlrai/phantom-secrets">GitHub</a> &middot;
-                <a href="https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md">Security</a> &middot;
-                MIT License
-            </p>
-        </footer>
+<!-- Nav -->
+<nav>
+    <div class="nav-inner">
+        <a href="#" class="logo"><span>Phantom</span></a>
+        <ul class="nav-links">
+            <li><a href="#problem">Problem</a></li>
+            <li><a href="#how-it-works">How It Works</a></li>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#install">Install</a></li>
+        </ul>
+        <a href="https://github.com/ashlrai/phantom-secrets" class="nav-cta">GitHub</a>
     </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+    <div class="container">
+        <div class="fade-in">
+            <div class="hero-badge">
+                <span class="dot"></span>
+                Open source &middot; Written in Rust &middot; MIT License
+            </div>
+        </div>
+
+        <h1 class="fade-in fade-in-delay-1">
+            <span class="gradient">Phantom</span>
+        </h1>
+
+        <p class="tagline fade-in fade-in-delay-2">
+            Prevent AI coding agents from leaking your API keys.<br>
+            Phantom tokens in, real credentials at the network layer.
+        </p>
+
+        <div class="hero-actions fade-in fade-in-delay-3">
+            <a href="https://github.com/ashlrai/phantom-secrets" class="btn-primary">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                View on GitHub
+            </a>
+            <a href="#install" class="btn-ghost">Quick Install</a>
+        </div>
+
+        <div class="hero-terminal fade-in fade-in-delay-4">
+            <div class="terminal">
+                <div class="terminal-header">
+                    <div class="terminal-dot red"></div>
+                    <div class="terminal-dot yellow"></div>
+                    <div class="terminal-dot green"></div>
+                    <div class="terminal-title">phantom -- zsh</div>
+                </div>
+                <div class="terminal-body">
+                    <span class="line"><span class="prompt">$ </span><span class="cmd">phantom init</span></span>
+                    <span class="line"><span class="success">&#10003;</span> <span class="output">Scanning .env for secrets...</span></span>
+                    <span class="line"><span class="success">&#10003;</span> <span class="output">Found 4 secrets, 2 config values skipped</span></span>
+                    <span class="line"><span class="success">&#10003;</span> <span class="output">Secrets encrypted and stored in OS keychain</span></span>
+                    <span class="line"><span class="success">&#10003;</span> <span class="output">.env rewritten with phantom tokens</span></span>
+                    <span class="blank"></span>
+                    <span class="line"><span class="prompt">$ </span><span class="cmd">phantom exec</span> <span class="flag">--</span> <span class="arg">claude</span></span>
+                    <span class="line"><span class="info">&#9656;</span> <span class="output">Proxy listening on 127.0.0.1:8484</span></span>
+                    <span class="line"><span class="info">&#9656;</span> <span class="output">Injecting credentials for 4 services</span></span>
+                    <span class="line"><span class="success">&#10003;</span> <span class="output">Claude Code launched — secrets are protected</span><span class="cursor"></span></span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Problem -->
+<section class="problem" id="problem">
+    <div class="container">
+        <div class="problem-header fade-in">
+            <div class="section-label">The Problem</div>
+            <h2 class="section-title">AI agents see your real secrets</h2>
+            <p class="section-subtitle">
+                AI coding tools read your .env files. Your API keys enter the LLM context window where they can leak via prompt injection, session logs, or training data.
+            </p>
+        </div>
+
+        <div class="stats-row">
+            <div class="stat-card fade-in">
+                <div class="stat-number">39.6M</div>
+                <div class="stat-label">Secrets leaked on GitHub in 2024</div>
+            </div>
+            <div class="stat-card fade-in fade-in-delay-1">
+                <div class="stat-number">2x</div>
+                <div class="stat-label">Higher leak rate with AI-assisted commits</div>
+            </div>
+            <div class="stat-card fade-in fade-in-delay-2">
+                <div class="stat-number">+81%</div>
+                <div class="stat-label">Year-over-year increase in AI key leaks</div>
+            </div>
+        </div>
+
+        <div class="comparison-grid">
+            <div class="comparison-card danger fade-in">
+                <div class="comparison-label">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                    Without Phantom
+                </div>
+                <div class="comparison-body">
+                    <span class="line"><span class="label">.env</span></span>
+                    <span class="line"><span class="key">OPENAI_API_KEY=</span><span class="val-bad">sk-proj-8a3f...real-key</span></span>
+                    <span class="line"><span class="key">STRIPE_SECRET=</span><span class="val-bad">sk_live_51N3x...real</span></span>
+                    <span class="blank"></span>
+                    <span class="line"><span class="label">AI context window:</span></span>
+                    <span class="line"><span class="val-bad">sk-proj-8a3f...real-key</span> <span class="note">exposed</span></span>
+                </div>
+            </div>
+            <div class="comparison-card safe fade-in fade-in-delay-1">
+                <div class="comparison-label">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                    With Phantom
+                </div>
+                <div class="comparison-body">
+                    <span class="line"><span class="label">.env</span></span>
+                    <span class="line"><span class="key">OPENAI_API_KEY=</span><span class="val-good">phm_a7f3b9e2c1d4</span></span>
+                    <span class="line"><span class="key">STRIPE_SECRET=</span><span class="val-good">phm_e8k2m5n7p3q1</span></span>
+                    <span class="blank"></span>
+                    <span class="line"><span class="label">AI context window:</span></span>
+                    <span class="line"><span class="val-good">phm_a7f3b9e2c1d4</span> <span class="note">harmless token</span></span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- How It Works -->
+<section class="how-it-works" id="how-it-works">
+    <div class="container">
+        <div class="how-header fade-in">
+            <div class="section-label">How It Works</div>
+            <h2 class="section-title">Four steps to zero leaked secrets</h2>
+            <p class="section-subtitle">
+                Phantom replaces your real credentials with worthless tokens. A local proxy injects the real secrets at the network layer.
+            </p>
+        </div>
+
+        <div class="flow-steps">
+            <div class="flow-step fade-in">
+                <div class="flow-step-icon">&#128274;</div>
+                <div class="flow-step-num">01</div>
+                <h3>Initialize</h3>
+                <p>Run <code>phantom init</code> to scan your .env, encrypt secrets into your OS keychain, and rewrite the file with phantom tokens.</p>
+            </div>
+            <div class="flow-step fade-in fade-in-delay-1">
+                <div class="flow-step-icon">&#9654;</div>
+                <div class="flow-step-num">02</div>
+                <h3>Execute</h3>
+                <p>Run <code>phantom exec -- claude</code> to launch your AI tool. It only ever sees <code>phm_</code> tokens in memory.</p>
+            </div>
+            <div class="flow-step fade-in fade-in-delay-2">
+                <div class="flow-step-icon">&#128259;</div>
+                <div class="flow-step-num">03</div>
+                <h3>Proxy Injects</h3>
+                <p>A local HTTP proxy intercepts outbound API calls, swaps phantom tokens for real credentials, and forwards over TLS.</p>
+            </div>
+            <div class="flow-step fade-in fade-in-delay-3">
+                <div class="flow-step-icon">&#128640;</div>
+                <div class="flow-step-num">04</div>
+                <h3>Deploy</h3>
+                <p>Run <code>phantom sync</code> to push secrets to Vercel, Railway, or any platform. One source of truth.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Features -->
+<section class="features" id="features">
+    <div class="container">
+        <div class="features-header fade-in">
+            <div class="section-label">Features</div>
+            <h2 class="section-title">Everything you need to protect secrets</h2>
+            <p class="section-subtitle">
+                Built for developers who ship with AI. Zero configuration for common setups.
+            </p>
+        </div>
+
+        <div class="features-grid">
+            <div class="feature-card fade-in">
+                <div class="feature-icon">&#128272;</div>
+                <h3>Encrypted Vault</h3>
+                <p>Secrets stored in your OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service). Protected by your login.</p>
+            </div>
+            <div class="feature-card fade-in fade-in-delay-1">
+                <div class="feature-icon">&#128336;</div>
+                <h3>Session Tokens</h3>
+                <p>Phantom tokens rotate per session. Even if a token leaks, it expires when the session ends. Zero persistent exposure.</p>
+            </div>
+            <div class="feature-card fade-in fade-in-delay-2">
+                <div class="feature-icon">&#128268;</div>
+                <h3>MCP Server</h3>
+                <p>Native Claude Code integration via Model Context Protocol. Manage secrets without values entering the AI context window.</p>
+            </div>
+            <div class="feature-card fade-in fade-in-delay-3">
+                <div class="feature-icon">&#128683;</div>
+                <h3>Pre-commit Hook</h3>
+                <p>Blocks commits containing unprotected secrets. Catches hardcoded API keys, connection strings, and tokens in your code.</p>
+            </div>
+            <div class="feature-card fade-in">
+                <div class="feature-icon">&#9729;</div>
+                <h3>Platform Sync</h3>
+                <p>Push secrets to Vercel and Railway. Pull to onboard new machines. Stop copy-pasting env vars between dashboards.</p>
+            </div>
+            <div class="feature-card fade-in fade-in-delay-1">
+                <div class="feature-icon">&#128269;</div>
+                <h3>Smart Detection</h3>
+                <p>Automatically distinguishes secrets from config. Leaves NODE_ENV, PORT, and DEBUG untouched. Zero false positives.</p>
+            </div>
+            <div class="feature-card fade-in fade-in-delay-2">
+                <div class="feature-icon">&#128065;</div>
+                <h3>Open Source</h3>
+                <p>MIT licensed. Written in Rust. Fully auditable, forkable, and free forever for individuals and teams.</p>
+            </div>
+            <div class="feature-card fade-in fade-in-delay-3">
+                <div class="feature-icon">&#128230;</div>
+                <h3>npm Install</h3>
+                <p>Run <code style="font-family:var(--mono);font-size:0.78rem;color:var(--green);background:rgba(74,222,128,0.08);padding:2px 6px;border-radius:3px;">npx phantom-secrets</code> for instant setup. No Rust toolchain required. Works everywhere Node runs.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Terminal Demo -->
+<section class="demo" id="demo">
+    <div class="container">
+        <div class="demo-header fade-in">
+            <div class="section-label">See It In Action</div>
+            <h2 class="section-title">The full workflow</h2>
+            <p class="section-subtitle">
+                From setup to protected AI session in under two minutes.
+            </p>
+        </div>
+
+        <div class="demo-terminal fade-in">
+            <div class="terminal">
+                <div class="terminal-header">
+                    <div class="terminal-dot red"></div>
+                    <div class="terminal-dot yellow"></div>
+                    <div class="terminal-dot green"></div>
+                    <div class="terminal-title">~/acme-app -- zsh</div>
+                </div>
+                <div class="terminal-body">
+                    <span class="line"><span class="dim"># Step 1: Initialize phantom in your project</span></span>
+                    <span class="line"><span class="prompt">$ </span><span class="cmd">phantom init</span></span>
+                    <span class="line"><span class="output">Scanning </span><span class="info">.env</span><span class="output"> for secrets...</span></span>
+                    <span class="blank"></span>
+                    <span class="line">  <span class="success">&#10003;</span> <span class="output">OPENAI_API_KEY      </span><span class="warn">secret</span><span class="output"> &#8594; </span><span class="token">phm_a7f3b9e2c1d4</span></span>
+                    <span class="line">  <span class="success">&#10003;</span> <span class="output">STRIPE_SECRET_KEY   </span><span class="warn">secret</span><span class="output"> &#8594; </span><span class="token">phm_e8k2m5n7p3q1</span></span>
+                    <span class="line">  <span class="success">&#10003;</span> <span class="output">DATABASE_URL        </span><span class="warn">secret</span><span class="output"> &#8594; </span><span class="token">phm_x4w9v6t2r8y5</span></span>
+                    <span class="line">  <span class="success">&#10003;</span> <span class="output">ANTHROPIC_API_KEY   </span><span class="warn">secret</span><span class="output"> &#8594; </span><span class="token">phm_k3j7h1f5d9s2</span></span>
+                    <span class="line">  <span class="dim">&#8212;</span> <span class="output">NODE_ENV            </span><span class="dim">config</span><span class="output"> &#8594; </span><span class="dim">skipped</span></span>
+                    <span class="line">  <span class="dim">&#8212;</span> <span class="output">PORT                </span><span class="dim">config</span><span class="output"> &#8594; </span><span class="dim">skipped</span></span>
+                    <span class="blank"></span>
+                    <span class="line"><span class="success">&#10003; 4 secrets encrypted and stored in macOS Keychain</span></span>
+                    <span class="line"><span class="success">&#10003; .env rewritten with phantom tokens</span></span>
+                    <span class="line"><span class="success">&#10003; Pre-commit hook installed</span></span>
+                    <span class="blank"></span>
+                    <span class="line"><span class="dim"># Step 2: Launch your AI tool under phantom's proxy</span></span>
+                    <span class="line"><span class="prompt">$ </span><span class="cmd">phantom exec</span> <span class="flag">--</span> <span class="arg">claude</span></span>
+                    <span class="line"><span class="info">&#9656; Proxy listening on 127.0.0.1:8484</span></span>
+                    <span class="line"><span class="info">&#9656; Intercepting requests for 4 services</span></span>
+                    <span class="line"><span class="success">&#10003; Claude Code launched (PID 48291)</span></span>
+                    <span class="blank"></span>
+                    <span class="line"><span class="dim"># Claude reads .env — only sees phantom tokens</span></span>
+                    <span class="line"><span class="dim"># Real credentials injected at network layer</span></span>
+                    <span class="line"><span class="dim"># If tokens leak: nothing happens. They're worthless.</span></span>
+                    <span class="blank"></span>
+                    <span class="line"><span class="dim"># Step 3: Deploy secrets to your platform</span></span>
+                    <span class="line"><span class="prompt">$ </span><span class="cmd">phantom sync</span> <span class="flag">--platform</span> <span class="arg">vercel</span></span>
+                    <span class="line"><span class="success">&#10003;</span> <span class="output">Synced 4 secrets to </span><span class="info">acme-app.vercel.app</span></span>
+                    <span class="line"><span class="success">&#10003;</span> <span class="output">Environment: production</span></span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Install -->
+<section class="install" id="install">
+    <div class="container">
+        <div class="install-header fade-in">
+            <div class="section-label">Get Started</div>
+            <h2 class="section-title">Install in seconds</h2>
+            <p class="section-subtitle">
+                Choose your preferred package manager. Up and running in two commands.
+            </p>
+        </div>
+
+        <div class="install-grid">
+            <div class="install-card fade-in">
+                <div class="install-icon">&#128230;</div>
+                <h3>npm</h3>
+                <div class="install-label">Recommended</div>
+                <div class="install-cmd" onclick="copyCmd(this)" data-cmd="npx phantom-secrets init">
+                    npx phantom-secrets init
+                    <span class="copy-hint">click to copy</span>
+                </div>
+            </div>
+            <div class="install-card fade-in fade-in-delay-1">
+                <div class="install-icon">&#127866;</div>
+                <h3>Homebrew</h3>
+                <div class="install-label">macOS &amp; Linux</div>
+                <div class="install-cmd" onclick="copyCmd(this)" data-cmd="brew install ashlrai/tap/phantom">
+                    brew install ashlrai/tap/phantom
+                    <span class="copy-hint">click to copy</span>
+                </div>
+            </div>
+            <div class="install-card fade-in fade-in-delay-2">
+                <div class="install-icon">&#9881;</div>
+                <h3>Cargo</h3>
+                <div class="install-label">Build from source</div>
+                <div class="install-cmd" onclick="copyCmd(this)" data-cmd="cargo install phantom-secrets">
+                    cargo install phantom-secrets
+                    <span class="copy-hint">click to copy</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+    <div class="container">
+        <div class="fade-in">
+            <div class="section-label">Ready?</div>
+            <h2 class="section-title">Start protecting your secrets</h2>
+            <p class="section-subtitle">
+                Two commands. Two minutes. Zero leaked API keys.
+            </p>
+        </div>
+        <div class="cta-buttons fade-in fade-in-delay-1">
+            <a href="https://github.com/ashlrai/phantom-secrets" class="btn-primary btn-large">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                View on GitHub
+            </a>
+            <a href="#install" class="btn-ghost btn-large">Install Now</a>
+        </div>
+    </div>
+</section>
+
+<!-- Footer -->
+<footer>
+    <div class="footer-inner">
+        <div class="footer-left">
+            Built by <a href="https://ashlar.ai">Ashlar AI</a> &middot; MIT License
+        </div>
+        <ul class="footer-links">
+            <li><a href="https://github.com/ashlrai/phantom-secrets">GitHub</a></li>
+            <li><a href="https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md">Security</a></li>
+            <li><a href="https://github.com/ashlrai/phantom-secrets/releases">Releases</a></li>
+        </ul>
+    </div>
+</footer>
+
+<script>
+// Scroll-triggered fade-in animations
+(function() {
+    const observer = new IntersectionObserver(
+        (entries) => {
+            entries.forEach((entry) => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                }
+            });
+        },
+        { threshold: 0.1, rootMargin: '0px 0px -40px 0px' }
+    );
+
+    document.querySelectorAll('.fade-in').forEach((el) => observer.observe(el));
+})();
+
+// Copy install command
+function copyCmd(el) {
+    const cmd = el.getAttribute('data-cmd');
+    navigator.clipboard.writeText(cmd).then(() => {
+        const hint = el.querySelector('.copy-hint');
+        hint.textContent = 'copied!';
+        hint.style.opacity = '1';
+        hint.style.color = '#4ade80';
+        setTimeout(() => {
+            hint.textContent = 'click to copy';
+            hint.style.color = '';
+            hint.style.opacity = '';
+        }, 1500);
+    });
+}
+
+// Smooth scroll for nav links
+document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+    anchor.addEventListener('click', function(e) {
+        e.preventDefault();
+        const target = document.querySelector(this.getAttribute('href'));
+        if (target) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    });
+});
+</script>
+
 </body>
 </html>
