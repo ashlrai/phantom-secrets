@@ -173,17 +173,8 @@ async fn handle_request(
 
     debug!("{} {}{}", method, path, query);
 
-    // Health check endpoint
-    if path == "/phantom/health" {
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .body(Full::new(Bytes::from(
-                r#"{"status":"ok","service":"phantom-proxy"}"#,
-            )))
-            .unwrap());
-    }
-
     // Verify proxy token (defense-in-depth — prevents other local processes from using the proxy)
+    // Token check runs before ALL endpoints, including health check.
     if !state.proxy_token.is_empty() {
         let provided_token = req
             .headers()
@@ -209,6 +200,16 @@ async fn handle_request(
                     .unwrap());
             }
         }
+    }
+
+    // Health check endpoint (after token verification)
+    if path == "/phantom/health" {
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .body(Full::new(Bytes::from(
+                r#"{"status":"ok","service":"phantom-proxy"}"#,
+            )))
+            .unwrap());
     }
 
     // Match the route

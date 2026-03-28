@@ -46,8 +46,11 @@ impl KeychainVault {
 
     /// Load the index of stored secret names.
     fn load_index(&self) -> Result<Vec<String>> {
-        let entry = keyring::Entry::new(SERVICE_PREFIX, &self.index_key)
-            .map_err(|e| PhantomError::VaultError(format!("Keychain error: {e}")))?;
+        let entry = keyring::Entry::new(
+            &format!("{SERVICE_PREFIX}:{}", self.project_id),
+            &self.index_key,
+        )
+        .map_err(|e| PhantomError::VaultError(format!("Keychain error: {e}")))?;
 
         match entry.get_password() {
             Ok(data) => Ok(serde_json::from_str(&data).unwrap_or_default()),
@@ -60,8 +63,11 @@ impl KeychainVault {
 
     /// Save the index of stored secret names.
     fn save_index(&self, names: &[String]) -> Result<()> {
-        let entry = keyring::Entry::new(SERVICE_PREFIX, &self.index_key)
-            .map_err(|e| PhantomError::VaultError(format!("Keychain error: {e}")))?;
+        let entry = keyring::Entry::new(
+            &format!("{SERVICE_PREFIX}:{}", self.project_id),
+            &self.index_key,
+        )
+        .map_err(|e| PhantomError::VaultError(format!("Keychain error: {e}")))?;
         let data = serde_json::to_string(names)
             .map_err(|e| PhantomError::VaultError(format!("Serialize error: {e}")))?;
         entry
