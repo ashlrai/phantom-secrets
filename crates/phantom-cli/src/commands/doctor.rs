@@ -19,7 +19,11 @@ pub fn run() -> Result<()> {
             Ok(config) => {
                 check_pass(&format!(
                     "Config valid (project: {})",
-                    &config.phantom.project_id[..8]
+                    config
+                        .phantom
+                        .project_id
+                        .get(..8)
+                        .unwrap_or(&config.phantom.project_id)
                 ));
 
                 // Check 2: Vault accessible
@@ -34,6 +38,13 @@ pub fn run() -> Result<()> {
                         check_fail(&format!("Vault access failed: {e}"));
                         issues += 1;
                     }
+                }
+
+                // Check sync targets (inside config block to avoid re-parsing)
+                if !config.sync.is_empty() {
+                    check_pass(&format!("{} sync target(s) configured", config.sync.len()));
+                } else {
+                    check_info("No sync targets — add [[sync]] to .phantom.toml for deployment");
                 }
             }
             Err(e) => {
@@ -127,17 +138,6 @@ pub fn run() -> Result<()> {
         }
     } else {
         check_info("No pre-commit hook — run `phantom check` before commits");
-    }
-
-    // Check 7: Sync targets
-    if config_path.exists() {
-        if let Ok(config) = PhantomConfig::load(&config_path) {
-            if !config.sync.is_empty() {
-                check_pass(&format!("{} sync target(s) configured", config.sync.len()));
-            } else {
-                check_info("No sync targets — add [[sync]] to .phantom.toml for deployment");
-            }
-        }
     }
 
     println!();

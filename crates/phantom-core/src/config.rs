@@ -137,13 +137,16 @@ impl PhantomConfig {
         }
     }
 
-    /// Generate a project ID from a directory path.
+    /// Generate a stable project ID from a directory path.
+    /// Uses FNV-1a (64-bit) which is deterministic across Rust versions and platforms.
     pub fn project_id_from_path(path: &Path) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        path.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
+        let bytes = path.to_string_lossy().as_bytes().to_vec();
+        let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
+        for byte in &bytes {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+        }
+        format!("{:016x}", hash)
     }
 
     /// Get service configs that have proxy patterns (API key type).

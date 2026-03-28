@@ -204,7 +204,8 @@ async fn run_async(cmd: &[String]) -> Result<()> {
                 .map(|(k, v)| (k.as_str(), v.as_str())),
         )
         .env("PHANTOM_PROXY_PORT", port.to_string())
-        .env("PHANTOM_PROXY_TOKEN", &proxy_token)
+        // Note: proxy token is embedded in BASE_URL query params, not exposed as separate env var.
+        // This prevents AI agents from discovering and using the token directly.
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
