@@ -51,6 +51,15 @@ impl PhantomMcpServer {
         })
     }
 
+    /// Create a server for a specific directory (used in tests).
+    #[allow(dead_code)]
+    pub fn with_dir(project_dir: PathBuf) -> Self {
+        Self {
+            tool_router: Self::tool_router(),
+            project_dir,
+        }
+    }
+
     fn config_path(&self) -> PathBuf {
         self.project_dir.join(".phantom.toml")
     }
@@ -403,5 +412,148 @@ impl ServerHandler for PhantomMcpServer {
                  Use phantom_init to protect secrets in .env files."
                 .to_string(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn setup_test_project() -> (PhantomMcpServer, TempDir) {
+        let dir = TempDir::new().unwrap();
+
+        // Create a .env file with real secrets
+        std::fs::write(
+            dir.path().join(".env"),
+            "OPENAI_API_KEY=sk-test-key\nDATABASE_URL=postgres://user:pass@localhost/db\nNODE_ENV=production\n",
+        )
+        .unwrap();
+
+        let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+        (server, dir)
+    }
+
+    fn setup_initialized_project() -> (PhantomMcpServer, TempDir) {
+        let (server, dir) = setup_test_project();
+
+        // Run init to set up config and vault
+        let params = InitParams {
+            env_path: ".env".to_string(),
+        };
+        let result = server.phantom_init(Parameters(params)).unwrap();
+        let text = get_result_text(&result);
+        assert!(
+            text.contains("protected"),
+            "Init should report protected secrets"
+        );
+
+        (server, dir)
+    }
+
+    fn get_result_text(result: &CallToolResult) -> String {
+        // CallToolResult content is serialized — extract text via debug format
+        format!("{:?}", result.content)
+    }
+
+    #[test]
+    fn test_status_before_init() {
+        let (server, _dir) = setup_test_project();
+        let result = server.phantom_status().unwrap();
+        let text = get_result_text(&result);
+        assert!(text.contains("not initialized"));
+    }
+
+    #[test]
+    fn test_init_protects_secrets() {
+        let (server, dir) = setup_test_project();
+
+        let result = server
+            .phantom_init(Parameters(InitParams {
+                env_path: ".env".to_string(),
+            }))
+            .unwrap();
+        let text = get_result_text(&result);
+
+        // Should report protected secrets
+        assert!(text.contains("OPENAI_API_KEY"));
+        assert!(text.contains("DATABASE_URL"));
+        // NODE_ENV should NOT be listed (non-secret)
+        assert!(!text.contains("NODE_ENV"));
+
+        // .env should now contain phantom tokens
+        let env_content = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+        assert!(env_content.contains("phm_"));
+        assert!(!env_content.contains("sk-test-key"));
+        // NODE_ENV should be unchanged
+        assert!(env_content.contains("NODE_ENV=production"));
+    }
+
+    #[test]
+    fn test_list_secrets_after_init() {
+        let (server, _dir) = setup_initialized_project();
+        let result = server.phantom_list_secrets().unwrap();
+        let text = get_result_text(&result);
+        assert!(text.contains("OPENAI_API_KEY"));
+        assert!(text.contains("DATABASE_URL"));
+        // Should never show the actual value
+        assert!(!text.contains("sk-test-key"));
+    }
+
+    #[test]
+    fn test_status_after_init() {
+        let (server, _dir) = setup_initialized_project();
+        let result = server.phantom_status().unwrap();
+        let text = get_result_text(&result);
+        assert!(text.contains("Vault backend:"));
+        assert!(text.contains("Secrets stored:"));
+    }
+
+    #[test]
+    fn test_add_and_remove_secret() {
+        let (server, _dir) = setup_initialized_project();
+
+        // Add a new secret
+        let result = server
+            .phantom_add_secret(Parameters(AddSecretParams {
+                name: "NEW_SECRET".to_string(),
+                value: "new-value-123".to_string(),
+            }))
+            .unwrap();
+        let text = get_result_text(&result);
+        assert!(text.contains("NEW_SECRET"));
+        assert!(text.contains("stored"));
+
+        // Verify it appears in list
+        let list_result = server.phantom_list_secrets().unwrap();
+        let list_text = get_result_text(&list_result);
+        assert!(list_text.contains("NEW_SECRET"));
+
+        // Remove it
+        let remove_result = server
+            .phantom_remove_secret(Parameters(RemoveSecretParams {
+                name: "NEW_SECRET".to_string(),
+            }))
+            .unwrap();
+        let remove_text = get_result_text(&remove_result);
+        assert!(remove_text.contains("removed"));
+    }
+
+    #[test]
+    fn test_rotate_tokens() {
+        let (server, dir) = setup_initialized_project();
+
+        // Read .env before rotation
+        let before = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+
+        // Rotate
+        let result = server.phantom_rotate().unwrap();
+        let text = get_result_text(&result);
+        assert!(text.contains("Rotated"));
+
+        // Read .env after rotation — tokens should be different
+        let after = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+        assert_ne!(before, after, "Tokens should change after rotation");
+        assert!(after.contains("phm_"));
     }
 }

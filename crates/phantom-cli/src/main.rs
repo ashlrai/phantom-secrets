@@ -55,6 +55,15 @@ enum Commands {
         name: String,
     },
 
+    /// Reveal a secret value (print to stdout or copy to clipboard)
+    Reveal {
+        /// Secret name to reveal
+        name: String,
+        /// Copy to clipboard instead of printing (auto-clears after 30s)
+        #[arg(short, long)]
+        clipboard: bool,
+    },
+
     /// Show proxy status and mapped secrets
     Status,
 
@@ -145,6 +154,7 @@ fn main() -> anyhow::Result<()> {
         Commands::List => commands::list::run(),
         Commands::Add { name, value } => commands::add::run(&name, &value),
         Commands::Remove { name } => commands::remove::run(&name),
+        Commands::Reveal { name, clipboard } => commands::reveal::run(&name, clipboard),
         Commands::Status => commands::status::run(),
         Commands::Rotate => commands::rotate::run(),
         Commands::Doctor => commands::doctor::run(),

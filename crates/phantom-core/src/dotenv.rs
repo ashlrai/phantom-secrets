@@ -100,12 +100,11 @@ impl DotenvFile {
         for line in &self.lines {
             match line {
                 DotenvLine::Entry(entry) => {
-                    if entry.is_phantom {
-                        // Already a phantom token, keep as-is
-                        output_lines.push(format!("{}={}", entry.key, entry.value));
-                    } else if let Some(token) = token_map.get_token(&entry.key) {
-                        // Replace real value with phantom token
-                        original_values.insert(entry.key.clone(), entry.value.clone());
+                    if let Some(token) = token_map.get_token(&entry.key) {
+                        // Replace value with phantom token (works for both initial and rotation)
+                        if !entry.is_phantom {
+                            original_values.insert(entry.key.clone(), entry.value.clone());
+                        }
                         output_lines.push(format!("{}={}", entry.key, token));
                     } else {
                         // No mapping for this key, keep as-is (non-secret env vars)

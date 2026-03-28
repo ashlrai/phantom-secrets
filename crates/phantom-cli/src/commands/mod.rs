@@ -7,6 +7,7 @@ pub mod init;
 pub mod list;
 pub mod pull;
 pub mod remove;
+pub mod reveal;
 pub mod rotate;
 pub mod setup;
 pub mod start;

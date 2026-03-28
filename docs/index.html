@@ -318,7 +318,10 @@
                 Open-source CLI for developers who use Claude Code, Cursor, and Copilot.
             </p>
             <div class="install-block">
-                <div><span class="comment"># Install</span></div>
+                <div><span class="comment"># npm (recommended)</span></div>
+                <div><span class="cmd">npx phantom-secrets init</span></div>
+                <br>
+                <div><span class="comment"># or Homebrew</span></div>
                 <div><span class="cmd">brew tap ashlrai/phantom && brew install phantom</span></div>
                 <br>
                 <div><span class="comment"># Protect your secrets</span></div>
@@ -336,7 +339,7 @@
 
             <div class="stats">
                 <div>
-                    <div class="stat-num">28.6M</div>
+                    <div class="stat-num">39.6M</div>
                     <div class="stat-label">Secrets leaked on GitHub in 2025</div>
                 </div>
                 <div>
@@ -393,6 +396,13 @@ OPENAI_API_KEY=<span class="safe">phm_a7f3b9e2...</span>
                         <p>A local HTTP proxy intercepts API calls, replaces phantom tokens with real credentials, and forwards over TLS. The AI never sees the real secret.</p>
                     </div>
                 </div>
+                <div class="step">
+                    <div class="step-num">4</div>
+                    <div class="step-content">
+                        <h3>Deploy anywhere</h3>
+                        <p>Run <code>phantom sync --platform vercel</code> to push secrets to deployment. No more manual env var editing.</p>
+                    </div>
+                </div>
             </div>
         </section>
 
@@ -422,6 +432,14 @@ OPENAI_API_KEY=<span class="safe">phm_a7f3b9e2...</span>
                 <div class="feature">
                     <h3>Built-in Services</h3>
                     <p>OpenAI, Anthropic, Stripe, Supabase, PlanetScale. Custom services via .phantom.toml.</p>
+                </div>
+                <div class="feature">
+                    <h3>Platform Sync</h3>
+                    <p>Push secrets to Vercel and Railway. Pull to onboard new machines. One source of truth.</p>
+                </div>
+                <div class="feature">
+                    <h3>npm Install</h3>
+                    <p><code>npx phantom-secrets init</code> — instant setup for JS/TS developers. No Rust needed.</p>
                 </div>
             </div>
         </section>
