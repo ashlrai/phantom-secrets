@@ -3,23 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Phantom — Secrets that AI can't see</title>
-    <meta name="description" content="Open-source CLI that makes your API keys invisible to AI coding agents. Replace secrets with phantom tokens. A local proxy injects real credentials at the network layer.">
+    <title>Phantom — Delegate everything to AI</title>
+    <meta name="description" content="Let AI agents use your API keys without the security risk. Phantom replaces real secrets with worthless tokens and injects credentials at the network layer. Open-source CLI for Claude Code, Cursor, and Copilot.">
     <meta name="theme-color" content="#3b82f6">
     <link rel="canonical" href="https://ashlrai.github.io/phantom-secrets/">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <meta property="og:title" content="Phantom — Secrets that AI can't see">
-    <meta property="og:description" content="Open-source CLI that makes your API keys invisible to AI coding agents. 39.6M secrets leaked on GitHub last year.">
+    <meta property="og:title" content="Phantom — Delegate everything to AI">
+    <meta property="og:description" content="Let AI agents use your API keys without the security risk. All the convenience of pasting secrets into Claude. None of the leaks.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://ashlrai.github.io/phantom-secrets/">
     <meta property="og:image" content="https://ashlrai.github.io/phantom-secrets/og-image.svg">
     <meta property="og:site_name" content="Phantom">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Phantom — Secrets that AI can't see">
-    <meta name="twitter:description" content="Open-source CLI that makes your API keys invisible to AI coding agents.">
+    <meta name="twitter:title" content="Phantom — Delegate everything to AI">
+    <meta name="twitter:description" content="Let AI agents use your API keys without the security risk. Open-source CLI.">
     <meta name="twitter:image" content="https://ashlrai.github.io/phantom-secrets/og-image.svg">
     <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Phantom","description":"Open-source CLI that prevents AI coding agents from leaking your API keys","url":"https://github.com/ashlrai/phantom-secrets","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Organization","name":"Ashlar AI","url":"https://ashlar.ai"}}</script>
     <style>
@@ -190,8 +190,8 @@
 
 <!-- HERO -->
 <header class="hero">
-    <h1 class="sr">Secrets that<br><span>AI can't see.</span></h1>
-    <p class="sr sr-d1 hero-sub">Phantom replaces your API keys with <strong>worthless tokens</strong>. A local proxy injects real credentials at the network layer. The AI never knew.</p>
+    <h1 class="sr">Delegate everything<br><span>to AI.</span></h1>
+    <p class="sr sr-d1 hero-sub">Your API keys work through AI agents without ever being exposed. All the convenience of pasting secrets into Claude. <strong>None of the risk.</strong></p>
     <div class="sr sr-d2 hero-btns">
         <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-p">Get started</a>
         <a href="#how" class="btn btn-s">How it works</a>
@@ -204,18 +204,18 @@
     <div class="sr sr-d4 hero-viz">
         <div class="env-row">
             <div class="env-card env-bad">
-                <div class="env-hdr"><span class="dot"></span> Before</div>
+                <div class="env-hdr"><span class="dot"></span> Today &mdash; AI sees your real keys</div>
                 <div class="env-body">
-                    <span class="c"># .env &mdash; AI sees everything</span><br>
+                    <span class="c"># .env</span><br>
                     <span class="k">OPENAI_API_KEY</span>=<span class="vr">sk-proj-a8Kx9mR...real</span><br>
                     <span class="k">STRIPE_SECRET</span>=<span class="vr">sk_live_4eC39HJ...real</span><br>
                     <span class="k">DATABASE_URL</span>=<span class="vr">postgres://u:pass@db/prod</span>
                 </div>
             </div>
             <div class="env-card env-good">
-                <div class="env-hdr"><span class="dot"></span> After <code style="font-size:.65rem;opacity:.6;margin-left:4px">phantom init</code></div>
+                <div class="env-hdr"><span class="dot"></span> With Phantom &mdash; AI works, keys stay safe</div>
                 <div class="env-body">
-                    <span class="c"># .env &mdash; AI sees nothing useful</span><br>
+                    <span class="c"># .env</span><br>
                     <span class="k">OPENAI_API_KEY</span>=<span class="vb">phm_d9f1c157e32c39...</span><br>
                     <span class="k">STRIPE_SECRET</span>=<span class="vb">phm_2ccb5a6ce67517...</span><br>
                     <span class="k">DATABASE_URL</span>=<span class="vb">phm_99a8d2fe93c561...</span>
@@ -223,15 +223,15 @@
             </div>
         </div>
         <div class="env-arrow">&rarr;</div>
-        <div class="env-label"><span style="color:var(--green)">&#10003;</span> Real keys injected by <strong>local proxy</strong> at network layer</div>
+        <div class="env-label"><span style="color:var(--green)">&#10003;</span> AI uses your keys through a <strong>local proxy</strong> &mdash; never sees the real values</div>
     </div>
 </header>
 
 <!-- STATS -->
 <section class="sec-b sr">
     <div class="sec-h">
-        <h2>AI makes secret leaks worse</h2>
-        <p>Every AI coding tool reads your environment. Every secret in context is at risk.</p>
+        <h2>You know the risk. You take it anyway.</h2>
+        <p>You paste API keys into Claude Code. You let Cursor read your .env. You know it's risky &mdash; but AI doing your work is worth it. Phantom fixes this.</p>
     </div>
     <div class="stats">
         <div class="stat"><div class="stat-n">39.6M</div><div class="stat-l">secrets leaked on GitHub in 2025</div></div>
@@ -244,7 +244,7 @@
 <section class="sr" id="how">
     <div class="sec-h">
         <h2>Two commands. No code changes.</h2>
-        <p>Your existing workflow stays exactly the same.</p>
+        <p>AI keeps doing everything for you. Your secrets just stop being exposed.</p>
     </div>
     <div class="how-grid">
         <div class="how-card sr"><div class="how-n">1</div><h3>Protect your secrets</h3><p>Run <code>phantom init</code>. Real secrets move to your OS keychain (encrypted). Your <code>.env</code> is rewritten with worthless <code>phm_</code> tokens.</p></div>
@@ -269,8 +269,8 @@
 <!-- FEATURES -->
 <section class="sr" id="features">
     <div class="sec-h">
-        <h2>Built for the AI coding era</h2>
-        <p>Security infrastructure for developers using Claude, Cursor, and Copilot.</p>
+        <h2>Built for developers who delegate to AI</h2>
+        <p>Everything you need to let Claude, Cursor, and Copilot use your real API keys safely.</p>
     </div>
     <div class="feat-grid">
         <div class="feat sr"><h3>Encrypted vault</h3><p>ChaCha20-Poly1305 with Argon2id. OS keychain on macOS/Linux. Encrypted file fallback for CI and Docker.</p></div>
@@ -297,8 +297,8 @@
 
 <!-- CTA -->
 <section class="cta sr">
-    <h2>Stop leaking secrets to AI.</h2>
-    <p>Two commands. Two minutes. Your API keys stay yours.</p>
+    <h2>Let AI do the work.<br>Keep your keys safe.</h2>
+    <p>Two commands. Two minutes. Full AI delegation without the security risk.</p>
     <div class="hero-btns">
         <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-p"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>View on GitHub</a>
         <a href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md" class="btn btn-s">Read the docs</a>
