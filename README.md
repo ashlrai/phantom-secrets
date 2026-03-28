@@ -54,6 +54,10 @@ phantom exec -- claude
 | `phantom rotate` | Regenerate phantom tokens |
 | `phantom doctor` | Check configuration and vault health |
 | `phantom check` | Scan for unprotected secrets (pre-commit hook) |
+| `phantom sync` | Push secrets to Vercel/Railway |
+| `phantom pull` | Pull secrets from Vercel/Railway into vault |
+| `phantom env` | Generate `.env.example` for team onboarding |
+| `phantom setup` | Configure Claude Code MCP server + hooks |
 
 ## Architecture
 

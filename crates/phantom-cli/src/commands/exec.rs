@@ -5,6 +5,7 @@ use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Stdio;
 
 pub fn run(cmd: &[String]) -> Result<()> {
@@ -128,6 +129,47 @@ async fn run_async(cmd: &[String]) -> Result<()> {
         }
     }
 
+    // --- Framework auto-detection ---
+    let mut framework_env_vars: Vec<(String, String)> = Vec::new();
+    let package_json_path = project_dir.join("package.json");
+    let is_node_project = package_json_path.exists();
+
+    if is_node_project {
+        println!("   {} Detected Node.js project", "->".dimmed(),);
+
+        // Detect Next.js: check if the command starts with "next" or package.json
+        // lists "next" as a dependency
+        let is_nextjs = cmd[0].starts_with("next")
+            || cmd.iter().any(|arg| arg.contains("next"))
+            || detect_next_dependency(&package_json_path);
+
+        if is_nextjs {
+            println!("   {} Detected Next.js framework", "->".dimmed(),);
+
+            // Pass through NEXT_PUBLIC_ prefixed vars from .env unchanged —
+            // these are non-secret public vars that the Next.js build expects
+            if env_path.exists() {
+                if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
+                    for entry in dotenv.entries() {
+                        if entry.key.starts_with("NEXT_PUBLIC_")
+                            && !PhantomToken::is_phantom_token(&entry.value)
+                        {
+                            framework_env_vars.push((entry.key.clone(), entry.value.clone()));
+                        }
+                    }
+                }
+            }
+
+            if !framework_env_vars.is_empty() {
+                println!(
+                    "   {} Passing through {} NEXT_PUBLIC_ env var(s)",
+                    "->".dimmed(),
+                    framework_env_vars.len(),
+                );
+            }
+        }
+    }
+
     // Override .env vars with session tokens for the subprocess
     // This way the subprocess sees session tokens (not the persistent ones),
     // and the proxy maps session tokens to real secrets
@@ -136,8 +178,17 @@ async fn run_async(cmd: &[String]) -> Result<()> {
         session_env_overrides.push((key.clone(), session_token.clone()));
     }
 
+    // Summary: proxied secrets vs injected env vars
+    let injected_count = conn_env_vars.len() + framework_env_vars.len();
     println!(
-        "\n{} Launching: {}\n",
+        "\n{} {} secret(s) proxied, {} env var(s) injected directly",
+        "->".blue().bold(),
+        secret_count,
+        injected_count,
+    );
+
+    println!(
+        "{} Launching: {}\n",
         "->".blue().bold(),
         cmd.join(" ").cyan().bold()
     );
@@ -152,6 +203,11 @@ async fn run_async(cmd: &[String]) -> Result<()> {
         .envs(conn_env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .envs(
             session_env_overrides
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        )
+        .envs(
+            framework_env_vars
                 .iter()
                 .map(|(k, v)| (k.as_str(), v.as_str())),
         )
@@ -178,6 +234,18 @@ async fn run_async(cmd: &[String]) -> Result<()> {
 
     println!("{} Done.", "ok".green().bold());
     Ok(())
+}
+
+/// Check if `package.json` lists `next` as a dependency or devDependency.
+/// Uses a lightweight string search to avoid pulling in a JSON parser.
+fn detect_next_dependency(package_json: &Path) -> bool {
+    let Ok(contents) = std::fs::read_to_string(package_json) else {
+        return false;
+    };
+    // Look for "next" as a key in dependencies or devDependencies.
+    // A proper JSON parse would be more robust, but this is intentionally
+    // lightweight — we only need a heuristic for framework detection.
+    contents.contains("\"next\"")
 }
 
 async fn run_command_directly(cmd: &[String]) -> Result<()> {

@@ -48,7 +48,7 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.artifact }}.tar.gz phantom
+          tar czf ../../../${{ matrix.artifact }}.tar.gz phantom phantom-mcp
           cd ../../..
 
       - name: Upload artifact
