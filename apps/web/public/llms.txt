@@ -4,7 +4,15 @@
 
 Phantom solves the problem of AI coding tools (Claude Code, Cursor, Copilot) reading .env files and leaking API keys via LLM context windows, session logs, or training data. It uses a "phantom token proxy" pattern: real secrets are stored in an encrypted vault (OS keychain or ChaCha20-Poly1305 encrypted file), the .env is rewritten with worthless phm_ tokens, and a local reverse proxy intercepts API calls to swap tokens for real credentials before forwarding over TLS.
 
-Key features: session-scoped tokens (fresh per exec session), auto-detection of 13+ API services, platform sync (push/pull to Vercel and Railway), MCP server for native Claude Code integration, pre-commit hook, encrypted vault, and npm install support (npx phantom-secrets).
+Key features: session-scoped tokens (fresh per exec session), auto-detection of 13+ API services, platform sync (push/pull to Vercel and Railway), MCP server with 9 tools for native Claude Code integration, cloud vault sync (end-to-end encrypted), streaming/SSE proxy support, pre-commit hook, vault export/import, and npm install support (npx phantom-secrets).
+
+## MCP Server — AI agents can manage secrets directly
+
+Phantom includes an MCP server (`phantom-secrets-mcp`) with 9 tools. Once configured, AI agents can protect, manage, and sync secrets without the user running any CLI commands.
+
+Setup: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
+
+Tools: phantom_init, phantom_list_secrets, phantom_status, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
 
 ## Documentation
 
@@ -15,6 +23,7 @@ Key features: session-scoped tokens (fresh per exec session), auto-detection of 
 
 ## Installation
 
+- Claude Code MCP: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 - npm: `npx phantom-secrets init`
 - Homebrew: `brew tap ashlrai/phantom && brew install phantom`
 - Cargo: `cargo install phantom --git https://github.com/ashlrai/phantom-secrets`
@@ -23,10 +32,15 @@ Key features: session-scoped tokens (fresh per exec session), auto-detection of 
 
 - `phantom init` — Import .env secrets into vault, rewrite with phantom tokens
 - `phantom exec -- <cmd>` — Start proxy + run command with session-scoped tokens
+- `phantom login` — Sign in to Phantom Cloud (GitHub OAuth)
+- `phantom cloud push` — Push encrypted vault to cloud (E2E encrypted)
+- `phantom cloud pull` — Pull vault from cloud to local
+- `phantom export --passphrase <pass>` — Export vault to encrypted backup file
+- `phantom import <file> --passphrase <pass>` — Import from backup
 - `phantom sync --platform vercel` — Push secrets to deployment platforms
 - `phantom pull --from vercel` — Pull secrets from platforms into local vault
 - `phantom setup` — Configure Claude Code MCP server automatically
 - `phantom check` — Pre-commit hook to block leaked secrets
 - `phantom reveal <KEY>` — View a secret value (requires --yes in non-interactive)
 - `phantom list` — Show secret names (never values)
-- `phantom doctor` — Health check for config, vault, and .env status
+- `phantom doctor` — Health check for config, vault, cloud auth, and .env status

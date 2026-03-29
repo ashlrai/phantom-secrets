@@ -149,7 +149,7 @@ export default function Home() {
         .feat h3{font-size:.92rem;font-weight:700;margin-bottom:6px}
         .feat p{color:var(--t2);font-size:.82rem;line-height:1.55}
 
-        .inst-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+        .inst-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
         .inst{background:var(--s1);border:1px solid var(--border);border-radius:12px;padding:28px}
         .inst h3{font-size:.78rem;color:var(--blue-b);text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px;font-weight:700}
         .inst-cmd{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:12px 14px;font-family:'SF Mono',monospace;font-size:.8rem;color:var(--t1);cursor:pointer;transition:border-color .15s;line-height:1.6}
@@ -422,6 +422,11 @@ export default function Home() {
               <h3>Cargo</h3>
               <CopyButton text="cargo install phantom --git https://github.com/ashlrai/phantom-secrets" />
               <div className="inst-sub">Build from source</div>
+            </div>
+            <div className="inst" style={{ borderColor: "var(--blue-d)" }}>
+              <h3>Claude Code</h3>
+              <CopyButton text="claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp" />
+              <div className="inst-sub">One command, Claude handles the rest</div>
             </div>
           </div>
         </section>
