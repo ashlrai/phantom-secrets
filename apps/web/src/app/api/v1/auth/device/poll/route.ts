@@ -48,11 +48,16 @@ export async function POST(req: Request) {
     const accessToken = randomBytes(64).toString("hex");
     const tokenHash = createHash("sha256").update(accessToken).digest("hex");
 
-    // Store the hash
-    await supabase
+    // Store the hash atomically — WHERE token_hash IS NULL prevents TOCTOU race
+    const { error: updateError } = await supabase
       .from("device_tokens")
       .update({ token_hash: tokenHash })
-      .eq("id", token.id);
+      .eq("id", token.id)
+      .is("token_hash", null);
+
+    if (updateError) {
+      return Response.json({ status: "already_claimed" });
+    }
 
     // Get user info
     const { data: user } = await supabase

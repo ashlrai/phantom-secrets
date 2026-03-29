@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 let _supabase: SupabaseClient | null = null;
@@ -92,14 +92,16 @@ export default function DevicePage() {
     }
   };
 
-  // Handle OAuth redirect
-  if (typeof window !== "undefined") {
+  // Handle OAuth redirect — runs once on mount
+  const redirectHandled = useRef(false);
+  useEffect(() => {
+    if (redirectHandled.current) return;
     const params = new URLSearchParams(window.location.search);
     const redirectCode = params.get("code");
     const storedCode = localStorage.getItem("phantom_device_code");
 
-    if (redirectCode && storedCode && status === "input") {
-      // Re-set the code and try to approve
+    if (redirectCode && storedCode) {
+      redirectHandled.current = true;
       setCode(storedCode);
       localStorage.removeItem("phantom_device_code");
 
@@ -109,7 +111,7 @@ export default function DevicePage() {
         }
       });
     }
-  }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="min-h-screen bg-[#050508] text-[#f5f5f7] flex items-center justify-center p-6">

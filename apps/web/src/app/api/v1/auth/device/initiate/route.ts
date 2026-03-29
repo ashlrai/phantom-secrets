@@ -1,5 +1,5 @@
 import { createServiceClient } from "@/lib/supabase-server";
-import { randomUUID } from "crypto";
+import { randomUUID, randomInt } from "crypto";
 
 // Characters that are easy to read aloud — no O/0, I/1, L confusion
 const CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -8,7 +8,7 @@ function generateUserCode(): string {
   const part = (len: number) => {
     let s = "";
     for (let i = 0; i < len; i++) {
-      s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+      s += CODE_CHARS[randomInt(CODE_CHARS.length)];
     }
     return s;
   };

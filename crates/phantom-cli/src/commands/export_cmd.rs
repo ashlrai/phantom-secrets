@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use zeroize::Zeroize;
 
 pub fn run(output: &str, passphrase: &str) -> Result<()> {
     let project_dir = std::env::current_dir()?;
@@ -35,11 +36,12 @@ pub fn run(output: &str, passphrase: &str) -> Result<()> {
     }
 
     // Serialize to JSON
-    let json = serde_json::to_string(&secrets).context("Failed to serialize secrets")?;
+    let mut json = serde_json::to_string(&secrets).context("Failed to serialize secrets")?;
 
     // Encrypt with passphrase
     let encrypted = phantom_vault::crypto::encrypt(json.as_bytes(), passphrase)
         .context("Failed to encrypt export data")?;
+    json.zeroize();
 
     // Write to output file
     let output_path = project_dir.join(output);

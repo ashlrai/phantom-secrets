@@ -3,6 +3,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use colored::Colorize;
 use phantom_core::{auth, cloud, config::PhantomConfig};
 use std::collections::BTreeMap;
+use zeroize::Zeroize;
 
 pub fn run_push() -> Result<()> {
     let token = auth::require_token()?;
@@ -26,12 +27,13 @@ pub fn run_push() -> Result<()> {
         secrets.insert(name.clone(), value);
     }
 
-    let plaintext = serde_json::to_string(&secrets).context("Failed to serialize secrets")?;
+    let mut plaintext = serde_json::to_string(&secrets).context("Failed to serialize secrets")?;
 
     // Encrypt with cloud passphrase (stored in keychain, never transmitted)
     let passphrase =
         auth::get_or_create_cloud_passphrase().context("Failed to access cloud encryption key")?;
     let encrypted = phantom_vault::crypto::encrypt(plaintext.as_bytes(), &passphrase)?;
+    plaintext.zeroize();
     let blob_b64 = BASE64.encode(&encrypted);
 
     let expected_version = config.cloud.as_ref().map(|c| c.version).unwrap_or(0);

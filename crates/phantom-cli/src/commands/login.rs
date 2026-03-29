@@ -90,6 +90,10 @@ pub fn run() -> Result<()> {
                     spinner.finish_and_clear();
                     anyhow::bail!("Login expired. Run `phantom login` to try again.");
                 }
+                "already_claimed" => {
+                    spinner.finish_and_clear();
+                    anyhow::bail!("This device code was already used. Run `phantom login` again.");
+                }
                 "pending" => continue,
                 other => {
                     spinner.finish_and_clear();

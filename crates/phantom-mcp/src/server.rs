@@ -500,6 +500,12 @@ impl PhantomMcpServer {
             )
         })?;
 
+        // Persist new version to config for optimistic concurrency on next push
+        let mut config = config;
+        let cloud_config = config.cloud.get_or_insert_default();
+        cloud_config.version = new_version;
+        let _ = config.save(&self.project_dir.join(".phantom.toml"));
+
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Pushed {} secret(s) to Phantom Cloud (v{new_version}). End-to-end encrypted.",
             names.len()
@@ -599,6 +605,12 @@ impl PhantomMcpServer {
             })?;
             added += 1;
         }
+
+        // Persist new version to config
+        let mut config = config;
+        let cloud_config = config.cloud.get_or_insert_default();
+        cloud_config.version = pull_data.version;
+        let _ = config.save(&self.project_dir.join(".phantom.toml"));
 
         let msg = if skipped > 0 {
             format!("Pulled {added} secret(s), {skipped} skipped (already exist, use force=true to overwrite).")

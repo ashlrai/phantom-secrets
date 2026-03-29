@@ -36,6 +36,7 @@ export async function POST(req: Request) {
 
     case "customer.subscription.updated": {
       const sub = event.data.object;
+      const isActive = sub.status === "active" || sub.status === "trialing";
       const { data: user } = await supabase
         .from("users")
         .select("id")
@@ -46,6 +47,7 @@ export async function POST(req: Request) {
         await supabase
           .from("users")
           .update({
+            plan: isActive ? "pro" : "free",
             plan_expires_at: new Date(
               sub.current_period_end * 1000
             ).toISOString(),
