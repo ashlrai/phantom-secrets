@@ -83,7 +83,7 @@ pub fn run(env_path: &str) -> Result<()> {
     }
 
     // Backup .env before rewriting (safety net against data loss)
-    let backup_path = env_path.with_extension("env.backup");
+    let backup_path = env_path.with_file_name(".env.backup");
     std::fs::copy(env_path, &backup_path).context("Failed to create .env backup")?;
     println!(
         "   {} Backed up original .env to {}",
