@@ -132,3 +132,5 @@ npx phantom-secrets init
 - **Getting started guide**: [phm.dev/docs/getting-started](https://phm.dev/docs/getting-started)
 
 Phantom is open-source (MIT), free for individuals, and has no SaaS dependency. Three commands, and your AI tools can use your real API keys without ever seeing them.
+
+**New since launch:** Cloud sync (`phantom login` + `phantom cloud push/pull`) for end-to-end encrypted vault backup across machines, export/import for offline backups, and full streaming proxy support for SSE responses.

@@ -285,7 +285,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/ashlrai/phantom-secrets
-    rev: v0.1.0
+    rev: v0.3.0
     hooks:
       - id: phantom-check
 ```
@@ -360,8 +360,11 @@ Once configured, Claude Code gains these tools:
 | `phantom_add_secret` | Add a secret to the vault |
 | `phantom_remove_secret` | Remove a secret from the vault |
 | `phantom_rotate` | Regenerate all phantom tokens |
+| `phantom_check` | Scan for unprotected secrets |
+| `phantom_reveal` | Reveal a secret value (with confirmation) |
+| `phantom_doctor` | Check configuration and vault health |
 
-Claude can call these tools during a session. For example, if you say "add my new Stripe key," Claude can use `phantom_add_secret` to store it safely -- the real value passes through the MCP protocol but never enters Claude's context window or conversation logs.
+Claude can call these 9 tools during a session. For example, if you say "add my new Stripe key," Claude can use `phantom_add_secret` to store it safely -- the real value passes through the MCP protocol but never enters Claude's context window or conversation logs.
 
 ## 10. Team Workflows
 
@@ -407,9 +410,9 @@ This lists all required variable names without exposing any values. Commit `.env
 - Phantom tokens are unique per developer. You cannot share `.env` files between machines and expect them to work.
 - There is no access control or audit log for who accessed which secret.
 
-### Pro tier (coming soon)
+### Pro tier
 
-A future Pro tier will add shared team vaults with centralized access control, audit logging, and automatic propagation of secret updates across team members. For now, the deployment platform (Vercel/Railway) serves as the coordination point.
+The Pro tier ($8/mo) adds unlimited cloud vaults and multi-device sync. Cloud sync uses end-to-end encryption (ChaCha20-Poly1305) -- the server never sees your plaintext secrets. See the [Cloud Sync](#cloud-sync-optional) section for details. A future update will add shared team vaults with centralized access control, audit logging, and automatic propagation of secret updates across team members.
 
 ## 11. CI/CD Setup
 

@@ -9,13 +9,24 @@
     "source": "github",
     "subfolder": "crates/phantom-mcp"
   },
-  "version": "0.2.0",
+  "version": "0.3.0",
+  "tools": [
+    { "name": "phantom_list_secrets", "description": "List secret names (never shows values)" },
+    { "name": "phantom_status", "description": "Show vault, config, and proxy status" },
+    { "name": "phantom_init", "description": "Initialize Phantom and protect .env secrets" },
+    { "name": "phantom_add_secret", "description": "Add a secret to the vault" },
+    { "name": "phantom_remove_secret", "description": "Remove a secret from the vault" },
+    { "name": "phantom_rotate", "description": "Regenerate all phantom tokens" },
+    { "name": "phantom_check", "description": "Scan for unprotected secrets" },
+    { "name": "phantom_reveal", "description": "Reveal a secret value (with confirmation)" },
+    { "name": "phantom_doctor", "description": "Check configuration and vault health" }
+  ],
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "phantom-secrets-mcp",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "transport": {
         "type": "stdio"
       }

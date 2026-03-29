@@ -137,7 +137,7 @@ Phantom is:
 
 ## What's next
 
-We're working on team features (shared phantom vaults, secret rotation policies, audit logs) and expanding the built-in service patterns. The core proxy pattern and CLI will remain free and open-source.
+Since launch, we've added **cloud sync** -- end-to-end encrypted vault backup across machines (`phantom login` + `phantom cloud push/pull`), **export/import** for offline vault backups, and **streaming proxy support** for SSE/streaming responses. We're now working on team features (shared phantom vaults, secret rotation policies, audit logs) and expanding the built-in service patterns. The core proxy pattern and CLI will remain free and open-source.
 
 If you've ever pasted an API key into an AI chat and felt a twinge of guilt, this is for you.
 

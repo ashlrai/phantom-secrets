@@ -31,6 +31,21 @@ Phantom is designed to prevent AI coding agents from leaking secrets. Here is th
 4. **Short-lived proxy sessions** — proxy starts with `exec`, stops when the command exits
 5. **Phantom tokens are identifiable** — `phm_` prefix makes them easy to detect in code review and pre-commit hooks
 
+## Cloud Sync Security
+
+Phantom Cloud uses a **zero-knowledge architecture**. The server never sees your plaintext secrets.
+
+- **Client-side encryption**: Secrets are encrypted with ChaCha20-Poly1305 before upload. The encryption key is derived from a key stored in your OS keychain and never leaves your device.
+- **End-to-end encryption**: The server stores only encrypted blobs. Even Phantom Cloud operators cannot decrypt your vault.
+- **Authentication**: GitHub OAuth is used for device authentication. Each device must be explicitly authorized.
+- **Transport security**: All cloud API calls use TLS 1.3.
+
+| Threat | Mitigation |
+|--------|------------|
+| Cloud server compromised | Zero-knowledge: server only stores encrypted blobs, cannot decrypt |
+| Cloud credentials stolen | GitHub OAuth tokens are device-scoped; vault data is still encrypted |
+| Man-in-the-middle on cloud API | TLS 1.3 for all cloud communication |
+
 ## Responsible Disclosure
 
 If you discover a security vulnerability, please report it privately via GitHub Security Advisories or email security@ashlar.ai. Do not open a public issue.

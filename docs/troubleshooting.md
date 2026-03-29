@@ -204,6 +204,29 @@ If you lose access to your vault (e.g., you reset your machine or the vault file
 
 3. **Ask a teammate.** If another developer on your team has the same secrets in their vault, they can `phantom sync` to the deployment platform and you can `phantom pull`.
 
+## Cloud Sync Issues
+
+### "Not authenticated" when running `phantom cloud push`
+
+You need to log in first:
+```bash
+phantom login
+```
+
+This opens your browser for GitHub OAuth. Once authenticated, your device is linked to your Phantom Cloud account.
+
+### Cloud push fails with encryption error
+
+Ensure your OS keychain is accessible. The cloud encryption key is stored in your keychain. If you are in a headless environment, set `PHANTOM_VAULT_PASSPHRASE` before running cloud commands.
+
+### Cloud pull doesn't restore all secrets
+
+Cloud sync is per-vault. Make sure you pushed from the same project directory. Each project has its own vault and cloud backup.
+
+### "Subscription required" on cloud push
+
+The free tier allows 1 cloud vault. If you need more, upgrade to Pro ($8/mo) at [phm.dev/pricing](https://phm.dev/pricing).
+
 ### Warning: vault corruption means secret loss
 
 If your vault becomes corrupted or inaccessible and you have no backup (no deployment platform copy, no password manager record), **those secrets are permanently lost**. Phantom cannot recover secrets from phantom tokens -- the tokens are random values with no reversible relationship to the real secrets.

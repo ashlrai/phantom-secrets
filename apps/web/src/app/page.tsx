@@ -227,9 +227,18 @@ export default function Home() {
             <a href="#how" className="btn btn-s">How it works</a>
           </div>
           <div className="sr sr-d3" style={{ marginBottom: 40 }}>
-            <CopyButton text="npx phantom-secrets init" />
+            <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
+              <div style={{ textAlign: "left" }}>
+                <div style={{ fontSize: ".7rem", color: "var(--t3)", marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>CLI</div>
+                <CopyButton text="npx phantom-secrets init" />
+              </div>
+              <div style={{ textAlign: "left" }}>
+                <div style={{ fontSize: ".7rem", color: "var(--blue-b)", marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>Claude Code</div>
+                <CopyButton text="claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp" />
+              </div>
+            </div>
             <div style={{ fontSize: ".78rem", color: "var(--t3)", marginTop: 8 }}>
-              One command. Installs Phantom, protects your .env, done.
+              One command to protect your .env. One command for Claude Code MCP.
             </div>
           </div>
 
