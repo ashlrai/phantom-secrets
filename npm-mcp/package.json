@@ -1,0 +1,30 @@
+{
+  "name": "phantom-secrets-mcp",
+  "version": "0.2.1",
+  "description": "MCP server for Phantom Secrets — lets AI tools manage API keys safely",
+  "bin": {
+    "phantom-secrets-mcp": "bin/cli.js",
+    "phantom-mcp": "bin/cli.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ashlrai/phantom-secrets"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "secrets",
+    "security",
+    "ai-safety",
+    "claude",
+    "cursor",
+    "phantom"
+  ],
+  "author": "Ashlar AI",
+  "license": "MIT",
+  "homepage": "https://phm.dev/",
+  "mcpName": "io.github.ashlrai/phantom-secrets-mcp"
+}

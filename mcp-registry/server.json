@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.ashlrai/phantom-secrets",
+  "name": "io.github.ashlrai/phantom-secrets-mcp",
   "title": "Phantom Secrets",
-  "description": "MCP server that prevents AI coding agents from leaking API keys. Secrets are stored in an OS keychain vault and replaced with phantom tokens — agents never see real values.",
+  "description": "MCP server that prevents AI coding agents from leaking API keys. Secrets are stored in an OS keychain vault and replaced with opaque phantom tokens so agents never see real values.",
   "websiteUrl": "https://github.com/ashlrai/phantom-secrets",
   "repository": {
     "url": "https://github.com/ashlrai/phantom-secrets",
@@ -14,7 +14,7 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "phantom-secrets",
+      "identifier": "phantom-secrets-mcp",
       "version": "0.2.0",
       "transport": {
         "type": "stdio"
