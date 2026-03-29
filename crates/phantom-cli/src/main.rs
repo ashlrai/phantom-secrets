@@ -135,6 +135,28 @@ enum Commands {
         output: String,
     },
 
+    /// Export secrets to an encrypted backup file
+    Export {
+        /// Output file path
+        #[arg(short, long, default_value = "phantom-export.enc")]
+        output: String,
+        /// Encryption passphrase
+        #[arg(short, long)]
+        passphrase: String,
+    },
+
+    /// Import secrets from an encrypted backup file
+    Import {
+        /// Path to the encrypted backup file
+        file: String,
+        /// Decryption passphrase
+        #[arg(short, long)]
+        passphrase: String,
+        /// Overwrite existing secrets
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Log in to Phantom Cloud
     Login,
 
@@ -205,6 +227,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Setup => commands::setup::run(),
         Commands::Sync { platform, project } => commands::sync::run(platform, project),
         Commands::Env { output } => commands::env::run(&output),
+        Commands::Export { output, passphrase } => commands::export_cmd::run(&output, &passphrase),
+        Commands::Import {
+            file,
+            passphrase,
+            force,
+        } => commands::import_cmd::run(&file, &passphrase, force),
         Commands::Login => commands::login::run(),
         Commands::Logout => commands::logout::run(),
         Commands::Cloud { action } => match action {

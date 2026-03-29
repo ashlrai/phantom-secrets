@@ -33,6 +33,8 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
+        <meta name="theme-color" content="#3b82f6" />
+        <link rel="canonical" href="https://phm.dev/" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
           rel="preconnect"
@@ -42,6 +44,28 @@ export default function RootLayout({
         <link
           href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
           rel="stylesheet"
+        />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "SoftwareApplication",
+              name: "Phantom",
+              description:
+                "Open-source CLI that prevents AI coding agents from leaking your API keys",
+              url: "https://github.com/ashlrai/phantom-secrets",
+              applicationCategory: "DeveloperApplication",
+              operatingSystem: "macOS, Linux",
+              license: "https://opensource.org/licenses/MIT",
+              offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+              author: {
+                "@type": "Organization",
+                name: "Ashlar AI",
+                url: "https://ashlar.ai",
+              },
+            }),
+          }}
         />
       </head>
       <body
