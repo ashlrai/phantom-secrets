@@ -142,7 +142,7 @@ Phantom automatically identifies secrets vs config values using heuristics:
 - phantom-core: Config, .env parsing, token generation, sync module
 - phantom-vault: VaultBackend trait, OS keychain + encrypted file backends
 - phantom-proxy: HTTP reverse proxy, request interceptor, token replacement
-- phantom-cli: 19 CLI commands via clap
+- phantom-cli: 16 CLI commands via clap
 - phantom-mcp: MCP server via rmcp SDK (stdio transport)
 
 52 tests, zero clippy warnings, MIT licensed.
