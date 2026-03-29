@@ -34,6 +34,13 @@ pub struct RemoveSecretParams {
     pub name: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CloudPullParams {
+    /// Overwrite existing local secrets (default: false)
+    #[serde(default)]
+    pub force: bool,
+}
+
 // ── MCP Server ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -400,6 +407,247 @@ impl PhantomMcpServer {
             names.len()
         ))]))
     }
+
+    /// Push encrypted vault to Phantom Cloud.
+    #[tool(
+        description = "Push local vault to Phantom Cloud. Encrypts secrets client-side before upload. Server never sees plaintext. Requires phantom login first."
+    )]
+    async fn phantom_cloud_push(&self) -> Result<CallToolResult, McpError> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+        use std::collections::BTreeMap;
+
+        let token = phantom_core::auth::load_token().ok_or_else(|| {
+            McpError::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "Not logged in. Run `phantom login` first.",
+                None,
+            )
+        })?;
+
+        let config = self
+            .load_config()
+            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+
+        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let names = vault.list().map_err(|e| {
+            McpError::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                format!("Failed to list secrets: {e}"),
+                None,
+            )
+        })?;
+
+        if names.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No secrets to push.",
+            )]));
+        }
+
+        let mut secrets = BTreeMap::new();
+        for name in &names {
+            let value = vault.retrieve(name).map_err(|e| {
+                McpError::new(
+                    rmcp::model::ErrorCode::INTERNAL_ERROR,
+                    format!("Failed to retrieve secret: {e}"),
+                    None,
+                )
+            })?;
+            secrets.insert(name.clone(), value);
+        }
+
+        let plaintext = serde_json::to_string(&secrets).map_err(|e| {
+            McpError::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                format!("Failed to serialize: {e}"),
+                None,
+            )
+        })?;
+
+        let passphrase = phantom_core::auth::get_or_create_cloud_passphrase().map_err(|e| {
+            McpError::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                format!("Failed to access cloud key: {e}"),
+                None,
+            )
+        })?;
+
+        let encrypted =
+            phantom_vault::crypto::encrypt(plaintext.as_bytes(), &passphrase).map_err(|e| {
+                McpError::new(
+                    rmcp::model::ErrorCode::INTERNAL_ERROR,
+                    format!("Encryption failed: {e}"),
+                    None,
+                )
+            })?;
+
+        let blob_b64 = BASE64.encode(&encrypted);
+        let version = config.cloud.as_ref().map(|c| c.version).unwrap_or(0);
+        let api_base = phantom_core::auth::api_base_url();
+
+        let new_version = phantom_core::cloud::push(
+            &api_base,
+            &token,
+            &config.phantom.project_id,
+            &blob_b64,
+            version,
+        )
+        .await
+        .map_err(|e| {
+            McpError::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                format!("Cloud push failed: {e}"),
+                None,
+            )
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Pushed {} secret(s) to Phantom Cloud (v{new_version}). End-to-end encrypted.",
+            names.len()
+        ))]))
+    }
+
+    /// Pull vault from Phantom Cloud.
+    #[tool(
+        description = "Pull vault from Phantom Cloud to local machine. Decrypts client-side. Use force=true to overwrite existing secrets."
+    )]
+    async fn phantom_cloud_pull(
+        &self,
+        Parameters(params): Parameters<CloudPullParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+        use std::collections::BTreeMap;
+
+        let token = phantom_core::auth::load_token().ok_or_else(|| {
+            McpError::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "Not logged in. Run `phantom login` first.",
+                None,
+            )
+        })?;
+
+        let config = self
+            .load_config()
+            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+
+        let api_base = phantom_core::auth::api_base_url();
+        let pull_result = phantom_core::cloud::pull(&api_base, &token, &config.phantom.project_id)
+            .await
+            .map_err(|e| {
+                McpError::new(
+                    rmcp::model::ErrorCode::INTERNAL_ERROR,
+                    format!("Cloud pull failed: {e}"),
+                    None,
+                )
+            })?;
+
+        let pull_data = match pull_result {
+            Some(data) => data,
+            None => {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "No cloud vault found for this project. Run phantom_cloud_push first.",
+                )]));
+            }
+        };
+
+        let passphrase = phantom_core::auth::get_or_create_cloud_passphrase().map_err(|e| {
+            McpError::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                format!("Failed to access cloud key: {e}"),
+                None,
+            )
+        })?;
+
+        let encrypted = BASE64.decode(&pull_data.encrypted_blob).map_err(|e| {
+            McpError::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                format!("Invalid cloud data: {e}"),
+                None,
+            )
+        })?;
+
+        let plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase).map_err(|e| {
+            McpError::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                format!("Decryption failed: {e}"),
+                None,
+            )
+        })?;
+
+        let secrets: BTreeMap<String, String> =
+            serde_json::from_slice(&plaintext).map_err(|e| {
+                McpError::new(
+                    rmcp::model::ErrorCode::INTERNAL_ERROR,
+                    format!("Invalid vault data: {e}"),
+                    None,
+                )
+            })?;
+
+        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let mut added = 0;
+        let mut skipped = 0;
+        for (name, value) in &secrets {
+            if !params.force && vault.exists(name).unwrap_or(false) {
+                skipped += 1;
+                continue;
+            }
+            vault.store(name, value).map_err(|e| {
+                McpError::new(
+                    rmcp::model::ErrorCode::INTERNAL_ERROR,
+                    format!("Failed to store secret: {e}"),
+                    None,
+                )
+            })?;
+            added += 1;
+        }
+
+        let msg = if skipped > 0 {
+            format!("Pulled {added} secret(s), {skipped} skipped (already exist, use force=true to overwrite).")
+        } else {
+            format!(
+                "Pulled {added} secret(s) from Phantom Cloud (v{}).",
+                pull_data.version
+            )
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    /// Check cloud auth and sync status.
+    #[tool(description = "Check Phantom Cloud authentication status, plan, and last sync version.")]
+    async fn phantom_cloud_status(&self) -> Result<CallToolResult, McpError> {
+        let api_base = phantom_core::auth::api_base_url();
+
+        let status = match phantom_core::auth::load_token() {
+            Some(token) => match phantom_core::auth::get_user_info(&api_base, &token).await {
+                Ok(user) => {
+                    let mut s =
+                        format!("Cloud: logged in as @{} ({})", user.github_login, user.plan);
+                    if let Some(count) = user.vaults_count {
+                        s.push_str(&format!("\nVaults: {count}"));
+                    }
+                    s
+                }
+                Err(_) => {
+                    "Cloud: token expired. Run `phantom login` to re-authenticate.".to_string()
+                }
+            },
+            None => "Cloud: not logged in. Run `phantom login` to enable cloud sync.".to_string(),
+        };
+
+        let config_status = if let Ok(config) = self.load_config() {
+            if let Some(cloud) = &config.cloud {
+                format!("\nLast synced version: {}", cloud.version)
+            } else {
+                "\nNo cloud sync history for this project.".to_string()
+            }
+        } else {
+            String::new()
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{status}{config_status}"
+        ))]))
+    }
 }
 
 #[tool_handler]
@@ -409,7 +657,8 @@ impl ServerHandler for PhantomMcpServer {
             "Phantom Secrets manager. Securely manages API keys and secrets. \
                  Use phantom_list_secrets to see what's stored (never shows values). \
                  Use phantom_status to check configuration. \
-                 Use phantom_init to protect secrets in .env files."
+                 Use phantom_init to protect secrets in .env files. \
+                 Use phantom_cloud_push/pull to sync vaults to Phantom Cloud (E2E encrypted)."
                 .to_string(),
         )
     }
