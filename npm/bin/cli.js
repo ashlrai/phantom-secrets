@@ -6,7 +6,7 @@ const { join } = require("path");
 const https = require("https");
 const { execSync } = require("child_process");
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const REPO = "ashlrai/phantom-secrets";
 const CACHE_DIR = join(
   process.env.HOME || process.env.USERPROFILE || "/tmp",
