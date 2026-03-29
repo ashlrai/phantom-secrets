@@ -159,6 +159,17 @@ pub fn get_or_create_cloud_passphrase() -> Result<String> {
 }
 
 /// Get the API base URL from env var or default.
+/// Warns if using HTTP (except localhost) since tokens would be transmitted in the clear.
 pub fn api_base_url() -> String {
-    std::env::var("PHANTOM_API_URL").unwrap_or_else(|_| "https://phm.dev/api/v1".to_string())
+    let url =
+        std::env::var("PHANTOM_API_URL").unwrap_or_else(|_| "https://phm.dev/api/v1".to_string());
+    if !url.starts_with("https://")
+        && !url.starts_with("http://localhost")
+        && !url.starts_with("http://127.0.0.1")
+    {
+        eprintln!(
+            "phantom: WARNING — PHANTOM_API_URL uses HTTP, not HTTPS. Tokens may be intercepted."
+        );
+    }
+    url
 }

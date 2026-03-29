@@ -15,6 +15,14 @@ export async function PUT(req: Request) {
     );
   }
 
+  // Reject oversized blobs (1MB limit — more than enough for any vault)
+  if (encrypted_blob.length > 1_000_000) {
+    return Response.json(
+      { error: "encrypted_blob too large (max 1MB)" },
+      { status: 413 }
+    );
+  }
+
   const supabase = createServiceClient();
 
   // Check free tier limit: 1 vault for free users

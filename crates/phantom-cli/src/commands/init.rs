@@ -82,6 +82,15 @@ pub fn run(env_path: &str) -> Result<()> {
         );
     }
 
+    // Backup .env before rewriting (safety net against data loss)
+    let backup_path = env_path.with_extension("env.backup");
+    std::fs::copy(env_path, &backup_path).context("Failed to create .env backup")?;
+    println!(
+        "   {} Backed up original .env to {}",
+        "+".green().bold(),
+        backup_path.display()
+    );
+
     // Rewrite .env with phantom tokens
     let _originals = dotenv
         .write_phantomized(&token_map, env_path)

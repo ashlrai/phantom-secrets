@@ -187,6 +187,13 @@ async fn run_async() -> Result<()> {
     std::fs::write(&tmp_pid, &pid_info)?;
     std::fs::rename(&tmp_pid, &pid_path)?;
 
+    // Set restrictive permissions — PID file contains proxy token
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&pid_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
     println!(
         "{} Proxy started on {}",
         "ok".green().bold(),

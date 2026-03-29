@@ -15,8 +15,23 @@ function generateUserCode(): string {
   return `${part(4)}-${part(4)}`;
 }
 
-export async function POST() {
+export async function POST(req: Request) {
   const supabase = createServiceClient();
+
+  // Rate limit: max 10 device codes created per minute (globally, since Vercel is serverless)
+  const oneMinAgo = new Date(Date.now() - 60 * 1000).toISOString();
+  const { count } = await supabase
+    .from("device_tokens")
+    .select("*", { count: "exact", head: true })
+    .gte("created_at", oneMinAgo);
+
+  if ((count ?? 0) > 50) {
+    return Response.json(
+      { error: "Too many requests. Try again in a minute." },
+      { status: 429 }
+    );
+  }
+
   const deviceCode = randomUUID();
   const userCode = generateUserCode();
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes

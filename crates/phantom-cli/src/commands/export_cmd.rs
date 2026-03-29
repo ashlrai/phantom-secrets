@@ -35,6 +35,15 @@ pub fn run(output: &str, passphrase: &str) -> Result<()> {
         secrets.insert(name.clone(), value);
     }
 
+    // Check if output file already exists
+    let output_path = project_dir.join(output);
+    if output_path.exists() {
+        anyhow::bail!(
+            "Output file {} already exists. Delete it first or choose a different name.",
+            output.bold()
+        );
+    }
+
     // Serialize to JSON
     let mut json = serde_json::to_string(&secrets).context("Failed to serialize secrets")?;
 
@@ -44,7 +53,6 @@ pub fn run(output: &str, passphrase: &str) -> Result<()> {
     json.zeroize();
 
     // Write to output file
-    let output_path = project_dir.join(output);
     std::fs::write(&output_path, &encrypted)
         .context(format!("Failed to write export file: {output}"))?;
 

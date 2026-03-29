@@ -41,30 +41,38 @@ pub fn run(file: &str, passphrase: &str, force: bool) -> Result<()> {
 
     let mut imported = 0usize;
     let mut skipped = 0usize;
+    let mut failed = Vec::new();
 
     for (name, value) in &secrets {
         if vault.exists(name).unwrap_or(false) && !force {
-            println!(
-                "{} Skipping {} (already exists, use {} to overwrite)",
-                "warn".yellow().bold(),
-                name.bold(),
-                "--force".cyan()
-            );
             skipped += 1;
             continue;
         }
 
-        vault
-            .store(name, value)
-            .context(format!("Failed to store secret: {name}"))?;
-        imported += 1;
+        match vault.store(name, value) {
+            Ok(()) => imported += 1,
+            Err(e) => {
+                failed.push(format!("{name}: {e}"));
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        for f in &failed {
+            println!("  {} {}", "FAIL".red().bold(), f);
+        }
     }
 
     println!(
-        "{} Imported {} secret(s) ({} skipped)",
-        "ok".green().bold(),
+        "{} Imported {} secret(s) ({} skipped, {} failed)",
+        if failed.is_empty() {
+            "ok".green().bold()
+        } else {
+            "warn".yellow().bold()
+        },
         imported,
-        skipped
+        skipped,
+        failed.len()
     );
 
     Ok(())

@@ -43,7 +43,16 @@ pub fn run() -> Result<()> {
     println!("   {}", flow.user_code.bold().cyan());
     println!();
 
-    let _ = open::that(&flow.verification_uri);
+    if open::that(&flow.verification_uri).is_err() {
+        println!(
+            "{}  Could not open browser automatically.",
+            "warn".yellow().bold()
+        );
+        println!(
+            "   Open this URL manually: {}",
+            flow.verification_uri.underline()
+        );
+    }
 
     // Poll with spinner
     let spinner = ProgressBar::new_spinner();
