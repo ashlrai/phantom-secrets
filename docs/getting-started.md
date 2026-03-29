@@ -4,16 +4,23 @@ This guide walks through the most common Phantom workflow: a solo developer usin
 
 ## 1. Install
 
-Phantom is distributed as a Rust binary. Install from source via Cargo:
+The fastest way to get started is with npm (downloads the correct binary automatically):
 
 ```bash
-cargo install --git https://github.com/ashlrai/phantom-secrets phantom
+npx phantom-secrets init
 ```
 
-Or, if you prefer Homebrew (macOS/Linux):
+This installs Phantom AND initializes your project in one command. Alternatively:
 
 ```bash
+# npm global install
+npm install -g phantom-secrets
+
+# Homebrew (macOS)
 brew tap ashlrai/phantom && brew install phantom
+
+# Cargo (from source)
+cargo install --git https://github.com/ashlrai/phantom-secrets phantom
 ```
 
 Verify the install:
@@ -21,6 +28,16 @@ Verify the install:
 ```bash
 phantom --version
 ```
+
+### Claude Code MCP (optional but recommended)
+
+Add Phantom's MCP server so Claude can manage your secrets directly:
+
+```bash
+claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
+```
+
+Once configured, you can just tell Claude: "Protect my API keys" and it will handle everything.
 
 ## 2. Initialize
 
@@ -504,3 +521,47 @@ phantom doctor
 ```
 
 This verifies your vault, config file, keychain access, and proxy configuration. Run it whenever something feels off.
+
+## Cloud Sync (Optional)
+
+Sync your vault across machines with end-to-end encryption. The server never sees your plaintext secrets.
+
+### Sign in
+
+```bash
+phantom login
+```
+
+This opens your browser for GitHub OAuth. Once authenticated, your device is linked to your Phantom Cloud account.
+
+### Push secrets to the cloud
+
+```bash
+phantom cloud push
+```
+
+Your vault is encrypted client-side with ChaCha20-Poly1305 before upload. The encryption key lives only in your OS keychain.
+
+### Pull secrets on a new machine
+
+```bash
+phantom login            # authenticate the new device
+phantom cloud pull       # download and decrypt your vault
+```
+
+### Pricing
+
+- **Free**: 1 cloud vault (unlimited local vaults)
+- **Pro** ($8/mo): Unlimited cloud vaults, multi-device sync
+
+### Vault Backup
+
+Export an encrypted backup file (independent of cloud sync):
+
+```bash
+phantom export --passphrase mypassword
+# Creates phantom-export.enc
+
+phantom import phantom-export.enc --passphrase mypassword
+# Restores secrets from backup
+```
