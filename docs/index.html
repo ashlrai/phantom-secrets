@@ -197,7 +197,7 @@
     <h1 class="sr">AI uses your keys.<em>Safely.</em></h1>
     <p class="sr sr-d1 hero-sub">Tell Claude to integrate Stripe. Let Cursor build your OpenAI pipeline. Phantom lets AI use your real API keys to do real work &mdash; without the keys ever being exposed.</p>
     <div class="sr sr-d2 hero-btns">
-        <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-p">Get started &mdash; it's free</a>
+        <a href="#start" class="btn btn-p">Get started &mdash; it's free</a>
         <a href="#how" class="btn btn-s">How it works</a>
     </div>
 
@@ -251,6 +251,34 @@
         <div class="flow-caption"><strong>&#10003;</strong> Real keys never enter the AI context window. Injected at network layer only.</div>
     </div>
 </header>
+
+<!-- GET STARTED — clear steps -->
+<section class="sec-b sr" id="start">
+    <div class="sec-h">
+        <h2>Get started in 60 seconds</h2>
+        <p>Three commands. No config files to write. No accounts to create.</p>
+    </div>
+    <div class="how-grid" style="grid-template-columns:1fr 1fr 1fr">
+        <div class="how-card sr" style="text-align:center">
+            <div class="how-n">1</div>
+            <h3>Install &amp; protect</h3>
+            <div class="inst-cmd" onclick="cc('npx phantom-secrets init')" style="margin:12px 0 8px;text-align:left">$ npx phantom-secrets init</div>
+            <p style="color:var(--t3);font-size:.82rem">Installs Phantom, reads your .env, stores real secrets in an encrypted vault, rewrites .env with phantom tokens.</p>
+        </div>
+        <div class="how-card sr" style="text-align:center">
+            <div class="how-n">2</div>
+            <h3>Configure Claude Code</h3>
+            <div class="inst-cmd" onclick="cc('phantom setup')" style="margin:12px 0 8px;text-align:left">$ phantom setup</div>
+            <p style="color:var(--t3);font-size:.82rem">Adds Phantom's MCP server to Claude Code and allows it to read your .env (which now only has phantom tokens).</p>
+        </div>
+        <div class="how-card sr" style="text-align:center">
+            <div class="how-n">3</div>
+            <h3>Code with AI</h3>
+            <div class="inst-cmd" onclick="cc('phantom exec -- claude')" style="margin:12px 0 8px;text-align:left">$ phantom exec -- claude</div>
+            <p style="color:var(--t3);font-size:.82rem">Starts the proxy, launches Claude Code. AI sees phantom tokens. Real keys injected at the network layer. Done.</p>
+        </div>
+    </div>
+</section>
 
 <!-- STATS -->
 <section class="sec-b sr">
