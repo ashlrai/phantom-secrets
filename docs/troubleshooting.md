@@ -42,6 +42,22 @@ The default upstream timeout is 30 seconds. For long-running API calls:
 - Verify the upstream service is accessible
 - The proxy follows redirects automatically (up to 5 hops)
 
+### Claude Code can't read my .env file
+
+Many Claude Code setups block reading `.env` files by default (it's in the deny rules). After running `phantom init`, your `.env` only contains worthless phantom tokens (`phm_...`) — it's **safe for AI to read**.
+
+Fix it automatically:
+```bash
+phantom setup
+```
+
+This adds `.env` to Claude Code's allow rules in `.claude/settings.local.json`. If you have `.env` in your deny rules, you can safely remove it after running `phantom init`.
+
+You can verify with:
+```bash
+phantom doctor
+```
+
 ### "Refusing to reveal secret in non-interactive context"
 
 This is a security feature. `phantom reveal` blocks in non-interactive contexts (pipes, scripts, AI agents) to prevent secrets from leaking into AI context windows.

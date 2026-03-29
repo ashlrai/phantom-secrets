@@ -111,6 +111,17 @@ pub fn run(env_path: &str) -> Result<()> {
         "phantom exec -- <your-command>".cyan().bold()
     );
 
+    // Check if Claude Code is configured
+    let claude_settings = project_dir.join(".claude/settings.local.json");
+    if !claude_settings.exists() {
+        println!(
+            "{} Run {} to let Claude Code safely read your .env",
+            "tip".blue().bold(),
+            "phantom setup".cyan().bold()
+        );
+        println!("     (your .env only contains phantom tokens now — safe for AI)",);
+    }
+
     Ok(())
 }
 

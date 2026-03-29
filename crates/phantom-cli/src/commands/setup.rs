@@ -65,6 +65,60 @@ pub fn run() -> Result<()> {
         );
     }
 
+    // Add permissions to allow Claude Code to read .env files
+    // After phantom init, .env only contains worthless phantom tokens — safe for AI to read
+    let permissions = obj
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}));
+
+    if let Some(perms) = permissions.as_object_mut() {
+        let allow = perms
+            .entry("allow")
+            .or_insert_with(|| serde_json::json!([]));
+
+        if let Some(allow_arr) = allow.as_array_mut() {
+            let env_rules = ["Read .env", "Read .env.*"];
+            let mut added = false;
+            for rule in &env_rules {
+                if !allow_arr.iter().any(|v| v.as_str() == Some(rule)) {
+                    allow_arr.push(serde_json::json!(rule));
+                    added = true;
+                }
+            }
+            if added {
+                println!(
+                    "   {} .env read permission: {} (phantom tokens only — safe for AI)",
+                    "+".green().bold(),
+                    "allowed".green()
+                );
+            } else {
+                println!(
+                    "   {} .env read permission already configured",
+                    "-".dimmed()
+                );
+            }
+        }
+
+        // Check if .env is in deny rules and warn
+        if let Some(deny) = perms.get("deny") {
+            if let Some(deny_arr) = deny.as_array() {
+                let has_env_deny = deny_arr
+                    .iter()
+                    .any(|v| v.as_str().is_some_and(|s| s.contains(".env")));
+                if has_env_deny {
+                    println!(
+                        "\n   {} .env is in your deny rules. After phantom init, .env only",
+                        "warn".yellow().bold()
+                    );
+                    println!(
+                        "   {} contains phantom tokens (phm_...) — it's safe to remove the deny rule.",
+                        "    ".yellow()
+                    );
+                }
+            }
+        }
+    }
+
     // Write settings
     let content =
         serde_json::to_string_pretty(&settings).context("Failed to serialize settings")?;
@@ -77,11 +131,12 @@ pub fn run() -> Result<()> {
             "{} Phantom MCP tools are now available in Claude Code.",
             "->".blue().bold()
         );
-        println!(
-            "{} Claude can use: phantom_list_secrets, phantom_status, phantom_init, etc.",
-            "->".blue().bold()
-        );
     }
+
+    println!(
+        "{} .env files are allowed — they only contain phantom tokens after init.",
+        "->".blue().bold()
+    );
 
     println!(
         "\n{} Restart Claude Code to activate.",

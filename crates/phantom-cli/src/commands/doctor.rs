@@ -106,7 +106,7 @@ pub fn run() -> Result<()> {
         issues += 1;
     }
 
-    // Check 5: Claude Code MCP configuration
+    // Check 5: Claude Code MCP configuration and .env permissions
     let claude_settings = project_dir.join(".claude/settings.local.json");
     if claude_settings.exists() {
         let content = std::fs::read_to_string(&claude_settings).unwrap_or_default();
@@ -115,8 +115,21 @@ pub fn run() -> Result<()> {
         } else {
             check_info("Claude Code settings exist but no Phantom MCP — run `phantom setup`");
         }
+
+        // Check if .env read is allowed
+        if content.contains("Read .env") {
+            check_pass("Claude Code allowed to read .env (phantom tokens only)");
+        } else {
+            check_warn(".env not in Claude Code allow rules — run `phantom setup` to fix");
+            issues += 1;
+        }
+
+        // Check if .env is in deny rules
+        if content.contains(".env") && content.contains("deny") {
+            check_warn(".env may be in deny rules — after phantom init, .env is safe to read");
+        }
     } else {
-        check_info("No Claude Code config — run `phantom setup` for auto-mode");
+        check_info("No Claude Code config — run `phantom setup` for auto-mode + .env permissions");
     }
 
     // Check 6: Pre-commit hook
