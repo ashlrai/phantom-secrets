@@ -77,7 +77,7 @@ pub fn run() -> Result<()> {
             .or_insert_with(|| serde_json::json!([]));
 
         if let Some(allow_arr) = allow.as_array_mut() {
-            let env_rules = ["Read .env", "Read .env.*"];
+            let env_rules = ["Read(./.env)", "Read(./.env.*)"];
             let mut added = false;
             for rule in &env_rules {
                 if !allow_arr.iter().any(|v| v.as_str() == Some(rule)) {

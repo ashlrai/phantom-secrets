@@ -116,17 +116,25 @@ pub fn run() -> Result<()> {
             check_info("Claude Code settings exist but no Phantom MCP — run `phantom setup`");
         }
 
-        // Check if .env read is allowed
-        if content.contains("Read .env") {
+        // Check if .env read is allowed (correct format: Read(./.env))
+        if content.contains("Read(./.env)") {
             check_pass("Claude Code allowed to read .env (phantom tokens only)");
         } else {
             check_warn(".env not in Claude Code allow rules — run `phantom setup` to fix");
             issues += 1;
         }
 
-        // Check if .env is in deny rules
-        if content.contains(".env") && content.contains("deny") {
-            check_warn(".env may be in deny rules — after phantom init, .env is safe to read");
+        // Check if .env is actually in deny rules (parse JSON to avoid false positives)
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(deny_arr) = parsed["permissions"]["deny"].as_array() {
+                let has_env_deny = deny_arr
+                    .iter()
+                    .any(|v| v.as_str().is_some_and(|s| s.contains(".env")));
+                if has_env_deny {
+                    check_warn(".env is in deny rules — after phantom init, .env is safe to read");
+                    issues += 1;
+                }
+            }
         }
     } else {
         check_info("No Claude Code config — run `phantom setup` for auto-mode + .env permissions");
