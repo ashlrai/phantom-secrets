@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:1200px;height:630px;background:#050508;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;color:#f5f5f7;display:flex;overflow:hidden;position:relative}
+body::before{content:'';position:absolute;top:-100px;left:50%;width:900px;height:600px;transform:translateX(-50%);background:radial-gradient(ellipse at 50% 40%,rgba(59,130,246,.08) 0%,transparent 65%);pointer-events:none}
+.left{flex:1;padding:80px 60px;display:flex;flex-direction:column;justify-content:center;position:relative;z-index:1}
+.logo{display:flex;align-items:center;gap:10px;margin-bottom:32px}
+.logo svg{width:32px;height:32px}
+.logo span{font-weight:700;font-size:18px;color:#a1a1b5}
+h1{font-size:64px;font-weight:900;letter-spacing:-0.06em;line-height:1}
+h1 em{font-style:normal;color:#60a5fa;display:block}
+.sub{font-size:20px;color:#a1a1b5;margin-top:20px;line-height:1.6;max-width:460px}
+.url{font-size:16px;color:#65657a;margin-top:24px;font-weight:600}
+.url span{color:#3b82f6}
+.right{width:480px;padding:60px 50px 60px 20px;display:flex;flex-direction:column;justify-content:center;position:relative;z-index:1}
+.card{background:#0a0a12;border:1px solid #1a1a2c;border-radius:12px;padding:20px;margin-bottom:8px}
+.card.center{border-color:#1d4ed8;box-shadow:0 0 30px rgba(59,130,246,.08)}
+.card-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#65657a;margin-bottom:8px}
+.card.center .card-label{color:#60a5fa}
+.code{font-family:'SF Mono',monospace;font-size:13px;line-height:1.8}
+.code .k{color:#65657a}
+.code .vb{color:#60a5fa}
+.code .vg{color:#22c55e}
+.arrow{text-align:center;color:#3b82f6;font-size:18px;margin:4px 0}
+</style>
+</head>
+<body>
+<div class="left">
+    <div class="logo">
+        <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs><linearGradient id="g" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="50%" style="stop-color:#60a5fa"/><stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0.3"/></linearGradient></defs>
+            <path d="M16 2C10.5 2 6 6.5 6 12v10.5c0 .8.7 1.5 1.5 1.5H10c0-2 1.3-3.5 2.5-3.5S15 22 15 24h2c0-2 1.3-3.5 2.5-3.5S22 22 22 24h2.5c.8 0 1.5-.7 1.5-1.5V12c0-5.5-4.5-10-10-10z" fill="url(#g)"/>
+            <circle cx="12.5" cy="13.5" r="2.2" fill="#050508"/>
+            <circle cx="19.5" cy="13.5" r="2.2" fill="#050508"/>
+            <circle cx="13" cy="13" r="0.8" fill="#fff"/>
+            <circle cx="20" cy="13" r="0.8" fill="#fff"/>
+        </svg>
+        <span>Phantom</span>
+    </div>
+    <h1>AI uses your keys.<em>Safely.</em></h1>
+    <div class="sub">Let AI agents use your real API keys to do real work — without the keys ever being exposed.</div>
+    <div class="url"><span>phm.dev</span> — Open source, free forever</div>
+</div>
+<div class="right">
+    <div class="card">
+        <div class="card-label">Your .env</div>
+        <div class="code">
+            <span class="k">OPENAI_API_KEY=</span><span class="vb">phm_d9f1c1...</span><br>
+            <span class="k">STRIPE_SECRET=</span><span class="vb">phm_2ccb5a...</span>
+        </div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="card center">
+        <div class="card-label">Phantom Proxy</div>
+        <div class="code">
+            <span class="vb">phm_d9f1...</span> <span class="k">→</span> <span class="vg">sk-proj-real...</span><br>
+            <span class="vb">phm_2ccb...</span> <span class="k">→</span> <span class="vg">sk_live-real...</span>
+        </div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="card">
+        <div class="card-label">APIs receive real keys</div>
+        <div class="code">
+            <span class="vg">api.openai.com</span> <span class="k">✓</span><br>
+            <span class="vg">api.stripe.com</span> <span class="k">✓</span>
+        </div>
+    </div>
+</div>
+</body>
+</html>

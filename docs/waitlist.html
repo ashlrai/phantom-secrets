@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phantom Pro — Waitlist</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Inter',system-ui,sans-serif;background:#050508;color:#f5f5f7;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;-webkit-font-smoothing:antialiased}
+        .card{max-width:480px;width:100%;text-align:center}
+        .logo{display:flex;align-items:center;gap:9px;justify-content:center;margin-bottom:32px}
+        .logo img{width:22px;height:22px}
+        .logo span{font-weight:700;font-size:.95rem;color:#f5f5f7}
+        h1{font-size:2rem;font-weight:900;letter-spacing:-.04em;margin-bottom:12px}
+        h1 em{font-style:normal;color:#60a5fa}
+        .sub{color:#a1a1b5;font-size:1rem;line-height:1.7;margin-bottom:32px}
+        form{display:flex;gap:8px;margin-bottom:16px}
+        input[type=email]{flex:1;padding:12px 16px;background:#0a0a12;border:1px solid #1a1a2c;border-radius:8px;color:#f5f5f7;font-size:.9rem;font-family:inherit;outline:none;transition:border-color .2s}
+        input[type=email]:focus{border-color:#3b82f6}
+        input[type=email]::placeholder{color:#65657a}
+        button{padding:12px 24px;background:#3b82f6;color:#fff;border:none;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;font-family:inherit;transition:background .2s}
+        button:hover{background:#1d4ed8}
+        .note{color:#65657a;font-size:.8rem}
+        .features{text-align:left;margin-top:32px;padding-top:32px;border-top:1px solid #1a1a2c}
+        .features h3{font-size:.85rem;color:#a1a1b5;margin-bottom:12px;font-weight:600}
+        .features li{color:#a1a1b5;font-size:.85rem;padding:4px 0;list-style:none;display:flex;gap:8px}
+        .features li::before{content:"✓";color:#22c55e;font-weight:700}
+        .back{margin-top:24px;color:#65657a;font-size:.82rem}
+        .back a{color:#60a5fa;text-decoration:none}
+        .back a:hover{text-decoration:underline}
+        #success{display:none;padding:16px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:8px;color:#22c55e;font-weight:600;margin-bottom:16px}
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="logo"><img src="favicon.svg" alt="Phantom"><span>Phantom</span></div>
+    <h1>Phantom <em>Pro</em></h1>
+    <p class="sub">Cloud-synced vaults, team sharing, audit logs, and deployment platform integration. Be the first to know when it launches.</p>
+
+    <div id="success">You're on the list! We'll email you when Pro launches.</div>
+
+    <form id="waitlist" onsubmit="return submitWaitlist(event)">
+        <input type="email" name="email" placeholder="your@email.com" required>
+        <button type="submit">Join waitlist</button>
+    </form>
+    <p class="note">No spam. Just one email when Pro is ready.</p>
+
+    <div class="features">
+        <h3>What's coming in Pro ($8/user/month)</h3>
+        <ul>
+            <li>Cloud-synced vault across all your machines</li>
+            <li>Team vault sharing (up to 10 users)</li>
+            <li>phantom sync to Vercel, Railway, AWS</li>
+            <li>phantom pull for instant new machine onboarding</li>
+            <li>Secret history (30-day retention)</li>
+            <li>Audit log — who accessed what, when</li>
+            <li>CI/CD integration</li>
+            <li>Priority support</li>
+        </ul>
+    </div>
+
+    <div class="back"><a href="/">← Back to phm.dev</a></div>
+</div>
+
+<script>
+function submitWaitlist(e) {
+    e.preventDefault();
+    const email = e.target.email.value;
+    // For now, open mailto — replace with real API later
+    const subject = encodeURIComponent('Phantom Pro Waitlist');
+    const body = encodeURIComponent('I want early access to Phantom Pro.\n\nEmail: ' + email);
+    window.open('mailto:mason@ashlr.ai?subject=' + subject + '&body=' + body, '_blank');
+    document.getElementById('success').style.display = 'block';
+    e.target.style.display = 'none';
+    return false;
+}
+</script>
+</body>
+</html>
