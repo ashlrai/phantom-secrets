@@ -154,3 +154,42 @@ phantom pull --from vercel --project prj_xxx --force
 ### Is Phantom safe to use with Claude Code / Cursor?
 
 That's exactly what it's built for. The AI agent only sees phantom tokens (`phm_...`), never real secrets. Even if the AI includes a phantom token in generated code or sends it to an LLM, the token is worthless — it only works through the local proxy during the current session.
+
+## Vault Backup
+
+### Where secrets are stored
+
+Phantom stores your real secret values in one of two locations:
+
+- **OS keychain (primary):** macOS Keychain or Linux Secret Service. This is the default on desktop systems. Secrets are tied to your user account and persist across reboots.
+- **Encrypted file vault (fallback):** `~/.phantom/vaults/`. Used automatically in environments without an OS keychain (Docker, CI runners), or when `PHANTOM_VAULT_PASSPHRASE` is explicitly set. The vault files are AES-256-GCM encrypted.
+
+### How to back up your secrets
+
+Phantom does not have a dedicated backup command. To manually back up your secrets, reveal each one and store the values in a secure location (e.g., a password manager):
+
+```bash
+phantom list                        # see all secret names
+phantom reveal <KEY> --yes          # print the real value for each key
+```
+
+Repeat `phantom reveal` for each secret and save the values somewhere safe. Do not store the backup in plain text on disk or in your git repository.
+
+### Recovery options
+
+If you lose access to your vault (e.g., you reset your machine or the vault file is deleted), you have a few options:
+
+1. **Re-pull from a deployment platform.** If you previously ran `phantom sync` to push secrets to Vercel or Railway, you can recover them:
+   ```bash
+   phantom pull --from vercel --project prj_abc123def456 --force
+   ```
+
+2. **Re-enter secrets manually.** If you have the real values saved elsewhere (password manager, team wiki), create a fresh `.env` with the real values and re-run `phantom init`.
+
+3. **Ask a teammate.** If another developer on your team has the same secrets in their vault, they can `phantom sync` to the deployment platform and you can `phantom pull`.
+
+### Warning: vault corruption means secret loss
+
+If your vault becomes corrupted or inaccessible and you have no backup (no deployment platform copy, no password manager record), **those secrets are permanently lost**. Phantom cannot recover secrets from phantom tokens -- the tokens are random values with no reversible relationship to the real secrets.
+
+Take backups seriously. At minimum, ensure your secrets are synced to at least one deployment platform (`phantom sync`) so you always have a recovery path.

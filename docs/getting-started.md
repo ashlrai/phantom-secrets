@@ -346,7 +346,116 @@ Once configured, Claude Code gains these tools:
 
 Claude can call these tools during a session. For example, if you say "add my new Stripe key," Claude can use `phantom_add_secret` to store it safely -- the real value passes through the MCP protocol but never enters Claude's context window or conversation logs.
 
-## 10. FAQ
+## 10. Team Workflows
+
+Phantom is currently designed for **solo developers**. Each developer manages their own vault independently -- there is no shared team vault or centralized secret management server (yet).
+
+### How it works in practice
+
+Each developer on your team runs `phantom init` independently on their own machine. This means every team member has their own local vault backed by their OS keychain (or an encrypted file vault).
+
+### Sharing secrets across the team
+
+The recommended workflow for sharing secrets between developers:
+
+1. **One developer syncs to a deployment platform:**
+   ```bash
+   phantom sync --platform vercel --project prj_abc123def456
+   ```
+
+2. **Other developers pull from that platform:**
+   ```bash
+   phantom pull --from vercel --project prj_abc123def456
+   ```
+
+This uses Vercel (or Railway) as the shared source of truth. Each developer ends up with the same real secret values in their own local vault, but with independently generated phantom tokens.
+
+### Bootstrapping new team members
+
+Use `phantom env` to generate a `.env.example` file that new developers can reference:
+
+```bash
+phantom env
+```
+
+This lists all required variable names without exposing any values. Commit `.env.example` to your repo so new teammates know which secrets they need.
+
+### What to commit
+
+`.phantom.toml` can (and should) be committed to git. It contains proxy configuration and service definitions -- no secrets. This ensures every developer on the team uses the same Phantom configuration.
+
+### Limitations to be aware of
+
+- There is no real-time secret sharing. If one developer rotates an API key, they need to `phantom sync` and every other developer needs to `phantom pull` again.
+- Phantom tokens are unique per developer. You cannot share `.env` files between machines and expect them to work.
+- There is no access control or audit log for who accessed which secret.
+
+### Pro tier (coming soon)
+
+A future Pro tier will add shared team vaults with centralized access control, audit logging, and automatic propagation of secret updates across team members. For now, the deployment platform (Vercel/Railway) serves as the coordination point.
+
+## 11. CI/CD Setup
+
+Phantom works in CI/CD environments where no OS keychain is available. In these environments, Phantom uses an encrypted file vault instead, unlocked by the `PHANTOM_VAULT_PASSPHRASE` environment variable.
+
+### GitHub Actions
+
+Set `PHANTOM_VAULT_PASSPHRASE` and any required platform tokens as GitHub repository secrets, then install Phantom and pull secrets at the start of your workflow:
+
+```yaml
+name: Build and Test
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Phantom
+        run: cargo install phantom --git https://github.com/ashlrai/phantom-secrets
+
+      - name: Pull secrets from Vercel
+        run: phantom pull --from vercel --project ${{ vars.VERCEL_PROJECT_ID }}
+        env:
+          PHANTOM_VAULT_PASSPHRASE: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Run tests with secrets injected
+        run: phantom exec -- npm test
+        env:
+          PHANTOM_VAULT_PASSPHRASE: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
+```
+
+### Docker
+
+In Docker builds, install Phantom and pass the vault passphrase at runtime (never bake it into the image):
+
+```dockerfile
+FROM rust:1.77 AS builder
+RUN cargo install phantom --git https://github.com/ashlrai/phantom-secrets
+
+FROM node:20-slim
+COPY --from=builder /usr/local/cargo/bin/phantom /usr/local/bin/phantom
+COPY . .
+
+# Pass PHANTOM_VAULT_PASSPHRASE at runtime via docker run -e
+CMD ["phantom", "exec", "--", "node", "server.js"]
+```
+
+Run the container with the passphrase:
+
+```bash
+docker run -e PHANTOM_VAULT_PASSPHRASE="your-passphrase" my-app
+```
+
+### How the encrypted file vault works in CI
+
+When no OS keychain is detected (which is the case on virtually all CI runners and Docker containers), Phantom falls back to an encrypted file vault stored at `~/.phantom/vaults/`. This vault is encrypted with the passphrase provided via `PHANTOM_VAULT_PASSPHRASE`. The passphrase must be set before any Phantom command that accesses secrets (`pull`, `exec`, `init`).
+
+The encrypted file vault provides the same security guarantees as the OS keychain -- secrets are encrypted at rest and only decrypted in memory when needed.
+
+## 12. FAQ
 
 ### What if I share my project with someone who does not use Phantom?
 
