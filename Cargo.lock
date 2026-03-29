@@ -1281,6 +1281,7 @@ name = "phantom-mcp"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "base64",
  "colored",
  "phantom-core",
  "phantom-vault",
