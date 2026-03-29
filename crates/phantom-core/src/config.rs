@@ -14,6 +14,17 @@ pub struct PhantomConfig {
     /// Deployment platform sync targets
     #[serde(default)]
     pub sync: Vec<SyncTarget>,
+    /// Cloud sync configuration
+    #[serde(default)]
+    pub cloud: Option<CloudConfig>,
+}
+
+/// Cloud vault sync configuration.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct CloudConfig {
+    /// Last synced version number (managed by CLI)
+    #[serde(default)]
+    pub version: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -134,6 +145,7 @@ impl PhantomConfig {
             },
             services,
             sync: Vec::new(),
+            cloud: None,
         }
     }
 

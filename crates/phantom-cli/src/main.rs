@@ -134,6 +134,32 @@ enum Commands {
         #[arg(short, long, default_value = ".env.example")]
         output: String,
     },
+
+    /// Log in to Phantom Cloud
+    Login,
+
+    /// Log out of Phantom Cloud
+    Logout,
+
+    /// Cloud vault sync commands
+    Cloud {
+        #[command(subcommand)]
+        action: CloudAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CloudAction {
+    /// Push local secrets to Phantom Cloud
+    Push,
+    /// Pull secrets from Phantom Cloud to local vault
+    Pull {
+        /// Overwrite existing local secrets
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show cloud sync status
+    Status,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -179,5 +205,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Setup => commands::setup::run(),
         Commands::Sync { platform, project } => commands::sync::run(platform, project),
         Commands::Env { output } => commands::env::run(&output),
+        Commands::Login => commands::login::run(),
+        Commands::Logout => commands::logout::run(),
+        Commands::Cloud { action } => match action {
+            CloudAction::Push => commands::cloud::run_push(),
+            CloudAction::Pull { force } => commands::cloud::run_pull(force),
+            CloudAction::Status => commands::cloud::run_status(),
+        },
     }
 }

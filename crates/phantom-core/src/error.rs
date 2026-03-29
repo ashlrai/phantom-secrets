@@ -26,6 +26,21 @@ pub enum PhantomError {
     #[error("Proxy error: {0}")]
     ProxyError(String),
 
+    #[error("Authentication required. Run `phantom login` first.")]
+    AuthRequired,
+
+    #[error("Authentication failed: {0}")]
+    AuthError(String),
+
+    #[error("Cloud API error ({status}): {message}")]
+    CloudError { status: u16, message: String },
+
+    #[error("Pro plan required. Upgrade at https://phm.dev/pricing")]
+    PlanRequired,
+
+    #[error("Version conflict: local version {local} != remote version {remote}. Run `phantom cloud pull` first.")]
+    VersionConflict { local: u64, remote: u64 },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

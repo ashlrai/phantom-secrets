@@ -1,8 +1,8 @@
 use crate::interceptor::Interceptor;
 use crate::services::ServiceRegistry;
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::{Frame, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
+use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
 
 /// Configuration for the proxy server.
@@ -160,10 +161,22 @@ async fn run_server(
     }
 }
 
+type BoxBody = http_body_util::Either<
+    Full<Bytes>,
+    StreamBody<tokio_stream::wrappers::ReceiverStream<Result<Frame<Bytes>, std::io::Error>>>,
+>;
+
+fn error_response(status: StatusCode, body: impl Into<Bytes>) -> Response<BoxBody> {
+    Response::builder()
+        .status(status)
+        .body(BoxBody::Left(Full::new(body.into())))
+        .unwrap()
+}
+
 async fn handle_request(
     req: Request<Incoming>,
     state: Arc<ProxyState>,
-) -> Result<Response<Full<Bytes>>, hyper::Error> {
+) -> Result<Response<BoxBody>, hyper::Error> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
     // Strip phantom_token from query before forwarding to upstream
@@ -204,24 +217,20 @@ async fn handle_request(
 
             if query_token != state.proxy_token {
                 warn!("Rejected request without valid proxy token from {}", path);
-                return Ok(Response::builder()
-                    .status(StatusCode::UNAUTHORIZED)
-                    .body(Full::new(Bytes::from(
-                        r#"{"error":"missing or invalid proxy token"}"#,
-                    )))
-                    .unwrap());
+                return Ok(error_response(
+                    StatusCode::UNAUTHORIZED,
+                    r#"{"error":"missing or invalid proxy token"}"#,
+                ));
             }
         }
     }
 
     // Health check endpoint (after token verification)
     if path == "/phantom/health" {
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .body(Full::new(Bytes::from(
-                r#"{"status":"ok","service":"phantom-proxy"}"#,
-            )))
-            .unwrap());
+        return Ok(error_response(
+            StatusCode::OK,
+            r#"{"status":"ok","service":"phantom-proxy"}"#,
+        ));
     }
 
     // Match the route
@@ -229,13 +238,13 @@ async fn handle_request(
         Some(matched) => matched,
         None => {
             warn!("No route found for path: {}", path);
-            return Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Full::new(Bytes::from(format!(
+            return Ok(error_response(
+                StatusCode::NOT_FOUND,
+                format!(
                     r#"{{"error":"no route for path: {}","hint":"check .phantom.toml service configuration"}}"#,
                     path
-                ))))
-                .unwrap());
+                ),
+            ));
         }
     };
 
@@ -283,21 +292,19 @@ async fn handle_request(
                     "Request body too large (limit: {} bytes)",
                     state.max_body_size
                 );
-                return Ok(Response::builder()
-                    .status(StatusCode::PAYLOAD_TOO_LARGE)
-                    .body(Full::new(Bytes::from(format!(
+                return Ok(error_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!(
                         r#"{{"error":"request body too large","limit":{}}}"#,
                         state.max_body_size
-                    ))))
-                    .unwrap());
+                    ),
+                ));
             }
             error!("Failed to read request body: {}", e);
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    r#"{"error":"failed to read request body"}"#,
-                )))
-                .unwrap());
+            return Ok(error_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"failed to read request body"}"#,
+            ));
         }
     };
 
@@ -322,13 +329,10 @@ async fn handle_request(
             } else {
                 "upstream request failed"
             };
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from(format!(
-                    r#"{{"error":"{user_msg}","service":"{}"}}"#,
-                    route.name
-                ))))
-                .unwrap());
+            return Ok(error_response(
+                StatusCode::BAD_GATEWAY,
+                format!(r#"{{"error":"{user_msg}","service":"{}"}}"#, route.name),
+            ));
         }
     };
 
@@ -336,31 +340,76 @@ async fn handle_request(
     let status = response.status();
     let mut builder = Response::builder().status(status);
 
-    // Copy response headers
+    // Copy response headers (skip hop-by-hop and content-length since we stream)
+    let is_streaming = response
+        .headers()
+        .get("transfer-encoding")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("chunked"))
+        .unwrap_or(false)
+        || response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.contains("text/event-stream"))
+            .unwrap_or(false);
+
     for (name, value) in response.headers() {
         let name_str = name.as_str();
         if matches!(name_str, "transfer-encoding" | "connection") {
             continue;
         }
+        // Drop content-length for streaming responses since we forward as chunked
+        if is_streaming && name_str == "content-length" {
+            continue;
+        }
         builder = builder.header(name, value);
     }
 
-    let response_body = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            error!("Failed to read response body: {}", e);
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from(
+    if is_streaming {
+        // Stream the response body chunk-by-chunk (critical for SSE/streaming APIs)
+        debug!("Streaming response: {}", status);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(32);
+
+        let byte_stream = response.bytes_stream();
+        tokio::spawn(async move {
+            tokio::pin!(byte_stream);
+            while let Some(chunk_result) = byte_stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        if tx.send(Ok(Frame::data(chunk))).await.is_err() {
+                            break; // client disconnected
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Upstream stream error: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let body = BoxBody::Right(StreamBody::new(stream));
+        Ok(builder.body(body).unwrap())
+    } else {
+        // Non-streaming: buffer and forward (small JSON responses, etc.)
+        let response_body = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                error!("Failed to read response body: {}", e);
+                return Ok(error_response(
+                    StatusCode::BAD_GATEWAY,
                     r#"{"error":"failed to read upstream response"}"#,
-                )))
-                .unwrap());
-        }
-    };
+                ));
+            }
+        };
 
-    debug!("Response: {} ({} bytes)", status, response_body.len());
-
-    Ok(builder.body(Full::new(response_body)).unwrap())
+        debug!("Response: {} ({} bytes)", status, response_body.len());
+        Ok(builder
+            .body(BoxBody::Left(Full::new(response_body)))
+            .unwrap())
+    }
 }
 
 #[cfg(test)]

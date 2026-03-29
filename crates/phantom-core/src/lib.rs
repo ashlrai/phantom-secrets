@@ -1,3 +1,5 @@
+pub mod auth;
+pub mod cloud;
 pub mod config;
 pub mod dotenv;
 pub mod error;

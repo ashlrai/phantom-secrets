@@ -140,7 +140,17 @@ pub fn run() -> Result<()> {
         check_info("No Claude Code config — run `phantom setup` for auto-mode + .env permissions");
     }
 
-    // Check 6: Pre-commit hook
+    // Check 6: Cloud auth
+    match phantom_core::auth::load_token() {
+        Some(_) => {
+            check_pass("Cloud: logged in (token stored in keychain)");
+        }
+        None => {
+            check_info("Cloud: not logged in — run `phantom login` for cloud sync");
+        }
+    }
+
+    // Check 7: Pre-commit hook
     let pre_commit_config = project_dir.join(".pre-commit-config.yaml");
     let git_hook = project_dir.join(".git/hooks/pre-commit");
     if pre_commit_config.exists() {

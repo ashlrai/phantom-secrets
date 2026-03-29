@@ -30,6 +30,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
 hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
 
 # Internal crates
 phantom-core = { path = "crates/phantom-core" }

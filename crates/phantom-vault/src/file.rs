@@ -1,31 +1,16 @@
+use crate::crypto;
 use crate::traits::VaultBackend;
-use argon2::Argon2;
-use chacha20poly1305::{
-    aead::{Aead, KeyInit},
-    ChaCha20Poly1305, Nonce,
-};
 use phantom_core::error::{PhantomError, Result};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use zeroize::Zeroize;
 
 /// ChaCha20-Poly1305 encrypted file vault backend.
-/// Used when OS keychain is not available (Docker, CI, etc.).
-///
-/// Encryption scheme:
-/// - Key derivation: Argon2id(passphrase, salt) → 256-bit key
-/// - Encryption: ChaCha20-Poly1305(key, nonce, plaintext)
-/// - File format: salt (32 bytes) || nonce (12 bytes) || ciphertext
+/// Uses shared crypto module for encryption/decryption.
 pub struct FileVault {
     vault_path: PathBuf,
     passphrase: String,
 }
-
-const SALT_LEN: usize = 32;
-const NONCE_LEN: usize = 12;
-const KEY_LEN: usize = 32;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct VaultData {
@@ -72,14 +57,6 @@ impl FileVault {
         Ok(())
     }
 
-    fn derive_key(&self, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
-        let mut key = [0u8; KEY_LEN];
-        Argon2::default()
-            .hash_password_into(self.passphrase.as_bytes(), salt, &mut key)
-            .map_err(|e| PhantomError::VaultError(format!("Key derivation failed: {e}")))?;
-        Ok(key)
-    }
-
     fn load(&self) -> Result<VaultData> {
         if !self.vault_path.exists() {
             return Ok(VaultData::default());
@@ -102,34 +79,8 @@ impl FileVault {
         }
 
         let encrypted = std::fs::read(&self.vault_path)?;
+        let plaintext = crypto::decrypt(&encrypted, &self.passphrase)?;
 
-        if encrypted.len() < SALT_LEN + NONCE_LEN + 1 {
-            return Err(PhantomError::VaultError(
-                "Vault file too small — may be corrupt".to_string(),
-            ));
-        }
-
-        // Parse: salt || nonce || ciphertext
-        let salt = &encrypted[..SALT_LEN];
-        let nonce_bytes = &encrypted[SALT_LEN..SALT_LEN + NONCE_LEN];
-        let ciphertext = &encrypted[SALT_LEN + NONCE_LEN..];
-
-        // Derive key from passphrase + salt
-        let mut key = self.derive_key(salt)?;
-        let cipher = ChaCha20Poly1305::new_from_slice(&key)
-            .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?;
-        key.zeroize();
-
-        let nonce = Nonce::from_slice(nonce_bytes);
-
-        // Decrypt
-        let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
-            PhantomError::VaultError(
-                "Decryption failed — wrong passphrase or corrupt vault file".to_string(),
-            )
-        })?;
-
-        // Parse JSON
         serde_json::from_slice(&plaintext)
             .map_err(|e| PhantomError::VaultError(format!("Corrupt vault data: {e}")))
     }
@@ -138,34 +89,11 @@ impl FileVault {
         let plaintext = serde_json::to_string_pretty(data)
             .map_err(|e| PhantomError::VaultError(format!("Serialize error: {e}")))?;
 
-        // Generate random salt and nonce
-        let mut salt = [0u8; SALT_LEN];
-        let mut nonce_bytes = [0u8; NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut salt);
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
-
-        // Derive key
-        let mut key = self.derive_key(&salt)?;
-        let cipher = ChaCha20Poly1305::new_from_slice(&key)
-            .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?;
-        key.zeroize();
-
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
-        // Encrypt
-        let ciphertext = cipher
-            .encrypt(nonce, plaintext.as_bytes())
-            .map_err(|e| PhantomError::VaultError(format!("Encryption failed: {e}")))?;
-
-        // Write: salt || nonce || ciphertext
-        let mut output = Vec::with_capacity(SALT_LEN + NONCE_LEN + ciphertext.len());
-        output.extend_from_slice(&salt);
-        output.extend_from_slice(&nonce_bytes);
-        output.extend_from_slice(&ciphertext);
+        let encrypted = crypto::encrypt(plaintext.as_bytes(), &self.passphrase)?;
 
         // Write atomically via temp file
         let tmp_path = self.vault_path.with_extension("tmp");
-        std::fs::write(&tmp_path, &output)?;
+        std::fs::write(&tmp_path, &encrypted)?;
         std::fs::rename(&tmp_path, &self.vault_path)?;
 
         // Set restrictive permissions (owner read/write only)

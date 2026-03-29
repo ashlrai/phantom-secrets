@@ -1,3 +1,4 @@
+pub mod crypto;
 pub mod file;
 pub mod keychain;
 pub mod traits;

@@ -17,7 +17,8 @@ thiserror = { workspace = true }
 zeroize = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
+tokio-stream = "0.1"
 rand = { workspace = true }
 hex = { workspace = true }
 

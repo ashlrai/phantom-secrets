@@ -1,10 +1,13 @@
 pub mod add;
 pub mod check;
+pub mod cloud;
 pub mod doctor;
 pub mod env;
 pub mod exec;
 pub mod init;
 pub mod list;
+pub mod login;
+pub mod logout;
 pub mod pull;
 pub mod remove;
 pub mod reveal;
