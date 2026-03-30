@@ -152,8 +152,10 @@ export default function Home() {
         .inst-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
         .inst{background:var(--s1);border:1px solid var(--border);border-radius:12px;padding:28px}
         .inst h3{font-size:.78rem;color:var(--blue-b);text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px;font-weight:700}
-        .inst-cmd{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:12px 14px;font-family:'SF Mono',monospace;font-size:.8rem;color:var(--t1);cursor:pointer;transition:border-color .15s;line-height:1.6}
+        .inst-cmd{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:12px 14px;font-family:'SF Mono',monospace;font-size:.8rem;color:var(--t1);cursor:pointer;transition:border-color .15s;line-height:1.6;overflow-x:auto;word-break:break-all}
         .inst-cmd:hover{border-color:var(--blue)}
+        .how-grid-3{grid-template-columns:1fr 1fr 1fr}
+        html,body{overflow-x:hidden}
         .inst-sub{font-size:.75rem;color:var(--t3);margin-top:10px;text-align:center}
 
         .cta{text-align:center;position:relative}
@@ -173,14 +175,31 @@ export default function Home() {
         .sr-d1{transition-delay:.08s}.sr-d2{transition-delay:.16s}.sr-d3{transition-delay:.24s}
 
         @media(max-width:768px){
-          .hero h1{font-size:2.8rem}
+          .hero h1{font-size:2.4rem}
+          .hero-sub{font-size:.92rem}
+          .hero{padding:100px 0 40px}
+          .hero-installs{flex-direction:column;align-items:stretch}
           .flow-row{grid-template-columns:1fr;gap:12px}
           .flow-conn{flex-direction:row;padding:4px 0;justify-content:center}
           .flow-arrow{width:2px;height:32px;background:linear-gradient(180deg,var(--border),var(--blue),var(--border))}
           .flow-arrow::after{right:auto;bottom:-1px;top:auto;left:-3px;border:4px solid transparent;border-top:6px solid var(--blue);border-left:4px solid transparent}
-          .stats,.how-grid,.feat-grid,.inst-grid{grid-template-columns:1fr}
+          .flow-code{font-size:.65rem}
+          .flow-node{padding:16px 14px}
+          .stats,.how-grid,.how-grid-3,.feat-grid,.inst-grid{grid-template-columns:1fr}
           .n-r a:not(.n-gh){display:none}
-          .hero{padding:120px 0 60px}
+          section{padding:60px 0}
+          .sec-h h2{font-size:1.6rem}
+          .sec-h p{font-size:.88rem}
+          .stat-n{font-size:2.2rem}
+          .stat{padding:28px 16px}
+          .cta h2{font-size:1.8rem}
+          .inst-cmd{font-size:.7rem;padding:10px 12px}
+          .feat{padding:20px}
+          .feat-grid{gap:10px}
+          .how-card{padding:20px}
+          .btn{padding:10px 18px;font-size:.84rem}
+          .hero-btns{margin-bottom:32px}
+          .w{padding:0 16px}
         }
       `}</style>
 
@@ -227,7 +246,7 @@ export default function Home() {
             <a href="#how" className="btn btn-s">How it works</a>
           </div>
           <div className="sr sr-d3" style={{ marginBottom: 40 }}>
-            <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
+            <div className="hero-installs" style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
               <div style={{ textAlign: "left" }}>
                 <div style={{ fontSize: ".7rem", color: "var(--t3)", marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>CLI</div>
                 <CopyButton text="npx phantom-secrets init" />
@@ -292,7 +311,7 @@ export default function Home() {
             <h2>Get started in 60 seconds</h2>
             <p>Three commands. No config files to write. No accounts to create.</p>
           </div>
-          <div className="how-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+          <div className="how-grid how-grid-3">
             <div className="how-card sr" style={{ textAlign: "center" }}>
               <div className="how-n">1</div>
               <h3>Install &amp; protect</h3>
