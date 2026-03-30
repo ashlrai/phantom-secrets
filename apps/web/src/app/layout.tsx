@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { PostHogProvider } from "./providers";
 
 export const metadata: Metadata = {
   title: "Phantom — Delegate everything to AI",
@@ -72,7 +73,7 @@ export default function RootLayout({
         className="bg-[#050508] text-[#f5f5f7] antialiased"
         style={{ fontFamily: "'Inter', system-ui, sans-serif" }}
       >
-        {children}
+        <PostHogProvider>{children}</PostHogProvider>
       </body>
     </html>
   );

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { posthog } from "@/lib/posthog";
 
 let _supabase: SupabaseClient | null = null;
 function getSupabase() {
@@ -81,6 +82,7 @@ export default function DevicePage() {
 
       if (resp.ok) {
         setStatus("done");
+        posthog.capture("device_authorized");
       } else {
         const data = await resp.json();
         setError(data.error || "Failed to approve device");

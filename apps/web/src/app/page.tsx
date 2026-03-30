@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { posthog } from "@/lib/posthog";
 
 function CopyButton({ text }: { text: string }) {
   return (
@@ -8,6 +9,7 @@ function CopyButton({ text }: { text: string }) {
       className="inst-cmd"
       onClick={() => {
         navigator.clipboard.writeText(text);
+        posthog.capture("command_copied", { command: text });
         const t = document.getElementById("toast");
         if (t) {
           t.classList.add("show");

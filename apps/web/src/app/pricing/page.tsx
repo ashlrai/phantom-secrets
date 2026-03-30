@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { posthog } from "@/lib/posthog";
 
 export default function PricingPage() {
   const [loading, setLoading] = useState(false);
@@ -16,6 +17,7 @@ export default function PricingPage() {
 
   const handleSubscribe = async () => {
     setLoading(true);
+    posthog.capture("subscribe_clicked", { plan: "pro" });
     try {
       const resp = await fetch("/api/v1/billing/checkout", { method: "POST" });
       const data = await resp.json();
