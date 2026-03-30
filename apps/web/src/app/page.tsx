@@ -152,9 +152,10 @@ export default function Home() {
         .inst-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
         .inst{background:var(--s1);border:1px solid var(--border);border-radius:12px;padding:28px}
         .inst h3{font-size:.78rem;color:var(--blue-b);text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px;font-weight:700}
-        .inst-cmd{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:12px 14px;font-family:'SF Mono',monospace;font-size:.8rem;color:var(--t1);cursor:pointer;transition:border-color .15s;line-height:1.6;overflow-x:auto;word-break:break-all}
+        .inst-cmd{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:12px 14px;font-family:'SF Mono',monospace;font-size:.8rem;color:var(--t1);cursor:pointer;transition:border-color .15s;line-height:1.6;overflow-wrap:break-word}
         .inst-cmd:hover{border-color:var(--blue)}
         .how-grid-3{grid-template-columns:1fr 1fr 1fr}
+        .hero-installs{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
         html,body{overflow-x:hidden}
         .inst-sub{font-size:.75rem;color:var(--t3);margin-top:10px;text-align:center}
 
@@ -182,7 +183,7 @@ export default function Home() {
           .flow-row{grid-template-columns:1fr;gap:12px}
           .flow-conn{flex-direction:row;padding:4px 0;justify-content:center}
           .flow-arrow{width:2px;height:32px;background:linear-gradient(180deg,var(--border),var(--blue),var(--border))}
-          .flow-arrow::after{right:auto;bottom:-1px;top:auto;left:-3px;border:4px solid transparent;border-top:6px solid var(--blue);border-left:4px solid transparent}
+          .flow-arrow::after{border:4px solid transparent;border-top:6px solid var(--blue);right:auto;bottom:-1px;top:auto;left:-3px}
           .flow-code{font-size:.65rem}
           .flow-node{padding:16px 14px}
           .stats,.how-grid,.how-grid-3,.feat-grid,.inst-grid{grid-template-columns:1fr}
@@ -246,7 +247,7 @@ export default function Home() {
             <a href="#how" className="btn btn-s">How it works</a>
           </div>
           <div className="sr sr-d3" style={{ marginBottom: 40 }}>
-            <div className="hero-installs" style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
+            <div className="hero-installs">
               <div style={{ textAlign: "left" }}>
                 <div style={{ fontSize: ".7rem", color: "var(--t3)", marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>CLI</div>
                 <CopyButton text="npx phantom-secrets init" />
