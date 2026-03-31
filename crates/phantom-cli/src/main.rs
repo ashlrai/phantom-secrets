@@ -71,7 +71,11 @@ enum Commands {
     Status,
 
     /// Regenerate phantom tokens (invalidates old ones)
-    Rotate,
+    Rotate {
+        /// Also sync secrets to all configured deployment platforms after rotation
+        #[arg(long)]
+        sync: bool,
+    },
 
     /// Check configuration and vault health
     Doctor,
@@ -211,7 +215,7 @@ fn main() -> anyhow::Result<()> {
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status => commands::status::run(),
-        Commands::Rotate => commands::rotate::run(),
+        Commands::Rotate { sync } => commands::rotate::run(sync),
         Commands::Doctor => commands::doctor::run(),
         Commands::Exec { cmd } => commands::exec::run(&cmd),
         Commands::Start { daemon } => commands::start::run(daemon),

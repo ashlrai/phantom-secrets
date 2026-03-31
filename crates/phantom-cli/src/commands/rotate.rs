@@ -4,7 +4,7 @@ use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::TokenMap;
 
-pub fn run() -> Result<()> {
+pub fn run(sync_after: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let env_path = project_dir.join(".env");
@@ -49,6 +49,15 @@ pub fn run() -> Result<()> {
 
     for name in &names {
         println!("   {} {} -> new token", "+".green(), name.bold());
+    }
+
+    // Sync to all deployment platforms if --sync flag is set
+    if sync_after {
+        println!(
+            "\n{} Syncing to deployment platforms...",
+            "->".blue().bold()
+        );
+        crate::commands::sync::run(None, None)?;
     }
 
     Ok(())

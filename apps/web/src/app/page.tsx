@@ -243,7 +243,7 @@ export default function Home() {
           <div className="sr sr-d2" style={{ marginBottom: 32 }}>
             <CopyButton text="npx phantom-secrets init" />
             <div style={{ fontSize: ".82rem", color: "var(--t3)", marginTop: 10, lineHeight: 1.7 }}>
-              That&apos;s it. Protects your .env, configures Claude Code, sets up MCP tools &mdash; one command.
+              That&apos;s it. Protects your .env, sets up MCP tools for Claude Code, Cursor, and Windsurf &mdash; one command.
             </div>
           </div>
           <div className="sr sr-d2 hero-btns">
@@ -444,20 +444,20 @@ export default function Home() {
               <CopyButton text="npx phantom-secrets init" />
               <div className="inst-sub">Downloads binary automatically</div>
             </div>
-            <div className="inst">
-              <h3>Homebrew</h3>
-              <CopyButton text="brew tap ashlrai/phantom && brew install phantom" />
-              <div className="inst-sub">macOS</div>
-            </div>
-            <div className="inst">
-              <h3>Cargo</h3>
-              <CopyButton text="cargo install phantom --git https://github.com/ashlrai/phantom-secrets" />
-              <div className="inst-sub">Build from source</div>
-            </div>
             <div className="inst" style={{ borderColor: "var(--blue-d)" }}>
               <h3>Claude Code</h3>
               <CopyButton text="claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp" />
               <div className="inst-sub">One command, Claude handles the rest</div>
+            </div>
+            <div className="inst">
+              <h3>Cursor</h3>
+              <CopyButton text='{"phantom":{"command":"npx","args":["phantom-secrets-mcp"]}}' />
+              <div className="inst-sub">Add to Settings &gt; MCP Servers</div>
+            </div>
+            <div className="inst">
+              <h3>Windsurf</h3>
+              <CopyButton text='{"phantom":{"command":"npx","args":["phantom-secrets-mcp"]}}' />
+              <div className="inst-sub">Add to ~/.codeium/windsurf/mcp_config.json</div>
             </div>
           </div>
         </section>

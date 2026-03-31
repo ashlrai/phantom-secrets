@@ -47,17 +47,27 @@ $ phantom exec -- claude
 3. API calls hit the proxy, which replaces phantom tokens with real secrets and forwards over TLS
 4. When the session ends, the proxy shuts down. Phantom tokens are worthless outside the proxy.
 
-## Claude Code MCP Integration
+## MCP Integration (Claude Code, Cursor, Windsurf)
 
-Phantom ships an MCP server so Claude Code can manage secrets directly -- without ever seeing real values. 9 tools available: list, status, init, add, remove, rotate, cloud push, cloud pull, cloud status.
+Phantom ships an MCP server so AI coding tools can manage secrets directly -- without ever seeing real values. 9 tools available: list, status, init, add, remove, rotate, cloud push, cloud pull, cloud status.
 
-One-liner setup:
-
+### Claude Code
 ```bash
 $ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 ```
 
-Or via `phantom setup`, which also configures pre-commit hooks.
+### Cursor
+Add to Cursor Settings > Features > MCP Servers:
+- Name: `phantom`
+- Command: `npx phantom-secrets-mcp`
+
+### Windsurf
+Add to `~/.codeium/windsurf/mcp_config.json`:
+```json
+{"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}
+```
+
+Or run `phantom setup` to auto-configure Claude Code.
 
 ## Cloud Sync
 
