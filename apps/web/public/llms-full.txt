@@ -1,6 +1,6 @@
 # Phantom — Delegate Everything to AI
 
-Phantom is an open-source CLI tool that lets AI coding agents (Claude Code, Cursor, Copilot) use your real API keys without the security risk. It replaces secrets in .env files with worthless "phantom tokens" and injects real credentials at the network layer via a local HTTP proxy.
+Phantom is an open-source CLI tool that lets AI coding agents (Claude Code, Cursor, Copilot, Windsurf, Codex) use your real API keys without the security risk. It replaces secrets in .env files with worthless "phantom tokens" and injects real credentials at the network layer via a local HTTP proxy.
 
 Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
@@ -29,7 +29,7 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 
 ## CLI Commands
 
-- `phantom init` — Import .env secrets into vault, rewrite with phantom tokens. Auto-detects 13+ services.
+- `phantom init` — Import .env secrets into vault, rewrite with phantom tokens. Auto-detects 13+ services. Supports monorepo subdirectory detection.
 - `phantom exec -- <cmd>` — Start proxy with session-scoped tokens, run command, shut down proxy on exit.
 - `phantom login` — Sign in to Phantom Cloud via GitHub OAuth (device code flow).
 - `phantom logout` — Sign out of Phantom Cloud.
@@ -43,7 +43,7 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 - `phantom add <KEY> <VALUE>` — Add a secret to the vault.
 - `phantom remove <KEY>` — Remove a secret from the vault.
 - `phantom reveal <KEY>` — View a secret value. Requires `--yes` in non-interactive contexts.
-- `phantom rotate` — Regenerate all phantom tokens in .env.
+- `phantom rotate` — Regenerate all phantom tokens in .env. Supports `--sync` to push updated tokens to deployment platforms.
 - `phantom status` — Show project ID, vault backend, secret count, service mappings.
 - `phantom doctor` — Health check: config, vault, .env, .gitignore, Claude Code MCP, cloud auth.
 - `phantom check` — Pre-commit hook. Scans for unprotected secrets. Exit code 1 if found.
@@ -77,33 +77,37 @@ brew install phantom
 cargo install phantom --git https://github.com/ashlrai/phantom-secrets
 ```
 
-## MCP Server for Claude Code
+## MCP Server — Multi-IDE Support
 
-Phantom includes a native MCP server (`phantom-secrets-mcp`) with 9 tools that lets Claude Code manage secrets without ever seeing real values.
+Phantom includes a native MCP server (`phantom-secrets-mcp`) with 9 tools. Works with every major AI coding tool.
 
-Setup: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
+### Setup by IDE
 
-Or manually add to `.claude/settings.local.json`:
+**Claude Code:**
+```
+claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
+```
+
+**Cursor:** Add in Settings > Features > MCP Servers (name: `phantom`, command: `npx phantom-secrets-mcp`)
+
+**Windsurf:** Add to MCP configuration (name: `phantom`, command: `npx`, args: `["phantom-secrets-mcp"]`)
+
+**GitHub Copilot:** Uses `.github/copilot-instructions.md` for project-level instructions. MCP via VS Code settings.
+
+**OpenAI Codex:** Add to MCP config:
 ```json
-{
-  "mcpServers": {
-    "phantom": {
-      "command": "npx",
-      "args": ["phantom-secrets-mcp"]
-    }
-  }
-}
+{"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}
 ```
 
 ### MCP Tools
 
 **Secret Management:**
-- `phantom_init` — Initialize Phantom and protect .env. Reads .env, stores real secrets in vault, rewrites with phm_ tokens, saves .phantom.toml config.
+- `phantom_init` — Initialize Phantom and protect .env. Reads .env, stores real secrets in vault, rewrites with phm_ tokens, saves .phantom.toml config. Supports monorepo subdirectory detection.
 - `phantom_list_secrets` — List secret names with service mappings (never values).
 - `phantom_status` — Show vault and config status (project ID, backend, secret count).
 - `phantom_add_secret` — Add a new secret to the vault. Params: name, value.
 - `phantom_remove_secret` — Remove a secret from the vault. Params: name.
-- `phantom_rotate` — Regenerate all phantom tokens in .env.
+- `phantom_rotate` — Regenerate all phantom tokens in .env. Supports `--sync` flag to push to deployment platforms simultaneously.
 
 **Cloud Sync:**
 - `phantom_cloud_push` — Push local vault to Phantom Cloud. Encrypts client-side with ChaCha20-Poly1305 before upload. Server never sees plaintext.
@@ -155,6 +159,10 @@ phantom pull --from vercel --project prj_xxx
 phantom pull --from railway --project xxx --environment production
 ```
 
+## Monorepo Support
+
+Phantom supports monorepo subdirectory detection. Running `phantom init` in a subdirectory with its own `.env` creates a project-scoped vault. Each subdirectory can have its own `.phantom.toml` config and independent secret set.
+
 ## Smart Secret Detection
 
 Phantom automatically identifies secrets vs config values using heuristics:
@@ -170,7 +178,7 @@ Phantom automatically identifies secrets vs config values using heuristics:
 - phantom-core: Config, .env parsing, token generation, sync, auth, cloud API client
 - phantom-vault: VaultBackend trait, OS keychain + encrypted file backends, shared crypto module
 - phantom-proxy: HTTP reverse proxy with streaming/SSE support, request interceptor
-- phantom-cli: 20 CLI commands via clap (including login, cloud, export/import)
+- phantom-cli: 21 CLI commands via clap (including login, cloud, export/import)
 - phantom-mcp: MCP server via rmcp SDK (stdio transport, 9 tools)
 - apps/web: Next.js backend on Vercel (Supabase + Stripe, device auth, vault API, billing)
 
@@ -178,12 +186,15 @@ Phantom automatically identifies secrets vs config values using heuristics:
 
 ## Common Use Cases
 
-1. **Solo developer with Claude Code**: `phantom init` → `phantom exec -- claude` → code safely
+1. **Solo developer with Claude Code**: `phantom init` then `phantom exec -- claude` — code safely
 2. **Just tell Claude**: Add MCP server, say "protect my API keys" — Claude handles everything
-3. **Multi-device sync**: `phantom login` → `phantom cloud push` on one machine, `phantom cloud pull` on another
+3. **Multi-device sync**: `phantom login` then `phantom cloud push` on one machine, `phantom cloud pull` on another
 4. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
 5. **New machine onboarding**: `phantom pull --from vercel --project prj_xxx`
-6. **Vault backup**: `phantom export --passphrase mypass` → `phantom import backup.enc --passphrase mypass`
+6. **Vault backup**: `phantom export --passphrase mypass` then `phantom import backup.enc --passphrase mypass`
 7. **Team onboarding**: `phantom env` generates .env.example with placeholders
 8. **CI/CD**: Set PHANTOM_VAULT_PASSPHRASE env var, use phantom in GitHub Actions
 9. **Pre-commit safety**: Add `phantom check` to git hooks or pre-commit framework
+10. **Rotate with sync**: `phantom rotate --sync` regenerates tokens and pushes to deployment platforms
+11. **Monorepo**: Run `phantom init` in each subdirectory — each gets its own vault and config
+12. **Multi-IDE team**: Same MCP server works across Claude Code, Cursor, Windsurf, and Codex

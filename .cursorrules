@@ -1,0 +1,47 @@
+# Phantom Secrets — Cursor Rules
+
+This project uses Phantom Secrets to protect API keys from AI leaks.
+
+## Rules
+
+- `.env` contains phantom tokens (`phm_...`), NOT real secrets. This is intentional.
+- Real secrets are in an encrypted vault. Never attempt to read them directly.
+- NEVER hardcode API keys in source code.
+- NEVER ask the user to paste real API key values into code files.
+- NEVER log, display, or write real secret values to any file.
+
+## Available Commands
+
+- `phantom list` — See available secrets (never shows values)
+- `phantom add <name> <value>` — Add a new secret
+- `phantom remove <name>` — Remove a secret
+- `phantom exec -- <command>` — Run code with real credentials injected via proxy
+- `phantom init` — Protect .env secrets
+- `phantom rotate` — Regenerate all phantom tokens
+- `phantom status` — Show vault status and secret count
+- `phantom doctor` — Health check
+
+## MCP Server
+
+Phantom has an MCP server with 9 tools. Add it in Cursor Settings > Features > MCP Servers:
+- Name: `phantom`
+- Command: `npx phantom-secrets-mcp`
+
+### MCP Tools
+
+- `phantom_init` — Protect .env secrets
+- `phantom_list_secrets` — List secret names (never values)
+- `phantom_status` — Show vault and config status
+- `phantom_add_secret` — Add a secret (params: name, value)
+- `phantom_remove_secret` — Remove a secret (params: name)
+- `phantom_rotate` — Regenerate phantom tokens
+- `phantom_cloud_push` — Push encrypted vault to cloud
+- `phantom_cloud_pull` — Pull vault from cloud
+- `phantom_cloud_status` — Check cloud sync status
+
+## When You See API Keys
+
+If a user shares a real API key (`sk-*`, `ghp_*`, `xoxb-*`, etc.):
+1. Store it with `phantom add <KEY_NAME> <value>` (or `phantom_add_secret` via MCP)
+2. Reference the phantom token in code, never the real value
+3. Never write the real key into any file
