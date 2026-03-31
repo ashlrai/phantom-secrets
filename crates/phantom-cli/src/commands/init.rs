@@ -26,7 +26,11 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     };
 
     // Config and project dir are based on where the .env file lives (not cwd)
+    // Canonicalize for stable project IDs regardless of which directory user runs from
     let project_dir = env_path.parent().unwrap_or(&cwd).to_path_buf();
+    let project_dir = project_dir
+        .canonicalize()
+        .unwrap_or_else(|_| cwd.join(&project_dir));
     let config_path = project_dir.join(".phantom.toml");
 
     // Parse .env file
@@ -134,10 +138,11 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     );
 
     // Auto-configure Claude Code if detected (merges phantom setup into init)
-    auto_setup_claude_code(&project_dir);
+    // Check project_dir first, fall back to cwd (repo root) for monorepos
+    auto_setup_claude_code(&project_dir, &cwd);
 
     // Add Phantom instructions to CLAUDE.md so Claude knows how to use it
-    auto_add_claude_md(&project_dir);
+    auto_add_claude_md(&project_dir, &cwd);
 
     println!(
         "\n{} Run {} to start coding with AI safely.",
@@ -407,14 +412,16 @@ fn auto_detect_services(
 }
 
 /// Auto-configure Claude Code MCP server and .env permissions if Claude Code is detected.
-fn auto_setup_claude_code(project_dir: &Path) {
-    let claude_dir = project_dir.join(".claude");
+fn auto_setup_claude_code(project_dir: &Path, cwd: &Path) {
+    // .claude dir is typically at the repo root, not in a subdirectory
+    let claude_dir = if project_dir.join(".claude").exists() {
+        project_dir.join(".claude")
+    } else if cwd.join(".claude").exists() {
+        cwd.join(".claude")
+    } else {
+        return; // No .claude dir found anywhere
+    };
     let settings_path = claude_dir.join("settings.local.json");
-
-    // Only auto-configure if .claude directory already exists (user has Claude Code)
-    if !claude_dir.exists() {
-        return;
-    }
 
     let mut settings: serde_json::Value = if settings_path.exists() {
         match std::fs::read_to_string(&settings_path) {
@@ -482,8 +489,13 @@ fn auto_setup_claude_code(project_dir: &Path) {
 }
 
 /// Add Phantom usage instructions to the project's CLAUDE.md so Claude knows how to use it.
-fn auto_add_claude_md(project_dir: &Path) {
-    let claude_md = project_dir.join("CLAUDE.md");
+fn auto_add_claude_md(project_dir: &Path, cwd: &Path) {
+    // Prefer repo root CLAUDE.md (cwd), fall back to project_dir
+    let claude_md = if cwd.join("CLAUDE.md").exists() {
+        cwd.join("CLAUDE.md")
+    } else {
+        project_dir.join("CLAUDE.md")
+    };
     let phantom_marker = "## Phantom Secrets";
 
     let mut content = if claude_md.exists() {
