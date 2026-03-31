@@ -172,6 +172,38 @@ enum Commands {
         #[command(subcommand)]
         action: CloudAction,
     },
+
+    /// Team vault management
+    Team {
+        #[command(subcommand)]
+        action: TeamAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum TeamAction {
+    /// List your teams
+    List,
+    /// Create a new team
+    Create {
+        /// Team name
+        name: String,
+    },
+    /// List team members
+    Members {
+        /// Team ID
+        team_id: String,
+    },
+    /// Invite a member to a team
+    Invite {
+        /// Team ID
+        team_id: String,
+        /// GitHub username to invite
+        github_login: String,
+        /// Role to assign (member, admin, owner)
+        #[arg(long, default_value = "member")]
+        role: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -243,6 +275,16 @@ fn main() -> anyhow::Result<()> {
             CloudAction::Push => commands::cloud::run_push(),
             CloudAction::Pull { force } => commands::cloud::run_pull(force),
             CloudAction::Status => commands::cloud::run_status(),
+        },
+        Commands::Team { action } => match action {
+            TeamAction::List => commands::team::run_list(),
+            TeamAction::Create { name } => commands::team::run_create(&name),
+            TeamAction::Members { team_id } => commands::team::run_members(&team_id),
+            TeamAction::Invite {
+                team_id,
+                github_login,
+                role,
+            } => commands::team::run_invite(&team_id, &github_login, &role),
         },
     }
 }
