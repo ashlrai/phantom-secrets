@@ -1,5 +1,5 @@
 name: 'Phantom Secrets'
-description: 'Pull secrets from Phantom Cloud into your CI environment. End-to-end encrypted.'
+description: 'Pull secrets from Phantom Cloud into your CI environment. End-to-end encrypted — secrets are decrypted only inside the runner.'
 author: 'AshlrAI'
 
 branding:
@@ -8,29 +8,131 @@ branding:
 
 inputs:
   phantom-token:
-    description: 'Phantom Cloud device token (from `phantom login`)'
+    description: 'Phantom Cloud device token (from `phantom login --ci`)'
     required: true
   project-id:
     description: 'Phantom project ID (from .phantom.toml)'
     required: true
   vault-passphrase:
-    description: 'Cloud vault encryption passphrase (from OS keychain)'
-    required: true
+    description: 'Cloud vault encryption passphrase. Optional if your project uses keychain-only mode.'
+    required: false
+    default: ''
+  phantom-version:
+    description: 'Version of phantom-secrets to install (e.g., "0.3.2"). Defaults to latest.'
+    required: false
+    default: 'latest'
+  environment:
+    description: 'Target environment to pull secrets for (e.g., "production", "staging"). Defaults to the project default.'
+    required: false
+    default: ''
+  working-directory:
+    description: 'Directory containing .phantom.toml. Defaults to repository root.'
+    required: false
+    default: '.'
+
+outputs:
+  secrets-count:
+    description: 'Number of secrets loaded into the vault'
+    value: ${{ steps.pull-secrets.outputs.secrets-count }}
+  project-id:
+    description: 'The Phantom project ID that was used'
+    value: ${{ steps.pull-secrets.outputs.project-id }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Install Phantom
+    - name: Validate inputs
       shell: bash
-      run: npm install -g phantom-secrets@latest
+      run: |
+        if [ -z "${{ inputs.phantom-token }}" ]; then
+          echo "::error::phantom-token is required. Generate one with 'phantom login --ci'."
+          exit 1
+        fi
+        if [ -z "${{ inputs.project-id }}" ]; then
+          echo "::error::project-id is required. Find it in your .phantom.toml file."
+          exit 1
+        fi
 
-    - name: Pull secrets from cloud
+    - name: Install Phantom CLI
       shell: bash
+      run: |
+        echo "::group::Installing phantom-secrets@${{ inputs.phantom-version }}"
+        npm install -g "phantom-secrets@${{ inputs.phantom-version }}" 2>&1
+        INSTALL_EXIT=$?
+        echo "::endgroup::"
+
+        if [ $INSTALL_EXIT -ne 0 ]; then
+          echo "::error::Failed to install phantom-secrets. Check that the version '${{ inputs.phantom-version }}' exists on npm."
+          exit 1
+        fi
+
+        # Verify installation
+        if ! command -v phantom &> /dev/null; then
+          echo "::error::phantom CLI not found after installation. This may be a PATH issue."
+          exit 1
+        fi
+
+        INSTALLED_VERSION=$(phantom --version 2>/dev/null || echo "unknown")
+        echo "Installed phantom-secrets: ${INSTALLED_VERSION}"
+
+    - name: Pull secrets from Phantom Cloud
+      id: pull-secrets
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         PHANTOM_DEVICE_TOKEN: ${{ inputs.phantom-token }}
         PHANTOM_PROJECT_ID: ${{ inputs.project-id }}
         PHANTOM_VAULT_PASSPHRASE: ${{ inputs.vault-passphrase }}
+        PHANTOM_CI: 'true'
       run: |
-        echo "Pulling secrets from Phantom Cloud..."
-        phantom cloud pull --force
-        echo "Secrets loaded into vault"
+        echo "::group::Pulling secrets from Phantom Cloud"
+
+        # Build the pull command
+        PULL_CMD="phantom cloud pull --force"
+        if [ -n "${{ inputs.environment }}" ]; then
+          PULL_CMD="${PULL_CMD} --env ${{ inputs.environment }}"
+        fi
+
+        # Unset passphrase env var if not provided (keychain-only mode)
+        if [ -z "${PHANTOM_VAULT_PASSPHRASE}" ]; then
+          unset PHANTOM_VAULT_PASSPHRASE
+          echo "No vault passphrase provided — using keychain-only mode."
+        fi
+
+        # Execute pull
+        ${PULL_CMD} 2>&1
+        PULL_EXIT=$?
+        echo "::endgroup::"
+
+        if [ $PULL_EXIT -ne 0 ]; then
+          echo "::error::Failed to pull secrets from Phantom Cloud. Check your token and project ID."
+          echo "::error::If this is a new runner, you may need to set vault-passphrase."
+          exit 1
+        fi
+
+        # Export outputs
+        echo "project-id=${{ inputs.project-id }}" >> "$GITHUB_OUTPUT"
+
+        # Count secrets in vault
+        SECRET_COUNT=$(phantom list --count 2>/dev/null || echo "0")
+        echo "secrets-count=${SECRET_COUNT}" >> "$GITHUB_OUTPUT"
+        echo "Loaded ${SECRET_COUNT} secret(s) into vault."
+
+    - name: Verify secrets are available
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PHANTOM_DEVICE_TOKEN: ${{ inputs.phantom-token }}
+        PHANTOM_PROJECT_ID: ${{ inputs.project-id }}
+        PHANTOM_VAULT_PASSPHRASE: ${{ inputs.vault-passphrase }}
+        PHANTOM_CI: 'true'
+      run: |
+        # Run a quick health check to ensure the vault is accessible
+        phantom status --quiet 2>/dev/null
+        STATUS_EXIT=$?
+
+        if [ $STATUS_EXIT -ne 0 ]; then
+          echo "::warning::Phantom status check returned a non-zero exit code. Secrets may not be fully loaded."
+        else
+          echo "Phantom vault is healthy and secrets are ready."
+        fi

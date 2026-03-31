@@ -1,0 +1,124 @@
+# Example: Use Phantom Secrets in GitHub Actions
+#
+# This workflow demonstrates how to securely load secrets from Phantom Cloud
+# and use them in your CI/CD pipeline. Secrets are end-to-end encrypted and
+# only decrypted inside the GitHub Actions runner.
+#
+# Prerequisites:
+#   1. A Phantom Cloud account with secrets pushed via `phantom cloud push`
+#   2. Three GitHub Actions secrets configured (see README.md for setup)
+
+name: Deploy with Phantom
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  # ----------------------------------------------------------------
+  # Example 1: Basic deployment with Phantom secrets
+  # ----------------------------------------------------------------
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load secrets from Phantom Cloud
+        uses: ashlrai/phantom-secrets/integrations/github-actions@main
+        with:
+          phantom-token: ${{ secrets.PHANTOM_TOKEN }}
+          project-id: ${{ secrets.PHANTOM_PROJECT_ID }}
+          vault-passphrase: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
+
+      - name: Deploy (secrets are injected by the proxy)
+        run: |
+          phantom exec -- npm run deploy
+
+  # ----------------------------------------------------------------
+  # Example 2: Run tests with secrets (e.g., API integration tests)
+  # ----------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Load secrets from Phantom Cloud
+        id: phantom
+        uses: ashlrai/phantom-secrets/integrations/github-actions@main
+        with:
+          phantom-token: ${{ secrets.PHANTOM_TOKEN }}
+          project-id: ${{ secrets.PHANTOM_PROJECT_ID }}
+          vault-passphrase: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
+
+      - name: Run integration tests with real API keys
+        run: |
+          echo "Loaded ${{ steps.phantom.outputs.secrets-count }} secrets"
+          phantom exec -- npm test
+
+  # ----------------------------------------------------------------
+  # Example 3: Multi-environment deployment (staging then production)
+  # ----------------------------------------------------------------
+  deploy-staging:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load staging secrets
+        uses: ashlrai/phantom-secrets/integrations/github-actions@main
+        with:
+          phantom-token: ${{ secrets.PHANTOM_TOKEN }}
+          project-id: ${{ secrets.PHANTOM_PROJECT_ID }}
+          vault-passphrase: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
+          environment: staging
+
+      - name: Deploy to staging
+        run: |
+          phantom exec -- npm run deploy:staging
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load production secrets
+        uses: ashlrai/phantom-secrets/integrations/github-actions@main
+        with:
+          phantom-token: ${{ secrets.PHANTOM_TOKEN }}
+          project-id: ${{ secrets.PHANTOM_PROJECT_ID }}
+          vault-passphrase: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
+          environment: production
+
+      - name: Deploy to production
+        run: |
+          phantom exec -- npm run deploy:production
+
+  # ----------------------------------------------------------------
+  # Example 4: Pin a specific Phantom version
+  # ----------------------------------------------------------------
+  deploy-pinned:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load secrets (pinned version)
+        uses: ashlrai/phantom-secrets/integrations/github-actions@main
+        with:
+          phantom-token: ${{ secrets.PHANTOM_TOKEN }}
+          project-id: ${{ secrets.PHANTOM_PROJECT_ID }}
+          vault-passphrase: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
+          phantom-version: '0.3.2'
+
+      - name: Deploy
+        run: |
+          phantom exec -- npm run deploy
