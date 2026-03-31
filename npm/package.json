@@ -1,6 +1,6 @@
 {
   "name": "phantom-secrets",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Prevent AI coding agents from leaking your API keys",
   "bin": {
     "phantom-secrets": "bin/cli.js",
