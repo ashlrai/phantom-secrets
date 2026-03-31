@@ -235,33 +235,20 @@ export default function Home() {
         {/* HERO */}
         <header className="hero">
           <h1 className="sr">
-            AI uses your keys.<em>Safely.</em>
+            One command.<em>Keys safe forever.</em>
           </h1>
           <p className="sr sr-d1 hero-sub">
-            Tell Claude to integrate Stripe. Let Cursor build your OpenAI
-            pipeline. Phantom lets AI use your real API keys to do real work
-            &mdash; without the keys ever being exposed.
+            Phantom replaces your real API keys with decoy tokens. A local proxy injects the real keys at the network layer. AI agents never see a real secret &mdash; but everything just works.
           </p>
-          <div className="sr sr-d2 hero-btns">
-            <a href="https://github.com/ashlrai/phantom-secrets" className="btn btn-p">
-              Get started &mdash; it&apos;s free
-            </a>
-            <a href="#how" className="btn btn-s">How it works</a>
+          <div className="sr sr-d2" style={{ marginBottom: 32 }}>
+            <CopyButton text="npx phantom-secrets init" />
+            <div style={{ fontSize: ".82rem", color: "var(--t3)", marginTop: 10, lineHeight: 1.7 }}>
+              That&apos;s it. Protects your .env, configures Claude Code, sets up MCP tools &mdash; one command.
+            </div>
           </div>
-          <div className="sr sr-d3" style={{ marginBottom: 40 }}>
-            <div className="hero-installs">
-              <div style={{ textAlign: "left" }}>
-                <div style={{ fontSize: ".7rem", color: "var(--t3)", marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>CLI</div>
-                <CopyButton text="npx phantom-secrets init" />
-              </div>
-              <div style={{ textAlign: "left" }}>
-                <div style={{ fontSize: ".7rem", color: "var(--blue-b)", marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>Claude Code</div>
-                <CopyButton text="claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp" />
-              </div>
-            </div>
-            <div style={{ fontSize: ".78rem", color: "var(--t3)", marginTop: 8 }}>
-              One command to protect your .env. One command for Claude Code MCP.
-            </div>
+          <div className="sr sr-d2 hero-btns">
+            <a href="#why" className="btn btn-p">Why Phantom?</a>
+            <a href="#how" className="btn btn-s">How it works</a>
           </div>
 
           {/* FLOW DIAGRAM */}
@@ -308,35 +295,48 @@ export default function Home() {
           </div>
         </header>
 
-        {/* GET STARTED */}
-        <section className="sec-b sr" id="start">
+        {/* WHAT IT DOES */}
+        <section className="sec-b sr" id="why">
           <div className="sec-h">
-            <h2>Get started in 60 seconds</h2>
-            <p>Three commands. No config files to write. No accounts to create.</p>
+            <h2>What happens when you run it</h2>
+            <p>One command. No config files. No accounts. Here&apos;s exactly what <code>phantom init</code> does:</p>
           </div>
           <div className="how-grid how-grid-3">
             <div className="how-card sr" style={{ textAlign: "center" }}>
               <div className="how-n">1</div>
-              <h3>Install &amp; protect</h3>
-              <CopyButton text="npx phantom-secrets init" />
-              <p style={{ color: "var(--t3)", fontSize: ".82rem", marginTop: 8 }}>
-                Installs Phantom, reads your .env, stores real secrets in an encrypted vault, rewrites .env with phantom tokens.
+              <h3>Reads your .env</h3>
+              <p style={{ color: "var(--t2)", fontSize: ".85rem", marginTop: 8 }}>
+                Scans for real secrets (API keys, tokens, connection strings). Ignores config values like <code>NODE_ENV</code>. Auto-detects 13+ services.
               </p>
             </div>
             <div className="how-card sr" style={{ textAlign: "center" }}>
               <div className="how-n">2</div>
-              <h3>Configure Claude Code</h3>
-              <CopyButton text="phantom setup" />
-              <p style={{ color: "var(--t3)", fontSize: ".82rem", marginTop: 8 }}>
-                Adds Phantom&apos;s MCP server to Claude Code and allows it to read your .env (which now only has phantom tokens).
+              <h3>Locks them in a vault</h3>
+              <p style={{ color: "var(--t2)", fontSize: ".85rem", marginTop: 8 }}>
+                Real secrets move to your OS keychain (macOS Keychain, Linux Secret Service) or an encrypted file vault. ChaCha20-Poly1305 encryption.
               </p>
             </div>
             <div className="how-card sr" style={{ textAlign: "center" }}>
               <div className="how-n">3</div>
-              <h3>Code with AI</h3>
-              <CopyButton text="phantom exec -- claude" />
-              <p style={{ color: "var(--t3)", fontSize: ".82rem", marginTop: 8 }}>
-                Starts the proxy, launches Claude Code. AI sees phantom tokens. Real keys injected at the network layer. Done.
+              <h3>Rewrites .env with decoys</h3>
+              <p style={{ color: "var(--t2)", fontSize: ".85rem", marginTop: 8 }}>
+                Your .env now contains worthless <code>phm_</code> tokens. AI reads these instead. A backup of your original .env is saved automatically.
+              </p>
+            </div>
+          </div>
+          <div className="how-grid" style={{ marginTop: 14 }}>
+            <div className="how-card sr" style={{ textAlign: "center" }}>
+              <div className="how-n" style={{ background: "var(--green)" }}>+</div>
+              <h3>Auto-configures Claude Code</h3>
+              <p style={{ color: "var(--t2)", fontSize: ".85rem", marginTop: 8 }}>
+                Sets up the MCP server so Claude can manage your secrets directly. Adds .env read permission. Adds CLAUDE.md instructions. Zero manual config.
+              </p>
+            </div>
+            <div className="how-card sr" style={{ textAlign: "center" }}>
+              <div className="how-n" style={{ background: "var(--green)" }}>+</div>
+              <h3>Everything just works</h3>
+              <p style={{ color: "var(--t2)", fontSize: ".85rem", marginTop: 8 }}>
+                Run <code>phantom exec -- claude</code> and a local proxy injects real keys at the network layer. Your code works. AI never knew.
               </p>
             </div>
           </div>
@@ -462,20 +462,47 @@ export default function Home() {
           </div>
         </section>
 
+        {/* TRUST */}
+        <section className="sec-b sr" id="trust">
+          <div className="sec-h">
+            <h2>Why trust Phantom?</h2>
+            <p>Security tools earn trust through transparency, not promises.</p>
+          </div>
+          <div className="how-grid">
+            <div className="how-card sr">
+              <h3>Open source. MIT licensed.</h3>
+              <p>Every line of code is on GitHub. Fork it, audit it, self-host it. 56 tests, zero clippy warnings. Written in Rust for memory safety.</p>
+            </div>
+            <div className="how-card sr">
+              <h3>Zero-knowledge cloud.</h3>
+              <p>Cloud sync encrypts with ChaCha20-Poly1305 before upload. The encryption key never leaves your machine. We literally cannot read your secrets.</p>
+            </div>
+            <div className="how-card sr">
+              <h3>Your keys never leave your machine.</h3>
+              <p>Real secrets live in your OS keychain (macOS Keychain, Linux Secret Service). The proxy runs on 127.0.0.1 only. Nothing is sent to us unless you opt into cloud sync.</p>
+            </div>
+            <div className="how-card sr">
+              <h3>No lock-in. Remove in 10 seconds.</h3>
+              <p>Your original .env is backed up automatically. Run <code>phantom reveal</code> to see any secret. Delete <code>.phantom.toml</code> and restore your backup to fully remove Phantom.</p>
+            </div>
+          </div>
+        </section>
+
         {/* CTA */}
         <section className="cta sr">
-          <h2>Let AI do the work.<br />Keep your keys safe.</h2>
-          <p>Two commands. Two minutes. Full AI delegation without the security risk.</p>
+          <h2>One command.<br />Keys safe forever.</h2>
+          <p>Protect your secrets. Let AI do the work. Free and open source.</p>
+          <div style={{ marginBottom: 24 }}>
+            <CopyButton text="npx phantom-secrets init" />
+          </div>
           <div className="hero-btns">
-            <a href="https://github.com/ashlrai/phantom-secrets" className="btn btn-p">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <a href="https://github.com/ashlrai/phantom-secrets" className="btn btn-s">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
               </svg>
               View on GitHub
             </a>
-            <a href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md" className="btn btn-s">
-              Read the docs
-            </a>
+            <a href="/pricing" className="btn btn-s">Pricing</a>
           </div>
         </section>
       </div>
