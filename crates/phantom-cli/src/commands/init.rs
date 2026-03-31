@@ -143,7 +143,7 @@ fn ensure_gitignore(project_dir: &Path) -> Result<()> {
 
     // Ensure .phantom.toml is NOT ignored (it contains no secrets, and teammates need it)
     // But ensure .env is ignored
-    for pattern in &[".env", ".env.local", ".env.*.local"] {
+    for pattern in &[".env", ".env.local", ".env.*.local", ".env.backup"] {
         if !content.lines().any(|l| l.trim() == *pattern) {
             if !content.is_empty() && !content.ends_with('\n') {
                 content.push('\n');
@@ -340,8 +340,8 @@ fn auto_setup_claude_code(project_dir: &Path) {
     let claude_dir = project_dir.join(".claude");
     let settings_path = claude_dir.join("settings.local.json");
 
-    // Only auto-configure if .claude directory exists OR we can create it
-    if std::fs::create_dir_all(&claude_dir).is_err() {
+    // Only auto-configure if .claude directory already exists (user has Claude Code)
+    if !claude_dir.exists() {
         return;
     }
 
@@ -447,10 +447,15 @@ This project uses [Phantom](https://phm.dev) to protect API keys from AI leaks.
     }
     content.push_str(instructions);
 
-    if std::fs::write(&claude_md, &content).is_ok() {
-        println!(
+    match std::fs::write(&claude_md, &content) {
+        Ok(_) => println!(
             "{} Added Phantom instructions to CLAUDE.md",
             "ok".green().bold()
-        );
+        ),
+        Err(e) => println!(
+            "{} Could not update CLAUDE.md: {}",
+            "warn".yellow().bold(),
+            e
+        ),
     }
 }
