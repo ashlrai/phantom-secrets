@@ -2,25 +2,20 @@
 
 > Phantom is an open-source CLI that lets AI coding agents use real API keys safely. It replaces secrets with worthless phantom tokens and injects real credentials via a local HTTP proxy.
 
-## MCP Server — Let Claude manage secrets directly
+## MCP Server — Let AI manage secrets directly
 
-Phantom includes an MCP server with 9 tools. Once configured, Claude can manage secrets without the user ever running CLI commands.
+Phantom includes an MCP server with 9 tools. Works with Claude Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
 
-**One-command setup for Claude Code:**
+**Claude Code:**
 ```bash
 claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 ```
 
-Or add to `.claude/settings.local.json`:
+**Cursor:** Add to Settings > Features > MCP Servers (name: `phantom`, command: `npx phantom-secrets-mcp`)
+
+**Windsurf / Codex / Any MCP client:**
 ```json
-{
-  "mcpServers": {
-    "phantom": {
-      "command": "npx",
-      "args": ["phantom-secrets-mcp"]
-    }
-  }
-}
+{"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}
 ```
 
 ### Available MCP Tools

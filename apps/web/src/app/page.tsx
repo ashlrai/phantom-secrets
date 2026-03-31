@@ -243,7 +243,7 @@ export default function Home() {
           <div className="sr sr-d2" style={{ marginBottom: 32 }}>
             <CopyButton text="npx phantom-secrets init" />
             <div style={{ fontSize: ".82rem", color: "var(--t3)", marginTop: 10, lineHeight: 1.7 }}>
-              That&apos;s it. Protects your .env, sets up MCP tools for Claude Code, Cursor, and Windsurf &mdash; one command.
+              That&apos;s it. Protects your .env, sets up MCP tools for Claude Code, Cursor, Windsurf, and Codex &mdash; one command.
             </div>
           </div>
           <div className="sr sr-d2 hero-btns">
@@ -455,9 +455,9 @@ export default function Home() {
               <div className="inst-sub">Add to Settings &gt; MCP Servers</div>
             </div>
             <div className="inst">
-              <h3>Windsurf</h3>
+              <h3>Windsurf / Codex</h3>
               <CopyButton text='{"phantom":{"command":"npx","args":["phantom-secrets-mcp"]}}' />
-              <div className="inst-sub">Add to ~/.codeium/windsurf/mcp_config.json</div>
+              <div className="inst-sub">Any MCP-compatible AI coding tool</div>
             </div>
           </div>
         </section>
