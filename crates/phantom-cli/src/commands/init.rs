@@ -7,23 +7,27 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 pub fn run(env_path_arg: &str) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
+    let cwd = std::env::current_dir()?;
 
     // Auto-detect .env file if the default wasn't found
     let env_path = if Path::new(env_path_arg).exists() {
         std::path::PathBuf::from(env_path_arg)
     } else {
-        find_env_file(&project_dir, env_path_arg).ok_or_else(|| {
+        find_env_file(&cwd, env_path_arg).ok_or_else(|| {
             anyhow::anyhow!(
                 "No .env file found.\n\
-                 Checked: .env, .env.local, .env.development, .env.development.local\n\n\
+                 Checked: .env, .env.local, .env.development, .env.development.local\n\
+                 (also searched immediate subdirectories)\n\n\
                  Create a .env file with your secrets, or specify one:\n\
                  {}",
                 "phantom init --from .env.local".cyan().bold()
             )
         })?
     };
+
+    // Config and project dir are based on where the .env file lives (not cwd)
+    let project_dir = env_path.parent().unwrap_or(&cwd).to_path_buf();
+    let config_path = project_dir.join(".phantom.toml");
 
     // Parse .env file
     println!("{} Reading {}...", "->".blue().bold(), env_path.display());

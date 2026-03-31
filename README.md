@@ -16,11 +16,9 @@ Phantom replaces real secrets with inert tokens. A local proxy swaps them back a
 
 ```bash
 $ npx phantom-secrets init
-# Found 3 secret(s): OPENAI_API_KEY, ANTHROPIC_API_KEY, STRIPE_SECRET_KEY
-# Stored in OS keychain, .env rewritten with phantom tokens
-
-$ phantom setup
-# Configured Claude Code MCP server + pre-commit hook
+# Auto-detects .env, .env.local, or .env in subdirectories
+# Stores real secrets in OS keychain, rewrites .env with phantom tokens
+# Auto-configures Claude Code MCP server if detected
 
 $ phantom exec -- claude
 # Proxy running on 127.0.0.1:54321 — AI sees phantom tokens, proxy injects real keys

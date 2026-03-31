@@ -9,7 +9,7 @@
     "source": "github",
     "subfolder": "crates/phantom-mcp"
   },
-  "version": "0.3.0",
+  "version": "0.3.2",
   "tools": [
     { "name": "phantom_list_secrets", "description": "List secret names (never shows values)" },
     { "name": "phantom_status", "description": "Show vault, config, and proxy status" },
@@ -26,7 +26,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "phantom-secrets-mcp",
-      "version": "0.3.0",
+      "version": "0.3.2",
       "transport": {
         "type": "stdio"
       }

@@ -33,7 +33,7 @@ struct Cli {
 enum Commands {
     /// Import .env secrets into the vault and rewrite with phantom tokens
     Init {
-        /// Path to .env file (defaults to .env in current directory)
+        /// Path to .env file. Auto-detects .env, .env.local, .env.development and searches subdirectories
         #[arg(short, long, default_value = ".env")]
         from: String,
     },
