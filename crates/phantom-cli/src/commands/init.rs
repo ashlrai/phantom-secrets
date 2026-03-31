@@ -6,14 +6,28 @@ use phantom_core::token::TokenMap;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-pub fn run(env_path: &str) -> Result<()> {
-    let env_path = Path::new(env_path);
+pub fn run(env_path_arg: &str) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
+    // Auto-detect .env file if the default wasn't found
+    let env_path = if Path::new(env_path_arg).exists() {
+        std::path::PathBuf::from(env_path_arg)
+    } else {
+        find_env_file(&project_dir, env_path_arg).ok_or_else(|| {
+            anyhow::anyhow!(
+                "No .env file found.\n\
+                 Checked: .env, .env.local, .env.development, .env.development.local\n\n\
+                 Create a .env file with your secrets, or specify one:\n\
+                 {}",
+                "phantom init --from .env.local".cyan().bold()
+            )
+        })?
+    };
+
     // Parse .env file
     println!("{} Reading {}...", "->".blue().bold(), env_path.display());
-    let dotenv = DotenvFile::parse_file(env_path).context("Failed to read .env file")?;
+    let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env file")?;
 
     let real_entries = dotenv.real_secret_entries();
     if real_entries.is_empty() {
@@ -84,7 +98,7 @@ pub fn run(env_path: &str) -> Result<()> {
 
     // Backup .env before rewriting (safety net against data loss)
     let backup_path = env_path.with_file_name(".env.backup");
-    std::fs::copy(env_path, &backup_path).context("Failed to create .env backup")?;
+    std::fs::copy(&env_path, &backup_path).context("Failed to create .env backup")?;
     println!(
         "   {} Backed up original .env to {}",
         "+".green().bold(),
@@ -93,7 +107,7 @@ pub fn run(env_path: &str) -> Result<()> {
 
     // Rewrite .env with phantom tokens
     let _originals = dotenv
-        .write_phantomized(&token_map, env_path)
+        .write_phantomized(&token_map, &env_path)
         .context("Failed to rewrite .env file")?;
 
     println!(
@@ -128,6 +142,24 @@ pub fn run(env_path: &str) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Auto-detect .env files in common locations.
+fn find_env_file(project_dir: &Path, user_specified: &str) -> Option<std::path::PathBuf> {
+    let candidates = [
+        user_specified,
+        ".env.local",
+        ".env",
+        ".env.development",
+        ".env.development.local",
+    ];
+    for candidate in &candidates {
+        let path = project_dir.join(candidate);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn ensure_gitignore(project_dir: &Path) -> Result<()> {
