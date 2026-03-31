@@ -87,7 +87,7 @@ phantom cloud push              # Backup vault to cloud (E2E encrypted)
 
 ```bash
 ~/.cargo/bin/cargo build        # Build all crates
-~/.cargo/bin/cargo test         # Run 56+ tests
+~/.cargo/bin/cargo test         # Run 56 tests
 ~/.cargo/bin/cargo clippy --all-targets -- -D warnings  # Lint
 ~/.cargo/bin/cargo fmt --all    # Format
 ```

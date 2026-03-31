@@ -360,9 +360,9 @@ Once configured, Claude Code gains these tools:
 | `phantom_add_secret` | Add a secret to the vault |
 | `phantom_remove_secret` | Remove a secret from the vault |
 | `phantom_rotate` | Regenerate all phantom tokens |
-| `phantom_check` | Scan for unprotected secrets |
-| `phantom_reveal` | Reveal a secret value (with confirmation) |
-| `phantom_doctor` | Check configuration and vault health |
+| `phantom_cloud_push` | Push encrypted vault to Phantom Cloud |
+| `phantom_cloud_pull` | Pull vault from Phantom Cloud |
+| `phantom_cloud_status` | Check cloud auth and sync status |
 
 Claude can call these 9 tools during a session. For example, if you say "add my new Stripe key," Claude can use `phantom_add_secret` to store it safely -- the real value passes through the MCP protocol but never enters Claude's context window or conversation logs.
 

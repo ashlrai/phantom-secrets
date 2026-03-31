@@ -23,13 +23,13 @@ Note: `~/.cargo/bin/` prefix is needed because cargo is not in PATH on this mach
 
 ## Architecture
 
-4-crate Rust workspace:
+5-crate Rust workspace:
 
 - **phantom-core** — Config (.phantom.toml), .env parsing/rewriting, phantom token generation (256-bit CSPRNG, `phm_` prefix), error types
 - **phantom-vault** — `VaultBackend` trait with OS keychain (macOS Keychain, Linux Secret Service) and encrypted file fallback
 - **phantom-proxy** — HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, replaces phantom tokens in headers/body with real secrets, forwards over TLS. Uses `hyper` for server, `reqwest` for outbound HTTPS
 - **phantom-cli** — `clap`-based CLI binary. 21 commands: init, exec, start, stop, list, add, remove, reveal, rotate, status, doctor, check, sync, pull, env, setup, login, cloud push, cloud pull, export, import
-- **phantom-mcp** — MCP server binary for Claude Code integration. Uses `rmcp` 1.3 SDK. Stdio transport (JSON-RPC over stdin/stdout). 9 tools: list, status, init, add, remove, rotate, check, reveal, doctor
+- **phantom-mcp** — MCP server for Claude Code, Cursor, Windsurf, Codex. Uses `rmcp` 1.3 SDK. Stdio transport. 9 tools: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
 
 ### How the proxy works
 

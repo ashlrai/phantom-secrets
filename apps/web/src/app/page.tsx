@@ -430,7 +430,7 @@ export default function Home() {
             <div className="feat sr"><h3>Platform sync</h3><p>Push secrets to Vercel and Railway. Pull to onboard new machines. No more copying keys through Slack.</p></div>
             <div className="feat sr"><h3>Smart detection</h3><p>Auto-detects 13+ services from key names. Knows <code>OPENAI_API_KEY</code> from <code>NODE_ENV</code>.</p></div>
             <div className="feat sr"><h3>Streaming proxy</h3><p>Full SSE/streaming support. OpenAI and Anthropic streaming responses work perfectly through the proxy.</p></div>
-            <div className="feat sr"><h3>Open source</h3><p>MIT licensed. Written in Rust. 56+ tests. Auditable, forkable, free forever.</p></div>
+            <div className="feat sr"><h3>Open source</h3><p>MIT licensed. Written in Rust. 56 tests. Auditable, forkable, free forever.</p></div>
             <div className="feat sr"><h3>Cloud sync</h3><p><code>phantom cloud push</code> backs up your vault to Phantom Cloud. Sync secrets across machines. End-to-end encrypted.</p></div>
           </div>
         </section>

@@ -182,7 +182,7 @@ Phantom automatically identifies secrets vs config values using heuristics:
 - phantom-mcp: MCP server via rmcp SDK (stdio transport, 9 tools)
 - apps/web: Next.js backend on Vercel (Supabase + Stripe, device auth, vault API, billing)
 
-56+ tests, zero clippy warnings, MIT licensed.
+56 tests, zero clippy warnings, MIT licensed.
 
 ## Common Use Cases
 
