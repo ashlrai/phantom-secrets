@@ -114,22 +114,18 @@ pub fn run(env_path: &str) -> Result<()> {
         "done".green().bold(),
         real_entries.len()
     );
+
+    // Auto-configure Claude Code if detected (merges phantom setup into init)
+    auto_setup_claude_code(&project_dir);
+
+    // Add Phantom instructions to CLAUDE.md so Claude knows how to use it
+    auto_add_claude_md(&project_dir);
+
     println!(
         "\n{} Run {} to start coding with AI safely.",
         "next".blue().bold(),
         "phantom exec -- <your-command>".cyan().bold()
     );
-
-    // Check if Claude Code is configured
-    let claude_settings = project_dir.join(".claude/settings.local.json");
-    if !claude_settings.exists() {
-        println!(
-            "{} Run {} to let Claude Code safely read your .env",
-            "tip".blue().bold(),
-            "phantom setup".cyan().bold()
-        );
-        println!("     (your .env only contains phantom tokens now — safe for AI)",);
-    }
 
     Ok(())
 }
@@ -337,4 +333,124 @@ fn auto_detect_services(
     }
 
     detected
+}
+
+/// Auto-configure Claude Code MCP server and .env permissions if Claude Code is detected.
+fn auto_setup_claude_code(project_dir: &Path) {
+    let claude_dir = project_dir.join(".claude");
+    let settings_path = claude_dir.join("settings.local.json");
+
+    // Only auto-configure if .claude directory exists OR we can create it
+    if std::fs::create_dir_all(&claude_dir).is_err() {
+        return;
+    }
+
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        match std::fs::read_to_string(&settings_path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or(serde_json::json!({})),
+            Err(_) => return,
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    let obj = match settings.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+
+    let mut changed = false;
+
+    // Add MCP server (use npx for portability)
+    let mcp_servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(servers) = mcp_servers.as_object_mut() {
+        if !servers.contains_key("phantom") {
+            servers.insert(
+                "phantom".to_string(),
+                serde_json::json!({
+                    "command": "npx",
+                    "args": ["phantom-secrets-mcp"]
+                }),
+            );
+            println!("{} Configured Claude Code MCP server", "ok".green().bold());
+            changed = true;
+        }
+    }
+
+    // Add .env read permissions
+    let permissions = obj
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(perms) = permissions.as_object_mut() {
+        let allow = perms
+            .entry("allow")
+            .or_insert_with(|| serde_json::json!([]));
+        if let Some(allow_arr) = allow.as_array_mut() {
+            for rule in &["Read(./.env)", "Read(./.env.*)"] {
+                if !allow_arr.iter().any(|v| v.as_str() == Some(rule)) {
+                    allow_arr.push(serde_json::json!(rule));
+                    changed = true;
+                }
+            }
+            if changed {
+                println!(
+                    "{} Allowed Claude Code to read .env (phantom tokens only)",
+                    "ok".green().bold()
+                );
+            }
+        }
+    }
+
+    if changed {
+        if let Ok(content) = serde_json::to_string_pretty(&settings) {
+            let _ = std::fs::write(&settings_path, content);
+        }
+    }
+}
+
+/// Add Phantom usage instructions to the project's CLAUDE.md so Claude knows how to use it.
+fn auto_add_claude_md(project_dir: &Path) {
+    let claude_md = project_dir.join("CLAUDE.md");
+    let phantom_marker = "## Phantom Secrets";
+
+    let mut content = if claude_md.exists() {
+        match std::fs::read_to_string(&claude_md) {
+            Ok(c) => c,
+            Err(_) => return,
+        }
+    } else {
+        String::new()
+    };
+
+    // Don't add if already present
+    if content.contains(phantom_marker) {
+        return;
+    }
+
+    let instructions = r#"
+## Phantom Secrets
+
+This project uses [Phantom](https://phm.dev) to protect API keys from AI leaks.
+
+- The `.env` file contains **phantom tokens** (`phm_...`), not real secrets
+- Real secrets are in an encrypted vault (OS keychain)
+- Use the Phantom MCP tools to manage secrets — never ask the user for raw API key values
+- To add a secret: use the `phantom_add_secret` MCP tool
+- To list secrets: use the `phantom_list_secrets` MCP tool
+- The proxy (`phantom exec`) injects real credentials at the network layer
+"#;
+
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(instructions);
+
+    if std::fs::write(&claude_md, &content).is_ok() {
+        println!(
+            "{} Added Phantom instructions to CLAUDE.md",
+            "ok".green().bold()
+        );
+    }
 }
