@@ -144,21 +144,56 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     Ok(())
 }
 
-/// Auto-detect .env files in common locations.
+/// Auto-detect .env files — checks current dir first, then immediate subdirectories.
 fn find_env_file(project_dir: &Path, user_specified: &str) -> Option<std::path::PathBuf> {
-    let candidates = [
+    let names = [
         user_specified,
         ".env.local",
         ".env",
         ".env.development",
         ".env.development.local",
     ];
-    for candidate in &candidates {
-        let path = project_dir.join(candidate);
+
+    // Check current directory first
+    for name in &names {
+        let path = project_dir.join(name);
         if path.exists() {
             return Some(path);
         }
     }
+
+    // Scan immediate subdirectories (monorepo support)
+    if let Ok(entries) = std::fs::read_dir(project_dir) {
+        for entry in entries.flatten() {
+            let sub = entry.path();
+            if !sub.is_dir() {
+                continue;
+            }
+            // Skip hidden dirs, node_modules, target, etc.
+            let dir_name = sub.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if dir_name.starts_with('.')
+                || dir_name == "node_modules"
+                || dir_name == "target"
+                || dir_name == "dist"
+                || dir_name == "build"
+            {
+                continue;
+            }
+            for name in &names {
+                let path = sub.join(name);
+                if path.exists() {
+                    println!(
+                        "{} Found {} in subdirectory {}",
+                        "->".blue().bold(),
+                        name.bold(),
+                        dir_name.cyan()
+                    );
+                    return Some(path);
+                }
+            }
+        }
+    }
+
     None
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "phantom-secrets-mcp",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "MCP server for Phantom Secrets — lets AI tools manage API keys safely",
   "bin": {
     "phantom-secrets-mcp": "bin/cli.js",
