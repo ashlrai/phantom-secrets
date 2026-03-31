@@ -62,8 +62,8 @@ export default function RootLayout({
               offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
               author: {
                 "@type": "Organization",
-                name: "Ashlar AI",
-                url: "https://ashlar.ai",
+                name: "AshlrAI",
+                url: "https://ashlr.ai",
               },
             }),
           }}

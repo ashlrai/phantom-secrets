@@ -48,4 +48,4 @@ Phantom Cloud uses a **zero-knowledge architecture**. The server never sees your
 
 ## Responsible Disclosure
 
-If you discover a security vulnerability, please report it privately via GitHub Security Advisories or email security@ashlar.ai. Do not open a public issue.
+If you discover a security vulnerability, please report it privately via GitHub Security Advisories or email security@ashlr.ai. Do not open a public issue.

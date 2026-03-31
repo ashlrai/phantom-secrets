@@ -119,7 +119,7 @@ export default function PricingPage() {
             <li>Dedicated support</li>
           </ul>
           <a
-            href="mailto:mason@ashlar.ai"
+            href="mailto:mason@ashlr.ai"
             className="block text-center py-2.5 border border-[#1a1a2c] rounded-lg hover:border-[#333] transition-colors font-semibold"
           >
             Contact Us

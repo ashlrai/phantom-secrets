@@ -509,7 +509,7 @@ export default function Home() {
 
       <footer>
         <p>
-          Built by <a href="https://ashlar.ai">Ashlar AI</a> &middot;{" "}
+          Built by <a href="https://ashlr.ai">AshlrAI</a> &middot;{" "}
           <a href="https://github.com/ashlrai/phantom-secrets">GitHub</a> &middot;{" "}
           <a href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md">Docs</a> &middot;{" "}
           <a href="/pricing">Pricing</a> &middot; MIT License
