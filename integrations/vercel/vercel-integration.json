@@ -1,0 +1,11 @@
+{
+  "name": "Phantom Secrets",
+  "slug": "phantom-secrets",
+  "description": "Auto-sync encrypted secrets from Phantom vault to Vercel environment variables. One command to protect and deploy your API keys.",
+  "logo": "https://phm.dev/favicon.svg",
+  "website": "https://phm.dev",
+  "installationUrl": "https://phm.dev/integrations/vercel/install",
+  "scopes": ["env-vars:read-write", "projects:read"],
+  "redirectUrl": "https://phm.dev/integrations/vercel/callback",
+  "features": ["env-sync", "secret-management"]
+}

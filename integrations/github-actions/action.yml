@@ -1,0 +1,36 @@
+name: 'Phantom Secrets'
+description: 'Pull secrets from Phantom Cloud into your CI environment. End-to-end encrypted.'
+author: 'AshlrAI'
+
+branding:
+  icon: 'lock'
+  color: 'blue'
+
+inputs:
+  phantom-token:
+    description: 'Phantom Cloud device token (from `phantom login`)'
+    required: true
+  project-id:
+    description: 'Phantom project ID (from .phantom.toml)'
+    required: true
+  vault-passphrase:
+    description: 'Cloud vault encryption passphrase (from OS keychain)'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Phantom
+      shell: bash
+      run: npm install -g phantom-secrets@latest
+
+    - name: Pull secrets from cloud
+      shell: bash
+      env:
+        PHANTOM_DEVICE_TOKEN: ${{ inputs.phantom-token }}
+        PHANTOM_PROJECT_ID: ${{ inputs.project-id }}
+        PHANTOM_VAULT_PASSPHRASE: ${{ inputs.vault-passphrase }}
+      run: |
+        echo "Pulling secrets from Phantom Cloud..."
+        phantom cloud pull --force
+        echo "Secrets loaded into vault"
