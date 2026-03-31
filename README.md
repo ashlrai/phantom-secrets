@@ -2,11 +2,11 @@
 
 **AI uses your keys. Safely.**
 
+[![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=social)](https://github.com/ashlrai/phantom-secrets/stargazers)
 [![CI](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml/badge.svg)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/phantom-secrets)](https://www.npmjs.com/package/phantom-secrets)
-[![crates.io](https://img.shields.io/crates/v/phantom)](https://crates.io/crates/phantom)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![phm.dev](https://img.shields.io/badge/cloud-phm.dev-purple)](https://phm.dev)
+[![phm.dev](https://img.shields.io/badge/cloud-phm.dev-blue)](https://phm.dev)
 
 AI coding agents read your `.env` files, putting API keys into LLM context windows where they leak via prompt injection, session logs, malicious MCP servers, or training data. GitGuardian reports AI-assisted commits leak secrets at 2x the baseline rate.
 
