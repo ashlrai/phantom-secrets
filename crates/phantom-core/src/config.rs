@@ -17,6 +17,9 @@ pub struct PhantomConfig {
     /// Cloud sync configuration
     #[serde(default)]
     pub cloud: Option<CloudConfig>,
+    /// Keys explicitly classified as public (skipped during init)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub public_keys: Vec<String>,
 }
 
 /// Cloud vault sync configuration.
@@ -146,6 +149,7 @@ impl PhantomConfig {
             services,
             sync: Vec::new(),
             cloud: None,
+            public_keys: Vec::new(),
         }
     }
 

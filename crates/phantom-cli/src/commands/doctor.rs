@@ -3,11 +3,12 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 
-pub fn run() -> Result<()> {
+pub fn run(fix: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let env_path = project_dir.join(".env");
     let mut issues = 0;
+    let mut fixed = 0;
 
     println!("{}", "Phantom Doctor".bold().underline());
     println!();
@@ -40,11 +41,12 @@ pub fn run() -> Result<()> {
                     }
                 }
 
-                // Check sync targets (inside config block to avoid re-parsing)
+                // Check sync targets
                 if !config.sync.is_empty() {
                     check_pass(&format!("{} sync target(s) configured", config.sync.len()));
                 } else {
-                    check_info("No sync targets — add [[sync]] to .phantom.toml for deployment");
+                    check_info("No sync targets configured");
+                    check_fix("Add to .phantom.toml: [[sync]] platform = \"vercel\" project_id = \"your-id\"");
                 }
             }
             Err(e) => {
@@ -53,7 +55,9 @@ pub fn run() -> Result<()> {
             }
         }
     } else {
-        check_warn("No .phantom.toml — run `phantom init`");
+        check_warn("No .phantom.toml found");
+        check_fix("Run: phantom init");
+        issues += 1;
     }
 
     // Check 3: .env file
@@ -79,6 +83,7 @@ pub fn run() -> Result<()> {
                             .collect::<Vec<_>>()
                             .join(", ")
                     ));
+                    check_fix("Run: phantom init");
                     issues += 1;
                 }
             }
@@ -99,32 +104,75 @@ pub fn run() -> Result<()> {
             check_pass(".env is in .gitignore");
         } else {
             check_warn(".env is NOT in .gitignore — secrets could be committed!");
-            issues += 1;
+            check_fix("Run: echo '.env' >> .gitignore");
+            if fix {
+                let mut c = content;
+                if !c.ends_with('\n') {
+                    c.push('\n');
+                }
+                c.push_str(".env\n");
+                std::fs::write(&gitignore_path, c)?;
+                check_fixed("Added .env to .gitignore");
+                fixed += 1;
+            } else {
+                issues += 1;
+            }
         }
     } else {
         check_warn("No .gitignore — consider adding one");
-        issues += 1;
+        if fix {
+            std::fs::write(
+                &gitignore_path,
+                ".env\n.env.local\n.env.*.local\n.env.backup\n",
+            )?;
+            check_fixed("Created .gitignore with .env patterns");
+            fixed += 1;
+        } else {
+            issues += 1;
+        }
     }
 
-    // Check 5: Claude Code MCP configuration and .env permissions
+    // Check 5: .env.example exists
+    let example_path = project_dir.join(".env.example");
+    if example_path.exists() {
+        check_pass(".env.example found (team onboarding ready)");
+    } else {
+        check_warn("No .env.example — team onboarding may be difficult");
+        check_fix("Run: phantom env");
+        if fix && env_path.exists() {
+            if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
+                let config = PhantomConfig::load(&config_path).ok();
+                let content = dotenv.generate_example_content(config.as_ref());
+                std::fs::write(&example_path, content)?;
+                check_fixed("Generated .env.example");
+                fixed += 1;
+            }
+        } else if fix {
+            issues += 1; // Can't fix without .env
+        } else {
+            issues += 1;
+        }
+    }
+
+    // Check 6: Claude Code MCP configuration
     let claude_settings = project_dir.join(".claude/settings.local.json");
     if claude_settings.exists() {
         let content = std::fs::read_to_string(&claude_settings).unwrap_or_default();
         if content.contains("phantom") {
             check_pass("Claude Code MCP server configured");
         } else {
-            check_info("Claude Code settings exist but no Phantom MCP — run `phantom setup`");
+            check_info("Claude Code settings exist but no Phantom MCP");
+            check_fix("Run: phantom setup");
         }
 
-        // Check if .env read is allowed (correct format: Read(./.env))
         if content.contains("Read(./.env)") {
             check_pass("Claude Code allowed to read .env (phantom tokens only)");
         } else {
-            check_warn(".env not in Claude Code allow rules — run `phantom setup` to fix");
+            check_warn(".env not in Claude Code allow rules");
+            check_fix("Run: phantom setup");
             issues += 1;
         }
 
-        // Check if .env is actually in deny rules (parse JSON to avoid false positives)
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(deny_arr) = parsed["permissions"]["deny"].as_array() {
                 let has_env_deny = deny_arr
@@ -137,10 +185,10 @@ pub fn run() -> Result<()> {
             }
         }
     } else {
-        check_info("No Claude Code config — run `phantom setup` for auto-mode + .env permissions");
+        check_info("No Claude Code config — run `phantom setup` for auto-mode");
     }
 
-    // Check 6: Cloud auth
+    // Check 7: Cloud auth
     match phantom_core::auth::load_token() {
         Some(_) => {
             check_pass("Cloud: logged in (token stored in keychain)");
@@ -150,7 +198,7 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // Check 7: Pre-commit hook
+    // Check 8: Pre-commit hook
     let pre_commit_config = project_dir.join(".pre-commit-config.yaml");
     let git_hook = project_dir.join(".git/hooks/pre-commit");
     if pre_commit_config.exists() {
@@ -165,17 +213,73 @@ pub fn run() -> Result<()> {
         if content.contains("phantom") {
             check_pass("Git pre-commit hook includes phantom check");
         } else {
-            check_info("Git pre-commit hook exists but no phantom check");
+            check_warn("Git pre-commit hook exists but no phantom check");
+            check_fix("Run: phantom init (will offer to add phantom check to hook)");
+            if fix {
+                let mut c = content;
+                c.push_str(
+                    "\n\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\n",
+                );
+                std::fs::write(&git_hook, c)?;
+                check_fixed("Appended phantom check to pre-commit hook");
+                fixed += 1;
+            } else {
+                issues += 1;
+            }
+        }
+    } else if project_dir.join(".git").exists() {
+        check_warn("No pre-commit hook installed");
+        check_fix("Run: phantom init (will auto-install hook)");
+        if fix {
+            let hooks_dir = project_dir.join(".git/hooks");
+            let _ = std::fs::create_dir_all(&hooks_dir);
+            let hook = "#!/bin/sh\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\nexit $?\n";
+            std::fs::write(&git_hook, hook)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&git_hook, std::fs::Permissions::from_mode(0o755));
+            }
+            check_fixed("Installed pre-commit hook");
+            fixed += 1;
+        } else {
+            issues += 1;
         }
     } else {
-        check_info("No pre-commit hook — run `phantom check` before commits");
+        check_info("Not a git repo — pre-commit hook not applicable");
+    }
+
+    // Check 9: README mentions Phantom
+    let readme_path = project_dir.join("README.md");
+    if readme_path.exists() {
+        let content = std::fs::read_to_string(&readme_path).unwrap_or_default();
+        if content.to_lowercase().contains("phantom")
+            || content.to_lowercase().contains("## secrets")
+        {
+            check_pass("README.md mentions Phantom/secrets setup");
+        } else {
+            check_info("README.md doesn't mention Phantom");
+            check_fix("Run: phantom init (will offer to add Secrets section)");
+        }
     }
 
     println!();
+    if fix && fixed > 0 {
+        println!("{} Auto-fixed {} issue(s)", "ok".green().bold(), fixed);
+    }
     if issues == 0 {
         println!("{} All checks passed!", "ok".green().bold());
     } else {
-        println!("{} {} issue(s) found", "!".yellow().bold(), issues);
+        println!(
+            "{} {} issue(s) found{}",
+            "!".yellow().bold(),
+            issues,
+            if !fix {
+                " — run `phantom doctor --fix` to auto-fix"
+            } else {
+                ""
+            }
+        );
     }
 
     Ok(())
@@ -195,4 +299,12 @@ fn check_warn(msg: &str) {
 
 fn check_info(msg: &str) {
     println!("  {} {}", "info".blue(), msg);
+}
+
+fn check_fix(msg: &str) {
+    println!("       {} {}", "Fix:".dimmed(), msg.dimmed());
+}
+
+fn check_fixed(msg: &str) {
+    println!("       {} {}", "Fixed:".green(), msg);
 }

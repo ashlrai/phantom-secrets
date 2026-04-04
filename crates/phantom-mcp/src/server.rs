@@ -41,6 +41,16 @@ pub struct CloudPullParams {
     pub force: bool,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CopySecretParams {
+    /// Name of the secret to copy from the current project
+    pub name: String,
+    /// Path to the target project directory (must be phantom-initialized)
+    pub target_dir: String,
+    /// Optional new name for the secret in the target project
+    pub rename: Option<String>,
+}
+
 // ── MCP Server ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -621,6 +631,85 @@ impl PhantomMcpServer {
             )
         };
 
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    /// Copy a secret to another phantom-initialized project without exposing its value.
+    #[tool(
+        description = "Copy a secret from this project's vault to another project's vault. The secret value is never exposed — it transfers directly between encrypted vaults. The target project must be phantom-initialized."
+    )]
+    fn phantom_copy_secret(
+        &self,
+        Parameters(params): Parameters<CopySecretParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let config = self
+            .load_config()
+            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+
+        let source_vault = phantom_vault::create_vault(&config.phantom.project_id);
+
+        // Retrieve from source
+        let mut secret_value = source_vault.retrieve(&params.name).map_err(|e| {
+            McpError::new(
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                format!("Secret '{}' not found: {e}", params.name),
+                None,
+            )
+        })?;
+
+        // Resolve target directory
+        let target_path = std::path::PathBuf::from(&params.target_dir);
+        let target_dir = if target_path.is_relative() {
+            self.project_dir.join(&target_path)
+        } else {
+            target_path
+        };
+
+        let target_config_path = target_dir.join(".phantom.toml");
+        if !target_config_path.exists() {
+            use zeroize::Zeroize;
+            secret_value.zeroize();
+            return Err(McpError::new(
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                format!(
+                    "Target project at {} is not phantom-initialized",
+                    target_dir.display()
+                ),
+                None,
+            ));
+        }
+
+        let target_config = PhantomConfig::load(&target_config_path).map_err(|e| {
+            McpError::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                format!("Failed to load target config: {e}"),
+                None,
+            )
+        })?;
+
+        let target_vault = phantom_vault::create_vault(&target_config.phantom.project_id);
+        let target_name = params.rename.as_deref().unwrap_or(&params.name);
+
+        target_vault
+            .store(target_name, &secret_value)
+            .map_err(|e| {
+                McpError::new(
+                    rmcp::model::ErrorCode::INTERNAL_ERROR,
+                    format!("Failed to store in target vault: {e}"),
+                    None,
+                )
+            })?;
+
+        // Zeroize
+        use zeroize::Zeroize;
+        secret_value.zeroize();
+
+        let msg = format!(
+            "Copied '{}' -> '{}' in {}. Secret value was never exposed.",
+            params.name,
+            target_name,
+            target_dir.display()
+        );
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 

@@ -3,6 +3,17 @@ use crate::token::{PhantomToken, TokenMap};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Classification of an environment variable entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretClassification {
+    /// A real secret that should be protected with a phantom token.
+    Secret,
+    /// A framework public key (NEXT_PUBLIC_*, VITE_*, etc.) — safe for browser bundles.
+    PublicKey,
+    /// Non-secret configuration (NODE_ENV, PORT, DEBUG, etc.)
+    NotSecret,
+}
+
 /// A parsed key-value entry from a .env file.
 #[derive(Debug, Clone)]
 pub struct EnvEntry {
@@ -86,6 +97,64 @@ impl DotenvFile {
             .into_iter()
             .filter(|e| !e.is_phantom && looks_like_secret(e))
             .collect()
+    }
+
+    /// Classify all entries, returning entries grouped by classification.
+    /// Entries that are already phantom tokens are excluded.
+    pub fn classified_entries(&self) -> Vec<(&EnvEntry, SecretClassification)> {
+        self.entries()
+            .into_iter()
+            .filter(|e| !e.is_phantom)
+            .map(|e| (e, classify(e)))
+            .collect()
+    }
+
+    /// Get entries that are framework public keys (NEXT_PUBLIC_*, VITE_*, etc.)
+    pub fn public_key_entries(&self) -> Vec<&EnvEntry> {
+        self.entries()
+            .into_iter()
+            .filter(|e| !e.is_phantom && classify(e) == SecretClassification::PublicKey)
+            .collect()
+    }
+
+    /// Generate .env.example content with secrets replaced by placeholders.
+    /// Public keys and non-secret config values are preserved as-is.
+    pub fn generate_example_content(
+        &self,
+        config: Option<&crate::config::PhantomConfig>,
+    ) -> String {
+        let mut output_lines = vec![
+            "# Environment variables for this project".to_string(),
+            "# Copy to .env and fill in real values, or use Phantom:".to_string(),
+            "#   npm install -g phantom-secrets && phantom init".to_string(),
+            "#".to_string(),
+            "# See https://phm.dev for details".to_string(),
+            String::new(),
+        ];
+
+        for line in &self.lines {
+            match line {
+                DotenvLine::Entry(entry) => {
+                    if entry.is_phantom || classify(entry) == SecretClassification::Secret {
+                        // Secret → placeholder
+                        let placeholder = generate_placeholder(&entry.key, config);
+                        output_lines.push(format!("{}={}", entry.key, placeholder));
+                    } else {
+                        // Public key or non-secret → actual value
+                        output_lines.push(format!("{}={}", entry.key, entry.value));
+                    }
+                }
+                DotenvLine::Other(text) => {
+                    output_lines.push(text.clone());
+                }
+            }
+        }
+
+        let mut content = output_lines.join("\n");
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content
     }
 
     /// Rewrite the .env file, replacing real secret values with phantom tokens.
@@ -247,6 +316,52 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
     false
 }
 
+/// Classify an environment variable entry as Secret, PublicKey, or NotSecret.
+pub fn classify(entry: &EnvEntry) -> SecretClassification {
+    if is_public_key(&entry.key) {
+        SecretClassification::PublicKey
+    } else if looks_like_secret(entry) {
+        SecretClassification::Secret
+    } else {
+        SecretClassification::NotSecret
+    }
+}
+
+/// Check if a key name is a framework public key (safe for browser bundles).
+pub fn is_public_key(key: &str) -> bool {
+    let public_prefixes = [
+        "NEXT_PUBLIC_",
+        "EXPO_PUBLIC_",
+        "VITE_",
+        "REACT_APP_",
+        "NUXT_PUBLIC_",
+        "GATSBY_",
+    ];
+    public_prefixes.iter().any(|prefix| key.starts_with(prefix))
+}
+
+/// Generate a descriptive placeholder for a secret key.
+fn generate_placeholder(key: &str, config: Option<&crate::config::PhantomConfig>) -> String {
+    // Check for service mapping to give helpful hints
+    if let Some(cfg) = config {
+        for (svc_name, svc) in &cfg.services {
+            if svc.secret_key == key {
+                return format!("your_{}_here", svc_name);
+            }
+        }
+    }
+
+    // Generate placeholder based on key name
+    let key_lower = key.to_lowercase();
+    if key_lower.contains("url") {
+        "your_connection_string_here".to_string()
+    } else if key_lower.contains("password") || key_lower.contains("passwd") {
+        "your_password_here".to_string()
+    } else {
+        format!("your_{key_lower}_here")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,6 +511,103 @@ KEY3=unquoted
         assert!(rewritten.contains("# Config"));
         // Original value captured
         assert_eq!(originals.get("API_KEY").unwrap(), "sk-real-secret");
+    }
+
+    #[test]
+    fn test_is_public_key() {
+        assert!(is_public_key("NEXT_PUBLIC_SUPABASE_URL"));
+        assert!(is_public_key("NEXT_PUBLIC_SUPABASE_ANON_KEY"));
+        assert!(is_public_key("EXPO_PUBLIC_POSTHOG_KEY"));
+        assert!(is_public_key("VITE_API_URL"));
+        assert!(is_public_key("REACT_APP_BACKEND_URL"));
+        assert!(is_public_key("NUXT_PUBLIC_API_BASE"));
+        assert!(is_public_key("GATSBY_API_URL"));
+        assert!(!is_public_key("OPENAI_API_KEY"));
+        assert!(!is_public_key("SUPABASE_SERVICE_ROLE_KEY"));
+        assert!(!is_public_key("DATABASE_URL"));
+        assert!(!is_public_key("NODE_ENV"));
+    }
+
+    #[test]
+    fn test_classify_entries() {
+        // Public keys
+        assert_eq!(
+            classify(&EnvEntry {
+                key: "NEXT_PUBLIC_SUPABASE_URL".into(),
+                value: "https://example.supabase.co".into(),
+                is_phantom: false
+            }),
+            SecretClassification::PublicKey
+        );
+        assert_eq!(
+            classify(&EnvEntry {
+                key: "VITE_API_URL".into(),
+                value: "https://api.example.com".into(),
+                is_phantom: false
+            }),
+            SecretClassification::PublicKey
+        );
+
+        // Secrets
+        assert_eq!(
+            classify(&EnvEntry {
+                key: "OPENAI_API_KEY".into(),
+                value: "sk-abc123".into(),
+                is_phantom: false
+            }),
+            SecretClassification::Secret
+        );
+        assert_eq!(
+            classify(&EnvEntry {
+                key: "SUPABASE_SERVICE_ROLE_KEY".into(),
+                value: "eyJhbGciOiJIUzI1NiJ9".into(),
+                is_phantom: false
+            }),
+            SecretClassification::Secret
+        );
+
+        // Not secrets
+        assert_eq!(
+            classify(&EnvEntry {
+                key: "NODE_ENV".into(),
+                value: "production".into(),
+                is_phantom: false
+            }),
+            SecretClassification::NotSecret
+        );
+        assert_eq!(
+            classify(&EnvEntry {
+                key: "PORT".into(),
+                value: "3000".into(),
+                is_phantom: false
+            }),
+            SecretClassification::NotSecret
+        );
+    }
+
+    #[test]
+    fn test_public_key_entries() {
+        let content = "NEXT_PUBLIC_SUPABASE_URL=https://example.supabase.co\nSUPABASE_SERVICE_ROLE_KEY=eyJ\nNODE_ENV=production\nEXPO_PUBLIC_KEY=abc123\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let public = dotenv.public_key_entries();
+        assert_eq!(public.len(), 2);
+        assert_eq!(public[0].key, "NEXT_PUBLIC_SUPABASE_URL");
+        assert_eq!(public[1].key, "EXPO_PUBLIC_KEY");
+    }
+
+    #[test]
+    fn test_generate_example_content() {
+        let content = "# Config\nOPENAI_API_KEY=sk-real-secret\nNEXT_PUBLIC_URL=https://app.example.com\nPORT=3000\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let example = dotenv.generate_example_content(None);
+        // Secret should be a placeholder
+        assert!(example.contains("OPENAI_API_KEY=your_openai_api_key_here"));
+        // Public key should preserve actual value
+        assert!(example.contains("NEXT_PUBLIC_URL=https://app.example.com"));
+        // Non-secret should preserve actual value
+        assert!(example.contains("PORT=3000"));
+        // Should have header
+        assert!(example.contains("# Environment variables for this project"));
     }
 
     #[test]

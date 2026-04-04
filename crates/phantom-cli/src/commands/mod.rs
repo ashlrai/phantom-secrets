@@ -1,6 +1,7 @@
 pub mod add;
 pub mod check;
 pub mod cloud;
+pub mod copy;
 pub mod doctor;
 pub mod env;
 pub mod exec;
@@ -20,3 +21,7 @@ pub mod status;
 pub mod stop;
 pub mod sync;
 pub mod team;
+pub mod unwrap;
+pub mod watch;
+pub mod why;
+pub mod wrap;

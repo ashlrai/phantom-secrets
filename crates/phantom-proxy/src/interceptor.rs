@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use zeroize::Zeroize;
 
-/// The interceptor replaces phantom tokens with real secrets in HTTP requests.
-/// It holds the runtime token-to-secret mapping and performs constant-time-ish lookups.
+/// The interceptor replaces phantom tokens with real secrets in HTTP requests,
+/// and scrubs real secrets from API responses to prevent leakage.
 #[derive(Clone)]
 pub struct Interceptor {
-    /// phantom_token_string -> real_secret_value
+    /// phantom_token_string -> real_secret_value (for outgoing requests)
     token_map: HashMap<String, SecretValue>,
+    /// real_secret_value -> phantom_token_string (for response scrubbing)
+    reverse_map: HashMap<String, String>,
 }
 
 /// A secret value that zeroizes itself when dropped.
@@ -24,11 +26,18 @@ impl Drop for SecretValue {
 impl Interceptor {
     /// Create a new interceptor with a mapping of phantom tokens to real secrets.
     pub fn new(mappings: HashMap<String, String>) -> Self {
+        let reverse_map: HashMap<String, String> = mappings
+            .iter()
+            .map(|(token, secret)| (secret.clone(), token.clone()))
+            .collect();
         let token_map = mappings
             .into_iter()
             .map(|(token, secret)| (token, SecretValue { value: secret }))
             .collect();
-        Self { token_map }
+        Self {
+            token_map,
+            reverse_map,
+        }
     }
 
     /// Replace any phantom tokens found in a string with their real values.
@@ -115,6 +124,60 @@ impl Interceptor {
     pub fn is_empty(&self) -> bool {
         self.token_map.is_empty()
     }
+
+    /// Scrub real secrets from a response string, replacing them with phantom tokens.
+    /// Prevents API responses from leaking real credentials back to AI agents.
+    pub fn scrub_response_str(&self, input: &str) -> (String, bool) {
+        let mut result = input.to_string();
+        let mut scrubbed = false;
+
+        for (secret, token) in &self.reverse_map {
+            if result.contains(secret.as_str()) {
+                result = result.replace(secret.as_str(), token.as_str());
+                scrubbed = true;
+            }
+        }
+
+        (result, scrubbed)
+    }
+
+    /// Scrub real secrets from response bytes.
+    pub fn scrub_response_bytes(&self, input: &[u8]) -> (Vec<u8>, bool) {
+        match std::str::from_utf8(input) {
+            Ok(s) => {
+                let (scrubbed, did_scrub) = self.scrub_response_str(s);
+                (scrubbed.into_bytes(), did_scrub)
+            }
+            Err(_) => {
+                // Binary response — scan for secret bytes directly
+                let mut result = input.to_vec();
+                let mut scrubbed = false;
+
+                for (secret, token) in &self.reverse_map {
+                    let secret_bytes = secret.as_bytes();
+                    let token_bytes = token.as_bytes();
+
+                    let mut i = 0;
+                    let mut new_result = Vec::with_capacity(result.len());
+                    while i < result.len() {
+                        if i + secret_bytes.len() <= result.len()
+                            && &result[i..i + secret_bytes.len()] == secret_bytes
+                        {
+                            new_result.extend_from_slice(token_bytes);
+                            i += secret_bytes.len();
+                            scrubbed = true;
+                        } else {
+                            new_result.push(result[i]);
+                            i += 1;
+                        }
+                    }
+                    result = new_result;
+                }
+
+                (result, scrubbed)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +244,38 @@ mod tests {
             Some("sk-real-openai-key-12345")
         );
         assert_eq!(interceptor.resolve("phm_nonexistent"), None);
+    }
+
+    #[test]
+    fn test_scrub_response_str() {
+        let interceptor = test_interceptor();
+        // Simulate an API response that echoes back the real secret
+        let response = r#"{"error":"Invalid key: sk-real-openai-key-12345","status":401}"#;
+        let (scrubbed, did_scrub) = interceptor.scrub_response_str(response);
+        assert!(did_scrub);
+        assert!(scrubbed
+            .contains("phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222"));
+        assert!(!scrubbed.contains("sk-real-openai-key-12345"));
+    }
+
+    #[test]
+    fn test_scrub_response_bytes() {
+        let interceptor = test_interceptor();
+        let response = b"key echoed: sk-real-openai-key-12345 in response";
+        let (scrubbed, did_scrub) = interceptor.scrub_response_bytes(response);
+        assert!(did_scrub);
+        let scrubbed_str = String::from_utf8(scrubbed).unwrap();
+        assert!(!scrubbed_str.contains("sk-real-openai-key-12345"));
+        assert!(scrubbed_str.contains("phm_"));
+    }
+
+    #[test]
+    fn test_scrub_no_secrets_in_response() {
+        let interceptor = test_interceptor();
+        let response = r#"{"data":"safe content","status":200}"#;
+        let (scrubbed, did_scrub) = interceptor.scrub_response_str(response);
+        assert!(!did_scrub);
+        assert_eq!(scrubbed, response);
     }
 
     #[test]

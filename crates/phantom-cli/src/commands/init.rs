@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::{PhantomConfig, ServiceConfig};
-use phantom_core::dotenv::{DotenvFile, EnvEntry};
+use phantom_core::dotenv::{DotenvFile, EnvEntry, SecretClassification};
 use phantom_core::token::TokenMap;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -37,13 +37,35 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     println!("{} Reading {}...", "->".blue().bold(), env_path.display());
     let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env file")?;
 
-    let real_entries = dotenv.real_secret_entries();
+    // Classify all entries
+    let classified = dotenv.classified_entries();
+    let real_entries: Vec<&EnvEntry> = classified
+        .iter()
+        .filter(|(_, c)| *c == SecretClassification::Secret)
+        .map(|(e, _)| *e)
+        .collect();
+    let public_entries: Vec<&EnvEntry> = classified
+        .iter()
+        .filter(|(_, c)| *c == SecretClassification::PublicKey)
+        .map(|(e, _)| *e)
+        .collect();
+
     if real_entries.is_empty() {
         println!(
-            "{} No real secrets found in {} (all values are already phantom tokens or empty)",
+            "{} No real secrets found in {} (all values are already phantom tokens, public keys, or config)",
             "!".yellow().bold(),
             env_path.display()
         );
+        if !public_entries.is_empty() {
+            println!(
+                "\n{} {} public key(s) detected (safe for browser bundles, not protected):",
+                "->".blue().bold(),
+                public_entries.len()
+            );
+            for entry in &public_entries {
+                println!("   {} {}", "·".dimmed(), entry.key);
+            }
+        }
         return Ok(());
     }
 
@@ -53,7 +75,19 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         real_entries.len()
     );
     for entry in &real_entries {
-        println!("   {} {}", "-".dimmed(), entry.key.bold());
+        println!("   {} {}", "+".cyan().bold(), entry.key.bold());
+    }
+
+    if !public_entries.is_empty() {
+        println!(
+            "\n{} Skipping {} public key(s) (safe for browser bundles):",
+            "->".blue().bold(),
+            public_entries.len()
+        );
+        for entry in &public_entries {
+            println!("   {} {}", "·".dimmed(), entry.key);
+        }
+        println!("   Override with: {}", "phantom add --force <KEY>".dimmed());
     }
 
     // Generate project ID and config
@@ -124,12 +158,30 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         env_path.display()
     );
 
+    // Persist public key classifications
+    if !public_entries.is_empty() {
+        config.public_keys = public_entries.iter().map(|e| e.key.clone()).collect();
+    }
+
     // Save config
     config.save(&config_path)?;
     println!("{} Saved .phantom.toml", "ok".green().bold());
 
     // Add .phantom.toml to .gitignore if needed
     ensure_gitignore(&project_dir)?;
+
+    // Generate .env.example for team onboarding
+    let example_path = project_dir.join(".env.example");
+    let example_content = dotenv.generate_example_content(Some(&config));
+    std::fs::write(&example_path, &example_content)?;
+    println!(
+        "{} Generated {} (commit this for team onboarding)",
+        "ok".green().bold(),
+        ".env.example".cyan()
+    );
+
+    // Install pre-commit hook if in a git repo
+    install_precommit_hook(&project_dir);
 
     println!(
         "\n{} {} secret(s) are now protected!",
@@ -143,6 +195,12 @@ pub fn run(env_path_arg: &str) -> Result<()> {
 
     // Add Phantom instructions to CLAUDE.md so Claude knows how to use it
     auto_add_claude_md(&project_dir, &cwd);
+
+    // Add development setup section to README.md
+    auto_add_readme(&project_dir, &cwd);
+
+    // Detect deployment platforms and suggest sync setup
+    detect_platforms(&project_dir, &cwd);
 
     println!(
         "\n{} Run {} to start coding with AI safely.",
@@ -484,6 +542,182 @@ fn auto_setup_claude_code(project_dir: &Path, cwd: &Path) {
     if changed {
         if let Ok(content) = serde_json::to_string_pretty(&settings) {
             let _ = std::fs::write(&settings_path, content);
+        }
+    }
+}
+
+/// Detect deployment platforms and suggest sync configuration.
+fn detect_platforms(project_dir: &Path, cwd: &Path) {
+    let checks: Vec<(&str, &[&str])> = vec![
+        ("Vercel", &["vercel.json", ".vercel"]),
+        ("EAS Build", &["eas.json"]),
+        ("GitHub Actions", &[".github/workflows"]),
+        ("Fly.io", &["fly.toml"]),
+        ("Railway", &["railway.json", "railway.toml"]),
+        ("Netlify", &["netlify.toml"]),
+        ("Docker", &["Dockerfile"]),
+    ];
+
+    let mut detected: Vec<&str> = Vec::new();
+
+    for (platform, files) in &checks {
+        for file in *files {
+            let exists = project_dir.join(file).exists() || cwd.join(file).exists();
+            if exists {
+                detected.push(platform);
+                break;
+            }
+        }
+    }
+
+    if !detected.is_empty() {
+        println!("\n{} Detected deployment platform(s):", "->".blue().bold(),);
+        for platform in &detected {
+            println!("   {} {}", "·".dimmed(), platform);
+        }
+        println!(
+            "   Configure sync: {}",
+            "phantom sync --platform <name>".dimmed()
+        );
+    }
+}
+
+/// Add a "Secrets" section to README.md so humans know the project uses Phantom.
+fn auto_add_readme(project_dir: &Path, cwd: &Path) {
+    let readme_path = if cwd.join("README.md").exists() {
+        cwd.join("README.md")
+    } else if project_dir.join("README.md").exists() {
+        project_dir.join("README.md")
+    } else {
+        return; // No README found
+    };
+
+    let content = match std::fs::read_to_string(&readme_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // Don't add if a secrets/environment section already exists
+    let content_lower = content.to_lowercase();
+    if content_lower.contains("## secrets")
+        || content_lower.contains("## environment")
+        || content_lower.contains("phantom")
+    {
+        return;
+    }
+
+    let section = r#"
+## Secrets
+
+This project uses [Phantom](https://phm.dev) to protect API keys from AI agent leaks.
+
+**Setup (with Phantom):**
+```bash
+npm i -g phantom-secrets  # or: npx phantom-secrets
+phantom cloud pull         # restore team vault
+phantom exec -- npm run dev
+```
+
+**Setup (manual):**
+```bash
+cp .env.example .env
+# Fill in real API keys
+npm run dev
+```
+"#;
+
+    let mut updated = content;
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(section);
+
+    match std::fs::write(&readme_path, &updated) {
+        Ok(_) => println!(
+            "{} Added \"Secrets\" section to README.md",
+            "ok".green().bold()
+        ),
+        Err(e) => println!(
+            "{} Could not update README.md: {}",
+            "warn".yellow().bold(),
+            e
+        ),
+    }
+}
+
+/// Install a pre-commit hook that scans for unprotected secrets.
+fn install_precommit_hook(project_dir: &Path) {
+    // Find .git directory (check project_dir, then walk up to find repo root)
+    let git_dir = if project_dir.join(".git").exists() {
+        project_dir.join(".git")
+    } else {
+        // Walk up to find .git
+        let mut dir = project_dir.to_path_buf();
+        loop {
+            if dir.join(".git").exists() {
+                break dir.join(".git");
+            }
+            if !dir.pop() {
+                return; // Not a git repo
+            }
+        }
+    };
+
+    let hooks_dir = git_dir.join("hooks");
+    let hook_path = hooks_dir.join("pre-commit");
+
+    // Check if hook already exists
+    if hook_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&hook_path) {
+            if content.contains("phantom") {
+                return; // Already installed
+            }
+            // Existing hook without phantom — append
+            let updated = format!(
+                "{}\n\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\n",
+                content.trim_end()
+            );
+            if std::fs::write(&hook_path, updated).is_ok() {
+                println!(
+                    "{} Appended phantom check to existing pre-commit hook",
+                    "ok".green().bold()
+                );
+            }
+            return;
+        }
+    }
+
+    // Create hooks directory if needed
+    let _ = std::fs::create_dir_all(&hooks_dir);
+
+    let hook_content = r#"#!/bin/sh
+# Phantom Secrets pre-commit hook
+# Scans staged files for unprotected secrets
+
+npx phantom-secrets check --staged
+exit $?
+"#;
+
+    match std::fs::write(&hook_path, hook_content) {
+        Ok(_) => {
+            // Make executable
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ =
+                    std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
+            }
+            println!(
+                "{} Installed pre-commit hook (scans for leaked secrets)",
+                "ok".green().bold()
+            );
+        }
+        Err(e) => {
+            println!(
+                "{} Could not install pre-commit hook: {}",
+                "warn".yellow().bold(),
+                e
+            );
         }
     }
 }

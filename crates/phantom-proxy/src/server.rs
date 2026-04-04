@@ -368,16 +368,26 @@ async fn handle_request(
 
     if is_streaming {
         // Stream the response body chunk-by-chunk (critical for SSE/streaming APIs)
+        // Scrub secrets from each chunk as it passes through
         debug!("Streaming response: {}", status);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(32);
 
+        let interceptor = state.interceptor.clone();
         let byte_stream = response.bytes_stream();
         tokio::spawn(async move {
             tokio::pin!(byte_stream);
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
-                        if tx.send(Ok(Frame::data(chunk))).await.is_err() {
+                        let (scrubbed, did_scrub) = interceptor.scrub_response_bytes(&chunk);
+                        if did_scrub {
+                            debug!("Scrubbed secret(s) from streaming response chunk");
+                        }
+                        if tx
+                            .send(Ok(Frame::data(Bytes::from(scrubbed))))
+                            .await
+                            .is_err()
+                        {
                             break; // client disconnected
                         }
                     }
@@ -393,7 +403,7 @@ async fn handle_request(
         let body = BoxBody::Right(StreamBody::new(stream));
         Ok(builder.body(body).unwrap())
     } else {
-        // Non-streaming: buffer and forward (small JSON responses, etc.)
+        // Non-streaming: buffer, scrub secrets, and forward
         let response_body = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -405,10 +415,26 @@ async fn handle_request(
             }
         };
 
-        debug!("Response: {} ({} bytes)", status, response_body.len());
-        Ok(builder
-            .body(BoxBody::Left(Full::new(response_body)))
-            .unwrap())
+        // Scrub real secrets from response body to prevent leakage to AI agents
+        let (scrubbed_body, did_scrub) = state.interceptor.scrub_response_bytes(&response_body);
+        if did_scrub {
+            debug!("Scrubbed secret(s) from response body");
+            // Recalculate content-length since phantom tokens differ in length from real secrets
+            let builder = builder.header("content-length", scrubbed_body.len().to_string());
+            debug!(
+                "Response: {} ({} bytes, scrubbed)",
+                status,
+                scrubbed_body.len()
+            );
+            Ok(builder
+                .body(BoxBody::Left(Full::new(Bytes::from(scrubbed_body))))
+                .unwrap())
+        } else {
+            debug!("Response: {} ({} bytes)", status, response_body.len());
+            Ok(builder
+                .body(BoxBody::Left(Full::new(response_body)))
+                .unwrap())
+        }
     }
 }
 

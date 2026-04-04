@@ -2,16 +2,20 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 
-pub fn run() -> Result<()> {
+pub fn run(oneline: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        println!(
-            "{} Not initialized. Run {} to get started.",
-            "!".yellow().bold(),
-            "phantom init".cyan().bold()
-        );
+        if oneline {
+            println!("not initialized");
+        } else {
+            println!(
+                "{} Not initialized. Run {} to get started.",
+                "!".yellow().bold(),
+                "phantom init".cyan().bold()
+            );
+        }
         return Ok(());
     }
 
@@ -19,12 +23,22 @@ pub fn run() -> Result<()> {
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
     let names = vault.list().context("Failed to list secrets")?;
 
+    if oneline {
+        // Compact output for shell prompts
+        println!(
+            "{} secret{} · proxy off",
+            names.len(),
+            if names.len() == 1 { "" } else { "s" }
+        );
+        return Ok(());
+    }
+
     println!("{}", "Phantom Status".bold().underline());
     println!();
     println!("  Project ID:  {}", config.phantom.project_id.dimmed());
     println!("  Vault:       {}", vault.backend_name().cyan());
     println!("  Secrets:     {}", names.len().to_string().green().bold());
-    println!("  Proxy:       {}", "not running".yellow()); // Phase 2
+    println!("  Proxy:       {}", "not running".yellow());
 
     if !names.is_empty() {
         println!();

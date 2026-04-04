@@ -68,7 +68,11 @@ enum Commands {
     },
 
     /// Show proxy status and mapped secrets
-    Status,
+    Status {
+        /// Compact one-line output for shell prompts (e.g., "3 secrets · proxy off")
+        #[arg(long)]
+        oneline: bool,
+    },
 
     /// Regenerate phantom tokens (invalidates old ones)
     Rotate {
@@ -78,7 +82,11 @@ enum Commands {
     },
 
     /// Check configuration and vault health
-    Doctor,
+    Doctor {
+        /// Auto-fix safe issues (install hooks, generate .env.example, etc.)
+        #[arg(long)]
+        fix: bool,
+    },
 
     /// Start the proxy and run a command
     Exec {
@@ -98,7 +106,14 @@ enum Commands {
     Stop,
 
     /// Check for unprotected secrets (pre-commit hook)
-    Check,
+    Check {
+        /// Only scan git-staged files (skip .env scanning, faster for pre-commit hooks)
+        #[arg(long)]
+        staged: bool,
+        /// Check if phantom tokens are in environment without proxy running
+        #[arg(long)]
+        runtime: bool,
+    },
 
     /// Sync secrets to deployment platforms (Vercel, Railway)
     Sync {
@@ -178,6 +193,44 @@ enum Commands {
         #[command(subcommand)]
         action: TeamAction,
     },
+
+    /// Wrap package.json scripts with `phantom exec` (no more manual prefix)
+    Wrap {
+        /// Only wrap specific scripts (by name)
+        #[arg(long)]
+        only: Option<Vec<String>>,
+        /// Skip specific scripts (by name)
+        #[arg(long)]
+        skip: Option<Vec<String>>,
+    },
+
+    /// Unwrap package.json scripts (restore originals from :raw variants)
+    Unwrap,
+
+    /// Watch .env files and auto-detect new unprotected secrets
+    Watch {
+        /// Auto-protect new secrets without prompting
+        #[arg(long)]
+        auto: bool,
+    },
+
+    /// Explain why a key is or isn't protected
+    Why {
+        /// Environment variable name to explain
+        key: String,
+    },
+
+    /// Copy a secret from this project's vault to another project
+    Copy {
+        /// Secret name in this project
+        name: String,
+        /// Target project directory
+        #[arg(long)]
+        to: std::path::PathBuf,
+        /// Rename the secret in the target project
+        #[arg(long, alias = "as")]
+        rename: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -246,13 +299,13 @@ fn main() -> anyhow::Result<()> {
             clipboard,
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
-        Commands::Status => commands::status::run(),
+        Commands::Status { oneline } => commands::status::run(oneline),
         Commands::Rotate { sync } => commands::rotate::run(sync),
-        Commands::Doctor => commands::doctor::run(),
+        Commands::Doctor { fix } => commands::doctor::run(fix),
         Commands::Exec { cmd } => commands::exec::run(&cmd),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
-        Commands::Check => commands::check::run(),
+        Commands::Check { staged, runtime } => commands::check::run(staged, runtime),
         Commands::Pull {
             from,
             project,
@@ -276,6 +329,11 @@ fn main() -> anyhow::Result<()> {
             CloudAction::Pull { force } => commands::cloud::run_pull(force),
             CloudAction::Status => commands::cloud::run_status(),
         },
+        Commands::Watch { auto } => commands::watch::run(auto),
+        Commands::Why { key } => commands::why::run(&key),
+        Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
+        Commands::Unwrap => commands::unwrap::run(),
+        Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
         Commands::Team { action } => match action {
             TeamAction::List => commands::team::run_list(),
             TeamAction::Create { name } => commands::team::run_create(&name),
