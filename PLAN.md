@@ -2,7 +2,7 @@
 
 ## Context
 
-Phantom Secrets (v0.3.3) has a solid security architecture: 5-crate Rust workspace, OS keychain + encrypted file vault, session-scoped proxy tokens, MCP server integration. The core cryptographic and proxy infrastructure is production-ready.
+Phantom Secrets (v0.4.0) has a solid security architecture: 5-crate Rust workspace, OS keychain + encrypted file vault, session-scoped proxy tokens, MCP server integration. The core cryptographic and proxy infrastructure is production-ready.
 
 The gaps are all in **developer experience around the edges**: onboarding, multi-repo workflows, public key handling, reducing `phantom exec` friction, CI/CD integration, and pre-commit automation. These improvements will take Phantom from "solo dev installs it" to "team of 5 uses it daily without thinking about it."
 

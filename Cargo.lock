@@ -1346,7 +1346,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phantom"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-core"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "base64",
  "hex",
@@ -1386,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-mcp"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1406,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-proxy"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "hex",
@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-vault"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",

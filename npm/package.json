@@ -1,7 +1,7 @@
 {
   "name": "phantom-secrets",
-  "version": "0.3.3",
-  "description": "Prevent AI coding agents from leaking your API keys",
+  "version": "0.4.0",
+  "description": "Prevent AI coding agents from leaking your API keys. Replaces real secrets with phantom tokens; a local proxy swaps them back at the network layer.",
   "bin": {
     "phantom-secrets": "bin/cli.js",
     "phantom": "bin/cli.js"
@@ -14,16 +14,23 @@
     "url": "https://github.com/ashlrai/phantom-secrets"
   },
   "keywords": [
-    "security",
     "secrets",
     "api-keys",
     "ai-safety",
+    "phantom",
+    "proxy",
+    "mcp",
+    "security",
     "env",
     "dotenv",
-    "proxy",
     "claude",
     "cursor",
-    "copilot"
+    "copilot",
+    "codex",
+    "windsurf",
+    "model-context-protocol",
+    "keychain",
+    "vault"
   ],
   "author": "AshlrAI",
   "license": "MIT",

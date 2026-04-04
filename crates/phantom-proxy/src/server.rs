@@ -369,9 +369,8 @@ async fn handle_request(
 
     if is_streaming {
         // Stream the response body chunk-by-chunk (critical for SSE/streaming APIs)
-        // Scrub secrets from each chunk as it passes through.
-        // KNOWN LIMITATION: secrets split across chunk boundaries won't be detected.
-        // A future improvement would use a ring buffer to overlap-scan across chunks.
+        // Scrub secrets from each chunk using an overlap window to catch secrets
+        // split across chunk boundaries.
         debug!("Streaming response: {}", status);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(32);
 
@@ -379,19 +378,47 @@ async fn handle_request(
         let byte_stream = response.bytes_stream();
         tokio::spawn(async move {
             tokio::pin!(byte_stream);
+            let overlap_len = interceptor.max_secret_len().saturating_sub(1);
+            let mut carry: Vec<u8> = Vec::new();
+
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
-                        let (scrubbed, did_scrub) = interceptor.scrub_response_bytes(&chunk);
+                        // Build combined buffer: carry from previous chunk + current chunk
+                        let mut combined = Vec::with_capacity(carry.len() + chunk.len());
+                        combined.extend_from_slice(&carry);
+                        combined.extend_from_slice(&chunk);
+
+                        let (scrubbed, did_scrub) = interceptor.scrub_response_bytes(&combined);
                         if did_scrub {
                             debug!("Scrubbed secret(s) from streaming response chunk");
                         }
-                        if tx
-                            .send(Ok(Frame::data(Bytes::from(scrubbed))))
-                            .await
-                            .is_err()
-                        {
-                            break; // client disconnected
+
+                        if overlap_len > 0 && scrubbed.len() > overlap_len {
+                            // Hold back the last overlap_len bytes for the next iteration
+                            let emit_end = scrubbed.len() - overlap_len;
+                            let to_emit = &scrubbed[..emit_end];
+                            carry = scrubbed[emit_end..].to_vec();
+                            if tx
+                                .send(Ok(Frame::data(Bytes::copy_from_slice(to_emit))))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        } else if overlap_len > 0 {
+                            // Entire scrubbed output fits within the overlap window; carry it all
+                            carry = scrubbed;
+                        } else {
+                            // No secrets registered — no overlap needed
+                            carry.clear();
+                            if tx
+                                .send(Ok(Frame::data(Bytes::from(scrubbed))))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                     }
                     Err(e) => {
@@ -399,6 +426,12 @@ async fn handle_request(
                         break;
                     }
                 }
+            }
+
+            // Flush any remaining carry bytes
+            if !carry.is_empty() {
+                let (scrubbed, _) = interceptor.scrub_response_bytes(&carry);
+                let _ = tx.send(Ok(Frame::data(Bytes::from(scrubbed)))).await;
             }
         });
 

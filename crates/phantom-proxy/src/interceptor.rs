@@ -103,6 +103,12 @@ impl Interceptor {
         self.token_map.is_empty()
     }
 
+    /// Maximum length of any real secret in the reverse map.
+    /// Used to size the overlap window for streaming response scrubbing.
+    pub fn max_secret_len(&self) -> usize {
+        self.reverse_map.keys().map(|k| k.len()).max().unwrap_or(0)
+    }
+
     /// Scrub real secrets from a response string, replacing them with phantom tokens.
     /// Prevents API responses from leaking real credentials back to AI agents.
     pub fn scrub_response_str(&self, input: &str) -> (String, bool) {
@@ -270,5 +276,90 @@ mod tests {
         assert!(result.contains("sk-real-openai-key-12345"));
         assert!(result.contains("sk-ant-real-anthropic-key"));
         assert!(!result.contains("phm_"));
+    }
+
+    #[test]
+    fn test_max_secret_len() {
+        let interceptor = test_interceptor();
+        // "sk-ant-real-anthropic-key" is 25 chars, "sk-real-openai-key-12345" is 24 chars
+        assert_eq!(interceptor.max_secret_len(), 25);
+    }
+
+    #[test]
+    fn test_max_secret_len_empty() {
+        let interceptor = Interceptor::new(HashMap::new());
+        assert_eq!(interceptor.max_secret_len(), 0);
+    }
+
+    #[test]
+    fn test_max_secret_len_varied() {
+        let mut mappings = HashMap::new();
+        mappings.insert("phm_short".to_string(), "abc".to_string());
+        mappings.insert(
+            "phm_long".to_string(),
+            "a-much-longer-secret-value-here".to_string(),
+        );
+        let interceptor = Interceptor::new(mappings);
+        assert_eq!(interceptor.max_secret_len(), 31); // "a-much-longer-secret-value-here"
+    }
+
+    /// Simulate streaming scrub with overlap window to verify cross-chunk secret detection.
+    #[test]
+    fn test_streaming_scrub_overlap_window() {
+        let interceptor = test_interceptor();
+        let secret = "sk-real-openai-key-12345";
+        let phantom = "phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222";
+
+        // Split secret across two chunks at various positions
+        for split_pos in 1..secret.len() {
+            let chunk1 = format!("prefix-{}", &secret[..split_pos]);
+            let chunk2 = format!("{}-suffix", &secret[split_pos..]);
+
+            let overlap_len = interceptor.max_secret_len().saturating_sub(1);
+            let mut carry: Vec<u8> = Vec::new();
+            let mut emitted = Vec::new();
+
+            // Process chunk 1
+            let mut combined = Vec::new();
+            combined.extend_from_slice(&carry);
+            combined.extend_from_slice(chunk1.as_bytes());
+            let (scrubbed, _) = interceptor.scrub_response_bytes(&combined);
+            if scrubbed.len() > overlap_len {
+                let emit_end = scrubbed.len() - overlap_len;
+                emitted.extend_from_slice(&scrubbed[..emit_end]);
+                carry = scrubbed[emit_end..].to_vec();
+            } else {
+                carry = scrubbed;
+            }
+
+            // Process chunk 2
+            let mut combined = Vec::new();
+            combined.extend_from_slice(&carry);
+            combined.extend_from_slice(chunk2.as_bytes());
+            let (scrubbed, _) = interceptor.scrub_response_bytes(&combined);
+            if scrubbed.len() > overlap_len {
+                let emit_end = scrubbed.len() - overlap_len;
+                emitted.extend_from_slice(&scrubbed[..emit_end]);
+                carry = scrubbed[emit_end..].to_vec();
+            } else {
+                carry = scrubbed;
+            }
+
+            // Flush carry
+            if !carry.is_empty() {
+                let (scrubbed, _) = interceptor.scrub_response_bytes(&carry);
+                emitted.extend_from_slice(&scrubbed);
+            }
+
+            let result = String::from_utf8(emitted).unwrap();
+            assert!(
+                !result.contains(secret),
+                "Secret leaked at split_pos={split_pos}: {result}"
+            );
+            assert!(
+                result.contains(phantom),
+                "Phantom token missing at split_pos={split_pos}: {result}"
+            );
+        }
     }
 }
