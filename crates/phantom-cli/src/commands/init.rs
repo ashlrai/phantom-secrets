@@ -582,30 +582,62 @@ fn detect_platforms(project_dir: &Path, cwd: &Path) {
     }
 }
 
-/// Add a "Secrets" section to README.md so humans know the project uses Phantom.
-fn auto_add_readme(project_dir: &Path, cwd: &Path) {
-    let readme_path = if cwd.join("README.md").exists() {
-        cwd.join("README.md")
-    } else if project_dir.join("README.md").exists() {
-        project_dir.join("README.md")
+/// Append a section to a file if it doesn't already contain certain marker strings.
+/// Searches for the file in `cwd` first, then `project_dir`. If the file doesn't exist
+/// in either location, `create_if_missing` controls whether to create it in `project_dir`.
+fn append_section_to_file(
+    file_name: &str,
+    project_dir: &Path,
+    cwd: &Path,
+    skip_markers: &[&str],
+    section: &str,
+    success_msg: &str,
+    create_if_missing: bool,
+) {
+    let file_path = if cwd.join(file_name).exists() {
+        cwd.join(file_name)
+    } else if project_dir.join(file_name).exists() || create_if_missing {
+        project_dir.join(file_name)
     } else {
-        return; // No README found
+        return;
     };
 
-    let content = match std::fs::read_to_string(&readme_path) {
-        Ok(c) => c,
-        Err(_) => return,
+    let content = if file_path.exists() {
+        match std::fs::read_to_string(&file_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        }
+    } else {
+        String::new()
     };
 
-    // Don't add if a secrets/environment section already exists
     let content_lower = content.to_lowercase();
-    if content_lower.contains("## secrets")
-        || content_lower.contains("## environment")
-        || content_lower.contains("phantom")
+    if skip_markers
+        .iter()
+        .any(|m| content_lower.contains(&m.to_lowercase()))
     {
         return;
     }
 
+    let mut updated = content;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(section);
+
+    match std::fs::write(&file_path, &updated) {
+        Ok(_) => println!("{} {}", "ok".green().bold(), success_msg),
+        Err(e) => println!(
+            "{} Could not update {}: {}",
+            "warn".yellow().bold(),
+            file_name,
+            e
+        ),
+    }
+}
+
+/// Add a "Secrets" section to README.md so humans know the project uses Phantom.
+fn auto_add_readme(project_dir: &Path, cwd: &Path) {
     let section = r#"
 ## Secrets
 
@@ -626,24 +658,26 @@ npm run dev
 ```
 "#;
 
-    let mut updated = content;
-    if !updated.ends_with('\n') {
-        updated.push('\n');
-    }
-    updated.push_str(section);
-
-    match std::fs::write(&readme_path, &updated) {
-        Ok(_) => println!(
-            "{} Added \"Secrets\" section to README.md",
-            "ok".green().bold()
-        ),
-        Err(e) => println!(
-            "{} Could not update README.md: {}",
-            "warn".yellow().bold(),
-            e
-        ),
-    }
+    append_section_to_file(
+        "README.md",
+        project_dir,
+        cwd,
+        &["## secrets", "## environment", "phantom"],
+        section,
+        "Added \"Secrets\" section to README.md",
+        false,
+    );
 }
+
+/// Make a file executable on Unix platforms.
+#[cfg(unix)]
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) {}
 
 /// Install a pre-commit hook that scans for unprotected secrets.
 fn install_precommit_hook(project_dir: &Path) {
@@ -678,14 +712,7 @@ fn install_precommit_hook(project_dir: &Path) {
                 content.trim_end()
             );
             if std::fs::write(&hook_path, updated).is_ok() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &hook_path,
-                        std::fs::Permissions::from_mode(0o755),
-                    );
-                }
+                make_executable(&hook_path);
                 println!(
                     "{} Appended phantom check to existing pre-commit hook",
                     "ok".green().bold()
@@ -708,13 +735,7 @@ exit $?
 
     match std::fs::write(&hook_path, hook_content) {
         Ok(_) => {
-            // Make executable
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ =
-                    std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
-            }
+            make_executable(&hook_path);
             println!(
                 "{} Installed pre-commit hook (scans for leaked secrets)",
                 "ok".green().bold()
@@ -732,28 +753,6 @@ exit $?
 
 /// Add Phantom usage instructions to the project's CLAUDE.md so Claude knows how to use it.
 fn auto_add_claude_md(project_dir: &Path, cwd: &Path) {
-    // Prefer repo root CLAUDE.md (cwd), fall back to project_dir
-    let claude_md = if cwd.join("CLAUDE.md").exists() {
-        cwd.join("CLAUDE.md")
-    } else {
-        project_dir.join("CLAUDE.md")
-    };
-    let phantom_marker = "## Phantom Secrets";
-
-    let mut content = if claude_md.exists() {
-        match std::fs::read_to_string(&claude_md) {
-            Ok(c) => c,
-            Err(_) => return,
-        }
-    } else {
-        String::new()
-    };
-
-    // Don't add if already present
-    if content.contains(phantom_marker) {
-        return;
-    }
-
     let instructions = r#"
 ## Phantom Secrets
 
@@ -767,20 +766,13 @@ This project uses [Phantom](https://phm.dev) to protect API keys from AI leaks.
 - The proxy (`phantom exec`) injects real credentials at the network layer
 "#;
 
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
-    }
-    content.push_str(instructions);
-
-    match std::fs::write(&claude_md, &content) {
-        Ok(_) => println!(
-            "{} Added Phantom instructions to CLAUDE.md",
-            "ok".green().bold()
-        ),
-        Err(e) => println!(
-            "{} Could not update CLAUDE.md: {}",
-            "warn".yellow().bold(),
-            e
-        ),
-    }
+    append_section_to_file(
+        "CLAUDE.md",
+        project_dir,
+        cwd,
+        &["## Phantom Secrets"],
+        instructions,
+        "Added Phantom instructions to CLAUDE.md",
+        true,
+    );
 }

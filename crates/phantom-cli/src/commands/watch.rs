@@ -69,18 +69,46 @@ pub fn run(auto: bool) -> Result<()> {
             .context(format!("Failed to watch {}", file))?;
     }
 
-    // Process events
+    // Process events with debounce to prevent TOCTOU races.
+    // Editors often trigger multiple events per save (temp file, rename, write).
+    // We debounce by draining all events within 200ms before processing.
+    let debounce = std::time::Duration::from_millis(200);
     loop {
         match rx.recv() {
             Ok(event) => {
+                // Collect this event's paths
+                let mut pending_paths: std::collections::HashSet<std::path::PathBuf> =
+                    std::collections::HashSet::new();
                 if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                    for path in &event.paths {
-                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                            if file_name.starts_with(".env") {
-                                handle_env_change(path, &config_path, auto);
+                    for path in event.paths {
+                        if path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with(".env"))
+                        {
+                            pending_paths.insert(path);
+                        }
+                    }
+                }
+
+                // Drain any additional events that arrive within the debounce window
+                while let Ok(extra) = rx.recv_timeout(debounce) {
+                    if matches!(extra.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                        for path in extra.paths {
+                            if path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.starts_with(".env"))
+                            {
+                                pending_paths.insert(path);
                             }
                         }
                     }
+                }
+
+                // Process each unique path once
+                for path in &pending_paths {
+                    handle_env_change(path, &config_path, auto);
                 }
             }
             Err(e) => {

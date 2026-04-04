@@ -293,6 +293,7 @@ impl PhantomMcpServer {
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
+                    + "\n"
             } else {
                 let mut c = content;
                 if !c.is_empty() && !c.ends_with('\n') {

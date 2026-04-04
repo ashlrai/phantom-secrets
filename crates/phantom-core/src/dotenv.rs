@@ -317,14 +317,44 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
 }
 
 /// Classify an environment variable entry as Secret, PublicKey, or NotSecret.
+/// If a key has a public prefix (NEXT_PUBLIC_, VITE_, etc.) but the value matches
+/// known secret patterns (sk_live_, ghp_, etc.), it's classified as Secret to prevent
+/// accidental exposure of misnamed keys.
 pub fn classify(entry: &EnvEntry) -> SecretClassification {
     if is_public_key(&entry.key) {
-        SecretClassification::PublicKey
+        // Safety check: if the value looks like a real secret despite the public prefix,
+        // classify as Secret to prevent leaking misnamed keys (e.g., VITE_STRIPE_SECRET_KEY=sk_live_...)
+        if has_secret_value_pattern(&entry.value) {
+            SecretClassification::Secret
+        } else {
+            SecretClassification::PublicKey
+        }
     } else if looks_like_secret(entry) {
         SecretClassification::Secret
     } else {
         SecretClassification::NotSecret
     }
+}
+
+/// Check if a value matches known secret prefixes (independent of key name).
+fn has_secret_value_pattern(value: &str) -> bool {
+    let secret_value_prefixes = [
+        "sk-",
+        "sk_",
+        "pk_",
+        "rk_",
+        "whsec_",
+        "Bearer ",
+        "ghp_",
+        "gho_",
+        "github_pat_",
+        "glpat-",
+        "xoxb-",
+        "xoxp-",
+        "AKIA",
+        "shpat_",
+    ];
+    secret_value_prefixes.iter().any(|p| value.starts_with(p))
 }
 
 /// Check if a key name is a framework public key (safe for browser bundles).
@@ -592,6 +622,24 @@ KEY3=unquoted
                 is_phantom: false
             }),
             SecretClassification::NotSecret
+        );
+
+        // Misnamed public key with secret value — should be classified as Secret
+        assert_eq!(
+            classify(&EnvEntry {
+                key: "VITE_STRIPE_SECRET_KEY".into(),
+                value: "sk_live_abc123xyz".into(),
+                is_phantom: false
+            }),
+            SecretClassification::Secret
+        );
+        assert_eq!(
+            classify(&EnvEntry {
+                key: "NEXT_PUBLIC_GITHUB_TOKEN".into(),
+                value: "ghp_xxxxxxxxxxxx".into(),
+                is_phantom: false
+            }),
+            SecretClassification::Secret
         );
     }
 

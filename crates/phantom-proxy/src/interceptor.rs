@@ -43,36 +43,23 @@ impl Interceptor {
     /// Replace any phantom tokens found in a string with their real values.
     /// Returns the modified string and whether any replacements were made.
     pub fn replace_in_str(&self, input: &str) -> (String, bool) {
-        let mut result = input.to_string();
-        let mut replaced = false;
-
-        for (token, secret) in &self.token_map {
-            if result.contains(token.as_str()) {
-                result = result.replace(token.as_str(), &secret.value);
-                replaced = true;
-            }
-        }
-
-        (result, replaced)
+        let pairs: Vec<(&str, &str)> = self
+            .token_map
+            .iter()
+            .map(|(token, secret)| (token.as_str(), secret.value.as_str()))
+            .collect();
+        find_replace_str(input, &pairs)
     }
 
     /// Replace phantom tokens in a byte buffer (for request bodies).
     /// Returns the modified bytes and whether any replacements were made.
     pub fn replace_in_bytes(&self, input: &[u8]) -> (Vec<u8>, bool) {
-        match std::str::from_utf8(input) {
-            Ok(s) => {
-                let (replaced, did_replace) = self.replace_in_str(s);
-                (replaced.into_bytes(), did_replace)
-            }
-            Err(_) => {
-                let pairs: Vec<(&[u8], &[u8])> = self
-                    .token_map
-                    .iter()
-                    .map(|(t, s)| (t.as_bytes(), s.value.as_bytes()))
-                    .collect();
-                find_replace_bytes(input, &pairs)
-            }
-        }
+        let pairs: Vec<(&str, &str)> = self
+            .token_map
+            .iter()
+            .map(|(token, secret)| (token.as_str(), secret.value.as_str()))
+            .collect();
+        find_replace_bytes_via_str(input, &pairs)
     }
 
     /// Format a header value by replacing the {secret} placeholder with the real secret.
@@ -112,45 +99,53 @@ impl Interceptor {
     /// Scrub real secrets from a response string, replacing them with phantom tokens.
     /// Prevents API responses from leaking real credentials back to AI agents.
     pub fn scrub_response_str(&self, input: &str) -> (String, bool) {
-        let mut result = input.to_string();
-        let mut scrubbed = false;
-
-        for (secret, token) in &self.reverse_map {
-            if result.contains(secret.as_str()) {
-                result = result.replace(secret.as_str(), token.as_str());
-                scrubbed = true;
-            }
-        }
-
-        (result, scrubbed)
+        let pairs: Vec<(&str, &str)> = self
+            .reverse_map
+            .iter()
+            .map(|(secret, token)| (secret.as_str(), token.as_str()))
+            .collect();
+        find_replace_str(input, &pairs)
     }
 
     /// Scrub real secrets from response bytes.
     pub fn scrub_response_bytes(&self, input: &[u8]) -> (Vec<u8>, bool) {
-        match std::str::from_utf8(input) {
-            Ok(s) => {
-                let (scrubbed, did_scrub) = self.scrub_response_str(s);
-                (scrubbed.into_bytes(), did_scrub)
-            }
-            Err(_) => {
-                let pairs: Vec<(&[u8], &[u8])> = self
-                    .reverse_map
-                    .iter()
-                    .map(|(s, t)| (s.as_bytes(), t.as_bytes()))
-                    .collect();
-                find_replace_bytes(input, &pairs)
-            }
-        }
+        let pairs: Vec<(&str, &str)> = self
+            .reverse_map
+            .iter()
+            .map(|(secret, token)| (secret.as_str(), token.as_str()))
+            .collect();
+        find_replace_bytes_via_str(input, &pairs)
     }
 }
 
-/// Find-and-replace multiple byte patterns in a buffer.
-/// Each pair is (needle, replacement). Returns the result and whether any replacement was made.
-fn find_replace_bytes(input: &[u8], pairs: &[(&[u8], &[u8])]) -> (Vec<u8>, bool) {
+/// Find-and-replace multiple string patterns. Returns the result and whether any replacement was made.
+fn find_replace_str(input: &str, pairs: &[(&str, &str)]) -> (String, bool) {
+    let mut result = input.to_string();
+    let mut replaced = false;
+    for &(needle, replacement) in pairs {
+        if result.contains(needle) {
+            result = result.replace(needle, replacement);
+            replaced = true;
+        }
+    }
+    (result, replaced)
+}
+
+/// Find-and-replace in bytes, using the string path for valid UTF-8 and a byte-level
+/// scan for non-UTF-8 input.
+fn find_replace_bytes_via_str(input: &[u8], pairs: &[(&str, &str)]) -> (Vec<u8>, bool) {
+    if let Ok(s) = std::str::from_utf8(input) {
+        let (replaced, did) = find_replace_str(s, pairs);
+        return (replaced.into_bytes(), did);
+    }
+    // Non-UTF-8 fallback: byte-level scan
+    let byte_pairs: Vec<(&[u8], &[u8])> = pairs
+        .iter()
+        .map(|(n, r)| (n.as_bytes(), r.as_bytes()))
+        .collect();
     let mut result = input.to_vec();
     let mut replaced = false;
-
-    for &(needle, replacement) in pairs {
+    for &(needle, replacement) in &byte_pairs {
         let mut i = 0;
         let mut new_result = Vec::with_capacity(result.len());
         while i < result.len() {
@@ -165,7 +160,6 @@ fn find_replace_bytes(input: &[u8], pairs: &[(&[u8], &[u8])]) -> (Vec<u8>, bool)
         }
         result = new_result;
     }
-
     (result, replaced)
 }
 
