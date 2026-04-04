@@ -4,7 +4,7 @@ use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::TokenMap;
 use std::path::PathBuf;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 /// Copy a secret from the current project's vault to another project's vault.
 pub fn run(name: &str, target_dir: &PathBuf, rename: &Option<String>) -> Result<()> {
@@ -40,10 +40,12 @@ pub fn run(name: &str, target_dir: &PathBuf, rename: &Option<String>) -> Result<
     let source_config = PhantomConfig::load(&source_config_path)?;
     let source_vault = phantom_vault::create_vault(&source_config.phantom.project_id);
 
-    // Retrieve the secret
-    let mut secret_value = source_vault
-        .retrieve(name)
-        .context(format!("Secret '{}' not found in source vault", name))?;
+    // Retrieve the secret — Zeroizing<String> auto-zeroizes on drop (all exit paths)
+    let secret_value = Zeroizing::new(
+        source_vault
+            .retrieve(name)
+            .context(format!("Secret '{}' not found in source vault", name))?,
+    );
 
     let target_name = rename.as_deref().unwrap_or(name);
 
@@ -94,9 +96,6 @@ pub fn run(name: &str, target_dir: &PathBuf, rename: &Option<String>) -> Result<
             ".env".cyan()
         );
     }
-
-    // Zeroize the secret from memory
-    secret_value.zeroize();
 
     println!(
         "\n{} Secret copied successfully (value never printed)",

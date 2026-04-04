@@ -648,14 +648,15 @@ impl PhantomMcpServer {
 
         let source_vault = phantom_vault::create_vault(&config.phantom.project_id);
 
-        // Retrieve from source
-        let mut secret_value = source_vault.retrieve(&params.name).map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INVALID_PARAMS,
-                format!("Secret '{}' not found: {e}", params.name),
-                None,
-            )
-        })?;
+        // Retrieve from source — Zeroizing<String> auto-zeroizes on all exit paths
+        let secret_value =
+            zeroize::Zeroizing::new(source_vault.retrieve(&params.name).map_err(|e| {
+                McpError::new(
+                    rmcp::model::ErrorCode::INVALID_PARAMS,
+                    format!("Secret '{}' not found: {e}", params.name),
+                    None,
+                )
+            })?);
 
         // Resolve target directory
         let target_path = std::path::PathBuf::from(&params.target_dir);
@@ -667,8 +668,6 @@ impl PhantomMcpServer {
 
         let target_config_path = target_dir.join(".phantom.toml");
         if !target_config_path.exists() {
-            use zeroize::Zeroize;
-            secret_value.zeroize();
             return Err(McpError::new(
                 rmcp::model::ErrorCode::INVALID_PARAMS,
                 format!(
@@ -699,10 +698,6 @@ impl PhantomMcpServer {
                     None,
                 )
             })?;
-
-        // Zeroize
-        use zeroize::Zeroize;
-        secret_value.zeroize();
 
         let msg = format!(
             "Copied '{}' -> '{}' in {}. Secret value was never exposed.",

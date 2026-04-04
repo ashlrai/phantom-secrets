@@ -356,11 +356,12 @@ async fn handle_request(
 
     for (name, value) in response.headers() {
         let name_str = name.as_str();
-        if matches!(name_str, "transfer-encoding" | "connection") {
-            continue;
-        }
-        // Drop content-length for streaming responses since we forward as chunked
-        if is_streaming && name_str == "content-length" {
+        // Drop content-length: streaming uses chunked transfer, non-streaming may need
+        // recalculation after response scrubbing (phantom tokens differ in length)
+        if matches!(
+            name_str,
+            "transfer-encoding" | "connection" | "content-length"
+        ) {
             continue;
         }
         builder = builder.header(name, value);
@@ -368,7 +369,9 @@ async fn handle_request(
 
     if is_streaming {
         // Stream the response body chunk-by-chunk (critical for SSE/streaming APIs)
-        // Scrub secrets from each chunk as it passes through
+        // Scrub secrets from each chunk as it passes through.
+        // KNOWN LIMITATION: secrets split across chunk boundaries won't be detected.
+        // A future improvement would use a ring buffer to overlap-scan across chunks.
         debug!("Streaming response: {}", status);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(32);
 
@@ -418,23 +421,21 @@ async fn handle_request(
         // Scrub real secrets from response body to prevent leakage to AI agents
         let (scrubbed_body, did_scrub) = state.interceptor.scrub_response_bytes(&response_body);
         if did_scrub {
-            debug!("Scrubbed secret(s) from response body");
-            // Recalculate content-length since phantom tokens differ in length from real secrets
-            let builder = builder.header("content-length", scrubbed_body.len().to_string());
             debug!(
-                "Response: {} ({} bytes, scrubbed)",
-                status,
+                "Scrubbed secret(s) from response body ({} bytes)",
                 scrubbed_body.len()
             );
-            Ok(builder
-                .body(BoxBody::Left(Full::new(Bytes::from(scrubbed_body))))
-                .unwrap())
-        } else {
-            debug!("Response: {} ({} bytes)", status, response_body.len());
-            Ok(builder
-                .body(BoxBody::Left(Full::new(response_body)))
-                .unwrap())
         }
+
+        // Always set content-length from the final body (may differ after scrubbing)
+        let final_body = if did_scrub {
+            Bytes::from(scrubbed_body)
+        } else {
+            response_body
+        };
+        debug!("Response: {} ({} bytes)", status, final_body.len());
+        let builder = builder.header("content-length", final_body.len().to_string());
+        Ok(builder.body(BoxBody::Left(Full::new(final_body))).unwrap())
     }
 }
 

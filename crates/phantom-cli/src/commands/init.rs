@@ -678,6 +678,14 @@ fn install_precommit_hook(project_dir: &Path) {
                 content.trim_end()
             );
             if std::fs::write(&hook_path, updated).is_ok() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &hook_path,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
                 println!(
                     "{} Appended phantom check to existing pre-commit hook",
                     "ok".green().bold()

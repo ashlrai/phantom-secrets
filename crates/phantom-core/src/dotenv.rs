@@ -95,7 +95,7 @@ impl DotenvFile {
     pub fn real_secret_entries(&self) -> Vec<&EnvEntry> {
         self.entries()
             .into_iter()
-            .filter(|e| !e.is_phantom && looks_like_secret(e))
+            .filter(|e| !e.is_phantom && classify(e) == SecretClassification::Secret)
             .collect()
     }
 
@@ -427,6 +427,16 @@ KEY3=unquoted
         assert_eq!(real.len(), 2);
         assert_eq!(real[0].key, "API_KEY");
         assert_eq!(real[1].key, "DATABASE_URL");
+    }
+
+    #[test]
+    fn test_real_secret_entries_excludes_public_keys() {
+        // NEXT_PUBLIC_SUPABASE_ANON_KEY contains "KEY" pattern but should be excluded as a public key
+        let content = "NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiJ9\nSUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiJ9\nVITE_API_KEY=some-key\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let real = dotenv.real_secret_entries();
+        assert_eq!(real.len(), 1);
+        assert_eq!(real[0].key, "SUPABASE_SERVICE_ROLE_KEY");
     }
 
     #[test]
