@@ -1,7 +1,7 @@
 {
   "name": "phantom-secrets-mcp",
   "version": "0.4.0",
-  "description": "MCP server for Phantom Secrets — lets AI tools manage API keys safely",
+  "description": "MCP server for Phantom Secrets — lets AI coding tools manage API keys safely without ever seeing real values. 10 tools for Claude Code, Cursor, Windsurf, and Codex.",
   "bin": {
     "phantom-secrets-mcp": "bin/cli.js",
     "phantom-mcp": "bin/cli.js"
@@ -17,14 +17,40 @@
     "mcp",
     "model-context-protocol",
     "secrets",
-    "security",
+    "api-keys",
     "ai-safety",
+    "phantom",
+    "proxy",
+    "security",
     "claude",
     "cursor",
-    "phantom"
+    "codex",
+    "windsurf",
+    "keychain",
+    "vault"
   ],
   "author": "AshlrAI",
   "license": "MIT",
   "homepage": "https://phm.dev/",
+  "bugs": {
+    "url": "https://github.com/ashlrai/phantom-secrets/issues"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "bin/",
+    "install.js",
+    "README.md",
+    "LICENSE"
+  ],
   "mcpName": "io.github.ashlrai/phantom-secrets-mcp"
 }

@@ -49,7 +49,7 @@ $ phantom exec -- claude
 
 ## MCP Integration (Claude Code, Cursor, Windsurf, Codex)
 
-Phantom ships an MCP server so AI coding tools can manage secrets directly -- without ever seeing real values. 9 tools available: list, status, init, add, remove, rotate, cloud push, cloud pull, cloud status.
+Phantom ships an MCP server so AI coding tools can manage secrets directly -- without ever seeing real values. 10 tools available: list, status, init, add, remove, rotate, copy, cloud push, cloud pull, cloud status.
 
 ### Claude Code
 ```bash
@@ -105,8 +105,8 @@ Cloud sync uses ChaCha20-Poly1305 with a client-side passphrase derived via Argo
 | `phantom reveal <KEY>` | Print a secret value (or `--clipboard` to copy) |
 | `phantom status` | Show proxy state, vault info, and mapped services |
 | `phantom rotate` | Regenerate all phantom tokens (old ones become invalid) |
-| `phantom doctor` | Check configuration and vault health |
-| `phantom check` | Scan for unprotected secrets (pre-commit hook) |
+| `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair) |
+| `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`) |
 | `phantom sync` | Push secrets to Vercel / Railway |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
 | `phantom setup` | Configure Claude Code MCP server + hooks |
@@ -117,6 +117,12 @@ Cloud sync uses ChaCha20-Poly1305 with a client-side passphrase derived via Argo
 | `phantom logout` | Clear cloud credentials |
 | `phantom cloud push` | Push encrypted vault to Phantom Cloud |
 | `phantom cloud pull` | Pull and decrypt vault from Phantom Cloud |
+| `phantom wrap` | Wrap package.json scripts with `phantom exec` automatically |
+| `phantom unwrap` | Restore original package.json scripts |
+| `phantom watch` | Watch .env files and auto-detect new unprotected secrets |
+| `phantom why <KEY>` | Explain why a key is or is not protected |
+| `phantom copy <KEY>` | Copy a secret to another project's vault |
+| `phantom team list/create/members/invite` | Team vault management |
 
 ## Features
 
@@ -126,9 +132,15 @@ Cloud sync uses ChaCha20-Poly1305 with a client-side passphrase derived via Argo
 - **Smart detection** -- Heuristic engine distinguishes secrets (`*_KEY`, `*_TOKEN`, `sk-*`, `ghp_*`) from config (`NODE_ENV`, `PORT`)
 - **Platform sync** -- Push/pull secrets to Vercel and Railway
 - **Pre-commit hook** -- Blocks commits containing unprotected secrets
-- **MCP server** -- 9 tools for Claude Code to manage secrets without seeing values
+- **MCP server** -- 10 tools for Claude Code, Cursor, Windsurf, and Codex to manage secrets without seeing values
 - **Cloud sync** -- E2E encrypted zero-knowledge vault sync across machines
 - **Export/import** -- Encrypted backup and restore with passphrase protection
+- **Response scrubbing** -- Prevents secrets from leaking in API responses back to the AI
+- **Script wrapping** -- `phantom wrap` patches package.json so every npm script runs through the proxy
+- **Watch mode** -- `phantom watch` monitors .env files for new unprotected secrets
+- **Secret explainer** -- `phantom why <KEY>` explains detection heuristics
+- **Cross-project copy** -- `phantom copy` shares secrets between project vaults
+- **Team vaults** -- Shared vaults with role-based access control
 - **Built-in service routing** -- OpenAI, Anthropic, Stripe, Supabase, and custom services via `.phantom.toml`
 
 ## Installation
@@ -166,8 +178,8 @@ $ cargo install phantom
 | `phantom-core` | Config (`.phantom.toml`), `.env` parsing/rewriting, token generation, auth, cloud client |
 | `phantom-vault` | `VaultBackend` trait: OS keychain + encrypted file fallback, ChaCha20-Poly1305 crypto |
 | `phantom-proxy` | HTTP reverse proxy on 127.0.0.1 with SSE/streaming, token replacement, TLS forwarding |
-| `phantom-cli` | `clap`-based CLI binary, 21 commands |
-| `phantom-mcp` | MCP server binary (`rmcp` SDK), stdio transport, 9 tools |
+| `phantom-cli` | `clap`-based CLI binary, 27 commands |
+| `phantom-mcp` | MCP server binary (`rmcp` SDK), stdio transport, 10 tools |
 
 **`apps/web`** -- Next.js backend at [phm.dev](https://phm.dev) for cloud vault sync, GitHub OAuth, and Stripe billing.
 

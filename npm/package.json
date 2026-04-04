@@ -34,5 +34,25 @@
   ],
   "author": "AshlrAI",
   "license": "MIT",
-  "homepage": "https://phm.dev"
+  "homepage": "https://phm.dev",
+  "bugs": {
+    "url": "https://github.com/ashlrai/phantom-secrets/issues"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "bin/",
+    "install.js",
+    "README.md",
+    "LICENSE"
+  ]
 }
