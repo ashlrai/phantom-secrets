@@ -59,40 +59,18 @@ impl Interceptor {
     /// Replace phantom tokens in a byte buffer (for request bodies).
     /// Returns the modified bytes and whether any replacements were made.
     pub fn replace_in_bytes(&self, input: &[u8]) -> (Vec<u8>, bool) {
-        // Try to interpret as UTF-8 for replacement
         match std::str::from_utf8(input) {
             Ok(s) => {
                 let (replaced, did_replace) = self.replace_in_str(s);
                 (replaced.into_bytes(), did_replace)
             }
             Err(_) => {
-                // Binary body — scan for phantom token bytes directly
-                let mut result = input.to_vec();
-                let mut replaced = false;
-
-                for (token, secret) in &self.token_map {
-                    let token_bytes = token.as_bytes();
-                    let secret_bytes = secret.value.as_bytes();
-
-                    // Simple find-and-replace in bytes
-                    let mut i = 0;
-                    let mut new_result = Vec::with_capacity(result.len());
-                    while i < result.len() {
-                        if i + token_bytes.len() <= result.len()
-                            && &result[i..i + token_bytes.len()] == token_bytes
-                        {
-                            new_result.extend_from_slice(secret_bytes);
-                            i += token_bytes.len();
-                            replaced = true;
-                        } else {
-                            new_result.push(result[i]);
-                            i += 1;
-                        }
-                    }
-                    result = new_result;
-                }
-
-                (result, replaced)
+                let pairs: Vec<(&[u8], &[u8])> = self
+                    .token_map
+                    .iter()
+                    .map(|(t, s)| (t.as_bytes(), s.value.as_bytes()))
+                    .collect();
+                find_replace_bytes(input, &pairs)
             }
         }
     }
@@ -149,35 +127,40 @@ impl Interceptor {
                 (scrubbed.into_bytes(), did_scrub)
             }
             Err(_) => {
-                // Binary response — scan for secret bytes directly
-                let mut result = input.to_vec();
-                let mut scrubbed = false;
-
-                for (secret, token) in &self.reverse_map {
-                    let secret_bytes = secret.as_bytes();
-                    let token_bytes = token.as_bytes();
-
-                    let mut i = 0;
-                    let mut new_result = Vec::with_capacity(result.len());
-                    while i < result.len() {
-                        if i + secret_bytes.len() <= result.len()
-                            && &result[i..i + secret_bytes.len()] == secret_bytes
-                        {
-                            new_result.extend_from_slice(token_bytes);
-                            i += secret_bytes.len();
-                            scrubbed = true;
-                        } else {
-                            new_result.push(result[i]);
-                            i += 1;
-                        }
-                    }
-                    result = new_result;
-                }
-
-                (result, scrubbed)
+                let pairs: Vec<(&[u8], &[u8])> = self
+                    .reverse_map
+                    .iter()
+                    .map(|(s, t)| (s.as_bytes(), t.as_bytes()))
+                    .collect();
+                find_replace_bytes(input, &pairs)
             }
         }
     }
+}
+
+/// Find-and-replace multiple byte patterns in a buffer.
+/// Each pair is (needle, replacement). Returns the result and whether any replacement was made.
+fn find_replace_bytes(input: &[u8], pairs: &[(&[u8], &[u8])]) -> (Vec<u8>, bool) {
+    let mut result = input.to_vec();
+    let mut replaced = false;
+
+    for &(needle, replacement) in pairs {
+        let mut i = 0;
+        let mut new_result = Vec::with_capacity(result.len());
+        while i < result.len() {
+            if i + needle.len() <= result.len() && &result[i..i + needle.len()] == needle {
+                new_result.extend_from_slice(replacement);
+                i += needle.len();
+                replaced = true;
+            } else {
+                new_result.push(result[i]);
+                i += 1;
+            }
+        }
+        result = new_result;
+    }
+
+    (result, replaced)
 }
 
 #[cfg(test)]

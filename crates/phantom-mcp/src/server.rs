@@ -51,6 +51,16 @@ pub struct CopySecretParams {
     pub rename: Option<String>,
 }
 
+// ── Error helpers ───────────────────────────────────────────────────
+
+fn internal_err(msg: impl Into<String>) -> McpError {
+    McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, msg.into(), None)
+}
+
+fn invalid_params_err(msg: impl Into<String>) -> McpError {
+    McpError::new(rmcp::model::ErrorCode::INVALID_PARAMS, msg.into(), None)
+}
+
 // ── MCP Server ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -101,18 +111,12 @@ impl PhantomMcpServer {
         description = "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured."
     )]
     fn phantom_list_secrets(&self) -> Result<CallToolResult, McpError> {
-        let config = self
-            .load_config()
-            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+        let config = self.load_config().map_err(internal_err)?;
 
         let vault = phantom_vault::create_vault(&config.phantom.project_id);
-        let names = vault.list().map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Failed to list secrets: {e}"),
-                None,
-            )
-        })?;
+        let names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
         if names.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -148,9 +152,7 @@ impl PhantomMcpServer {
             )]));
         }
 
-        let config = self
-            .load_config()
-            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+        let config = self.load_config().map_err(internal_err)?;
 
         let vault = phantom_vault::create_vault(&config.phantom.project_id);
         let names = vault.list().unwrap_or_default();
@@ -203,13 +205,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let env_path = self.project_dir.join(&params.env_path);
 
-        let dotenv = DotenvFile::parse_file(&env_path).map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INVALID_PARAMS,
-                format!("Failed to read {}: {e}", params.env_path),
-                None,
-            )
-        })?;
+        let dotenv = DotenvFile::parse_file(&env_path)
+            .map_err(|e| invalid_params_err(format!("Failed to read {}: {e}", params.env_path)))?;
 
         let real_entries = dotenv.real_secret_entries();
         if real_entries.is_empty() {
@@ -220,13 +217,8 @@ impl PhantomMcpServer {
 
         let project_id = PhantomConfig::project_id_from_path(&self.project_dir);
         let config = if self.config_path().exists() {
-            PhantomConfig::load(&self.config_path()).map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    format!("Config error: {e}"),
-                    None,
-                )
-            })?
+            PhantomConfig::load(&self.config_path())
+                .map_err(|e| internal_err(format!("Config error: {e}")))?
         } else {
             PhantomConfig::new_with_defaults(project_id.clone())
         };
@@ -237,33 +229,19 @@ impl PhantomMcpServer {
         let mut stored = Vec::new();
         for entry in &real_entries {
             token_map.insert(entry.key.clone());
-            vault.store(&entry.key, &entry.value).map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to store {}: {e}", entry.key),
-                    None,
-                )
-            })?;
+            vault
+                .store(&entry.key, &entry.value)
+                .map_err(|e| internal_err(format!("Failed to store {}: {e}", entry.key)))?;
             stored.push(entry.key.clone());
         }
 
         dotenv
             .write_phantomized(&token_map, &env_path)
-            .map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to rewrite .env: {e}"),
-                    None,
-                )
-            })?;
+            .map_err(|e| internal_err(format!("Failed to rewrite .env: {e}")))?;
 
-        config.save(&self.config_path()).map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Failed to save config: {e}"),
-                None,
-            )
-        })?;
+        config
+            .save(&self.config_path())
+            .map_err(|e| internal_err(format!("Failed to save config: {e}")))?;
 
         let mut output = format!(
             "Phantom initialized! {} secret(s) protected:\n",
@@ -287,18 +265,12 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AddSecretParams>,
     ) -> Result<CallToolResult, McpError> {
-        let config = self
-            .load_config()
-            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+        let config = self.load_config().map_err(internal_err)?;
 
         let vault = phantom_vault::create_vault(&config.phantom.project_id);
-        vault.store(&params.name, &params.value).map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Failed to store secret: {e}"),
-                None,
-            )
-        })?;
+        vault
+            .store(&params.name, &params.value)
+            .map_err(|e| internal_err(format!("Failed to store secret: {e}")))?;
 
         // Update .env with phantom token if it exists
         let env_path = self.env_path();
@@ -344,18 +316,12 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<RemoveSecretParams>,
     ) -> Result<CallToolResult, McpError> {
-        let config = self
-            .load_config()
-            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+        let config = self.load_config().map_err(internal_err)?;
 
         let vault = phantom_vault::create_vault(&config.phantom.project_id);
-        vault.delete(&params.name).map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Failed to remove secret: {e}"),
-                None,
-            )
-        })?;
+        vault
+            .delete(&params.name)
+            .map_err(|e| internal_err(format!("Failed to remove secret: {e}")))?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Secret '{}' removed from vault.",
@@ -368,18 +334,12 @@ impl PhantomMcpServer {
         description = "Regenerate all phantom tokens in .env. Old tokens become invalid. Real secrets in the vault are unchanged."
     )]
     fn phantom_rotate(&self) -> Result<CallToolResult, McpError> {
-        let config = self
-            .load_config()
-            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+        let config = self.load_config().map_err(internal_err)?;
 
         let vault = phantom_vault::create_vault(&config.phantom.project_id);
-        let names = vault.list().map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Failed to list secrets: {e}"),
-                None,
-            )
-        })?;
+        let names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
         if names.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -394,22 +354,11 @@ impl PhantomMcpServer {
 
         let env_path = self.env_path();
         if env_path.exists() {
-            let dotenv = DotenvFile::parse_file(&env_path).map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to read .env: {e}"),
-                    None,
-                )
-            })?;
+            let dotenv = DotenvFile::parse_file(&env_path)
+                .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
             dotenv
                 .write_phantomized(&token_map, &env_path)
-                .map_err(|e| {
-                    McpError::new(
-                        rmcp::model::ErrorCode::INTERNAL_ERROR,
-                        format!("Failed to rewrite .env: {e}"),
-                        None,
-                    )
-                })?;
+                .map_err(|e| internal_err(format!("Failed to rewrite .env: {e}")))?;
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -426,26 +375,15 @@ impl PhantomMcpServer {
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         use std::collections::BTreeMap;
 
-        let token = phantom_core::auth::load_token().ok_or_else(|| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                "Not logged in. Run `phantom login` first.",
-                None,
-            )
-        })?;
+        let token = phantom_core::auth::load_token()
+            .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
 
-        let config = self
-            .load_config()
-            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+        let config = self.load_config().map_err(internal_err)?;
 
         let vault = phantom_vault::create_vault(&config.phantom.project_id);
-        let names = vault.list().map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Failed to list secrets: {e}"),
-                None,
-            )
-        })?;
+        let names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
         if names.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -455,40 +393,20 @@ impl PhantomMcpServer {
 
         let mut secrets = BTreeMap::new();
         for name in &names {
-            let value = vault.retrieve(name).map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to retrieve secret: {e}"),
-                    None,
-                )
-            })?;
+            let value = vault
+                .retrieve(name)
+                .map_err(|e| internal_err(format!("Failed to retrieve secret: {e}")))?;
             secrets.insert(name.clone(), value);
         }
 
-        let plaintext = serde_json::to_string(&secrets).map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Failed to serialize: {e}"),
-                None,
-            )
-        })?;
+        let plaintext = serde_json::to_string(&secrets)
+            .map_err(|e| internal_err(format!("Failed to serialize: {e}")))?;
 
-        let passphrase = phantom_core::auth::get_or_create_cloud_passphrase().map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Failed to access cloud key: {e}"),
-                None,
-            )
-        })?;
+        let passphrase = phantom_core::auth::get_or_create_cloud_passphrase()
+            .map_err(|e| internal_err(format!("Failed to access cloud key: {e}")))?;
 
-        let encrypted =
-            phantom_vault::crypto::encrypt(plaintext.as_bytes(), &passphrase).map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    format!("Encryption failed: {e}"),
-                    None,
-                )
-            })?;
+        let encrypted = phantom_vault::crypto::encrypt(plaintext.as_bytes(), &passphrase)
+            .map_err(|e| internal_err(format!("Encryption failed: {e}")))?;
 
         let blob_b64 = BASE64.encode(&encrypted);
         let version = config.cloud.as_ref().map(|c| c.version).unwrap_or(0);
@@ -502,13 +420,7 @@ impl PhantomMcpServer {
             version,
         )
         .await
-        .map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Cloud push failed: {e}"),
-                None,
-            )
-        })?;
+        .map_err(|e| internal_err(format!("Cloud push failed: {e}")))?;
 
         // Persist new version to config for optimistic concurrency on next push
         let mut config = config;
@@ -533,28 +445,15 @@ impl PhantomMcpServer {
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         use std::collections::BTreeMap;
 
-        let token = phantom_core::auth::load_token().ok_or_else(|| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                "Not logged in. Run `phantom login` first.",
-                None,
-            )
-        })?;
+        let token = phantom_core::auth::load_token()
+            .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
 
-        let config = self
-            .load_config()
-            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+        let config = self.load_config().map_err(internal_err)?;
 
         let api_base = phantom_core::auth::api_base_url();
         let pull_result = phantom_core::cloud::pull(&api_base, &token, &config.phantom.project_id)
             .await
-            .map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    format!("Cloud pull failed: {e}"),
-                    None,
-                )
-            })?;
+            .map_err(|e| internal_err(format!("Cloud pull failed: {e}")))?;
 
         let pull_data = match pull_result {
             Some(data) => data,
@@ -565,38 +464,18 @@ impl PhantomMcpServer {
             }
         };
 
-        let passphrase = phantom_core::auth::get_or_create_cloud_passphrase().map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Failed to access cloud key: {e}"),
-                None,
-            )
-        })?;
+        let passphrase = phantom_core::auth::get_or_create_cloud_passphrase()
+            .map_err(|e| internal_err(format!("Failed to access cloud key: {e}")))?;
 
-        let encrypted = BASE64.decode(&pull_data.encrypted_blob).map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Invalid cloud data: {e}"),
-                None,
-            )
-        })?;
+        let encrypted = BASE64
+            .decode(&pull_data.encrypted_blob)
+            .map_err(|e| internal_err(format!("Invalid cloud data: {e}")))?;
 
-        let plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase).map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Decryption failed: {e}"),
-                None,
-            )
-        })?;
+        let plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase)
+            .map_err(|e| internal_err(format!("Decryption failed: {e}")))?;
 
-        let secrets: BTreeMap<String, String> =
-            serde_json::from_slice(&plaintext).map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    format!("Invalid vault data: {e}"),
-                    None,
-                )
-            })?;
+        let secrets: BTreeMap<String, String> = serde_json::from_slice(&plaintext)
+            .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
 
         let vault = phantom_vault::create_vault(&config.phantom.project_id);
         let mut added = 0;
@@ -606,13 +485,9 @@ impl PhantomMcpServer {
                 skipped += 1;
                 continue;
             }
-            vault.store(name, value).map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to store secret: {e}"),
-                    None,
-                )
-            })?;
+            vault
+                .store(name, value)
+                .map_err(|e| internal_err(format!("Failed to store secret: {e}")))?;
             added += 1;
         }
 
@@ -642,20 +517,14 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<CopySecretParams>,
     ) -> Result<CallToolResult, McpError> {
-        let config = self
-            .load_config()
-            .map_err(|e| McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, e, None))?;
+        let config = self.load_config().map_err(internal_err)?;
 
         let source_vault = phantom_vault::create_vault(&config.phantom.project_id);
 
         // Retrieve from source — Zeroizing<String> auto-zeroizes on all exit paths
         let secret_value =
             zeroize::Zeroizing::new(source_vault.retrieve(&params.name).map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INVALID_PARAMS,
-                    format!("Secret '{}' not found: {e}", params.name),
-                    None,
-                )
+                invalid_params_err(format!("Secret '{}' not found: {e}", params.name))
             })?);
 
         // Resolve target directory
@@ -668,36 +537,21 @@ impl PhantomMcpServer {
 
         let target_config_path = target_dir.join(".phantom.toml");
         if !target_config_path.exists() {
-            return Err(McpError::new(
-                rmcp::model::ErrorCode::INVALID_PARAMS,
-                format!(
-                    "Target project at {} is not phantom-initialized",
-                    target_dir.display()
-                ),
-                None,
-            ));
+            return Err(invalid_params_err(format!(
+                "Target project at {} is not phantom-initialized",
+                target_dir.display()
+            )));
         }
 
-        let target_config = PhantomConfig::load(&target_config_path).map_err(|e| {
-            McpError::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                format!("Failed to load target config: {e}"),
-                None,
-            )
-        })?;
+        let target_config = PhantomConfig::load(&target_config_path)
+            .map_err(|e| internal_err(format!("Failed to load target config: {e}")))?;
 
         let target_vault = phantom_vault::create_vault(&target_config.phantom.project_id);
         let target_name = params.rename.as_deref().unwrap_or(&params.name);
 
         target_vault
             .store(target_name, &secret_value)
-            .map_err(|e| {
-                McpError::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to store in target vault: {e}"),
-                    None,
-                )
-            })?;
+            .map_err(|e| internal_err(format!("Failed to store in target vault: {e}")))?;
 
         let msg = format!(
             "Copied '{}' -> '{}' in {}. Secret value was never exposed.",
