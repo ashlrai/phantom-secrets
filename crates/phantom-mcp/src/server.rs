@@ -1,5 +1,5 @@
 use phantom_core::config::PhantomConfig;
-use phantom_core::dotenv::DotenvFile;
+use phantom_core::dotenv::{classify, is_public_key, DotenvFile, SecretClassification};
 use phantom_core::token::{PhantomToken, TokenMap};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -49,6 +49,60 @@ pub struct CopySecretParams {
     pub target_dir: String,
     /// Optional new name for the secret in the target project
     pub rename: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DoctorParams {
+    /// Auto-fix safe issues (install hooks, generate .env.example, etc.)
+    #[serde(default)]
+    pub fix: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WhyParams {
+    /// Environment variable name to explain
+    pub key: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WrapParams {
+    /// Only wrap specific scripts (by name). If empty, uses default heuristic.
+    #[serde(default)]
+    pub only: Vec<String>,
+    /// Skip specific scripts (by name)
+    #[serde(default)]
+    pub skip: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UnwrapParams {}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CheckParams {
+    /// Check if phantom tokens are in environment without proxy running
+    #[serde(default)]
+    pub runtime: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EnvParams {
+    /// Output file name (defaults to .env.example)
+    #[serde(default = "default_example_output")]
+    pub output: String,
+}
+
+fn default_example_output() -> String {
+    ".env.example".to_string()
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SyncParams {
+    /// Platform to sync to (vercel, railway). If empty, syncs all configured targets.
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// Override project ID for this sync
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 // ── Error helpers ───────────────────────────────────────────────────
@@ -564,6 +618,804 @@ impl PhantomMcpServer {
             target_dir.display()
         );
         Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    /// Run health checks and optionally auto-fix issues.
+    #[tool(
+        description = "Run Phantom health checks: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook. Set fix=true to auto-fix safe issues."
+    )]
+    fn phantom_doctor(
+        &self,
+        Parameters(params): Parameters<DoctorParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut issues = 0u32;
+        let mut fixed = 0u32;
+
+        let config_path = self.config_path();
+        let env_path = self.env_path();
+
+        // ── Check 1: .phantom.toml ──────────────────────────────────────
+        let config = if config_path.exists() {
+            lines.push("pass: .phantom.toml found".to_string());
+            match PhantomConfig::load(&config_path) {
+                Ok(cfg) => {
+                    let id_short = cfg
+                        .phantom
+                        .project_id
+                        .get(..8)
+                        .unwrap_or(&cfg.phantom.project_id);
+                    lines.push(format!("pass: Config valid (project: {id_short})"));
+                    Some(cfg)
+                }
+                Err(e) => {
+                    lines.push(format!("FAIL: Config parse error: {e}"));
+                    issues += 1;
+                    None
+                }
+            }
+        } else {
+            lines.push("warn: No .phantom.toml found".to_string());
+            lines.push("  Fix: Run `phantom init`".to_string());
+            issues += 1;
+            None
+        };
+
+        // ── Check 2: Vault accessible ───────────────────────────────────
+        if let Some(cfg) = &config {
+            let vault = phantom_vault::create_vault(&cfg.phantom.project_id);
+            lines.push(format!("pass: Vault backend: {}", vault.backend_name()));
+            match vault.list() {
+                Ok(names) => {
+                    lines.push(format!("pass: {} secret(s) in vault", names.len()));
+                }
+                Err(e) => {
+                    lines.push(format!("FAIL: Vault access failed: {e}"));
+                    issues += 1;
+                }
+            }
+        }
+
+        // ── Check 3: .env file ──────────────────────────────────────────
+        if env_path.exists() {
+            match DotenvFile::parse_file(&env_path) {
+                Ok(dotenv) => {
+                    let entries = dotenv.entries();
+                    let real_secrets = dotenv.real_secret_entries();
+                    if real_secrets.is_empty() {
+                        lines.push(format!(
+                            "pass: .env has {} entries, all protected",
+                            entries.len()
+                        ));
+                    } else {
+                        let names: Vec<&str> =
+                            real_secrets.iter().map(|e| e.key.as_str()).collect();
+                        lines.push(format!(
+                            "warn: .env has {} unprotected secret(s): {}",
+                            real_secrets.len(),
+                            names.join(", ")
+                        ));
+                        lines.push("  Fix: Run `phantom init`".to_string());
+                        issues += 1;
+                    }
+                }
+                Err(e) => {
+                    lines.push(format!("FAIL: .env parse error: {e}"));
+                    issues += 1;
+                }
+            }
+        } else {
+            lines.push("info: No .env file in current directory".to_string());
+        }
+
+        // ── Check 4: .gitignore includes .env ───────────────────────────
+        let gitignore_path = self.project_dir.join(".gitignore");
+        if gitignore_path.exists() {
+            let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+            if content.lines().any(|l| l.trim() == ".env") {
+                lines.push("pass: .env is in .gitignore".to_string());
+            } else {
+                lines.push(
+                    "warn: .env is NOT in .gitignore — secrets could be committed!".to_string(),
+                );
+                if params.fix {
+                    let mut c = content;
+                    if !c.ends_with('\n') {
+                        c.push('\n');
+                    }
+                    c.push_str(".env\n");
+                    std::fs::write(&gitignore_path, c)
+                        .map_err(|e| internal_err(format!("Failed to write .gitignore: {e}")))?;
+                    lines.push("  Fixed: Added .env to .gitignore".to_string());
+                    fixed += 1;
+                } else {
+                    issues += 1;
+                }
+            }
+        } else {
+            lines.push("warn: No .gitignore — consider adding one".to_string());
+            if params.fix {
+                std::fs::write(
+                    &gitignore_path,
+                    ".env\n.env.local\n.env.*.local\n.env.backup\n",
+                )
+                .map_err(|e| internal_err(format!("Failed to create .gitignore: {e}")))?;
+                lines.push("  Fixed: Created .gitignore with .env patterns".to_string());
+                fixed += 1;
+            } else {
+                issues += 1;
+            }
+        }
+
+        // ── Check 5: .env.example exists ────────────────────────────────
+        let example_path = self.project_dir.join(".env.example");
+        if example_path.exists() {
+            lines.push("pass: .env.example found (team onboarding ready)".to_string());
+        } else {
+            lines.push("warn: No .env.example — team onboarding may be difficult".to_string());
+            if params.fix && env_path.exists() {
+                if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
+                    let cfg = config.as_ref();
+                    let content = dotenv.generate_example_content(cfg);
+                    std::fs::write(&example_path, content)
+                        .map_err(|e| internal_err(format!("Failed to write .env.example: {e}")))?;
+                    lines.push("  Fixed: Generated .env.example".to_string());
+                    fixed += 1;
+                }
+            } else if !params.fix {
+                issues += 1;
+            }
+        }
+
+        // ── Check 6: Pre-commit hook ────────────────────────────────────
+        let git_dir = self.project_dir.join(".git");
+        let git_hook = git_dir.join("hooks/pre-commit");
+        if git_dir.exists() {
+            if git_hook.exists() {
+                let content = std::fs::read_to_string(&git_hook).unwrap_or_default();
+                if content.contains("phantom") {
+                    lines.push("pass: Git pre-commit hook includes phantom check".to_string());
+                } else {
+                    lines.push("warn: Git pre-commit hook exists but no phantom check".to_string());
+                    if params.fix {
+                        let mut c = content;
+                        c.push_str(
+                            "\n\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\n",
+                        );
+                        std::fs::write(&git_hook, c).map_err(|e| {
+                            internal_err(format!("Failed to update pre-commit hook: {e}"))
+                        })?;
+                        lines
+                            .push("  Fixed: Appended phantom check to pre-commit hook".to_string());
+                        fixed += 1;
+                    } else {
+                        issues += 1;
+                    }
+                }
+            } else {
+                lines.push("warn: No pre-commit hook installed".to_string());
+                if params.fix {
+                    let hooks_dir = git_dir.join("hooks");
+                    let _ = std::fs::create_dir_all(&hooks_dir);
+                    let hook = "#!/bin/sh\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\nexit $?\n";
+                    std::fs::write(&git_hook, hook).map_err(|e| {
+                        internal_err(format!("Failed to install pre-commit hook: {e}"))
+                    })?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            &git_hook,
+                            std::fs::Permissions::from_mode(0o755),
+                        );
+                    }
+                    lines.push("  Fixed: Installed pre-commit hook".to_string());
+                    fixed += 1;
+                } else {
+                    issues += 1;
+                }
+            }
+        } else {
+            lines.push("info: Not a git repo — pre-commit hook not applicable".to_string());
+        }
+
+        // ── Summary ─────────────────────────────────────────────────────
+        lines.push(String::new());
+        if params.fix && fixed > 0 {
+            lines.push(format!("Auto-fixed {fixed} issue(s)."));
+        }
+        if issues == 0 {
+            lines.push("All checks passed!".to_string());
+        } else {
+            let suffix = if !params.fix {
+                " — use fix=true to auto-fix"
+            } else {
+                ""
+            };
+            lines.push(format!("{issues} issue(s) found{suffix}"));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            lines.join("\n"),
+        )]))
+    }
+
+    /// Explain why a key is or isn't protected by Phantom.
+    #[tool(
+        description = "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched."
+    )]
+    fn phantom_why(
+        &self,
+        Parameters(params): Parameters<WhyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let env_path = self.env_path();
+        let dotenv = DotenvFile::parse_file(&env_path)
+            .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
+
+        let entry = dotenv.entries().into_iter().find(|e| e.key == params.key);
+
+        let entry = match entry {
+            Some(e) => e,
+            None => {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "'{}' was not found in .env.",
+                    params.key
+                ))]));
+            }
+        };
+
+        let config = self.load_config().ok();
+
+        let mut output = String::new();
+
+        if entry.is_phantom {
+            // Already protected with a phantom token
+            let truncated = if entry.value.len() > 12 {
+                format!("{}...", &entry.value[..12])
+            } else {
+                entry.value.clone()
+            };
+            output.push_str(&format!(
+                "PROTECTED: '{}' is a phantom token ({}).\n",
+                params.key, truncated
+            ));
+            output.push_str(
+                "The real secret is stored in the vault; only the phantom token appears in .env.\n",
+            );
+
+            // Check for service mapping
+            if let Some(cfg) = &config {
+                if let Some((svc_name, svc)) = cfg
+                    .services
+                    .iter()
+                    .find(|(_, c)| c.secret_key == params.key)
+                {
+                    output.push_str(&format!(
+                        "Service mapping: {} -> {} ({})\n",
+                        params.key,
+                        svc.pattern.as_deref().unwrap_or("n/a"),
+                        svc_name
+                    ));
+                }
+            }
+        } else {
+            let classification = classify(entry);
+            match classification {
+                SecretClassification::PublicKey => {
+                    // Determine which prefix matched
+                    let public_prefixes = [
+                        "NEXT_PUBLIC_",
+                        "EXPO_PUBLIC_",
+                        "VITE_",
+                        "REACT_APP_",
+                        "NUXT_PUBLIC_",
+                        "GATSBY_",
+                    ];
+                    let matched_prefix = public_prefixes
+                        .iter()
+                        .find(|p| params.key.starts_with(*p))
+                        .unwrap_or(&"unknown");
+                    output.push_str(&format!(
+                        "PUBLIC KEY: '{}' matches the framework prefix '{}'.\n",
+                        params.key, matched_prefix
+                    ));
+                    output.push_str(
+                        "This is a browser-safe public key — it's designed to be \
+                         embedded in client-side bundles and does not need protection.\n",
+                    );
+                }
+                SecretClassification::Secret => {
+                    output.push_str(&format!(
+                        "UNPROTECTED: '{}' is classified as a secret but does NOT have a phantom token.\n",
+                        params.key
+                    ));
+                    // Explain why it was detected
+                    let key_upper = params.key.to_uppercase();
+                    let secret_key_patterns = [
+                        "KEY",
+                        "SECRET",
+                        "TOKEN",
+                        "PASSWORD",
+                        "PASSWD",
+                        "CREDENTIAL",
+                        "AUTH",
+                        "PRIVATE",
+                        "API_KEY",
+                        "ACCESS_KEY",
+                        "SIGNING",
+                    ];
+                    let connection_patterns = [
+                        "DATABASE_URL",
+                        "REDIS_URL",
+                        "MONGO_URL",
+                        "POSTGRES_URL",
+                        "MYSQL_URL",
+                        "AMQP_URL",
+                        "RABBITMQ_URL",
+                        "ELASTICSEARCH_URL",
+                        "CONNECTION_STRING",
+                        "DSN",
+                    ];
+
+                    if let Some(pat) = secret_key_patterns.iter().find(|p| key_upper.contains(*p)) {
+                        output.push_str(&format!(
+                            "Reason: key name contains '{}', which indicates a secret.\n",
+                            pat
+                        ));
+                    } else if let Some(pat) =
+                        connection_patterns.iter().find(|p| key_upper.contains(*p))
+                    {
+                        output.push_str(&format!(
+                            "Reason: key name matches connection pattern '{}'.\n",
+                            pat
+                        ));
+                    } else if is_public_key(&params.key) {
+                        output.push_str(
+                            "Reason: has a public-key prefix, but the value matches a known secret pattern.\n",
+                        );
+                    } else {
+                        output.push_str(
+                            "Reason: the value matches known secret patterns (prefix, connection string, or high-entropy string).\n",
+                        );
+                    }
+                    output.push_str("Run `phantom init` to protect it with a phantom token.\n");
+                }
+                SecretClassification::NotSecret => {
+                    output.push_str(&format!(
+                        "NOT SECRET: '{}' is classified as non-secret configuration.\n",
+                        params.key
+                    ));
+                    output.push_str(
+                        "It doesn't match any secret key patterns (KEY, SECRET, TOKEN, PASSWORD, etc.), \
+                         connection string patterns, or secret value prefixes.\n",
+                    );
+                    output.push_str("Phantom leaves non-secret config values untouched in .env.\n");
+                }
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            output.trim_end().to_string(),
+        )]))
+    }
+
+    /// Wrap package.json scripts with `npx phantom-secrets exec --`.
+    #[tool(
+        description = "Wrap package.json scripts with `npx phantom-secrets exec --` so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts."
+    )]
+    fn phantom_wrap(
+        &self,
+        Parameters(params): Parameters<WrapParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let pkg_path = self.project_dir.join("package.json");
+        if !pkg_path.exists() {
+            return Err(internal_err("No package.json found in project directory."));
+        }
+
+        let content = std::fs::read_to_string(&pkg_path)
+            .map_err(|e| internal_err(format!("Failed to read package.json: {e}")))?;
+
+        let mut pkg: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| internal_err(format!("Failed to parse package.json: {e}")))?;
+
+        let scripts = match pkg.get_mut("scripts").and_then(|s| s.as_object_mut()) {
+            Some(s) => s,
+            None => {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "No \"scripts\" field found in package.json.",
+                )]));
+            }
+        };
+
+        // Heuristic keywords
+        let wrap_keywords = ["dev", "start", "build", "serve", "deploy"];
+        let skip_keywords = [
+            "lint",
+            "test",
+            "format",
+            "check",
+            "typecheck",
+            "prettier",
+            "eslint",
+            "clean",
+            "prepare",
+            "postinstall",
+        ];
+
+        // Collect script names to wrap (avoid mutating while iterating)
+        let candidates: Vec<(String, String)> = scripts
+            .iter()
+            .filter_map(|(name, val)| {
+                let value = val.as_str()?;
+                // Skip :raw variants
+                if name.ends_with(":raw") {
+                    return None;
+                }
+                // Skip already wrapped
+                if value.contains("phantom-secrets") {
+                    return None;
+                }
+                // Apply skip list from params
+                if params.skip.iter().any(|s| s == name) {
+                    return None;
+                }
+                // If "only" is specified, use that; otherwise use heuristic
+                let should_wrap = if !params.only.is_empty() {
+                    params.only.iter().any(|o| o == name)
+                } else {
+                    let lower = name.to_lowercase();
+                    let matches_wrap = wrap_keywords.iter().any(|kw| lower.contains(kw));
+                    let matches_skip = skip_keywords.iter().any(|kw| lower.contains(kw));
+                    matches_wrap && !matches_skip
+                };
+                if should_wrap {
+                    Some((name.clone(), value.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No scripts matched for wrapping.",
+            )]));
+        }
+
+        // Apply wrapping
+        for (name, original) in &candidates {
+            let raw_key = format!("{name}:raw");
+            scripts.insert(raw_key, serde_json::Value::String(original.clone()));
+            scripts.insert(
+                name.clone(),
+                serde_json::Value::String(format!("npx phantom-secrets exec -- {original}")),
+            );
+        }
+
+        let pretty = serde_json::to_string_pretty(&pkg)
+            .map_err(|e| internal_err(format!("Failed to serialize package.json: {e}")))?;
+        std::fs::write(&pkg_path, format!("{pretty}\n"))
+            .map_err(|e| internal_err(format!("Failed to write package.json: {e}")))?;
+
+        let mut output = format!("Wrapped {} script(s):\n", candidates.len());
+        for (name, _) in &candidates {
+            output.push_str(&format!("  - {name}\n"));
+        }
+        output.push_str("\nOriginals saved as `script:raw` variants.");
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Unwrap package.json scripts, restoring originals from `:raw` variants.
+    #[tool(
+        description = "Reverse phantom_wrap: restore original package.json scripts from their `:raw` variants and remove the `:raw` entries."
+    )]
+    fn phantom_unwrap(
+        &self,
+        #[allow(unused_variables)] Parameters(params): Parameters<UnwrapParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let pkg_path = self.project_dir.join("package.json");
+        if !pkg_path.exists() {
+            return Err(internal_err("No package.json found in project directory."));
+        }
+
+        let content = std::fs::read_to_string(&pkg_path)
+            .map_err(|e| internal_err(format!("Failed to read package.json: {e}")))?;
+
+        let mut pkg: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| internal_err(format!("Failed to parse package.json: {e}")))?;
+
+        let scripts = match pkg.get_mut("scripts").and_then(|s| s.as_object_mut()) {
+            Some(s) => s,
+            None => {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "No \"scripts\" field found in package.json.",
+                )]));
+            }
+        };
+
+        // Find all :raw variants
+        let raw_entries: Vec<(String, String)> = scripts
+            .iter()
+            .filter_map(|(name, val)| {
+                if name.ends_with(":raw") {
+                    Some((name.clone(), val.as_str()?.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if raw_entries.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No wrapped scripts found (no `:raw` variants).",
+            )]));
+        }
+
+        let mut restored = Vec::new();
+        for (raw_key, original_value) in &raw_entries {
+            let base_name = raw_key.trim_end_matches(":raw");
+            scripts.insert(
+                base_name.to_string(),
+                serde_json::Value::String(original_value.clone()),
+            );
+            scripts.remove(raw_key);
+            restored.push(base_name.to_string());
+        }
+
+        let pretty = serde_json::to_string_pretty(&pkg)
+            .map_err(|e| internal_err(format!("Failed to serialize package.json: {e}")))?;
+        std::fs::write(&pkg_path, format!("{pretty}\n"))
+            .map_err(|e| internal_err(format!("Failed to write package.json: {e}")))?;
+
+        let mut output = format!("Unwrapped {} script(s):\n", restored.len());
+        for name in &restored {
+            output.push_str(&format!("  - {name}\n"));
+        }
+        output.push_str("\n`:raw` variants removed. Scripts restored to originals.");
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    /// Check for leaked secrets or orphaned phantom tokens.
+    #[tool(
+        description = "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans .env files for unprotected real secrets."
+    )]
+    fn phantom_check(
+        &self,
+        Parameters(params): Parameters<CheckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.runtime {
+            // Scan common API key env vars for phantom tokens in the process environment
+            let api_vars = [
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "STRIPE_SECRET_KEY",
+                "STRIPE_API_KEY",
+                "GITHUB_TOKEN",
+                "AWS_SECRET_ACCESS_KEY",
+                "DATABASE_URL",
+                "REDIS_URL",
+                "SENDGRID_API_KEY",
+                "TWILIO_AUTH_TOKEN",
+                "SLACK_TOKEN",
+                "SLACK_BOT_TOKEN",
+                "DISCORD_TOKEN",
+                "FIREBASE_API_KEY",
+                "SUPABASE_SERVICE_ROLE_KEY",
+                "CLOUDFLARE_API_TOKEN",
+            ];
+
+            let mut found = Vec::new();
+            for var in &api_vars {
+                if let Ok(val) = std::env::var(var) {
+                    if PhantomToken::is_phantom_token(&val) {
+                        found.push(*var);
+                    }
+                }
+            }
+
+            if found.is_empty() {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "No issues found. No phantom tokens detected in environment variables.",
+                )]));
+            }
+
+            let mut output = format!(
+                "WARNING: {} phantom token(s) found in environment without proxy:\n",
+                found.len()
+            );
+            for var in &found {
+                output.push_str(&format!("  - {}\n", var));
+            }
+            output.push_str(
+                "\nThese tokens will not resolve to real secrets without the proxy running.\n\
+                 Run `phantom exec -- <command>` to start the proxy.",
+            );
+            Ok(CallToolResult::success(vec![Content::text(output)]))
+        } else {
+            // Scan .env files for unprotected secrets
+            let env_files = [".env", ".env.local", ".env.development", ".env.production"];
+            let mut total_issues = 0;
+            let mut output = String::new();
+
+            for filename in &env_files {
+                let path = self.project_dir.join(filename);
+                if !path.exists() {
+                    continue;
+                }
+
+                match DotenvFile::parse_file(&path) {
+                    Ok(dotenv) => {
+                        let real = dotenv.real_secret_entries();
+                        if !real.is_empty() {
+                            output.push_str(&format!(
+                                "{}: {} unprotected secret(s)\n",
+                                filename,
+                                real.len()
+                            ));
+                            for entry in &real {
+                                output.push_str(&format!("  - {}\n", entry.key));
+                            }
+                            total_issues += real.len();
+                        }
+                    }
+                    Err(e) => {
+                        output.push_str(&format!("{}: failed to parse ({})\n", filename, e));
+                    }
+                }
+            }
+
+            if total_issues == 0 {
+                Ok(CallToolResult::success(vec![Content::text(
+                    "No issues found. All .env files are clean.",
+                )]))
+            } else {
+                let header = format!(
+                    "Found {} unprotected secret(s) across .env files:\n\n",
+                    total_issues
+                );
+                output
+                    .push_str("\nRun `phantom init` to protect these secrets with phantom tokens.");
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "{header}{output}"
+                ))]))
+            }
+        }
+    }
+
+    /// Generate a .env.example file from the current .env.
+    #[tool(
+        description = "Generate a .env.example file from .env. Secrets are replaced with descriptive placeholders; non-secret config values are preserved. Safe to commit to version control."
+    )]
+    fn phantom_env(
+        &self,
+        Parameters(params): Parameters<EnvParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let env_path = self.env_path();
+
+        let dotenv = DotenvFile::parse_file(&env_path)
+            .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
+
+        let config = self.load_config().ok();
+
+        let content = dotenv.generate_example_content(config.as_ref());
+
+        let output_path = self.project_dir.join(&params.output);
+        std::fs::write(&output_path, &content)
+            .map_err(|e| internal_err(format!("Failed to write {}: {e}", params.output)))?;
+
+        let entry_count = dotenv.entries().len();
+        let secret_count = dotenv.real_secret_entries().len()
+            + dotenv.entries().iter().filter(|e| e.is_phantom).count();
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Generated {} with {} entries ({} secrets replaced with placeholders).",
+            params.output, entry_count, secret_count
+        ))]))
+    }
+
+    /// Show what would be synced to deployment platforms and the current sync configuration.
+    #[tool(
+        description = "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool — actual sync requires platform API tokens. Use it to understand and explain the sync setup."
+    )]
+    fn phantom_sync(
+        &self,
+        Parameters(params): Parameters<SyncParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let config = self.load_config().map_err(internal_err)?;
+
+        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let secret_names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+
+        // Filter sync targets by platform if specified
+        let targets: Vec<_> = if let Some(ref platform_filter) = params.platform {
+            let filter_lower = platform_filter.to_lowercase();
+            config
+                .sync
+                .iter()
+                .filter(|t| t.platform.to_string() == filter_lower)
+                .collect()
+        } else {
+            config.sync.iter().collect()
+        };
+
+        if targets.is_empty() && config.sync.is_empty() {
+            let mut output = String::from("No sync targets configured.\n\n");
+            output.push_str("To add a sync target, add a [[sync]] section to .phantom.toml:\n\n");
+            output.push_str("  [[sync]]\n");
+            output.push_str("  platform = \"vercel\"\n");
+            output.push_str("  token_env = \"VERCEL_TOKEN\"\n");
+            output.push_str("  project_id = \"prj_xxxxx\"\n");
+            output.push_str("  targets = [\"production\", \"preview\"]\n\n");
+            output.push_str("  [[sync]]\n");
+            output.push_str("  platform = \"railway\"\n");
+            output.push_str("  token_env = \"RAILWAY_TOKEN\"\n");
+            output.push_str("  project_id = \"your-railway-project-id\"\n");
+            if !secret_names.is_empty() {
+                output.push_str(&format!(
+                    "\n{} secret(s) in vault that would be synced once configured.",
+                    secret_names.len()
+                ));
+            }
+            return Ok(CallToolResult::success(vec![Content::text(output)]));
+        }
+
+        if targets.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No sync targets match platform '{}'. Configured platforms: {}",
+                params.platform.as_deref().unwrap_or(""),
+                config
+                    .sync
+                    .iter()
+                    .map(|t| t.platform.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))]));
+        }
+
+        let mut output = format!(
+            "Sync configuration ({} target(s), {} secret(s) in vault):\n\n",
+            targets.len(),
+            secret_names.len()
+        );
+
+        for target in &targets {
+            let project_id = params.project_id.as_deref().unwrap_or(&target.project_id);
+
+            output.push_str(&format!("Platform: {}\n", target.platform));
+            output.push_str(&format!("  Project ID: {}\n", project_id));
+            output.push_str(&format!("  Token env var: {}\n", target.token_env));
+            output.push_str(&format!(
+                "  Target environments: {}\n",
+                target.targets.join(", ")
+            ));
+
+            if let Some(ref svc_id) = target.service_id {
+                output.push_str(&format!("  Service ID: {}\n", svc_id));
+            }
+            if let Some(ref env_id) = target.environment_id {
+                output.push_str(&format!("  Environment ID: {}\n", env_id));
+            }
+
+            output.push_str("  Secrets to sync:\n");
+            if secret_names.is_empty() {
+                output.push_str("    (none — vault is empty)\n");
+            } else {
+                for name in &secret_names {
+                    output.push_str(&format!("    - {}\n", name));
+                }
+            }
+            output.push('\n');
+        }
+
+        output.push_str(
+            "Note: Actual sync requires platform API tokens. Run `phantom sync` in the CLI to execute.",
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     /// Check cloud auth and sync status.
