@@ -8,6 +8,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![phm.dev](https://img.shields.io/badge/cloud-phm.dev-blue)](https://phm.dev)
 
+[Watch the 45-second demo](https://github.com/ashlrai/phantom-secrets/releases/download/v0.4.0/phantom-demo.mp4)
+
 AI coding agents read your `.env` files, putting API keys into LLM context windows where they leak via prompt injection, session logs, malicious MCP servers, or training data. GitGuardian reports AI-assisted commits leak secrets at 2x the baseline rate.
 
 Phantom replaces real secrets with inert tokens. A local proxy swaps them back at the network layer. The AI never sees a real key.

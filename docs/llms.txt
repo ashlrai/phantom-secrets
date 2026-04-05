@@ -8,11 +8,30 @@
 npx phantom-secrets init
 ```
 
-## MCP Server (9 tools)
+## MCP Server (10 tools)
 
 Setup: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
-Tools: phantom_init, phantom_list_secrets, phantom_status, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
+Tools: phantom_init, phantom_list_secrets, phantom_status, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_copy, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
+
+## CLI (27 commands)
+
+init, exec, start, stop, list, add, remove, reveal, rotate, status, doctor (--fix), check, sync, pull, env, setup, login, logout, cloud push, cloud pull, wrap, unwrap, watch, why, copy, export, import, team (list/create/members/invite)
+
+## Key Features
+
+- Phantom token proxy — replaces real secrets with `phm_` tokens, injects real keys at the network layer
+- Response scrubbing — prevents secrets from leaking in API responses back to the AI
+- Public key awareness — detects and skips publishable/public keys that don't need protection
+- OS keychain storage — macOS Keychain, Linux Secret Service, encrypted file fallback
+- Cloud sync — E2E encrypted zero-knowledge vault sync via phm.dev
+- Script wrapping — `phantom wrap` patches package.json so every npm script runs through the proxy
+- Watch mode — `phantom watch` monitors .env files for new unprotected secrets
+- Secret explainer — `phantom why <KEY>` explains detection heuristics
+- Cross-project copy — `phantom copy` shares secrets between project vaults
+- Doctor with auto-fix — `phantom doctor --fix` repairs configuration issues
+- Team vaults — shared vaults with role-based access control
+- Pre-commit hook — blocks commits containing unprotected secrets
 
 ## How AI Should Behave
 
