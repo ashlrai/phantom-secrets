@@ -8,7 +8,7 @@
 npx phantom-secrets init
 ```
 
-## MCP Server (10 tools)
+## MCP Server (17 tools)
 
 Setup: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 

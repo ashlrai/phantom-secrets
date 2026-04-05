@@ -135,7 +135,7 @@ Phantom also ships an MCP server so Claude Code, Cursor, Windsurf, and Codex can
 $ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 ```
 
-Ten tools: `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret`, `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`.
+Seventeen tools: `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret`, `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`.
 
 ## Architecture: 5-crate Rust workspace
 
@@ -144,7 +144,7 @@ phantom-core     Config, .env parsing, token generation (256-bit CSPRNG, phm_ pr
 phantom-vault    VaultBackend trait: OS keychain + encrypted file fallback
 phantom-proxy    HTTP reverse proxy (hyper), token replacement, TLS forwarding (reqwest)
 phantom-cli      clap-based CLI, 27 commands
-phantom-mcp      MCP server (rmcp SDK), stdio transport, 10 tools
+phantom-mcp      MCP server (rmcp SDK), stdio transport, 17 tools
 ```
 
 The vault uses ChaCha20-Poly1305 for encryption with Argon2id key derivation (for the encrypted file fallback). The `zeroize` crate scrubs secrets from memory after every proxy injection. 69 tests, zero clippy warnings.

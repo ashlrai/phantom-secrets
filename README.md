@@ -51,7 +51,7 @@ $ phantom exec -- claude
 
 ## MCP Integration (Claude Code, Cursor, Windsurf, Codex)
 
-Phantom ships an MCP server so AI coding tools can manage secrets directly -- without ever seeing real values. 10 tools available: list, status, init, add, remove, rotate, copy, cloud push, cloud pull, cloud status.
+Phantom ships an MCP server so AI coding tools can manage secrets directly -- without ever seeing real values. 17 tools available: list, status, init, add, remove, rotate, copy, cloud push, cloud pull, cloud status.
 
 ### Claude Code
 ```bash
@@ -134,7 +134,7 @@ Cloud sync uses ChaCha20-Poly1305 with a client-side passphrase derived via Argo
 - **Smart detection** -- Heuristic engine distinguishes secrets (`*_KEY`, `*_TOKEN`, `sk-*`, `ghp_*`) from config (`NODE_ENV`, `PORT`)
 - **Platform sync** -- Push/pull secrets to Vercel and Railway
 - **Pre-commit hook** -- Blocks commits containing unprotected secrets
-- **MCP server** -- 10 tools for Claude Code, Cursor, Windsurf, and Codex to manage secrets without seeing values
+- **MCP server** -- 17 tools for Claude Code, Cursor, Windsurf, and Codex to manage secrets without seeing values
 - **Cloud sync** -- E2E encrypted zero-knowledge vault sync across machines
 - **Export/import** -- Encrypted backup and restore with passphrase protection
 - **Response scrubbing** -- Prevents secrets from leaking in API responses back to the AI
@@ -181,7 +181,7 @@ $ cargo install phantom
 | `phantom-vault` | `VaultBackend` trait: OS keychain + encrypted file fallback, ChaCha20-Poly1305 crypto |
 | `phantom-proxy` | HTTP reverse proxy on 127.0.0.1 with SSE/streaming, token replacement, TLS forwarding |
 | `phantom-cli` | `clap`-based CLI binary, 27 commands |
-| `phantom-mcp` | MCP server binary (`rmcp` SDK), stdio transport, 10 tools |
+| `phantom-mcp` | MCP server binary (`rmcp` SDK), stdio transport, 17 tools |
 
 **`apps/web`** -- Next.js backend at [phm.dev](https://phm.dev) for cloud vault sync, GitHub OAuth, and Stripe billing.
 

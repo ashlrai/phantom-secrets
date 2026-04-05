@@ -364,7 +364,7 @@ Once configured, Claude Code gains these tools:
 | `phantom_cloud_pull` | Pull vault from Phantom Cloud |
 | `phantom_cloud_status` | Check cloud auth and sync status |
 
-Claude can call these 10 tools during a session. For example, if you say "add my new Stripe key," Claude can use `phantom_add_secret` to store it safely -- the real value passes through the MCP protocol but never enters Claude's context window or conversation logs.
+Claude can call these 17 tools during a session. For example, if you say "add my new Stripe key," Claude can use `phantom_add_secret` to store it safely -- the real value passes through the MCP protocol but never enters Claude's context window or conversation logs.
 
 ## 10. Team Workflows
 
