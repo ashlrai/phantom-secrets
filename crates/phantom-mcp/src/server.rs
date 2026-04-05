@@ -115,6 +115,41 @@ fn invalid_params_err(msg: impl Into<String>) -> McpError {
     McpError::new(rmcp::model::ErrorCode::INVALID_PARAMS, msg.into(), None)
 }
 
+fn text_result(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
+    Ok(CallToolResult::success(vec![Content::text(msg.into())]))
+}
+
+// ── Package.json helpers ────────────────────────────────────────────
+
+fn read_package_scripts(
+    pkg_path: &std::path::Path,
+) -> Result<
+    (
+        serde_json::Value,
+        serde_json::Map<String, serde_json::Value>,
+    ),
+    McpError,
+> {
+    let content = std::fs::read_to_string(pkg_path)
+        .map_err(|e| internal_err(format!("Failed to read package.json: {e}")))?;
+    let pkg: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| internal_err(format!("Failed to parse package.json: {e}")))?;
+    let scripts = pkg
+        .get("scripts")
+        .and_then(|s| s.as_object())
+        .cloned()
+        .unwrap_or_default();
+    Ok((pkg, scripts))
+}
+
+fn write_package_json(pkg_path: &std::path::Path, pkg: &serde_json::Value) -> Result<(), McpError> {
+    let pretty = serde_json::to_string_pretty(pkg)
+        .map_err(|e| internal_err(format!("Failed to serialize package.json: {e}")))?;
+    std::fs::write(pkg_path, format!("{pretty}\n"))
+        .map_err(|e| internal_err(format!("Failed to write package.json: {e}")))?;
+    Ok(())
+}
+
 // ── MCP Server ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -156,6 +191,20 @@ impl PhantomMcpServer {
         }
         PhantomConfig::load(&path).map_err(|e| format!("Failed to load config: {e}"))
     }
+
+    fn load_config_and_vault(
+        &self,
+    ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
+        let config = self.load_config().map_err(internal_err)?;
+        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        Ok((config, vault))
+    }
+
+    fn save_cloud_version(&self, config: &mut PhantomConfig, version: u64) {
+        let cloud_config = config.cloud.get_or_insert_default();
+        cloud_config.version = version;
+        let _ = config.save(&self.config_path());
+    }
 }
 
 #[tool_router]
@@ -165,17 +214,13 @@ impl PhantomMcpServer {
         description = "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured."
     )]
     fn phantom_list_secrets(&self) -> Result<CallToolResult, McpError> {
-        let config = self.load_config().map_err(internal_err)?;
-
-        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let (config, vault) = self.load_config_and_vault()?;
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
         if names.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No secrets stored in vault.",
-            )]));
+            return text_result("No secrets stored in vault.");
         }
 
         let mut output = format!("{} secret(s) in vault:\n", names.len());
@@ -190,7 +235,7 @@ impl PhantomMcpServer {
             output.push_str(&format!("  - {}{}\n", name, service.unwrap_or_default()));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        text_result(output)
     }
 
     /// Show the current status of Phantom in this project.
@@ -198,17 +243,13 @@ impl PhantomMcpServer {
         description = "Show Phantom status: project ID, vault backend, number of secrets, configured services, and proxy state."
     )]
     fn phantom_status(&self) -> Result<CallToolResult, McpError> {
-        let config_path = self.config_path();
-
-        if !config_path.exists() {
-            return Ok(CallToolResult::success(vec![Content::text(
+        if !self.config_path().exists() {
+            return text_result(
                 "Phantom is not initialized in this directory.\nRun `phantom init` to get started.",
-            )]));
+            );
         }
 
-        let config = self.load_config().map_err(internal_err)?;
-
-        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let (config, vault) = self.load_config_and_vault()?;
         let names = vault.list().unwrap_or_default();
 
         let mut output = String::new();
@@ -246,7 +287,7 @@ impl PhantomMcpServer {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        text_result(output)
     }
 
     /// Initialize Phantom in the current directory.
@@ -264,9 +305,9 @@ impl PhantomMcpServer {
 
         let real_entries = dotenv.real_secret_entries();
         if real_entries.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return text_result(
                 "No real secrets found in .env (all values are already phantom tokens or non-secret config).",
-            )]));
+            );
         }
 
         let project_id = PhantomConfig::project_id_from_path(&self.project_dir);
@@ -308,7 +349,7 @@ impl PhantomMcpServer {
         output.push_str("Real secrets are stored in the vault.\n");
         output.push_str("Use `phantom exec -- <command>` to run code with the proxy.");
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        text_result(output)
     }
 
     /// Add a secret to the vault.
@@ -319,12 +360,11 @@ impl PhantomMcpServer {
         &self,
         Parameters(mut params): Parameters<AddSecretParams>,
     ) -> Result<CallToolResult, McpError> {
-        let config = self.load_config().map_err(internal_err)?;
+        let (_config, vault) = self.load_config_and_vault()?;
 
         // Zeroize the secret value on all exit paths
         let secret_value = zeroize::Zeroizing::new(std::mem::take(&mut params.value));
 
-        let vault = phantom_vault::create_vault(&config.phantom.project_id);
         vault
             .store(&params.name, &secret_value)
             .map_err(|e| internal_err(format!("Failed to store secret: {e}")))?;
@@ -362,10 +402,10 @@ impl PhantomMcpServer {
             let _ = std::fs::write(&env_path, new_content);
         }
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        text_result(format!(
             "Secret '{}' stored in vault. .env updated with phantom token.",
             params.name
-        ))]))
+        ))
     }
 
     /// Remove a secret from the vault.
@@ -374,17 +414,12 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<RemoveSecretParams>,
     ) -> Result<CallToolResult, McpError> {
-        let config = self.load_config().map_err(internal_err)?;
-
-        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let (_config, vault) = self.load_config_and_vault()?;
         vault
             .delete(&params.name)
             .map_err(|e| internal_err(format!("Failed to remove secret: {e}")))?;
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Secret '{}' removed from vault.",
-            params.name
-        ))]))
+        text_result(format!("Secret '{}' removed from vault.", params.name))
     }
 
     /// Rotate all phantom tokens.
@@ -392,17 +427,13 @@ impl PhantomMcpServer {
         description = "Regenerate all phantom tokens in .env. Old tokens become invalid. Real secrets in the vault are unchanged."
     )]
     fn phantom_rotate(&self) -> Result<CallToolResult, McpError> {
-        let config = self.load_config().map_err(internal_err)?;
-
-        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let (_config, vault) = self.load_config_and_vault()?;
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
         if names.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No secrets to rotate.",
-            )]));
+            return text_result("No secrets to rotate.");
         }
 
         let mut token_map = TokenMap::new();
@@ -419,10 +450,10 @@ impl PhantomMcpServer {
                 .map_err(|e| internal_err(format!("Failed to rewrite .env: {e}")))?;
         }
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        text_result(format!(
             "Rotated {} phantom token(s). Old tokens are now invalid.",
             names.len()
-        ))]))
+        ))
     }
 
     /// Push encrypted vault to Phantom Cloud.
@@ -436,17 +467,13 @@ impl PhantomMcpServer {
         let token = phantom_core::auth::load_token()
             .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
 
-        let config = self.load_config().map_err(internal_err)?;
-
-        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let (config, vault) = self.load_config_and_vault()?;
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
         if names.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No secrets to push.",
-            )]));
+            return text_result("No secrets to push.");
         }
 
         let mut secrets = BTreeMap::new();
@@ -459,6 +486,12 @@ impl PhantomMcpServer {
 
         let plaintext = serde_json::to_string(&secrets)
             .map_err(|e| internal_err(format!("Failed to serialize: {e}")))?;
+        // Zeroize secrets from memory after serialization
+        for value in secrets.values_mut() {
+            zeroize::Zeroize::zeroize(value);
+        }
+        drop(secrets);
+        let plaintext = zeroize::Zeroizing::new(plaintext);
 
         let passphrase = phantom_core::auth::get_or_create_cloud_passphrase()
             .map_err(|e| internal_err(format!("Failed to access cloud key: {e}")))?;
@@ -480,16 +513,13 @@ impl PhantomMcpServer {
         .await
         .map_err(|e| internal_err(format!("Cloud push failed: {e}")))?;
 
-        // Persist new version to config for optimistic concurrency on next push
         let mut config = config;
-        let cloud_config = config.cloud.get_or_insert_default();
-        cloud_config.version = new_version;
-        let _ = config.save(&self.project_dir.join(".phantom.toml"));
+        self.save_cloud_version(&mut config, new_version);
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        text_result(format!(
             "Pushed {} secret(s) to Phantom Cloud (v{new_version}). End-to-end encrypted.",
             names.len()
-        ))]))
+        ))
     }
 
     /// Pull vault from Phantom Cloud.
@@ -506,7 +536,7 @@ impl PhantomMcpServer {
         let token = phantom_core::auth::load_token()
             .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
 
-        let config = self.load_config().map_err(internal_err)?;
+        let (config, vault) = self.load_config_and_vault()?;
 
         let api_base = phantom_core::auth::api_base_url();
         let pull_result = phantom_core::cloud::pull(&api_base, &token, &config.phantom.project_id)
@@ -516,9 +546,9 @@ impl PhantomMcpServer {
         let pull_data = match pull_result {
             Some(data) => data,
             None => {
-                return Ok(CallToolResult::success(vec![Content::text(
+                return text_result(
                     "No cloud vault found for this project. Run phantom_cloud_push first.",
-                )]));
+                );
             }
         };
 
@@ -529,13 +559,14 @@ impl PhantomMcpServer {
             .decode(&pull_data.encrypted_blob)
             .map_err(|e| internal_err(format!("Invalid cloud data: {e}")))?;
 
-        let plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase)
-            .map_err(|e| internal_err(format!("Decryption failed: {e}")))?;
+        let plaintext = zeroize::Zeroizing::new(
+            phantom_vault::crypto::decrypt(&encrypted, &passphrase)
+                .map_err(|e| internal_err(format!("Decryption failed: {e}")))?,
+        );
 
         let secrets: BTreeMap<String, String> = serde_json::from_slice(&plaintext)
             .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
 
-        let vault = phantom_vault::create_vault(&config.phantom.project_id);
         let mut added = 0;
         let mut skipped = 0;
         for (name, value) in &secrets {
@@ -549,11 +580,8 @@ impl PhantomMcpServer {
             added += 1;
         }
 
-        // Persist new version to config
         let mut config = config;
-        let cloud_config = config.cloud.get_or_insert_default();
-        cloud_config.version = pull_data.version;
-        let _ = config.save(&self.project_dir.join(".phantom.toml"));
+        self.save_cloud_version(&mut config, pull_data.version);
 
         let msg = if skipped > 0 {
             format!("Pulled {added} secret(s), {skipped} skipped (already exist, use force=true to overwrite).")
@@ -564,7 +592,7 @@ impl PhantomMcpServer {
             )
         };
 
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        text_result(msg)
     }
 
     /// Copy a secret to another phantom-initialized project without exposing its value.
@@ -575,9 +603,7 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<CopySecretParams>,
     ) -> Result<CallToolResult, McpError> {
-        let config = self.load_config().map_err(internal_err)?;
-
-        let source_vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let (_config, source_vault) = self.load_config_and_vault()?;
 
         // Retrieve from source — Zeroizing<String> auto-zeroizes on all exit paths
         let secret_value =
@@ -611,13 +637,12 @@ impl PhantomMcpServer {
             .store(target_name, &secret_value)
             .map_err(|e| internal_err(format!("Failed to store in target vault: {e}")))?;
 
-        let msg = format!(
+        text_result(format!(
             "Copied '{}' -> '{}' in {}. Secret value was never exposed.",
             params.name,
             target_name,
             target_dir.display()
-        );
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        ))
     }
 
     /// Run health checks and optionally auto-fix issues.
@@ -835,9 +860,7 @@ impl PhantomMcpServer {
             lines.push(format!("{issues} issue(s) found{suffix}"));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
-            lines.join("\n"),
-        )]))
+        text_result(lines.join("\n"))
     }
 
     /// Explain why a key is or isn't protected by Phantom.
@@ -849,6 +872,12 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<WhyParams>,
     ) -> Result<CallToolResult, McpError> {
         let env_path = self.env_path();
+        if !env_path.exists() {
+            return text_result(format!(
+                "No .env file found. '{}' cannot be classified without an .env file.",
+                params.key
+            ));
+        }
         let dotenv = DotenvFile::parse_file(&env_path)
             .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
 
@@ -857,10 +886,7 @@ impl PhantomMcpServer {
         let entry = match entry {
             Some(e) => e,
             None => {
-                return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "'{}' was not found in .env.",
-                    params.key
-                ))]));
+                return text_result(format!("'{}' was not found in .env.", params.key));
             }
         };
 
@@ -994,9 +1020,7 @@ impl PhantomMcpServer {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
-            output.trim_end().to_string(),
-        )]))
+        text_result(output.trim_end().to_string())
     }
 
     /// Wrap package.json scripts with `npx phantom-secrets exec --`.
@@ -1012,20 +1036,13 @@ impl PhantomMcpServer {
             return Err(internal_err("No package.json found in project directory."));
         }
 
-        let content = std::fs::read_to_string(&pkg_path)
-            .map_err(|e| internal_err(format!("Failed to read package.json: {e}")))?;
+        let (mut pkg, scripts) = read_package_scripts(&pkg_path)?;
+        if scripts.is_empty() {
+            return text_result("No \"scripts\" field found in package.json.");
+        }
 
-        let mut pkg: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| internal_err(format!("Failed to parse package.json: {e}")))?;
-
-        let scripts = match pkg.get_mut("scripts").and_then(|s| s.as_object_mut()) {
-            Some(s) => s,
-            None => {
-                return Ok(CallToolResult::success(vec![Content::text(
-                    "No \"scripts\" field found in package.json.",
-                )]));
-            }
-        };
+        // We need a mutable reference for modifications below
+        let scripts = pkg.get_mut("scripts").unwrap().as_object_mut().unwrap();
 
         // Heuristic keywords
         let wrap_keywords = ["dev", "start", "build", "serve", "deploy"];
@@ -1077,9 +1094,7 @@ impl PhantomMcpServer {
             .collect();
 
         if candidates.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No scripts matched for wrapping.",
-            )]));
+            return text_result("No scripts matched for wrapping.");
         }
 
         // Apply wrapping
@@ -1092,10 +1107,7 @@ impl PhantomMcpServer {
             );
         }
 
-        let pretty = serde_json::to_string_pretty(&pkg)
-            .map_err(|e| internal_err(format!("Failed to serialize package.json: {e}")))?;
-        std::fs::write(&pkg_path, format!("{pretty}\n"))
-            .map_err(|e| internal_err(format!("Failed to write package.json: {e}")))?;
+        write_package_json(&pkg_path, &pkg)?;
 
         let mut output = format!("Wrapped {} script(s):\n", candidates.len());
         for (name, _) in &candidates {
@@ -1103,7 +1115,7 @@ impl PhantomMcpServer {
         }
         output.push_str("\nOriginals saved as `script:raw` variants.");
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        text_result(output)
     }
 
     /// Unwrap package.json scripts, restoring originals from `:raw` variants.
@@ -1119,22 +1131,12 @@ impl PhantomMcpServer {
             return Err(internal_err("No package.json found in project directory."));
         }
 
-        let content = std::fs::read_to_string(&pkg_path)
-            .map_err(|e| internal_err(format!("Failed to read package.json: {e}")))?;
+        let (mut pkg, scripts) = read_package_scripts(&pkg_path)?;
+        if scripts.is_empty() {
+            return text_result("No \"scripts\" field found in package.json.");
+        }
 
-        let mut pkg: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| internal_err(format!("Failed to parse package.json: {e}")))?;
-
-        let scripts = match pkg.get_mut("scripts").and_then(|s| s.as_object_mut()) {
-            Some(s) => s,
-            None => {
-                return Ok(CallToolResult::success(vec![Content::text(
-                    "No \"scripts\" field found in package.json.",
-                )]));
-            }
-        };
-
-        // Find all :raw variants
+        // Find all :raw variants from the read-only copy
         let raw_entries: Vec<(String, String)> = scripts
             .iter()
             .filter_map(|(name, val)| {
@@ -1147,11 +1149,11 @@ impl PhantomMcpServer {
             .collect();
 
         if raw_entries.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No wrapped scripts found (no `:raw` variants).",
-            )]));
+            return text_result("No wrapped scripts found (no `:raw` variants).");
         }
 
+        // Get mutable reference to apply changes
+        let scripts = pkg.get_mut("scripts").unwrap().as_object_mut().unwrap();
         let mut restored = Vec::new();
         for (raw_key, original_value) in &raw_entries {
             let base_name = raw_key.trim_end_matches(":raw");
@@ -1163,10 +1165,7 @@ impl PhantomMcpServer {
             restored.push(base_name.to_string());
         }
 
-        let pretty = serde_json::to_string_pretty(&pkg)
-            .map_err(|e| internal_err(format!("Failed to serialize package.json: {e}")))?;
-        std::fs::write(&pkg_path, format!("{pretty}\n"))
-            .map_err(|e| internal_err(format!("Failed to write package.json: {e}")))?;
+        write_package_json(&pkg_path, &pkg)?;
 
         let mut output = format!("Unwrapped {} script(s):\n", restored.len());
         for name in &restored {
@@ -1174,7 +1173,7 @@ impl PhantomMcpServer {
         }
         output.push_str("\n`:raw` variants removed. Scripts restored to originals.");
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        text_result(output)
     }
 
     /// Check for leaked secrets or orphaned phantom tokens.
@@ -1216,9 +1215,9 @@ impl PhantomMcpServer {
             }
 
             if found.is_empty() {
-                return Ok(CallToolResult::success(vec![Content::text(
+                return text_result(
                     "No issues found. No phantom tokens detected in environment variables.",
-                )]));
+                );
             }
 
             let mut output = format!(
@@ -1232,7 +1231,7 @@ impl PhantomMcpServer {
                 "\nThese tokens will not resolve to real secrets without the proxy running.\n\
                  Run `phantom exec -- <command>` to start the proxy.",
             );
-            Ok(CallToolResult::success(vec![Content::text(output)]))
+            text_result(output)
         } else {
             // Scan .env files for unprotected secrets
             let env_files = [".env", ".env.local", ".env.development", ".env.production"];
@@ -1267,19 +1266,14 @@ impl PhantomMcpServer {
             }
 
             if total_issues == 0 {
-                Ok(CallToolResult::success(vec![Content::text(
-                    "No issues found. All .env files are clean.",
-                )]))
+                text_result("No issues found. All .env files are clean.")
             } else {
-                let header = format!(
-                    "Found {} unprotected secret(s) across .env files:\n\n",
-                    total_issues
-                );
                 output
                     .push_str("\nRun `phantom init` to protect these secrets with phantom tokens.");
-                Ok(CallToolResult::success(vec![Content::text(format!(
-                    "{header}{output}"
-                ))]))
+                text_result(format!(
+                    "Found {} unprotected secret(s) across .env files:\n\n{}",
+                    total_issues, output
+                ))
             }
         }
     }
@@ -1309,10 +1303,10 @@ impl PhantomMcpServer {
         let secret_count = dotenv.real_secret_entries().len()
             + dotenv.entries().iter().filter(|e| e.is_phantom).count();
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        text_result(format!(
             "Generated {} with {} entries ({} secrets replaced with placeholders).",
             params.output, entry_count, secret_count
-        ))]))
+        ))
     }
 
     /// Show what would be synced to deployment platforms and the current sync configuration.
@@ -1323,9 +1317,7 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<SyncParams>,
     ) -> Result<CallToolResult, McpError> {
-        let config = self.load_config().map_err(internal_err)?;
-
-        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let (config, vault) = self.load_config_and_vault()?;
         let secret_names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
@@ -1360,11 +1352,11 @@ impl PhantomMcpServer {
                     secret_names.len()
                 ));
             }
-            return Ok(CallToolResult::success(vec![Content::text(output)]));
+            return text_result(output);
         }
 
         if targets.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
+            return text_result(format!(
                 "No sync targets match platform '{}'. Configured platforms: {}",
                 params.platform.as_deref().unwrap_or(""),
                 config
@@ -1373,7 +1365,7 @@ impl PhantomMcpServer {
                     .map(|t| t.platform.to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
-            ))]));
+            ));
         }
 
         let mut output = format!(
@@ -1415,7 +1407,7 @@ impl PhantomMcpServer {
             "Note: Actual sync requires platform API tokens. Run `phantom sync` in the CLI to execute.",
         );
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        text_result(output)
     }
 
     /// Check cloud auth and sync status.
@@ -1450,9 +1442,7 @@ impl PhantomMcpServer {
             String::new()
         };
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "{status}{config_status}"
-        ))]))
+        text_result(format!("{status}{config_status}"))
     }
 }
 
