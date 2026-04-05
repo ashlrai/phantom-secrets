@@ -16,7 +16,7 @@ When you run `phantom exec -- claude`, a local reverse proxy starts on 127.0.0.1
 
 Allowlist model: secrets only go to configured endpoints. Localhost-bound. Session-scoped — proxy dies when your session ends.
 
-5-crate Rust workspace. 56 tests. MIT licensed. No SaaS dependency.
+5-crate Rust workspace. 69 tests. MIT licensed. No SaaS dependency.
 
 ```
 npx phantom-secrets init

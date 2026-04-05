@@ -4,7 +4,7 @@
 
 ## MCP Server — Let AI manage secrets directly
 
-Phantom includes an MCP server with 9 tools. Works with Claude Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
+Phantom includes an MCP server with 10 tools. Works with Claude Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
 
 ### Setup by IDE
 
@@ -87,7 +87,7 @@ phantom cloud push              # Backup vault to cloud (E2E encrypted)
 
 ```bash
 ~/.cargo/bin/cargo build        # Build all crates
-~/.cargo/bin/cargo test         # Run 56 tests
+~/.cargo/bin/cargo test         # Run 69 tests
 ~/.cargo/bin/cargo clippy --all-targets -- -D warnings  # Lint
 ~/.cargo/bin/cargo fmt --all    # Format
 ```
@@ -96,11 +96,11 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 
 ## Project structure
 
-- `crates/phantom-cli/` — CLI binary (21 commands including login, cloud push/pull, export/import)
+- `crates/phantom-cli/` — CLI binary (27 commands including login, cloud push/pull, export/import)
 - `crates/phantom-core/` — Config, .env parsing, token generation, sync, auth, cloud API client
 - `crates/phantom-vault/` — Encrypted vault (OS keychain + file backends) + shared crypto module
 - `crates/phantom-proxy/` — HTTP reverse proxy with streaming/SSE support
-- `crates/phantom-mcp/` — MCP server (9 tools, works with Claude Code, Cursor, Windsurf, Codex)
+- `crates/phantom-mcp/` — MCP server (10 tools, works with Claude Code, Cursor, Windsurf, Codex)
 - `apps/web/` — Next.js backend + landing page at phm.dev (Supabase + Stripe)
 
 ## Key files
@@ -111,5 +111,5 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 - `crates/phantom-core/src/cloud.rs` — Cloud push/pull HTTP client
 - `crates/phantom-proxy/src/server.rs` — Proxy server with streaming support
 - `crates/phantom-vault/src/crypto.rs` — Shared ChaCha20-Poly1305 encryption
-- `crates/phantom-mcp/src/server.rs` — MCP server with 9 tools
+- `crates/phantom-mcp/src/server.rs` — MCP server with 10 tools
 - `apps/web/src/app/api/v1/` — Backend API routes (auth, vault, billing)

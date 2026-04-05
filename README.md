@@ -187,7 +187,7 @@ $ cargo install phantom
 
 **npm packages**: [`phantom-secrets`](https://www.npmjs.com/package/phantom-secrets) (CLI), [`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) (MCP server).
 
-56 tests across all crates, zero clippy warnings.
+69 tests across all crates, zero clippy warnings.
 
 ## Security
 
