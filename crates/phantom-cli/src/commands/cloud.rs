@@ -100,10 +100,12 @@ pub fn run_pull(force: bool) -> Result<()> {
     let encrypted = BASE64
         .decode(&pull_data.encrypted_blob)
         .context("Invalid cloud vault data")?;
-    let plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase)?;
+    let mut plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase)?;
 
-    let secrets: BTreeMap<String, String> =
+    let mut secrets: BTreeMap<String, String> =
         serde_json::from_slice(&plaintext).context("Failed to parse cloud vault data")?;
+    // Zeroize decrypted plaintext immediately after deserialization
+    zeroize::Zeroize::zeroize(&mut plaintext);
 
     // Store each secret in local vault
     let mut added = 0;
@@ -116,6 +118,11 @@ pub fn run_pull(force: bool) -> Result<()> {
         vault.store(name, value)?;
         added += 1;
     }
+    // Zeroize secret values from memory after storing
+    for value in secrets.values_mut() {
+        zeroize::Zeroize::zeroize(value);
+    }
+    drop(secrets);
 
     // Update local version in config
     let mut config = config;
