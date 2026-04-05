@@ -4,7 +4,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{DotenvFile, SecretClassification};
 use phantom_core::token::TokenMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 /// Watch .env files for changes and auto-protect new secrets.
@@ -76,37 +76,14 @@ pub fn run(auto: bool) -> Result<()> {
     loop {
         match rx.recv() {
             Ok(event) => {
-                // Collect this event's paths
-                let mut pending_paths: std::collections::HashSet<std::path::PathBuf> =
+                let mut pending_paths: std::collections::HashSet<PathBuf> =
                     std::collections::HashSet::new();
-                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                    for path in event.paths {
-                        if path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|n| n.starts_with(".env"))
-                        {
-                            pending_paths.insert(path);
-                        }
-                    }
-                }
+                collect_env_paths(&event, &mut pending_paths);
 
-                // Drain any additional events that arrive within the debounce window
                 while let Ok(extra) = rx.recv_timeout(debounce) {
-                    if matches!(extra.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                        for path in extra.paths {
-                            if path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .is_some_and(|n| n.starts_with(".env"))
-                            {
-                                pending_paths.insert(path);
-                            }
-                        }
-                    }
+                    collect_env_paths(&extra, &mut pending_paths);
                 }
 
-                // Process each unique path once
                 for path in &pending_paths {
                     handle_env_change(path, &config_path, auto);
                 }
@@ -119,6 +96,20 @@ pub fn run(auto: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn collect_env_paths(event: &Event, paths: &mut std::collections::HashSet<PathBuf>) {
+    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+        for path in &event.paths {
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(".env"))
+            {
+                paths.insert(path.clone());
+            }
+        }
+    }
 }
 
 fn handle_env_change(env_path: &Path, config_path: &Path, auto: bool) {
@@ -161,7 +152,8 @@ fn handle_env_change(env_path: &Path, config_path: &Path, auto: bool) {
 
             for entry in &new_secrets {
                 token_map.insert(entry.key.clone());
-                if let Err(e) = vault.store(&entry.key, &entry.value) {
+                let secret = zeroize::Zeroizing::new(entry.value.clone());
+                if let Err(e) = vault.store(&entry.key, &secret) {
                     eprintln!(
                         "   {} Failed to store {}: {}",
                         "!".red().bold(),

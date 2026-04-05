@@ -263,13 +263,16 @@ impl PhantomMcpServer {
     )]
     fn phantom_add_secret(
         &self,
-        Parameters(params): Parameters<AddSecretParams>,
+        Parameters(mut params): Parameters<AddSecretParams>,
     ) -> Result<CallToolResult, McpError> {
         let config = self.load_config().map_err(internal_err)?;
 
+        // Zeroize the secret value on all exit paths
+        let secret_value = zeroize::Zeroizing::new(std::mem::take(&mut params.value));
+
         let vault = phantom_vault::create_vault(&config.phantom.project_id);
         vault
-            .store(&params.name, &params.value)
+            .store(&params.name, &secret_value)
             .map_err(|e| internal_err(format!("Failed to store secret: {e}")))?;
 
         // Update .env with phantom token if it exists

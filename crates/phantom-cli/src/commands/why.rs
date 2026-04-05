@@ -63,19 +63,18 @@ pub fn run(key: &str) -> Result<()> {
                             key.bold(),
                             "NOT PROTECTED".yellow().bold()
                         );
-                        let prefix = if key.starts_with("NEXT_PUBLIC_") {
-                            "NEXT_PUBLIC_"
-                        } else if key.starts_with("EXPO_PUBLIC_") {
-                            "EXPO_PUBLIC_"
-                        } else if key.starts_with("VITE_") {
-                            "VITE_"
-                        } else if key.starts_with("REACT_APP_") {
-                            "REACT_APP_"
-                        } else if key.starts_with("NUXT_PUBLIC_") {
-                            "NUXT_PUBLIC_"
-                        } else {
-                            "GATSBY_"
-                        };
+                        let public_prefixes = [
+                            "NEXT_PUBLIC_",
+                            "EXPO_PUBLIC_",
+                            "VITE_",
+                            "REACT_APP_",
+                            "NUXT_PUBLIC_",
+                            "GATSBY_",
+                        ];
+                        let prefix = public_prefixes
+                            .iter()
+                            .find(|p| key.starts_with(*p))
+                            .unwrap_or(&"PUBLIC_");
                         println!(
                             "   Reason: Keys with {} prefix are browser-safe (shipped in client bundles)",
                             prefix.cyan()
