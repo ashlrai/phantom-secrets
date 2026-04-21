@@ -19,17 +19,12 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     // Safety gate: refuse to reveal in non-interactive contexts unless --yes is passed.
     // This prevents AI agents from calling `phantom reveal` to extract real secrets.
     if !yes {
-        // Check if stdout is a TTY (interactive terminal)
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            let is_tty = unsafe { libc::isatty(std::io::stdout().as_raw_fd()) } != 0;
-            if !is_tty {
-                anyhow::bail!(
-                    "Refusing to reveal secret in non-interactive context.\n\
-                     Pass --yes to override. This prevents AI agents from extracting secrets."
-                );
-            }
+        use std::io::IsTerminal;
+        if !std::io::stdout().is_terminal() {
+            anyhow::bail!(
+                "Refusing to reveal secret in non-interactive context.\n\
+                 Pass --yes to override. This prevents AI agents from extracting secrets."
+            );
         }
 
         eprintln!(
