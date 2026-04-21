@@ -15,11 +15,17 @@ pub fn run() -> Result<()> {
 
     if let Some(pid_str) = parts.first() {
         if let Ok(pid) = pid_str.parse::<u32>() {
-            // Send SIGTERM to the proxy process
+            // Send stop signal to the proxy process
             #[cfg(unix)]
             {
                 let _ = std::process::Command::new("kill")
                     .arg(pid.to_string())
+                    .status();
+            }
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F"])
                     .status();
             }
             println!(
