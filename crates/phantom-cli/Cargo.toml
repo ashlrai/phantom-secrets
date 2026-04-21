@@ -21,8 +21,8 @@ tracing-subscriber = { workspace = true }
 colored = "2"
 serde_json = { workspace = true }
 zeroize = { workspace = true }
-libc = "0.2"
 open = "5"
+which = "6"
 indicatif = "0.17"
 base64 = { workspace = true }
 notify = "7"

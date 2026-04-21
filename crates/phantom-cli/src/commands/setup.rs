@@ -162,13 +162,7 @@ fn find_mcp_binary() -> Option<String> {
 
     for candidate in candidates.into_iter().flatten() {
         if candidate == "phantom-mcp" {
-            // Check if it's in PATH
-            if std::process::Command::new("which")
-                .arg("phantom-mcp")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-            {
+            if which::which("phantom-mcp").is_ok() {
                 return Some(candidate);
             }
         } else if Path::new(&candidate).exists() {
