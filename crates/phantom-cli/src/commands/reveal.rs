@@ -74,38 +74,8 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
 }
 
 fn copy_to_clipboard(text: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        use std::io::Write;
-        if let Ok(mut child) = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-        {
-            if let Some(stdin) = child.stdin.as_mut() {
-                let _ = stdin.write_all(text.as_bytes());
-            }
-            return child.wait().map(|s| s.success()).unwrap_or(false);
-        }
+    match arboard::Clipboard::new() {
+        Ok(mut clipboard) => clipboard.set_text(text.to_string()).is_ok(),
+        Err(_) => false,
     }
-
-    #[cfg(target_os = "linux")]
-    {
-        use std::io::Write;
-        for cmd in &["xclip", "xsel"] {
-            if let Ok(mut child) = std::process::Command::new(cmd)
-                .args(["-selection", "clipboard"])
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
-                if let Some(stdin) = child.stdin.as_mut() {
-                    let _ = stdin.write_all(text.as_bytes());
-                }
-                if child.wait().map(|s| s.success()).unwrap_or(false) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
 }
