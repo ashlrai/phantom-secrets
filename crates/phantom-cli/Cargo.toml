@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 zeroize = { workspace = true }
 open = "5"
 which = "6"
+dirs = "5"
 indicatif = "0.17"
 base64 = { workspace = true }
 notify = "7"

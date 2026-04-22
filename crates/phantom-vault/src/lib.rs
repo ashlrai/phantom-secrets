@@ -69,6 +69,6 @@ fn generate_passphrase() -> String {
 }
 
 fn dirs_fallback() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::PathBuf::from(home).join(".phantom")
+    let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    home.join(".phantom")
 }
