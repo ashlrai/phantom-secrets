@@ -49,11 +49,18 @@ fn run_daemon() -> Result<()> {
         .stderr(Stdio::null())
         .stdin(Stdio::null());
 
-    // On Unix, start a new session so the child survives the parent exiting.
+    // Detach the child so it survives the parent exiting.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
     }
 
     cmd.spawn()
