@@ -24,6 +24,7 @@ zeroize = { workspace = true }
 open = "5"
 which = "6"
 dirs = "5"
+arboard = { version = "3", default-features = false }
 indicatif = "0.17"
 base64 = { workspace = true }
 notify = "7"
