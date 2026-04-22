@@ -12,7 +12,8 @@ const CACHE_DIR = join(
   "bin"
 );
 
-const binaryPath = join(CACHE_DIR, "phantom");
+const binaryExt = process.platform === "win32" ? ".exe" : "";
+const binaryPath = join(CACHE_DIR, `phantom${binaryExt}`);
 
 if (existsSync(binaryPath)) {
   console.log("phantom binary already installed.");

@@ -26,6 +26,8 @@ function getPlatformTarget() {
     return "x86_64-unknown-linux-gnu";
   if (platform === "linux" && arch === "arm64")
     return "aarch64-unknown-linux-gnu";
+  if (platform === "win32" && arch === "x64")
+    return "x86_64-pc-windows-msvc";
 
   console.error(
     `Unsupported platform: ${platform}-${arch}. Install from source: cargo install phantom --git https://github.com/${REPO}`
@@ -63,24 +65,35 @@ async function ensureBinary() {
   }
 
   const target = getPlatformTarget();
-  const tarball = `phantom-${target}.tar.gz`;
-  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${tarball}`;
+  const isWindows = process.platform === "win32";
+  const archiveExt = isWindows ? "zip" : "tar.gz";
+  const archiveName = `phantom-${target}.${archiveExt}`;
+  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${archiveName}`;
 
   console.error(`Downloading phantom v${VERSION} for ${target}...`);
   mkdirSync(CACHE_DIR, { recursive: true });
 
-  const tarPath = join(CACHE_DIR, tarball);
+  const archivePath = join(CACHE_DIR, archiveName);
 
   try {
     const data = await download(url);
-    require("fs").writeFileSync(tarPath, data);
+    require("fs").writeFileSync(archivePath, data);
 
     // Extract
-    execSync(`tar xzf "${tarPath}" -C "${CACHE_DIR}"`, { stdio: "pipe" });
-    execSync(`chmod +x "${binaryPath}"`, { stdio: "pipe" });
+    if (isWindows) {
+      // PowerShell Expand-Archive is present on Windows 10+ (PowerShell 5.0+).
+      const psEscape = (s) => s.replace(/'/g, "''");
+      execSync(
+        `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${psEscape(archivePath)}' -DestinationPath '${psEscape(CACHE_DIR)}' -Force"`,
+        { stdio: "pipe" }
+      );
+    } else {
+      execSync(`tar xzf "${archivePath}" -C "${CACHE_DIR}"`, { stdio: "pipe" });
+      execSync(`chmod +x "${binaryPath}"`, { stdio: "pipe" });
+    }
 
-    // Clean up tarball
-    unlinkSync(tarPath);
+    // Clean up archive
+    unlinkSync(archivePath);
 
     console.error(`Installed phantom to ${binaryPath}`);
   } catch (err) {
