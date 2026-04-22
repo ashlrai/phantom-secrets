@@ -154,6 +154,9 @@ fn write_package_json(pkg_path: &std::path::Path, pkg: &serde_json::Value) -> Re
 
 #[derive(Debug, Clone)]
 pub struct PhantomMcpServer {
+    // rmcp's #[tool_router] / #[tool_handler] macros consume this field via
+    // generated code that clippy's dead-code pass can't see through.
+    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     project_dir: PathBuf,
 }
