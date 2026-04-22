@@ -7,6 +7,59 @@ use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellSyntax {
+    Bash,
+    PowerShell,
+    Cmd,
+}
+
+fn detect_shell_syntax() -> ShellSyntax {
+    // POSIX shells (incl. Git Bash on Windows, WSL, macOS, Linux) set $SHELL.
+    if let Ok(sh) = std::env::var("SHELL") {
+        let lower = sh.to_lowercase();
+        if lower.contains("bash")
+            || lower.contains("zsh")
+            || lower.contains("fish")
+            || lower.ends_with("/sh")
+        {
+            return ShellSyntax::Bash;
+        }
+    }
+    // $PSModulePath is set by PowerShell on Windows and nowhere else.
+    if std::env::var("PSModulePath").is_ok() {
+        return ShellSyntax::PowerShell;
+    }
+    #[cfg(windows)]
+    {
+        ShellSyntax::Cmd
+    }
+    #[cfg(not(windows))]
+    {
+        ShellSyntax::Bash
+    }
+}
+
+fn format_export(syntax: ShellSyntax, var: &str, value: &str) -> String {
+    match syntax {
+        ShellSyntax::Bash => format!("  export {}={}", var, value),
+        ShellSyntax::PowerShell => format!("  $env:{} = \"{}\"", var, value),
+        ShellSyntax::Cmd => format!("  set {}={}", var, value),
+    }
+}
+
+fn shell_hint(syntax: ShellSyntax) -> &'static str {
+    match syntax {
+        ShellSyntax::Bash => {
+            "  # Detected bash/zsh/fish. PowerShell: `$env:X = \"Y\"`. cmd: `set X=Y`."
+        }
+        ShellSyntax::PowerShell => "  # Detected PowerShell. bash: `export X=Y`. cmd: `set X=Y`.",
+        ShellSyntax::Cmd => {
+            "  # Assuming cmd.exe. PowerShell: `$env:X = \"Y\"`. bash: `export X=Y`."
+        }
+    }
+}
+
 pub fn run(daemon: bool) -> Result<()> {
     if daemon {
         return run_daemon();
@@ -106,12 +159,20 @@ fn run_daemon() -> Result<()> {
         "\n{} Set these env vars in your shell:\n",
         "->".blue().bold()
     );
+    let syntax = detect_shell_syntax();
     let overrides = registry.base_url_overrides_with_token(port, Some(proxy_token));
     for (env_var, url) in &overrides {
-        println!("  export {}={}", env_var, url);
+        println!("{}", format_export(syntax, env_var, url));
     }
-    println!("  export PHANTOM_PROXY_PORT={}", port);
-    println!("  export PHANTOM_PROXY_TOKEN={}", proxy_token);
+    println!(
+        "{}",
+        format_export(syntax, "PHANTOM_PROXY_PORT", &port.to_string())
+    );
+    println!(
+        "{}",
+        format_export(syntax, "PHANTOM_PROXY_TOKEN", proxy_token)
+    );
+    println!("\n{}", shell_hint(syntax));
 
     println!(
         "\n{} Running in background. Use {} to stop.",
@@ -217,12 +278,20 @@ async fn run_async() -> Result<()> {
         "\n{} Set these env vars in your shell:\n",
         "->".blue().bold()
     );
+    let syntax = detect_shell_syntax();
     let overrides = registry.base_url_overrides_with_token(port, Some(&proxy_token));
     for (env_var, url) in &overrides {
-        println!("  export {}={}", env_var, url);
+        println!("{}", format_export(syntax, env_var, url));
     }
-    println!("  export PHANTOM_PROXY_PORT={}", port);
-    println!("  export PHANTOM_PROXY_TOKEN={}", proxy_token);
+    println!(
+        "{}",
+        format_export(syntax, "PHANTOM_PROXY_PORT", &port.to_string())
+    );
+    println!(
+        "{}",
+        format_export(syntax, "PHANTOM_PROXY_TOKEN", &proxy_token)
+    );
+    println!("\n{}", shell_hint(syntax));
 
     println!("\n{} Press Ctrl-C to stop the proxy.\n", "->".blue().bold());
     tokio::signal::ctrl_c().await?;
