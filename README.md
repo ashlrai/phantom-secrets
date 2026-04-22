@@ -26,6 +26,33 @@ $ phantom exec -- claude
 # Proxy running on 127.0.0.1:54321 — AI sees phantom tokens, proxy injects real keys
 ```
 
+### Windows
+
+The same commands work on Windows. `npx phantom-secrets init` installs via npm as on macOS/Linux.
+
+After `phantom start --daemon`, the CLI detects your shell and prints the matching env-var syntax. For reference:
+
+**PowerShell:**
+```powershell
+$env:OPENAI_BASE_URL = "http://127.0.0.1:PORT/openai"
+$env:PHANTOM_PROXY_PORT = "PORT"
+$env:PHANTOM_PROXY_TOKEN = "TOKEN"
+```
+
+**cmd.exe:**
+```cmd
+set OPENAI_BASE_URL=http://127.0.0.1:PORT/openai
+set PHANTOM_PROXY_PORT=PORT
+set PHANTOM_PROXY_TOKEN=TOKEN
+```
+
+**Git Bash / WSL:** use the `export X=Y` syntax from the main quick-start.
+
+Notes:
+- If `phantom.exe` fails to run with "Application Control policy has blocked this file," Windows Smart App Control is honoring the downloaded file's Mark-of-the-Web tag. One-time fix from PowerShell: `Get-ChildItem "$env:USERPROFILE\.phantom-secrets\bin\*.exe" | Unblock-File`.
+- Clipboard auto-clear (`phantom reveal --copy` clears after 30s) is macOS-only — tracked in [#9](https://github.com/ashlrai/phantom-secrets/issues/9). Clipboard copy itself works on all platforms.
+- Windows-on-ARM64 not yet packaged — x64 only. Tracker: [#1](https://github.com/ashlrai/phantom-secrets/issues/1).
+
 ## How It Works
 
 ```

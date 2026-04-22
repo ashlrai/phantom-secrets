@@ -1,6 +1,6 @@
 {
   "name": "phantom-secrets",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Prevent AI coding agents from leaking your API keys. Replaces real secrets with phantom tokens; a local proxy swaps them back at the network layer.",
   "bin": {
     "phantom-secrets": "bin/cli.js",
