@@ -174,5 +174,5 @@ fn find_mcp_binary() -> Option<String> {
 }
 
 fn dirs_home() -> Option<String> {
-    std::env::var("HOME").ok()
+    dirs::home_dir().map(|p| p.to_string_lossy().into_owned())
 }
