@@ -79,15 +79,23 @@ impl FileVault {
         }
 
         let encrypted = std::fs::read(&self.vault_path)?;
-        let plaintext = crypto::decrypt(&encrypted, &self.passphrase)?;
+        // Wrap the decrypted JSON in Zeroizing so the heap buffer is overwritten
+        // with zeros when it drops — whether that's on success or on an early
+        // return from the serde_json error path below.
+        let plaintext = zeroize::Zeroizing::new(crypto::decrypt(&encrypted, &self.passphrase)?);
 
-        serde_json::from_slice(&plaintext)
+        serde_json::from_slice::<VaultData>(&plaintext)
             .map_err(|e| PhantomError::VaultError(format!("Corrupt vault data: {e}")))
     }
 
     fn save(&self, data: &VaultData) -> Result<()> {
-        let plaintext = serde_json::to_string_pretty(data)
-            .map_err(|e| PhantomError::VaultError(format!("Serialize error: {e}")))?;
+        // The plaintext JSON holds every secret in the vault. Wrap it in
+        // Zeroizing so the heap allocation is scrubbed on drop — including on
+        // the error paths below. String's own Drop does not zero memory.
+        let plaintext = zeroize::Zeroizing::new(
+            serde_json::to_string_pretty(data)
+                .map_err(|e| PhantomError::VaultError(format!("Serialize error: {e}")))?,
+        );
 
         let encrypted = crypto::encrypt(plaintext.as_bytes(), &self.passphrase)?;
 
