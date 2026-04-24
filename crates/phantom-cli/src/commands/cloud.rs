@@ -7,7 +7,7 @@ use zeroize::Zeroize;
 
 pub fn run_push() -> Result<()> {
     let token = auth::require_token()?;
-    let api_base = auth::api_base_url();
+    let api_base = auth::api_base_url()?;
 
     let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
         .context("No .phantom.toml found. Run `phantom init` first.")?;
@@ -71,7 +71,7 @@ pub fn run_push() -> Result<()> {
 
 pub fn run_pull(force: bool) -> Result<()> {
     let token = auth::require_token()?;
-    let api_base = auth::api_base_url();
+    let api_base = auth::api_base_url()?;
 
     let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
         .context("No .phantom.toml found. Run `phantom init` first.")?;
@@ -150,7 +150,7 @@ pub fn run_pull(force: bool) -> Result<()> {
 }
 
 pub fn run_status() -> Result<()> {
-    let api_base = auth::api_base_url();
+    let api_base = auth::api_base_url()?;
 
     match auth::load_token() {
         Some(token) => {

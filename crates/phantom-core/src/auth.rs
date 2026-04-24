@@ -159,17 +159,81 @@ pub fn get_or_create_cloud_passphrase() -> Result<String> {
 }
 
 /// Get the API base URL from env var or default.
-/// Warns if using HTTP (except localhost) since tokens would be transmitted in the clear.
-pub fn api_base_url() -> String {
-    let url =
-        std::env::var("PHANTOM_API_URL").unwrap_or_else(|_| "https://phm.dev/api/v1".to_string());
-    if !url.starts_with("https://")
-        && !url.starts_with("http://localhost")
-        && !url.starts_with("http://127.0.0.1")
-    {
-        eprintln!(
-            "phantom: WARNING — PHANTOM_API_URL uses HTTP, not HTTPS. Tokens may be intercepted."
-        );
+///
+/// The default is `https://phm.dev/api/v1`. Callers can override with
+/// `PHANTOM_API_URL`, but only `https://…`, `http://localhost…`, or
+/// `http://127.0.0.1…` are accepted — anything else is rejected with
+/// [`PhantomError::AuthError`] to prevent a prompt-injected agent from
+/// redirecting the OAuth bearer token or the encrypted vault blob to an
+/// attacker-controlled host over cleartext.
+///
+/// When an override is active the resolved URL is echoed to stderr so it's
+/// impossible to miss in the user's terminal.
+pub fn api_base_url() -> Result<String> {
+    const DEFAULT: &str = "https://phm.dev/api/v1";
+    match std::env::var("PHANTOM_API_URL") {
+        Err(_) => Ok(DEFAULT.to_string()),
+        Ok(url) => {
+            if !is_acceptable_api_url(&url) {
+                return Err(PhantomError::AuthError(format!(
+                    "PHANTOM_API_URL must use https:// (or http://localhost / http://127.0.0.1 for local testing). Got: {url}"
+                )));
+            }
+            eprintln!("phantom: PHANTOM_API_URL override in effect -> {url}");
+            Ok(url)
+        }
     }
-    url
+}
+
+fn is_acceptable_api_url(url: &str) -> bool {
+    url.starts_with("https://")
+        || url.starts_with("http://localhost/")
+        || url == "http://localhost"
+        || url.starts_with("http://localhost:")
+        || url.starts_with("http://127.0.0.1/")
+        || url == "http://127.0.0.1"
+        || url.starts_with("http://127.0.0.1:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_https_default_shape() {
+        assert!(is_acceptable_api_url("https://phm.dev/api/v1"));
+        assert!(is_acceptable_api_url("https://example.com"));
+    }
+
+    #[test]
+    fn accepts_local_http_for_tests() {
+        assert!(is_acceptable_api_url("http://localhost"));
+        assert!(is_acceptable_api_url("http://localhost:8080/api"));
+        assert!(is_acceptable_api_url("http://localhost/api"));
+        assert!(is_acceptable_api_url("http://127.0.0.1"));
+        assert!(is_acceptable_api_url("http://127.0.0.1:3000"));
+        assert!(is_acceptable_api_url("http://127.0.0.1/api/v1"));
+    }
+
+    #[test]
+    fn rejects_plain_http() {
+        assert!(!is_acceptable_api_url("http://phm.dev/api/v1"));
+        assert!(!is_acceptable_api_url("http://example.com"));
+        assert!(!is_acceptable_api_url("http://192.0.2.5:8080/api"));
+    }
+
+    #[test]
+    fn rejects_localhost_host_confusion() {
+        // These look like localhost but are attacker-controlled hostnames.
+        assert!(!is_acceptable_api_url("http://localhost.attacker.com/api"));
+        assert!(!is_acceptable_api_url("http://127.0.0.1.attacker.com/"));
+        assert!(!is_acceptable_api_url("http://localhost@attacker.com/"));
+    }
+
+    #[test]
+    fn rejects_garbage_schemes() {
+        assert!(!is_acceptable_api_url("ftp://phm.dev"));
+        assert!(!is_acceptable_api_url("javascript:alert(1)"));
+        assert!(!is_acceptable_api_url(""));
+    }
 }

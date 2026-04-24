@@ -8,7 +8,7 @@ pub fn run() -> Result<()> {
     // Check if already logged in
     if let Some(token) = auth::load_token() {
         let rt = tokio::runtime::Runtime::new()?;
-        let api_base = auth::api_base_url();
+        let api_base = auth::api_base_url()?;
         match rt.block_on(auth::get_user_info(&api_base, &token)) {
             Ok(user) => {
                 println!(
@@ -26,7 +26,7 @@ pub fn run() -> Result<()> {
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    let api_base = auth::api_base_url();
+    let api_base = auth::api_base_url()?;
 
     // Initiate device flow
     let flow = rt
