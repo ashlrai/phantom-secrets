@@ -4,6 +4,7 @@ const { execFileSync } = require("child_process");
 const { existsSync, mkdirSync, createWriteStream, unlinkSync } = require("fs");
 const { join } = require("path");
 const https = require("https");
+const crypto = require("crypto");
 const { execSync } = require("child_process");
 
 const VERSION = "0.5.1";
@@ -57,6 +58,15 @@ function download(url) {
   });
 }
 
+function parseSha256File(buf, expectedFilename) {
+  // Standard `sha256sum` / `shasum -a 256` format: "<64-hex>  <filename>\n"
+  const line = buf.toString("utf8").trim().split(/\r?\n/)[0] || "";
+  const m = line.match(/^([0-9a-f]{64})\s+\*?(.+)$/i);
+  if (!m) return null;
+  if (expectedFilename && m[2].trim() !== expectedFilename) return null;
+  return m[1].toLowerCase();
+}
+
 async function ensureBinary() {
   const binaryPath = getBinaryPath();
 
@@ -69,6 +79,7 @@ async function ensureBinary() {
   const archiveExt = isWindows ? "zip" : "tar.gz";
   const archiveName = `phantom-${target}.${archiveExt}`;
   const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${archiveName}`;
+  const sha256Url = `${url}.sha256`;
 
   console.error(`Downloading phantom v${VERSION} for ${target}...`);
   mkdirSync(CACHE_DIR, { recursive: true });
@@ -76,7 +87,30 @@ async function ensureBinary() {
   const archivePath = join(CACHE_DIR, archiveName);
 
   try {
+    // Fetch the checksum first so we fail before we've written anything to disk
+    // if the release is missing its .sha256 sidecar.
+    const sumBuf = await download(sha256Url);
+    const expected = parseSha256File(sumBuf, archiveName);
+    if (!expected) {
+      throw new Error(
+        `malformed or missing checksum at ${sha256Url} — refusing to install unverified binary`
+      );
+    }
+
     const data = await download(url);
+
+    const actual = crypto.createHash("sha256").update(data).digest("hex");
+    const expectedBuf = Buffer.from(expected, "hex");
+    const actualBuf = Buffer.from(actual, "hex");
+    if (
+      expectedBuf.length !== actualBuf.length ||
+      !crypto.timingSafeEqual(expectedBuf, actualBuf)
+    ) {
+      throw new Error(
+        `SHA-256 mismatch for ${archiveName}: expected ${expected}, got ${actual}`
+      );
+    }
+
     require("fs").writeFileSync(archivePath, data);
 
     // Extract
