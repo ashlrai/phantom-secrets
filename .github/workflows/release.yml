@@ -79,6 +79,20 @@ jobs:
         with:
           path: artifacts
 
+      - name: Generate SHA-256 checksums
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          : > ../SHA256SUMS
+          while IFS= read -r -d '' f; do
+            base=$(basename "$f")
+            dir=$(dirname "$f")
+            (cd "$dir" && sha256sum "$base") | tee "$f.sha256" >> ../SHA256SUMS
+          done < <(find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 | sort -z)
+          mv ../SHA256SUMS ./SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -86,3 +100,5 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+            artifacts/**/*.sha256
+            artifacts/SHA256SUMS
