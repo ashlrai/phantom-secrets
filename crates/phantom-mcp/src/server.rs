@@ -81,10 +81,17 @@ pub struct CloudPullParams {
 pub struct CopySecretParams {
     /// Name of the secret to copy from the current project
     pub name: String,
-    /// Path to the target project directory (must be phantom-initialized)
+    /// Path to the target project directory (must be phantom-initialized).
+    /// `..` segments are rejected to prevent prompt-injected target-dir
+    /// obfuscation; pass the full destination path explicitly.
     pub target_dir: String,
     /// Optional new name for the secret in the target project
     pub rename: Option<String>,
+    /// Required. Must be true — the calling agent must confirm with the user
+    /// before invoking this tool. Copying writes secrets into another vault,
+    /// which an attacker can use as an exfiltration primitive.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -661,12 +668,23 @@ impl PhantomMcpServer {
 
     /// Copy a secret to another phantom-initialized project without exposing its value.
     #[tool(
-        description = "Copy a secret from this project's vault to another project's vault. The secret value is never exposed — it transfers directly between encrypted vaults. The target project must be phantom-initialized."
+        description = "Copy a secret from this project's vault to another project's vault. The secret value is never exposed — it transfers directly between encrypted vaults. The target project must be phantom-initialized. DESTRUCTIVE — writes a secret into another vault (exfiltration primitive if misdirected); requires `confirm: true`; the agent must ask the user for explicit consent before calling."
     )]
     fn phantom_copy_secret(
         &self,
         Parameters(params): Parameters<CopySecretParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_copy_secret", params.confirm)?;
+
+        // Reject `..` in the raw input. Canonicalize below collapses traversal,
+        // but only once target_dir exists on disk — and an attacker can stage a
+        // missing-path case. Guarding at the textual layer is simplest.
+        if params.target_dir.split(['/', '\\']).any(|seg| seg == "..") {
+            return Err(invalid_params_err(
+                "target_dir must not contain `..` segments; pass the full destination path explicitly.",
+            ));
+        }
+
         let (_config, source_vault) = self.load_config_and_vault()?;
 
         // Retrieve from source — Zeroizing<String> auto-zeroizes on all exit paths
@@ -675,13 +693,20 @@ impl PhantomMcpServer {
                 invalid_params_err(format!("Secret '{}' not found: {e}", params.name))
             })?);
 
-        // Resolve target directory
+        // Resolve target directory, then canonicalize to normalize any symlinks
+        // and give the user a fully-qualified path in the success message.
         let target_path = std::path::PathBuf::from(&params.target_dir);
-        let target_dir = if target_path.is_relative() {
+        let target_dir_raw = if target_path.is_relative() {
             self.project_dir.join(&target_path)
         } else {
             target_path
         };
+        let target_dir = target_dir_raw.canonicalize().map_err(|e| {
+            invalid_params_err(format!(
+                "target_dir '{}' cannot be resolved: {e}",
+                target_dir_raw.display()
+            ))
+        })?;
 
         let target_config_path = target_dir.join(".phantom.toml");
         if !target_config_path.exists() {
@@ -1676,6 +1701,63 @@ mod tests {
             .phantom_rotate(Parameters(RotateParams { confirm: false }))
             .unwrap_err();
         assert_eq!(rotate_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn test_copy_secret_rejects_without_confirm() {
+        let (server, _dir) = setup_initialized_project();
+        let err = server
+            .phantom_copy_secret(Parameters(CopySecretParams {
+                name: "OPENAI_API_KEY".to_string(),
+                target_dir: ".".to_string(),
+                rename: None,
+                confirm: false,
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("confirm"));
+    }
+
+    #[test]
+    fn test_copy_secret_rejects_dot_dot() {
+        let (server, _dir) = setup_initialized_project();
+        for bad in [
+            "../other",
+            "..",
+            "foo/../bar",
+            "..\\windows",
+            "foo\\..\\bar",
+        ] {
+            let err = server
+                .phantom_copy_secret(Parameters(CopySecretParams {
+                    name: "OPENAI_API_KEY".to_string(),
+                    target_dir: bad.to_string(),
+                    rename: None,
+                    confirm: true,
+                }))
+                .unwrap_err();
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "input {bad}"
+            );
+            assert!(err.message.contains(".."), "input {bad}");
+        }
+    }
+
+    #[test]
+    fn test_copy_secret_rejects_unresolvable_target() {
+        let (server, _dir) = setup_initialized_project();
+        let err = server
+            .phantom_copy_secret(Parameters(CopySecretParams {
+                name: "OPENAI_API_KEY".to_string(),
+                target_dir: "definitely/does/not/exist".to_string(),
+                rename: None,
+                confirm: true,
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("cannot be resolved"));
     }
 
     #[test]
