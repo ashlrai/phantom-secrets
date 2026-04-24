@@ -194,13 +194,18 @@ impl DotenvFile {
     }
 
     /// Write the rewritten content to a file.
+    ///
+    /// Uses [`crate::fs::atomic_write`]: the new content is staged in a
+    /// same-directory tempfile (mode 0o600 on POSIX), fsynced, then renamed
+    /// over the target. Prevents a crash mid-write from leaving a
+    /// half-plaintext .env on disk.
     pub fn write_phantomized(
         &self,
         token_map: &TokenMap,
         path: &Path,
     ) -> Result<BTreeMap<String, String>> {
         let (content, originals) = self.rewrite_with_phantoms(token_map);
-        std::fs::write(path, content)?;
+        crate::fs::atomic_write(path, content.as_bytes())?;
         Ok(originals)
     }
 }
