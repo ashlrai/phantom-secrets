@@ -1,3 +1,4 @@
+use crate::body_scope;
 use crate::interceptor::Interceptor;
 use crate::services::ServiceRegistry;
 use bytes::Bytes;
@@ -251,12 +252,23 @@ async fn handle_request(
     let target_url = format!("{}{}{}", route.target_base, remainder, query);
     debug!("Proxying to: {}", target_url);
 
+    // Capture the request content-type before consuming `req` for its body —
+    // we need it to drive content-type-aware body substitution (F9).
+    let request_content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     // Build the outgoing request
     let mut outgoing = state.http_client.request(method.clone(), &target_url);
 
-    // Copy and transform headers
+    // Copy and transform headers. F9: phm-token substitution is restricted to
+    // a whitelist of auth-bearing header names plus the per-route configured
+    // header. Tokens present in other headers are passed through unchanged
+    // and logged — substituting them would turn arbitrary request metadata
+    // into a secret-leakage vector.
     for (name, value) in req.headers() {
-        // Skip hop-by-hop headers and our custom headers
         let name_str = name.as_str();
         if matches!(
             name_str,
@@ -270,12 +282,22 @@ async fn handle_request(
         }
 
         if let Ok(value_str) = value.to_str() {
-            // Replace phantom tokens in header values
-            let (replaced_value, did_replace) = state.interceptor.replace_in_str(value_str);
-            if did_replace {
-                debug!("Replaced phantom token in header: {}", name_str);
-            }
-            outgoing = outgoing.header(name_str, replaced_value);
+            let header_value = if body_scope::is_allowed_header(name_str, &route.header) {
+                let (replaced_value, did_replace) = state.interceptor.replace_in_str(value_str);
+                if did_replace {
+                    debug!("Replaced phantom token in header: {}", name_str);
+                }
+                replaced_value
+            } else {
+                if state.interceptor.contains_phantom_token(value_str) {
+                    warn!(
+                        "phantom token in non-allowed request header '{}' — not substituted (F9 scope)",
+                        name_str
+                    );
+                }
+                value_str.to_string()
+            };
+            outgoing = outgoing.header(name_str, header_value);
         } else {
             outgoing = outgoing.header(name, value.clone());
         }
@@ -309,9 +331,16 @@ async fn handle_request(
     };
 
     if !body_bytes.is_empty() {
-        let (replaced_body, did_replace) = state.interceptor.replace_in_bytes(&body_bytes);
+        // F9: content-type-scoped substitution. JSON bodies get field-level
+        // replacement on a whitelist of known-secret fields; other
+        // content-types pass through without substitution.
+        let (replaced_body, did_replace) = body_scope::scoped_body_replace(
+            &state.interceptor,
+            request_content_type.as_deref(),
+            &body_bytes,
+        );
         if did_replace {
-            debug!("Replaced phantom token(s) in request body");
+            debug!("Replaced phantom token(s) in request body (scoped)");
         }
         outgoing = outgoing.body(replaced_body);
     }
@@ -711,6 +740,134 @@ mod tests {
         let received_body = String::from_utf8(requests[0].body.clone()).unwrap();
         assert!(received_body.contains(real_secret));
         assert!(!received_body.contains("phm_"));
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_proxy_does_not_replace_phantom_token_in_disallowed_body_field() {
+        // F9 regression: a phm token landing in a non-secret JSON field
+        // (e.g. "prompt" / message content) must NOT be substituted to the
+        // real secret before forwarding upstream.
+        let mock = crate::test_server::MockServer::start().await;
+
+        let phantom_token = "phm_cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333dddd4444";
+        let real_secret = "sk-must-not-leak-upstream";
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+
+        let mut mappings = HashMap::new();
+        mappings.insert(phantom_token.to_string(), real_secret.to_string());
+        let interceptor = Interceptor::new(mappings);
+
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        // phm token appears only in `prompt` (chat content), never in an
+        // allowed field. The proxy must forward it unchanged.
+        let body = format!(
+            r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"I saw {phantom_token} in logs"}}]}}"#
+        );
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://127.0.0.1:{}/testapi/v1/chat", proxy.port()))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 1);
+
+        let received_body = String::from_utf8(requests[0].body.clone()).unwrap();
+        assert!(
+            !received_body.contains(real_secret),
+            "real secret leaked into non-allowed body field: {received_body}"
+        );
+        assert!(
+            received_body.contains(phantom_token),
+            "phm token should have been forwarded un-substituted: {received_body}"
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_proxy_does_not_replace_phantom_token_in_disallowed_header() {
+        // F9 regression: a phm token in a non-auth header (e.g. User-Agent)
+        // must NOT be substituted to the real secret.
+        let mock = crate::test_server::MockServer::start().await;
+
+        let phantom_token = "phm_dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333dddd4444eeee5555";
+        let real_secret = "sk-must-not-leak-in-ua";
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+
+        let mut mappings = HashMap::new();
+        mappings.insert(phantom_token.to_string(), real_secret.to_string());
+        let interceptor = Interceptor::new(mappings);
+
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/testapi/v1/ping", proxy.port()))
+            .header("User-Agent", format!("agent/{phantom_token}"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+
+        let requests = mock.get_requests();
+        let ua = requests[0].headers.get("user-agent").unwrap();
+        assert!(
+            !ua.contains(real_secret),
+            "real secret leaked into User-Agent: {ua}"
+        );
+        assert!(
+            ua.contains(phantom_token),
+            "phm token should be forwarded: {ua}"
+        );
 
         proxy.shutdown().await;
         mock.shutdown().await;

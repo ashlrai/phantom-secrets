@@ -1,3 +1,4 @@
+pub mod body_scope;
 pub mod interceptor;
 pub mod server;
 pub mod services;
