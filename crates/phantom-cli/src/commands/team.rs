@@ -4,7 +4,7 @@ use phantom_core::{auth, teams};
 
 pub fn run_list() -> Result<()> {
     let token = auth::require_token()?;
-    let api_base = auth::api_base_url();
+    let api_base = auth::api_base_url()?;
 
     let rt = tokio::runtime::Runtime::new()?;
     let team_list = rt.block_on(teams::list_teams(&api_base, &token))?;
@@ -32,7 +32,7 @@ pub fn run_list() -> Result<()> {
 
 pub fn run_create(name: &str) -> Result<()> {
     let token = auth::require_token()?;
-    let api_base = auth::api_base_url();
+    let api_base = auth::api_base_url()?;
 
     println!("{}  Creating team \"{}\"...", "->".blue().bold(), name);
 
@@ -51,7 +51,7 @@ pub fn run_create(name: &str) -> Result<()> {
 
 pub fn run_members(team_id: &str) -> Result<()> {
     let token = auth::require_token()?;
-    let api_base = auth::api_base_url();
+    let api_base = auth::api_base_url()?;
 
     let rt = tokio::runtime::Runtime::new()?;
     let members = rt.block_on(teams::list_members(&api_base, &token, team_id))?;
@@ -85,7 +85,7 @@ pub fn run_members(team_id: &str) -> Result<()> {
 
 pub fn run_invite(team_id: &str, github_login: &str, role: &str) -> Result<()> {
     let token = auth::require_token()?;
-    let api_base = auth::api_base_url();
+    let api_base = auth::api_base_url()?;
 
     println!(
         "{}  Inviting @{} as {} to team {}...",

@@ -564,7 +564,8 @@ impl PhantomMcpServer {
 
         let blob_b64 = BASE64.encode(&encrypted);
         let version = config.cloud.as_ref().map(|c| c.version).unwrap_or(0);
-        let api_base = phantom_core::auth::api_base_url();
+        let api_base = phantom_core::auth::api_base_url()
+            .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
 
         let new_version = phantom_core::cloud::push(
             &api_base,
@@ -602,7 +603,8 @@ impl PhantomMcpServer {
 
         let (config, vault) = self.load_config_and_vault()?;
 
-        let api_base = phantom_core::auth::api_base_url();
+        let api_base = phantom_core::auth::api_base_url()
+            .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
         let pull_result = phantom_core::cloud::pull(&api_base, &token, &config.phantom.project_id)
             .await
             .map_err(|e| internal_err(format!("Cloud pull failed: {e}")))?;
@@ -1477,7 +1479,8 @@ impl PhantomMcpServer {
     /// Check cloud auth and sync status.
     #[tool(description = "Check Phantom Cloud authentication status, plan, and last sync version.")]
     async fn phantom_cloud_status(&self) -> Result<CallToolResult, McpError> {
-        let api_base = phantom_core::auth::api_base_url();
+        let api_base = phantom_core::auth::api_base_url()
+            .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
 
         let status = match phantom_core::auth::load_token() {
             Some(token) => match phantom_core::auth::get_user_info(&api_base, &token).await {
