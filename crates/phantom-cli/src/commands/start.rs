@@ -250,18 +250,14 @@ async fn run_async() -> Result<()> {
 
     let port = proxy.port();
 
-    // Write PID file atomically (temp + rename) so daemon parent never reads partial data.
+    // Write PID file atomically. The PID file contains the proxy auth token,
+    // so the tempfile must have restrictive permissions from the moment of
+    // creation — not set afterward. phantom_core::fs::atomic_write stages
+    // through `tempfile::NamedTempFile` which creates with mode 0o600 on POSIX
+    // before the first byte is written, then renames over the target atomically.
+    // Fixes F8 from the 0.5.1 security audit (world-readable race window).
     let pid_info = format!("{}:{}:{}", std::process::id(), port, proxy_token);
-    let tmp_pid = pid_path.with_extension("tmp");
-    std::fs::write(&tmp_pid, &pid_info)?;
-    std::fs::rename(&tmp_pid, &pid_path)?;
-
-    // Set restrictive permissions — PID file contains proxy token
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&pid_path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    phantom_core::fs::atomic_write(&pid_path, pid_info.as_bytes())?;
 
     println!(
         "{} Proxy started on {}",
