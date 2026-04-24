@@ -11,6 +11,7 @@ use std::process::{Command, Stdio};
 enum ShellSyntax {
     Bash,
     PowerShell,
+    #[cfg_attr(not(windows), allow(dead_code))]
     Cmd,
 }
 
