@@ -207,7 +207,7 @@ async fn handle_request(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
 
-        if provided_token != state.proxy_token {
+        if !constant_time_eq(provided_token, &state.proxy_token) {
             // Also check query param as fallback (for clients that can't set custom headers)
             let query_token = req
                 .uri()
@@ -215,7 +215,7 @@ async fn handle_request(
                 .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("phantom_token=")))
                 .unwrap_or("");
 
-            if query_token != state.proxy_token {
+            if !constant_time_eq(query_token, &state.proxy_token) {
                 warn!("Rejected request without valid proxy token from {}", path);
                 return Ok(error_response(
                     StatusCode::UNAUTHORIZED,
@@ -472,12 +472,50 @@ async fn handle_request(
     }
 }
 
+/// Constant-time string compare for the proxy-auth token. Length mismatch
+/// short-circuits (token length is not secret); the byte compare runs in
+/// constant time so an attacker colocated on the loopback interface cannot
+/// byte-discover the token via response-timing side-channels.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    a.len() == b.len() && bool::from(a.as_bytes().ct_eq(b.as_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::interceptor::Interceptor;
     use crate::services::{ServiceRegistry, ServiceRoute};
     use std::collections::HashMap;
+
+    #[test]
+    fn test_constant_time_eq_matches_on_equal() {
+        let t = "phm_".to_string() + &"a".repeat(64);
+        assert!(constant_time_eq(&t, &t));
+    }
+
+    #[test]
+    fn test_constant_time_eq_rejects_differing_byte() {
+        let a = "phm_".to_string() + &"a".repeat(64);
+        let mut b = a.clone();
+        b.pop();
+        b.push('b');
+        assert!(!constant_time_eq(&a, &b));
+    }
+
+    #[test]
+    fn test_constant_time_eq_rejects_length_mismatch() {
+        assert!(!constant_time_eq("abc", "abcd"));
+        assert!(!constant_time_eq("", "a"));
+        assert!(!constant_time_eq("a", ""));
+    }
+
+    #[test]
+    fn test_constant_time_eq_matches_empty() {
+        // Both empty is a match; the call site guards this separately by
+        // checking `!state.proxy_token.is_empty()` before invoking compare.
+        assert!(constant_time_eq("", ""));
+    }
 
     fn test_state() -> (ServiceRegistry, Interceptor) {
         let mut registry = ServiceRegistry::new();
