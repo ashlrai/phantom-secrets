@@ -26,12 +26,43 @@ pub struct AddSecretParams {
     pub name: String,
     /// Value of the secret
     pub value: String,
+    /// Required. Must be true — the calling agent must confirm with the user
+    /// before invoking this tool. Defends against prompt-injected instructions
+    /// in project content (READMEs, issue comments, dependency docs) silently
+    /// mutating the vault.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RemoveSecretParams {
     /// Name of the secret to remove
     pub name: String,
+    /// Required. Must be true — the calling agent must confirm with the user
+    /// before invoking this tool. Defends against prompt-injected instructions
+    /// deleting secrets.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RotateParams {
+    /// Required. Must be true — the calling agent must confirm with the user
+    /// before invoking this tool. Rotating invalidates every live phantom token
+    /// and will break any process that cached the old tokens (e.g. a running
+    /// `phantom exec` or dev server) until it picks up the new .env.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CloudPushParams {
+    /// Required. Must be true — the calling agent must confirm with the user
+    /// before invoking this tool. A push overwrites the cloud copy of the
+    /// project's vault; damage from a prompt-injected push propagates to every
+    /// machine that later pulls.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -39,6 +70,11 @@ pub struct CloudPullParams {
     /// Overwrite existing local secrets (default: false)
     #[serde(default)]
     pub force: bool,
+    /// Required. Must be true — the calling agent must confirm with the user
+    /// before invoking this tool. A pull writes entries into the local vault
+    /// and (with force=true) overwrites existing values.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -113,6 +149,18 @@ fn internal_err(msg: impl Into<String>) -> McpError {
 
 fn invalid_params_err(msg: impl Into<String>) -> McpError {
     McpError::new(rmcp::model::ErrorCode::INVALID_PARAMS, msg.into(), None)
+}
+
+fn require_confirm(tool: &str, confirm: bool) -> Result<(), McpError> {
+    if confirm {
+        return Ok(());
+    }
+    Err(invalid_params_err(format!(
+        "{tool} is a destructive vault operation. Ask the user for explicit \
+         confirmation, then retry the call with `confirm: true`. This gate \
+         exists to prevent prompt-injected content (READMEs, issue comments, \
+         dependency docs) from silently mutating or exfiltrating secrets."
+    )))
 }
 
 fn text_result(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
@@ -357,12 +405,13 @@ impl PhantomMcpServer {
 
     /// Add a secret to the vault.
     #[tool(
-        description = "Add a new secret to the Phantom vault. The secret is stored securely and never exposed to AI agents."
+        description = "Add a new secret to the Phantom vault. DESTRUCTIVE — overwrites any existing secret of the same name and rewrites .env. Requires `confirm: true`; the agent must ask the user for explicit consent before calling. See the `confirm` parameter docs for the threat model."
     )]
     fn phantom_add_secret(
         &self,
         Parameters(mut params): Parameters<AddSecretParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_add_secret", params.confirm)?;
         let (_config, vault) = self.load_config_and_vault()?;
 
         // Zeroize the secret value on all exit paths
@@ -412,11 +461,14 @@ impl PhantomMcpServer {
     }
 
     /// Remove a secret from the vault.
-    #[tool(description = "Remove a secret from the Phantom vault by name.")]
+    #[tool(
+        description = "Remove a secret from the Phantom vault by name. DESTRUCTIVE — the secret is permanently deleted (after a successful cloud pull it is recoverable, otherwise not). Requires `confirm: true`; the agent must ask the user for explicit consent before calling. See the `confirm` parameter docs for the threat model."
+    )]
     fn phantom_remove_secret(
         &self,
         Parameters(params): Parameters<RemoveSecretParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_remove_secret", params.confirm)?;
         let (_config, vault) = self.load_config_and_vault()?;
         vault
             .delete(&params.name)
@@ -427,9 +479,13 @@ impl PhantomMcpServer {
 
     /// Rotate all phantom tokens.
     #[tool(
-        description = "Regenerate all phantom tokens in .env. Old tokens become invalid. Real secrets in the vault are unchanged."
+        description = "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true`; the agent must ask the user for explicit consent before calling."
     )]
-    fn phantom_rotate(&self) -> Result<CallToolResult, McpError> {
+    fn phantom_rotate(
+        &self,
+        Parameters(params): Parameters<RotateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_rotate", params.confirm)?;
         let (_config, vault) = self.load_config_and_vault()?;
         let names = vault
             .list()
@@ -461,9 +517,13 @@ impl PhantomMcpServer {
 
     /// Push encrypted vault to Phantom Cloud.
     #[tool(
-        description = "Push local vault to Phantom Cloud. Encrypts secrets client-side before upload. Server never sees plaintext. Requires phantom login first."
+        description = "Push local vault to Phantom Cloud. Encrypts secrets client-side before upload; server never sees plaintext. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true`; the agent must ask the user for explicit consent before calling."
     )]
-    async fn phantom_cloud_push(&self) -> Result<CallToolResult, McpError> {
+    async fn phantom_cloud_push(
+        &self,
+        Parameters(params): Parameters<CloudPushParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_cloud_push", params.confirm)?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         use std::collections::BTreeMap;
 
@@ -527,12 +587,13 @@ impl PhantomMcpServer {
 
     /// Pull vault from Phantom Cloud.
     #[tool(
-        description = "Pull vault from Phantom Cloud to local machine. Decrypts client-side. Use force=true to overwrite existing secrets."
+        description = "Pull vault from Phantom Cloud to local machine. Decrypts client-side. Use force=true to overwrite existing secrets. DESTRUCTIVE — writes entries into the local vault and (with force=true) overwrites values. Requires `confirm: true`; the agent must ask the user for explicit consent before calling."
     )]
     async fn phantom_cloud_pull(
         &self,
         Parameters(params): Parameters<CloudPullParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_cloud_pull", params.confirm)?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         use std::collections::BTreeMap;
 
@@ -1566,6 +1627,7 @@ mod tests {
             .phantom_add_secret(Parameters(AddSecretParams {
                 name: "NEW_SECRET".to_string(),
                 value: "new-value-123".to_string(),
+                confirm: true,
             }))
             .unwrap();
         let text = get_result_text(&result);
@@ -1581,10 +1643,39 @@ mod tests {
         let remove_result = server
             .phantom_remove_secret(Parameters(RemoveSecretParams {
                 name: "NEW_SECRET".to_string(),
+                confirm: true,
             }))
             .unwrap();
         let remove_text = get_result_text(&remove_result);
         assert!(remove_text.contains("removed"));
+    }
+
+    #[test]
+    fn test_destructive_tools_require_confirm() {
+        let (server, _dir) = setup_initialized_project();
+
+        let add_err = server
+            .phantom_add_secret(Parameters(AddSecretParams {
+                name: "X".to_string(),
+                value: "y".to_string(),
+                confirm: false,
+            }))
+            .unwrap_err();
+        assert_eq!(add_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(add_err.message.contains("confirm: true"));
+
+        let rm_err = server
+            .phantom_remove_secret(Parameters(RemoveSecretParams {
+                name: "OPENAI_API_KEY".to_string(),
+                confirm: false,
+            }))
+            .unwrap_err();
+        assert_eq!(rm_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+
+        let rotate_err = server
+            .phantom_rotate(Parameters(RotateParams { confirm: false }))
+            .unwrap_err();
+        assert_eq!(rotate_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     }
 
     #[test]
@@ -1595,7 +1686,9 @@ mod tests {
         let before = std::fs::read_to_string(dir.path().join(".env")).unwrap();
 
         // Rotate
-        let result = server.phantom_rotate().unwrap();
+        let result = server
+            .phantom_rotate(Parameters(RotateParams { confirm: true }))
+            .unwrap();
         let text = get_result_text(&result);
         assert!(text.contains("Rotated"));
 
