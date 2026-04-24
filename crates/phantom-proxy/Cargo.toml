@@ -21,6 +21,7 @@ reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-featu
 tokio-stream = "0.1"
 rand = { workspace = true }
 hex = { workspace = true }
+subtle = "2.6"
 
 [dev-dependencies]
 tokio = { workspace = true }
