@@ -3,6 +3,7 @@ pub mod cloud;
 pub mod config;
 pub mod dotenv;
 pub mod error;
+pub mod fs;
 pub mod sync;
 pub mod teams;
 pub mod token;
