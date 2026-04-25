@@ -9,12 +9,12 @@ export function CTA() {
       <div className="relative mx-auto max-w-[1080px] px-7 text-center">
         <Reveal>
           <h2 className="font-black tracking-[-0.04em] leading-[0.98] text-white text-[clamp(2rem,5.5vw,3rem)]">
-            One command.
+            Stop rationing.
             <br />
-            Keys safe forever.
+            Start delegating.
           </h2>
           <p className="mt-4 text-t2 text-[0.95rem] sm:text-base leading-[1.7]">
-            Protect your secrets. Let AI do the work. Free and open source.
+            One command. Real keys never leave your machine. AI gets to work.
           </p>
         </Reveal>
 

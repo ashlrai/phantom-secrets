@@ -59,11 +59,12 @@ export function UseCases() {
         <Reveal>
           <div className="text-center mb-14">
             <h2 className="text-[1.7rem] sm:text-[2.2rem] font-extrabold tracking-[-0.04em] text-white mb-3">
-              Let AI do real work with your keys
+              Now you can ship the things you wouldn&apos;t risk before.
             </h2>
-            <p className="mx-auto max-w-[520px] text-t2 text-[0.95rem] sm:text-base leading-[1.7]">
-              Phantom doesn&apos;t restrict AI — it enables it. Tell Claude or
-              Cursor to use your real APIs. Everything just works.
+            <p className="mx-auto max-w-[560px] text-t2 text-[0.95rem] sm:text-base leading-[1.7]">
+              Phantom doesn&apos;t restrict AI — it unlocks the work you used
+              to keep it away from. Real APIs, real databases, real production.
+              Everything just works.
             </p>
           </div>
         </Reveal>

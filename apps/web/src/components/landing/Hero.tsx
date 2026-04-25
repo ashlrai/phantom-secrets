@@ -2,7 +2,7 @@
 
 import { motion } from "motion/react";
 import { CopyButton } from "./CopyButton";
-import { TheSwap } from "./TheSwap";
+import { Hero3D } from "./Hero3D";
 import { easeOutExpo } from "./motion";
 
 const fadeUp = (delay = 0) => ({
@@ -26,27 +26,27 @@ export function Hero() {
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue/60 opacity-75" />
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue" />
             </span>
-            Open source · v0.5 · MIT
+            For every AI coding tool · Open source · MIT
           </motion.div>
 
           <motion.h1
             {...fadeUp(0.08)}
-            className="font-black tracking-[-0.05em] leading-[0.98] text-white max-w-[820px] text-[clamp(2.6rem,7vw,5rem)]"
+            className="font-black tracking-[-0.05em] leading-[0.98] text-white max-w-[920px] text-[clamp(2.6rem,7vw,5rem)]"
           >
-            Real secrets stay home.
+            Delegate everything to AI.
             <br />
             <span className="bg-gradient-to-br from-blue-b via-blue to-blue-d bg-clip-text text-transparent">
-              AI gets a phantom.
+              Without sharing a single key.
             </span>
           </motion.h1>
 
           <motion.p
             {...fadeUp(0.16)}
-            className="mt-6 max-w-[520px] text-base sm:text-[1.05rem] text-t2 leading-[1.7]"
+            className="mt-6 max-w-[560px] text-base sm:text-[1.05rem] text-t2 leading-[1.7]"
           >
-            Phantom replaces your real API keys with decoy tokens. A local proxy
-            injects the real keys at the network layer — AI agents never see a
-            real secret, but everything just works.
+            AI coding tools want your API keys. Pasting them in works — until
+            they leak. Phantom hands AI a worthless token and injects the real
+            key at the network layer. Full access. Zero exposure. One command.
           </motion.p>
 
           <motion.div
@@ -85,7 +85,7 @@ export function Hero() {
           transition={{ duration: 0.9, delay: 0.4, ease: easeOutExpo }}
           className="mt-12 sm:mt-16"
         >
-          <TheSwap />
+          <Hero3D />
         </motion.div>
       </div>
     </header>
