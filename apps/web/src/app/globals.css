@@ -71,10 +71,14 @@ code, pre, .mono {
   background: #252538;
 }
 
-/* Marquee for the hero key wall */
-@keyframes marquee {
+/* Marquees for the hero key wall — left + right */
+@keyframes marqueeLeft {
   from { transform: translateX(0); }
   to   { transform: translateX(-50%); }
+}
+@keyframes marqueeRight {
+  from { transform: translateX(-50%); }
+  to   { transform: translateX(0); }
 }
 .marquee-pause-on-hover:hover .marquee-track {
   animation-play-state: paused;

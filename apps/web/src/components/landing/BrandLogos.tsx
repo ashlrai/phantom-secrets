@@ -1,6 +1,10 @@
 // Real brand SVG marks for the logo wall. Sourced from each brand's
 // public logo and simplified to single-color glyphs so they read as a
 // cohesive monochrome row. Use `currentColor` for theming.
+//
+// Each logo also exports a brand `color` (hex) so the key wall can
+// hint at the real brand identity via a small colored dot/accent
+// without going full color-fill (which would look chaotic).
 
 import type { SVGProps } from "react";
 
@@ -89,7 +93,6 @@ export function DockerLogo(props: LogoProps) {
 }
 
 export function WindsurfLogo(props: LogoProps) {
-  // Codeium / Windsurf — wave glyph
   return (
     <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Windsurf" {...props}>
       <path d="M3 16.5c1.8-2.4 3.6-3.6 6-3.6 2.4 0 3 1.2 4.8 1.2s2.4-1.2 4.2-1.2c1.5 0 2.4.6 3 1.2v3c-.6-.6-1.5-1.2-3-1.2-1.8 0-2.4 1.2-4.2 1.2s-2.4-1.2-4.8-1.2c-2.4 0-4.2 1.2-6 3.6v-3Zm0-6c1.8-2.4 3.6-3.6 6-3.6 2.4 0 3 1.2 4.8 1.2s2.4-1.2 4.2-1.2c1.5 0 2.4.6 3 1.2v3c-.6-.6-1.5-1.2-3-1.2-1.8 0-2.4 1.2-4.2 1.2s-2.4-1.2-4.8-1.2c-2.4 0-4.2 1.2-6 3.6v-3Z" />
@@ -105,17 +108,127 @@ export function MongoLogo(props: LogoProps) {
   );
 }
 
-export const LOGOS = [
-  { Logo: ClaudeLogo, name: "Claude" },
-  { Logo: CursorLogo, name: "Cursor" },
-  { Logo: WindsurfLogo, name: "Windsurf" },
-  { Logo: OpenAILogo, name: "OpenAI" },
-  { Logo: VercelLogo, name: "Vercel" },
-  { Logo: StripeLogo, name: "Stripe" },
-  { Logo: GitHubLogo, name: "GitHub" },
-  { Logo: SupabaseLogo, name: "Supabase" },
-  { Logo: RailwayLogo, name: "Railway" },
-  { Logo: PostgresLogo, name: "Postgres" },
-  { Logo: MongoLogo, name: "MongoDB" },
-  { Logo: DockerLogo, name: "Docker" },
-] as const;
+export function NotionLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Notion" {...props}>
+      <path d="M4.459 4.208c.746.606 1.026.56 2.428.466l13.215-.793c.28 0 .047-.28-.046-.326L17.86 1.968c-.42-.326-.981-.7-2.055-.607L3.01 2.295c-.466.046-.56.28-.374.466zm.793 3.08v13.904c0 .747.373 1.027 1.214.98l14.523-.84c.841-.046.935-.56.935-1.167V6.354c0-.606-.233-.933-.748-.887l-15.177.887c-.56.047-.747.327-.747.933zm14.337.745c.093.42 0 .84-.42.888l-.7.14v10.264c-.608.327-1.168.514-1.635.514-.748 0-.935-.234-1.495-.933l-4.577-7.186v6.952L12.21 19s0 .84-1.168.84l-3.222.186c-.093-.186 0-.653.327-.746l.84-.233V9.854L7.822 9.76c-.094-.42.14-1.026.793-1.073l3.456-.233 4.764 7.279v-6.44l-1.215-.139c-.093-.514.28-.887.747-.933zM1.936 1.035l13.31-.98c1.634-.14 2.055-.047 3.082.7l4.249 2.986c.7.513.934.653.934 1.213v16.378c0 1.026-.373 1.634-1.68 1.726l-15.458.934c-.98.047-1.448-.093-1.962-.747l-3.129-4.06c-.56-.747-.793-1.306-.793-1.96V2.667c0-.839.374-1.54 1.447-1.632z" />
+    </svg>
+  );
+}
+
+export function SlackLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Slack" {...props}>
+      <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" />
+    </svg>
+  );
+}
+
+export function LinearLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Linear" {...props}>
+      <path d="M.403 13.795l9.802 9.802c4.247.768 8.787-.527 12.057-3.798L.403 13.795zM.012 9.872l14.116 14.116c1.124-.083 2.236-.336 3.296-.755L.767 6.576c-.418 1.06-.672 2.172-.755 3.296zm1.785-5.516a12.022 12.022 0 0 0-1.04 1.819L18.83 23.243c.629-.282 1.24-.629 1.819-1.04L1.797 4.356zm2.943-3.205A11.998 11.998 0 0 0 0 11.717L12.282 24a12.001 12.001 0 0 0 7.567-3.151L4.74 1.151z" />
+    </svg>
+  );
+}
+
+export function CloudflareLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Cloudflare" {...props}>
+      <path d="M16.5088 16.8447l.211-.7319c.2515-.8649.1641-1.6667-.246-2.2585-.378-.5407-1.0078-.8624-1.7715-.9013l-14.4339-.1828a.286.286 0 01-.2275-.1207.2922.2922 0 01-.0328-.2575.3832.3832 0 01.3372-.2533l14.5663-.1828c1.7281-.0793 3.5993-1.4798 4.2535-3.1936l.8328-2.1758a.5089.5089 0 00.0234-.2902C19.9818 3.0828 16.6586 0 12.6043 0c-3.7295 0-6.9038 2.604-7.7536 6.105a3.6437 3.6437 0 00-2.55-.7081C.5417 5.5715-.0697 7.0312.0066 8.382l.0086.124a.2902.2902 0 01-.2585.3158c-.0035 0-.0048.001-.0083.0011l-.0072.0021a.4147.4147 0 01-.0247.0014l-.082.0157c-.4108.0772-.8016.2274-1.1632.4456l-.5142.2871c-.5184.2934-.8893.7577-1.0386 1.3218a3.0252 3.0252 0 00.0386 1.6953l.5232 1.5318c.071.2078.2647.3473.4842.3473h22.5538c.0237 0 .0473-.0008.0708-.0028.0027-.0009.0058-.0009.0085-.0023.0049-.0009.0099-.0023.015-.0034l.0226-.0036.0226-.0028.0227-.0014.0226-.0028.0226-.0014.0226-.0028.0226-.0028.0226-.0028.0226-.0028.0226-.0028.0226-.0042.0226-.0028.0226-.0042c.0048-.0009.0098-.0019.0147-.0028a.2879.2879 0 00.2188-.197z" />
+      <path d="M19.9508 7.0723c-.1312 0-.2649.0035-.3962.0093-.0894.0046-.1788.0093-.2682.0185a.1885.1885 0 00-.1493.1278l-.5663 1.9651c-.2515.8649-.1641 1.6644.2461 2.255.378.5413 1.008.864 1.7715.9023l3.0786.1828a.2879.2879 0 01.2275.1208.2922.2922 0 01.0328.2585.385.385 0 01-.3373.2517l-3.2018.1828c-1.7374.0793-3.6086 1.4787-4.2627 3.1937l-.231.6049a.1751.1751 0 00.155.2376c.0024.0001.0049.0011.0073.0011h11.0144c.1654 0 .31-.1103.3503-.2706.1894-.6791.2887-1.3927.2887-2.1303 0-4.4156-3.5806-7.9963-7.9962-7.9963z" />
+    </svg>
+  );
+}
+
+export function TwilioLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Twilio" {...props}>
+      <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm0 19.7c-4.3 0-7.7-3.5-7.7-7.7 0-4.3 3.5-7.7 7.7-7.7 4.3 0 7.7 3.5 7.7 7.7 0 4.3-3.5 7.7-7.7 7.7zm4.7-9.5c0 1.3-1 2.3-2.3 2.3-1.3 0-2.3-1-2.3-2.3 0-1.3 1-2.3 2.3-2.3 1.3 0 2.3 1 2.3 2.3zm0 5.6c0 1.3-1 2.3-2.3 2.3-1.3 0-2.3-1-2.3-2.3 0-1.3 1-2.3 2.3-2.3 1.3 0 2.3 1 2.3 2.3zm-5.6 0c0 1.3-1 2.3-2.3 2.3-1.3 0-2.3-1-2.3-2.3 0-1.3 1-2.3 2.3-2.3 1.3 0 2.3 1 2.3 2.3zm0-5.6c0 1.3-1 2.3-2.3 2.3-1.3 0-2.3-1-2.3-2.3 0-1.3 1-2.3 2.3-2.3 1.3 0 2.3 1 2.3 2.3z" />
+    </svg>
+  );
+}
+
+export function AwsLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="AWS" {...props}>
+      <path d="M6.763 10.036c0 .296.032.535.088.71.064.176.144.368.256.576.04.063.056.127.056.183 0 .08-.048.16-.152.24l-.503.335a.383.383 0 01-.208.072c-.08 0-.16-.04-.24-.112a2.47 2.47 0 01-.287-.375 6.18 6.18 0 01-.248-.471c-.622.734-1.405 1.101-2.347 1.101-.67 0-1.205-.191-1.596-.574-.391-.384-.59-.894-.59-1.533 0-.678.239-1.23.726-1.644.487-.415 1.133-.623 1.955-.623.272 0 .55.024.846.064.296.04.6.104.918.176v-.583c0-.607-.127-1.03-.375-1.277-.255-.248-.686-.367-1.3-.367-.28 0-.568.031-.863.103-.295.072-.583.16-.862.272a2.287 2.287 0 01-.28.104.488.488 0 01-.127.023c-.112 0-.168-.08-.168-.247v-.391c0-.128.016-.224.056-.28a.597.597 0 01.224-.167c.279-.144.614-.264 1.005-.36a4.84 4.84 0 011.246-.151c.95 0 1.644.216 2.091.647.439.43.662 1.085.662 1.963v2.586zm-3.24 1.214c.263 0 .534-.048.822-.144.287-.096.543-.271.758-.51.128-.152.224-.32.272-.512.047-.191.08-.423.08-.694v-.335a6.66 6.66 0 00-.735-.136 6.02 6.02 0 00-.75-.048c-.535 0-.926.104-1.19.32-.263.215-.39.518-.39.917 0 .375.095.655.295.846.191.2.47.296.838.296zm6.41.862c-.144 0-.24-.024-.304-.08-.064-.048-.12-.16-.168-.311L7.586 5.55a1.398 1.398 0 01-.072-.32c0-.128.064-.2.191-.2h.783c.151 0 .255.025.31.08.065.048.113.16.16.312l1.342 5.284 1.245-5.284c.04-.16.088-.264.151-.312a.549.549 0 01.32-.08h.638c.152 0 .256.025.32.08.063.048.12.16.151.312l1.261 5.348 1.381-5.348c.048-.16.104-.264.16-.312a.52.52 0 01.311-.08h.743c.127 0 .2.065.2.2 0 .04-.009.08-.017.128a1.137 1.137 0 01-.056.2l-1.923 6.17c-.048.16-.104.263-.168.311a.51.51 0 01-.303.08h-.687c-.151 0-.255-.024-.32-.08-.063-.056-.119-.16-.15-.32l-1.238-5.148-1.23 5.14c-.04.16-.087.264-.15.32-.065.056-.177.08-.32.08zm10.256.215c-.415 0-.83-.048-1.229-.143-.399-.096-.71-.2-.918-.32-.128-.071-.215-.151-.247-.223a.563.563 0 01-.048-.224v-.407c0-.167.064-.247.183-.247.048 0 .096.008.144.024.048.016.12.048.2.08.271.12.566.215.878.279.319.064.63.096.95.096.502 0 .894-.088 1.165-.264a.86.86 0 00.415-.758.777.777 0 00-.215-.559c-.144-.151-.416-.287-.806-.415l-1.157-.36c-.583-.183-1.014-.454-1.277-.813a1.902 1.902 0 01-.4-1.158c0-.335.073-.63.216-.886.144-.255.336-.479.575-.654.24-.184.51-.32.83-.415.32-.096.655-.136 1.006-.136.175 0 .359.008.535.032.183.024.35.056.518.088.16.04.312.08.455.127.144.048.256.096.336.144a.69.69 0 01.24.2.43.43 0 01.071.263v.375c0 .168-.064.256-.184.256a.83.83 0 01-.303-.096 3.652 3.652 0 00-1.532-.311c-.455 0-.815.071-1.062.223-.248.152-.375.383-.375.71 0 .224.08.416.24.567.159.152.454.304.877.44l1.134.358c.574.184.99.44 1.237.767.247.327.367.702.367 1.117 0 .343-.072.655-.207.926-.144.272-.336.511-.583.703-.248.2-.543.343-.886.447-.36.111-.734.167-1.142.167z" />
+    </svg>
+  );
+}
+
+export function GcpLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Google Cloud" {...props}>
+      <path d="M12.19 2.38a9.344 9.344 0 0 0-9.234 6.893c.053-.02-.055.013 0 0-3.875 2.551-3.922 8.11-.247 10.941l.006-.007-.007.03a6.717 6.717 0 0 0 4.077 1.356h5.173l.03.005h5.192c6.687.053 9.376-8.605 3.835-12.35a9.365 9.365 0 0 0-2.821-4.7l-.043-.038-.001.001a9.344 9.344 0 0 0-5.96-2.131zm-.034 1.617a7.717 7.717 0 0 1 4.91 1.754l-.155.153v-.002a.41.41 0 0 0 .003.58l3.2 3.2a.41.41 0 0 0 .58 0l.146-.147a7.731 7.731 0 0 1 1.09 8.464l-.198-.197a.41.41 0 0 0-.58 0l-3.2 3.2a.41.41 0 0 0 0 .58l.156.157c-.197.022-.4.034-.61.034H7.05c-.36 0-.704-.038-1.038-.102l.157-.156a.41.41 0 0 0 0-.58l-3.2-3.2a.41.41 0 0 0-.58 0l-.214.214a5.097 5.097 0 0 1 1.06-7.79l.45.45a.41.41 0 0 0 .58 0l3.2-3.2a.41.41 0 0 0 0-.58l-.142-.142A7.731 7.731 0 0 1 12.156 4z" />
+    </svg>
+  );
+}
+
+export function ResendLogo(props: LogoProps) {
+  // Resend wordmark glyph approximation — stylized 'R'
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Resend" {...props}>
+      <path d="M5 4h7.5a4.5 4.5 0 0 1 1.99 8.54L18 20h-3.4l-3.2-7H8v7H5V4zm3 6.5h4.5a2 2 0 1 0 0-4H8v4z" />
+    </svg>
+  );
+}
+
+export function FigmaLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Figma" {...props}>
+      <path d="M15.852 8.981h-4.588V0h4.588c2.476 0 4.49 2.014 4.49 4.49s-2.014 4.491-4.49 4.491zM12.735 7.51h3.117c1.665 0 3.019-1.355 3.019-3.019s-1.354-3.019-3.019-3.019h-3.117V7.51zm0 1.471H8.148c-2.476 0-4.49-2.015-4.49-4.491S5.672 0 8.148 0h4.588v8.981zm-4.587-7.51c-1.665 0-3.019 1.355-3.019 3.019s1.354 3.02 3.019 3.02h3.117V1.471H8.148zm0 15.019H3.66c-2.476 0-4.49-2.014-4.49-4.49s2.014-4.49 4.49-4.49h4.488V16.49zm-4.488-7.51c-1.665 0-3.019 1.354-3.019 3.019s1.354 3.019 3.019 3.019h3.117V8.981H3.66zM8.148 24c-2.476 0-4.49-2.014-4.49-4.49s2.014-4.49 4.49-4.49h4.588v4.49c0 2.476-2.015 4.49-4.491 4.49zm-3.019-4.49c0 1.665 1.354 3.019 3.019 3.019 1.665 0 3.019-1.354 3.019-3.019v-3.019H8.148c-1.665 0-3.019 1.354-3.019 3.019zm10.722-7.539c-2.475 0-4.488-2.014-4.488-4.49s2.013-4.49 4.488-4.49 4.49 2.014 4.49 4.49-2.015 4.49-4.49 4.49zm0-7.51c-1.664 0-3.018 1.354-3.018 3.019s1.354 3.019 3.018 3.019c1.665 0 3.019-1.354 3.019-3.019s-1.354-3.019-3.019-3.019z" />
+    </svg>
+  );
+}
+
+interface LogoEntry {
+  Logo: (p: LogoProps) => React.JSX.Element;
+  name: string;
+  /** brand accent color used for the small dot beside the card */
+  color: string;
+  /** category, for selective grouping if we ever sort */
+  category: "ai" | "editor" | "infra" | "db" | "comms" | "dev";
+  /** the env-var name a user typically stores this service's key under */
+  env: string;
+  /** deterministic phm_ token displayed on the card */
+  token: string;
+}
+
+export const KEY_ENTRIES: LogoEntry[] = [
+  // AI APIs
+  { Logo: OpenAILogo,     name: "OpenAI",     color: "#10a37f", category: "ai",     env: "OPENAI_API_KEY",     token: "phm_a8f2c4d9" },
+  { Logo: ClaudeLogo,     name: "Anthropic",  color: "#cc785c", category: "ai",     env: "ANTHROPIC_API_KEY",  token: "phm_e1b773c0" },
+
+  // Editors
+  { Logo: CursorLogo,     name: "Cursor",     color: "#a3a3a3", category: "editor", env: "CURSOR_API_KEY",     token: "phm_77b3e5f1" },
+  { Logo: WindsurfLogo,   name: "Windsurf",   color: "#38bdf8", category: "editor", env: "WINDSURF_API_KEY",   token: "phm_1c9e2a40" },
+
+  // Infra
+  { Logo: VercelLogo,     name: "Vercel",     color: "#ffffff", category: "infra",  env: "VERCEL_TOKEN",       token: "phm_d9f1c102" },
+  { Logo: RailwayLogo,    name: "Railway",    color: "#a78bfa", category: "infra",  env: "RAILWAY_TOKEN",      token: "phm_8b4d6f93" },
+  { Logo: AwsLogo,        name: "AWS",        color: "#ff9900", category: "infra",  env: "AWS_SECRET_KEY",     token: "phm_5e2a8d61" },
+  { Logo: GcpLogo,        name: "GCP",        color: "#4285f4", category: "infra",  env: "GCP_API_KEY",        token: "phm_c7f9b203" },
+  { Logo: CloudflareLogo, name: "Cloudflare", color: "#f48120", category: "infra",  env: "CF_API_TOKEN",       token: "phm_ae15f627" },
+
+  // Databases
+  { Logo: SupabaseLogo,   name: "Supabase",   color: "#3ecf8e", category: "db",     env: "SUPABASE_KEY",       token: "phm_4f1c8ae3" },
+  { Logo: PostgresLogo,   name: "Postgres",   color: "#336791", category: "db",     env: "DATABASE_URL",       token: "phm_3a2e7c81" },
+  { Logo: MongoLogo,      name: "MongoDB",    color: "#47a248", category: "db",     env: "MONGODB_URI",        token: "phm_6e0fb529" },
+
+  // Commerce / comms
+  { Logo: StripeLogo,     name: "Stripe",     color: "#635bff", category: "comms",  env: "STRIPE_SECRET_KEY",  token: "phm_2ccb5a91" },
+  { Logo: TwilioLogo,     name: "Twilio",     color: "#f22f46", category: "comms",  env: "TWILIO_AUTH_TOKEN",  token: "phm_9d4b3e12" },
+  { Logo: ResendLogo,     name: "Resend",     color: "#000000", category: "comms",  env: "RESEND_API_KEY",     token: "phm_f1a82b57" },
+  { Logo: SlackLogo,      name: "Slack",      color: "#4a154b", category: "comms",  env: "SLACK_BOT_TOKEN",    token: "phm_71e0d493" },
+
+  // Dev
+  { Logo: GitHubLogo,     name: "GitHub",     color: "#ffffff", category: "dev",    env: "GITHUB_TOKEN",       token: "phm_99a8d2bf" },
+  { Logo: DockerLogo,     name: "Docker",     color: "#2496ed", category: "dev",    env: "DOCKER_TOKEN",       token: "phm_b5817d4c" },
+  { Logo: NotionLogo,     name: "Notion",     color: "#ffffff", category: "dev",    env: "NOTION_API_KEY",     token: "phm_d04c1f86" },
+  { Logo: LinearLogo,     name: "Linear",     color: "#5e6ad2", category: "dev",    env: "LINEAR_API_KEY",     token: "phm_e2f37a91" },
+  { Logo: FigmaLogo,      name: "Figma",      color: "#f24e1e", category: "dev",    env: "FIGMA_TOKEN",        token: "phm_82bd5a14" },
+];
+
+// Backwards-compat: keep LOGOS export shape for any consumer that imports it.
+export const LOGOS = KEY_ENTRIES.map(({ Logo, name }) => ({ Logo, name }));

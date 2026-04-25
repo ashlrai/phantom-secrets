@@ -1,54 +1,13 @@
 "use client";
 
-import type { ComponentType, SVGProps } from "react";
 import { posthog } from "@/lib/posthog";
 import { CopyButton } from "./CopyButton";
-import {
-  ClaudeLogo,
-  CursorLogo,
-  DockerLogo,
-  GitHubLogo,
-  MongoLogo,
-  OpenAILogo,
-  PostgresLogo,
-  RailwayLogo,
-  StripeLogo,
-  SupabaseLogo,
-  VercelLogo,
-  WindsurfLogo,
-} from "./BrandLogos";
+import { KEY_ENTRIES } from "./BrandLogos";
 import { Github } from "./Icons";
-
-type LogoComponent = ComponentType<SVGProps<SVGSVGElement>>;
-
-interface ApiKey {
-  Logo: LogoComponent;
-  name: string;
-  env: string;
-  token: string;
-}
-
-// Twelve real services, each with a real-shape env var name and a fixed
-// phm_xxx token. Tokens are deterministic per service so the marquee
-// always reads the same card-for-card on repeat passes.
-const KEYS: ApiKey[] = [
-  { Logo: OpenAILogo,   name: "OpenAI",     env: "OPENAI_API_KEY",     token: "phm_a8f2c4d9" },
-  { Logo: ClaudeLogo,   name: "Anthropic",  env: "ANTHROPIC_API_KEY",  token: "phm_e1b773c0" },
-  { Logo: StripeLogo,   name: "Stripe",     env: "STRIPE_SECRET_KEY",  token: "phm_2ccb5a91" },
-  { Logo: VercelLogo,   name: "Vercel",     env: "VERCEL_TOKEN",       token: "phm_d9f1c102" },
-  { Logo: GitHubLogo,   name: "GitHub",     env: "GITHUB_TOKEN",       token: "phm_99a8d2bf" },
-  { Logo: SupabaseLogo, name: "Supabase",   env: "SUPABASE_KEY",       token: "phm_4f1c8ae3" },
-  { Logo: CursorLogo,   name: "Cursor",     env: "CURSOR_API_KEY",     token: "phm_77b3e5f1" },
-  { Logo: WindsurfLogo, name: "Windsurf",   env: "WINDSURF_API_KEY",   token: "phm_1c9e2a40" },
-  { Logo: RailwayLogo,  name: "Railway",    env: "RAILWAY_TOKEN",      token: "phm_8b4d6f93" },
-  { Logo: PostgresLogo, name: "Postgres",   env: "DATABASE_URL",       token: "phm_3a2e7c81" },
-  { Logo: MongoLogo,    name: "MongoDB",    env: "MONGODB_URI",        token: "phm_6e0fb529" },
-  { Logo: DockerLogo,   name: "Docker",     env: "DOCKER_TOKEN",       token: "phm_b5817d4c" },
-];
 
 export function Hero() {
   return (
-    <header className="relative pt-14 pb-16 sm:pt-20 sm:pb-24 overflow-hidden">
+    <header className="relative pt-14 pb-20 sm:pt-20 sm:pb-28 overflow-hidden">
       {/* Soft halo behind the headline */}
       <div
         aria-hidden
@@ -105,66 +64,110 @@ export function Hero() {
         </div>
       </div>
 
-      {/* Marquee of API key cards — full bleed past content max-width */}
+      {/* Two-row counter-rotating marquee of API key cards */}
       <KeyWall />
     </header>
   );
 }
 
 function KeyWall() {
-  // Duplicate the array so the marquee loop is seamless when translated -50%
-  const track = [...KEYS, ...KEYS];
+  // Split entries into two rows so opposing motion creates visual depth.
+  // Even-indexed entries → top row (scrolls left), odd → bottom (scrolls right).
+  const rowA = KEY_ENTRIES.filter((_, i) => i % 2 === 0);
+  const rowB = KEY_ENTRIES.filter((_, i) => i % 2 === 1);
 
   return (
     <section
       aria-label="Phantom protects API keys for every popular service"
       className="relative mt-16 sm:mt-20"
     >
-      {/* Section label */}
-      <p className="mx-auto max-w-[940px] px-7 text-center text-[0.78rem] font-medium uppercase tracking-[0.18em] text-t3 mb-7">
-        Replaces real keys for every service you use
+      <p className="mx-auto max-w-[940px] px-7 text-center text-[0.78rem] font-medium uppercase tracking-[0.18em] text-t3 mb-8">
+        Replaces real keys for {KEY_ENTRIES.length}+ services and counting
       </p>
 
-      {/* Marquee — escapes any container, full viewport width */}
-      <div className="relative">
-        {/* Edge fade — left + right, mask out the marquee endpoints */}
+      <div className="relative space-y-3 sm:space-y-4">
+        {/* Edge fades — sit above both marquee rows */}
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-32 sm:w-48 bg-gradient-to-r from-bg to-transparent"
+          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-32 sm:w-48 bg-gradient-to-r from-bg via-bg/85 to-transparent"
         />
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-32 sm:w-48 bg-gradient-to-l from-bg to-transparent"
+          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-32 sm:w-48 bg-gradient-to-l from-bg via-bg/85 to-transparent"
         />
 
-        <div className="overflow-hidden marquee-pause-on-hover">
-          <div className="flex gap-3 sm:gap-4 animate-[marquee_56s_linear_infinite] w-max marquee-track">
-            {track.map((k, i) => (
-              <KeyCard key={`${k.name}-${i}`} item={k} />
-            ))}
-          </div>
-        </div>
+        <Marquee items={rowA} duration={62} direction="left" />
+        <Marquee items={rowB} duration={74} direction="right" />
       </div>
     </section>
   );
 }
 
-function KeyCard({ item }: { item: ApiKey }) {
-  const { Logo, name, env, token } = item;
+function Marquee({
+  items,
+  duration,
+  direction,
+}: {
+  items: typeof KEY_ENTRIES;
+  duration: number;
+  direction: "left" | "right";
+}) {
+  // Duplicate so translateX(-50% / +50%) creates a seamless loop
+  const track = [...items, ...items];
+  const animationName = direction === "left" ? "marqueeLeft" : "marqueeRight";
+
+  return (
+    <div className="overflow-hidden marquee-pause-on-hover">
+      <div
+        className="flex gap-3 sm:gap-4 w-max marquee-track"
+        style={{
+          animation: `${animationName} ${duration}s linear infinite`,
+        }}
+      >
+        {track.map((k, i) => (
+          <KeyCard key={`${k.name}-${i}`} item={k} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function KeyCard({ item }: { item: typeof KEY_ENTRIES[number] }) {
+  const { Logo, name, env, token, color } = item;
   return (
     <article
-      className="group flex w-[260px] sm:w-[300px] shrink-0 items-center gap-4 rounded-xl border border-border bg-s1 px-4 py-3.5 transition-colors duration-200 hover:border-blue-d/60"
+      className="group relative flex w-[280px] sm:w-[310px] shrink-0 items-center gap-3.5 rounded-xl border border-border bg-s1 px-4 py-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-border-l overflow-hidden"
     >
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-s2 text-t2 transition-colors group-hover:text-t1">
+      {/* Brand-color accent on hover */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute -left-px top-0 bottom-0 w-[3px] opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+        style={{ backgroundColor: color }}
+      />
+
+      <div
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-s2 text-t2 transition-colors group-hover:text-t1"
+        style={{
+          // Subtle brand-color glow on hover
+          boxShadow: `inset 0 0 0 0px ${color}00`,
+        }}
+      >
         <Logo className="h-5 w-5" />
       </div>
+
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[0.84rem] font-semibold text-t1 truncate">
+          <span className="text-[0.86rem] font-semibold text-t1 truncate">
             {name}
           </span>
-          <span className="text-[0.66rem] font-mono uppercase tracking-[0.06em] text-green/90">
-            ● safe
+          <span
+            className="inline-flex items-center gap-1 text-[0.66rem] font-mono uppercase tracking-[0.06em] text-green/85 shrink-0"
+          >
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 rounded-full bg-green animate-pulse"
+            />
+            safe
           </span>
         </div>
         <div className="mt-1 font-mono text-[0.72rem] leading-tight truncate">
