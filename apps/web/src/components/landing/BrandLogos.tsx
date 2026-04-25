@@ -76,16 +76,18 @@ export function XaiLogo(props: LogoProps) {
 }
 
 export function GeminiLogo(props: LogoProps) {
-  // Wrap the official Gemini path in our own SVG so we can apply the
-  // canonical 3-stop diagonal gradient (which is Gemini's actual brand
-  // identity — the icon is intrinsically multi-color).
+  // Google Gemini 2025 mark — the 4-pointed star with the official
+  // vertical rainbow gradient that ships on gemini.google.com:
+  // red top → yellow → green → blue bottom. Matches the Wikimedia
+  // commons "Google Gemini icon 2025.svg" reference.
   return (
     <svg viewBox="0 0 24 24" aria-label="Gemini" {...props}>
       <defs>
-        <linearGradient id="gemini-grad" x1="15%" y1="15%" x2="85%" y2="85%">
-          <stop offset="0%" stopColor="#4796E3" />
-          <stop offset="50%" stopColor="#8E72E1" />
-          <stop offset="100%" stopColor="#D96570" />
+        <linearGradient id="gemini-grad" x1="50%" y1="0%" x2="50%" y2="100%">
+          <stop offset="0%" stopColor="#ea4335" />
+          <stop offset="33%" stopColor="#fbbc04" />
+          <stop offset="66%" stopColor="#34a853" />
+          <stop offset="100%" stopColor="#4285f4" />
         </linearGradient>
       </defs>
       <path
@@ -155,7 +157,29 @@ export function AwsLogo(props: LogoProps) {
 }
 
 export function GcpLogo(props: LogoProps) {
-  return <SiGooglecloud {...asIconProps(props, "#4285f4")} />;
+  // The iconic four-color Google "G" mark — universally recognizable
+  // as Google. Used as the GCP brand cue (Google Cloud doesn't ship a
+  // distinct icon-only mark separate from the Google G).
+  return (
+    <svg viewBox="0 0 24 24" aria-label="Google Cloud" {...props}>
+      <path
+        d="M21.6 11.06A9.06 9.06 0 0 0 21.34 9H12v3.95h5.4a4.62 4.62 0 0 1-2 3.04V19h3.24a9.78 9.78 0 0 0 2.96-7.94z"
+        fill="#4285f4"
+      />
+      <path
+        d="M12 21c2.7 0 4.97-.9 6.62-2.42L15.4 16a5.85 5.85 0 0 1-8.7-3.07H3.34v3.07A9.78 9.78 0 0 0 12 21z"
+        fill="#34a853"
+      />
+      <path
+        d="M6.7 12.93a5.85 5.85 0 0 1 0-3.86V6H3.34A9.78 9.78 0 0 0 2.34 12c0 1.6.4 3.13 1.07 4.5L6.7 12.93z"
+        fill="#fbbc04"
+      />
+      <path
+        d="M12 5.97a5.4 5.4 0 0 1 3.82 1.49l2.86-2.85A9.5 9.5 0 0 0 12 2.34 9.78 9.78 0 0 0 3.34 6.07L6.7 9.07A5.85 5.85 0 0 1 12 5.97z"
+        fill="#ea4335"
+      />
+    </svg>
+  );
 }
 
 export function CloudflareLogo(props: LogoProps) {
