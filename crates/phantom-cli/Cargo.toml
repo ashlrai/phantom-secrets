@@ -28,3 +28,8 @@ arboard = { version = "3", default-features = false }
 indicatif = "0.17"
 base64 = { workspace = true }
 notify = "7"
+
+[dev-dependencies]
+assert_cmd = "2"
+tempfile = "3"
+wiremock = "0.6"
