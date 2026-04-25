@@ -1,68 +1,77 @@
 # Getting Started with Phantom
 
-This guide walks through the most common Phantom workflow: a solo developer using Claude Code (or Cursor) with a Next.js/Node.js project deployed to Vercel. By the end, your AI coding tools will never see a real secret again.
+## TL;DR
 
-## 1. Install
+```bash
+npx phantom-secrets init   # installs Phantom and protects your .env
+phantom exec -- claude     # run Claude Code with real secrets injected by proxy
+```
 
-The fastest way to get started is with npm (downloads the correct binary automatically):
+That's it. Your AI tool never sees a real key again.
+
+---
+
+## What Phantom actually does
+
+Phantom replaces real API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in your OS keychain. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`. API SDKs are redirected to this proxy via `*_BASE_URL` environment variables; the proxy swaps phantom tokens for real credentials in request headers and body before forwarding over TLS to the actual API endpoint. The AI agent reads `.env`, gets only worthless tokens, and its logs and context windows contain nothing sensitive.
+
+---
+
+## Install
+
+### npx (recommended — no global install required)
 
 ```bash
 npx phantom-secrets init
 ```
 
-This installs Phantom AND initializes your project in one command. Alternatively:
+Downloads the correct platform binary and runs `phantom init` in one step.
+
+### npm global
 
 ```bash
-# npm global install
 npm install -g phantom-secrets
-
-# Homebrew (macOS)
-brew tap ashlrai/phantom && brew install phantom
-
-# Cargo (from source)
-cargo install --git https://github.com/ashlrai/phantom-secrets phantom
-```
-
-Verify the install:
-
-```bash
-phantom --version
-```
-
-### Claude Code MCP (optional but recommended)
-
-Add Phantom's MCP server so Claude can manage your secrets directly:
-
-```bash
-claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
-```
-
-Once configured, you can just tell Claude: "Protect my API keys" and it will handle everything.
-
-## 2. Initialize
-
-Navigate to your project directory and run `phantom init`:
-
-```bash
-cd my-nextjs-app
 phantom init
 ```
 
-Here is what happens:
+### Homebrew (macOS)
 
-1. Phantom reads your `.env` file and identifies secrets using heuristics (key patterns like `*_API_KEY`, `*_SECRET*`, `*_TOKEN`; value patterns like `sk-*`, `ghp_*`, connection strings).
-2. Real secret values are stored in your **OS keychain** (macOS Keychain / Linux Secret Service). They never exist on disk inside your project directory again.
-3. Your `.env` file is **rewritten in place** -- real values are replaced with phantom tokens (random 256-bit tokens prefixed with `phm_`).
-4. A `.phantom.toml` config file is created in your project root.
+```bash
+brew tap ashlrai/phantom
+brew install phantom
+```
+
+### Direct binary download
+
+Download from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases), extract, and place `phantom` on your `$PATH`.
+
+### Verify
+
+```bash
+phantom --version
+# phantom 0.4.0
+```
+
+---
+
+## First run: exact terminal output
 
 ```
+$ cd my-project
 $ phantom init
-Found 3 secret(s) to protect: OPENAI_API_KEY, ANTHROPIC_API_KEY, DATABASE_URL
-Rewrote .env with phantom tokens
-Saved real secrets to OS keychain
+-> Scanning .env...
+-> Found 3 secret(s): OPENAI_API_KEY, ANTHROPIC_API_KEY, DATABASE_URL
+-> Storing secrets in OS keychain...
+ok  OPENAI_API_KEY stored
+ok  ANTHROPIC_API_KEY stored
+ok  DATABASE_URL stored
+-> Rewriting .env with phantom tokens...
+ok  .env updated
+-> Writing .phantom.toml...
+ok  Initialized. Run `phantom exec -- <cmd>` to start the proxy.
 ```
 
-Your `.env` now looks like this:
+Your `.env` now contains:
 
 ```env
 # Managed by Phantom -- do not edit phantom tokens manually
@@ -73,498 +82,233 @@ NODE_ENV=development
 PORT=3000
 ```
 
-Non-secret values like `NODE_ENV` and `PORT` are left untouched.
-
-If your `.env` is at a non-standard path:
+Non-secret values (`NODE_ENV`, `PORT`) are left untouched. If your `.env` is at a non-standard path:
 
 ```bash
 phantom init --from .env.local
 ```
 
-## 3. Daily Workflow
+---
 
-Your primary daily command is `phantom exec`. It starts the local proxy, runs your command, and tears everything down when the command exits.
+## Core commands
 
-### With Claude Code
+### `phantom init`
 
-```bash
-phantom exec -- claude
-```
-
-### With Cursor
+Reads `.env`, stores real secrets in the OS keychain, rewrites `.env` with phantom tokens, creates `.phantom.toml`. Safe to re-run: new secrets are added, existing phantom tokens are preserved.
 
 ```bash
-phantom exec -- cursor .
+phantom init
+phantom init --from .env.local
 ```
 
-### What happens under the hood
-
-1. Phantom starts a local HTTP proxy on `127.0.0.1` (ephemeral port).
-2. It sets environment variables so SDKs route through the proxy:
-   - `OPENAI_BASE_URL=http://127.0.0.1:<port>/openai`
-   - `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>/anthropic`
-   - (and similar for other configured services)
-3. Your AI tool launches. It reads `.env` and sees only `phm_` tokens.
-4. When your code makes an API call, the request hits the local proxy. The proxy swaps phantom tokens for real secrets in the request headers/body, then forwards the request over TLS to the real API.
-5. When you exit Claude Code (or Cursor), the proxy shuts down. The phantom tokens become inert -- they are meaningless outside the proxy.
-
-**The AI agent never sees, logs, or transmits a real secret.**
-
-## 4. How It Works with Your Code
-
-The key insight: **no code changes are required**. Your application code stays exactly the same.
-
-### Why it just works
-
-The OpenAI and Anthropic SDKs (and most API clients) respect `*_BASE_URL` environment variables. When Phantom sets `OPENAI_BASE_URL`, the SDK sends requests to the local proxy instead of `api.openai.com` directly. The proxy handles the rest.
-
-### Node.js / Next.js example
-
-Your code does not change at all:
-
-```typescript
-// This code works identically with or without Phantom
-import OpenAI from "openai";
-
-const openai = new OpenAI();
-// SDK reads OPENAI_API_KEY (gets phm_ token) and
-// OPENAI_BASE_URL (gets http://127.0.0.1:<port>/openai)
-// Proxy swaps phm_ for the real key before forwarding
-
-const response = await openai.chat.completions.create({
-  model: "gpt-4o",
-  messages: [{ role: "user", content: "Hello" }],
-});
-```
-
-```typescript
-// Same for Anthropic
-import Anthropic from "@anthropic-ai/sdk";
-
-const anthropic = new Anthropic();
-// SDK reads ANTHROPIC_API_KEY (gets phm_ token) and
-// ANTHROPIC_BASE_URL (gets http://127.0.0.1:<port>/anthropic)
-```
-
-### What about DATABASE_URL?
-
-Database connections are not HTTP-based, so the proxy cannot intercept them. For secrets like `DATABASE_URL`, Phantom injects the real value directly as an environment variable inside the `exec` session. The `.env` file still contains only the phantom token, so the AI never sees the real connection string.
-
-### Custom services
-
-Add custom API services in `.phantom.toml`:
-
-```toml
-[services.custom_api]
-secret_key = "MY_CUSTOM_KEY"
-pattern = "api.example.com"
-header = "X-Api-Key"
-header_format = "{secret}"
-```
-
-## 5. Deploy to Vercel
-
-Phantom can push your real secrets directly to Vercel's environment variables, so you never copy-paste secrets into a web dashboard.
+### `phantom add` / `phantom remove`
 
 ```bash
-phantom sync --platform vercel --project prj_abc123def456
+phantom add STRIPE_SECRET_KEY sk_live_abc123...
+phantom remove STRIPE_SECRET_KEY
 ```
 
-This reads real secret values from your OS keychain and sets them as environment variables in your Vercel project. Phantom tokens are never uploaded -- Vercel gets the real values.
+`add` stores the value and writes a phantom token to `.env`. `remove` deletes from the vault (`.env` token line is left; remove manually if desired).
 
-### Finding your Vercel project ID
+### `phantom rotate`
 
-Your project ID is in the Vercel dashboard under **Settings > General**, or in your local `.vercel/project.json`:
-
-```bash
-cat .vercel/project.json
-# {"projectId": "prj_abc123def456", "orgId": "team_xyz"}
-```
-
-You can also save the target in `.phantom.toml` so future syncs do not require the `--project` flag:
-
-```toml
-[sync.vercel]
-project = "prj_abc123def456"
-```
-
-Then simply run:
-
-```bash
-phantom sync --platform vercel
-```
-
-**Note:** You need the Vercel CLI authenticated (`vercel login`) or a `VERCEL_TOKEN` set for this to work.
-
-## 6. New Machine Setup
-
-Starting fresh on a new laptop or CI runner? Pull secrets from a platform you have already synced to:
-
-```bash
-phantom pull --from vercel --project prj_abc123def456
-```
-
-This fetches the real secret values from Vercel, stores them in your local OS keychain, and writes phantom tokens to your `.env` file.
-
-If you already have some secrets locally and want to overwrite them with the platform values:
-
-```bash
-phantom pull --from vercel --project prj_abc123def456 --force
-```
-
-### Railway
-
-For Railway projects, specify the environment and optionally a service:
-
-```bash
-phantom pull --from railway --project <project-id> --environment production --service <service-id>
-```
-
-## 7. Team Onboarding
-
-### Generate .env.example
-
-Phantom can generate a `.env.example` file that lists all required variable names without any values (real or phantom):
-
-```bash
-phantom env
-```
-
-This creates `.env.example`:
-
-```env
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
-DATABASE_URL=
-NODE_ENV=development
-PORT=3000
-```
-
-Non-secret values are preserved as-is. Secret values are left blank.
-
-To write to a different filename:
-
-```bash
-phantom env --output .env.template
-```
-
-### What to commit
-
-| File | Commit? | Why |
-|------|---------|-----|
-| `.env.example` | Yes | Shows teammates what variables are needed |
-| `.phantom.toml` | Yes | Shares proxy/service config with the team |
-| `.env` | No | Contains phantom tokens specific to your vault |
-| `.env.local` | No | Same reason |
-
-Add to your `.gitignore`:
-
-```gitignore
-.env
-.env.local
-.env*.local
-```
-
-### New teammate workflow
-
-When a new developer joins:
-
-1. They clone the repo and see `.env.example`.
-2. They copy it to `.env` and fill in their own API keys.
-3. They run `phantom init` to protect those secrets.
-4. Or, if secrets are already in Vercel: `phantom pull --from vercel --project prj_abc123def456`.
-
-## 8. Pre-commit Hook
-
-`phantom check` scans staged files for unprotected secrets. Set it up as a git hook to block accidental leaks before they reach your repository.
-
-### With the pre-commit framework
-
-Add to your `.pre-commit-config.yaml`:
-
-```yaml
-repos:
-  - repo: https://github.com/ashlrai/phantom-secrets
-    rev: v0.3.0
-    hooks:
-      - id: phantom-check
-```
-
-Then install:
-
-```bash
-pre-commit install
-```
-
-### Manual git hook
-
-```bash
-echo '#!/bin/sh
-phantom check' > .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-```
-
-### What it catches
-
-- Real API keys in `.env` files (values that should be phantom tokens)
-- Hardcoded secrets in staged source files (patterns like `sk-*`, `ghp_*`, `AKIA*`)
-
-```
-$ phantom check
-BLOCKED Unprotected secrets detected!
-
-  ! .env has 1 unprotected secret(s):
-    - OPENAI_API_KEY
-
-fix Run phantom init to protect your secrets.
-```
-
-If everything is clean, `phantom check` exits silently with code 0.
-
-## 9. Claude Code MCP Integration
-
-For a deeper integration, Phantom provides an MCP server that lets Claude Code manage secrets natively -- listing, adding, and rotating secrets without ever exposing real values in the conversation.
-
-### Automatic setup
-
-```bash
-phantom setup
-```
-
-This configures the MCP server in your Claude Code settings and sets up the proxy to start automatically.
-
-### Manual setup
-
-Add to `.claude/settings.json` (project-level) or your global Claude Code settings:
-
-```json
-{
-  "mcpServers": {
-    "phantom": {
-      "command": "phantom-mcp",
-      "args": []
-    }
-  }
-}
-```
-
-### Available MCP tools
-
-Once configured, Claude Code gains these tools:
-
-| Tool | What it does |
-|------|-------------|
-| `phantom_list_secrets` | List secret names (never shows values) |
-| `phantom_status` | Show vault, config, and proxy status |
-| `phantom_init` | Initialize Phantom and protect .env secrets |
-| `phantom_add_secret` | Add a secret to the vault |
-| `phantom_remove_secret` | Remove a secret from the vault |
-| `phantom_rotate` | Regenerate all phantom tokens |
-| `phantom_cloud_push` | Push encrypted vault to Phantom Cloud |
-| `phantom_cloud_pull` | Pull vault from Phantom Cloud |
-| `phantom_cloud_status` | Check cloud auth and sync status |
-
-Claude can call these 17 tools during a session. For example, if you say "add my new Stripe key," Claude can use `phantom_add_secret` to store it safely -- the real value passes through the MCP protocol but never enters Claude's context window or conversation logs.
-
-## 10. Team Workflows
-
-Phantom is currently designed for **solo developers**. Each developer manages their own vault independently -- there is no shared team vault or centralized secret management server (yet).
-
-### How it works in practice
-
-Each developer on your team runs `phantom init` independently on their own machine. This means every team member has their own local vault backed by their OS keychain (or an encrypted file vault).
-
-### Sharing secrets across the team
-
-The recommended workflow for sharing secrets between developers:
-
-1. **One developer syncs to a deployment platform:**
-   ```bash
-   phantom sync --platform vercel --project prj_abc123def456
-   ```
-
-2. **Other developers pull from that platform:**
-   ```bash
-   phantom pull --from vercel --project prj_abc123def456
-   ```
-
-This uses Vercel (or Railway) as the shared source of truth. Each developer ends up with the same real secret values in their own local vault, but with independently generated phantom tokens.
-
-### Bootstrapping new team members
-
-Use `phantom env` to generate a `.env.example` file that new developers can reference:
-
-```bash
-phantom env
-```
-
-This lists all required variable names without exposing any values. Commit `.env.example` to your repo so new teammates know which secrets they need.
-
-### What to commit
-
-`.phantom.toml` can (and should) be committed to git. It contains proxy configuration and service definitions -- no secrets. This ensures every developer on the team uses the same Phantom configuration.
-
-### Limitations to be aware of
-
-- There is no real-time secret sharing. If one developer rotates an API key, they need to `phantom sync` and every other developer needs to `phantom pull` again.
-- Phantom tokens are unique per developer. You cannot share `.env` files between machines and expect them to work.
-- There is no access control or audit log for who accessed which secret.
-
-### Pro tier
-
-The Pro tier ($8/mo) adds unlimited cloud vaults and multi-device sync. Cloud sync uses end-to-end encryption (ChaCha20-Poly1305) -- the server never sees your plaintext secrets. See the [Cloud Sync](#cloud-sync-optional) section for details. A future update will add shared team vaults with centralized access control, audit logging, and automatic propagation of secret updates across team members.
-
-## 11. CI/CD Setup
-
-Phantom works in CI/CD environments where no OS keychain is available. In these environments, Phantom uses an encrypted file vault instead, unlocked by the `PHANTOM_VAULT_PASSPHRASE` environment variable.
-
-### GitHub Actions
-
-Set `PHANTOM_VAULT_PASSPHRASE` and any required platform tokens as GitHub repository secrets, then install Phantom and pull secrets at the start of your workflow:
-
-```yaml
-name: Build and Test
-on: [push]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Phantom
-        run: cargo install phantom --git https://github.com/ashlrai/phantom-secrets
-
-      - name: Pull secrets from Vercel
-        run: phantom pull --from vercel --project ${{ vars.VERCEL_PROJECT_ID }}
-        env:
-          PHANTOM_VAULT_PASSPHRASE: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-
-      - name: Run tests with secrets injected
-        run: phantom exec -- npm test
-        env:
-          PHANTOM_VAULT_PASSPHRASE: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
-```
-
-### Docker
-
-In Docker builds, install Phantom and pass the vault passphrase at runtime (never bake it into the image):
-
-```dockerfile
-FROM rust:1.77 AS builder
-RUN cargo install phantom --git https://github.com/ashlrai/phantom-secrets
-
-FROM node:20-slim
-COPY --from=builder /usr/local/cargo/bin/phantom /usr/local/bin/phantom
-COPY . .
-
-# Pass PHANTOM_VAULT_PASSPHRASE at runtime via docker run -e
-CMD ["phantom", "exec", "--", "node", "server.js"]
-```
-
-Run the container with the passphrase:
-
-```bash
-docker run -e PHANTOM_VAULT_PASSPHRASE="your-passphrase" my-app
-```
-
-### How the encrypted file vault works in CI
-
-When no OS keychain is detected (which is the case on virtually all CI runners and Docker containers), Phantom falls back to an encrypted file vault stored at `~/.phantom/vaults/`. This vault is encrypted with the passphrase provided via `PHANTOM_VAULT_PASSPHRASE`. The passphrase must be set before any Phantom command that accesses secrets (`pull`, `exec`, `init`).
-
-The encrypted file vault provides the same security guarantees as the OS keychain -- secrets are encrypted at rest and only decrypted in memory when needed.
-
-## 12. FAQ
-
-### What if I share my project with someone who does not use Phantom?
-
-Everything still works. Your `.env` contains phantom tokens, which are harmless -- they look like gibberish API keys and will simply fail authentication if used directly. The teammate can replace them with their own real keys, or install Phantom themselves.
-
-### What if I need to see a real secret value?
-
-Phantom deliberately never displays real values. This is a security feature. If you absolutely need to retrieve a value:
-
-- **macOS**: Open Keychain Access and search for "phantom"
-- **Linux**: Use your Secret Service client (e.g., `secret-tool` or Seahorse)
-- **Or**: Check the deployment platform (Vercel dashboard, Railway dashboard) where you synced the secrets
-
-### What if the proxy is not running and my app tries to make an API call?
-
-The app will send the phantom token (`phm_...`) directly to the API, which will reject it as an invalid key. This is by design -- phantom tokens are worthless outside the proxy. Start the proxy with `phantom exec` or `phantom start` before running your app.
-
-### Can I use Phantom in CI/CD?
-
-Yes. In environments without an OS keychain (Docker, CI runners), Phantom falls back to an encrypted file vault. Use `phantom pull` to populate secrets from your deployment platform at the start of the CI job.
-
-### Does Phantom work with monorepos?
-
-Yes. Run `phantom init` in each package/app directory that has its own `.env`. Each gets its own `.phantom.toml` and set of phantom tokens. The proxy handles all of them in a single `phantom exec` session.
-
-### What if I add a new secret to .env after initialization?
-
-Run `phantom init` again. It detects new unprotected secrets, adds them to the vault, and rewrites the `.env`. Existing phantom tokens are preserved.
-
-### How do I rotate my phantom tokens?
+Regenerates all phantom tokens without changing the real secrets. Use this if you suspect a token mapping was exposed (tokens are worthless without the proxy, but rotation is a clean reset).
 
 ```bash
 phantom rotate
 ```
 
-This regenerates all phantom tokens in your `.env` without affecting the real secret values in the vault. Useful if you suspect a token mapping was exposed.
+### `phantom cloud push` / `phantom cloud pull`
 
-### Is the proxy secure?
+Sync your vault across machines. End-to-end encrypted — the server never sees plaintext.
 
-The proxy binds to `127.0.0.1` only -- it is never exposed to the network. It uses TLS (via rustls) for all outgoing connections to real APIs. Secrets are zeroized from memory after injection. See [SECURITY.md](../SECURITY.md) for the full threat model.
+```bash
+phantom login              # GitHub OAuth, once per device
+phantom cloud push         # upload encrypted vault
+phantom cloud pull         # download and decrypt on another machine
+```
 
-### How do I check that everything is healthy?
+### `phantom sync` / `phantom pull`
+
+Push real secrets to a deployment platform, or pull them from one.
+
+```bash
+# Push to Vercel
+phantom sync --platform vercel --project prj_abc123
+
+# Pull from Vercel on a new machine
+phantom pull --from vercel --project prj_abc123
+
+# Railway
+phantom sync --platform railway --project <id>
+phantom pull --from railway --project <id> --environment production
+```
+
+### `phantom check`
+
+Scans `.env` files for unprotected secrets. Use as a pre-commit hook.
+
+```bash
+phantom check
+# BLOCKED Unprotected secrets detected!
+#   ! .env: OPENAI_API_KEY is not protected
+# fix Run `phantom init`
+```
+
+Exit code 0 = clean. Exit code 1 = unprotected secrets found.
+
+### `phantom doctor`
+
+Health check for your setup: config validity, vault access, `.env` protection, `.gitignore` coverage, `.env.example`, pre-commit hook.
 
 ```bash
 phantom doctor
+phantom doctor --fix    # auto-fix safe issues
 ```
 
-This verifies your vault, config file, keychain access, and proxy configuration. Run it whenever something feels off.
+```
+$ phantom doctor
+pass: .phantom.toml found
+pass: Config valid (project: a1b2c3d4)
+pass: Vault backend: macOS Keychain
+pass: 3 secret(s) in vault
+pass: .env has 5 entries, all protected
+pass: .env is in .gitignore
+warn: No .env.example — team onboarding may be difficult
+warn: No pre-commit hook installed
 
-## Cloud Sync (Optional)
+2 issue(s) found — use --fix to auto-fix
+```
 
-Sync your vault across machines with end-to-end encryption. The server never sees your plaintext secrets.
+### `phantom reveal`
 
-### Sign in
+Print a real secret value to stdout. Blocked in non-interactive contexts by default.
 
 ```bash
-phantom login
+phantom reveal OPENAI_API_KEY
+phantom reveal OPENAI_API_KEY --clipboard   # copies and auto-clears after 30s
+phantom reveal OPENAI_API_KEY --yes         # bypass interactive check (scripts/CI)
 ```
 
-This opens your browser for GitHub OAuth. Once authenticated, your device is linked to your Phantom Cloud account.
+---
 
-### Push secrets to the cloud
+## Editor integrations
+
+### Claude Code (MCP)
 
 ```bash
-phantom cloud push
+claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 ```
 
-Your vault is encrypted client-side with ChaCha20-Poly1305 before upload. The encryption key lives only in your OS keychain.
+Or use `phantom setup` to configure it automatically alongside `.claude/settings.json`.
 
-### Pull secrets on a new machine
+Once installed, Claude gains 17 Phantom tools and can manage secrets from inside the conversation. See [claude-code.md](./claude-code.md) for the full workflow.
+
+### Cursor
+
+Add in **Settings > Features > MCP Servers**:
+
+| Field | Value |
+|-------|-------|
+| Name | `phantom` |
+| Command | `npx` |
+| Args | `phantom-secrets-mcp` |
+
+Then run your project with `phantom exec -- cursor .` so the proxy is active.
+
+### Windsurf
+
+Add to your MCP configuration file:
+
+```json
+{
+  "mcpServers": {
+    "phantom": {
+      "command": "npx",
+      "args": ["phantom-secrets-mcp"]
+    }
+  }
+}
+```
+
+### OpenAI Codex
+
+Add to `~/.codex/config.json`:
+
+```json
+{
+  "mcpServers": {
+    "phantom": {
+      "command": "npx",
+      "args": ["phantom-secrets-mcp"]
+    }
+  }
+}
+```
+
+---
+
+## Troubleshooting
+
+### "No .phantom.toml found"
+
+You haven't initialized in this directory.
 
 ```bash
-phantom login            # authenticate the new device
-phantom cloud pull       # download and decrypt your vault
+phantom init
 ```
 
-### Pricing
+### API calls return 401 after setup
 
-- **Free**: 1 cloud vault (unlimited local vaults)
-- **Pro** ($8/mo): Unlimited cloud vaults, multi-device sync
-
-### Vault Backup
-
-Export an encrypted backup file (independent of cloud sync):
+The proxy is not running or the `*_BASE_URL` variables aren't set. Always run your tool via `phantom exec`:
 
 ```bash
-phantom export --passphrase mypassword
-# Creates phantom-export.enc
-
-phantom import phantom-export.enc --passphrase mypassword
-# Restores secrets from backup
+phantom exec -- node server.js
+phantom exec -- claude
 ```
+
+Check status:
+
+```bash
+phantom status
+phantom doctor
+```
+
+### Keychain access prompt on macOS
+
+Click "Always Allow" for the `phantom-secrets` entry. This appears once per application.
+
+### Linux keychain unavailable / CI environments
+
+Set a passphrase and Phantom falls back to an encrypted file vault:
+
+```bash
+export PHANTOM_VAULT_PASSPHRASE="$(openssl rand -hex 32)"
+```
+
+Store this passphrase as a CI secret. See `docs/ci-cd.md` for full GitHub Actions and Docker examples.
+
+### `npx phantom-secrets` fails to download
+
+The binary ships from GitHub Releases. Check your internet connection, then:
+
+```bash
+# Fallback: install from source
+cargo install phantom --git https://github.com/ashlrai/phantom-secrets
+```
+
+Or download the binary directly from [github.com/ashlrai/phantom-secrets/releases](https://github.com/ashlrai/phantom-secrets/releases).
+
+### Claude Code reads `.env` and sees phantom tokens — is this broken?
+
+No. Phantom tokens are safe for AI to read. They're random strings that are meaningless without the proxy. After `phantom init`, you can explicitly allow `.env` in Claude Code's settings — `phantom setup` does this automatically.
+
+---
+
+## Next steps
+
+- [Claude Code integration](./claude-code.md) — MCP tools, workflow examples, what Claude can and cannot do
+- [CI/CD setup](./ci-cd.md) — GitHub Actions, Docker, encrypted file vault
+- [Troubleshooting](./troubleshooting.md) — extended issue reference
+- [GitHub repository](https://github.com/ashlrai/phantom-secrets) — source, issues, releases
+- [phm.dev](https://phm.dev) — pricing, cloud sync, team features

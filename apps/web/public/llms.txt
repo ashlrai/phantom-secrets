@@ -2,30 +2,50 @@
 
 > Open-source CLI that protects API keys from AI coding agent leaks by replacing real secrets with worthless phantom tokens and injecting real credentials via a local HTTP proxy.
 
+Website: https://phm.dev
+GitHub: https://github.com/ashlrai/phantom-secrets
+Docs: https://phm.dev/docs
+Full LLM context: https://phm.dev/llms-full.txt
+
 ## Install
 
 ```
 npx phantom-secrets init
 ```
 
-## MCP Server (9 tools)
+Or: `brew tap ashlrai/phantom && brew install phantom`
+
+## MCP Server (17 tools)
 
 Setup: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
-Tools: phantom_init, phantom_list_secrets, phantom_status, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
+Read-only tools: phantom_list_secrets, phantom_status, phantom_cloud_status, phantom_why, phantom_check, phantom_sync, phantom_doctor
+Init tools: phantom_init, phantom_env
+Destructive tools (require confirm=true): phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_cloud_push, phantom_cloud_pull, phantom_copy_secret, phantom_wrap, phantom_unwrap
 
 ## How AI Should Behave
 
 - NEVER show, log, or write real API key values into code files
 - The `.env` file contains `phm_...` tokens — these are safe placeholders, not broken keys
 - Use `phantom_list_secrets` to see what secrets are available (never shows values)
-- Use `phantom_add_secret` to store new keys a user provides
+- Use `phantom_add_secret` to store a new key (ask user to confirm first)
 - Use `phantom_init` to protect an unprotected `.env` file
 - Suggest `phantom exec -- <command>` to run code with real credentials injected
+- Never call destructive tools (add, remove, rotate, cloud_push, cloud_pull, copy, wrap, unwrap) without confirm=true
 
-## Links
+## CLI Commands (27 total)
 
-- Website: https://phm.dev
-- GitHub: https://github.com/ashlrai/phantom-secrets
-- Docs: https://phm.dev/docs
-- Full LLM context: https://phm.dev/llms-full.txt
+init, exec, start, stop, list, add, remove, reveal, rotate, status, doctor, check, sync, pull, env, setup, login, logout, cloud push, cloud pull, export, import, wrap, unwrap, watch, why, copy
+
+## Architecture
+
+5-crate Rust workspace: phantom-core, phantom-vault, phantom-proxy, phantom-cli, phantom-mcp
+- Vault backends: macOS Keychain, Linux Secret Service, encrypted file (CI/Docker)
+- Proxy: HTTP reverse proxy on 127.0.0.1, TLS outbound, streaming/SSE support
+- Encryption: ChaCha20-Poly1305 with Argon2id key derivation
+- Tokens: 256-bit CSPRNG with phm_ prefix
+
+## Pricing
+
+Free: 1 cloud vault, unlimited local vaults
+Pro ($8/mo): unlimited cloud vaults, multi-device sync
