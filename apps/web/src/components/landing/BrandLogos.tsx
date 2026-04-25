@@ -13,16 +13,15 @@ type LogoProps = SVGProps<SVGSVGElement>;
 
 export function GeminiLogo(props: LogoProps) {
   // Gemini's official 4-pointed-star mark with the canonical Google
-  // Gemini gradient: Google blue → violet → coral. Diagonal top-left
-  // to bottom-right, matching gemini.google.com.
+  // Gemini gradient as it appears on gemini.google.com — cool Google
+  // blue at top-left flowing through violet to a warm pink/coral.
   return (
     <svg viewBox="0 0 24 24" aria-label="Gemini" {...props}>
       <defs>
-        <linearGradient id="gemini-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#1c7bd7" />
-          <stop offset="35%" stopColor="#4285f4" />
-          <stop offset="65%" stopColor="#9168c0" />
-          <stop offset="100%" stopColor="#d96570" />
+        <linearGradient id="gemini-grad" x1="15%" y1="15%" x2="85%" y2="85%">
+          <stop offset="0%" stopColor="#4796E3" />
+          <stop offset="50%" stopColor="#8E72E1" />
+          <stop offset="100%" stopColor="#D96570" />
         </linearGradient>
       </defs>
       <path
@@ -94,28 +93,26 @@ export function FigmaLogo(props: LogoProps) {
 }
 
 export function GcpLogo(props: LogoProps) {
-  // Google Cloud — the actual cloud silhouette with the four Google
-  // brand colors arranged as a continuous outline (each quadrant of
-  // the cloud picks up one color, matching Google's official mark).
+  // Google's iconic four-color "G" mark — universally recognizable as
+  // Google. Used as the GCP brand cue since Google Cloud has no
+  // distinct icon-only mark; the G IS Google.
   return (
     <svg viewBox="0 0 24 24" aria-label="Google Cloud" {...props}>
-      <defs>
-        <linearGradient id="gcp-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#4285f4" />
-          <stop offset="33%" stopColor="#34a853" />
-          <stop offset="66%" stopColor="#fbbc04" />
-          <stop offset="100%" stopColor="#ea4335" />
-        </linearGradient>
-      </defs>
-      {/* Cloud silhouette */}
       <path
-        d="M17 9.5h-.4A6 6 0 0 0 5.7 11a4.5 4.5 0 0 0 .8 8.95h10.5a5.25 5.25 0 0 0 .5-10.45z"
-        fill="url(#gcp-grad)"
+        d="M21.6 11.06A9.06 9.06 0 0 0 21.34 9H12v3.95h5.4a4.62 4.62 0 0 1-2 3.04V19h3.24a9.78 9.78 0 0 0 2.96-7.94z"
+        fill="#4285f4"
       />
-      {/* Letter G centered, cut out of the cloud */}
       <path
-        d="M11.5 13.5h2v1.2h-1.1c.05.3-.05.6-.3.85a1.4 1.4 0 0 1-1 .35 1.7 1.7 0 0 1-1.7-1.7 1.7 1.7 0 0 1 1.7-1.7c.45 0 .85.16 1.15.42l.7-.7a2.65 2.65 0 0 0-1.85-.72 2.7 2.7 0 0 0 0 5.4 2.4 2.4 0 0 0 1.85-.75 2.5 2.5 0 0 0 .65-1.8c0-.18-.02-.35-.04-.52z"
-        fill="#ffffff"
+        d="M12 21c2.7 0 4.97-.9 6.62-2.42L15.4 16a5.85 5.85 0 0 1-8.7-3.07H3.34v3.07A9.78 9.78 0 0 0 12 21z"
+        fill="#34a853"
+      />
+      <path
+        d="M6.7 12.93a5.85 5.85 0 0 1 0-3.86V6H3.34A9.78 9.78 0 0 0 2.34 12c0 1.6.4 3.13 1.07 4.5L6.7 12.93z"
+        fill="#fbbc04"
+      />
+      <path
+        d="M12 5.97a5.4 5.4 0 0 1 3.82 1.49l2.86-2.85A9.5 9.5 0 0 0 12 2.34 9.78 9.78 0 0 0 3.34 6.07L6.7 9.07A5.85 5.85 0 0 1 12 5.97z"
+        fill="#ea4335"
       />
     </svg>
   );
@@ -139,20 +136,27 @@ export function CloudflareLogo(props: LogoProps) {
 }
 
 export function AwsLogo(props: LogoProps) {
+  // The iconic AWS smile arc with arrow tail. This is the cleanest
+  // recognizable AWS mark at small sizes — better than trying to fit
+  // the full "aws" wordmark in 24px.
   return (
-    <svg viewBox="0 0 24 24" {...props}>
-      {/* AWS smile arc — orange */}
+    <svg viewBox="0 0 24 24" aria-label="AWS" {...props}>
+      {/* The smile — broad arc curving upward across the bottom */}
       <path
-        d="M22.43 16.7c-3.05 2.18-7.47 3.34-11.27 3.34-5.33 0-10.13-1.97-13.76-5.25-.28-.26-.03-.6.31-.4 3.92 2.28 8.78 3.66 13.79 3.66 3.38 0 7.1-.7 10.52-2.16.51-.22.94.34.41.81z"
+        d="M3 13.5C5.5 18 9.5 19.5 12 19.5s6.5-1.5 9-6"
+        stroke="#ff9900"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        fill="none"
+      />
+      {/* Arrow tip on the right end */}
+      <path
+        d="M19 12.6l3.5 1L20 15.5z"
         fill="#ff9900"
       />
+      {/* "aws" minimal wordmark above the smile */}
       <path
-        d="M23.7 15.25c-.39-.5-2.59-.24-3.58-.12-.3.04-.34-.22-.07-.41 1.75-1.23 4.62-.88 4.96-.46.34.42-.09 3.3-1.73 4.67-.25.21-.49.1-.38-.18.37-.92 1.19-2.99.8-3.5z"
-        fill="#ff9900"
-      />
-      {/* Black wordmark approximation */}
-      <path
-        d="M6.83 9.7c0 .42.05.76.13 1l.42.91c.04.07.06.14.06.2 0 .09-.05.18-.17.27l-.55.37a.4.4 0 0 1-.23.08c-.09 0-.17-.04-.26-.13a2.66 2.66 0 0 1-.31-.41 6.85 6.85 0 0 1-.27-.51c-.68.8-1.54 1.21-2.57 1.21-.74 0-1.32-.21-1.74-.63a2.32 2.32 0 0 1-.65-1.68c0-.74.26-1.34.79-1.79a3.13 3.13 0 0 1 2.13-.68c.3 0 .61.03.93.07.34.05.68.11 1.03.19v-.64c0-.66-.14-1.13-.41-1.4-.28-.27-.75-.4-1.43-.4-.31 0-.62.04-.95.11-.32.08-.64.18-.94.3a2.5 2.5 0 0 1-.31.11c-.05.01-.1.02-.13.02-.12 0-.18-.09-.18-.27v-.43c0-.14.02-.24.06-.31a.65.65 0 0 1 .25-.18c.31-.16.67-.29 1.1-.4a5.3 5.3 0 0 1 1.36-.16c1.04 0 1.79.24 2.27.71.48.47.72 1.18.72 2.14V9.7z"
+        d="M5.6 8.5c0 .25.03.46.07.6.05.14.11.29.19.45.03.05.04.09.04.13 0 .06-.03.12-.1.18l-.32.21c-.04.03-.09.05-.13.05-.05 0-.1-.03-.15-.08l-.18-.24-.16-.31c-.4.46-.9.71-1.51.71-.43 0-.78-.13-1.02-.38-.25-.25-.38-.58-.38-.99 0-.44.15-.79.46-1.05.31-.27.73-.4 1.25-.4.17 0 .35.02.54.05.19.03.39.07.6.12v-.38c0-.39-.08-.66-.24-.82-.16-.16-.43-.24-.83-.24-.18 0-.36.02-.55.07-.19.04-.37.1-.55.18-.06.03-.11.04-.14.05-.03.01-.06.01-.07.01-.07 0-.1-.05-.1-.16v-.25c0-.08.01-.14.04-.18.03-.04.07-.08.14-.11.18-.09.39-.17.64-.23.25-.06.51-.09.79-.09.61 0 1.05.14 1.33.41.28.27.42.69.42 1.25v1.65zM3.34 9.32c.16 0 .33-.03.51-.09a1.06 1.06 0 0 0 .47-.31.79.79 0 0 0 .17-.31c.03-.12.05-.27.05-.43v-.21c-.15-.04-.31-.07-.48-.09-.17-.02-.33-.03-.49-.03-.35 0-.6.07-.78.21-.17.14-.26.34-.26.6 0 .25.06.43.18.55.13.13.31.19.55.19zm5.18.69c-.09 0-.15-.02-.2-.05-.04-.04-.07-.1-.11-.2L7.04 5.69a.94.94 0 0 1-.05-.21c0-.08.04-.13.13-.13h.51c.1 0 .17.02.21.05.04.03.08.1.1.21l.88 3.46.81-3.46c.03-.1.06-.17.1-.21.04-.03.11-.05.21-.05h.42c.1 0 .17.02.21.05.04.04.08.11.1.21l.83 3.51.91-3.51c.03-.11.07-.18.11-.21.04-.03.11-.05.21-.05h.49c.08 0 .13.04.13.13 0 .03 0 .06-.01.08l-.04.13-1.26 4.07c-.03.1-.07.17-.11.2-.04.04-.11.05-.2.05h-.45c-.1 0-.17-.02-.21-.05-.04-.04-.08-.11-.1-.21l-.81-3.41-.81 3.41c-.03.1-.06.17-.1.21-.04.03-.11.05-.21.05h-.45z"
         fill="#ffffff"
       />
     </svg>
@@ -224,24 +228,41 @@ export function SupabaseLogo(props: LogoProps) {
 }
 
 export function RailwayLogo(props: LogoProps) {
-  // Railway's actual mark — a stylized R-via-rail-tracks: a vertical
-  // stem rising from a horizontal track-tile base. Clean, geometric.
+  // Railway's mark — a clean bold "R" letterform inside a rounded
+  // square frame, in their signature pale lavender.
   return (
-    <svg viewBox="0 0 24 24" fill="#c6c6f5" aria-label="Railway" {...props}>
-      {/* Top horizontal bar */}
-      <path d="M3 4h18v2H3z" />
-      {/* Bottom horizontal bar */}
-      <path d="M3 18h18v2H3z" />
-      {/* Vertical track ties — six evenly spaced */}
-      <path d="M4.5 8h2v8h-2zM8 8h2v8H8zM11.5 8h2v8h-2zM15 8h2v8h-2zM18.5 8h2v8h-2z" />
+    <svg viewBox="0 0 24 24" aria-label="Railway" {...props}>
+      {/* Square frame */}
+      <rect
+        x="2.5"
+        y="2.5"
+        width="19"
+        height="19"
+        rx="3.5"
+        fill="none"
+        stroke="#c6c6f5"
+        strokeWidth="1.6"
+      />
+      {/* Letter R */}
+      <path
+        d="M7.5 6.5h5.2c2.4 0 4.3 1.7 4.3 3.95 0 1.7-1.05 3.1-2.55 3.65l3.05 5.4h-3.05L11.7 14.5h-1.5v5h-2.7v-13zm2.7 2.6v3.05h2.4c.95 0 1.65-.65 1.65-1.55 0-.85-.7-1.5-1.65-1.5h-2.4z"
+        fill="#c6c6f5"
+      />
     </svg>
   );
 }
 
 export function PostgresLogo(props: LogoProps) {
+  // PostgreSQL's elephant mascot ("Slonik"). Filled in their brand
+  // blue, slightly lifted for legibility on the dark background.
   return (
-    <svg viewBox="0 0 24 24" fill="#5d8db0" aria-label="PostgreSQL" {...props}>
-      <path d="M17.128 0a8.521 8.521 0 0 0-2.218.296l-.041.014a8.668 8.668 0 0 0-1.41-.106c-1.184.02-2.203.305-3.027.792-.81-.275-2.476-.787-4.21-.704-1.072.05-2.246.348-3.106 1.15-.86.803-1.346 2.085-1.222 3.832.037.518.185 1.366.443 2.459.257 1.092.625 2.385 1.087 3.667.461 1.282 1.001 2.554 1.673 3.503.336.475.713.872 1.18 1.158.466.286 1.054.454 1.638.396.41-.04.768-.198 1.077-.4.15.16.31.328.476.483-.215.255-.405.483-.526.673-.273.428-.402.766-.443 1.13-.04.36.02.737.222 1.176.439.953 1.318 1.598 2.34 1.785 1.025.187 2.183-.077 3.13-.792.291.752.875 1.367 1.61 1.682.79.34 1.692.422 2.555.205.864-.218 1.704-.732 2.262-1.515.555-.78.768-1.795.523-2.953a17.43 17.43 0 0 0-.36-1.482c1.046-.156 1.937-.585 2.582-1.245.736-.753 1.117-1.756 1.118-2.954-.001-.358-.045-.737-.139-1.117-.587-2.36-2.063-3.969-3.946-4.748-.94-.39-1.987-.59-3.043-.59-.288 0-.577.014-.864.045-.812-.776-1.722-1.211-2.633-1.49a8.94 8.94 0 0 0-2.62-.379z" />
+    <svg viewBox="0 0 24 24" aria-label="PostgreSQL" {...props}>
+      <path
+        d="M17.128 0a8.521 8.521 0 0 0-2.218.296l-.041.014a8.668 8.668 0 0 0-1.41-.106c-1.184.02-2.203.305-3.027.792-.81-.275-2.476-.787-4.21-.704-1.072.05-2.246.348-3.106 1.15-.86.803-1.346 2.085-1.222 3.832.037.518.185 1.366.443 2.459.257 1.092.625 2.385 1.087 3.667.461 1.282 1.001 2.554 1.673 3.503.336.475.713.872 1.18 1.158.466.286 1.054.454 1.638.396.41-.04.768-.198 1.077-.4.15.16.31.328.476.483-.215.255-.405.483-.526.673-.273.428-.402.766-.443 1.13-.04.36.02.737.222 1.176.439.953 1.318 1.598 2.34 1.785 1.025.187 2.183-.077 3.13-.792.291.752.875 1.367 1.61 1.682.79.34 1.692.422 2.555.205.864-.218 1.704-.732 2.262-1.515.555-.78.768-1.795.523-2.953a17.43 17.43 0 0 0-.36-1.482c1.046-.156 1.937-.585 2.582-1.245.736-.753 1.117-1.756 1.118-2.954-.001-.358-.045-.737-.139-1.117-.587-2.36-2.063-3.969-3.946-4.748-.94-.39-1.987-.59-3.043-.59-.288 0-.577.014-.864.045-.812-.776-1.722-1.211-2.633-1.49a8.94 8.94 0 0 0-2.62-.379z"
+        fill="#6f9ed4"
+      />
+      {/* Eye dot */}
+      <circle cx="14.5" cy="6" r="0.5" fill="#1d1f27" />
     </svg>
   );
 }
@@ -255,9 +276,28 @@ export function DockerLogo(props: LogoProps) {
 }
 
 export function WindsurfLogo(props: LogoProps) {
+  // Windsurf — a stylized sail rising above three flowing wind/water
+  // waves. Reads as "wind + surf" at any size.
   return (
-    <svg viewBox="0 0 24 24" fill="#19b3a6" aria-label="Windsurf" {...props}>
-      <path d="M3 16.5c1.8-2.4 3.6-3.6 6-3.6 2.4 0 3 1.2 4.8 1.2s2.4-1.2 4.2-1.2c1.5 0 2.4.6 3 1.2v3c-.6-.6-1.5-1.2-3-1.2-1.8 0-2.4 1.2-4.2 1.2s-2.4-1.2-4.8-1.2c-2.4 0-4.2 1.2-6 3.6v-3Zm0-6c1.8-2.4 3.6-3.6 6-3.6 2.4 0 3 1.2 4.8 1.2s2.4-1.2 4.2-1.2c1.5 0 2.4.6 3 1.2v3c-.6-.6-1.5-1.2-3-1.2-1.8 0-2.4 1.2-4.2 1.2s-2.4-1.2-4.8-1.2c-2.4 0-4.2 1.2-6 3.6v-3Z" />
+    <svg viewBox="0 0 24 24" aria-label="Windsurf" {...props}>
+      {/* Sail — triangular */}
+      <path
+        d="M12 2.5L19 14h-7V2.5z"
+        fill="#19b3a6"
+      />
+      {/* Mast/handle */}
+      <path d="M11.4 2.5h.6v12h-.6z" fill="#19b3a6" />
+      {/* Wave 1 (top, smaller) */}
+      <path
+        d="M3 17c1.5-1.5 3-1.5 4.5 0s3 1.5 4.5 0 3-1.5 4.5 0 3 1.5 4.5 0v1.5c-1.5 1.5-3 1.5-4.5 0s-3-1.5-4.5 0-3 1.5-4.5 0-3-1.5-4.5 0z"
+        fill="#19b3a6"
+      />
+      {/* Wave 2 (bottom, fainter) */}
+      <path
+        d="M3 20.5c1.5-1.5 3-1.5 4.5 0s3 1.5 4.5 0 3-1.5 4.5 0 3 1.5 4.5 0V22c-1.5 1.5-3 1.5-4.5 0s-3-1.5-4.5 0-3 1.5-4.5 0-3-1.5-4.5 0z"
+        fill="#19b3a6"
+        opacity="0.6"
+      />
     </svg>
   );
 }
@@ -311,23 +351,49 @@ export function XaiLogo(props: LogoProps) {
 }
 
 export function PostHogLogo(props: LogoProps) {
-  // PostHog's stacked-chevrons mark (the angular hedgehog-spike pattern)
+  // PostHog's mascot Max — yellow hedgehog. Spiky body, simple face.
   return (
     <svg viewBox="0 0 24 24" aria-label="PostHog" {...props}>
+      {/* Body — rounded dome with flat bottom */}
       <path
-        d="M9.854 14.586 7.404 17.036a1.5 1.5 0 0 1-2.121-.001l-.793-.794a1.5 1.5 0 0 1 0-2.121l3.182-3.182zm-3.182 0 3.182 3.182-3.182 3.182H5.611a1.5 1.5 0 0 1-1.5-1.5v-3.182zm10-10 3.182 3.182v6.364l-3.182-3.182v-6.364zm-3.182 0 3.182 3.182-3.182 3.182H8.611a1.5 1.5 0 0 1-1.5-1.5V4.586zm-3.182 5L4 11v3.5l5.49-5.5z"
+        d="M3 17c0-4.5 4-7.5 9-7.5s9 3 9 7.5v3H3v-3z"
         fill="#f9bd2b"
       />
-      {/* Eye dots */}
-      <circle cx="14" cy="14" r="1.1" fill="#1d1f27" />
+      {/* Spikes on top of the body */}
+      <path
+        d="M5 11l1.5-3 1.5 3M8 9l1.5-3 1.5 3M11 8l1.5-3 1.5 3M14 9l1.5-3 1.5 3M17 11l1.5-3 1.5 3"
+        stroke="#f9bd2b"
+        strokeWidth="1"
+        fill="#f9bd2b"
+        strokeLinejoin="round"
+      />
+      {/* Snout pointing right */}
+      <ellipse cx="20" cy="16" rx="1.5" ry="1.2" fill="#f9bd2b" />
+      {/* Eye */}
+      <circle cx="17" cy="14.5" r="0.9" fill="#1d1f27" />
+      <circle cx="17.3" cy="14.2" r="0.3" fill="#ffffff" />
+      {/* Nose */}
+      <circle cx="21" cy="16" r="0.5" fill="#1d1f27" />
     </svg>
   );
 }
 
 export function SentryLogo(props: LogoProps) {
+  // Sentry's actual mark — two interlocking purple chevrons forming a
+  // stylized inverted "S". Layered with the smaller inner chevron
+  // brighter than the outer to give the depth Sentry's brand uses.
   return (
-    <svg viewBox="0 0 24 24" fill="#a87aff" aria-label="Sentry" {...props}>
-      <path d="M13.84 4.124c-.5-.86-1.74-.86-2.24 0L8.18 9.69a14 14 0 0 1 8.13 8.45h-2.74A11.32 11.32 0 0 0 6.74 12l-2.36 4.05a6.61 6.61 0 0 1 4.4 5.07H3.07a.43.43 0 0 1-.36-.65l1.83-3.13a4.04 4.04 0 0 0-1.45-.84l-1.79 3.06a2.6 2.6 0 0 0 2.25 3.91h6.4a8.78 8.78 0 0 0-5.49-7.93l1.18-2A11.32 11.32 0 0 1 11.81 21h7.13a14 14 0 0 0-8.59-13.21l1.84-3.18 5.83 10.07c-.66.36-1.27.78-1.85 1.26.52.49 1.02 1.01 1.5 1.55a8.85 8.85 0 0 1 2.4-1.21l1.36 2.36a2.6 2.6 0 0 0 .61-3.4z" />
+    <svg viewBox="0 0 24 24" aria-label="Sentry" {...props}>
+      {/* Outer chevron — full mountain peak */}
+      <path
+        d="M12 3.5l9 17h-4.5l-4.5-8.5-3 5.5h2l1.5 3H4z"
+        fill="#7553e1"
+      />
+      {/* Inner chevron — smaller, brighter, offset top-right */}
+      <path
+        d="M14 8l4.5 8.5h-2l-2.5-4.5z"
+        fill="#b399ff"
+      />
     </svg>
   );
 }
@@ -372,18 +438,25 @@ export function PerplexityLogo(props: LogoProps) {
 }
 
 export function DatadogLogo(props: LogoProps) {
-  // Datadog's dog/paw silhouette — head with two ears + paw print accent
+  // Datadog's mascot — friendly purple dog face with floppy ears.
   return (
     <svg viewBox="0 0 24 24" aria-label="Datadog" {...props}>
-      {/* Dog head (rounded triangle pointing down) */}
-      <path
-        d="M4 4l5 5-2 2 3 3-2 2 4 4 8-8L4 4z"
-        fill="#9d6bd1"
-      />
-      {/* Eye accent */}
-      <circle cx="14" cy="10" r="1.2" fill="#1d1f27" />
-      {/* Tongue dot */}
-      <circle cx="11" cy="13" r="0.8" fill="#ff70a0" />
+      {/* Left ear (floppy, hangs down-left) */}
+      <path d="M4 5l3 7 1.5-1V6z" fill="#632ca6" />
+      {/* Right ear */}
+      <path d="M20 5l-3 7-1.5-1V6z" fill="#632ca6" />
+      {/* Head — rounded square */}
+      <rect x="6" y="6" width="12" height="13" rx="3" fill="#632ca6" />
+      {/* Eye whites */}
+      <circle cx="9.5" cy="11" r="1.4" fill="#ffffff" />
+      <circle cx="14.5" cy="11" r="1.4" fill="#ffffff" />
+      {/* Pupils */}
+      <circle cx="9.5" cy="11" r="0.7" fill="#1d1f27" />
+      <circle cx="14.5" cy="11" r="0.7" fill="#1d1f27" />
+      {/* Nose */}
+      <ellipse cx="12" cy="14.5" rx="1.2" ry="0.9" fill="#1d1f27" />
+      {/* Smile */}
+      <path d="M10 16.5c.5.5 1.5.5 2 0M14 16.5c-.5.5-1.5.5-2 0" stroke="#1d1f27" strokeWidth="0.6" fill="none" strokeLinecap="round" />
     </svg>
   );
 }
@@ -405,10 +478,18 @@ export function ClerkLogo(props: LogoProps) {
 }
 
 export function SendGridLogo(props: LogoProps) {
+  // SendGrid's official 4-quadrant cube mark — two-tone blue diamond
+  // grid suggesting a folded envelope.
   return (
-    <svg viewBox="0 0 24 24" {...props}>
-      <path d="M0 12.0016V24h11.9982v-7.9989H4.0011v-8H0V12.0016z" fill="#1a82e2" />
-      <path d="M12.0016 7.999v8.0027h7.9988V8.0014L12.0017.0026 4 7.999h8.0014z" fill="#9dd4f3" />
+    <svg viewBox="0 0 24 24" aria-label="SendGrid" {...props}>
+      {/* Top-left quadrant — light */}
+      <rect x="2" y="2" width="9" height="9" fill="#9dd4f3" />
+      {/* Top-right quadrant — dark */}
+      <rect x="13" y="2" width="9" height="9" fill="#1a82e2" />
+      {/* Bottom-left quadrant — dark */}
+      <rect x="2" y="13" width="9" height="9" fill="#1a82e2" />
+      {/* Bottom-right quadrant — light */}
+      <rect x="13" y="13" width="9" height="9" fill="#9dd4f3" />
     </svg>
   );
 }
@@ -430,9 +511,14 @@ export function PineconeLogo(props: LogoProps) {
 }
 
 export function NeonLogo(props: LogoProps) {
+  // Neon's actual mark — a stylized "N" with a downward-arrow tail
+  // (the diagonal sweeps below the right vertical to suggest flow).
   return (
-    <svg viewBox="0 0 24 24" fill="#00e699" aria-label="Neon" {...props}>
-      <path d="M0 4.8C0 2.149 2.149 0 4.8 0h14.4C21.851 0 24 2.149 24 4.8v11.4c0 2.298-2.866 3.337-4.331 1.572L15.6 13.115V19.2c0 2.651-2.149 4.8-4.8 4.8H4.8C2.149 24 0 21.851 0 19.2V4.8zm4.8-1.2a1.2 1.2 0 00-1.2 1.2v14.4a1.2 1.2 0 002.4 0V14.4c0-2.298 2.865-3.336 4.33-1.571l4.07 4.658V4.8a1.2 1.2 0 00-1.2-1.2H4.8z" />
+    <svg viewBox="0 0 24 24" aria-label="Neon" {...props}>
+      <path
+        d="M3 3h3.6l8.4 11.5V3h3v15.5L20 22h-3.4l-8.6-12V21H5v-3.5L3 14.5z"
+        fill="#00e699"
+      />
     </svg>
   );
 }
@@ -480,7 +566,7 @@ export const KEY_ENTRIES: LogoEntry[] = [
 
   // Databases
   { Logo: SupabaseLogo,   name: "Supabase",    color: "#3ecf8e", category: "db",     env: "SUPABASE_KEY",        token: "phm_4f1c8ae3" },
-  { Logo: PostgresLogo,   name: "Postgres",    color: "#5d8db0", category: "db",     env: "DATABASE_URL",        token: "phm_3a2e7c81" },
+  { Logo: PostgresLogo,   name: "Postgres",    color: "#6f9ed4", category: "db",     env: "DATABASE_URL",        token: "phm_3a2e7c81" },
   { Logo: MongoLogo,      name: "MongoDB",     color: "#47a248", category: "db",     env: "MONGODB_URI",         token: "phm_6e0fb529" },
   { Logo: NeonLogo,       name: "Neon",        color: "#00e699", category: "db",     env: "NEON_API_KEY",        token: "phm_aa9d34f0" },
   { Logo: UpstashLogo,    name: "Upstash",     color: "#00e9a3", category: "db",     env: "UPSTASH_REDIS_TOKEN", token: "phm_3fc0e851" },
