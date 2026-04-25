@@ -18,9 +18,6 @@
 
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "SF Mono", "Fira Code", "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
-
-  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-swap: cubic-bezier(0.65, 0, 0.35, 1);
 }
 
 html {
@@ -57,7 +54,6 @@ code, pre, .mono {
   font-feature-settings: "calt" 0;
 }
 
-/* Subtle scrollbar */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -74,129 +70,11 @@ code, pre, .mono {
   background: #252538;
 }
 
-/* Background grain — barely-there texture */
-.grain {
-  position: relative;
-}
-.grain::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.04;
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.5'/></svg>");
-  background-repeat: repeat;
-}
-
-/* Hero radial wash */
-.hero-wash {
-  position: absolute;
-  top: -200px;
-  left: 50%;
-  width: 1200px;
-  height: 900px;
-  transform: translateX(-50%);
-  background: radial-gradient(ellipse at 50% 35%, rgba(59, 130, 246, 0.08) 0%, transparent 60%);
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* CTA radial wash */
-.cta-wash {
-  position: absolute;
-  bottom: -100px;
-  left: 50%;
-  width: 800px;
-  height: 500px;
-  transform: translateX(-50%);
-  background: radial-gradient(50% 50%, rgba(59, 130, 246, 0.05) 0%, transparent 100%);
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* The Swap perspective stage */
-.swap-stage {
-  perspective: 1400px;
-  perspective-origin: 50% 50%;
-}
-.swap-card {
-  transform-style: preserve-3d;
-  backface-visibility: hidden;
-}
-.swap-face {
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-}
-.swap-back {
-  transform: rotateY(180deg);
-}
-
-/* Glow utilities */
-.glow-blue {
-  box-shadow:
-    0 0 0 1px rgba(59, 130, 246, 0.15) inset,
-    0 0 40px -10px rgba(59, 130, 246, 0.35),
-    0 0 80px -30px rgba(59, 130, 246, 0.6);
-}
-.glow-blue-soft {
-  box-shadow: 0 0 60px -20px rgba(59, 130, 246, 0.5);
-}
-
-/* Terminal traffic-light dots */
-.tl-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 9999px;
-  opacity: 0.55;
-}
-
-/* Pulse dot for flow lines */
-@keyframes pulseDot {
-  0%, 100% { opacity: 0.3; transform: scale(0.85); }
-  50% { opacity: 1; transform: scale(1.2); }
-}
-.pulse-dot {
-  animation: pulseDot 2s ease-in-out infinite;
-}
-
-/* Cursor blink */
-@keyframes blink {
-  50% { opacity: 0; }
-}
-
-/* Shimmer — used by the CTA accent bar */
-@keyframes shimmer {
-  0%, 100% { transform: translateX(-100%); }
-  50% { transform: translateX(100%); }
-}
-.cursor-blink {
-  display: inline-block;
-  width: 8px;
-  height: 16px;
-  background: #3b82f6;
-  vertical-align: text-bottom;
-  animation: blink 1s step-end infinite;
-  border-radius: 1px;
-  margin-left: 2px;
-}
-
-/* Reduced motion: still show end states, just skip transitions */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
-  }
-  .pulse-dot, .cursor-blink {
-    animation: none;
-  }
-}
-
-/* Touch device: kill hover lift effects */
-@media (hover: none) {
-  .hover-lift:hover {
-    transform: none !important;
   }
 }
