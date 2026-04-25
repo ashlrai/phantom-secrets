@@ -1,227 +1,316 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { posthog } from "@/lib/posthog";
 import { CopyButton } from "./CopyButton";
 import { Github } from "./Icons";
 
+/**
+ * Story-driven hero. The video sits behind everything as a full-bleed
+ * background. As the user scrolls through the 1.5-viewport hero region,
+ * five text beats cross-fade in and out. On desktop, scroll progress
+ * also scrubs `video.currentTime` so the cinematic moves with the user.
+ * On mobile / reduced-motion, the video just autoplays its loop.
+ */
 export function Hero() {
+  const sectionRef = useRef<HTMLElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [progress, setProgress] = useState(0);
   const [hasVideo, setHasVideo] = useState<boolean | null>(null);
+  const [scrubbable, setScrubbable] = useState(false);
 
+  // Probe for the video file
   useEffect(() => {
     fetch("/hero/loop.mp4", { method: "HEAD" })
       .then((r) => setHasVideo(r.ok))
       .catch(() => setHasVideo(false));
   }, []);
 
+  // Decide whether to scroll-scrub (desktop) or autoplay-loop (mobile / RM)
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const small = window.matchMedia("(max-width: 768px)").matches;
+    setScrubbable(!reduce && !small);
+  }, []);
+
+  // Track scroll progress through the hero region (0..1)
+  useEffect(() => {
+    const section = sectionRef.current;
+    if (!section) return;
+
+    let raf = 0;
+    const apply = () => {
+      const rect = section.getBoundingClientRect();
+      const total = section.offsetHeight - window.innerHeight;
+      if (total <= 0) {
+        setProgress(0);
+        return;
+      }
+      const p = Math.min(1, Math.max(0, -rect.top / total));
+      setProgress(p);
+
+      const video = videoRef.current;
+      if (scrubbable && video && Number.isFinite(video.duration) && video.duration > 0) {
+        video.currentTime = p * video.duration;
+      }
+    };
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(apply);
+    };
+    apply();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(raf);
+    };
+  }, [scrubbable]);
+
+  // On mobile / RM, just play the loop
+  useEffect(() => {
+    if (!hasVideo || scrubbable) return;
     const video = videoRef.current;
-    if (!video || !hasVideo) return;
+    if (!video) return;
     video.loop = true;
     video.play().catch(() => {});
-  }, [hasVideo]);
+  }, [hasVideo, scrubbable]);
 
   return (
-    <header className="relative">
-      <div className="mx-auto max-w-[1200px] px-7 pt-14 pb-20 sm:pt-20 sm:pb-28">
-        {/* Above the fold — text block */}
-        <div className="mx-auto max-w-[820px] text-center">
-          <span className="inline-flex items-center gap-2 rounded-full border border-border bg-s1/80 px-3 py-1 text-[0.72rem] font-medium text-t2 backdrop-blur-md">
+    <header
+      ref={sectionRef}
+      className="relative h-[150svh] bg-bg"
+      aria-label="Phantom — delegate everything to AI without sharing a single key"
+    >
+      <div className="sticky top-0 h-svh w-full overflow-hidden">
+        {/* Background video */}
+        {hasVideo === true ? (
+          <video
+            ref={videoRef}
+            src="/hero/loop.mp4"
+            poster="/hero/poster.jpg"
+            preload="auto"
+            muted
+            playsInline
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        ) : (
+          <FallbackBackdrop />
+        )}
+
+        {/* Contrast washes — strong, so text always reads */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-bg/55 via-bg/40 to-bg/85"
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-gradient-to-r from-bg/35 via-transparent to-bg/35"
+        />
+
+        {/* Eyebrow chip — pinned top center, visible the entire scroll */}
+        <div className="absolute inset-x-0 top-20 sm:top-24 flex justify-center pointer-events-none">
+          <span
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[0.72rem] font-medium text-white/85 backdrop-blur-md transition-opacity duration-500"
+            style={{ opacity: progress < 0.85 ? 1 : 0 }}
+          >
             <span className="relative flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue/60 opacity-75" />
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue" />
             </span>
             For Claude Code · Cursor · Windsurf · Codex
           </span>
+        </div>
 
-          <h1 className="mt-6 font-extrabold tracking-[-0.045em] leading-[1.02] text-white text-[clamp(2.6rem,6.2vw,4.4rem)]">
-            Delegate everything to AI.
-            <br />
-            <span className="text-t3">Without sharing a single key.</span>
-          </h1>
-
-          <p className="mt-5 mx-auto max-w-[600px] text-[0.98rem] sm:text-[1.04rem] leading-[1.65] text-t2">
-            Phantom hands AI a worthless{" "}
-            <code className="font-mono text-blue-b text-[0.92em]">phm_</code>{" "}
-            token and injects the real key at the network layer. Full access.
-            Zero exposure.
-          </p>
-
-          <div className="mt-8 mx-auto w-full max-w-[460px]">
-            <CopyButton text="npx phantom-secrets init" />
-          </div>
-
-          <div className="mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[0.85rem]">
-            <a
-              href="https://github.com/ashlrai/phantom-secrets"
-              className="inline-flex items-center gap-1.5 text-t2 hover:text-t1 transition-colors"
-            >
-              <Github className="h-3.5 w-3.5" />
-              GitHub
-            </a>
-            <span className="text-t3">·</span>
-            <a
-              href="#how"
-              className="text-t2 hover:text-t1 transition-colors"
-            >
-              How it works
-            </a>
-            <span className="text-t3">·</span>
-            <a
-              href="#pricing"
-              className="text-t2 hover:text-t1 transition-colors"
-            >
-              Pricing
-            </a>
+        {/* Beat stack — all centered, cross-fade */}
+        <div className="absolute inset-0 flex items-center justify-center px-7">
+          <div className="relative w-full max-w-[940px]">
+            {BEATS.map((beat, i) => {
+              const o = beatOpacity(progress, beat.center, i === BEATS.length - 1);
+              const y = (1 - o) * 16;
+              return (
+                <div
+                  key={i}
+                  aria-hidden={o < 0.05}
+                  className="absolute inset-0 flex flex-col items-center justify-center text-center"
+                  style={{
+                    opacity: o,
+                    transform: `translateY(${y}px)`,
+                    pointerEvents: o > 0.6 ? "auto" : "none",
+                    transition: "opacity 80ms linear, transform 80ms linear",
+                  }}
+                >
+                  {beat.render()}
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        {/* The cinematic — full-width 16:9 */}
-        <div className="relative mt-14 sm:mt-20 mx-auto max-w-[1100px]">
-          {/* Soft halo behind the frame */}
+        {/* Scroll progress rail — bottom, only while pinned */}
+        <div
+          aria-hidden
+          className="absolute bottom-0 left-0 right-0 h-px bg-white/5"
+        >
           <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-12 -inset-y-6 -z-10 blur-3xl opacity-50"
-            style={{
-              background:
-                "radial-gradient(ellipse 70% 60% at 50% 50%, rgba(59,130,246,0.32) 0%, transparent 70%)",
-            }}
+            className="h-full bg-gradient-to-r from-blue-b via-blue to-blue-d"
+            style={{ width: `${progress * 100}%` }}
           />
-          <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-border bg-s1 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.6)]">
-            {hasVideo === true ? (
-              <video
-                ref={videoRef}
-                src="/hero/loop.mp4"
-                poster="/hero/poster.jpg"
-                preload="auto"
-                muted
-                playsInline
-                className="absolute inset-0 h-full w-full object-cover"
-              />
-            ) : (
-              <div className="absolute inset-0 bg-gradient-to-br from-s1 via-s2 to-s1" />
-            )}
-          </div>
         </div>
 
-        {/* Story captions — explain what just happened */}
-        <div className="mt-10 grid grid-cols-1 sm:grid-cols-3 gap-px rounded-2xl border border-border bg-border overflow-hidden mx-auto max-w-[1100px]">
-          <Caption
-            icon={<VaultGlyph />}
-            tone="amber"
-            title="Real keys live in the vault"
-            body="Your OS keychain. Encrypted at rest with ChaCha20-Poly1305. The amber star inside the ghost."
-          />
-          <Caption
-            icon={<TokenGlyph />}
-            tone="cyan"
-            title="AI sees only the phantom"
-            body="A worthless phm_ token in your .env. The card the ghost holds out. Useless if leaked."
-          />
-          <Caption
-            icon={<WireGlyph />}
-            tone="neutral"
-            title="Full access, zero exposure"
-            body="The local proxy swaps the token for the real key just before the TLS hop. AI delegates. Secrets stay home."
-          />
+        {/* Scroll hint — only at the very start */}
+        <div
+          aria-hidden
+          className="absolute bottom-7 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 text-[0.65rem] tracking-[0.2em] uppercase text-white/40 transition-opacity duration-500"
+          style={{ opacity: progress < 0.05 ? 1 : 0 }}
+        >
+          <span>Scroll</span>
+          <span className="block h-5 w-px bg-gradient-to-b from-white/40 to-transparent animate-[scrollHint_1.6s_ease-in-out_infinite]" />
         </div>
       </div>
+
+      <style>{`
+        @keyframes scrollHint {
+          0%, 100% { transform: translateY(0); opacity: 0.4; }
+          50% { transform: translateY(5px); opacity: 1; }
+        }
+      `}</style>
     </header>
   );
 }
 
-function Caption({
-  icon,
-  title,
-  body,
-  tone,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-  tone: "amber" | "cyan" | "neutral";
-}) {
-  const ring =
-    tone === "amber"
-      ? "border-[#f59e0b]/25 bg-[#f59e0b]/10 text-[#fbbf24]"
-      : tone === "cyan"
-      ? "border-blue-d/40 bg-blue/10 text-blue-b"
-      : "border-border bg-s2 text-t2";
+/* ── Story beats ──────────────────────────────────────────────── */
 
-  return (
-    <article className="bg-s1 p-7 sm:p-8">
-      <div
-        className={
-          "inline-flex h-10 w-10 items-center justify-center rounded-lg border " +
-          ring
-        }
-      >
-        {icon}
+const BEATS: Array<{ center: number; render: () => React.ReactNode }> = [
+  // 0: Promise
+  {
+    center: 0.08,
+    render: () => (
+      <h1 className="font-extrabold tracking-[-0.045em] leading-[1.0] text-white text-[clamp(2.6rem,6.8vw,5.2rem)]">
+        Delegate everything to AI.
+      </h1>
+    ),
+  },
+  // 1: Catch
+  {
+    center: 0.30,
+    render: () => (
+      <h1 className="font-extrabold tracking-[-0.045em] leading-[1.0] text-white text-[clamp(2.6rem,6.8vw,5.2rem)]">
+        Without sharing
+        <br />
+        <span className="bg-gradient-to-br from-blue-b via-blue to-blue-d bg-clip-text text-transparent">
+          a single key.
+        </span>
+      </h1>
+    ),
+  },
+  // 2: Mechanism
+  {
+    center: 0.52,
+    render: () => (
+      <div>
+        <h2 className="font-extrabold tracking-[-0.04em] leading-[1.05] text-white text-[clamp(2rem,4.8vw,3.4rem)]">
+          AI gets a worthless{" "}
+          <code className="font-mono text-blue-b text-[0.92em]">phm_</code> token.
+        </h2>
+        <p className="mt-5 mx-auto max-w-[600px] text-[0.98rem] sm:text-[1.04rem] text-white/75 leading-[1.65]">
+          Phantom rewrites your <code className="font-mono text-blue-b">.env</code>{" "}
+          and hands the decoy to every AI tool you use.
+        </p>
       </div>
-      <h3 className="mt-4 text-[1rem] font-bold text-t1 tracking-[-0.01em]">
-        {title}
-      </h3>
-      <p className="mt-2 text-[0.88rem] text-t2 leading-[1.6]">{body}</p>
-    </article>
+    ),
+  },
+  // 3: Outcome
+  {
+    center: 0.74,
+    render: () => (
+      <div>
+        <h2 className="font-extrabold tracking-[-0.04em] leading-[1.05] text-white text-[clamp(2rem,4.8vw,3.4rem)]">
+          Real secrets never leave
+          <br />
+          your machine.
+        </h2>
+        <p className="mt-5 mx-auto max-w-[600px] text-[0.98rem] sm:text-[1.04rem] text-white/75 leading-[1.65]">
+          A local proxy on{" "}
+          <code className="font-mono text-blue-b">127.0.0.1</code> swaps the
+          token for the real key just before TLS. Nothing else changes.
+        </p>
+      </div>
+    ),
+  },
+  // 4: CTA — payoff
+  {
+    center: 0.92,
+    render: () => <CTABeat />,
+  },
+];
+
+function CTABeat() {
+  return (
+    <div className="w-full">
+      <h2 className="font-extrabold tracking-[-0.045em] leading-[1.0] text-white text-[clamp(2.2rem,5vw,3.6rem)]">
+        Sixty seconds to a safe{" "}
+        <code className="font-mono text-blue-b text-[0.92em]">.env</code>.
+      </h2>
+
+      <div className="mt-7 mx-auto w-full max-w-[480px]">
+        <CopyButton text="npx phantom-secrets init" />
+      </div>
+
+      <div className="mt-5 flex flex-wrap justify-center gap-2.5">
+        <a
+          href="#install"
+          onClick={() => posthog.capture("hero_get_started_clicked")}
+          className="inline-flex items-center gap-2 rounded-lg bg-blue px-5 py-2.5 text-[0.9rem] font-semibold text-white no-underline transition-all duration-200 hover:bg-blue-d hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(59,130,246,0.32)]"
+        >
+          Get started
+        </a>
+        <a
+          href="https://github.com/ashlrai/phantom-secrets"
+          className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/[0.04] px-5 py-2.5 text-[0.9rem] font-semibold text-white no-underline transition-colors duration-200 hover:border-white/30 hover:bg-white/[0.08] backdrop-blur-md"
+        >
+          <Github className="h-3.5 w-3.5" />
+          View on GitHub
+        </a>
+      </div>
+    </div>
   );
 }
 
-/* Inline SVG glyphs — no new icon dep, monoline, sized 18px */
-function VaultGlyph() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <rect x="3" y="11" width="18" height="11" rx="2" />
-      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      <circle cx="12" cy="16.5" r="1.4" />
-    </svg>
-  );
+/* ── Helpers ──────────────────────────────────────────────────── */
+
+/**
+ * Bell-curve fade. Beat is fully visible at `center` and fades out
+ * symmetrically on either side over `range`. The final beat (CTA)
+ * stays visible after its center so the user can interact with it.
+ */
+function beatOpacity(progress: number, center: number, isLast: boolean) {
+  const range = 0.13;
+  if (isLast && progress >= center) return 1;
+  const distance = Math.abs(progress - center);
+  if (distance >= range) return 0;
+  // Smooth-step (cubic) for a nicer fade
+  const t = 1 - distance / range;
+  return t * t * (3 - 2 * t);
 }
 
-function TokenGlyph() {
+function FallbackBackdrop() {
   return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <rect x="3" y="6" width="18" height="12" rx="2" />
-      <path d="M7 12h2M11 12h6" />
-    </svg>
-  );
-}
-
-function WireGlyph() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M3 12h6M15 12h6" />
-      <circle cx="12" cy="12" r="3" />
-      <path d="M12 6v1.5M12 16.5V18" />
-    </svg>
+    <div aria-hidden className="absolute inset-0 overflow-hidden bg-bg">
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(ellipse 70% 55% at 50% 38%, rgba(59,130,246,0.45) 0%, transparent 65%)",
+        }}
+      />
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(ellipse 50% 70% at 30% 70%, rgba(96,165,250,0.28) 0%, transparent 60%)",
+        }}
+      />
+    </div>
   );
 }
