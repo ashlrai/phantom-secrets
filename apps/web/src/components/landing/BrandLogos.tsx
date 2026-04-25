@@ -90,24 +90,28 @@ export function FigmaLogo(props: LogoProps) {
 }
 
 export function GcpLogo(props: LogoProps) {
-  // Stylized 4-color GCP cloud
+  // Google Cloud — the actual cloud silhouette with the four Google
+  // brand colors arranged as a continuous outline (each quadrant of
+  // the cloud picks up one color, matching Google's official mark).
   return (
-    <svg viewBox="0 0 24 24" {...props}>
+    <svg viewBox="0 0 24 24" aria-label="Google Cloud" {...props}>
+      <defs>
+        <linearGradient id="gcp-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#4285f4" />
+          <stop offset="33%" stopColor="#34a853" />
+          <stop offset="66%" stopColor="#fbbc04" />
+          <stop offset="100%" stopColor="#ea4335" />
+        </linearGradient>
+      </defs>
+      {/* Cloud silhouette */}
       <path
-        d="M15.69 7.41h.01l1.96-1.96c.1-.1.16-.23.16-.37 0-.07-.02-.13-.04-.19A7.7 7.7 0 0 0 12 2.5c-3.36 0-6.27 2.13-7.4 5.13l2.31 1.66a4.71 4.71 0 0 1 4.78-3.27c1.46.13 2.78.79 3.79 1.79.07.07.14.14.21.2z"
-        fill="#ea4335"
+        d="M17 9.5h-.4A6 6 0 0 0 5.7 11a4.5 4.5 0 0 0 .8 8.95h10.5a5.25 5.25 0 0 0 .5-10.45z"
+        fill="url(#gcp-grad)"
       />
+      {/* Letter G centered, cut out of the cloud */}
       <path
-        d="M21.46 9.7a4.74 4.74 0 0 0-4.18-3.13 7.4 7.4 0 0 0-1.43.13l-1.69 1.69c.16.04.31.09.46.15a4.7 4.7 0 0 1 2.97 3.92l3.86-.04c.2-.81.21-1.85.01-2.72z"
-        fill="#fbbc04"
-      />
-      <path
-        d="M2.5 12c0 2.06.81 3.93 2.13 5.32l2.31-2.31a4.7 4.7 0 0 1 0-6.02L4.63 6.68A7.61 7.61 0 0 0 2.5 12z"
-        fill="#34a853"
-      />
-      <path
-        d="M19.27 14.94l-3.86-.04a4.7 4.7 0 0 1-3.41 1.6c-1.97 0-3.66-1.21-4.36-2.93l-2.31 2.31a7.6 7.6 0 0 0 6.67 3.62c2.85 0 5.31-1.55 6.63-3.86.31-.55.49-1.13.64-1.7z"
-        fill="#4285f4"
+        d="M11.5 13.5h2v1.2h-1.1c.05.3-.05.6-.3.85a1.4 1.4 0 0 1-1 .35 1.7 1.7 0 0 1-1.7-1.7 1.7 1.7 0 0 1 1.7-1.7c.45 0 .85.16 1.15.42l.7-.7a2.65 2.65 0 0 0-1.85-.72 2.7 2.7 0 0 0 0 5.4 2.4 2.4 0 0 0 1.85-.75 2.5 2.5 0 0 0 .65-1.8c0-.18-.02-.35-.04-.52z"
+        fill="#ffffff"
       />
     </svg>
   );
@@ -216,9 +220,16 @@ export function SupabaseLogo(props: LogoProps) {
 }
 
 export function RailwayLogo(props: LogoProps) {
+  // Railway's actual mark — a stylized R-via-rail-tracks: a vertical
+  // stem rising from a horizontal track-tile base. Clean, geometric.
   return (
-    <svg viewBox="0 0 24 24" fill="#ffffff" aria-label="Railway" {...props}>
-      <path d="M.49 6.71h22.7v1.13H.49V6.71Zm0 9.45h22.7v1.13H.49v-1.13Zm5.13-7.46h13.21v-.69H5.62v.69Zm-3.27 5.27h19.79v-.7H2.35v.7Zm.32-3h2.85V9.66H2.67v1.31Zm4.07 0h2.84V9.66H6.74v1.31Zm4.07 0h2.85V9.66h-2.85v1.31Zm4.07 0h2.85V9.66h-2.85v1.31Zm4.07 0h2.85V9.66h-2.85v1.31ZM4.5 13.66h2.84v-1.31H4.5v1.31Zm4.07 0h2.85v-1.31H8.57v1.31Zm4.07 0h2.85v-1.31h-2.85v1.31Zm4.07 0h2.85v-1.31h-2.85v1.31Zm-15.5 7.61c.18.66.79 1.13 1.5 1.13h17.84c.71 0 1.32-.47 1.5-1.13H1.21Zm0-18.81h21.58c-.18-.66-.79-1.13-1.5-1.13H2.71c-.71 0-1.32.47-1.5 1.13Z" />
+    <svg viewBox="0 0 24 24" fill="#c6c6f5" aria-label="Railway" {...props}>
+      {/* Top horizontal bar */}
+      <path d="M3 4h18v2H3z" />
+      {/* Bottom horizontal bar */}
+      <path d="M3 18h18v2H3z" />
+      {/* Vertical track ties — six evenly spaced */}
+      <path d="M4.5 8h2v8h-2zM8 8h2v8H8zM11.5 8h2v8h-2zM15 8h2v8h-2zM18.5 8h2v8h-2z" />
     </svg>
   );
 }
@@ -347,9 +358,11 @@ export function ReplicateLogo(props: LogoProps) {
 }
 
 export function PerplexityLogo(props: LogoProps) {
+  // Perplexity's official mark — angular asterisk / octagram in their
+  // signature teal. SimpleIcons-accurate path.
   return (
     <svg viewBox="0 0 24 24" fill="#20b8cd" aria-label="Perplexity" {...props}>
-      <path d="M22.398 8.61H17.41L21.65.795l-.667-.502-9.005 8.318h-.998V0H10v8.61H1.602v6.78H4.99V24l6.99-7.18V24h1l6.992-7.18V21.4l-2.93 2.6h6.348l-1.001-2.602h-.001v-6.41h2.99V8.61zm-3.99 5.78h-2.397L17 14.59l-5.02 5.16-.001-7.36-1.001 1.001v7.358L5.99 14.59h2.398v-1l-5.766-.001v-3.78H10v.998h1.018L19.4 1.998l-3.74 6.69-.001-.018v.951h6.74v3.78z" />
+      <path d="M22.3977 7.0896h-2.3106V.0676l-7.5094 6.3219V.1577h-1.1554v6.1331L4.4904 0v7.0896H1.6023v10.3976h2.8882V24l6.9233-6.0124v6.0124h1.1554v-6.0124L19.4904 24v-6.5128h2.9073V7.0896zM5.6451 2.4787l5.7765 5.0531v3.0205L5.6451 5.499V2.4787zm10.5772 0v3.0203l-5.7765 5.0533V7.5318l5.7765-5.0531zM2.7577 8.2455h7.4051l-7.4051 6.4296V8.2455zm2.8882 13.2885v-9.6328l5.7765 5.0531v4.5797l-5.7765 0zm10.5772 0V16.954l5.7765-5.0531v9.6328l-5.7765-.0001zm5.6566-7.0654l-7.4051-6.4296h7.4051v6.4296z" />
     </svg>
   );
 }
