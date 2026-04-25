@@ -1,5 +1,35 @@
+import type Stripe from "stripe";
 import { getStripe, getStripeWebhookSecret } from "@/lib/stripe";
 import { createServiceClient } from "@/lib/supabase-server";
+
+// API 2025-04-30.basil moved current_period_end from Subscription to its items.
+function getSubscriptionPeriodEnd(sub: Stripe.Subscription): number | null {
+  const top = (sub as unknown as { current_period_end?: number }).current_period_end;
+  if (typeof top === "number") return top;
+  const item = sub.items?.data?.[0] as
+    | { current_period_end?: number }
+    | undefined;
+  return item?.current_period_end ?? null;
+}
+
+// API 2025-04-30.basil moved subscription off Invoice onto parent.subscription_details.
+function getInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
+  const direct = (invoice as unknown as {
+    subscription?: string | { id: string };
+  }).subscription;
+  if (typeof direct === "string") return direct;
+  if (direct && typeof direct === "object" && "id" in direct) return direct.id;
+  const fromParent = (invoice as unknown as {
+    parent?: {
+      subscription_details?: { subscription?: string | { id: string } };
+    };
+  }).parent?.subscription_details?.subscription;
+  if (typeof fromParent === "string") return fromParent;
+  if (fromParent && typeof fromParent === "object" && "id" in fromParent) {
+    return fromParent.id;
+  }
+  return null;
+}
 
 export async function POST(req: Request) {
   const body = await req.text();
@@ -11,7 +41,11 @@ export async function POST(req: Request) {
 
   let event;
   try {
-    event = getStripe().webhooks.constructEvent(body, sig, getStripeWebhookSecret());
+    event = getStripe().webhooks.constructEvent(
+      body,
+      sig,
+      getStripeWebhookSecret(),
+    );
   } catch {
     return new Response("Invalid signature", { status: 400 });
   }
@@ -20,69 +54,104 @@ export async function POST(req: Request) {
 
   switch (event.type) {
     case "checkout.session.completed": {
-      const session = event.data.object;
-      const userId = session.metadata?.user_id;
-      if (!userId) break;
+      try {
+        const session = event.data.object;
+        const userId = session.metadata?.user_id;
+        if (!userId) break;
 
-      await supabase
-        .from("users")
-        .update({
-          plan: "pro",
-          subscription_id: session.subscription as string,
-        })
-        .eq("id", userId);
+        await supabase
+          .from("users")
+          .update({
+            plan: "pro",
+            subscription_id: session.subscription as string,
+          })
+          .eq("id", userId);
+      } catch (err) {
+        console.error(
+          `[stripe-webhook] ${event.type} (${event.id}) failed:`,
+          err,
+        );
+      }
       break;
     }
 
     case "customer.subscription.updated": {
-      const sub = event.data.object;
-      const isActive = sub.status === "active" || sub.status === "trialing";
-      const { data: user } = await supabase
-        .from("users")
-        .select("id")
-        .eq("subscription_id", sub.id)
-        .single();
+      try {
+        const sub = event.data.object;
+        const isActive =
+          sub.status === "active" || sub.status === "trialing";
 
-      if (user) {
+        const { data: user, error } = await supabase
+          .from("users")
+          .select("id")
+          .eq("subscription_id", sub.id)
+          .single();
+
+        if (error || !user) {
+          console.warn(
+            `[stripe-webhook] ${event.type} (${event.id}): no user for subscription_id=${sub.id}`,
+            error,
+          );
+          break;
+        }
+
+        const periodEnd = getSubscriptionPeriodEnd(sub);
+        const planExpiresAt = periodEnd
+          ? new Date(periodEnd * 1000).toISOString()
+          : null;
+
         await supabase
           .from("users")
           .update({
             plan: isActive ? "pro" : "free",
-            plan_expires_at: new Date(
-              sub.current_period_end * 1000
-            ).toISOString(),
+            plan_expires_at: planExpiresAt,
           })
           .eq("id", user.id);
+      } catch (err) {
+        console.error(
+          `[stripe-webhook] ${event.type} (${event.id}) failed:`,
+          err,
+        );
       }
       break;
     }
 
     case "customer.subscription.deleted": {
-      const sub = event.data.object;
-      await supabase
-        .from("users")
-        .update({
-          plan: "free",
-          subscription_id: null,
-          plan_expires_at: null,
-        })
-        .eq("subscription_id", sub.id);
+      try {
+        const sub = event.data.object;
+        await supabase
+          .from("users")
+          .update({
+            plan: "free",
+            subscription_id: null,
+            plan_expires_at: null,
+          })
+          .eq("subscription_id", sub.id);
+      } catch (err) {
+        console.error(
+          `[stripe-webhook] ${event.type} (${event.id}) failed:`,
+          err,
+        );
+      }
       break;
     }
 
     case "invoice.payment_failed": {
-      const invoice = event.data.object;
-      const subId =
-        typeof invoice.subscription === "string"
-          ? invoice.subscription
-          : invoice.subscription?.toString();
-      if (subId) {
-        // Grace period: 3 days
-        const grace = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
-        await supabase
-          .from("users")
-          .update({ plan_expires_at: grace.toISOString() })
-          .eq("subscription_id", subId);
+      try {
+        const invoice = event.data.object;
+        const subId = getInvoiceSubscriptionId(invoice);
+        if (subId) {
+          const grace = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+          await supabase
+            .from("users")
+            .update({ plan_expires_at: grace.toISOString() })
+            .eq("subscription_id", subId);
+        }
+      } catch (err) {
+        console.error(
+          `[stripe-webhook] ${event.type} (${event.id}) failed:`,
+          err,
+        );
       }
       break;
     }
