@@ -27,25 +27,9 @@ async fn run_async(
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
-    // Get all real secret values from vault
+    // Cheap precondition check before decrypting anything.
     let secret_names = vault.list().context("Failed to list secrets")?;
-    let mut secrets: BTreeMap<String, String> = BTreeMap::new();
-    for name in &secret_names {
-        match vault.retrieve(name) {
-            Ok(value) => {
-                secrets.insert(name.clone(), String::from(value.as_str()));
-            }
-            Err(_) => {
-                eprintln!(
-                    "{} Could not retrieve {} from vault, skipping",
-                    "warn".yellow(),
-                    name
-                );
-            }
-        }
-    }
-
-    if secrets.is_empty() {
+    if secret_names.is_empty() {
         println!("{} No secrets in vault to sync.", "!".yellow().bold());
         return Ok(());
     }
@@ -128,6 +112,24 @@ async fn run_async(
     if targets.is_empty() {
         println!("{} No matching sync targets.", "!".yellow().bold());
         return Ok(());
+    }
+
+    // Decrypt vault values only after we know we have targets to push to.
+    // Anything that exits via `return Ok(())` above never touches plaintext.
+    let mut secrets: BTreeMap<String, String> = BTreeMap::new();
+    for name in &secret_names {
+        match vault.retrieve(name) {
+            Ok(value) => {
+                secrets.insert(name.clone(), String::from(value.as_str()));
+            }
+            Err(_) => {
+                eprintln!(
+                    "{} Could not retrieve {} from vault, skipping",
+                    "warn".yellow(),
+                    name
+                );
+            }
+        }
     }
 
     for (platform, token, project_id, env_targets, service_id, environment_id) in &targets {

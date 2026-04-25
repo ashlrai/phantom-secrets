@@ -453,25 +453,34 @@ impl PhantomMcpServer {
             serde_json::from_slice(&plaintext)
                 .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
 
+        // Run the store loop without `?` so a mid-loop error can't bypass the
+        // zeroize sweep below — serde produced fresh String allocations the
+        // Zeroizing<plaintext> wrapper does not reach.
         let mut added = 0;
         let mut skipped = 0;
+        let mut store_err: Option<McpError> = None;
         for (name, value) in &secrets {
             if !params.force && vault.exists(name).unwrap_or(false) {
                 skipped += 1;
                 continue;
             }
-            vault
-                .store(name, value)
-                .map_err(|e| internal_err(format!("Failed to store secret: {e}")))?;
-            added += 1;
+            match vault.store(name, value) {
+                Ok(()) => added += 1,
+                Err(e) => {
+                    store_err = Some(internal_err(format!("Failed to store secret: {e}")));
+                    break;
+                }
+            }
         }
 
-        // Scrub deserialized secrets — serde produced fresh String allocations
-        // that the Zeroizing<plaintext> wrapper does not reach.
         for value in secrets.values_mut() {
             zeroize::Zeroize::zeroize(value);
         }
         drop(secrets);
+
+        if let Some(err) = store_err {
+            return Err(err);
+        }
 
         let mut config = config;
         self.save_cloud_version(&mut config, pull_data.version);
