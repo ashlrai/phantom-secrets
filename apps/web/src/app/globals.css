@@ -71,6 +71,15 @@ code, pre, .mono {
   background: #252538;
 }
 
+/* Marquee for the hero key wall */
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.marquee-pause-on-hover:hover .marquee-track {
+  animation-play-state: paused;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;

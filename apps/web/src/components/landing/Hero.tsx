@@ -1,344 +1,177 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import type { ComponentType, SVGProps } from "react";
 import { posthog } from "@/lib/posthog";
 import { CopyButton } from "./CopyButton";
+import {
+  ClaudeLogo,
+  CursorLogo,
+  DockerLogo,
+  GitHubLogo,
+  MongoLogo,
+  OpenAILogo,
+  PostgresLogo,
+  RailwayLogo,
+  StripeLogo,
+  SupabaseLogo,
+  VercelLogo,
+  WindsurfLogo,
+} from "./BrandLogos";
 import { Github } from "./Icons";
 
-/**
- * Story-driven hero. The video sits behind everything as a full-bleed
- * background. As the user scrolls through the 1.5-viewport hero region,
- * five text beats cross-fade in and out. On desktop, scroll progress
- * also scrubs `video.currentTime` so the cinematic moves with the user.
- * On mobile / reduced-motion, the video just autoplays its loop.
- */
+type LogoComponent = ComponentType<SVGProps<SVGSVGElement>>;
+
+interface ApiKey {
+  Logo: LogoComponent;
+  name: string;
+  env: string;
+  token: string;
+}
+
+// Twelve real services, each with a real-shape env var name and a fixed
+// phm_xxx token. Tokens are deterministic per service so the marquee
+// always reads the same card-for-card on repeat passes.
+const KEYS: ApiKey[] = [
+  { Logo: OpenAILogo,   name: "OpenAI",     env: "OPENAI_API_KEY",     token: "phm_a8f2c4d9" },
+  { Logo: ClaudeLogo,   name: "Anthropic",  env: "ANTHROPIC_API_KEY",  token: "phm_e1b773c0" },
+  { Logo: StripeLogo,   name: "Stripe",     env: "STRIPE_SECRET_KEY",  token: "phm_2ccb5a91" },
+  { Logo: VercelLogo,   name: "Vercel",     env: "VERCEL_TOKEN",       token: "phm_d9f1c102" },
+  { Logo: GitHubLogo,   name: "GitHub",     env: "GITHUB_TOKEN",       token: "phm_99a8d2bf" },
+  { Logo: SupabaseLogo, name: "Supabase",   env: "SUPABASE_KEY",       token: "phm_4f1c8ae3" },
+  { Logo: CursorLogo,   name: "Cursor",     env: "CURSOR_API_KEY",     token: "phm_77b3e5f1" },
+  { Logo: WindsurfLogo, name: "Windsurf",   env: "WINDSURF_API_KEY",   token: "phm_1c9e2a40" },
+  { Logo: RailwayLogo,  name: "Railway",    env: "RAILWAY_TOKEN",      token: "phm_8b4d6f93" },
+  { Logo: PostgresLogo, name: "Postgres",   env: "DATABASE_URL",       token: "phm_3a2e7c81" },
+  { Logo: MongoLogo,    name: "MongoDB",    env: "MONGODB_URI",        token: "phm_6e0fb529" },
+  { Logo: DockerLogo,   name: "Docker",     env: "DOCKER_TOKEN",       token: "phm_b5817d4c" },
+];
+
 export function Hero() {
-  const sectionRef = useRef<HTMLElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const lastProgressRef = useRef(0);
-  const [progress, setProgress] = useState(0);
-  const [hasVideo, setHasVideo] = useState<boolean | null>(null);
-  const [scrubbable, setScrubbable] = useState(false);
-
-  // Probe for the video file
-  useEffect(() => {
-    fetch("/hero/loop.mp4", { method: "HEAD" })
-      .then((r) => setHasVideo(r.ok))
-      .catch(() => setHasVideo(false));
-  }, []);
-
-  // Decide whether to scroll-scrub (desktop) or autoplay-loop (mobile / RM).
-  // Re-evaluate on viewport resize so a window-resize from desktop into
-  // mobile range (or vice-versa) flips the mode correctly.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const reduceMq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const smallMq = window.matchMedia("(max-width: 768px)");
-    const evaluate = () => setScrubbable(!reduceMq.matches && !smallMq.matches);
-    evaluate();
-    reduceMq.addEventListener("change", evaluate);
-    smallMq.addEventListener("change", evaluate);
-    return () => {
-      reduceMq.removeEventListener("change", evaluate);
-      smallMq.removeEventListener("change", evaluate);
-    };
-  }, []);
-
-  // Track scroll progress through the hero region (0..1). Only triggers a
-  // React re-render when progress crosses a meaningful threshold so we don't
-  // re-render the whole beat stack 60×/sec.
-  useEffect(() => {
-    const section = sectionRef.current;
-    if (!section) return;
-
-    let raf = 0;
-    const apply = () => {
-      const rect = section.getBoundingClientRect();
-      const total = section.offsetHeight - window.innerHeight;
-      const p = total <= 0
-        ? 0
-        : Math.min(1, Math.max(0, -rect.top / total));
-
-      const video = videoRef.current;
-      if (scrubbable && video && Number.isFinite(video.duration) && video.duration > 0) {
-        video.currentTime = p * video.duration;
-      }
-
-      // Only re-render when progress moves enough to matter visually
-      if (Math.abs(p - lastProgressRef.current) > 0.004) {
-        lastProgressRef.current = p;
-        setProgress(p);
-      }
-    };
-    const onScroll = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(apply);
-    };
-    apply();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      cancelAnimationFrame(raf);
-    };
-  }, [scrubbable]);
-
-  // On mobile / RM, just play the loop
-  useEffect(() => {
-    if (!hasVideo || scrubbable) return;
-    const video = videoRef.current;
-    if (!video) return;
-    video.loop = true;
-    video.play().catch(() => {});
-  }, [hasVideo, scrubbable]);
-
   return (
-    <header
-      ref={sectionRef}
-      className="relative h-[150svh] bg-bg"
-      aria-label="Phantom — delegate everything to AI without sharing a single key"
-    >
-      <div className="sticky top-0 h-svh w-full overflow-hidden">
-        {/* Background video */}
-        {hasVideo === true ? (
-          <video
-            ref={videoRef}
-            src="/hero/loop.mp4"
-            poster="/hero/poster.jpg"
-            preload="auto"
-            muted
-            playsInline
-            className="absolute inset-0 h-full w-full object-cover"
-          />
-        ) : (
-          <FallbackBackdrop />
-        )}
+    <header className="relative pt-14 pb-16 sm:pt-20 sm:pb-24 overflow-hidden">
+      {/* Soft halo behind the headline */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-[680px] -z-10 opacity-60"
+        style={{
+          background:
+            "radial-gradient(ellipse 60% 60% at 50% 0%, rgba(59,130,246,0.18) 0%, transparent 70%)",
+        }}
+      />
 
-        {/* Contrast washes — strong, so text always reads */}
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-bg/55 via-bg/40 to-bg/85"
-        />
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 bg-gradient-to-r from-bg/35 via-transparent to-bg/35"
-        />
-
-        {/* Eyebrow chip — pinned top center, visible the entire scroll */}
-        <div className="absolute inset-x-0 top-20 sm:top-24 flex justify-center pointer-events-none">
-          <span
-            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[0.72rem] font-medium text-white/85 backdrop-blur-md transition-opacity duration-500"
-            style={{ opacity: progress < 0.85 ? 1 : 0 }}
-          >
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue/60 opacity-75" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue" />
-            </span>
-            For Claude Code · Cursor · Windsurf · Codex
+      <div className="mx-auto max-w-[940px] px-7 text-center">
+        <span className="inline-flex items-center gap-2 rounded-full border border-border bg-s1/80 px-3 py-1 text-[0.72rem] font-medium text-t2 backdrop-blur-md">
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue/60 opacity-75" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue" />
           </span>
+          For Claude Code · Cursor · Windsurf · Codex
+        </span>
+
+        <h1 className="mt-7 font-extrabold tracking-[-0.045em] leading-[1.0] text-white text-[clamp(2.6rem,6.4vw,4.6rem)]">
+          Delegate everything to AI.
+          <br />
+          <span className="bg-gradient-to-br from-blue-b via-blue to-blue-d bg-clip-text text-transparent">
+            Without sharing a single key.
+          </span>
+        </h1>
+
+        <p className="mt-6 mx-auto max-w-[600px] text-[0.98rem] sm:text-[1.04rem] leading-[1.65] text-t2">
+          Phantom hands every AI tool a worthless{" "}
+          <code className="font-mono text-blue-b text-[0.92em]">phm_</code>{" "}
+          token. The local proxy injects the real key at the network layer.
+          Full access. Zero exposure.
+        </p>
+
+        <div className="mt-8 mx-auto w-full max-w-[460px]">
+          <CopyButton text="npx phantom-secrets init" />
         </div>
 
-        {/* Beat stack — all centered, cross-fade */}
-        <div className="absolute inset-0 flex items-center justify-center px-7">
-          <div className="relative w-full max-w-[940px]">
-            {BEATS.map((beat, i) => {
-              const o = beatOpacity(
-                progress,
-                beat.center,
-                i === 0,
-                i === BEATS.length - 1,
-              );
-              const y = (1 - o) * 16;
-              return (
-                <div
-                  key={i}
-                  aria-hidden={o < 0.05}
-                  className="absolute inset-0 flex flex-col items-center justify-center text-center"
-                  style={{
-                    opacity: o,
-                    transform: `translateY(${y}px)`,
-                    pointerEvents: o > 0.6 ? "auto" : "none",
-                    transition: "opacity 80ms linear, transform 80ms linear",
-                  }}
-                >
-                  {beat.render()}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Scroll progress rail — bottom, only while pinned */}
-        <div
-          aria-hidden
-          className="absolute bottom-0 left-0 right-0 h-px bg-white/5"
-        >
-          <div
-            className="h-full bg-gradient-to-r from-blue-b via-blue to-blue-d"
-            style={{ width: `${progress * 100}%` }}
-          />
-        </div>
-
-        {/* Scroll hint — only at the very start */}
-        <div
-          aria-hidden
-          className="absolute bottom-7 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 text-[0.65rem] tracking-[0.2em] uppercase text-white/40 transition-opacity duration-500"
-          style={{ opacity: progress < 0.05 ? 1 : 0 }}
-        >
-          <span>Scroll</span>
-          <span className="block h-5 w-px bg-gradient-to-b from-white/40 to-transparent animate-[scrollHint_1.6s_ease-in-out_infinite]" />
+        <div className="mt-5 flex flex-wrap justify-center gap-2.5">
+          <a
+            href="#install"
+            onClick={() => posthog.capture("hero_get_started_clicked")}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue px-5 py-2.5 text-[0.9rem] font-semibold text-white no-underline transition-all duration-200 hover:bg-blue-d hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(59,130,246,0.32)]"
+          >
+            Get started
+          </a>
+          <a
+            href="https://github.com/ashlrai/phantom-secrets"
+            className="inline-flex items-center gap-2 rounded-lg border border-border-l bg-s1 px-5 py-2.5 text-[0.9rem] font-semibold text-t1 no-underline transition-colors duration-200 hover:border-t3"
+          >
+            <Github className="h-3.5 w-3.5" />
+            View on GitHub
+          </a>
         </div>
       </div>
 
-      <style>{`
-        @keyframes scrollHint {
-          0%, 100% { transform: translateY(0); opacity: 0.4; }
-          50% { transform: translateY(5px); opacity: 1; }
-        }
-      `}</style>
+      {/* Marquee of API key cards — full bleed past content max-width */}
+      <KeyWall />
     </header>
   );
 }
 
-/* ── Story beats ──────────────────────────────────────────────── */
+function KeyWall() {
+  // Duplicate the array so the marquee loop is seamless when translated -50%
+  const track = [...KEYS, ...KEYS];
 
-const BEATS: Array<{ center: number; render: () => React.ReactNode }> = [
-  // 0: Promise
-  {
-    center: 0.08,
-    render: () => (
-      <h1 className="font-extrabold tracking-[-0.045em] leading-[1.0] text-white text-[clamp(2.6rem,6.8vw,5.2rem)]">
-        Delegate everything to AI.
-      </h1>
-    ),
-  },
-  // 1: Catch
-  {
-    center: 0.30,
-    render: () => (
-      <h1 className="font-extrabold tracking-[-0.045em] leading-[1.0] text-white text-[clamp(2.6rem,6.8vw,5.2rem)]">
-        Without sharing
-        <br />
-        <span className="bg-gradient-to-br from-blue-b via-blue to-blue-d bg-clip-text text-transparent">
-          a single key.
-        </span>
-      </h1>
-    ),
-  },
-  // 2: Mechanism
-  {
-    center: 0.52,
-    render: () => (
-      <div>
-        <h2 className="font-extrabold tracking-[-0.04em] leading-[1.05] text-white text-[clamp(2rem,4.8vw,3.4rem)]">
-          AI gets a worthless{" "}
-          <code className="font-mono text-blue-b text-[0.92em]">phm_</code> token.
-        </h2>
-        <p className="mt-5 mx-auto max-w-[600px] text-[0.98rem] sm:text-[1.04rem] text-white/75 leading-[1.65]">
-          Phantom rewrites your <code className="font-mono text-blue-b">.env</code>{" "}
-          and hands the decoy to every AI tool you use.
-        </p>
-      </div>
-    ),
-  },
-  // 3: Outcome
-  {
-    center: 0.74,
-    render: () => (
-      <div>
-        <h2 className="font-extrabold tracking-[-0.04em] leading-[1.05] text-white text-[clamp(2rem,4.8vw,3.4rem)]">
-          Real secrets never leave
-          <br />
-          your machine.
-        </h2>
-        <p className="mt-5 mx-auto max-w-[600px] text-[0.98rem] sm:text-[1.04rem] text-white/75 leading-[1.65]">
-          A local proxy on{" "}
-          <code className="font-mono text-blue-b">127.0.0.1</code> swaps the
-          token for the real key just before TLS. Nothing else changes.
-        </p>
-      </div>
-    ),
-  },
-  // 4: CTA — payoff
-  {
-    center: 0.92,
-    render: () => <CTABeat />,
-  },
-];
-
-function CTABeat() {
   return (
-    <div className="w-full">
-      <h2 className="font-extrabold tracking-[-0.045em] leading-[1.0] text-white text-[clamp(2.2rem,5vw,3.6rem)]">
-        Sixty seconds to a safe{" "}
-        <code className="font-mono text-blue-b text-[0.92em]">.env</code>.
-      </h2>
+    <section
+      aria-label="Phantom protects API keys for every popular service"
+      className="relative mt-16 sm:mt-20"
+    >
+      {/* Section label */}
+      <p className="mx-auto max-w-[940px] px-7 text-center text-[0.78rem] font-medium uppercase tracking-[0.18em] text-t3 mb-7">
+        Replaces real keys for every service you use
+      </p>
 
-      <div className="mt-7 mx-auto w-full max-w-[480px]">
-        <CopyButton text="npx phantom-secrets init" />
-      </div>
+      {/* Marquee — escapes any container, full viewport width */}
+      <div className="relative">
+        {/* Edge fade — left + right, mask out the marquee endpoints */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-32 sm:w-48 bg-gradient-to-r from-bg to-transparent"
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-32 sm:w-48 bg-gradient-to-l from-bg to-transparent"
+        />
 
-      <div className="mt-5 flex flex-wrap justify-center gap-2.5">
-        <a
-          href="#install"
-          onClick={() => posthog.capture("hero_get_started_clicked")}
-          className="inline-flex items-center gap-2 rounded-lg bg-blue px-5 py-2.5 text-[0.9rem] font-semibold text-white no-underline transition-all duration-200 hover:bg-blue-d hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(59,130,246,0.32)]"
-        >
-          Get started
-        </a>
-        <a
-          href="https://github.com/ashlrai/phantom-secrets"
-          className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/[0.04] px-5 py-2.5 text-[0.9rem] font-semibold text-white no-underline transition-colors duration-200 hover:border-white/30 hover:bg-white/[0.08] backdrop-blur-md"
-        >
-          <Github className="h-3.5 w-3.5" />
-          View on GitHub
-        </a>
+        <div className="overflow-hidden marquee-pause-on-hover">
+          <div className="flex gap-3 sm:gap-4 animate-[marquee_56s_linear_infinite] w-max marquee-track">
+            {track.map((k, i) => (
+              <KeyCard key={`${k.name}-${i}`} item={k} />
+            ))}
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
   );
 }
 
-/* ── Helpers ──────────────────────────────────────────────────── */
-
-/**
- * Bell-curve fade. Beat is fully visible at `center` and fades out
- * symmetrically on either side over `range`. The first beat stays at full
- * opacity above its center so the headline reads on initial page load.
- * The last beat (CTA) stays visible below its center so the user can
- * interact with it at any scroll position past ~85%.
- */
-function beatOpacity(
-  progress: number,
-  center: number,
-  isFirst: boolean,
-  isLast: boolean,
-) {
-  const range = 0.13;
-  if (isFirst && progress <= center) return 1;
-  if (isLast && progress >= center) return 1;
-  const distance = Math.abs(progress - center);
-  if (distance >= range) return 0;
-  // Smooth-step (cubic) for a nicer fade
-  const t = 1 - distance / range;
-  return t * t * (3 - 2 * t);
-}
-
-function FallbackBackdrop() {
+function KeyCard({ item }: { item: ApiKey }) {
+  const { Logo, name, env, token } = item;
   return (
-    <div aria-hidden className="absolute inset-0 overflow-hidden bg-bg">
-      <div
-        className="absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(ellipse 70% 55% at 50% 38%, rgba(59,130,246,0.45) 0%, transparent 65%)",
-        }}
-      />
-      <div
-        className="absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(ellipse 50% 70% at 30% 70%, rgba(96,165,250,0.28) 0%, transparent 60%)",
-        }}
-      />
-    </div>
+    <article
+      className="group flex w-[260px] sm:w-[300px] shrink-0 items-center gap-4 rounded-xl border border-border bg-s1 px-4 py-3.5 transition-colors duration-200 hover:border-blue-d/60"
+    >
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-s2 text-t2 transition-colors group-hover:text-t1">
+        <Logo className="h-5 w-5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-[0.84rem] font-semibold text-t1 truncate">
+            {name}
+          </span>
+          <span className="text-[0.66rem] font-mono uppercase tracking-[0.06em] text-green/90">
+            ● safe
+          </span>
+        </div>
+        <div className="mt-1 font-mono text-[0.72rem] leading-tight truncate">
+          <span className="text-t3">{env}=</span>
+          <span className="text-blue-b">{token}</span>
+        </div>
+      </div>
+    </article>
   );
 }

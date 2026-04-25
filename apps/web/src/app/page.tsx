@@ -7,7 +7,6 @@ import { Nav } from "@/components/landing/Nav";
 import { Pricing } from "@/components/landing/Pricing";
 import { QuickStart } from "@/components/landing/QuickStart";
 import { SiteFooter } from "@/components/landing/SiteFooter";
-import { SupportedTools } from "@/components/landing/SupportedTools";
 import { Transformation } from "@/components/landing/Transformation";
 
 export default function Home() {
@@ -16,7 +15,6 @@ export default function Home() {
       <Nav />
       <main>
         <Hero />
-        <SupportedTools />
         <HowItWorks />
         <Transformation />
         <QuickStart />
