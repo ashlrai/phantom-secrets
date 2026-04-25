@@ -364,14 +364,17 @@ impl PhantomMcpServer {
             secrets.insert(name.clone(), String::from(value.as_str()));
         }
 
-        let plaintext = serde_json::to_string(&secrets)
-            .map_err(|e| internal_err(format!("Failed to serialize: {e}")))?;
-        // Zeroize secrets from memory after serialization
+        // Serialize, then zeroize the map on every exit path — including the
+        // serialization-error case (otherwise an `Err` early-returns with the
+        // cloned plaintext strings still sitting in the map).
+        let serialize_result = serde_json::to_string(&secrets);
         for value in secrets.values_mut() {
             zeroize::Zeroize::zeroize(value);
         }
         drop(secrets);
-        let plaintext = zeroize::Zeroizing::new(plaintext);
+        let plaintext = zeroize::Zeroizing::new(
+            serialize_result.map_err(|e| internal_err(format!("Failed to serialize: {e}")))?,
+        );
 
         let passphrase = phantom_core::auth::get_or_create_cloud_passphrase()
             .map_err(|e| internal_err(format!("Failed to access cloud key: {e}")))?;
@@ -446,7 +449,7 @@ impl PhantomMcpServer {
                 .map_err(|e| internal_err(format!("Decryption failed: {e}")))?,
         );
 
-        let secrets: std::collections::BTreeMap<String, String> =
+        let mut secrets: std::collections::BTreeMap<String, String> =
             serde_json::from_slice(&plaintext)
                 .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
 
@@ -462,6 +465,13 @@ impl PhantomMcpServer {
                 .map_err(|e| internal_err(format!("Failed to store secret: {e}")))?;
             added += 1;
         }
+
+        // Scrub deserialized secrets — serde produced fresh String allocations
+        // that the Zeroizing<plaintext> wrapper does not reach.
+        for value in secrets.values_mut() {
+            zeroize::Zeroize::zeroize(value);
+        }
+        drop(secrets);
 
         let mut config = config;
         self.save_cloud_version(&mut config, pull_data.version);

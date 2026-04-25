@@ -176,9 +176,6 @@ async fn cloud_pull_handles_404_gracefully() {
 #[tokio::test]
 #[ignore = "requires an auth token in the OS keychain; run manually with `cargo test -- --ignored`"]
 async fn cloud_push_then_pull_round_trip() {
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
     let dir_push = TempDir::new().unwrap();
     let dir_pull = TempDir::new().unwrap();
     init_project(&dir_push);
@@ -187,12 +184,8 @@ async fn cloud_push_then_pull_round_trip() {
     let mock_server = MockServer::start().await;
     let api_url = mock_server.uri();
 
-    // Capture whatever blob the push sends so we can serve it back on pull
-    let captured_blob: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let captured_clone = captured_blob.clone();
-
-    // We can't easily intercept the body with wiremock's simple API here, so
-    // instead just assert the correct verbs are called in the right order.
+    // We can't easily intercept the request body with wiremock's simple API,
+    // so we just assert the correct verbs land on the right paths in order.
     Mock::given(method("PUT"))
         .and(path("/vault/push"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -229,6 +222,4 @@ async fn cloud_push_then_pull_round_trip() {
 
     // Both HTTP endpoints must have been hit
     mock_server.verify().await;
-
-    drop(captured_clone); // satisfy the borrow checker
 }

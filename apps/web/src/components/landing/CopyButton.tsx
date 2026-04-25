@@ -12,11 +12,17 @@ interface CopyButtonProps {
 export function CopyButton({ text, variant = "block" }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text);
-    posthog.capture("command_copied", { command: text });
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1800);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      posthog.capture("command_copied", { command: text });
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Clipboard write can reject if the page lacks user-gesture context
+      // or if the browser denies permission (Firefox over HTTP, etc.).
+      // Stay silent — the button keeps its idle state so users see the failure.
+    }
   };
 
   if (variant === "inline") {

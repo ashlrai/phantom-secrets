@@ -3,6 +3,7 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::sync::{self, Platform, SyncStatus};
 use std::collections::BTreeMap;
+use zeroize::Zeroize;
 
 pub fn run(platform: Option<String>, project: Option<String>) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
@@ -207,6 +208,11 @@ async fn run_async(
             );
         }
     }
+
+    for value in secrets.values_mut() {
+        value.zeroize();
+    }
+    drop(secrets);
 
     Ok(())
 }
