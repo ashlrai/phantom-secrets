@@ -52,6 +52,24 @@ export async function POST(req: Request) {
 
   const supabase = createServiceClient();
 
+  // Idempotency: short-circuit if we've already processed this event id.
+  // Stripe delivers at-least-once and retries on 5xx; without this check a
+  // retried event would re-apply the same plan/subscription update.
+  const { error: insertErr } = await supabase
+    .from("stripe_processed_events")
+    .insert({ event_id: event.id, event_type: event.type });
+  if (insertErr) {
+    // 23505 = unique_violation → already processed, ack and return.
+    if (insertErr.code === "23505") {
+      return new Response("ok");
+    }
+    console.error(
+      `[stripe-webhook] failed to record event ${event.id}:`,
+      insertErr,
+    );
+    // Fall through and process anyway — better to double-apply than drop.
+  }
+
   switch (event.type) {
     case "checkout.session.completed": {
       try {
