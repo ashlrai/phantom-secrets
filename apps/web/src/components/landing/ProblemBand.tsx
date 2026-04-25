@@ -22,12 +22,13 @@ export function ProblemBand() {
         <Reveal>
           <div className="text-center mb-14">
             <h2 className="text-[1.7rem] sm:text-[2.2rem] font-extrabold tracking-[-0.04em] text-white mb-3">
-              You know the risk. You take it anyway.
+              The risk is the only thing holding you back.
             </h2>
-            <p className="mx-auto max-w-[520px] text-t2 text-[0.95rem] sm:text-base leading-[1.7]">
-              You paste API keys into Claude Code. You let Cursor read your
-              .env. You know it&apos;s risky — but AI doing your work is worth
-              it. Phantom fixes this.
+            <p className="mx-auto max-w-[560px] text-t2 text-[0.95rem] sm:text-base leading-[1.7]">
+              Today you ration what AI gets to touch. The Stripe key stays in
+              your head. The prod database URL lives in 1Password. AI watches
+              from the sidelines — because one paste is one leak away. Phantom
+              ends the rationing.
             </p>
           </div>
         </Reveal>
