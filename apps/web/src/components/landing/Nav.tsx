@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useState } from "react";
+import { posthog } from "@/lib/posthog";
 import { Github } from "./Icons";
 
 export function Nav() {
@@ -25,8 +26,11 @@ export function Nav() {
           : "border-b border-transparent bg-bg/50",
       ].join(" ")}
     >
-      <div className="mx-auto max-w-[1080px] px-7 h-14 flex items-center justify-between">
-        <a href="/" className="flex items-center gap-2.5 text-t1 no-underline">
+      <div className="mx-auto max-w-[1200px] px-7 h-14 flex items-center justify-between">
+        <a
+          href="/"
+          className="flex items-center gap-2.5 text-t1 no-underline shrink-0"
+        >
           <Image
             src="/favicon.svg"
             alt="Phantom"
@@ -36,37 +40,49 @@ export function Nav() {
           />
           <span className="font-bold text-[0.95rem] tracking-tight">Phantom</span>
         </a>
+
         <div className="flex items-center gap-5">
           <a
             href="#how"
-            className="hidden sm:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
+            className="hidden md:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
           >
             How it works
           </a>
           <a
             href="#features"
-            className="hidden sm:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
+            className="hidden md:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
           >
             Features
           </a>
           <a
-            href="/pricing"
-            className="hidden sm:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
+            href="#pricing"
+            className="hidden md:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
           >
             Pricing
           </a>
           <a
             href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md"
-            className="hidden sm:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
+            className="hidden md:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
           >
             Docs
           </a>
+
+          {/* GitHub icon-only button */}
           <a
             href="https://github.com/ashlrai/phantom-secrets"
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-s2 border border-border hover:border-blue rounded-md text-[0.82rem] font-semibold text-t1 no-underline transition-colors"
+            aria-label="View on GitHub"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-s2 text-t2 hover:text-t1 hover:border-blue transition-colors"
           >
-            <Github className="w-[15px] h-[15px]" />
-            GitHub
+            <Github className="h-3.5 w-3.5" />
+          </a>
+
+          {/* Primary CTA */}
+          <a
+            href="#install"
+            onClick={() => posthog.capture("nav_get_started_clicked")}
+            className="inline-flex items-center gap-1.5 rounded-md bg-blue px-3.5 py-1.5 text-[0.82rem] font-semibold text-white no-underline transition-all duration-200 hover:bg-blue-d hover:-translate-y-px hover:shadow-[0_4px_18px_rgba(59,130,246,0.4)]"
+          >
+            Get started
           </a>
         </div>
       </div>

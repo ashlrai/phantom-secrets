@@ -4,6 +4,7 @@ import { Hero } from "@/components/landing/Hero";
 import { HowItWorks } from "@/components/landing/HowItWorks";
 import { Install } from "@/components/landing/Install";
 import { Nav } from "@/components/landing/Nav";
+import { Pricing } from "@/components/landing/Pricing";
 import { QuickStart } from "@/components/landing/QuickStart";
 import { SiteFooter } from "@/components/landing/SiteFooter";
 import { SupportedTools } from "@/components/landing/SupportedTools";
@@ -20,6 +21,7 @@ export default function Home() {
         <Transformation />
         <QuickStart />
         <Features />
+        <Pricing />
         <Install />
         <CTA />
       </main>
