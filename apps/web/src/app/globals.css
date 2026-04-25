@@ -16,8 +16,8 @@
   --color-green: #22c55e;
   --color-red: #ef4444;
 
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "SF Mono", "Fira Code", "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), "SF Mono", "JetBrains Mono", ui-monospace, monospace;
 }
 
 html {
@@ -31,9 +31,10 @@ body {
   background: #050508;
   color: #f5f5f7;
   font-family: var(--font-sans);
-  font-feature-settings: "ss01", "cv11";
+  font-feature-settings: "ss01", "ss03", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   touch-action: pan-y;
   overflow-x: clip;
 }
