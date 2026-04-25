@@ -12,13 +12,17 @@ type LogoProps = SVGProps<SVGSVGElement>;
 /* ── Multi-color brands ──────────────────────────────────────── */
 
 export function GeminiLogo(props: LogoProps) {
+  // Gemini's official 4-pointed-star mark with the canonical Google
+  // Gemini gradient: Google blue → violet → coral. Diagonal top-left
+  // to bottom-right, matching gemini.google.com.
   return (
-    <svg viewBox="0 0 24 24" {...props}>
+    <svg viewBox="0 0 24 24" aria-label="Gemini" {...props}>
       <defs>
         <linearGradient id="gemini-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#1bbeff" />
-          <stop offset="50%" stopColor="#2c5cff" />
-          <stop offset="100%" stopColor="#cc4499" />
+          <stop offset="0%" stopColor="#1c7bd7" />
+          <stop offset="35%" stopColor="#4285f4" />
+          <stop offset="65%" stopColor="#9168c0" />
+          <stop offset="100%" stopColor="#d96570" />
         </linearGradient>
       </defs>
       <path
