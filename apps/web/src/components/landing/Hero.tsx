@@ -117,7 +117,7 @@ function Marquee({
   const animationName = direction === "left" ? "marqueeLeft" : "marqueeRight";
 
   return (
-    <div className="overflow-hidden marquee-pause-on-hover">
+    <div className="overflow-hidden marquee-pause-on-hover py-3">
       <div
         className="flex gap-3 sm:gap-4 w-max marquee-track"
         style={{

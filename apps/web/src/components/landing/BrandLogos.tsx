@@ -83,11 +83,15 @@ export function GeminiLogo(props: LogoProps) {
   return (
     <svg viewBox="0 0 24 24" aria-label="Gemini" {...props}>
       <defs>
-        <linearGradient id="gemini-grad" x1="50%" y1="0%" x2="50%" y2="100%">
-          <stop offset="0%" stopColor="#FF4D4D" />
-          <stop offset="22%" stopColor="#FF8C42" />
-          <stop offset="45%" stopColor="#FFD84D" />
-          <stop offset="68%" stopColor="#3FCF8E" />
+        {/* Diagonal warm-to-cool: red top-right → pink → cyan → blue
+            bottom-left. Matches the actual 2025 Gemini icon better
+            than a vertical Google-brand rainbow (which has yellow/
+            green that aren't visible in the real mark). */}
+        <linearGradient id="gemini-grad" x1="80%" y1="0%" x2="20%" y2="100%">
+          <stop offset="0%" stopColor="#FF6B5C" />
+          <stop offset="30%" stopColor="#E94B85" />
+          <stop offset="55%" stopColor="#9168C0" />
+          <stop offset="80%" stopColor="#5B96E8" />
           <stop offset="100%" stopColor="#4796E3" />
         </linearGradient>
       </defs>
