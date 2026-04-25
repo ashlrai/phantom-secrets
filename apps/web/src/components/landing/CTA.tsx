@@ -15,7 +15,7 @@ export function CTA() {
           <CopyButton text="npx phantom-secrets init" />
         </div>
 
-        <div className="mt-5 flex justify-center gap-4 text-[0.84rem]">
+        <div className="mt-5 flex flex-wrap justify-center gap-x-4 gap-y-2 text-[0.84rem]">
           <a
             href="https://github.com/ashlrai/phantom-secrets"
             className="inline-flex items-center gap-1.5 text-t2 hover:text-t1 transition-colors"

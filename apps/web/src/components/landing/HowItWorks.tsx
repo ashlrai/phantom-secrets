@@ -56,12 +56,12 @@ export function HowItWorks() {
             alt="Architecture diagram: .env file with phm_ tokens flows through local proxy and vault to AI tools"
             width={1920}
             height={1080}
-            priority
+            sizes="(max-width: 768px) 100vw, 1100px"
             className="w-full h-auto"
           />
         </div>
 
-        <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-px bg-border border border-border rounded-2xl overflow-hidden">
+        <div className="mt-12 grid grid-cols-1 lg:grid-cols-3 gap-px bg-border border border-border rounded-2xl overflow-hidden">
           {STEPS.map((s) => (
             <article key={s.n} className="bg-s1 p-7 sm:p-8">
               <div className="font-mono text-[0.78rem] text-blue-b mb-3">

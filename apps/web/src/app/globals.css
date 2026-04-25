@@ -9,7 +9,7 @@
   --color-border-l: #252538;
   --color-t1: #f5f5f7;
   --color-t2: #a1a1b5;
-  --color-t3: #65657a;
+  --color-t3: #808096;
   --color-blue: #3b82f6;
   --color-blue-b: #60a5fa;
   --color-blue-d: #1d4ed8;
@@ -82,6 +82,15 @@ code, pre, .mono {
 }
 .marquee-pause-on-hover:hover .marquee-track {
   animation-play-state: paused;
+}
+
+/* Marquee respects reduced-motion: stop entirely instead of snapping
+   to the end frame (which would leave cards half-rendered). */
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track {
+    animation: none !important;
+    transform: none !important;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

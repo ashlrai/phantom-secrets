@@ -162,7 +162,7 @@ function KeyCard({ item }: { item: typeof KEY_ENTRIES[number] }) {
             {name}
           </span>
           <span
-            className="inline-flex items-center gap-1 text-[0.66rem] font-mono uppercase tracking-[0.06em] text-green/85 shrink-0"
+            className="inline-flex items-center gap-1 text-[0.7rem] font-mono uppercase tracking-[0.06em] text-green/85 shrink-0"
           >
             <span
               aria-hidden

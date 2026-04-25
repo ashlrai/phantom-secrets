@@ -49,7 +49,7 @@ export function Features() {
   return (
     <section id="features" className="border-t border-border py-24 sm:py-28">
       <div className="mx-auto max-w-[1100px] px-7">
-        <div className="max-w-[640px] mb-14">
+        <div className="max-w-[640px] mb-12">
           <h2 className="text-[1.8rem] sm:text-[2.4rem] font-extrabold tracking-[-0.035em] leading-[1.08] text-white">
             Built like a real CLI.
           </h2>

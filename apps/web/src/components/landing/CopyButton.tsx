@@ -30,8 +30,8 @@ export function CopyButton({ text, variant = "block" }: CopyButtonProps) {
       <button
         type="button"
         onClick={handleCopy}
-        aria-label="Copy command"
-        className="inline-flex items-center gap-1.5 text-t3 hover:text-blue-b transition-colors"
+        aria-label={copied ? "Copied" : "Copy command"}
+        className="inline-flex items-center gap-1.5 p-2.5 -m-2.5 text-t3 hover:text-blue-b transition-colors"
       >
         {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
       </button>

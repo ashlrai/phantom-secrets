@@ -7,12 +7,14 @@ const sans = Geist({
   subsets: ["latin"],
   variable: "--font-geist-sans",
   display: "swap",
+  weight: ["400", "500", "600", "700", "800"],
 });
 
 const mono = Geist_Mono({
   subsets: ["latin"],
   variable: "--font-geist-mono",
   display: "swap",
+  weight: ["400", "500", "600"],
 });
 
 const SITE_URL = "https://phm.dev";

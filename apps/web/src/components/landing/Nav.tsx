@@ -65,7 +65,7 @@ export function Nav() {
           <a
             href="https://github.com/ashlrai/phantom-secrets"
             aria-label="View on GitHub"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-s2 text-t2 hover:text-t1 hover:border-blue transition-colors"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-border bg-s2 text-t2 hover:text-t1 hover:border-blue transition-colors"
           >
             <Github className="h-3.5 w-3.5" />
           </a>
@@ -74,7 +74,7 @@ export function Nav() {
           <a
             href="#install"
             onClick={() => posthog.capture("nav_get_started_clicked")}
-            className="inline-flex items-center gap-1.5 rounded-md bg-blue px-3.5 py-1.5 text-[0.82rem] font-semibold text-white no-underline transition-all duration-200 hover:bg-blue-d hover:-translate-y-px hover:shadow-[0_4px_18px_rgba(59,130,246,0.4)]"
+            className="inline-flex items-center gap-1.5 rounded-md bg-blue px-4 py-2.5 min-h-[40px] text-[0.84rem] font-semibold text-white no-underline transition-all duration-200 hover:bg-blue-d hover:-translate-y-px hover:shadow-[0_4px_18px_rgba(59,130,246,0.4)]"
           >
             Get started
           </a>
