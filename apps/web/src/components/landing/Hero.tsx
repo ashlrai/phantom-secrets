@@ -134,8 +134,9 @@ function Marquee({
 
 function KeyCard({ item }: { item: typeof KEY_ENTRIES[number] }) {
   const { Logo, name, env, token, color } = item;
-  // CSS variable so we can use the dynamic brand color in className-driven
-  // hover states (Tailwind arbitrary values can read CSS vars).
+  // Brand color exposed as a CSS variable so the card border can pick
+  // up the brand on hover. The logo itself is already in real brand
+  // colors (multi-color where applicable) regardless of state.
   const brandStyle = { "--brand": color } as React.CSSProperties;
 
   return (
@@ -143,22 +144,14 @@ function KeyCard({ item }: { item: typeof KEY_ENTRIES[number] }) {
       style={brandStyle}
       className="group relative flex w-[280px] sm:w-[310px] shrink-0 items-center gap-3.5 rounded-xl border border-border bg-s1 px-4 py-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-[color:var(--brand)] hover:shadow-[0_4px_22px_-8px_var(--brand)] overflow-hidden"
     >
-      {/* Brand-color accent stripe down the left edge */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute -left-px top-0 bottom-0 w-[3px] opacity-0 transition-opacity duration-200 group-hover:opacity-100"
-        style={{ backgroundColor: color }}
-      />
-
-      <div
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-s2 text-t2 transition-colors duration-200 group-hover:[color:var(--brand)] group-hover:bg-[color:var(--brand)]/10 group-hover:border-[color:var(--brand)]/40"
-      >
+      {/* Logo container — real brand colors at all times */}
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-s2/80 transition-colors duration-200 group-hover:bg-s2 group-hover:border-border-l">
         <Logo className="h-5 w-5" />
       </div>
 
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[0.86rem] font-semibold text-t1 truncate transition-colors duration-200 group-hover:[color:var(--brand)]">
+          <span className="text-[0.86rem] font-semibold text-t1 truncate">
             {name}
           </span>
           <span
