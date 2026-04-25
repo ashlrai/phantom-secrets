@@ -88,7 +88,6 @@ export function TerminalDemo() {
     if (!started) return;
 
     if (reduce) {
-      // Just render everything immediately for reduced motion
       setLines(SCRIPT.map(renderLine));
       return;
     }
@@ -102,7 +101,6 @@ export function TerminalDemo() {
       if (cancelled || i >= SCRIPT.length) return;
       const ln = SCRIPT[i];
       if (ln.kind === "cmd") {
-        // Type the command character by character
         let c = 0;
         const cmdIdx = out.length;
         out.push(PROMPT);
@@ -137,15 +135,25 @@ export function TerminalDemo() {
   }, [started, reduce]);
 
   return (
-    <section className="border-t border-border py-24 sm:py-28">
-      <div className="mx-auto max-w-[1080px] px-7">
+    <section className="border-t border-border py-24 sm:py-28 relative overflow-hidden">
+      {/* Soft blue ambient glow behind the terminal */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-[500px] w-[700px] rounded-full bg-blue/[0.05] blur-[140px]"
+      />
+
+      <div className="relative mx-auto max-w-[1080px] px-7">
         <Reveal>
           <div className="text-center mb-12">
+            <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-border bg-s1 px-3.5 py-1 text-[0.72rem] font-mono font-medium tracking-[0.06em] text-t3 uppercase">
+              // live demo
+            </div>
             <h2 className="text-[1.7rem] sm:text-[2.2rem] font-extrabold tracking-[-0.04em] text-white mb-3">
               See it in action
             </h2>
             <p className="mx-auto max-w-[520px] text-t2 text-[0.95rem] sm:text-base leading-[1.7]">
-              The full workflow from protecting secrets to deploying them.
+              Protect secrets, sync to Vercel, back up to the cloud — all from
+              one CLI.
             </p>
           </div>
         </Reveal>
@@ -153,17 +161,35 @@ export function TerminalDemo() {
         <Reveal delay={0.05}>
           <div
             ref={containerRef}
-            className="mx-auto max-w-[760px] rounded-2xl border border-border bg-s1 overflow-hidden shadow-[0_32px_80px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.03)_inset]"
+            className="mx-auto max-w-[760px] rounded-2xl border border-border bg-[#0d0d10] overflow-hidden shadow-[0_40px_100px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.04)_inset]"
           >
-            <div className="flex items-center gap-1.5 px-4 py-3.5 border-b border-border">
-              <span className="tl-dot bg-red" />
-              <span className="tl-dot bg-[#eab308]" />
-              <span className="tl-dot bg-green" />
-              <span className="ml-auto text-[0.72rem] text-t3 font-mono">
-                ~/my-app
-              </span>
+            {/* Window chrome */}
+            <div className="flex items-center gap-0 border-b border-border bg-s1/80 backdrop-blur-sm">
+              {/* Traffic lights */}
+              <div className="flex items-center gap-1.5 px-4 py-3.5">
+                <span className="h-[11px] w-[11px] rounded-full bg-[#ff5f57] ring-1 ring-black/20" />
+                <span className="h-[11px] w-[11px] rounded-full bg-[#febc2e] ring-1 ring-black/20" />
+                <span className="h-[11px] w-[11px] rounded-full bg-[#28c840] ring-1 ring-black/20" />
+              </div>
+
+              {/* Title bar */}
+              <div className="flex flex-1 items-center justify-center gap-2 py-3">
+                <span className="text-[0.72rem] text-t3 font-mono">
+                  phantom — ~/my-app
+                </span>
+                {/* Live dot */}
+                <span className="inline-flex items-center gap-1 rounded-full bg-green/10 px-2 py-0.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-green animate-pulse" />
+                  <span className="text-[0.6rem] font-mono text-green tracking-wider">LIVE</span>
+                </span>
+              </div>
+
+              {/* Right spacer to balance the traffic lights */}
+              <div className="w-[86px]" />
             </div>
-            <div className="px-5 py-5 font-mono text-[0.82rem] leading-[2] min-h-[260px]">
+
+            {/* Terminal body */}
+            <div className="px-6 py-6 font-mono text-[0.82rem] leading-[2] min-h-[260px]">
               {lines.map((html, idx) => (
                 <div
                   key={idx}

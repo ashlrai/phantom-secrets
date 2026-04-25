@@ -164,6 +164,12 @@ code, pre, .mono {
 @keyframes blink {
   50% { opacity: 0; }
 }
+
+/* Shimmer — used by the CTA accent bar */
+@keyframes shimmer {
+  0%, 100% { transform: translateX(-100%); }
+  50% { transform: translateX(100%); }
+}
 .cursor-blink {
   display: inline-block;
   width: 8px;
