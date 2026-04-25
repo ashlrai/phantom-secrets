@@ -34,7 +34,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        <meta name="theme-color" content="#3b82f6" />
+        <meta name="theme-color" content="#050508" />
         <link rel="canonical" href="https://phm.dev/" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
@@ -69,10 +69,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body
-        className="bg-[#050508] text-[#f5f5f7] antialiased"
-        style={{ fontFamily: "'Inter', system-ui, sans-serif" }}
-      >
+      <body className="bg-bg text-t1 antialiased font-sans min-h-svh">
         <PostHogProvider>{children}</PostHogProvider>
       </body>
     </html>
