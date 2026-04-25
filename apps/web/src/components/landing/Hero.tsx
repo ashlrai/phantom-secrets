@@ -31,8 +31,7 @@ export function Hero() {
 
           <motion.h1
             {...fadeUp(0.08)}
-            className="font-black tracking-[-0.05em] leading-[0.98] text-white max-w-[820px]"
-            style={{ fontSize: "clamp(2.6rem, 7vw, 5rem)" }}
+            className="font-black tracking-[-0.05em] leading-[0.98] text-white max-w-[820px] text-[clamp(2.6rem,7vw,5rem)]"
           >
             Real secrets stay home.
             <br />

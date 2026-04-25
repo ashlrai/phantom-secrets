@@ -8,10 +8,7 @@ export function CTA() {
       <div className="cta-wash" aria-hidden />
       <div className="relative mx-auto max-w-[1080px] px-7 text-center">
         <Reveal>
-          <h2
-            className="font-black tracking-[-0.04em] leading-[0.98] text-white"
-            style={{ fontSize: "clamp(2rem, 5.5vw, 3rem)" }}
-          >
+          <h2 className="font-black tracking-[-0.04em] leading-[0.98] text-white text-[clamp(2rem,5.5vw,3rem)]">
             One command.
             <br />
             Keys safe forever.

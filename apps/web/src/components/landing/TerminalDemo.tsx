@@ -45,11 +45,24 @@ const SCRIPT: Line[] = [
   },
 ];
 
+const PROMPT = '<span class="text-t3">$ </span>';
+const CHAR_INTERVAL_MS = 28;
+const POST_CMD_DELAY_MS = 200;
+const DEFAULT_OUT_DELAY_MS = 60;
+
+function renderCmd(text: string): string {
+  return `${PROMPT}<span class="text-t1">${escapeHtml(text)}</span>`;
+}
+
+function renderLine(line: Line): string {
+  return line.kind === "cmd" ? renderCmd(line.text) : line.html;
+}
+
 export function TerminalDemo() {
   const reduce = useReducedMotion();
   const containerRef = useRef<HTMLDivElement>(null);
   const [started, setStarted] = useState(false);
-  const [renderedLines, setRenderedLines] = useState<Array<{ html: string; visible: boolean }>>([]);
+  const [lines, setLines] = useState<string[]>([]);
 
   // Trigger when terminal scrolls into view
   useEffect(() => {
@@ -76,19 +89,14 @@ export function TerminalDemo() {
 
     if (reduce) {
       // Just render everything immediately for reduced motion
-      const all = SCRIPT.map((ln) =>
-        ln.kind === "cmd"
-          ? { html: `<span class="text-t3">$ </span><span class="text-t1">${escapeHtml(ln.text)}</span>`, visible: true }
-          : { html: ln.html, visible: true },
-      );
-      setRenderedLines(all);
+      setLines(SCRIPT.map(renderLine));
       return;
     }
 
     let cancelled = false;
     let i = 0;
-    const out: Array<{ html: string; visible: boolean }> = [];
-    setRenderedLines([]);
+    const out: string[] = [];
+    setLines([]);
 
     const next = () => {
       if (cancelled || i >= SCRIPT.length) return;
@@ -97,31 +105,28 @@ export function TerminalDemo() {
         // Type the command character by character
         let c = 0;
         const cmdIdx = out.length;
-        out.push({ html: `<span class="text-t3">$ </span>`, visible: true });
-        setRenderedLines([...out]);
+        out.push(PROMPT);
+        setLines([...out]);
         const iv = window.setInterval(() => {
           if (cancelled) {
             window.clearInterval(iv);
             return;
           }
           if (c < ln.text.length) {
-            out[cmdIdx] = {
-              html: `<span class="text-t3">$ </span><span class="text-t1">${escapeHtml(ln.text.slice(0, c + 1))}</span>`,
-              visible: true,
-            };
-            setRenderedLines([...out]);
+            out[cmdIdx] = renderCmd(ln.text.slice(0, c + 1));
+            setLines([...out]);
             c++;
           } else {
             window.clearInterval(iv);
             i++;
-            window.setTimeout(next, 200);
+            window.setTimeout(next, POST_CMD_DELAY_MS);
           }
-        }, 28);
+        }, CHAR_INTERVAL_MS);
       } else {
-        out.push({ html: ln.html, visible: true });
-        setRenderedLines([...out]);
+        out.push(ln.html);
+        setLines([...out]);
         i++;
-        window.setTimeout(next, ln.delay ?? 60);
+        window.setTimeout(next, ln.delay ?? DEFAULT_OUT_DELAY_MS);
       }
     };
 
@@ -159,10 +164,10 @@ export function TerminalDemo() {
               </span>
             </div>
             <div className="px-5 py-5 font-mono text-[0.82rem] leading-[2] min-h-[260px]">
-              {renderedLines.map((ln, idx) => (
+              {lines.map((html, idx) => (
                 <div
                   key={idx}
-                  dangerouslySetInnerHTML={{ __html: ln.html + "<br>" }}
+                  dangerouslySetInnerHTML={{ __html: `${html}<br>` }}
                 />
               ))}
             </div>

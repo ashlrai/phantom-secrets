@@ -39,10 +39,7 @@ export function ProblemBand() {
                 key={s.label}
                 className="bg-s1 px-6 py-10 sm:py-12 text-center"
               >
-                <div
-                  className="font-black tracking-[-0.04em] text-white leading-none"
-                  style={{ fontSize: "clamp(2.4rem, 5vw, 3.4rem)" }}
-                >
+                <div className="font-black tracking-[-0.04em] text-white leading-none text-[clamp(2.4rem,5vw,3.4rem)]">
                   {s.n}
                 </div>
                 <div className="mt-2 text-t2 text-[0.85rem]">{s.label}</div>
