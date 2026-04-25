@@ -98,12 +98,15 @@ impl VaultBackend for KeychainVault {
         Ok(())
     }
 
-    fn retrieve(&self, name: &str) -> Result<String> {
+    fn retrieve(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
         let entry = self.entry_for(name)?;
-        entry.get_password().map_err(|e| match e {
-            keyring::Error::NoEntry => PhantomError::SecretNotFound(name.to_string()),
-            _ => PhantomError::VaultError(format!("Failed to retrieve secret: {e}")),
-        })
+        entry
+            .get_password()
+            .map(zeroize::Zeroizing::new)
+            .map_err(|e| match e {
+                keyring::Error::NoEntry => PhantomError::SecretNotFound(name.to_string()),
+                _ => PhantomError::VaultError(format!("Failed to retrieve secret: {e}")),
+            })
     }
 
     fn delete(&self, name: &str) -> Result<()> {

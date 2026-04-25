@@ -32,7 +32,7 @@ pub fn run(output: &str, passphrase: &str) -> Result<()> {
         let value = vault
             .retrieve(name)
             .context(format!("Failed to retrieve secret: {name}"))?;
-        secrets.insert(name.clone(), value);
+        secrets.insert(name.clone(), String::from(value.as_str()));
     }
 
     // Check if output file already exists

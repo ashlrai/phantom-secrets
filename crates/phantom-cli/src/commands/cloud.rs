@@ -24,7 +24,7 @@ pub fn run_push() -> Result<()> {
     let mut secrets = BTreeMap::new();
     for name in &secret_names {
         let value = vault.retrieve(name)?;
-        secrets.insert(name.clone(), value);
+        secrets.insert(name.clone(), String::from(value.as_str()));
     }
 
     let mut plaintext = serde_json::to_string(&secrets).context("Failed to serialize secrets")?;

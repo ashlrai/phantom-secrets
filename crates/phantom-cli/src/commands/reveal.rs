@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 /// Reveal a single secret value from the vault.
 /// Requires --yes flag or interactive TTY to prevent AI agents from extracting secrets.
@@ -37,7 +37,7 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
-    let mut value = vault
+    let value: Zeroizing<String> = vault
         .retrieve(name)
         .context(format!("Secret '{}' not found in vault", name))?;
 
@@ -61,14 +61,13 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
                 "{} Clipboard not available. Printing to stdout instead.",
                 "warn".yellow()
             );
-            println!("{}", value);
+            println!("{}", value.as_str());
         }
     } else {
-        println!("{}", value);
+        println!("{}", value.as_str());
     }
 
-    // Zeroize the secret from memory
-    value.zeroize();
+    // Zeroizing<String> scrubs memory on drop automatically.
 
     Ok(())
 }

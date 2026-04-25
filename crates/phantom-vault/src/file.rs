@@ -123,11 +123,12 @@ impl VaultBackend for FileVault {
         Ok(())
     }
 
-    fn retrieve(&self, name: &str) -> Result<String> {
+    fn retrieve(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
         let data = self.load()?;
         data.secrets
             .get(name)
             .cloned()
+            .map(zeroize::Zeroizing::new)
             .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))
     }
 
@@ -166,7 +167,7 @@ mod tests {
     fn test_store_and_retrieve() {
         let (vault, _dir) = test_vault();
         vault.store("API_KEY", "sk-secret123").unwrap();
-        assert_eq!(vault.retrieve("API_KEY").unwrap(), "sk-secret123");
+        assert_eq!(vault.retrieve("API_KEY").unwrap().as_str(), "sk-secret123");
     }
 
     #[test]
@@ -211,7 +212,7 @@ mod tests {
         let (vault, _dir) = test_vault();
         vault.store("KEY", "v1").unwrap();
         vault.store("KEY", "v2").unwrap();
-        assert_eq!(vault.retrieve("KEY").unwrap(), "v2");
+        assert_eq!(vault.retrieve("KEY").unwrap().as_str(), "v2");
     }
 
     #[test]
@@ -267,7 +268,7 @@ mod tests {
             FileVault::new(dir.path(), "test-project", "my-passphrase".to_string()).unwrap();
 
         // Old secret should be accessible through encrypted vault
-        assert_eq!(vault.retrieve("OLD_KEY").unwrap(), "old-secret-value");
+        assert_eq!(vault.retrieve("OLD_KEY").unwrap().as_str(), "old-secret-value");
 
         // Legacy JSON file should be deleted
         assert!(!vault_dir.join("test-project.json").exists());

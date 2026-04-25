@@ -51,7 +51,7 @@ async fn run_async(cmd: &[String]) -> Result<()> {
                         // Generate a fresh session token for this secret
                         let session_token = PhantomToken::generate();
                         session_token_to_secret
-                            .insert(session_token.as_str().to_string(), real_value);
+                            .insert(session_token.as_str().to_string(), String::from(real_value.as_str()));
                         env_key_to_session_token
                             .insert(entry.key.clone(), session_token.as_str().to_string());
                         secret_count += 1;
@@ -120,7 +120,7 @@ async fn run_async(cmd: &[String]) -> Result<()> {
     let mut conn_env_vars: Vec<(String, String)> = Vec::new();
     for (_name, svc) in &conn_services {
         if let Ok(real_value) = vault.retrieve(&svc.secret_key) {
-            conn_env_vars.push((svc.secret_key.clone(), real_value));
+            conn_env_vars.push((svc.secret_key.clone(), String::from(real_value.as_str())));
             println!(
                 "   {} {} (injected as env var)",
                 "->".dimmed(),

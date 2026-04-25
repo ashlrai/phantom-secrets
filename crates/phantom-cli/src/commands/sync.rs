@@ -32,7 +32,7 @@ async fn run_async(
     for name in &secret_names {
         match vault.retrieve(name) {
             Ok(value) => {
-                secrets.insert(name.clone(), value);
+                secrets.insert(name.clone(), String::from(value.as_str()));
             }
             Err(_) => {
                 eprintln!(

@@ -219,7 +219,7 @@ async fn run_async() -> Result<()> {
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
                 if let Ok(real_value) = vault.retrieve(&entry.key) {
-                    token_to_secret.insert(entry.value.clone(), real_value);
+                    token_to_secret.insert(entry.value.clone(), String::from(real_value.as_str()));
                 }
             }
         }
