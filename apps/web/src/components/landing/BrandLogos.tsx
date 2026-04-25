@@ -182,13 +182,128 @@ export function FigmaLogo(props: LogoProps) {
   );
 }
 
+/* ── Additional brands ───────────────────────────────────────── */
+
+export function XaiLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="xAI" {...props}>
+      <path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z" />
+    </svg>
+  );
+}
+
+export function GeminiLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Gemini" {...props}>
+      <path d="M12 24A14.304 14.304 0 0 0 0 12 14.304 14.304 0 0 0 12 0a14.304 14.304 0 0 0 12 12 14.304 14.304 0 0 0-12 12Z" />
+    </svg>
+  );
+}
+
+export function PostHogLogo(props: LogoProps) {
+  // Simplified PostHog mark — angular hedgehog/wave silhouette
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="PostHog" {...props}>
+      <path d="M2 4.5v15c0 .83.67 1.5 1.5 1.5h17c.83 0 1.5-.67 1.5-1.5v-15c0-.83-.67-1.5-1.5-1.5h-17C2.67 3 2 3.67 2 4.5zm9.5 5.5L4 17.5V11l5-5 2.5 4zm0 4L8 17h7l-3.5-3.5zm5-7l3.5 3.5v6.5L13 14.5l3.5-7z" />
+    </svg>
+  );
+}
+
+export function SentryLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Sentry" {...props}>
+      <path d="M13.84 4.124c-.5-.86-1.74-.86-2.24 0L8.18 9.69a14 14 0 0 1 8.13 8.45h-2.74A11.32 11.32 0 0 0 6.74 12l-2.36 4.05a6.61 6.61 0 0 1 4.4 5.07H3.07a.43.43 0 0 1-.36-.65l1.83-3.13a4.04 4.04 0 0 0-1.45-.84l-1.79 3.06a2.6 2.6 0 0 0 2.25 3.91h6.4a8.78 8.78 0 0 0-5.49-7.93l1.18-2A11.32 11.32 0 0 1 11.81 21h7.13a14 14 0 0 0-8.59-13.21l1.84-3.18 5.83 10.07c-.66.36-1.27.78-1.85 1.26.52.49 1.02 1.01 1.5 1.55a8.85 8.85 0 0 1 2.4-1.21l1.36 2.36a2.6 2.6 0 0 0 .61-3.4z" />
+    </svg>
+  );
+}
+
+export function MistralLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Mistral" {...props}>
+      <path d="M3.428 3.4h3.429v3.428H3.428zM17.143 3.4h3.429v3.428h-3.429zM3.428 6.828h6.857v3.429H3.428zM13.714 6.828h6.858v3.429h-6.858zM3.428 10.258h17.143v3.428H3.428zM3.428 13.686h3.429v3.429H3.428zM10.286 13.686h3.428v3.429h-3.428zM17.143 13.686h3.429v3.429h-3.429zM3.428 17.115h3.429v3.428H3.428zM17.143 17.115h3.429v3.428h-3.429z" />
+    </svg>
+  );
+}
+
+export function ReplicateLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Replicate" {...props}>
+      <path d="M21.643 4.272v1.95H8.71V21H6.51V4.272h15.133zm0 3.875v1.95H10.55V21H8.35V8.147h13.293zm0 3.875v1.95h-9.232V21h-2.2V12.022h11.432z" />
+    </svg>
+  );
+}
+
+export function PerplexityLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Perplexity" {...props}>
+      <path d="M22.398 8.61H17.41L21.65.795l-.667-.502-9.005 8.318h-.998V0H10v8.61H1.602v6.78H4.99V24l6.99-7.18V24h1l6.992-7.18V21.4l-2.93 2.6h6.348l-1.001-2.602h-.001v-6.41h2.99V8.61zm-3.99 5.78h-2.397L17 14.59l-5.02 5.16-.001-7.36-1.001 1.001v7.358L5.99 14.59h2.398v-1l-5.766-.001v-3.78H10v.998h1.018L19.4 1.998l-3.74 6.69-.001-.018v.951h6.74v3.78z" />
+    </svg>
+  );
+}
+
+export function DatadogLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Datadog" {...props}>
+      <path d="M22.083 16.21c-.183.094-.42.165-.731.211-.802.139-1.563-.198-1.948-.736a1.74 1.74 0 0 1-.123-.207c-.218-.378-.273-.799-.082-1.135.034-.058.073-.114.116-.166-.043.052-.082.108-.116.166-.21.302-.6.502-1.046.502-.677 0-1.226-.518-1.226-1.157 0-.638.549-1.156 1.226-1.156.677 0 1.226.518 1.226 1.156a1.13 1.13 0 0 1-.087.434l.144-.054c.46-.155.93-.244 1.4-.244.91 0 1.756.302 2.439.811.683.51 1.063 1.21 1.063 1.964 0 .368-.092.717-.255 1.029l-.187-.418zM2.59 12.36c0-1.456 1.18-2.636 2.635-2.636.794 0 1.505.351 1.989.906l.005-.003c.482-.555 1.193-.906 1.989-.906 1.455 0 2.635 1.18 2.635 2.635 0 .455-.115.882-.318 1.255l.001.002c.483.555 1.196.906 1.992.906 1.455 0 2.635-1.18 2.635-2.635 0-1.455-1.18-2.636-2.635-2.636-.796 0-1.509.352-1.992.907l-.001.002a2.625 2.625 0 0 1 .318-1.256c0-1.455-1.18-2.635-2.635-2.635-.796 0-1.507.351-1.989.906l-.005-.003c-.484-.555-1.195-.906-1.989-.906C3.77 4.265 2.59 5.445 2.59 6.9c0 .455.115.881.318 1.255-.203-.374-.318-.8-.318-1.255 0-1.456-1.18-2.636-2.635-2.636C-1.5 4.264-2.68 5.445-2.68 6.9c0 1.455 1.18 2.635 2.635 2.635.794 0 1.505-.351 1.989-.906l.005.003C2.43 9.187 3.142 9.54 3.937 9.54c1.456 0 2.636-1.18 2.636-2.636 0-.455-.115-.882-.318-1.255.484.555 1.195.906 1.989.906z" />
+    </svg>
+  );
+}
+
+export function DiscordLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Discord" {...props}>
+      <path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z" />
+    </svg>
+  );
+}
+
+export function ClerkLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Clerk" {...props}>
+      <path d="M21.469 19.674l-3.286-3.286a.97.97 0 00-1.218-.121 6.066 6.066 0 01-6.726 0 .97.97 0 00-1.218.121L5.736 19.674a.974.974 0 00.144 1.501 11.99 11.99 0 0013.444 0 .974.974 0 00.145-1.501zm.005-15.353l-3.291 3.291a.97.97 0 01-1.219.122 6.06 6.06 0 00-8.93 2.71A6.057 6.057 0 007.13 16.45a.97.97 0 01-.122 1.218l-3.291 3.291a.972.972 0 01-1.502-.144 12 12 0 0119.66-13.847.971.971 0 01-.4 1.353zM12 15.6a3.6 3.6 0 100-7.2 3.6 3.6 0 000 7.2z" />
+    </svg>
+  );
+}
+
+export function SendGridLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="SendGrid" {...props}>
+      <path d="M0 12.0016V24h11.9982v-7.9989H4.0011v-8H0V12.0016zM12.0016 7.999v8.0027h7.9988V8.0014L12.0017.0026 4 7.999h8.0014z" />
+    </svg>
+  );
+}
+
+export function PineconeLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Pinecone" {...props}>
+      <path d="M12 1.5l-1.5 3 1.5 1.5 1.5-1.5L12 1.5zm-3 4l-1.5 3 1.5 1.5L12 7.5l3 2.5 1.5-1.5L15 5.5 12 7.5 9 5.5zm-3 4l-1.5 3 1.5 1.5 3-2.5 3 2.5 3-2.5 3 2.5 1.5-1.5L18 9.5l-3 2.5-3-2.5-3 2.5-3-2.5zm-3 4l-1.5 3L3 18l3-2.5 3 2.5 3-2.5 3 2.5 3-2.5 3 2.5 1.5-1.5L21 13.5l-3 2.5-3-2.5-3 2.5-3-2.5-3 2.5-3-2.5zm0 5l-1.5 3 1.5 1.5L6 21l1.5 1.5L9 21l1.5 1.5L12 21l1.5 1.5L15 21l1.5 1.5L18 21l1.5 1.5 1.5-1.5-1.5-3-3 2.5-3-2.5-3 2.5-3-2.5-3 2.5-3-2.5z" />
+    </svg>
+  );
+}
+
+export function NeonLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Neon" {...props}>
+      <path d="M0 4.8C0 2.149 2.149 0 4.8 0h14.4C21.851 0 24 2.149 24 4.8v11.4c0 2.298-2.866 3.337-4.331 1.572L15.6 13.115V19.2c0 2.651-2.149 4.8-4.8 4.8H4.8C2.149 24 0 21.851 0 19.2V4.8zm4.8-1.2a1.2 1.2 0 00-1.2 1.2v14.4a1.2 1.2 0 002.4 0V14.4c0-2.298 2.865-3.336 4.33-1.571l4.07 4.658V4.8a1.2 1.2 0 00-1.2-1.2H4.8z" />
+    </svg>
+  );
+}
+
+export function UpstashLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-label="Upstash" {...props}>
+      <path d="M5.625 18.375a8.969 8.969 0 0012.69 0l-1.689-1.69a6.578 6.578 0 01-9.31 0l-1.69 1.69zm3.378-3.378a4.188 4.188 0 005.945 0l-1.689-1.689a1.797 1.797 0 01-2.567 0l-1.689 1.69zm9.255-9.347a8.969 8.969 0 010 12.69l-1.69-1.689a6.578 6.578 0 000-9.31l1.69-1.69zM3.347 5.65a8.969 8.969 0 0012.69 0l-1.689 1.69a6.578 6.578 0 01-9.31 0L3.347 5.65zm3.379 3.378a4.188 4.188 0 005.945 0l-1.689 1.69a1.797 1.797 0 01-2.567 0l-1.69-1.69z" />
+    </svg>
+  );
+}
+
 interface LogoEntry {
   Logo: (p: LogoProps) => React.JSX.Element;
   name: string;
   /** brand accent color used for the small dot beside the card */
   color: string;
   /** category, for selective grouping if we ever sort */
-  category: "ai" | "editor" | "infra" | "db" | "comms" | "dev";
+  category: "ai" | "editor" | "infra" | "db" | "comms" | "dev" | "auth" | "obs";
   /** the env-var name a user typically stores this service's key under */
   env: string;
   /** deterministic phm_ token displayed on the card */
@@ -197,37 +312,55 @@ interface LogoEntry {
 
 export const KEY_ENTRIES: LogoEntry[] = [
   // AI APIs
-  { Logo: OpenAILogo,     name: "OpenAI",     color: "#10a37f", category: "ai",     env: "OPENAI_API_KEY",     token: "phm_a8f2c4d9" },
-  { Logo: ClaudeLogo,     name: "Anthropic",  color: "#cc785c", category: "ai",     env: "ANTHROPIC_API_KEY",  token: "phm_e1b773c0" },
+  { Logo: OpenAILogo,     name: "OpenAI",      color: "#10a37f", category: "ai",     env: "OPENAI_API_KEY",      token: "phm_a8f2c4d9" },
+  { Logo: ClaudeLogo,     name: "Anthropic",   color: "#cc785c", category: "ai",     env: "ANTHROPIC_API_KEY",   token: "phm_e1b773c0" },
+  { Logo: XaiLogo,        name: "xAI",         color: "#ffffff", category: "ai",     env: "XAI_API_KEY",         token: "phm_4a91c70b" },
+  { Logo: GeminiLogo,     name: "Gemini",      color: "#4285f4", category: "ai",     env: "GEMINI_API_KEY",      token: "phm_38d2e6a4" },
+  { Logo: MistralLogo,    name: "Mistral",     color: "#ff7000", category: "ai",     env: "MISTRAL_API_KEY",     token: "phm_b6c1f827" },
+  { Logo: PerplexityLogo, name: "Perplexity",  color: "#20b8cd", category: "ai",     env: "PERPLEXITY_API_KEY",  token: "phm_05fa9d3e" },
+  { Logo: ReplicateLogo,  name: "Replicate",   color: "#ea2526", category: "ai",     env: "REPLICATE_API_TOKEN", token: "phm_e8c40b71" },
 
   // Editors
-  { Logo: CursorLogo,     name: "Cursor",     color: "#a3a3a3", category: "editor", env: "CURSOR_API_KEY",     token: "phm_77b3e5f1" },
-  { Logo: WindsurfLogo,   name: "Windsurf",   color: "#38bdf8", category: "editor", env: "WINDSURF_API_KEY",   token: "phm_1c9e2a40" },
+  { Logo: CursorLogo,     name: "Cursor",      color: "#a3a3a3", category: "editor", env: "CURSOR_API_KEY",      token: "phm_77b3e5f1" },
+  { Logo: WindsurfLogo,   name: "Windsurf",    color: "#38bdf8", category: "editor", env: "WINDSURF_API_KEY",    token: "phm_1c9e2a40" },
 
   // Infra
-  { Logo: VercelLogo,     name: "Vercel",     color: "#ffffff", category: "infra",  env: "VERCEL_TOKEN",       token: "phm_d9f1c102" },
-  { Logo: RailwayLogo,    name: "Railway",    color: "#a78bfa", category: "infra",  env: "RAILWAY_TOKEN",      token: "phm_8b4d6f93" },
-  { Logo: AwsLogo,        name: "AWS",        color: "#ff9900", category: "infra",  env: "AWS_SECRET_KEY",     token: "phm_5e2a8d61" },
-  { Logo: GcpLogo,        name: "GCP",        color: "#4285f4", category: "infra",  env: "GCP_API_KEY",        token: "phm_c7f9b203" },
-  { Logo: CloudflareLogo, name: "Cloudflare", color: "#f48120", category: "infra",  env: "CF_API_TOKEN",       token: "phm_ae15f627" },
+  { Logo: VercelLogo,     name: "Vercel",      color: "#ffffff", category: "infra",  env: "VERCEL_TOKEN",        token: "phm_d9f1c102" },
+  { Logo: RailwayLogo,    name: "Railway",     color: "#a78bfa", category: "infra",  env: "RAILWAY_TOKEN",       token: "phm_8b4d6f93" },
+  { Logo: AwsLogo,        name: "AWS",         color: "#ff9900", category: "infra",  env: "AWS_SECRET_KEY",      token: "phm_5e2a8d61" },
+  { Logo: GcpLogo,        name: "GCP",         color: "#4285f4", category: "infra",  env: "GCP_API_KEY",         token: "phm_c7f9b203" },
+  { Logo: CloudflareLogo, name: "Cloudflare",  color: "#f48120", category: "infra",  env: "CF_API_TOKEN",        token: "phm_ae15f627" },
 
   // Databases
-  { Logo: SupabaseLogo,   name: "Supabase",   color: "#3ecf8e", category: "db",     env: "SUPABASE_KEY",       token: "phm_4f1c8ae3" },
-  { Logo: PostgresLogo,   name: "Postgres",   color: "#336791", category: "db",     env: "DATABASE_URL",       token: "phm_3a2e7c81" },
-  { Logo: MongoLogo,      name: "MongoDB",    color: "#47a248", category: "db",     env: "MONGODB_URI",        token: "phm_6e0fb529" },
+  { Logo: SupabaseLogo,   name: "Supabase",    color: "#3ecf8e", category: "db",     env: "SUPABASE_KEY",        token: "phm_4f1c8ae3" },
+  { Logo: PostgresLogo,   name: "Postgres",    color: "#336791", category: "db",     env: "DATABASE_URL",        token: "phm_3a2e7c81" },
+  { Logo: MongoLogo,      name: "MongoDB",     color: "#47a248", category: "db",     env: "MONGODB_URI",         token: "phm_6e0fb529" },
+  { Logo: NeonLogo,       name: "Neon",        color: "#00e699", category: "db",     env: "NEON_API_KEY",        token: "phm_aa9d34f0" },
+  { Logo: UpstashLogo,    name: "Upstash",     color: "#00e9a3", category: "db",     env: "UPSTASH_REDIS_TOKEN", token: "phm_3fc0e851" },
+  { Logo: PineconeLogo,   name: "Pinecone",    color: "#1c17ff", category: "db",     env: "PINECONE_API_KEY",    token: "phm_b71204e5" },
 
   // Commerce / comms
-  { Logo: StripeLogo,     name: "Stripe",     color: "#635bff", category: "comms",  env: "STRIPE_SECRET_KEY",  token: "phm_2ccb5a91" },
-  { Logo: TwilioLogo,     name: "Twilio",     color: "#f22f46", category: "comms",  env: "TWILIO_AUTH_TOKEN",  token: "phm_9d4b3e12" },
-  { Logo: ResendLogo,     name: "Resend",     color: "#000000", category: "comms",  env: "RESEND_API_KEY",     token: "phm_f1a82b57" },
-  { Logo: SlackLogo,      name: "Slack",      color: "#4a154b", category: "comms",  env: "SLACK_BOT_TOKEN",    token: "phm_71e0d493" },
+  { Logo: StripeLogo,     name: "Stripe",      color: "#635bff", category: "comms",  env: "STRIPE_SECRET_KEY",   token: "phm_2ccb5a91" },
+  { Logo: TwilioLogo,     name: "Twilio",      color: "#f22f46", category: "comms",  env: "TWILIO_AUTH_TOKEN",   token: "phm_9d4b3e12" },
+  { Logo: ResendLogo,     name: "Resend",      color: "#ffffff", category: "comms",  env: "RESEND_API_KEY",      token: "phm_f1a82b57" },
+  { Logo: SendGridLogo,   name: "SendGrid",    color: "#0096e6", category: "comms",  env: "SENDGRID_API_KEY",    token: "phm_2940bf16" },
+  { Logo: SlackLogo,      name: "Slack",       color: "#4a154b", category: "comms",  env: "SLACK_BOT_TOKEN",     token: "phm_71e0d493" },
+  { Logo: DiscordLogo,    name: "Discord",     color: "#5865f2", category: "comms",  env: "DISCORD_BOT_TOKEN",   token: "phm_e74cb201" },
+
+  // Auth
+  { Logo: ClerkLogo,      name: "Clerk",       color: "#6c47ff", category: "auth",   env: "CLERK_SECRET_KEY",    token: "phm_8af216c3" },
+
+  // Observability
+  { Logo: PostHogLogo,    name: "PostHog",     color: "#f9bd2b", category: "obs",    env: "POSTHOG_API_KEY",     token: "phm_d2bf1e95" },
+  { Logo: SentryLogo,     name: "Sentry",      color: "#362d59", category: "obs",    env: "SENTRY_AUTH_TOKEN",   token: "phm_3187a4d0" },
+  { Logo: DatadogLogo,    name: "Datadog",     color: "#632ca6", category: "obs",    env: "DATADOG_API_KEY",     token: "phm_f5e290bc" },
 
   // Dev
-  { Logo: GitHubLogo,     name: "GitHub",     color: "#ffffff", category: "dev",    env: "GITHUB_TOKEN",       token: "phm_99a8d2bf" },
-  { Logo: DockerLogo,     name: "Docker",     color: "#2496ed", category: "dev",    env: "DOCKER_TOKEN",       token: "phm_b5817d4c" },
-  { Logo: NotionLogo,     name: "Notion",     color: "#ffffff", category: "dev",    env: "NOTION_API_KEY",     token: "phm_d04c1f86" },
-  { Logo: LinearLogo,     name: "Linear",     color: "#5e6ad2", category: "dev",    env: "LINEAR_API_KEY",     token: "phm_e2f37a91" },
-  { Logo: FigmaLogo,      name: "Figma",      color: "#f24e1e", category: "dev",    env: "FIGMA_TOKEN",        token: "phm_82bd5a14" },
+  { Logo: GitHubLogo,     name: "GitHub",      color: "#ffffff", category: "dev",    env: "GITHUB_TOKEN",        token: "phm_99a8d2bf" },
+  { Logo: DockerLogo,     name: "Docker",      color: "#2496ed", category: "dev",    env: "DOCKER_TOKEN",        token: "phm_b5817d4c" },
+  { Logo: NotionLogo,     name: "Notion",      color: "#ffffff", category: "dev",    env: "NOTION_API_KEY",      token: "phm_d04c1f86" },
+  { Logo: LinearLogo,     name: "Linear",      color: "#5e6ad2", category: "dev",    env: "LINEAR_API_KEY",      token: "phm_e2f37a91" },
+  { Logo: FigmaLogo,      name: "Figma",       color: "#f24e1e", category: "dev",    env: "FIGMA_TOKEN",         token: "phm_82bd5a14" },
 ];
 
 // Backwards-compat: keep LOGOS export shape for any consumer that imports it.
