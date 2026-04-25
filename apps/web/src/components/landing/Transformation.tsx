@@ -1,32 +1,61 @@
 // Side-by-side .env transformation — the most concrete demonstration of
-// what Phantom actually does. Real code, real diff.
+// what Phantom actually does. Each row carries the actual brand logo of
+// the service the env var belongs to so the diff reads as a real config.
+
+import type { ComponentType, SVGProps } from "react";
+import {
+  ClaudeLogo,
+  OpenAILogo,
+  PostgresLogo,
+  StripeLogo,
+} from "./BrandLogos";
+
+type LogoComponent = ComponentType<SVGProps<SVGSVGElement>>;
+
+interface EnvRow {
+  Logo: LogoComponent;
+  k: string;
+  before: string;
+  after: string;
+}
 
 // Values are deliberately truncated mid-string so they read as real keys
 // without matching any provider's live-key format (and without tripping
 // GitHub secret scanning on this very demo).
-const BEFORE = [
-  { k: "OPENAI_API_KEY", v: "sk-proj-aB3xK9…" },
-  { k: "ANTHROPIC_API_KEY", v: "sk-ant-api03-9X2v…" },
-  { k: "STRIPE_SECRET_KEY", v: "sk_live_51HxAb…" },
-  { k: "DATABASE_URL", v: "postgres://app:••••@db.prod:5432/app" },
-];
-
-const AFTER = [
-  { k: "OPENAI_API_KEY", v: "phm_a8f2c4d9e1b7" },
-  { k: "ANTHROPIC_API_KEY", v: "phm_2ccb5a91f604" },
-  { k: "STRIPE_SECRET_KEY", v: "phm_491e6dc8a273" },
-  { k: "DATABASE_URL", v: "phm_99a8d2bf17e0" },
+const ROWS: EnvRow[] = [
+  {
+    Logo: OpenAILogo,
+    k: "OPENAI_API_KEY",
+    before: "sk-proj-aB3xK9…",
+    after: "phm_a8f2c4d9e1b7",
+  },
+  {
+    Logo: ClaudeLogo,
+    k: "ANTHROPIC_API_KEY",
+    before: "sk-ant-api03-9X2v…",
+    after: "phm_2ccb5a91f604",
+  },
+  {
+    Logo: StripeLogo,
+    k: "STRIPE_SECRET_KEY",
+    before: "sk_live_51HxAb…",
+    after: "phm_491e6dc8a273",
+  },
+  {
+    Logo: PostgresLogo,
+    k: "DATABASE_URL",
+    before: "postgres://app:••••@db.prod:5432/app",
+    after: "phm_99a8d2bf17e0",
+  },
 ];
 
 function EnvBlock({
   title,
   subtitle,
-  rows,
   variant,
 }: {
   title: string;
   subtitle: string;
-  rows: { k: string; v: string }[];
   variant: "before" | "after";
 }) {
   return (
@@ -45,15 +74,18 @@ function EnvBlock({
           {title}
         </span>
       </div>
-      <pre className="px-5 py-5 font-mono text-[0.82rem] leading-[1.85] overflow-x-auto">
-        {rows.map((r) => (
-          <div key={r.k} className="whitespace-nowrap">
-            <span className="text-t3">{r.k}</span>
-            <span className="text-t3">=</span>
-            <span
-              className={variant === "before" ? "text-red/90" : "text-blue-b"}
-            >
-              {r.v}
+      <pre className="px-5 py-5 font-mono text-[0.82rem] leading-[2] overflow-x-auto">
+        {ROWS.map((r) => (
+          <div key={r.k} className="flex items-center gap-2.5 whitespace-nowrap">
+            <r.Logo className="h-4 w-4 shrink-0" />
+            <span>
+              <span className="text-t3">{r.k}</span>
+              <span className="text-t3">=</span>
+              <span
+                className={variant === "before" ? "text-red/90" : "text-blue-b"}
+              >
+                {variant === "before" ? r.before : r.after}
+              </span>
             </span>
           </div>
         ))}
@@ -83,13 +115,11 @@ export function Transformation() {
           <EnvBlock
             title="Before"
             subtitle="What AI sees if you paste your .env into Claude or Cursor."
-            rows={BEFORE}
             variant="before"
           />
           <EnvBlock
             title="After phantom init"
             subtitle="What AI sees now. Decoys only. Proxy injects the real keys."
-            rows={AFTER}
             variant="after"
           />
         </div>

@@ -84,10 +84,11 @@ export function GeminiLogo(props: LogoProps) {
     <svg viewBox="0 0 24 24" aria-label="Gemini" {...props}>
       <defs>
         <linearGradient id="gemini-grad" x1="50%" y1="0%" x2="50%" y2="100%">
-          <stop offset="0%" stopColor="#ea4335" />
-          <stop offset="33%" stopColor="#fbbc04" />
-          <stop offset="66%" stopColor="#34a853" />
-          <stop offset="100%" stopColor="#4285f4" />
+          <stop offset="0%" stopColor="#FF4D4D" />
+          <stop offset="22%" stopColor="#FF8C42" />
+          <stop offset="45%" stopColor="#FFD84D" />
+          <stop offset="68%" stopColor="#3FCF8E" />
+          <stop offset="100%" stopColor="#4796E3" />
         </linearGradient>
       </defs>
       <path
