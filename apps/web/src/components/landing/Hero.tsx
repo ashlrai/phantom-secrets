@@ -142,11 +142,11 @@ function KeyCard({ item }: { item: typeof KEY_ENTRIES[number] }) {
   return (
     <article
       style={brandStyle}
-      className="group relative flex w-[280px] sm:w-[310px] shrink-0 items-center gap-3.5 rounded-xl border border-border bg-s1 px-4 py-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-[color:var(--brand)] hover:shadow-[0_4px_22px_-8px_var(--brand)] overflow-hidden"
+      className="group relative flex w-[300px] sm:w-[330px] shrink-0 items-center gap-4 rounded-xl border border-border bg-s1 px-4 py-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-[color:var(--brand)] hover:shadow-[0_4px_22px_-8px_var(--brand)] overflow-hidden"
     >
       {/* Logo container — real brand colors at all times */}
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-s2/80 transition-colors duration-200 group-hover:bg-s2 group-hover:border-border-l">
-        <Logo className="h-5 w-5" />
+      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border bg-s2/80 transition-colors duration-200 group-hover:bg-s2 group-hover:border-border-l">
+        <Logo className="h-6 w-6" />
       </div>
 
       <div className="min-w-0 flex-1">

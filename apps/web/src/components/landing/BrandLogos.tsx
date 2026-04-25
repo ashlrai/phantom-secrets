@@ -170,11 +170,15 @@ export function OpenAILogo(props: LogoProps) {
 }
 
 export function CursorLogo(props: LogoProps) {
+  // Cursor's actual mark — three-faced angular block, viewed from above
   return (
-    <svg viewBox="0 0 24 24" fill="#ffffff" aria-label="Cursor" {...props}>
-      <path d="M11.925 24l10.425-6-10.425-6L1.5 18l10.425 6z" />
-      <path d="M22.35 18V6L11.925 0v12l10.425 6z" opacity=".7" />
-      <path d="M11.925 0L1.5 6v12l10.425-6V0z" opacity=".4" />
+    <svg viewBox="0 0 24 24" aria-label="Cursor" {...props}>
+      {/* Right face (lightest) */}
+      <path d="M11.925 24l10.425-6-10.425-6L1.5 18l10.425 6z" fill="#ffffff" opacity=".95" />
+      {/* Top face (medium) */}
+      <path d="M22.35 18V6L11.925 0v12l10.425 6z" fill="#ffffff" opacity=".7" />
+      {/* Left face (darkest) */}
+      <path d="M11.925 0L1.5 6v12l10.425-6V0z" fill="#ffffff" opacity=".45" />
     </svg>
   );
 }
@@ -292,9 +296,15 @@ export function XaiLogo(props: LogoProps) {
 }
 
 export function PostHogLogo(props: LogoProps) {
+  // PostHog's stacked-chevrons mark (the angular hedgehog-spike pattern)
   return (
-    <svg viewBox="0 0 24 24" fill="#f9bd2b" aria-label="PostHog" {...props}>
-      <path d="M2 4.5v15c0 .83.67 1.5 1.5 1.5h17c.83 0 1.5-.67 1.5-1.5v-15c0-.83-.67-1.5-1.5-1.5h-17C2.67 3 2 3.67 2 4.5zm9.5 5.5L4 17.5V11l5-5 2.5 4zm0 4L8 17h7l-3.5-3.5zm5-7l3.5 3.5v6.5L13 14.5l3.5-7z" />
+    <svg viewBox="0 0 24 24" aria-label="PostHog" {...props}>
+      <path
+        d="M9.854 14.586 7.404 17.036a1.5 1.5 0 0 1-2.121-.001l-.793-.794a1.5 1.5 0 0 1 0-2.121l3.182-3.182zm-3.182 0 3.182 3.182-3.182 3.182H5.611a1.5 1.5 0 0 1-1.5-1.5v-3.182zm10-10 3.182 3.182v6.364l-3.182-3.182v-6.364zm-3.182 0 3.182 3.182-3.182 3.182H8.611a1.5 1.5 0 0 1-1.5-1.5V4.586zm-3.182 5L4 11v3.5l5.49-5.5z"
+        fill="#f9bd2b"
+      />
+      {/* Eye dots */}
+      <circle cx="14" cy="14" r="1.1" fill="#1d1f27" />
     </svg>
   );
 }
@@ -308,17 +318,30 @@ export function SentryLogo(props: LogoProps) {
 }
 
 export function MistralLogo(props: LogoProps) {
+  // Five horizontal "M" rows in Mistral's signature warm gradient
   return (
-    <svg viewBox="0 0 24 24" fill="#ff7000" aria-label="Mistral" {...props}>
-      <path d="M3.428 3.4h3.429v3.428H3.428zM17.143 3.4h3.429v3.428h-3.429zM3.428 6.828h6.857v3.429H3.428zM13.714 6.828h6.858v3.429h-6.858zM3.428 10.258h17.143v3.428H3.428zM3.428 13.686h3.429v3.429H3.428zM10.286 13.686h3.428v3.429h-3.428zM17.143 13.686h3.429v3.429h-3.429zM3.428 17.115h3.429v3.428H3.428zM17.143 17.115h3.429v3.428h-3.429z" />
+    <svg viewBox="0 0 24 24" aria-label="Mistral" {...props}>
+      {/* Row 1 — yellow (top) */}
+      <path d="M3.428 3.4h3.429v3.428H3.428zM17.143 3.4h3.429v3.428h-3.429z" fill="#ffd28a" />
+      {/* Row 2 — light orange */}
+      <path d="M3.428 6.828h6.857v3.429H3.428zM13.714 6.828h6.858v3.429h-6.858z" fill="#ffae00" />
+      {/* Row 3 — orange (middle, the M crossbar) */}
+      <path d="M3.428 10.258h17.143v3.428H3.428z" fill="#ff8205" />
+      {/* Row 4 — red-orange */}
+      <path d="M3.428 13.686h3.429v3.429H3.428zM10.286 13.686h3.428v3.429h-3.428zM17.143 13.686h3.429v3.429h-3.429z" fill="#fa520f" />
+      {/* Row 5 — deep red (bottom) */}
+      <path d="M3.428 17.115h3.429v3.428H3.428zM17.143 17.115h3.429v3.428h-3.429z" fill="#e10500" />
     </svg>
   );
 }
 
 export function ReplicateLogo(props: LogoProps) {
+  // Replicate's three layered horizontal bars descending into vertical stems
   return (
     <svg viewBox="0 0 24 24" fill="#ffffff" aria-label="Replicate" {...props}>
-      <path d="M21.643 4.272v1.95H8.71V21H6.51V4.272h15.133zm0 3.875v1.95H10.55V21H8.35V8.147h13.293zm0 3.875v1.95h-9.232V21h-2.2V12.022h11.432z" />
+      <path d="M3 3.5h18v3H8v14h-3V3.5z" />
+      <path d="M5 8h16v3H10v9.5H7V8z" />
+      <path d="M7 12.5h14v3h-9V20H9.5v-7.5z" />
     </svg>
   );
 }
@@ -332,9 +355,18 @@ export function PerplexityLogo(props: LogoProps) {
 }
 
 export function DatadogLogo(props: LogoProps) {
+  // Datadog's dog/paw silhouette — head with two ears + paw print accent
   return (
-    <svg viewBox="0 0 24 24" fill="#9d6bd1" aria-label="Datadog" {...props}>
-      <path d="M22.083 16.21c-.183.094-.42.165-.731.211-.802.139-1.563-.198-1.948-.736a1.74 1.74 0 0 1-.123-.207c-.218-.378-.273-.799-.082-1.135.034-.058.073-.114.116-.166-.043.052-.082.108-.116.166-.21.302-.6.502-1.046.502-.677 0-1.226-.518-1.226-1.157 0-.638.549-1.156 1.226-1.156.677 0 1.226.518 1.226 1.156a1.13 1.13 0 0 1-.087.434l.144-.054c.46-.155.93-.244 1.4-.244.91 0 1.756.302 2.439.811.683.51 1.063 1.21 1.063 1.964 0 .368-.092.717-.255 1.029l-.187-.418z" />
+    <svg viewBox="0 0 24 24" aria-label="Datadog" {...props}>
+      {/* Dog head (rounded triangle pointing down) */}
+      <path
+        d="M4 4l5 5-2 2 3 3-2 2 4 4 8-8L4 4z"
+        fill="#9d6bd1"
+      />
+      {/* Eye accent */}
+      <circle cx="14" cy="10" r="1.2" fill="#1d1f27" />
+      {/* Tongue dot */}
+      <circle cx="11" cy="13" r="0.8" fill="#ff70a0" />
     </svg>
   );
 }
@@ -365,9 +397,17 @@ export function SendGridLogo(props: LogoProps) {
 }
 
 export function PineconeLogo(props: LogoProps) {
+  // Pine cone — segmented triangular cone with stem
   return (
     <svg viewBox="0 0 24 24" fill="#ffffff" aria-label="Pinecone" {...props}>
-      <path d="M12 1.5l-1.5 3 1.5 1.5 1.5-1.5L12 1.5zm-3 4l-1.5 3 1.5 1.5L12 7.5l3 2.5 1.5-1.5L15 5.5 12 7.5 9 5.5zm-3 4l-1.5 3 1.5 1.5 3-2.5 3 2.5 3-2.5 3 2.5 1.5-1.5L18 9.5l-3 2.5-3-2.5-3 2.5-3-2.5zm-3 4l-1.5 3L3 18l3-2.5 3 2.5 3-2.5 3 2.5 3-2.5 3 2.5 1.5-1.5L21 13.5l-3 2.5-3-2.5-3 2.5-3-2.5-3 2.5-3-2.5zm0 5l-1.5 3 1.5 1.5L6 21l1.5 1.5L9 21l1.5 1.5L12 21l1.5 1.5L15 21l1.5 1.5L18 21l1.5 1.5 1.5-1.5-1.5-3-3 2.5-3-2.5-3 2.5-3-2.5-3 2.5-3-2.5z" />
+      {/* Stem at top */}
+      <path d="M11 2h2v3h-2z" />
+      {/* Cone scales — three rows of segmented chevrons widening downward */}
+      <path d="M12 5l-3 4h6l-3-4z" />
+      <path d="M12 9l-5 4h10l-5-4z" />
+      <path d="M12 13l-7 4h14l-7-4z" />
+      {/* Base point */}
+      <path d="M12 17l-3 5h6l-3-5z" />
     </svg>
   );
 }

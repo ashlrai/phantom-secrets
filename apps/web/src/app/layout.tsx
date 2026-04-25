@@ -1,20 +1,20 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter_Tight, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { PostHogProvider } from "./providers";
 
-const sans = Geist({
+const sans = Inter_Tight({
   subsets: ["latin"],
-  variable: "--font-geist-sans",
+  variable: "--font-sans-stack",
   display: "swap",
   weight: ["400", "500", "600", "700", "800"],
 });
 
-const mono = Geist_Mono({
+const mono = JetBrains_Mono({
   subsets: ["latin"],
-  variable: "--font-geist-mono",
+  variable: "--font-mono-stack",
   display: "swap",
-  weight: ["400", "500", "600"],
+  weight: ["400", "500", "600", "700"],
 });
 
 const SITE_URL = "https://phm.dev";
