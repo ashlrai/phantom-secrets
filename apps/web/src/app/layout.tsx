@@ -145,7 +145,6 @@ export default function RootLayout({
                 name: "AshlrAI",
                 url: "https://ashlr.ai",
               },
-              aggregateRating: undefined,
             }),
           }}
         />

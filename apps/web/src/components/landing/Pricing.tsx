@@ -1,6 +1,7 @@
 "use client";
 
 import { posthog } from "@/lib/posthog";
+import { Check } from "./Icons";
 
 const TIERS = [
   {
@@ -101,7 +102,10 @@ export function Pricing() {
                       key={f}
                       className="flex items-start gap-2 text-[0.86rem] text-t2"
                     >
-                      <CheckGlyph />
+                      <Check
+                        className="mt-[3px] h-3.5 w-3.5 shrink-0 text-blue-b"
+                        strokeWidth={2.4}
+                      />
                       <span>{f}</span>
                     </li>
                   ))}
@@ -136,21 +140,3 @@ export function Pricing() {
   );
 }
 
-function CheckGlyph() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="mt-[3px] text-blue-b shrink-0"
-      aria-hidden
-    >
-      <path d="M20 6 9 17l-5-5" />
-    </svg>
-  );
-}

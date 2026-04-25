@@ -5,6 +5,9 @@ import { useEffect, useState } from "react";
 import { posthog } from "@/lib/posthog";
 import { Github } from "./Icons";
 
+const navLinkClass =
+  "hidden md:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline";
+
 export function Nav() {
   const [scrolled, setScrolled] = useState(false);
 
@@ -42,27 +45,18 @@ export function Nav() {
         </a>
 
         <div className="flex items-center gap-5">
-          <a
-            href="#how"
-            className="hidden md:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
-          >
+          <a href="#how" className={navLinkClass}>
             How it works
           </a>
-          <a
-            href="#features"
-            className="hidden md:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
-          >
+          <a href="#features" className={navLinkClass}>
             Features
           </a>
-          <a
-            href="#pricing"
-            className="hidden md:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
-          >
+          <a href="#pricing" className={navLinkClass}>
             Pricing
           </a>
           <a
             href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md"
-            className="hidden md:inline text-t2 hover:text-t1 transition-colors text-[0.85rem] font-medium no-underline"
+            className={navLinkClass}
           >
             Docs
           </a>

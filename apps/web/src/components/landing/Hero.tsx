@@ -15,6 +15,7 @@ import { Github } from "./Icons";
 export function Hero() {
   const sectionRef = useRef<HTMLElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const lastProgressRef = useRef(0);
   const [progress, setProgress] = useState(0);
   const [hasVideo, setHasVideo] = useState<boolean | null>(null);
   const [scrubbable, setScrubbable] = useState(false);
@@ -26,15 +27,26 @@ export function Hero() {
       .catch(() => setHasVideo(false));
   }, []);
 
-  // Decide whether to scroll-scrub (desktop) or autoplay-loop (mobile / RM)
+  // Decide whether to scroll-scrub (desktop) or autoplay-loop (mobile / RM).
+  // Re-evaluate on viewport resize so a window-resize from desktop into
+  // mobile range (or vice-versa) flips the mode correctly.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const small = window.matchMedia("(max-width: 768px)").matches;
-    setScrubbable(!reduce && !small);
+    const reduceMq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const smallMq = window.matchMedia("(max-width: 768px)");
+    const evaluate = () => setScrubbable(!reduceMq.matches && !smallMq.matches);
+    evaluate();
+    reduceMq.addEventListener("change", evaluate);
+    smallMq.addEventListener("change", evaluate);
+    return () => {
+      reduceMq.removeEventListener("change", evaluate);
+      smallMq.removeEventListener("change", evaluate);
+    };
   }, []);
 
-  // Track scroll progress through the hero region (0..1)
+  // Track scroll progress through the hero region (0..1). Only triggers a
+  // React re-render when progress crosses a meaningful threshold so we don't
+  // re-render the whole beat stack 60×/sec.
   useEffect(() => {
     const section = sectionRef.current;
     if (!section) return;
@@ -43,16 +55,19 @@ export function Hero() {
     const apply = () => {
       const rect = section.getBoundingClientRect();
       const total = section.offsetHeight - window.innerHeight;
-      if (total <= 0) {
-        setProgress(0);
-        return;
-      }
-      const p = Math.min(1, Math.max(0, -rect.top / total));
-      setProgress(p);
+      const p = total <= 0
+        ? 0
+        : Math.min(1, Math.max(0, -rect.top / total));
 
       const video = videoRef.current;
       if (scrubbable && video && Number.isFinite(video.duration) && video.duration > 0) {
         video.currentTime = p * video.duration;
+      }
+
+      // Only re-render when progress moves enough to matter visually
+      if (Math.abs(p - lastProgressRef.current) > 0.004) {
+        lastProgressRef.current = p;
+        setProgress(p);
       }
     };
     const onScroll = () => {
@@ -126,7 +141,12 @@ export function Hero() {
         <div className="absolute inset-0 flex items-center justify-center px-7">
           <div className="relative w-full max-w-[940px]">
             {BEATS.map((beat, i) => {
-              const o = beatOpacity(progress, beat.center, i === BEATS.length - 1);
+              const o = beatOpacity(
+                progress,
+                beat.center,
+                i === 0,
+                i === BEATS.length - 1,
+              );
               const y = (1 - o) * 16;
               return (
                 <div
@@ -281,11 +301,19 @@ function CTABeat() {
 
 /**
  * Bell-curve fade. Beat is fully visible at `center` and fades out
- * symmetrically on either side over `range`. The final beat (CTA)
- * stays visible after its center so the user can interact with it.
+ * symmetrically on either side over `range`. The first beat stays at full
+ * opacity above its center so the headline reads on initial page load.
+ * The last beat (CTA) stays visible below its center so the user can
+ * interact with it at any scroll position past ~85%.
  */
-function beatOpacity(progress: number, center: number, isLast: boolean) {
+function beatOpacity(
+  progress: number,
+  center: number,
+  isFirst: boolean,
+  isLast: boolean,
+) {
   const range = 0.13;
+  if (isFirst && progress <= center) return 1;
   if (isLast && progress >= center) return 1;
   const distance = Math.abs(progress - center);
   if (distance >= range) return 0;
