@@ -1,4 +1,5 @@
 mod server;
+mod tools;
 
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;

@@ -7,203 +7,13 @@ use rmcp::model::*;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use std::path::PathBuf;
 
-// ── Parameter schemas ────────────────────────────────────────────────
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct InitParams {
-    /// Path to the .env file (defaults to .env in current directory)
-    #[serde(default = "default_env_path")]
-    pub env_path: String,
-}
-
-fn default_env_path() -> String {
-    ".env".to_string()
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct AddSecretParams {
-    /// Name of the secret (e.g., OPENAI_API_KEY)
-    pub name: String,
-    /// Value of the secret
-    pub value: String,
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. Defends against prompt-injected instructions
-    /// in project content (READMEs, issue comments, dependency docs) silently
-    /// mutating the vault.
-    #[serde(default)]
-    pub confirm: bool,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct RemoveSecretParams {
-    /// Name of the secret to remove
-    pub name: String,
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. Defends against prompt-injected instructions
-    /// deleting secrets.
-    #[serde(default)]
-    pub confirm: bool,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct RotateParams {
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. Rotating invalidates every live phantom token
-    /// and will break any process that cached the old tokens (e.g. a running
-    /// `phantom exec` or dev server) until it picks up the new .env.
-    #[serde(default)]
-    pub confirm: bool,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CloudPushParams {
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. A push overwrites the cloud copy of the
-    /// project's vault; damage from a prompt-injected push propagates to every
-    /// machine that later pulls.
-    #[serde(default)]
-    pub confirm: bool,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CloudPullParams {
-    /// Overwrite existing local secrets (default: false)
-    #[serde(default)]
-    pub force: bool,
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. A pull writes entries into the local vault
-    /// and (with force=true) overwrites existing values.
-    #[serde(default)]
-    pub confirm: bool,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CopySecretParams {
-    /// Name of the secret to copy from the current project
-    pub name: String,
-    /// Path to the target project directory (must be phantom-initialized).
-    /// `..` segments are rejected to prevent prompt-injected target-dir
-    /// obfuscation; pass the full destination path explicitly.
-    pub target_dir: String,
-    /// Optional new name for the secret in the target project
-    pub rename: Option<String>,
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. Copying writes secrets into another vault,
-    /// which an attacker can use as an exfiltration primitive.
-    #[serde(default)]
-    pub confirm: bool,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct DoctorParams {
-    /// Auto-fix safe issues (install hooks, generate .env.example, etc.)
-    #[serde(default)]
-    pub fix: bool,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct WhyParams {
-    /// Environment variable name to explain
-    pub key: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct WrapParams {
-    /// Only wrap specific scripts (by name). If empty, uses default heuristic.
-    #[serde(default)]
-    pub only: Vec<String>,
-    /// Skip specific scripts (by name)
-    #[serde(default)]
-    pub skip: Vec<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct UnwrapParams {}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CheckParams {
-    /// Check if phantom tokens are in environment without proxy running
-    #[serde(default)]
-    pub runtime: bool,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct EnvParams {
-    /// Output file name (defaults to .env.example)
-    #[serde(default = "default_example_output")]
-    pub output: String,
-}
-
-fn default_example_output() -> String {
-    ".env.example".to_string()
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct SyncParams {
-    /// Platform to sync to (vercel, railway). If empty, syncs all configured targets.
-    #[serde(default)]
-    pub platform: Option<String>,
-    /// Override project ID for this sync
-    #[serde(default)]
-    pub project_id: Option<String>,
-}
-
-// ── Error helpers ───────────────────────────────────────────────────
-
-fn internal_err(msg: impl Into<String>) -> McpError {
-    McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, msg.into(), None)
-}
-
-fn invalid_params_err(msg: impl Into<String>) -> McpError {
-    McpError::new(rmcp::model::ErrorCode::INVALID_PARAMS, msg.into(), None)
-}
-
-fn require_confirm(tool: &str, confirm: bool) -> Result<(), McpError> {
-    if confirm {
-        return Ok(());
-    }
-    Err(invalid_params_err(format!(
-        "{tool} is a destructive vault operation. Ask the user for explicit \
-         confirmation, then retry the call with `confirm: true`. This gate \
-         exists to prevent prompt-injected content (READMEs, issue comments, \
-         dependency docs) from silently mutating or exfiltrating secrets."
-    )))
-}
-
-fn text_result(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::success(vec![Content::text(msg.into())]))
-}
-
-// ── Package.json helpers ────────────────────────────────────────────
-
-fn read_package_scripts(
-    pkg_path: &std::path::Path,
-) -> Result<
-    (
-        serde_json::Value,
-        serde_json::Map<String, serde_json::Value>,
-    ),
-    McpError,
-> {
-    let content = std::fs::read_to_string(pkg_path)
-        .map_err(|e| internal_err(format!("Failed to read package.json: {e}")))?;
-    let pkg: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| internal_err(format!("Failed to parse package.json: {e}")))?;
-    let scripts = pkg
-        .get("scripts")
-        .and_then(|s| s.as_object())
-        .cloned()
-        .unwrap_or_default();
-    Ok((pkg, scripts))
-}
-
-fn write_package_json(pkg_path: &std::path::Path, pkg: &serde_json::Value) -> Result<(), McpError> {
-    let pretty = serde_json::to_string_pretty(pkg)
-        .map_err(|e| internal_err(format!("Failed to serialize package.json: {e}")))?;
-    std::fs::write(pkg_path, format!("{pretty}\n"))
-        .map_err(|e| internal_err(format!("Failed to write package.json: {e}")))?;
-    Ok(())
-}
+use crate::tools::helpers::{internal_err, invalid_params_err, require_confirm, text_result};
+use crate::tools::params::{
+    AddSecretParams, CheckParams, CloudPullParams, CloudPushParams, CopySecretParams, DoctorParams,
+    EnvParams, InitParams, RemoveSecretParams, RotateParams, SyncParams, UnwrapParams, WhyParams,
+    WrapParams,
+};
+use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
 // ── MCP Server ───────────────────────────────────────────────────────
 
@@ -551,7 +361,7 @@ impl PhantomMcpServer {
             let value = vault
                 .retrieve(name)
                 .map_err(|e| internal_err(format!("Failed to retrieve secret: {e}")))?;
-            secrets.insert(name.clone(), value);
+            secrets.insert(name.clone(), String::from(value.as_str()));
         }
 
         let plaintext = serde_json::to_string(&secrets)
@@ -603,7 +413,6 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_pull", params.confirm)?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-        use std::collections::BTreeMap;
 
         let token = phantom_core::auth::load_token()
             .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
@@ -637,8 +446,9 @@ impl PhantomMcpServer {
                 .map_err(|e| internal_err(format!("Decryption failed: {e}")))?,
         );
 
-        let secrets: BTreeMap<String, String> = serde_json::from_slice(&plaintext)
-            .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
+        let secrets: std::collections::BTreeMap<String, String> =
+            serde_json::from_slice(&plaintext)
+                .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
 
         let mut added = 0;
         let mut skipped = 0;
@@ -690,10 +500,9 @@ impl PhantomMcpServer {
         let (_config, source_vault) = self.load_config_and_vault()?;
 
         // Retrieve from source — Zeroizing<String> auto-zeroizes on all exit paths
-        let secret_value =
-            zeroize::Zeroizing::new(source_vault.retrieve(&params.name).map_err(|e| {
-                invalid_params_err(format!("Secret '{}' not found: {e}", params.name))
-            })?);
+        let secret_value = source_vault.retrieve(&params.name).map_err(|e| {
+            invalid_params_err(format!("Secret '{}' not found: {e}", params.name))
+        })?;
 
         // Resolve target directory, then canonicalize to normalize any symlinks
         // and give the user a fully-qualified path in the success message.
