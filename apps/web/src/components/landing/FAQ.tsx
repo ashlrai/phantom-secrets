@@ -124,13 +124,10 @@ export function FAQ() {
         </div>
 
         <div className="rounded-2xl border border-border bg-s1 overflow-hidden">
-          {QUESTIONS.map((item, i) => (
+          {QUESTIONS.map((item) => (
             <details
               key={item.q}
-              className={
-                "group [&>summary::-webkit-details-marker]:hidden " +
-                (i === QUESTIONS.length - 1 ? "" : "border-b border-border")
-              }
+              className="group [&>summary::-webkit-details-marker]:hidden border-b border-border last:border-b-0"
             >
               <summary className="flex items-center justify-between gap-4 cursor-pointer list-none px-6 py-5 hover:bg-s2/40 focus-visible:bg-s2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-b focus-visible:ring-inset transition-colors">
                 <span className="text-[0.95rem] font-semibold text-t1 leading-snug">

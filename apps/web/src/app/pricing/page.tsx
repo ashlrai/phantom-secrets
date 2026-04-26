@@ -97,7 +97,9 @@ export default function PricingPage() {
     try {
       const resp = await fetch("/api/v1/billing/checkout", { method: "POST" });
       // 401 = not authenticated → device-flow auth, then back to checkout.
+      // Reset loading first in case the navigation is blocked or delayed.
       if (resp.status === 401) {
+        setLoading(false);
         window.location.href = "/device";
         return;
       }
@@ -108,6 +110,7 @@ export default function PricingPage() {
       }
       const data = (await resp.json()) as { url?: string };
       if (data.url) {
+        setLoading(false);
         window.location.href = data.url;
         return;
       }
@@ -154,13 +157,12 @@ export default function PricingPage() {
           </div>
         </header>
 
-        {success && (
-          <div className="mx-auto max-w-[640px] px-7 mb-8">
-            <div
-              role="status"
-              aria-live="polite"
-              className="rounded-xl border border-green/30 bg-green/10 px-5 py-4 text-[0.92rem] font-medium text-green flex items-center gap-3"
-            >
+        {/* Live regions are rendered unconditionally so screen readers
+            attach listeners before content arrives — required for SR
+            announcement when content is injected via state change. */}
+        <div className="mx-auto max-w-[640px] px-7" aria-live="polite" role="status">
+          {success && (
+            <div className="mb-8 rounded-xl border border-green/30 bg-green/10 px-5 py-4 text-[0.92rem] font-medium text-green flex items-center gap-3">
               <span
                 aria-hidden
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-green/15"
@@ -169,27 +171,22 @@ export default function PricingPage() {
               </span>
               Welcome to Phantom Pro — your subscription is active.
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {error && (
-          <div className="mx-auto max-w-[640px] px-7 mb-8">
-            <div
-              role="alert"
-              aria-live="assertive"
-              className="rounded-xl border border-red-500/30 bg-red-500/10 px-5 py-4 text-[0.92rem] font-medium text-red-300"
-            >
+        <div className="mx-auto max-w-[640px] px-7" aria-live="assertive" role="alert">
+          {error && (
+            <div className="mb-8 rounded-xl border border-red-500/30 bg-red-500/10 px-5 py-4 text-[0.92rem] font-medium text-red-300">
               {error}
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Tier cards */}
         <section className="pb-20 sm:pb-28">
           <div className="mx-auto max-w-[1100px] px-7">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              {TIERS.map((t) => {
-                return (
+              {TIERS.map((t) => (
                   <article
                     key={t.name}
                     className={
@@ -260,8 +257,7 @@ export default function PricingPage() {
                       </a>
                     )}
                   </article>
-                );
-              })}
+              ))}
             </div>
 
             <p className="mt-10 text-center text-[0.82rem] text-t3 max-w-[680px] mx-auto leading-[1.7]">

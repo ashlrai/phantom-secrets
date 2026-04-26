@@ -100,51 +100,44 @@ const COMPETITORS: { key: CompetitorKey; label: string; featured: boolean }[] = 
   { key: "awsSm", label: "AWS Secrets Mgr", featured: false },
 ];
 
+const CELL_BASE = "inline-flex items-center gap-1.5 text-[0.84rem]";
+const ICON_SIZE = "h-3.5 w-3.5";
+
 function CellRender({ value, isPhantom }: { value: Cell; isPhantom: boolean }) {
-  if (value === "yes") {
-    return (
-      <span
-        className={
-          "inline-flex items-center gap-1.5 text-[0.84rem] " +
-          (isPhantom ? "text-green font-medium" : "text-t2")
-        }
-      >
-        <Check
-          className={isPhantom ? "h-3.5 w-3.5 text-green" : "h-3.5 w-3.5 text-t3"}
-          strokeWidth={3}
-        />
-        Yes
-      </span>
-    );
+  switch (value) {
+    case "yes":
+      return (
+        <span className={`${CELL_BASE} ${isPhantom ? "text-green font-medium" : "text-t2"}`}>
+          <Check
+            className={`${ICON_SIZE} ${isPhantom ? "text-green" : "text-t3"}`}
+            strokeWidth={3}
+          />
+          Yes
+        </span>
+      );
+    case "no":
+      return (
+        <span className={`${CELL_BASE} text-t3`}>
+          <Cross className={`${ICON_SIZE} text-t3/60`} />
+          No
+        </span>
+      );
+    case "n/a":
+      return <span className="text-[0.84rem] text-t3">—</span>;
+    case "limited":
+      return (
+        <span className={`${CELL_BASE} text-t3`}>
+          <Dash className={`${ICON_SIZE} text-t3/60`} />
+          Limited
+        </span>
+      );
+    default:
+      return (
+        <span className={`text-[0.84rem] ${isPhantom ? "text-green font-medium" : "text-t2"}`}>
+          {value}
+        </span>
+      );
   }
-  if (value === "no") {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[0.84rem] text-t3">
-        <Cross className="h-3.5 w-3.5 text-t3/60" />
-        No
-      </span>
-    );
-  }
-  if (value === "n/a") {
-    return <span className="text-[0.84rem] text-t3">—</span>;
-  }
-  if (value === "limited") {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[0.84rem] text-t3">
-        <Dash className="h-3.5 w-3.5 text-t3/60" />
-        Limited
-      </span>
-    );
-  }
-  return (
-    <span
-      className={
-        "text-[0.84rem] " + (isPhantom ? "text-green font-medium" : "text-t2")
-      }
-    >
-      {value}
-    </span>
-  );
 }
 
 function Cross({ className }: { className?: string }) {
@@ -233,12 +226,10 @@ export function Comparison() {
                 </tr>
               </thead>
               <tbody>
-                {ROWS.map((row, i) => (
+                {ROWS.map((row) => (
                   <tr
                     key={row.label}
-                    className={
-                      i === ROWS.length - 1 ? "" : "border-b border-border"
-                    }
+                    className="border-b border-border last:border-b-0"
                   >
                     <th
                       scope="row"
