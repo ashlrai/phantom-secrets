@@ -240,6 +240,16 @@ enum Commands {
         #[arg(default_value = "")]
         target: String,
     },
+
+    /// Self-replace this binary with the latest GitHub release.
+    Upgrade {
+        /// Skip confirmation prompt and upgrade immediately
+        #[arg(long)]
+        force: bool,
+        /// Print available version without modifying the binary
+        #[arg(long)]
+        check_only: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -361,6 +371,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Unwrap => commands::unwrap::run(),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
         Commands::Open { target } => commands::open::run(&target),
+        Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
         Commands::Team { action } => match action {
             TeamAction::List => commands::team::run_list(),
             TeamAction::Create { name } => commands::team::run_create(&name),

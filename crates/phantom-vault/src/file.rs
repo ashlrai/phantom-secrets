@@ -1,5 +1,6 @@
 use crate::crypto;
 use crate::traits::VaultBackend;
+use fs2::FileExt;
 use phantom_core::error::{PhantomError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -39,6 +40,8 @@ impl FileVault {
 
     /// Migrate from old unencrypted JSON vault to encrypted format.
     fn migrate_from_json(&self, json_path: &Path) -> Result<()> {
+        let _lock = self.lock_file()?;
+
         let content = std::fs::read_to_string(json_path)?;
         let data: VaultData = serde_json::from_str(&content)
             .map_err(|e| PhantomError::VaultError(format!("Corrupt legacy vault: {e}")))?;
@@ -88,6 +91,22 @@ impl FileVault {
             .map_err(|e| PhantomError::VaultError(format!("Corrupt vault data: {e}")))
     }
 
+    /// Open (creating if needed) the sidecar lock file and take an exclusive
+    /// advisory lock on it.  The returned `File` MUST be kept alive for the
+    /// duration of the critical section — dropping it releases the lock.
+    fn lock_file(&self) -> Result<std::fs::File> {
+        let lock_path = self.vault_path.with_extension("lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| PhantomError::VaultError(format!("Cannot open lock file: {e}")))?;
+        file.lock_exclusive()
+            .map_err(|e| PhantomError::VaultError(format!("Cannot acquire vault lock: {e}")))?;
+        Ok(file)
+    }
+
     fn save(&self, data: &VaultData) -> Result<()> {
         // The plaintext JSON holds every secret in the vault. Wrap it in
         // Zeroizing so the heap allocation is scrubbed on drop — including on
@@ -117,6 +136,7 @@ impl FileVault {
 
 impl VaultBackend for FileVault {
     fn store(&self, name: &str, value: &str) -> Result<()> {
+        let _lock = self.lock_file()?;
         let mut data = self.load()?;
         data.secrets.insert(name.to_string(), value.to_string());
         self.save(&data)?;
@@ -133,6 +153,7 @@ impl VaultBackend for FileVault {
     }
 
     fn delete(&self, name: &str) -> Result<()> {
+        let _lock = self.lock_file()?;
         let mut data = self.load()?;
         if data.secrets.remove(name).is_none() {
             return Err(PhantomError::SecretNotFound(name.to_string()));
@@ -278,5 +299,42 @@ mod tests {
 
         // New encrypted file should exist
         assert!(vault_dir.join("test-project.vault").exists());
+    }
+
+    /// Stress test: 10 threads each writing a unique key concurrently.
+    /// Without the exclusive file lock this reliably loses writes.
+    #[test]
+    fn test_concurrent_stores_no_clobber() {
+        use std::sync::Arc;
+
+        let dir = TempDir::new().unwrap();
+        let vault = Arc::new(
+            FileVault::new(dir.path(), "stress-project", "stress-pass".to_string()).unwrap(),
+        );
+
+        const N: usize = 10;
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                let v = Arc::clone(&vault);
+                std::thread::spawn(move || {
+                    v.store(&format!("KEY_{i}"), &format!("value_{i}")).unwrap();
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+
+        // Every key must be present and hold the correct value.
+        let mut keys = vault.list().unwrap();
+        keys.sort();
+        assert_eq!(keys.len(), N, "expected {N} keys, got {}: {keys:?}", keys.len());
+
+        for i in 0..N {
+            let expected = format!("value_{i}");
+            let got = vault.retrieve(&format!("KEY_{i}")).unwrap();
+            assert_eq!(got.as_str(), expected, "KEY_{i} has wrong value");
+        }
     }
 }

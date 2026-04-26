@@ -34,6 +34,7 @@ arboard = { version = "3", default-features = false }
 indicatif = "0.17"
 base64 = { workspace = true }
 notify = "7"
+self_update = { version = "0.42", default-features = false, features = ["rustls", "compression-flate2", "compression-zip-deflate", "archive-tar", "archive-zip"] }
 chacha20poly1305 = "0.10"
 rand = { workspace = true }
 

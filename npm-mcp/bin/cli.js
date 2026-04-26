@@ -4,6 +4,7 @@ const { execFileSync } = require("child_process");
 const { existsSync, mkdirSync, unlinkSync } = require("fs");
 const { join } = require("path");
 const https = require("https");
+const crypto = require("crypto");
 const { execSync } = require("child_process");
 
 const VERSION = "0.5.1";
@@ -27,6 +28,8 @@ function getPlatformTarget() {
     return "x86_64-unknown-linux-gnu";
   if (platform === "linux" && arch === "arm64")
     return "aarch64-unknown-linux-gnu";
+  if (platform === "win32" && arch === "x64")
+    return "x86_64-pc-windows-msvc";
 
   console.error(
     `Unsupported platform: ${platform}-${arch}. Install from source: cargo install phantom-secrets-mcp`
@@ -35,7 +38,8 @@ function getPlatformTarget() {
 }
 
 function getBinaryPath() {
-  return join(CACHE_DIR, BINARY_NAME);
+  const ext = process.platform === "win32" ? ".exe" : "";
+  return join(CACHE_DIR, `${BINARY_NAME}${ext}`);
 }
 
 function download(url) {
@@ -55,6 +59,15 @@ function download(url) {
   });
 }
 
+function parseSha256File(buf, expectedFilename) {
+  // Standard `sha256sum` / `shasum -a 256` format: "<64-hex>  <filename>\n"
+  const line = buf.toString("utf8").trim().split(/\r?\n/)[0] || "";
+  const m = line.match(/^([0-9a-f]{64})\s+\*?(.+)$/i);
+  if (!m) return null;
+  if (expectedFilename && m[2].trim() !== expectedFilename) return null;
+  return m[1].toLowerCase();
+}
+
 async function ensureBinary() {
   const binaryPath = getBinaryPath();
 
@@ -63,22 +76,59 @@ async function ensureBinary() {
   }
 
   const target = getPlatformTarget();
-  const tarball = `phantom-${target}.tar.gz`;
-  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${tarball}`;
+  const isWindows = process.platform === "win32";
+  const archiveExt = isWindows ? "zip" : "tar.gz";
+  const archiveName = `phantom-${target}.${archiveExt}`;
+  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${archiveName}`;
+  const sha256Url = `${url}.sha256`;
 
   console.error(`Downloading phantom-mcp v${VERSION} for ${target}...`);
   mkdirSync(CACHE_DIR, { recursive: true });
 
-  const tarPath = join(CACHE_DIR, tarball);
+  const archivePath = join(CACHE_DIR, archiveName);
 
   try {
+    // Fetch the checksum first so we fail before writing anything to disk
+    // if the release is missing its .sha256 sidecar.
+    const sumBuf = await download(sha256Url);
+    const expected = parseSha256File(sumBuf, archiveName);
+    if (!expected) {
+      throw new Error(
+        `malformed or missing checksum at ${sha256Url} — refusing to install unverified binary`
+      );
+    }
+
     const data = await download(url);
-    require("fs").writeFileSync(tarPath, data);
 
-    execSync(`tar xzf "${tarPath}" -C "${CACHE_DIR}"`, { stdio: "pipe" });
-    execSync(`chmod +x "${binaryPath}"`, { stdio: "pipe" });
+    const actual = crypto.createHash("sha256").update(data).digest("hex");
+    const expectedBuf = Buffer.from(expected, "hex");
+    const actualBuf = Buffer.from(actual, "hex");
+    if (
+      expectedBuf.length !== actualBuf.length ||
+      !crypto.timingSafeEqual(expectedBuf, actualBuf)
+    ) {
+      throw new Error(
+        `SHA-256 mismatch for ${archiveName}: expected ${expected}, got ${actual}`
+      );
+    }
 
-    unlinkSync(tarPath);
+    require("fs").writeFileSync(archivePath, data);
+
+    // Extract
+    if (isWindows) {
+      // PowerShell Expand-Archive is present on Windows 10+ (PowerShell 5.0+).
+      const psEscape = (s) => s.replace(/'/g, "''");
+      execSync(
+        `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${psEscape(archivePath)}' -DestinationPath '${psEscape(CACHE_DIR)}' -Force"`,
+        { stdio: "pipe" }
+      );
+    } else {
+      execSync(`tar xzf "${archivePath}" -C "${CACHE_DIR}"`, { stdio: "pipe" });
+      execSync(`chmod +x "${binaryPath}"`, { stdio: "pipe" });
+    }
+
+    // Clean up archive
+    unlinkSync(archivePath);
 
     console.error(`Installed phantom-mcp to ${binaryPath}`);
   } catch (err) {

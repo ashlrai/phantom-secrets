@@ -31,5 +31,8 @@ hex = { workspace = true }
 chacha20poly1305 = "0.10"
 argon2 = "0.5"
 
+# Advisory file locking (cross-platform)
+fs2 = "0.4"
+
 [dev-dependencies]
 tempfile = "3"

@@ -1700,6 +1700,18 @@ mod tests {
     use tempfile::TempDir;
 
     fn setup_test_project() -> (PhantomMcpServer, TempDir) {
+        // Force file-vault backend for test hermeticity. Without this, Windows CI
+        // runners use the OS keychain, which is isolated across test processes and
+        // causes vault.retrieve to return "Secret not found" in subsequent tests.
+        // SAFETY: test-only passphrase; process-global side effect is intentional —
+        // all MCP tests should use the file backend.
+        unsafe {
+            std::env::set_var(
+                "PHANTOM_VAULT_PASSPHRASE",
+                "test-passphrase-do-not-use-in-prod",
+            );
+        }
+
         let dir = TempDir::new().unwrap();
 
         // Create a .env file with real secrets
@@ -1890,13 +1902,6 @@ mod tests {
         }
     }
 
-    // Skipped on Windows: setup_initialized_project doesn't reliably
-    // populate the vault under the Windows CI keychain backend, so this
-    // test fails in source_vault.retrieve before reaching the canonicalize
-    // check it's meant to exercise. The security behavior itself (rejecting
-    // unresolvable target_dirs) is unchanged on Windows; only the test
-    // infrastructure is gated. Tracked separately as a setup-fixture issue.
-    #[cfg(not(windows))]
     #[test]
     fn test_copy_secret_rejects_unresolvable_target() {
         let (server, _dir) = setup_initialized_project();
