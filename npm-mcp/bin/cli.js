@@ -6,7 +6,7 @@ const { join } = require("path");
 const https = require("https");
 const { execSync } = require("child_process");
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.1";
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom-mcp";
 const CACHE_DIR = join(
@@ -29,7 +29,7 @@ function getPlatformTarget() {
     return "aarch64-unknown-linux-gnu";
 
   console.error(
-    `Unsupported platform: ${platform}-${arch}. Install from source: cargo install phantom --git https://github.com/${REPO}`
+    `Unsupported platform: ${platform}-${arch}. Install from source: cargo install phantom-secrets-mcp`
   );
   process.exit(1);
 }
@@ -84,7 +84,7 @@ async function ensureBinary() {
   } catch (err) {
     console.error(`Failed to download phantom-mcp: ${err.message}`);
     console.error(
-      `Install from source: cargo install phantom --git https://github.com/${REPO}`
+      `Install from source: cargo install phantom-secrets-mcp`
     );
     process.exit(1);
   }

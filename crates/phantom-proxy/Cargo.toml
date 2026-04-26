@@ -1,9 +1,19 @@
 [package]
-name = "phantom-proxy"
+name = "phantom-secrets-proxy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
 description = "HTTP proxy for Phantom Secrets — intercepts requests and injects real credentials"
+keywords = ["proxy", "secrets", "api-keys", "ai-safety", "mcp"]
+categories = ["network-programming", "web-programming", "development-tools"]
+
+[lib]
+name = "phantom_proxy"
+path = "src/lib.rs"
 
 [dependencies]
 phantom-core = { workspace = true }

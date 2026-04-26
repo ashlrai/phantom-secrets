@@ -13,7 +13,10 @@ version = "0.5.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/ashlrai/phantom-secrets"
+homepage = "https://phm.dev"
 description = "Open-source CLI that prevents AI coding agents from leaking your API keys"
+authors = ["Mason Wyatt <mason@ashlr.ai>"]
+readme = "README.md"
 
 [workspace.dependencies]
 # Shared dependencies
@@ -32,7 +35,12 @@ hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 
-# Internal crates
-phantom-core = { path = "crates/phantom-core" }
-phantom-vault = { path = "crates/phantom-vault" }
-phantom-proxy = { path = "crates/phantom-proxy" }
+# Internal crates — version + path is required so crates.io publishes
+# work (path is used during local dev, version is what crates.io resolves).
+# Crates published as `phantom-secrets-*` because `phantom-core`, `phantom`,
+# and similar bare names are already taken on crates.io. The internal Rust
+# crate names stay `phantom_core`, `phantom_vault`, etc. via `[lib] name`
+# in each child Cargo.toml — so `use phantom_core::...` is unchanged.
+phantom-core = { path = "crates/phantom-core", version = "0.5.1", package = "phantom-secrets-core" }
+phantom-vault = { path = "crates/phantom-vault", version = "0.5.1", package = "phantom-secrets-vault" }
+phantom-proxy = { path = "crates/phantom-proxy", version = "0.5.1", package = "phantom-secrets-proxy" }

@@ -1,9 +1,15 @@
 [package]
-name = "phantom-mcp"
+name = "phantom-secrets-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
 description = "MCP server for Phantom Secrets — lets AI tools manage secrets safely"
+keywords = ["mcp", "model-context-protocol", "secrets", "ai-safety", "claude"]
+categories = ["development-tools", "command-line-utilities"]
 
 [[bin]]
 name = "phantom-mcp"

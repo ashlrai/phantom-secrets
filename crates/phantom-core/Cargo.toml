@@ -1,9 +1,19 @@
 [package]
-name = "phantom-core"
+name = "phantom-secrets-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
 description = "Core library for Phantom Secrets — config, .env parsing, token generation"
+keywords = ["secrets", "env", "dotenv", "config", "ai-safety"]
+categories = ["development-tools", "config", "parser-implementations"]
+
+[lib]
+name = "phantom_core"
+path = "src/lib.rs"
 
 [dependencies]
 serde = { workspace = true }

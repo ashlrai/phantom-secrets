@@ -31,7 +31,7 @@ function getPlatformTarget() {
     return "x86_64-pc-windows-msvc";
 
   console.error(
-    `Unsupported platform: ${platform}-${arch}. Install from source: cargo install phantom --git https://github.com/${REPO}`
+    `Unsupported platform: ${platform}-${arch}. Install from source: cargo install phantom-secrets`
   );
   process.exit(1);
 }
@@ -133,7 +133,7 @@ async function ensureBinary() {
   } catch (err) {
     console.error(`Failed to download phantom: ${err.message}`);
     console.error(
-      `Install from source: cargo install phantom --git https://github.com/${REPO}`
+      `Install from source: cargo install phantom-secrets`
     );
     process.exit(1);
   }

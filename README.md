@@ -221,7 +221,7 @@ $ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 ### Cargo
 
 ```bash
-$ cargo install phantom
+$ cargo install phantom-secrets
 ```
 
 ## Architecture

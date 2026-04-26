@@ -1585,7 +1585,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "phantom"
+name = "phantom-secrets"
 version = "0.5.1"
 dependencies = [
  "anyhow",
@@ -1598,9 +1598,9 @@ dependencies = [
  "indicatif",
  "notify",
  "open",
- "phantom-core",
- "phantom-proxy",
- "phantom-vault",
+ "phantom-secrets-core",
+ "phantom-secrets-proxy",
+ "phantom-secrets-vault",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1612,7 +1612,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phantom-core"
+name = "phantom-secrets-core"
 version = "0.5.1"
 dependencies = [
  "base64",
@@ -1630,14 +1630,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "phantom-mcp"
+name = "phantom-secrets-mcp"
 version = "0.5.1"
 dependencies = [
  "anyhow",
  "base64",
  "colored",
- "phantom-core",
- "phantom-vault",
+ "phantom-secrets-core",
+ "phantom-secrets-vault",
  "rmcp",
  "schemars",
  "serde",
@@ -1650,7 +1650,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phantom-proxy"
+name = "phantom-secrets-proxy"
 version = "0.5.1"
 dependencies = [
  "bytes",
@@ -1658,7 +1658,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "phantom-core",
+ "phantom-secrets-core",
  "rand 0.8.6",
  "reqwest",
  "serde",
@@ -1672,7 +1672,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phantom-vault"
+name = "phantom-secrets-vault"
 version = "0.5.1"
 dependencies = [
  "argon2",
@@ -1681,7 +1681,7 @@ dependencies = [
  "dirs",
  "hex",
  "keyring",
- "phantom-core",
+ "phantom-secrets-core",
  "rand 0.8.6",
  "serde",
  "serde_json",

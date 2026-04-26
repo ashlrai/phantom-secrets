@@ -294,7 +294,7 @@ The binary ships from GitHub Releases. Check your internet connection, then:
 
 ```bash
 # Fallback: install from source
-cargo install phantom --git https://github.com/ashlrai/phantom-secrets
+cargo install phantom-secrets
 ```
 
 Or download the binary directly from [github.com/ashlrai/phantom-secrets/releases](https://github.com/ashlrai/phantom-secrets/releases).

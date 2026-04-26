@@ -144,6 +144,12 @@ export default function DevicePage() {
               You can return to your terminal. The CLI will log you in
               automatically.
             </p>
+            <a
+              href="/dashboard"
+              className="mt-6 inline-block rounded-lg bg-blue-600 hover:bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white no-underline transition-colors"
+            >
+              Open your dashboard →
+            </a>
           </div>
         ) : (
           <div>

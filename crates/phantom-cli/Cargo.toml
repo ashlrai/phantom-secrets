@@ -1,9 +1,15 @@
 [package]
-name = "phantom"
+name = "phantom-secrets"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
 description = "Open-source CLI that prevents AI coding agents from leaking your API keys"
+keywords = ["secrets", "api-keys", "ai-safety", "claude-code", "mcp"]
+categories = ["command-line-utilities", "development-tools", "cryptography"]
 
 [[bin]]
 name = "phantom"

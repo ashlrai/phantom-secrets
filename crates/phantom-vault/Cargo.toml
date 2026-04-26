@@ -1,9 +1,19 @@
 [package]
-name = "phantom-vault"
+name = "phantom-secrets-vault"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
 description = "Secret vault backends for Phantom Secrets — OS keychain and encrypted file"
+keywords = ["secrets", "vault", "keychain", "encryption", "ai-safety"]
+categories = ["cryptography", "development-tools", "authentication"]
+
+[lib]
+name = "phantom_vault"
+path = "src/lib.rs"
 
 [dependencies]
 phantom-core = { workspace = true }
