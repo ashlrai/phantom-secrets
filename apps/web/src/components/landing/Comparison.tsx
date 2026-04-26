@@ -1,7 +1,22 @@
 // Comparison matrix — Phantom vs alternatives. Critical for security
 // buyers who need to justify the choice over what they already have.
 
-const ROWS: { label: string; phantom: Cell; rawEnv: Cell; doppler: Cell; onePassword: Cell; infisical: Cell; awsSm: Cell }[] = [
+import { Check } from "./Icons";
+
+// Special tokens get icon rendering; any other string is rendered as-is.
+type Cell = "yes" | "no" | "n/a" | "limited" | string;
+
+type CompetitorKey =
+  | "phantom"
+  | "rawEnv"
+  | "doppler"
+  | "onePassword"
+  | "infisical"
+  | "awsSm";
+
+type Row = { label: string } & Record<CompetitorKey, Cell>;
+
+const ROWS: Row[] = [
   {
     label: "AI tools never see real keys",
     phantom: "yes",
@@ -76,14 +91,29 @@ const ROWS: { label: string; phantom: Cell; rawEnv: Cell; doppler: Cell; onePass
   },
 ];
 
-type Cell = "yes" | "no" | "n/a" | "limited" | string;
+const COMPETITORS: { key: CompetitorKey; label: string; featured: boolean }[] = [
+  { key: "phantom", label: "Phantom", featured: true },
+  { key: "rawEnv", label: ".env file", featured: false },
+  { key: "doppler", label: "Doppler", featured: false },
+  { key: "onePassword", label: "1Password CLI", featured: false },
+  { key: "infisical", label: "Infisical", featured: false },
+  { key: "awsSm", label: "AWS Secrets Mgr", featured: false },
+];
 
 function CellRender({ value, isPhantom }: { value: Cell; isPhantom: boolean }) {
   if (value === "yes") {
     return (
-      <span className={"inline-flex items-center gap-1.5 text-[0.84rem] " + (isPhantom ? "text-green font-medium" : "text-t2")}>
-        <Check className={isPhantom ? "h-3.5 w-3.5 text-green" : "h-3.5 w-3.5 text-t3"} />
-        {isPhantom ? "Yes" : "Yes"}
+      <span
+        className={
+          "inline-flex items-center gap-1.5 text-[0.84rem] " +
+          (isPhantom ? "text-green font-medium" : "text-t2")
+        }
+      >
+        <Check
+          className={isPhantom ? "h-3.5 w-3.5 text-green" : "h-3.5 w-3.5 text-t3"}
+          strokeWidth={3}
+        />
+        Yes
       </span>
     );
   }
@@ -106,39 +136,49 @@ function CellRender({ value, isPhantom }: { value: Cell; isPhantom: boolean }) {
       </span>
     );
   }
-  return <span className={"text-[0.84rem] " + (isPhantom ? "text-green font-medium" : "text-t2")}>{value}</span>;
-}
-
-function Check({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
-      <path d="M20 6 9 17l-5-5" />
-    </svg>
+    <span
+      className={
+        "text-[0.84rem] " + (isPhantom ? "text-green font-medium" : "text-t2")
+      }
+    >
+      {value}
+    </span>
   );
 }
+
 function Cross({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
       <path d="M18 6 6 18M6 6l12 12" />
     </svg>
   );
 }
+
 function Dash({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className={className} aria-hidden>
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      className={className}
+      aria-hidden
+    >
       <path d="M5 12h14" />
     </svg>
   );
 }
-
-const COMPETITORS = [
-  { key: "phantom", label: "Phantom", featured: true },
-  { key: "rawEnv", label: ".env file", featured: false },
-  { key: "doppler", label: "Doppler", featured: false },
-  { key: "onePassword", label: "1Password CLI", featured: false },
-  { key: "infisical", label: "Infisical", featured: false },
-  { key: "awsSm", label: "AWS Secrets Mgr", featured: false },
-] as const;
 
 export function Comparison() {
   return (
@@ -159,52 +199,71 @@ export function Comparison() {
 
         <div className="overflow-x-auto -mx-7 px-7">
           <div className="min-w-[820px] rounded-2xl border border-border bg-s1 overflow-hidden">
-            {/* Header row */}
-            <div className="grid grid-cols-[1.5fr_repeat(6,1fr)] border-b border-border bg-s2/40">
-              <div className="px-5 py-4 text-[0.75rem] font-mono uppercase tracking-[0.1em] text-t3">
-                Capability
-              </div>
-              {COMPETITORS.map((c) => (
-                <div
-                  key={c.key}
-                  className={
-                    "px-3 py-4 text-[0.82rem] font-bold text-center " +
-                    (c.featured ? "text-blue-b" : "text-t2")
-                  }
-                >
-                  {c.label}
-                </div>
-              ))}
-            </div>
-
-            {/* Body rows */}
-            {ROWS.map((row, i) => (
-              <div
-                key={row.label}
-                className={
-                  "grid grid-cols-[1.5fr_repeat(6,1fr)] " +
-                  (i === ROWS.length - 1 ? "" : "border-b border-border")
-                }
-              >
-                <div className="px-5 py-4 text-[0.88rem] text-t1 font-medium">
-                  {row.label}
-                </div>
+            <table className="w-full table-fixed border-collapse">
+              <caption className="sr-only">
+                Capability comparison: Phantom vs five alternative secrets
+                managers.
+              </caption>
+              <colgroup>
+                <col style={{ width: "22%" }} />
                 {COMPETITORS.map((c) => (
-                  <div
-                    key={c.key}
+                  <col key={c.key} style={{ width: "13%" }} />
+                ))}
+              </colgroup>
+              <thead className="bg-s2/40">
+                <tr className="border-b border-border">
+                  <th
+                    scope="col"
+                    className="px-5 py-4 text-left text-[0.75rem] font-mono uppercase tracking-[0.1em] text-t3"
+                  >
+                    Capability
+                  </th>
+                  {COMPETITORS.map((c) => (
+                    <th
+                      key={c.key}
+                      scope="col"
+                      className={
+                        "px-3 py-4 text-[0.82rem] font-bold text-center " +
+                        (c.featured ? "text-blue-b" : "text-t2")
+                      }
+                    >
+                      {c.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {ROWS.map((row, i) => (
+                  <tr
+                    key={row.label}
                     className={
-                      "px-3 py-4 text-center flex items-center justify-center " +
-                      (c.featured ? "bg-blue/[0.04]" : "")
+                      i === ROWS.length - 1 ? "" : "border-b border-border"
                     }
                   >
-                    <CellRender
-                      value={row[c.key as keyof typeof row] as Cell}
-                      isPhantom={c.featured}
-                    />
-                  </div>
+                    <th
+                      scope="row"
+                      className="px-5 py-4 text-left text-[0.88rem] text-t1 font-medium"
+                    >
+                      {row.label}
+                    </th>
+                    {COMPETITORS.map((c) => (
+                      <td
+                        key={c.key}
+                        className={
+                          "px-3 py-4 text-center align-middle " +
+                          (c.featured ? "bg-blue/[0.04]" : "")
+                        }
+                      >
+                        <CellRender
+                          value={row[c.key]}
+                          isPhantom={c.featured}
+                        />
+                      </td>
+                    ))}
+                  </tr>
                 ))}
-              </div>
-            ))}
+              </tbody>
+            </table>
           </div>
         </div>
 

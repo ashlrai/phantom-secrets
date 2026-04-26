@@ -2,6 +2,12 @@
 // Uses native <details>/<summary> so it works without JS, with a small
 // CSS rotation on the chevron when open.
 
+function Tok({ children }: { children: React.ReactNode }) {
+  return (
+    <code className="font-mono text-blue-b text-[0.92em]">{children}</code>
+  );
+}
+
 const QUESTIONS: { q: string; a: React.ReactNode }[] = [
   {
     q: "Does Phantom slow down my AI requests?",
@@ -9,9 +15,8 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
       <>
         About 0.5 ms of proxy overhead per request — not measurable in
         practice. The proxy is a Rust HTTP server bound to{" "}
-        <code className="font-mono text-blue-b text-[0.92em]">127.0.0.1</code>{" "}
-        and uses zero-copy streaming for response bodies, so SSE and large
-        downloads pass through at native speed.
+        <Tok>127.0.0.1</Tok> and uses zero-copy streaming for response
+        bodies, so SSE and large downloads pass through at native speed.
       </>
     ),
   },
@@ -19,10 +24,8 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "What does AI actually see when Phantom is installed?",
     a: (
       <>
-        Your <code className="font-mono text-blue-b text-[0.92em]">.env</code>{" "}
-        file contains{" "}
-        <code className="font-mono text-blue-b text-[0.92em]">phm_xxxxxxxx</code>{" "}
-        tokens instead of real values. Every AI tool (Claude Code, Cursor,
+        Your <Tok>.env</Tok> file contains <Tok>phm_xxxxxxxx</Tok> tokens
+        instead of real values. Every AI tool (Claude Code, Cursor,
         Windsurf, Codex, anything else that reads .env) reads those tokens
         and only those tokens. The local proxy swaps them for real keys
         just before the outbound TLS connection — the AI never touches a
@@ -34,12 +37,10 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "What if a phm_ token leaks from AI logs?",
     a: (
       <>
-        Nothing happens. <code className="font-mono text-blue-b text-[0.92em]">phm_</code>{" "}
-        tokens are session-scoped placeholders that have no value outside
-        your local proxy. The real key never left your machine. Rotate the
-        token with{" "}
-        <code className="font-mono text-blue-b text-[0.92em]">phantom rotate</code>{" "}
-        and the leaked one becomes inert.
+        Nothing happens. <Tok>phm_</Tok> tokens are session-scoped
+        placeholders that have no value outside your local proxy. The real
+        key never left your machine. Rotate the token with{" "}
+        <Tok>phantom rotate</Tok> and the leaked one becomes inert.
       </>
     ),
   },
@@ -50,9 +51,9 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
         OS keychain on macOS and Linux (Keychain Services / libsecret).
         Encrypted file fallback for CI and Docker, using ChaCha20-Poly1305
         with Argon2id key derivation. Vault retrieval returns{" "}
-        <code className="font-mono text-blue-b text-[0.92em]">Zeroizing&lt;String&gt;</code>{" "}
-        so plaintext is scrubbed from RAM by Drop. No plaintext ever
-        touches disk outside the encrypted vault file.
+        <Tok>Zeroizing&lt;String&gt;</Tok> so plaintext is scrubbed from
+        RAM by Drop. No plaintext ever touches disk outside the encrypted
+        vault file.
       </>
     ),
   },
@@ -73,10 +74,9 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     a: (
       <>
         Yes — the proxy scans request headers, URL parameters, and JSON
-        body fields for{" "}
-        <code className="font-mono text-blue-b text-[0.92em]">phm_</code>{" "}
-        tokens and replaces all of them. Streaming bodies (SSE, large
-        uploads) are scanned chunk-by-chunk without buffering.
+        body fields for <Tok>phm_</Tok> tokens and replaces all of them.
+        Streaming bodies (SSE, large uploads) are scanned chunk-by-chunk
+        without buffering.
       </>
     ),
   },
@@ -94,13 +94,10 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "What if I want to leave Phantom?",
     a: (
       <>
-        Your original{" "}
-        <code className="font-mono text-blue-b text-[0.92em]">.env</code>{" "}
-        is backed up automatically on init. Run{" "}
-        <code className="font-mono text-blue-b text-[0.92em]">phantom unwrap</code>{" "}
-        to restore it. Delete{" "}
-        <code className="font-mono text-blue-b text-[0.92em]">.phantom.toml</code>{" "}
-        and Phantom is gone — no lock-in, no migration scripts.
+        Your original <Tok>.env</Tok> is backed up automatically on init.
+        Run <Tok>phantom unwrap</Tok> to restore it. Delete{" "}
+        <Tok>.phantom.toml</Tok> and Phantom is gone — no lock-in, no
+        migration scripts.
       </>
     ),
   },
@@ -135,7 +132,7 @@ export function FAQ() {
                 (i === QUESTIONS.length - 1 ? "" : "border-b border-border")
               }
             >
-              <summary className="flex items-center justify-between gap-4 cursor-pointer list-none px-6 py-5 hover:bg-s2/40 transition-colors">
+              <summary className="flex items-center justify-between gap-4 cursor-pointer list-none px-6 py-5 hover:bg-s2/40 focus-visible:bg-s2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-b focus-visible:ring-inset transition-colors">
                 <span className="text-[0.95rem] font-semibold text-t1 leading-snug">
                   {item.q}
                 </span>
