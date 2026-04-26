@@ -43,6 +43,12 @@ pub enum PhantomError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Catch-all for high-level flows that need to surface a contextual
+    /// message but don't fit any of the typed variants above. Use
+    /// sparingly — prefer a typed variant when one exists.
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T> = std::result::Result<T, PhantomError>;

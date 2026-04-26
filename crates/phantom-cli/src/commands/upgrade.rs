@@ -19,14 +19,14 @@ pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
         if self_update::version::bump_is_greater(current, latest_ver)? {
             println!(
                 "{} phantom {} is available (you have {}). Run `phantom upgrade` to install.",
-                "->".cyan(),
+                "->".blue().bold(),
                 latest_ver.green().bold(),
                 current,
             );
         } else {
             println!(
                 "{} phantom {} is already at the latest version.",
-                "ok".green(),
+                "ok".green().bold(),
                 current,
             );
         }
@@ -36,16 +36,16 @@ pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
     match update.update() {
         Ok(status) => match status {
             self_update::Status::UpToDate(v) => {
-                println!("{} phantom {} is already at the latest version.", "ok".green(), v);
+                println!("{} phantom {} is already at the latest version.", "ok".green().bold(), v);
             }
             self_update::Status::Updated(v) => {
-                println!("{} phantom updated to {}.", "ok".green(), v.green().bold());
+                println!("{} phantom updated to {}.", "ok".green().bold(), v.green().bold());
             }
         },
         Err(self_update::errors::Error::Io(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             println!(
                 "{} Permission denied — if phantom was installed via Homebrew, run: {}",
-                "!".red(),
+                "!".red().bold(),
                 "brew upgrade phantom".yellow(),
             );
             std::process::exit(1);

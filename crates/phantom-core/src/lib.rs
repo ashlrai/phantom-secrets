@@ -7,4 +7,5 @@ pub mod fs;
 pub mod sync;
 pub mod team_crypto;
 pub mod teams;
+pub mod teams_vault;
 pub mod token;

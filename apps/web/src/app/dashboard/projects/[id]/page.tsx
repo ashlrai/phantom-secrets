@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { getBrowserClient } from "@/lib/supabase-browser";
+import { useSupabaseQuery } from "@/lib/use-supabase-query";
 
 type VaultRow = {
   project_id: string;
@@ -15,24 +14,15 @@ type VaultRow = {
 export default function ProjectDetail() {
   const params = useParams<{ id: string }>();
   const projectId = decodeURIComponent(params.id);
-  const [vault, setVault] = useState<VaultRow | null | "missing">(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const supabase = getBrowserClient();
-    (async () => {
-      const { data, error } = await supabase
+  const { data: vault, error, loading } = useSupabaseQuery<VaultRow | null>(
+    (sb) =>
+      sb
         .from("vault_blobs")
         .select("project_id, version, updated_at, created_at, encrypted_blob")
         .eq("project_id", projectId)
-        .maybeSingle();
-      if (error) {
-        setError(error.message);
-        return;
-      }
-      setVault(data ? (data as VaultRow) : "missing");
-    })();
-  }, [projectId]);
+        .maybeSingle(),
+    [projectId]
+  );
 
   if (error) {
     return (
@@ -42,11 +32,11 @@ export default function ProjectDetail() {
     );
   }
 
-  if (vault === null) {
-    return <div className="text-[0.9rem] text-t3">Loading…</div>;
+  if (loading) {
+    return <div className="text-[0.9rem] text-t3">Loading project…</div>;
   }
 
-  if (vault === "missing") {
+  if (!vault) {
     return (
       <div className="rounded-2xl border border-border bg-s1 p-8 text-center">
         <p className="text-[1rem] font-bold text-t1">Project not found</p>

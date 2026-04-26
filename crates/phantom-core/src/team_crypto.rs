@@ -61,13 +61,16 @@ impl MemberKeypair {
     }
 
     /// Decode a keypair from base64-encoded private/public bytes.
+    /// The decoded private-key bytes are kept inside `Zeroizing` so the
+    /// stack copy is scrubbed on every exit path before returning.
     pub fn from_base64(public_b64: &str, secret_b64: &str) -> Result<Self> {
         let pub_bytes = B64
             .decode(public_b64)
             .map_err(|e| PhantomError::AuthError(format!("Bad team public key: {e}")))?;
-        let sec_bytes = B64
-            .decode(secret_b64)
-            .map_err(|e| PhantomError::AuthError(format!("Bad team secret key: {e}")))?;
+        let sec_bytes = Zeroizing::new(
+            B64.decode(secret_b64)
+                .map_err(|e| PhantomError::AuthError(format!("Bad team secret key: {e}")))?,
+        );
         if pub_bytes.len() != 32 || sec_bytes.len() != 32 {
             return Err(PhantomError::AuthError(
                 "Team key must be 32 bytes".to_string(),
@@ -75,11 +78,11 @@ impl MemberKeypair {
         }
         let mut pub_arr = [0u8; 32];
         pub_arr.copy_from_slice(&pub_bytes);
-        let mut sec_arr = [0u8; 32];
+        let mut sec_arr = Zeroizing::new([0u8; 32]);
         sec_arr.copy_from_slice(&sec_bytes);
         Ok(Self {
             public: PublicKey::from(pub_arr),
-            secret: SecretKey::from(sec_arr),
+            secret: SecretKey::from(*sec_arr),
         })
     }
 
@@ -87,8 +90,12 @@ impl MemberKeypair {
         B64.encode(self.public.as_bytes())
     }
 
+    /// Base64-encode the private key. The intermediate raw byte array
+    /// returned by `to_bytes()` is held in `Zeroizing` so it is scrubbed
+    /// from the stack as soon as the encoded string has been produced.
     pub fn secret_b64(&self) -> String {
-        B64.encode(self.secret.to_bytes())
+        let raw = Zeroizing::new(self.secret.to_bytes());
+        B64.encode(*raw)
     }
 }
 

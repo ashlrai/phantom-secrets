@@ -41,7 +41,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       <>
         <Nav />
         <main className="mx-auto max-w-[1100px] px-7 pt-28 pb-20 text-center text-t3">
-          Loading…
+          Checking session…
         </main>
       </>
     );

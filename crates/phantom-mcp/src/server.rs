@@ -1469,10 +1469,9 @@ impl PhantomMcpServer {
         ))
     }
 
-    /// Register the user's X25519 public key on a team. Required before
-    /// pushing or pulling team vaults. Idempotent.
+    /// Register the user's X25519 public key on a team.
     #[tool(
-        description = "Register the caller's team-vault public key on a team they belong to. Required once per team before pushing or pulling vaults. The corresponding private key never leaves the OS keychain."
+        description = "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation."
     )]
     async fn phantom_team_key_publish(
         &self,
@@ -1486,29 +1485,22 @@ impl PhantomMcpServer {
             .await
             .map_err(|e| internal_err(format!("Failed to register key: {e}")))?;
         text_result(format!(
-            "Public key registered on team {}.",
+            "Public key registered for team id {}.",
             params.team_id
         ))
     }
 
-    /// Push the current project's vault to a team — encrypted client-side
-    /// to every team member that has a registered public key.
+    /// Push the current project's vault to a team.
     #[tool(
-        description = "Push the current project's vault to a shared team vault. The vault is encrypted with a fresh symmetric key, then that key is wrapped (X25519 + ChaCha20-Poly1305) for every member with a registered public key. The server only stores ciphertext. Mutating: requires confirm:true."
+        description = "Push this project's secrets to the shared team vault so all members can pull them. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true."
     )]
     async fn phantom_team_vault_push(
         &self,
         Parameters(params): Parameters<TeamVaultParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_push", params.confirm)?;
-        use base64::{engine::general_purpose::STANDARD as B64, Engine};
-        use chacha20poly1305::{
-            aead::{Aead, KeyInit},
-            ChaCha20Poly1305, Nonce,
-        };
-        use rand::RngCore;
-        use std::collections::{BTreeMap, HashMap};
-        use zeroize::Zeroize;
+        use std::collections::BTreeMap;
+        use zeroize::Zeroizing;
 
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -1518,112 +1510,54 @@ impl PhantomMcpServer {
         let (config, vault) = self.load_config_and_vault()?;
         let project_id = config.phantom.project_id.clone();
 
-        // Auto-register our key — keeps team_members.public_key in sync if
-        // it was rotated since the last push.
-        phantom_core::teams::register_team_key(&api_base, &token, &params.team_id, &kp.public_b64())
-            .await
-            .map_err(|e| internal_err(format!("Failed to register own key: {e}")))?;
-
-        let members = phantom_core::teams::list_team_member_keys(
-            &api_base,
-            &token,
-            &params.team_id,
-        )
-        .await
-        .map_err(|e| internal_err(format!("Failed to list member keys: {e}")))?;
-        let recipients: Vec<&phantom_core::teams::TeamMemberKey> =
-            members.iter().filter(|m| m.public_key.is_some()).collect();
-        if recipients.is_empty() {
-            return Err(invalid_params_err(
-                "No team members have registered public keys. Each member should call phantom_team_key_publish first.",
-            ));
-        }
-        let skipped = members.len() - recipients.len();
-
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list vault: {e}")))?;
         if names.is_empty() {
-            return text_result("No secrets to push.".to_string());
+            return text_result("No secrets in this project's vault to push.".to_string());
         }
-        let mut secrets = BTreeMap::new();
+        let mut secrets: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
         for name in &names {
             let value = vault
                 .retrieve(name)
                 .map_err(|e| internal_err(format!("Failed to retrieve {name}: {e}")))?;
-            secrets.insert(name.clone(), String::from(value.as_str()));
-        }
-        let mut plaintext = serde_json::to_string(&secrets)
-            .map_err(|e| internal_err(format!("Serialize failed: {e}")))?;
-
-        let sym_key = phantom_core::team_crypto::generate_sym_key();
-        let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
-        let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext = cipher
-            .encrypt(nonce, plaintext.as_bytes())
-            .map_err(|e| internal_err(format!("Encryption failed: {e}")))?;
-        plaintext.zeroize();
-
-        let mut framed = Vec::with_capacity(12 + ciphertext.len());
-        framed.extend_from_slice(&nonce_bytes);
-        framed.extend_from_slice(&ciphertext);
-        let blob_b64 = B64.encode(&framed);
-
-        let mut shares: HashMap<String, phantom_core::team_crypto::KeyShare> = HashMap::new();
-        for m in &recipients {
-            let share = phantom_core::team_crypto::seal_sym_key(
-                &sym_key,
-                m.public_key.as_ref().unwrap(),
-            )
-            .map_err(|e| internal_err(format!("Seal failed: {e}")))?;
-            shares.insert(m.user_id.clone(), share);
+            secrets.insert(name.clone(), Zeroizing::new(String::from(value.as_str())));
         }
 
-        let new_version = phantom_core::teams::push_team_vault(
+        let outcome = phantom_core::teams_vault::push_for_project(
             &api_base,
             &token,
             &params.team_id,
             &project_id,
-            &blob_b64,
-            None,
-            shares,
+            secrets,
+            &kp,
         )
         .await
-        .map_err(|e| internal_err(format!("Push failed: {e}")))?;
+        .map_err(|e| internal_err(e.to_string()))?;
 
-        let suffix = if skipped > 0 {
-            format!(" ({skipped} member(s) skipped — no public key registered yet)")
+        let suffix = if outcome.skipped > 0 {
+            format!(
+                " ({} member(s) skipped — no public key registered yet)",
+                outcome.skipped
+            )
         } else {
             String::new()
         };
         text_result(format!(
-            "Pushed {} secret(s) to team {} as v{}, wrapped for {} recipient(s).{suffix}",
-            names.len(),
-            params.team_id,
-            new_version,
-            recipients.len()
+            "Pushed {} secret(s) to team id {} as v{}, encrypted for {} member(s).{suffix}",
+            outcome.secret_count, params.team_id, outcome.new_version, outcome.recipients
         ))
     }
 
     /// Pull a team vault into the current project's local vault.
     #[tool(
-        description = "Pull the current project's team vault into the local vault. Decrypts the per-member key share with the OS keychain's private key, then decrypts the vault and writes secrets locally. Mutating (overwrites local secrets): requires confirm:true."
+        description = "Download and decrypt the team vault for this project into the local vault. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true."
     )]
     async fn phantom_team_vault_pull(
         &self,
         Parameters(params): Parameters<TeamVaultParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_pull", params.confirm)?;
-        use base64::{engine::general_purpose::STANDARD as B64, Engine};
-        use chacha20poly1305::{
-            aead::{Aead, KeyInit},
-            ChaCha20Poly1305, Nonce,
-        };
-        use std::collections::BTreeMap;
-        use zeroize::Zeroize;
-
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
         let kp = phantom_core::auth::get_or_create_team_keypair()
@@ -1632,38 +1566,15 @@ impl PhantomMcpServer {
         let (config, vault) = self.load_config_and_vault()?;
         let project_id = config.phantom.project_id.clone();
 
-        let pulled = phantom_core::teams::pull_team_vault(
+        let (secrets, version) = phantom_core::teams_vault::pull_for_project(
             &api_base,
             &token,
             &params.team_id,
             &project_id,
+            &kp,
         )
         .await
-        .map_err(|e| internal_err(format!("Pull failed: {e}")))?
-        .ok_or_else(|| {
-            invalid_params_err(format!(
-                "No team vault for project {project_id} on team {}. Push from a member first.",
-                params.team_id
-            ))
-        })?;
-
-        let sym_key = phantom_core::team_crypto::open_sym_key(&pulled.my_share, &kp)
-            .map_err(|e| internal_err(format!("Decrypt key share failed: {e}")))?;
-        let framed = B64
-            .decode(&pulled.encrypted_blob)
-            .map_err(|e| internal_err(format!("Bad ciphertext base64: {e}")))?;
-        if framed.len() < 12 + 16 {
-            return Err(internal_err("Encrypted blob too short".to_string()));
-        }
-        let (nonce_bytes, ct) = framed.split_at(12);
-        let nonce = Nonce::from_slice(nonce_bytes);
-        let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
-        let mut plaintext = cipher
-            .decrypt(nonce, ct)
-            .map_err(|e| internal_err(format!("Decrypt vault failed: {e}")))?;
-        let secrets: BTreeMap<String, String> = serde_json::from_slice(&plaintext)
-            .map_err(|e| internal_err(format!("Bad vault JSON: {e}")))?;
-        plaintext.zeroize();
+        .map_err(|e| internal_err(e.to_string()))?;
 
         let mut written = 0usize;
         for (name, value) in &secrets {
@@ -1674,8 +1585,8 @@ impl PhantomMcpServer {
         }
 
         text_result(format!(
-            "Pulled {written} secret(s) from team {} (v{}). Local vault updated.",
-            params.team_id, pulled.version
+            "Pulled {written} secret(s) from team id {} (v{}). Local vault updated.",
+            params.team_id, version
         ))
     }
 }

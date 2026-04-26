@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getBrowserClient } from "@/lib/supabase-browser";
+import { useSupabaseQuery } from "@/lib/use-supabase-query";
 
 type TeamMembership = {
   team_id: string;
@@ -17,20 +16,12 @@ type TeamMember = {
 };
 
 export default function TeamPage() {
-  const [memberships, setMemberships] = useState<TeamMembership[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const supabase = getBrowserClient();
-    supabase
+  const { data: memberships, error } = useSupabaseQuery<TeamMembership[]>((sb) =>
+    sb
       .from("team_members")
       .select("team_id, role, joined_at, team:teams(id, name, created_at)")
       .order("joined_at", { ascending: false })
-      .then(({ data, error }) => {
-        if (error) setError(error.message);
-        else setMemberships((data as unknown) as TeamMembership[]);
-      });
-  }, []);
+  );
 
   if (error) {
     return (
@@ -79,19 +70,15 @@ export default function TeamPage() {
 }
 
 function TeamCard({ membership }: { membership: TeamMembership }) {
-  const [members, setMembers] = useState<TeamMember[] | null>(null);
-
-  useEffect(() => {
-    const supabase = getBrowserClient();
-    supabase
-      .from("team_members")
-      .select("user_id, role, joined_at")
-      .eq("team_id", membership.team_id)
-      .order("joined_at", { ascending: true })
-      .then(({ data, error }) => {
-        if (!error && data) setMembers(data as TeamMember[]);
-      });
-  }, [membership.team_id]);
+  const { data: members } = useSupabaseQuery<TeamMember[]>(
+    (sb) =>
+      sb
+        .from("team_members")
+        .select("user_id, role, joined_at")
+        .eq("team_id", membership.team_id)
+        .order("joined_at", { ascending: true }),
+    [membership.team_id]
+  );
 
   return (
     <section className="rounded-2xl border border-border bg-s1 overflow-hidden">

@@ -43,7 +43,14 @@ export async function GET(
     .maybeSingle();
 
   if (!membership) {
-    return Response.json({ error: "not a member" }, { status: 403 });
+    return Response.json(
+      {
+        error: "not_a_member",
+        message:
+          "You are not a member of this team. Ask the owner to invite you with `phantom team invite <TEAM_ID> <github-login>`.",
+      },
+      { status: 403 }
+    );
   }
   if (!membership.public_key) {
     return Response.json(
@@ -137,7 +144,14 @@ export async function POST(
     .eq("user_id", authResult.userId)
     .maybeSingle();
   if (!membership) {
-    return Response.json({ error: "not a member" }, { status: 403 });
+    return Response.json(
+      {
+        error: "not_a_member",
+        message:
+          "You are not a member of this team. Ask the owner to invite you with `phantom team invite <TEAM_ID> <github-login>`.",
+      },
+      { status: 403 }
+    );
   }
 
   // Validate that key_shares covers every member with a registered public_key.
@@ -201,7 +215,14 @@ export async function POST(
     );
 
   if (error) {
-    return Response.json({ error: "failed to push" }, { status: 500 });
+    return Response.json(
+      {
+        error: "server_error",
+        message:
+          "Failed to save the team vault. Try again, or email mason@ashlr.ai if this persists.",
+      },
+      { status: 500 }
+    );
   }
 
   return Response.json({ version: next_version, members_covered: required.length });

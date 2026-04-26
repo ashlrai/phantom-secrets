@@ -32,3 +32,6 @@ tempfile = "3"
 # Team-vault envelope encryption: X25519 + ChaCha20-Poly1305 via crypto_box
 # (sealed-box style with ephemeral sender keys per push for forward secrecy).
 crypto_box = { version = "0.9", features = ["chacha20"] }
+# Used directly by teams_vault for symmetric encryption of the vault blob
+# itself (the per-push sym key, distinct from the per-recipient X25519 wrap).
+chacha20poly1305 = "0.10"

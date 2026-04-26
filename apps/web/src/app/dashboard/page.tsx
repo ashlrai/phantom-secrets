@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getBrowserClient } from "@/lib/supabase-browser";
+import { useSupabaseQuery } from "@/lib/use-supabase-query";
 
 type VaultRow = {
   project_id: string;
@@ -35,34 +34,16 @@ function relTime(iso: string) {
 }
 
 export default function DashboardOverview() {
-  const [user, setUser] = useState<UserRow | null>(null);
-  const [vaults, setVaults] = useState<VaultRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const supabase = getBrowserClient();
-    (async () => {
-      const userRes = await supabase
-        .from("users")
-        .select("github_login, email, plan")
-        .single();
-      if (userRes.error) {
-        setError(userRes.error.message);
-        return;
-      }
-      setUser(userRes.data as UserRow);
-
-      const vaultRes = await supabase
-        .from("vault_blobs")
-        .select("project_id, version, updated_at, encrypted_blob")
-        .order("updated_at", { ascending: false });
-      if (vaultRes.error) {
-        setError(vaultRes.error.message);
-        return;
-      }
-      setVaults(vaultRes.data as VaultRow[]);
-    })();
-  }, []);
+  const { data: user, error: userError } = useSupabaseQuery<UserRow>((sb) =>
+    sb.from("users").select("github_login, email, plan").single()
+  );
+  const { data: vaults, error: vaultsError } = useSupabaseQuery<VaultRow[]>((sb) =>
+    sb
+      .from("vault_blobs")
+      .select("project_id, version, updated_at, encrypted_blob")
+      .order("updated_at", { ascending: false })
+  );
+  const error = userError ?? vaultsError;
 
   if (error) {
     return (

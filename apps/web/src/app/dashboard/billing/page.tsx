@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { getBrowserClient } from "@/lib/supabase-browser";
+import { useSupabaseQuery } from "@/lib/use-supabase-query";
 
 type UserRow = {
   github_login: string;
@@ -12,21 +13,15 @@ type UserRow = {
 };
 
 export default function BillingPage() {
-  const [user, setUser] = useState<UserRow | null>(null);
-  const [loadingPortal, setLoadingPortal] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const supabase = getBrowserClient();
-    supabase
+  const { data: user, error: queryError } = useSupabaseQuery<UserRow>((sb) =>
+    sb
       .from("users")
       .select("github_login, email, plan, plan_expires_at, stripe_customer_id")
       .single()
-      .then(({ data, error }) => {
-        if (error) setError(error.message);
-        else setUser(data as UserRow);
-      });
-  }, []);
+  );
+  const [loadingPortal, setLoadingPortal] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const error = actionError ?? queryError;
 
   const openPortal = async () => {
     const supabase = getBrowserClient();
@@ -34,18 +29,18 @@ export default function BillingPage() {
       data: { session },
     } = await supabase.auth.getSession();
     if (!session) {
-      setError("Not signed in.");
+      setActionError("Not signed in.");
       return;
     }
     setLoadingPortal(true);
-    setError(null);
+    setActionError(null);
     try {
       const resp = await fetch("/api/v1/billing/portal", {
         method: "POST",
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
       if (!resp.ok) {
-        setError("Could not open Stripe portal. Email mason@ashlr.ai if this persists.");
+        setActionError("Could not open Stripe portal. Email mason@ashlr.ai if this persists.");
         setLoadingPortal(false);
         return;
       }
@@ -53,11 +48,11 @@ export default function BillingPage() {
       if (data.url) {
         window.location.href = data.url;
       } else {
-        setError("Portal returned no URL.");
+        setActionError("Portal returned no URL.");
         setLoadingPortal(false);
       }
     } catch {
-      setError("Network error reaching billing portal.");
+      setActionError("Network error reaching billing portal.");
       setLoadingPortal(false);
     }
   };

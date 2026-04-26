@@ -174,13 +174,22 @@ pub fn get_or_create_team_keypair() -> Result<crate::team_crypto::MemberKeypair>
     }
 
     // First use — generate and persist.
+    //
+    // Write the private key FIRST. If we crash between the two writes,
+    // the keychain ends up with a private key but no public key — the
+    // next load() call sees the public-key fetch fail, falls into this
+    // generate-and-persist branch, and overwrites the orphan privkey
+    // with a fresh pair. Doing it the other way round (pub first) leaves
+    // the keychain with a public key whose private key never existed,
+    // and any vault key shares already encrypted to that pubkey become
+    // permanently unrecoverable on this machine.
     let kp = crate::team_crypto::MemberKeypair::generate();
-    pub_entry
-        .set_password(&kp.public_b64())
-        .map_err(|e| PhantomError::AuthError(format!("Failed to store team pubkey: {e}")))?;
     sec_entry
         .set_password(&kp.secret_b64())
         .map_err(|e| PhantomError::AuthError(format!("Failed to store team seckey: {e}")))?;
+    pub_entry
+        .set_password(&kp.public_b64())
+        .map_err(|e| PhantomError::AuthError(format!("Failed to store team pubkey: {e}")))?;
     Ok(kp)
 }
 
