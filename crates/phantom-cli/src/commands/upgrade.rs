@@ -36,13 +36,23 @@ pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
     match update.update() {
         Ok(status) => match status {
             self_update::Status::UpToDate(v) => {
-                println!("{} phantom {} is already at the latest version.", "ok".green().bold(), v);
+                println!(
+                    "{} phantom {} is already at the latest version.",
+                    "ok".green().bold(),
+                    v
+                );
             }
             self_update::Status::Updated(v) => {
-                println!("{} phantom updated to {}.", "ok".green().bold(), v.green().bold());
+                println!(
+                    "{} phantom updated to {}.",
+                    "ok".green().bold(),
+                    v.green().bold()
+                );
             }
         },
-        Err(self_update::errors::Error::Io(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+        Err(self_update::errors::Error::Io(e))
+            if e.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
             println!(
                 "{} Permission denied — if phantom was installed via Homebrew, run: {}",
                 "!".red().bold(),

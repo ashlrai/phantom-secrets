@@ -76,7 +76,7 @@ set PHANTOM_PROXY_TOKEN=TOKEN
 
 Notes:
 - If `phantom.exe` fails to run with "Application Control policy has blocked this file," Windows Smart App Control is honoring the downloaded file's Mark-of-the-Web tag. One-time fix from PowerShell: `Get-ChildItem "$env:USERPROFILE\.phantom-secrets\bin\*.exe" | Unblock-File`.
-- Clipboard auto-clear (`phantom reveal --copy` clears after 30s) is macOS-only — tracked in [#9](https://github.com/ashlrai/phantom-secrets/issues/9). Clipboard copy itself works on all platforms.
+- The pre-commit hook installed by `phantom init` is a `#!/bin/sh` script. Native git from the command line invokes it via Git for Windows' bundled `sh.exe`, which is what the official Git for Windows installer ships. GUI clients (GitHub Desktop, some IDE integrations) may run with a stripped-down `PATH` that lacks `sh.exe` and silently skip the hook — for these, run commits from a terminal, or use `phantom check --staged` directly. CI is the durable safety net regardless.
 - Windows-on-ARM64 not yet packaged — x64 only. Tracker: [#1](https://github.com/ashlrai/phantom-secrets/issues/1).
 
 ## How It Works

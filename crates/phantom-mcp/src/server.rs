@@ -1377,14 +1377,13 @@ impl PhantomMcpServer {
     )]
     async fn phantom_team_list(&self) -> Result<CallToolResult, McpError> {
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
-        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let api_base =
+            phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
         let teams = phantom_core::teams::list_teams(&api_base, &token)
             .await
             .map_err(|e| internal_err(format!("Failed to list teams: {e}")))?;
         if teams.is_empty() {
-            return text_result(
-                "No teams yet. Create one with phantom_team_create.".to_string(),
-            );
+            return text_result("No teams yet. Create one with phantom_team_create.".to_string());
         }
         let mut out = format!("{} team(s):\n", teams.len());
         for t in &teams {
@@ -1403,7 +1402,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_create", params.confirm)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
-        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let api_base =
+            phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
         let team = phantom_core::teams::create_team(&api_base, &token, &params.name)
             .await
             .map_err(|e| internal_err(format!("Failed to create team: {e}")))?;
@@ -1422,16 +1422,23 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamIdParams>,
     ) -> Result<CallToolResult, McpError> {
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
-        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let api_base =
+            phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
         let members = phantom_core::teams::list_members(&api_base, &token, &params.team_id)
             .await
             .map_err(|e| internal_err(format!("Failed to list members: {e}")))?;
         if members.is_empty() {
-            return text_result("No members yet. Invite someone with phantom_team_invite.".to_string());
+            return text_result(
+                "No members yet. Invite someone with phantom_team_invite.".to_string(),
+            );
         }
         let mut out = format!("{} member(s):\n", members.len());
         for m in &members {
-            let email = m.email.as_deref().map(|e| format!(" <{e}>")).unwrap_or_default();
+            let email = m
+                .email
+                .as_deref()
+                .map(|e| format!(" <{e}>"))
+                .unwrap_or_default();
             out.push_str(&format!("  @{}{} ({})\n", m.github_login, email, m.role));
         }
         text_result(out)
@@ -1453,7 +1460,8 @@ impl PhantomMcpServer {
             )));
         }
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
-        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let api_base =
+            phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
         phantom_core::teams::invite_member(
             &api_base,
             &token,
@@ -1478,12 +1486,18 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamIdParams>,
     ) -> Result<CallToolResult, McpError> {
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
-        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let api_base =
+            phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
         let kp = phantom_core::auth::get_or_create_team_keypair()
             .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
-        phantom_core::teams::register_team_key(&api_base, &token, &params.team_id, &kp.public_b64())
-            .await
-            .map_err(|e| internal_err(format!("Failed to register key: {e}")))?;
+        phantom_core::teams::register_team_key(
+            &api_base,
+            &token,
+            &params.team_id,
+            &kp.public_b64(),
+        )
+        .await
+        .map_err(|e| internal_err(format!("Failed to register key: {e}")))?;
         text_result(format!(
             "Public key registered for team id {}.",
             params.team_id
@@ -1503,7 +1517,8 @@ impl PhantomMcpServer {
         use zeroize::Zeroizing;
 
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
-        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let api_base =
+            phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
         let kp = phantom_core::auth::get_or_create_team_keypair()
             .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
 
@@ -1559,7 +1574,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_pull", params.confirm)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
-        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let api_base =
+            phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
         let kp = phantom_core::auth::get_or_create_team_keypair()
             .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
 

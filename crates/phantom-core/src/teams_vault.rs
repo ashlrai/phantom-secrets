@@ -92,10 +92,8 @@ async fn push_inner(
     teams::register_team_key(api_base, token, team_id, &kp.public_b64()).await?;
 
     let members = teams::list_team_member_keys(api_base, token, team_id).await?;
-    let recipients: Vec<&teams::TeamMemberKey> = members
-        .iter()
-        .filter(|m| m.public_key.is_some())
-        .collect();
+    let recipients: Vec<&teams::TeamMemberKey> =
+        members.iter().filter(|m| m.public_key.is_some()).collect();
     if recipients.is_empty() {
         return Err(PhantomError::Other(format!(
             "No team members have registered public keys yet. \
@@ -196,8 +194,10 @@ pub async fn pull_for_project(
 
     // Move every value into Zeroizing so the secrets are scrubbed when
     // the caller's map is dropped.
-    let secrets: BTreeMap<String, Zeroizing<String>> =
-        raw.into_iter().map(|(k, v)| (k, Zeroizing::new(v))).collect();
+    let secrets: BTreeMap<String, Zeroizing<String>> = raw
+        .into_iter()
+        .map(|(k, v)| (k, Zeroizing::new(v)))
+        .collect();
 
     Ok((secrets, pulled.version))
 }

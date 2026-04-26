@@ -257,9 +257,7 @@ pub async fn pull_team_vault(
 ) -> Result<Option<PulledTeamVault>> {
     let client = reqwest::Client::new();
     let resp = client
-        .get(format!(
-            "{api_base}/teams/{team_id}/vaults/{project_id}"
-        ))
+        .get(format!("{api_base}/teams/{team_id}/vaults/{project_id}"))
         .bearer_auth(token)
         .send()
         .await
@@ -317,9 +315,7 @@ pub async fn push_team_vault(
         key_shares,
     };
     let resp = client
-        .post(format!(
-            "{api_base}/teams/{team_id}/vaults/{project_id}"
-        ))
+        .post(format!("{api_base}/teams/{team_id}/vaults/{project_id}"))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -354,4 +350,3 @@ pub async fn push_team_vault(
         }
     }
 }
-

@@ -329,7 +329,12 @@ mod tests {
         // Every key must be present and hold the correct value.
         let mut keys = vault.list().unwrap();
         keys.sort();
-        assert_eq!(keys.len(), N, "expected {N} keys, got {}: {keys:?}", keys.len());
+        assert_eq!(
+            keys.len(),
+            N,
+            "expected {N} keys, got {}: {keys:?}",
+            keys.len()
+        );
 
         for i in 0..N {
             let expected = format!("value_{i}");

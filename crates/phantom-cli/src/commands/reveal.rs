@@ -48,14 +48,7 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
                 "ok".green().bold(),
                 name.bold()
             );
-            #[cfg(target_os = "macos")]
-            {
-                let _ = std::process::Command::new("bash")
-                    .args(["-c", "sleep 30 && echo -n '' | pbcopy"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
-            }
+            schedule_clipboard_clear(std::time::Duration::from_secs(30));
         } else {
             eprintln!(
                 "{} Clipboard not available. Printing to stdout instead.",
@@ -77,4 +70,39 @@ fn copy_to_clipboard(text: &str) -> bool {
         Ok(mut clipboard) => clipboard.set_text(text.to_string()).is_ok(),
         Err(_) => false,
     }
+}
+
+/// Spawn a detached child of this same binary that sleeps `delay`, then
+/// clears the clipboard. Cross-platform replacement for the macOS-only
+/// `bash -c 'sleep && pbcopy'` shell-out — works on Windows where there's
+/// no bash, and avoids quoting/PATH fragility on Unix.
+///
+/// We spawn a child rather than a thread so the parent `phantom reveal`
+/// process can exit immediately and return the user to their prompt; a
+/// thread would die when the parent exits, and on macOS/Windows the
+/// clipboard contents persist past process exit so we need a live process
+/// to issue the clear.
+fn schedule_clipboard_clear(delay: std::time::Duration) {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let _ = std::process::Command::new(exe)
+        .arg("__clear-clipboard-after")
+        .arg("--secs")
+        .arg(delay.as_secs().to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// Body of the hidden `__clear-clipboard-after` subcommand. Sleeps the
+/// given number of seconds and writes an empty string to the clipboard.
+pub fn run_clear_after(secs: u64) -> Result<()> {
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        let _ = cb.set_text(String::new());
+    }
+    Ok(())
 }

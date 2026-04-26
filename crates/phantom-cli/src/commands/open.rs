@@ -16,9 +16,7 @@ fn resolve_target(target: &str) -> String {
         // Arbitrary URLs are passed through, so `phantom open https://...`
         // works as a shortcut. Anything that doesn't look like a URL falls
         // through to a project-page convention on phm.dev.
-        other if other.starts_with("http://") || other.starts_with("https://") => {
-            other.to_string()
-        }
+        other if other.starts_with("http://") || other.starts_with("https://") => other.to_string(),
         other => format!("https://phm.dev/{}", other.trim_start_matches('/')),
     }
 }
@@ -42,13 +40,22 @@ mod tests {
 
     #[test]
     fn known_aliases_resolve() {
-        assert_eq!(resolve_target("billing"), "https://phm.dev/dashboard/billing");
+        assert_eq!(
+            resolve_target("billing"),
+            "https://phm.dev/dashboard/billing"
+        );
         assert_eq!(resolve_target("team"), "https://phm.dev/dashboard/team");
         assert_eq!(resolve_target("teams"), "https://phm.dev/dashboard/team");
         assert_eq!(resolve_target("docs"), "https://phm.dev/docs");
         assert_eq!(resolve_target("pricing"), "https://phm.dev/pricing");
-        assert_eq!(resolve_target("github"), "https://github.com/ashlrai/phantom-secrets");
-        assert_eq!(resolve_target("issues"), "https://github.com/ashlrai/phantom-secrets/issues");
+        assert_eq!(
+            resolve_target("github"),
+            "https://github.com/ashlrai/phantom-secrets"
+        );
+        assert_eq!(
+            resolve_target("issues"),
+            "https://github.com/ashlrai/phantom-secrets/issues"
+        );
         assert_eq!(resolve_target("site"), "https://phm.dev");
     }
 
