@@ -16,7 +16,8 @@ jobs:
 
       - name: Pull secrets from Phantom Cloud
         env:
-          PHANTOM_CLOUD_TOKEN: ${{ secrets.PHANTOM_CLOUD_TOKEN }}
+          PHANTOM_TOKEN: ${{ secrets.PHANTOM_TOKEN }}
+          PHANTOM_VAULT_PASSPHRASE: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
         run: npx phantom-secrets cloud pull
 
       - name: Build
@@ -24,10 +25,11 @@ jobs:
 ```
 
 **Setup:**
-1. Run `phantom login` locally
-2. Run `phantom cloud push` to upload your vault
-3. Add `PHANTOM_CLOUD_TOKEN` to your GitHub repo secrets (Settings > Secrets)
-4. Get your token: `phantom reveal PHANTOM_CLOUD_TOKEN --yes` (or copy from `phantom login` output)
+1. Run `phantom login` locally, then `phantom cloud push` to upload your vault.
+2. Generate a CI device token: `phantom login --ci` (outputs `PHANTOM_TOKEN`).
+3. Retrieve your vault passphrase: `phantom reveal --passphrase`.
+4. Add both as GitHub Actions secrets: **Settings → Secrets and variables → Actions**.
+5. See `integrations/github-actions/README.md` for the official action reference.
 
 ## Vercel
 

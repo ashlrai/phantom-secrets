@@ -12,16 +12,34 @@ The MCP server lets AI agents manage this workflow directly, without ever being 
 
 ## Tools
 
-The server exposes 6 tools over MCP stdio transport:
+The server exposes 17 tools over MCP stdio transport.
+
+**Read-only (safe to call anytime, never returns secret values):**
 
 | Tool | Description |
 |------|-------------|
-| `phantom_list_secrets` | List all secret names in the vault. Returns names only — never exposes actual values. |
-| `phantom_status` | Show project status: vault backend, secret count, service mappings, and proxy state. |
-| `phantom_init` | Initialize Phantom in a project directory. Reads `.env`, stores real secrets in the OS keychain vault, and rewrites `.env` with phantom tokens. |
-| `phantom_add_secret` | Add a new secret to the vault. The value is stored securely and a phantom token is written to `.env`. |
+| `phantom_list_secrets` | List all secret names in the vault. Returns names only. |
+| `phantom_status` | Show project status: vault backend, secret count, service mappings, proxy state. |
+| `phantom_doctor` | Diagnose configuration and vault health. |
+| `phantom_why` | Explain why a key is or is not classified as a secret. |
+| `phantom_check` | Scan the repo for unprotected secrets (pre-commit-style). |
+| `phantom_env` | List environment variables with protection status (no values). |
+| `phantom_sync` | Preview deployment-platform sync (Vercel, Railway). |
+| `phantom_cloud_status` | Check cloud authentication and sync status. |
+
+**Mutating (modify the vault or `.env`):**
+
+| Tool | Description |
+|------|-------------|
+| `phantom_init` | Initialize Phantom in a project. Stores real secrets in the keychain vault and rewrites `.env` with phantom tokens. |
+| `phantom_add_secret` | Add a new secret to the vault. A phantom token is written to `.env`. |
 | `phantom_remove_secret` | Remove a secret from the vault by name. |
-| `phantom_rotate` | Regenerate all phantom tokens in `.env`. Old tokens become invalid. Real secrets in the vault are unchanged. |
+| `phantom_rotate` | Regenerate all phantom tokens. Old tokens become invalid; real secrets unchanged. |
+| `phantom_copy_secret` | Copy a secret from this project to another project's vault. |
+| `phantom_wrap` | Wrap a plaintext `.env` value into a vaulted `phm_` token. |
+| `phantom_unwrap` | Reverse a wrap — restore plaintext to `.env` from the vault. |
+| `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted). |
+| `phantom_cloud_pull` | Pull and decrypt vault from Phantom Cloud. |
 
 ## Architecture
 

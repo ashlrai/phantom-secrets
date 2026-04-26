@@ -12,7 +12,7 @@ npx phantom-secrets init
 
 Setup: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
-Tools: phantom_init, phantom_list_secrets, phantom_status, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_copy, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
+Tools: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_copy_secret, phantom_doctor, phantom_why, phantom_wrap, phantom_unwrap, phantom_check, phantom_env, phantom_sync, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
 
 ## CLI (27 commands)
 

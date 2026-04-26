@@ -78,7 +78,7 @@ Notes:
 
 ## MCP Integration (Claude Code, Cursor, Windsurf, Codex)
 
-Phantom ships an MCP server so AI coding tools can manage secrets directly -- without ever seeing real values. 17 tools available: list, status, init, add, remove, rotate, copy, cloud push, cloud pull, cloud status.
+Phantom ships an MCP server so AI coding tools can manage secrets directly -- without ever seeing real values. 17 tools available: `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret`, `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`, `phantom_doctor`, `phantom_why`, `phantom_wrap`, `phantom_unwrap`, `phantom_check`, `phantom_env`, `phantom_sync`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`.
 
 ### Claude Code
 ```bash
@@ -214,7 +214,7 @@ $ cargo install phantom
 
 **npm packages**: [`phantom-secrets`](https://www.npmjs.com/package/phantom-secrets) (CLI), [`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) (MCP server).
 
-69 tests across all crates, zero clippy warnings.
+103 tests across all crates, zero clippy warnings.
 
 ## Security
 

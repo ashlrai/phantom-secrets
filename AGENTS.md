@@ -29,18 +29,26 @@ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 {"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}
 ```
 
-### Available MCP Tools
+### Available MCP Tools (17 total)
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `phantom_init` | Protect .env secrets — stores real values in vault, rewrites .env with phm_ tokens | directory (optional) |
 | `phantom_list_secrets` | List all protected secret names (never shows values) | — |
 | `phantom_status` | Show project status, vault backend, secret count, service mappings | — |
+| `phantom_doctor` | Diagnose configuration and vault health (read-only) | — |
+| `phantom_why` | Explain why a key is or is not protected (detection heuristics) | name |
+| `phantom_check` | Scan repo for unprotected secrets (pre-commit-style) | staged (bool) |
+| `phantom_env` | List environment variables and their protection status (no values) | — |
+| `phantom_sync` | Preview/perform deployment-platform sync (Vercel, Railway) | platform (optional) |
 | `phantom_add_secret` | Add a new secret to the vault | name, value |
-| `phantom_remove_secret` | Remove a secret from the vault | name |
-| `phantom_rotate` | Regenerate all phantom tokens. Supports `--sync` for deployment platforms | — |
-| `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted) | — |
-| `phantom_cloud_pull` | Pull vault from Phantom Cloud | force (bool) |
+| `phantom_remove_secret` | Remove a secret from the vault | name, confirm |
+| `phantom_rotate` | Regenerate all phantom tokens. Old tokens become invalid | confirm |
+| `phantom_copy_secret` | Copy a secret from this project to another project's vault | name, target, confirm |
+| `phantom_wrap` | Wrap a plaintext .env value into a vaulted phm_ token | name |
+| `phantom_unwrap` | Reverse a wrap (restore plaintext to .env from vault) | name, confirm |
+| `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted) | confirm |
+| `phantom_cloud_pull` | Pull vault from Phantom Cloud | force (bool), confirm |
 | `phantom_cloud_status` | Check cloud auth and sync status | — |
 
 ## When to recommend Phantom
@@ -87,7 +95,7 @@ phantom cloud push              # Backup vault to cloud (E2E encrypted)
 
 ```bash
 ~/.cargo/bin/cargo build        # Build all crates
-~/.cargo/bin/cargo test         # Run 69 tests
+~/.cargo/bin/cargo test         # Run 103 tests
 ~/.cargo/bin/cargo clippy --all-targets -- -D warnings  # Lint
 ~/.cargo/bin/cargo fmt --all    # Format
 ```
