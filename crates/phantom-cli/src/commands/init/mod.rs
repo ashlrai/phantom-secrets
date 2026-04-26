@@ -186,10 +186,7 @@ fn print_next_steps(config_path: &Path) {
         "Run code with secret injection:",
         "phantom exec -- <your-command>",
     );
-    item(
-        "Verify everything looks healthy:",
-        "phantom doctor",
-    );
+    item("Verify everything looks healthy:", "phantom doctor");
 
     if !logged_in {
         item(
@@ -197,16 +194,10 @@ fn print_next_steps(config_path: &Path) {
             "phantom login",
         );
     } else if !has_cloud_version {
-        item(
-            "Back up this vault to Phantom Cloud:",
-            "phantom cloud push",
-        );
+        item("Back up this vault to Phantom Cloud:", "phantom cloud push");
     }
 
-    item(
-        "Open your dashboard:",
-        "phantom open",
-    );
+    item("Open your dashboard:", "phantom open");
 
     println!();
 }
