@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🛡️ Report a security vulnerability
+    url: https://github.com/ashlrai/phantom-secrets/security/advisories/new
+    about: Use GitHub's private vulnerability reporting — DO NOT open a public issue.
+  - name: 💬 Ask a question / share an idea
+    url: https://github.com/ashlrai/phantom-secrets/discussions
+    about: Discussions are the right place for questions, ideas, and show-and-tell.
+  - name: 📚 Read the docs
+    url: https://phm.dev/docs
+    about: Quickstart, MCP integration, troubleshooting, and full CLI reference.

@@ -1,0 +1,92 @@
+name: 🐞 Bug report
+description: Something works incorrectly or crashes.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Before submitting, please run
+        `phantom doctor` and paste the output below — it captures most of what
+        we'd otherwise need to ask for.
+
+  - type: input
+    id: version
+    attributes:
+      label: Phantom version
+      description: Output of `phantom --version`
+      placeholder: "phantom 0.5.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Linux (x86_64)
+        - Linux (aarch64)
+        - Windows (x86_64)
+        - WSL2
+        - Other (please describe in repro)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How was Phantom installed?
+      options:
+        - npx phantom-secrets
+        - npm install -g phantom-secrets
+        - Homebrew
+        - cargo install
+        - GitHub release binary
+        - Built from source
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `phantom doctor`
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `phantom init` in an empty directory
+        2. Add a secret with `phantom add OPENAI_API_KEY sk-...`
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Include any error output. Redact real secret values — phm_ tokens are safe to share.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have searched [existing issues](https://github.com/ashlrai/phantom-secrets/issues?q=is%3Aissue) for this bug
+          required: true
+        - label: This report contains no real secret values (only `phm_` tokens or redacted strings)
+          required: true

@@ -1,18 +1,44 @@
-# Phantom
+<div align="center">
 
-**AI uses your keys. Safely.**
+<img src="https://phm.dev/og-image.png" alt="Phantom — Stop AI agents from leaking your API keys" width="720" />
 
-[![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=social)](https://github.com/ashlrai/phantom-secrets/stargazers)
-[![CI](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml/badge.svg)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/phantom-secrets)](https://www.npmjs.com/package/phantom-secrets)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![phm.dev](https://img.shields.io/badge/cloud-phm.dev-blue)](https://phm.dev)
+<h1>Phantom</h1>
 
-[Watch the 45-second demo](https://github.com/ashlrai/phantom-secrets/releases/download/v0.4.0/phantom-demo.mp4)
+**Delegate everything to AI. Without sharing a single key.**
 
-AI coding agents read your `.env` files, putting API keys into LLM context windows where they leak via prompt injection, session logs, malicious MCP servers, or training data. GitGuardian reports AI-assisted commits leak secrets at 2x the baseline rate.
+Phantom hands every AI tool a worthless `phm_` token. The local proxy injects the real key at the network layer. Full access. Zero exposure.
 
-Phantom replaces real secrets with inert tokens. A local proxy swaps them back at the network layer. The AI never sees a real key.
+[![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/stargazers)
+[![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/phantom-secrets?style=for-the-badge&logo=npm&color=cb3837&labelColor=0b0b14)](https://www.npmjs.com/package/phantom-secrets)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
+
+[**Quick start**](#quick-start) ·
+[**Why Phantom?**](#why-phantom) ·
+[**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex) ·
+[**Docs**](https://phm.dev/docs) ·
+[**phm.dev**](https://phm.dev)
+
+</div>
+
+---
+
+> **▶ [Watch the 45-second demo](https://github.com/ashlrai/phantom-secrets/releases/download/v0.4.0/phantom-demo.mp4)** &nbsp;·&nbsp;
+> **🛡 [Security model](SECURITY.md)** &nbsp;·&nbsp;
+> **💬 [Discussions](https://github.com/ashlrai/phantom-secrets/discussions)**
+
+## Why Phantom?
+
+AI coding agents read your `.env` files. Once a real API key enters an LLM's context window, it leaks — via prompt injection, session logs, malicious MCP servers, or training data. GitGuardian reports AI-assisted commits leak secrets at **2× the baseline rate**.
+
+Every other secrets manager protects keys *at rest* and *in transit*. Phantom protects them **in context**:
+
+- 🔒 **Real keys never enter the LLM** — `.env` contains only `phm_` tokens; the proxy swaps them at the network edge.
+- ⚡ **10-second setup** — `npx phantom-secrets init` and you're protected. No accounts, no DNS, no MITM cert dance.
+- 🧰 **Works with every AI tool** — Claude Code, Cursor, Windsurf, Codex, GitHub Copilot. Anything that reads `.env`.
+- 🦀 **Open source, local-first, MIT** — your secrets live in your OS keychain. The optional cloud sync is end-to-end encrypted; the server only ever sees ciphertext.
+
+Used by developers who don't want to choose between *delegating to AI* and *not pasting their Stripe key into a chat window*.
 
 ## Quick Start
 
@@ -247,6 +273,22 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 - [Troubleshooting](docs/troubleshooting.md)
 - [Contributing](CONTRIBUTING.md)
 
+## Contributing
+
+We love PRs. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), pick a [good first issue](https://github.com/ashlrai/phantom-secrets/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22), or [open a discussion](https://github.com/ashlrai/phantom-secrets/discussions) to talk through an idea. Be excellent to each other — see [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+
+## Star history
+
+<a href="https://star-history.com/#ashlrai/phantom-secrets&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ashlrai/phantom-secrets&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ashlrai/phantom-secrets&type=Date" />
+    <img alt="Phantom Secrets star history" src="https://api.star-history.com/svg?repos=ashlrai/phantom-secrets&type=Date" />
+  </picture>
+</a>
+
+If Phantom saves you from leaking a key — or even just from worrying about it — please **[star the repo ⭐](https://github.com/ashlrai/phantom-secrets/stargazers)**. It's the single biggest signal we use to know what to build next.
+
 ## License
 
-MIT -- see [LICENSE](LICENSE)
+MIT — see [LICENSE](LICENSE).
