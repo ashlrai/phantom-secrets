@@ -250,6 +250,16 @@ enum Commands {
         #[arg(long)]
         check_only: bool,
     },
+
+    /// Internal: clear the system clipboard after N seconds. Spawned by
+    /// `phantom reveal --copy` so the parent CLI can exit immediately while a
+    /// detached child waits, then clears. Hidden from `--help`.
+    #[command(name = "__clear-clipboard-after", hide = true)]
+    ClearClipboardAfter {
+        /// Seconds to wait before clearing
+        #[arg(long, default_value_t = 30)]
+        secs: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -372,6 +382,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
+        Commands::ClearClipboardAfter { secs } => commands::reveal::run_clear_after(secs),
         Commands::Team { action } => match action {
             TeamAction::List => commands::team::run_list(),
             TeamAction::Create { name } => commands::team::run_create(&name),
