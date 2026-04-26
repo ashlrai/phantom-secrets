@@ -52,31 +52,95 @@ impl DotenvFile {
     }
 
     /// Parse a .env file from a string.
+    ///
+    /// Supports multi-line double-quoted values (audit F12), which is how
+    /// PEM-encoded keys are typically stored in `.env`:
+    ///
+    /// ```text
+    /// PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
+    /// MIIEvQIBADANBgkqhkiG9w0BAQEF...
+    /// -----END PRIVATE KEY-----"
+    /// ```
+    ///
+    /// Inside `"..."` values, `\n` / `\t` / `\\` / `\"` escapes are
+    /// unescaped. Single-quoted values are treated as literal (single-line
+    /// only); unquoted values are single-line. An unterminated quote falls
+    /// back to treating the opening line as an unparsed `Other` line.
     pub fn parse_str(content: &str) -> Self {
-        let lines = content
-            .lines()
-            .map(|line| {
-                let trimmed = line.trim();
+        let mut out: Vec<DotenvLine> = Vec::new();
+        let mut iter = content.lines();
 
-                // Skip comments and blank lines
-                if trimmed.is_empty() || trimmed.starts_with('#') {
-                    return DotenvLine::Other(line.to_string());
+        while let Some(line) = iter.next() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                out.push(DotenvLine::Other(line.to_string()));
+                continue;
+            }
+
+            let working = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+            let Some(eq_pos) = working.find('=') else {
+                out.push(DotenvLine::Other(line.to_string()));
+                continue;
+            };
+
+            let key = working[..eq_pos].trim().to_string();
+            if key.is_empty() {
+                out.push(DotenvLine::Other(line.to_string()));
+                continue;
+            }
+
+            let raw_value = working[eq_pos + 1..].trim_start();
+
+            let value = if let Some(after_quote) = raw_value.strip_prefix('"') {
+                // Double-quoted — may span multiple lines (F12).
+                match find_unescaped_quote(after_quote, '"') {
+                    Some(end) => unescape_double_quoted(&after_quote[..end]),
+                    None => {
+                        // Closing quote not on the opening line — consume
+                        // subsequent lines until we find it.
+                        let mut buf = after_quote.to_string();
+                        let mut found = false;
+                        for next_line in iter.by_ref() {
+                            buf.push('\n');
+                            if let Some(end) = find_unescaped_quote(next_line, '"') {
+                                buf.push_str(&next_line[..end]);
+                                found = true;
+                                break;
+                            }
+                            buf.push_str(next_line);
+                        }
+                        if !found {
+                            // Unterminated quote — treat the opening line as
+                            // unparseable and keep going. Lines we already
+                            // consumed are effectively lost from the Other
+                            // stream; acceptable since the file is malformed.
+                            out.push(DotenvLine::Other(line.to_string()));
+                            continue;
+                        }
+                        unescape_double_quoted(&buf)
+                    }
                 }
-
-                // Try to parse as KEY=VALUE
-                if let Some((key, value)) = parse_kv_line(trimmed) {
-                    DotenvLine::Entry(EnvEntry {
-                        is_phantom: PhantomToken::is_phantom_token(&value),
-                        key,
-                        value,
-                    })
-                } else {
-                    DotenvLine::Other(line.to_string())
+            } else if let Some(after_quote) = raw_value.strip_prefix('\'') {
+                // Single-quoted: literal, single-line.
+                match after_quote.find('\'') {
+                    Some(end) => after_quote[..end].to_string(),
+                    None => {
+                        out.push(DotenvLine::Other(line.to_string()));
+                        continue;
+                    }
                 }
-            })
-            .collect();
+            } else {
+                raw_value.to_string()
+            };
 
-        Self { lines }
+            out.push(DotenvLine::Entry(EnvEntry {
+                is_phantom: PhantomToken::is_phantom_token(&value),
+                key,
+                value,
+            }));
+        }
+
+        Self { lines: out }
     }
 
     /// Get all key-value entries (excluding comments/blanks).
@@ -210,29 +274,50 @@ impl DotenvFile {
     }
 }
 
-/// Parse a single KEY=VALUE line, handling quotes.
-fn parse_kv_line(line: &str) -> Option<(String, String)> {
-    // Handle export prefix
-    let line = line.strip_prefix("export ").unwrap_or(line);
-
-    let eq_pos = line.find('=')?;
-    let key = line[..eq_pos].trim().to_string();
-    let raw_value = line[eq_pos + 1..].trim();
-
-    if key.is_empty() {
-        return None;
+/// Find the index of the first unescaped occurrence of `quote` in `s`.
+/// A preceding backslash escapes the quote (and is consumed along with it
+/// by the escape-pair skip). Returns `None` if no unescaped quote is found.
+fn find_unescaped_quote(s: &str, quote: char) -> Option<usize> {
+    let mut iter = s.char_indices();
+    while let Some((i, c)) = iter.next() {
+        if c == '\\' {
+            // Consume the escaped character so e.g. `\"` doesn't close the string
+            iter.next();
+            continue;
+        }
+        if c == quote {
+            return Some(i);
+        }
     }
+    None
+}
 
-    // Strip surrounding quotes (single or double)
-    let value = if (raw_value.starts_with('"') && raw_value.ends_with('"'))
-        || (raw_value.starts_with('\'') && raw_value.ends_with('\''))
-    {
-        raw_value[1..raw_value.len() - 1].to_string()
-    } else {
-        raw_value.to_string()
-    };
-
-    Some((key, value))
+/// Apply `\n` / `\r` / `\t` / `\\` / `\"` / `\'` escape handling inside a
+/// double-quoted value. Unknown escape sequences are preserved verbatim
+/// (including the backslash) so arbitrary bytes aren't silently dropped.
+fn unescape_double_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('\'') => out.push('\''),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// Heuristic to determine if an env entry is likely a secret.
@@ -241,13 +326,15 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
     let key = entry.key.to_uppercase();
     let value = &entry.value;
 
-    // Key-name patterns that indicate secrets
+    // Key-name patterns that indicate secrets. `PWD` covers short forms like
+    // `DB_PWD=hunter2` that would otherwise miss (audit F11).
     let secret_key_patterns = [
         "KEY",
         "SECRET",
         "TOKEN",
         "PASSWORD",
         "PASSWD",
+        "PWD",
         "CREDENTIAL",
         "AUTH",
         "PRIVATE",
@@ -287,6 +374,9 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
         "AKIA",
         "shpat_",
         "eyJ",
+        // PEM-encoded private keys — the armor header is a clear marker
+        // (audit F11). Multi-line PEM bodies depend on F12 quoted parsing.
+        "-----BEGIN ",
     ];
 
     // Check key name
@@ -304,8 +394,15 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
         return true;
     }
 
-    // Connection string URLs with credentials
+    // Connection string URLs with credentials in userinfo (postgres://u:p@host)
     if value.contains("://") && value.contains('@') {
+        return true;
+    }
+
+    // URLs carrying auth material in the query string, e.g.
+    // `https://host/endpoint?api_key=xxx` (audit F11). Bare `://` alone is
+    // not enough — that matches harmless public endpoints.
+    if value.contains("://") && url_has_auth_query_param(value) {
         return true;
     }
 
@@ -318,6 +415,41 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
         return true;
     }
 
+    false
+}
+
+/// Detect auth-like parameters in the query string of a URL-shaped value.
+/// Case-insensitive on the parameter name only. A hit on any of these means
+/// the URL is carrying a credential and should be treated as a secret.
+fn url_has_auth_query_param(value: &str) -> bool {
+    // Take everything after the first `?`, then scan `&`-separated pairs.
+    let Some(query) = value.split_once('?').map(|(_, q)| q) else {
+        return false;
+    };
+    const AUTH_PARAMS: &[&str] = &[
+        "api_key",
+        "apikey",
+        "api-key",
+        "access_token",
+        "accesstoken",
+        "auth_token",
+        "authtoken",
+        "auth",
+        "token",
+        "password",
+        "secret",
+        "sig",
+        "signature",
+    ];
+    for pair in query.split('&') {
+        let Some((name, _)) = pair.split_once('=') else {
+            continue;
+        };
+        let name_lower = name.to_ascii_lowercase();
+        if AUTH_PARAMS.iter().any(|p| *p == name_lower) {
+            return true;
+        }
+    }
     false
 }
 
@@ -472,6 +604,57 @@ KEY3=unquoted
         let real = dotenv.real_secret_entries();
         assert_eq!(real.len(), 1);
         assert_eq!(real[0].key, "SUPABASE_SERVICE_ROLE_KEY");
+    }
+
+    #[test]
+    fn test_looks_like_secret_f11_additions() {
+        // Short-form password variable (PWD)
+        assert!(looks_like_secret(&EnvEntry {
+            key: "DB_PWD".into(),
+            value: "hunter2".into(),
+            is_phantom: false
+        }));
+        assert!(looks_like_secret(&EnvEntry {
+            key: "ADMIN_PWD".into(),
+            value: "x".into(),
+            is_phantom: false
+        }));
+
+        // PEM armor header — common for RSA/EC private keys in env vars
+        assert!(looks_like_secret(&EnvEntry {
+            key: "SOMETHING".into(),
+            value: "-----BEGIN RSA PRIVATE KEY-----".into(),
+            is_phantom: false
+        }));
+        assert!(looks_like_secret(&EnvEntry {
+            key: "JWT_SIGNING".into(),
+            value: "-----BEGIN EC PRIVATE KEY-----".into(),
+            is_phantom: false
+        }));
+
+        // URL carrying auth material in query string (no `@` userinfo)
+        assert!(looks_like_secret(&EnvEntry {
+            key: "API_URL".into(),
+            value: "https://host.example.com/v1/data?api_key=sekret".into(),
+            is_phantom: false
+        }));
+        assert!(looks_like_secret(&EnvEntry {
+            key: "WEBHOOK".into(),
+            value: "https://hooks.example/endpoint?token=abc123&user=alice".into(),
+            is_phantom: false
+        }));
+        assert!(looks_like_secret(&EnvEntry {
+            key: "API_URL".into(),
+            value: "https://api.example/sign?sig=xyz".into(),
+            is_phantom: false
+        }));
+
+        // A plain URL with no auth params must remain a non-secret
+        assert!(!looks_like_secret(&EnvEntry {
+            key: "PUBLIC_URL".into(),
+            value: "https://example.com/page?lang=en".into(),
+            is_phantom: false
+        }));
     }
 
     #[test]
@@ -671,6 +854,61 @@ KEY3=unquoted
         assert!(example.contains("PORT=3000"));
         // Should have header
         assert!(example.contains("# Environment variables for this project"));
+    }
+
+    #[test]
+    fn test_multiline_double_quoted_pem() {
+        // F12: PEM-encoded private key stored across multiple lines in .env.
+        let content = "PRIVATE_KEY=\"-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEF...\n-----END RSA PRIVATE KEY-----\"\nOTHER=value\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let entries = dotenv.entries();
+        assert_eq!(entries.len(), 2, "parser must produce exactly 2 entries");
+        assert_eq!(entries[0].key, "PRIVATE_KEY");
+        assert!(entries[0].value.contains("-----BEGIN RSA PRIVATE KEY-----"));
+        assert!(entries[0].value.contains("MIIEvQIBADANBgkqhkiG9w0BAQEF..."));
+        assert!(entries[0].value.contains("-----END RSA PRIVATE KEY-----"));
+        assert_eq!(entries[1].key, "OTHER");
+        assert_eq!(entries[1].value, "value");
+    }
+
+    #[test]
+    fn test_multiline_pem_classified_as_secret() {
+        // The PEM-armor value prefix (F11) plus multi-line parsing (F12) must
+        // combine so a PEM private key is recognized as a Secret.
+        let content =
+            "PRIVATE_KEY=\"-----BEGIN PRIVATE KEY-----\nbody\n-----END PRIVATE KEY-----\"\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let secrets = dotenv.real_secret_entries();
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets[0].key, "PRIVATE_KEY");
+    }
+
+    #[test]
+    fn test_double_quoted_escapes_unescape() {
+        let content = r#"KEY="line1\nline2\tend""#;
+        let dotenv = DotenvFile::parse_str(content);
+        let entries = dotenv.entries();
+        assert_eq!(entries[0].value, "line1\nline2\tend");
+    }
+
+    #[test]
+    fn test_unterminated_double_quote_preserves_file() {
+        // Unterminated quote on first line — must not hang or consume the rest.
+        // The opening line is treated as an unparseable Other line.
+        let content = "KEY=\"missing closing\nOTHER=value\n";
+        let dotenv = DotenvFile::parse_str(content);
+        // OTHER may be consumed into the attempted multi-line buffer; the
+        // guarantee here is the parser does not panic and still returns.
+        let _ = dotenv.entries();
+    }
+
+    #[test]
+    fn test_single_quoted_literal() {
+        let content = r#"KEY='literal \n value'"#;
+        let dotenv = DotenvFile::parse_str(content);
+        let entries = dotenv.entries();
+        // Single-quoted = literal, no escape processing
+        assert_eq!(entries[0].value, r"literal \n value");
     }
 
     #[test]

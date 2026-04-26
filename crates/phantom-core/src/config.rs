@@ -5,7 +5,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The `.phantom.toml` project config file.
+///
+/// `#[serde(deny_unknown_fields)]` is set so that typos like `patern` (vs
+/// `pattern`) fail loudly at load time rather than silently disabling a
+/// protection (audit F15).
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PhantomConfig {
     pub phantom: PhantomMeta,
     /// Service pattern mappings: service name -> ServiceConfig
@@ -24,6 +29,7 @@ pub struct PhantomConfig {
 
 /// Cloud vault sync configuration.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CloudConfig {
     /// Last synced version number (managed by CLI)
     #[serde(default)]
@@ -31,6 +37,7 @@ pub struct CloudConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PhantomMeta {
     pub version: String,
     /// Project identifier (hash of project path, for vault namespacing)
@@ -39,6 +46,7 @@ pub struct PhantomMeta {
 
 /// Configuration for how a secret maps to an API service.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     /// The env var name holding the secret (e.g., "OPENAI_API_KEY")
     pub secret_key: String,
@@ -312,5 +320,48 @@ mod tests {
         let id2 = PhantomConfig::project_id_from_path(Path::new("/home/user/project-b"));
         assert_ne!(id1, id2);
         assert_eq!(id1.len(), 16);
+    }
+
+    #[test]
+    fn test_deny_unknown_fields_on_phantom_config() {
+        // Top-level typo — e.g. `[phantom]` section with an extra field
+        let bad = r#"
+[phantom]
+version = "1"
+project_id = "abc"
+typo_field = "oops"
+"#;
+        assert!(toml::from_str::<PhantomConfig>(bad).is_err());
+    }
+
+    #[test]
+    fn test_deny_unknown_fields_on_service_config() {
+        // F15 hard case: a typo like `patern` (missing t) would previously
+        // silently disable proxy routing for that service. Now it must fail.
+        let bad = r#"
+[phantom]
+version = "1"
+project_id = "abc"
+
+[services.openai]
+secret_key = "OPENAI_API_KEY"
+patern = "api.openai.com"
+header = "Authorization"
+"#;
+        let err = toml::from_str::<PhantomConfig>(bad)
+            .expect_err("expected deny_unknown_fields to reject `patern`");
+        assert!(
+            err.to_string().contains("patern") || err.to_string().contains("unknown field"),
+            "error should mention the bad field: {err}"
+        );
+    }
+
+    #[test]
+    fn test_valid_config_still_parses() {
+        let config = PhantomConfig::new_with_defaults("test".to_string());
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        // Round-tripping our own output must never trip deny_unknown_fields.
+        let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.services.len(), config.services.len());
     }
 }

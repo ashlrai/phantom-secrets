@@ -34,6 +34,7 @@ impl std::str::FromStr for Platform {
 
 /// Configuration for syncing to a deployment platform.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SyncTarget {
     pub platform: Platform,
     /// Platform API token env var name (e.g., "VERCEL_TOKEN")
