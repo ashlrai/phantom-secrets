@@ -50,8 +50,10 @@ async fn run_async(cmd: &[String]) -> Result<()> {
                     Ok(real_value) => {
                         // Generate a fresh session token for this secret
                         let session_token = PhantomToken::generate();
-                        session_token_to_secret
-                            .insert(session_token.as_str().to_string(), String::from(real_value.as_str()));
+                        session_token_to_secret.insert(
+                            session_token.as_str().to_string(),
+                            String::from(real_value.as_str()),
+                        );
                         env_key_to_session_token
                             .insert(entry.key.clone(), session_token.as_str().to_string());
                         secret_count += 1;

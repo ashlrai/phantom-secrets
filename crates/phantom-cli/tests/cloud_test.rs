@@ -197,12 +197,10 @@ async fn cloud_push_then_pull_round_trip() {
 
     Mock::given(method("GET"))
         .and(path("/vault/pull"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "encrypted_blob": "dGVzdA==",  // base64("test") — decryption will fail, that's ok
-                "version": 1
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "encrypted_blob": "dGVzdA==",  // base64("test") — decryption will fail, that's ok
+            "version": 1
+        })))
         .expect(1)
         .mount(&mock_server)
         .await;

@@ -25,7 +25,10 @@ pub fn read_package_scripts(
     Ok((pkg, scripts))
 }
 
-pub fn write_package_json(pkg_path: &std::path::Path, pkg: &serde_json::Value) -> Result<(), McpError> {
+pub fn write_package_json(
+    pkg_path: &std::path::Path,
+    pkg: &serde_json::Value,
+) -> Result<(), McpError> {
     let pretty = serde_json::to_string_pretty(pkg)
         .map_err(|e| internal_err(format!("Failed to serialize package.json: {e}")))?;
     std::fs::write(pkg_path, format!("{pretty}\n"))

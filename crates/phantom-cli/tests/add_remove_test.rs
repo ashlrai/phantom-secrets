@@ -13,11 +13,7 @@ const VAULT_PASS: &str = "test-integration-passphrase-add-remove";
 
 /// Initialise a fresh project in `dir` and return the TempDir (kept alive).
 fn init_project(dir: &TempDir) {
-    fs::write(
-        dir.path().join(".env"),
-        "SEED_SECRET=sk-seed-value\n",
-    )
-    .expect("write seed .env");
+    fs::write(dir.path().join(".env"), "SEED_SECRET=sk-seed-value\n").expect("write seed .env");
 
     Command::cargo_bin("phantom")
         .expect("binary not found")
@@ -69,10 +65,7 @@ fn remove_makes_key_disappear_from_list() {
         .success();
 
     // Remove it
-    phantom(&dir)
-        .args(["remove", "MY_KEY"])
-        .assert()
-        .success();
+    phantom(&dir).args(["remove", "MY_KEY"]).assert().success();
 
     // List should no longer contain the key
     let output = phantom(&dir).arg("list").assert();

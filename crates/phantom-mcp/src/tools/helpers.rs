@@ -1,6 +1,6 @@
 // ── Error helpers ───────────────────────────────────────────────────
 
-use rmcp::{ErrorData as McpError, model::CallToolResult, model::Content};
+use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
 
 pub fn internal_err(msg: impl Into<String>) -> McpError {
     McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, msg.into(), None)

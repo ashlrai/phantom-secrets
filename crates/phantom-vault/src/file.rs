@@ -268,7 +268,10 @@ mod tests {
             FileVault::new(dir.path(), "test-project", "my-passphrase".to_string()).unwrap();
 
         // Old secret should be accessible through encrypted vault
-        assert_eq!(vault.retrieve("OLD_KEY").unwrap().as_str(), "old-secret-value");
+        assert_eq!(
+            vault.retrieve("OLD_KEY").unwrap().as_str(),
+            "old-secret-value"
+        );
 
         // Legacy JSON file should be deleted
         assert!(!vault_dir.join("test-project.json").exists());
