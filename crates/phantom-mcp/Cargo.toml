@@ -8,7 +8,7 @@ homepage.workspace = true
 authors.workspace = true
 readme = "../../README.md"
 description = "MCP server for Phantom Secrets — lets AI tools manage secrets safely"
-keywords = ["mcp", "model-context-protocol", "secrets", "ai-safety", "claude"]
+keywords = ["mcp", "mcp-server", "secrets", "ai-safety", "claude"]
 categories = ["development-tools", "command-line-utilities"]
 
 [[bin]]
