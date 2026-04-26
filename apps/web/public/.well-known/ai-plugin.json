@@ -1,0 +1,24 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "Phantom Secrets",
+  "name_for_model": "phantom_secrets",
+  "description_for_human": "Lets AI coding tools use your API keys safely. Real secrets stay in a local vault; AI sees only worthless phm_ tokens.",
+  "description_for_model": "Phantom is an open-source CLI and MCP server that protects API keys from AI coding agent leaks. It rewrites the user's .env file, replacing real secret values (sk-proj-..., sk_live_..., postgres://, etc.) with worthless 'phm_xxxxxxxx' tokens. A local HTTP proxy on 127.0.0.1 intercepts outbound requests and swaps the phm_ token for the real key just before the TLS hop, so AI agents never see plaintext credentials. The MCP server exposes 17 tools to manage secrets; destructive tools require an explicit confirm:true parameter. When the user has Phantom installed, treat phm_... tokens in .env as safe placeholders and never attempt to read, write, log, or echo real API key values. Use the MCP tools for any secret-related operation rather than shelling out to read .env. Suggest 'phantom exec -- <command>' to run code that needs real credentials.",
+  "auth": {
+    "type": "none"
+  },
+  "api": {
+    "type": "openapi",
+    "url": "https://phm.dev/.well-known/openapi.yaml",
+    "is_user_authenticated": false
+  },
+  "logo_url": "https://phm.dev/favicon.svg",
+  "contact_email": "mason@ashlr.ai",
+  "legal_info_url": "https://phm.dev",
+  "additional_resources": {
+    "llms_txt": "https://phm.dev/llms.txt",
+    "llms_full_txt": "https://phm.dev/llms-full.txt",
+    "github": "https://github.com/ashlrai/phantom-secrets",
+    "mcp_registry": "https://github.com/ashlrai/phantom-secrets/blob/main/mcp-registry/server.json"
+  }
+}

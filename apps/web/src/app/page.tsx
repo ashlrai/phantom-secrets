@@ -16,9 +16,9 @@ export default function Home() {
       <main>
         <Hero />
         <Transformation />
+        <Features />
         <Install />
         <QuickStart />
-        <Features />
         <Pricing />
         <HowItWorks />
         <CTA />

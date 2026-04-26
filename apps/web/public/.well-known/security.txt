@@ -1,0 +1,6 @@
+Contact: mailto:mason@ashlr.ai
+Expires: 2027-01-01T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://phm.dev/.well-known/security.txt
+Policy: https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md
+Acknowledgments: https://github.com/ashlrai/phantom-secrets/security/advisories

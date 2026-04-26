@@ -116,6 +116,11 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${sans.variable} ${mono.variable}`}>
       <head>
+        {/* AI agents — point them at the canonical machine-readable docs */}
+        <link rel="alternate" type="text/markdown" href="/llms.txt" title="Phantom — LLM context" />
+        <link rel="alternate" type="text/markdown" href="/llms-full.txt" title="Phantom — full LLM reference" />
+        <link rel="alternate" type="application/json" href="/.well-known/ai-plugin.json" title="Phantom AI plugin manifest" />
+
         {/* JSON-LD: SoftwareApplication */}
         <script
           type="application/ld+json"
@@ -161,6 +166,102 @@ export default function RootLayout({
               url: SITE_URL,
               logo: `${SITE_URL}/favicon.svg`,
               sameAs: ["https://github.com/ashlrai/phantom-secrets"],
+            }),
+          }}
+        />
+        {/* JSON-LD: HowTo — install steps, surface for rich Google results
+            and AI agent indexing */}
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "HowTo",
+              name: "Install Phantom Secrets",
+              description:
+                "Set up Phantom so your AI coding tools never see real API keys.",
+              totalTime: "PT1M",
+              tool: [
+                { "@type": "HowToTool", name: "Node.js (for npx)" },
+                { "@type": "HowToTool", name: "Claude Code, Cursor, Windsurf, or Codex" },
+              ],
+              step: [
+                {
+                  "@type": "HowToStep",
+                  name: "Install Phantom and protect your .env",
+                  text: "Run `npx phantom-secrets init` in your project root. Phantom auto-detects API keys, moves them to your OS keychain, and rewrites the .env with phm_ tokens.",
+                },
+                {
+                  "@type": "HowToStep",
+                  name: "Register the MCP server with your editor",
+                  text: "Run `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp` for Claude Code, or paste the JSON into Cursor / Windsurf MCP settings.",
+                },
+                {
+                  "@type": "HowToStep",
+                  name: "Run your code with the proxy injecting real keys",
+                  text: "Use `phantom exec -- <command>` to start a process whose API calls go through the local proxy. The proxy swaps phm_ tokens for real keys at the network layer.",
+                },
+              ],
+            }),
+          }}
+        />
+        {/* JSON-LD: FAQPage — common questions, surfaces in Google AI overviews */}
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "FAQPage",
+              mainEntity: [
+                {
+                  "@type": "Question",
+                  name: "Does Phantom slow down my AI requests?",
+                  acceptedAnswer: {
+                    "@type": "Answer",
+                    text: "About 0.5 ms of proxy overhead per request — not measurable in practice. The proxy is a Rust HTTP server bound to 127.0.0.1.",
+                  },
+                },
+                {
+                  "@type": "Question",
+                  name: "What does AI see when Phantom is installed?",
+                  acceptedAnswer: {
+                    "@type": "Answer",
+                    text: "The .env file contains phm_xxxxxxxx tokens instead of real values. AI tools read those tokens. The local proxy swaps them for real keys just before the outbound TLS connection.",
+                  },
+                },
+                {
+                  "@type": "Question",
+                  name: "What happens if a phm_ token leaks from AI logs?",
+                  acceptedAnswer: {
+                    "@type": "Answer",
+                    text: "Nothing. phm_ tokens are session-scoped placeholders that have no value outside your local proxy. The real key never left your machine.",
+                  },
+                },
+                {
+                  "@type": "Question",
+                  name: "How are real keys stored?",
+                  acceptedAnswer: {
+                    "@type": "Answer",
+                    text: "OS keychain on macOS and Linux (Keychain / Secret Service). Encrypted file fallback for CI and Docker, using ChaCha20-Poly1305 with Argon2id key derivation.",
+                  },
+                },
+                {
+                  "@type": "Question",
+                  name: "Which editors does Phantom work with?",
+                  acceptedAnswer: {
+                    "@type": "Answer",
+                    text: "Claude Code, Cursor, Windsurf, Codex via MCP. Any tool that reads .env files works automatically because Phantom rewrites the file.",
+                  },
+                },
+                {
+                  "@type": "Question",
+                  name: "Is Phantom open source?",
+                  acceptedAnswer: {
+                    "@type": "Answer",
+                    text: "Yes. MIT licensed. Source at github.com/ashlrai/phantom-secrets. Rust workspace — phantom-core, phantom-vault, phantom-proxy, phantom-cli, phantom-mcp.",
+                  },
+                },
+              ],
             }),
           }}
         />

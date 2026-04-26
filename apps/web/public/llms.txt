@@ -1,51 +1,86 @@
 # Phantom
 
-> Open-source CLI that protects API keys from AI coding agent leaks by replacing real secrets with worthless phantom tokens and injecting real credentials via a local HTTP proxy.
+> Open-source CLI that lets AI coding agents use API keys safely. Replaces real secrets in `.env` with worthless `phm_` tokens; a local proxy on 127.0.0.1 swaps the token for the real key just before TLS — so AI tools never see plaintext credentials.
 
-Website: https://phm.dev
-GitHub: https://github.com/ashlrai/phantom-secrets
-Docs: https://phm.dev/docs
-Full LLM context: https://phm.dev/llms-full.txt
+- Site: https://phm.dev
+- GitHub: https://github.com/ashlrai/phantom-secrets
+- Full reference (for ingestion): https://phm.dev/llms-full.txt
+- Architecture diagram: https://phm.dev/architecture-diagram.png
+- License: MIT
 
-## Install
+## Install (10 seconds)
 
 ```
 npx phantom-secrets init
 ```
 
-Or: `brew tap ashlrai/phantom && brew install phantom`
+Alt: `brew tap ashlrai/phantom && brew install phantom`
 
-## MCP Server (17 tools)
+## Editor MCP setup
 
-Setup: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
+| Editor | Command |
+|---|---|
+| Claude Code | `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp` |
+| Cursor / Windsurf | Settings → MCP → `{"phantom":{"command":"npx","args":["phantom-secrets-mcp"]}}` |
+| Codex / other | `npx phantom-secrets init` (any tool that reads `.env`) |
 
-Read-only tools: phantom_list_secrets, phantom_status, phantom_cloud_status, phantom_why, phantom_check, phantom_sync, phantom_doctor
-Init tools: phantom_init, phantom_env
-Destructive tools (require confirm=true): phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_cloud_push, phantom_cloud_pull, phantom_copy_secret, phantom_wrap, phantom_unwrap
+## What an AI agent should do
 
-## How AI Should Behave
+- Treat `phm_…` tokens in `.env` as **safe placeholders**, not broken keys. Don't try to "fix" them.
+- Never read, log, transcribe, or echo a real API key value to a file or chat. The proxy injects them; you don't need them.
+- Use the MCP tools (below) for any secret-related operation. Don't shell out to `cat .env`.
+- Never call a destructive tool without `confirm: true` and explicit user consent.
+- Suggest `phantom exec -- <command>` when running code that needs real credentials.
 
-- NEVER show, log, or write real API key values into code files
-- The `.env` file contains `phm_...` tokens — these are safe placeholders, not broken keys
-- Use `phantom_list_secrets` to see what secrets are available (never shows values)
-- Use `phantom_add_secret` to store a new key (ask user to confirm first)
-- Use `phantom_init` to protect an unprotected `.env` file
-- Suggest `phantom exec -- <command>` to run code with real credentials injected
-- Never call destructive tools (add, remove, rotate, cloud_push, cloud_pull, copy, wrap, unwrap) without confirm=true
+## MCP tools (17 total)
 
-## CLI Commands (27 total)
+Read-only (safe to call freely):
+- `phantom_list_secrets` — names only, never values
+- `phantom_status` — vault and config state
+- `phantom_check` — scan for unprotected secrets
+- `phantom_doctor` — diagnostic checks
+- `phantom_why` — explain a token's origin
+- `phantom_env` — list environment without values
+- `phantom_cloud_status` — cloud sync state
+- `phantom_sync` — preview platform sync
 
-init, exec, start, stop, list, add, remove, reveal, rotate, status, doctor, check, sync, pull, env, setup, login, logout, cloud push, cloud pull, export, import, wrap, unwrap, watch, why, copy
+Init / scaffolding:
+- `phantom_init` — protect a fresh `.env`
+- `phantom_wrap` — convert a plaintext value into a vaulted token
+- `phantom_unwrap` — reverse, requires `confirm`
+
+Destructive (require `confirm: true`):
+- `phantom_add_secret`, `phantom_remove_secret`, `phantom_rotate`
+- `phantom_cloud_push`, `phantom_cloud_pull`
+- `phantom_copy_secret`
+
+## CLI surface (27 commands)
+
+`init · exec · start · stop · list · add · remove · reveal · rotate · status · doctor · check · sync · pull · env · setup · login · logout · cloud push · cloud pull · export · import · wrap · unwrap · watch · why · copy`
+
+## Detection
+
+Phantom auto-classifies env vars by name + value heuristics. Detected: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `STRIPE_SECRET_KEY`, `GITHUB_TOKEN`, `DATABASE_URL`, `AWS_SECRET_KEY`, `VERCEL_TOKEN`, `SUPABASE_KEY`, `MONGODB_URI`, `RAILWAY_TOKEN`, `CLOUDFLARE_API_TOKEN`, `TWILIO_AUTH_TOKEN`, `SENDGRID_API_KEY`, `RESEND_API_KEY`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `CLERK_SECRET_KEY`, `POSTHOG_API_KEY`, `SENTRY_AUTH_TOKEN`, `DATADOG_API_KEY`, `LINEAR_API_KEY`, `NOTION_API_KEY`, `FIGMA_TOKEN`, `XAI_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `PERPLEXITY_API_KEY`, `REPLICATE_API_TOKEN`, `PINECONE_API_KEY`, `NEON_API_KEY`, `UPSTASH_REDIS_TOKEN`, `DOCKER_TOKEN`, `GCP_API_KEY`, `CURSOR_API_KEY`, `WINDSURF_API_KEY`. Non-secrets like `NODE_ENV`, `PORT`, `DEBUG` are left alone.
 
 ## Architecture
 
-5-crate Rust workspace: phantom-core, phantom-vault, phantom-proxy, phantom-cli, phantom-mcp
-- Vault backends: macOS Keychain, Linux Secret Service, encrypted file (CI/Docker)
-- Proxy: HTTP reverse proxy on 127.0.0.1, TLS outbound, streaming/SSE support
-- Encryption: ChaCha20-Poly1305 with Argon2id key derivation
-- Tokens: 256-bit CSPRNG with phm_ prefix
+5-crate Rust workspace:
+
+- `phantom-core` — config (`.phantom.toml`), `.env` parsing, token generation (256-bit CSPRNG, `phm_` prefix)
+- `phantom-vault` — `VaultBackend` trait. macOS Keychain / Linux Secret Service / encrypted file fallback. ChaCha20-Poly1305 + Argon2id.
+- `phantom-proxy` — HTTP reverse proxy on 127.0.0.1. Header + body + URL-param token replacement. Streaming/SSE preserved.
+- `phantom-cli` — `clap` binary, 27 commands.
+- `phantom-mcp` — `rmcp` 1.3 stdio server, 17 tools.
 
 ## Pricing
 
-Free: 1 cloud vault, unlimited local vaults
-Pro ($8/mo): unlimited cloud vaults, multi-device sync
+- Free: local vault, proxy, MCP, 1 cloud vault (≤10 secrets), Vercel/Railway sync
+- Pro $8/mo: unlimited cloud vaults, multi-device sync, vault backup
+- Enterprise: team vaults, audit log, SSO/SAML — `mason@ashlr.ai`
+
+## Documentation
+
+- Getting started: https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md
+- Claude Code guide: https://github.com/ashlrai/phantom-secrets/blob/main/docs/claude-code.md
+- Security model: https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md
+- Architecture: https://github.com/ashlrai/phantom-secrets/blob/main/CLAUDE.md
