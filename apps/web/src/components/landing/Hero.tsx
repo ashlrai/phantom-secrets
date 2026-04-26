@@ -4,6 +4,7 @@ import { posthog } from "@/lib/posthog";
 import { CopyButton } from "./CopyButton";
 import { KEY_ENTRIES } from "./BrandLogos";
 import { Github } from "./Icons";
+import { SocialProof } from "./SocialProof";
 
 export function Hero() {
   return (
@@ -62,6 +63,8 @@ export function Hero() {
             View on GitHub
           </a>
         </div>
+
+        <SocialProof />
       </div>
 
       {/* Two-row counter-rotating marquee of API key cards */}

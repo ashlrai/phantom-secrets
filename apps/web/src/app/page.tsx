@@ -1,4 +1,6 @@
+import { Comparison } from "@/components/landing/Comparison";
 import { CTA } from "@/components/landing/CTA";
+import { FAQ } from "@/components/landing/FAQ";
 import { Features } from "@/components/landing/Features";
 import { Hero } from "@/components/landing/Hero";
 import { HowItWorks } from "@/components/landing/HowItWorks";
@@ -17,10 +19,12 @@ export default function Home() {
         <Hero />
         <Transformation />
         <Features />
+        <Comparison />
         <Install />
         <QuickStart />
         <Pricing />
         <HowItWorks />
+        <FAQ />
         <CTA />
       </main>
       <SiteFooter />
