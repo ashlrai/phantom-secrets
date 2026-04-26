@@ -1,0 +1,3 @@
+# Supabase CLI local-machine state
+.temp/
+.branches/
