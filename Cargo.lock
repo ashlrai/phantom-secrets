@@ -1702,9 +1702,11 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "base64",
+ "chacha20poly1305",
  "colored",
  "phantom-secrets-core",
  "phantom-secrets-vault",
+ "rand 0.8.6",
  "rmcp",
  "schemars",
  "serde",

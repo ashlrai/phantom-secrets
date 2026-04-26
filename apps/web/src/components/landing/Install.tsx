@@ -10,7 +10,7 @@ const TARGETS = [
     label: "Claude Code",
     Logo: ClaudeLogo,
     cmd: "claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp",
-    note: "One command. Claude registers the MCP server and discovers all 17 tools.",
+    note: "One command. Claude registers the MCP server and discovers all 24 tools.",
   },
   {
     id: "cursor",

@@ -1,7 +1,7 @@
 {
   "name": "phantom-secrets-mcp",
   "version": "0.5.1",
-  "description": "MCP server for Phantom Secrets — lets AI coding tools manage API keys safely without ever seeing real values. 17 tools for Claude Code, Cursor, Windsurf, and Codex.",
+  "description": "MCP server for Phantom Secrets — lets AI coding tools manage API keys safely without ever seeing real values. 24 tools for Claude Code, Cursor, Windsurf, and Codex.",
   "bin": {
     "phantom-secrets-mcp": "bin/cli.js",
     "phantom-mcp": "bin/cli.js"

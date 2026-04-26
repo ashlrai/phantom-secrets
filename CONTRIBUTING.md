@@ -30,7 +30,7 @@ crates/
   phantom-core/    Config, .env parsing, tokens, auth, cloud client
   phantom-vault/   Encrypted vault (keychain + file backends)
   phantom-proxy/   HTTP reverse proxy with streaming
-  phantom-mcp/     MCP server for Claude Code (17 tools)
+  phantom-mcp/     MCP server for Claude Code (24 tools)
 apps/
   web/             Next.js backend + landing page (phm.dev)
 ```

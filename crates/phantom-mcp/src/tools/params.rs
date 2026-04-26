@@ -1,4 +1,9 @@
 // ── Parameter schemas ────────────────────────────────────────────────
+//
+// All mutating tools include a `confirm: bool` field that defaults to
+// false. The MCP server returns INVALID_PARAMS unless the calling agent
+// explicitly sets `confirm: true` — defends against prompt-injected
+// instructions in project content silently mutating state.
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct InitParams {
@@ -137,4 +142,53 @@ pub struct SyncParams {
     /// Override project ID for this sync
     #[serde(default)]
     pub project_id: Option<String>,
+}
+
+// ── Team operations ──────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TeamCreateParams {
+    /// Name for the new team (human-readable label)
+    pub name: String,
+    /// Required. Must be true — confirms the user wants to create a new
+    /// team. Creating a team is a billable Pro action.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TeamIdParams {
+    /// Team identifier (UUID)
+    pub team_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TeamInviteParams {
+    /// Team identifier (UUID)
+    pub team_id: String,
+    /// GitHub username of the user to invite (no @ prefix)
+    pub github_login: String,
+    /// Role to assign — "member", "admin", or "owner". Defaults to "member".
+    #[serde(default = "default_member_role")]
+    pub role: String,
+    /// Required. Must be true — confirms the user wants to add this person
+    /// to the team. Defends against prompt-injected instructions silently
+    /// expanding team membership.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+fn default_member_role() -> String {
+    "member".to_string()
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TeamVaultParams {
+    /// Team identifier (UUID)
+    pub team_id: String,
+    /// Required. Must be true — push/pull mutates the team's shared vault
+    /// (push) or overwrites local secrets with the team copy (pull). Both
+    /// are write operations that need user consent.
+    #[serde(default)]
+    pub confirm: bool,
 }

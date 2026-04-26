@@ -6,7 +6,7 @@ Claude Code reads your project directory aggressively. It scans `.env` files, in
 
 Phantom solves this at the source: after `phantom init`, your `.env` contains only worthless phantom tokens (`phm_...`). Claude reads the file, sees the tokens, and cannot leak anything. When your code makes an API call at runtime, the local Phantom proxy swaps the token for the real credential before the request leaves your machine — over TLS, never touching Claude's context.
 
-The MCP integration goes further: Claude gains 17 tools to manage secrets directly, so you can ask Claude to add a key, check vault status, or push to cloud sync without leaving the conversation — and without any real secret value ever appearing in the chat.
+The MCP integration goes further: Claude gains 24 tools to manage secrets directly, so you can ask Claude to add a key, check vault status, or push to cloud sync without leaving the conversation — and without any real secret value ever appearing in the chat.
 
 ---
 
@@ -53,7 +53,7 @@ The proxy starts on `127.0.0.1`, `*_BASE_URL` environment variables are set, and
 
 ---
 
-## The 17 MCP tools Claude gets
+## The 24 MCP tools Claude gets
 
 Once `phantom-secrets-mcp` is registered, Claude can call these tools.
 

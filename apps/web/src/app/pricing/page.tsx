@@ -31,7 +31,7 @@ const TIERS: Tier[] = [
       "Local vault (OS keychain or encrypted file)",
       "Proxy with full streaming support",
       "MCP server for every editor",
-      "27 CLI commands · 17 MCP tools",
+      "27 CLI commands · 24 MCP tools",
       "Unlimited local secrets",
       "1 cloud vault (up to 10 secrets)",
       "Vercel & Railway sync",

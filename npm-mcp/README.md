@@ -78,7 +78,19 @@ Mutating tools (modify vault or `.env`):
 | `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted) |
 | `phantom_cloud_pull` | Pull and decrypt vault from Phantom Cloud |
 
-All tools are read-safe: they never return actual secret values. The AI can manage your secrets lifecycle (add, remove, rotate, sync) without any risk of key exposure.
+Team vault tools (Pro plan; multi-developer shared vaults):
+
+| Tool | Description |
+|------|-------------|
+| `phantom_team_list` | List teams the user belongs to (read-only) |
+| `phantom_team_create` | Create a new team. Caller becomes owner |
+| `phantom_team_members` | List members of a team (read-only) |
+| `phantom_team_invite` | Invite someone to a team by GitHub username |
+| `phantom_team_key_publish` | Register the caller's X25519 public key on a team |
+| `phantom_team_vault_push` | Push the current project's vault to a team (envelope-encrypted to every registered member) |
+| `phantom_team_vault_pull` | Pull the team vault into the local vault |
+
+All tools are read-safe: they never return actual secret values. The AI can manage your secrets lifecycle (add, remove, rotate, sync, share with teams) without any risk of key exposure. Mutating tools require `confirm: true`.
 
 ## How It Works
 

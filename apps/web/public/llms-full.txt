@@ -308,7 +308,7 @@ phantom-cli
   CLI output uses -> (info), ok (success), ! (error), warn (warning) prefixes.
 
 phantom-mcp
-  MCP server using rmcp 1.3 SDK. Stdio transport. 17 tools.
+  MCP server using rmcp 1.3 SDK. Stdio transport. 24 tools.
 
 apps/web
   Next.js backend on Vercel. Supabase for database. Stripe for billing.

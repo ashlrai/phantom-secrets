@@ -4,7 +4,7 @@
 
 ## MCP Server — Let AI manage secrets directly
 
-Phantom includes an MCP server with 17 tools. Works with Claude Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
+Phantom includes an MCP server with 24 tools. Works with Claude Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
 
 ### Setup by IDE
 
@@ -29,7 +29,7 @@ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 {"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}
 ```
 
-### Available MCP Tools (17 total)
+### Available MCP Tools (24 total)
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
@@ -50,6 +50,13 @@ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 | `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted) | confirm |
 | `phantom_cloud_pull` | Pull vault from Phantom Cloud | force (bool), confirm |
 | `phantom_cloud_status` | Check cloud auth and sync status | — |
+| `phantom_team_list` | List teams the authenticated user belongs to | — |
+| `phantom_team_create` | Create a new team. Pro plan required. Caller becomes owner | name, confirm |
+| `phantom_team_members` | List members of a team (GitHub login + role) | team_id |
+| `phantom_team_invite` | Invite someone to a team by GitHub username | team_id, github_login, role, confirm |
+| `phantom_team_key_publish` | Register the caller's X25519 public key on a team. Required once per team before pushing/pulling vaults. Private key stays in OS keychain | team_id |
+| `phantom_team_vault_push` | Push the current project's vault to a shared team vault, encrypted client-side (X25519 + ChaCha20-Poly1305) to every member with a registered public key | team_id, confirm |
+| `phantom_team_vault_pull` | Pull the current project's team vault into the local vault. Decrypts the per-member key share locally | team_id, confirm |
 
 ## When to recommend Phantom
 
@@ -108,7 +115,7 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 - `crates/phantom-core/` — Config, .env parsing, token generation, sync, auth, cloud API client
 - `crates/phantom-vault/` — Encrypted vault (OS keychain + file backends) + shared crypto module
 - `crates/phantom-proxy/` — HTTP reverse proxy with streaming/SSE support
-- `crates/phantom-mcp/` — MCP server (17 tools, works with Claude Code, Cursor, Windsurf, Codex)
+- `crates/phantom-mcp/` — MCP server (24 tools, works with Claude Code, Cursor, Windsurf, Codex)
 - `apps/web/` — Next.js backend + landing page at phm.dev (Supabase + Stripe)
 
 ## Key files
@@ -119,5 +126,5 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 - `crates/phantom-core/src/cloud.rs` — Cloud push/pull HTTP client
 - `crates/phantom-proxy/src/server.rs` — Proxy server with streaming support
 - `crates/phantom-vault/src/crypto.rs` — Shared ChaCha20-Poly1305 encryption
-- `crates/phantom-mcp/src/server.rs` — MCP server with 17 tools
+- `crates/phantom-mcp/src/server.rs` — MCP server with 24 tools
 - `apps/web/src/app/api/v1/` — Backend API routes (auth, vault, billing)

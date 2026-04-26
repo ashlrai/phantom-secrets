@@ -32,7 +32,7 @@ Alt: `brew tap ashlrai/phantom && brew install phantom`
 - Never call a destructive tool without `confirm: true` and explicit user consent.
 - Suggest `phantom exec -- <command>` when running code that needs real credentials.
 
-## MCP tools (17 total)
+## MCP tools (24 total)
 
 Read-only (safe to call freely):
 - `phantom_list_secrets` — names only, never values
@@ -54,6 +54,13 @@ Destructive (require `confirm: true`):
 - `phantom_cloud_push`, `phantom_cloud_pull`
 - `phantom_copy_secret`
 
+Teams (multi-developer shared vaults — Pro plan):
+- `phantom_team_list` — read-only, list teams the user belongs to
+- `phantom_team_members` — read-only, list members of a team
+- `phantom_team_key_publish` — register the user's X25519 pubkey on a team (idempotent; pubkey only — private key stays in OS keychain)
+- `phantom_team_create`, `phantom_team_invite` — require `confirm: true`
+- `phantom_team_vault_push`, `phantom_team_vault_pull` — require `confirm: true`. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305). Server only stores ciphertext.
+
 ## CLI surface (27 commands)
 
 `init · exec · start · stop · list · add · remove · reveal · rotate · status · doctor · check · sync · pull · env · setup · login · logout · cloud push · cloud pull · export · import · wrap · unwrap · watch · why · copy`
@@ -70,7 +77,7 @@ Phantom auto-classifies env vars by name + value heuristics. Detected: `OPENAI_A
 - `phantom-vault` — `VaultBackend` trait. macOS Keychain / Linux Secret Service / encrypted file fallback. ChaCha20-Poly1305 + Argon2id.
 - `phantom-proxy` — HTTP reverse proxy on 127.0.0.1. Header + body + URL-param token replacement. Streaming/SSE preserved.
 - `phantom-cli` — `clap` binary, 27 commands.
-- `phantom-mcp` — `rmcp` 1.3 stdio server, 17 tools.
+- `phantom-mcp` — `rmcp` 1.3 stdio server, 24 tools.
 
 ## Pricing
 

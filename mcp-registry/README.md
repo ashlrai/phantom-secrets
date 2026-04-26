@@ -12,7 +12,7 @@ The MCP server lets AI agents manage this workflow directly, without ever being 
 
 ## Tools
 
-The server exposes 17 tools over MCP stdio transport.
+The server exposes 24 tools over MCP stdio transport.
 
 **Read-only (safe to call anytime, never returns secret values):**
 
@@ -40,6 +40,18 @@ The server exposes 17 tools over MCP stdio transport.
 | `phantom_unwrap` | Reverse a wrap — restore plaintext to `.env` from the vault. |
 | `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted). |
 | `phantom_cloud_pull` | Pull and decrypt vault from Phantom Cloud. |
+
+**Team vaults (Pro plan; multi-developer shared vaults with envelope encryption):**
+
+| Tool | Description |
+|------|-------------|
+| `phantom_team_list` | List teams the authenticated user belongs to. (Read-only.) |
+| `phantom_team_create` | Create a new team. Caller becomes owner. (Mutating, requires `confirm`.) |
+| `phantom_team_members` | List members of a team. (Read-only.) |
+| `phantom_team_invite` | Invite someone to a team by GitHub username. (Mutating, requires `confirm`.) |
+| `phantom_team_key_publish` | Register the caller's X25519 public key on a team. Idempotent. |
+| `phantom_team_vault_push` | Push the current project's vault to a team. Encrypts the vault with a fresh symmetric key, then wraps that key (X25519 + ChaCha20-Poly1305) for every member with a registered public key. (Mutating, requires `confirm`.) |
+| `phantom_team_vault_pull` | Pull the current project's team vault, decrypt the key share with the OS-keychain private key, decrypt the vault, write into the local vault. (Mutating, requires `confirm`.) |
 
 ## Architecture
 

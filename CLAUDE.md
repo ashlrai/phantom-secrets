@@ -29,7 +29,7 @@ Note: `~/.cargo/bin/` prefix is needed because cargo is not in PATH on this mach
 - **phantom-vault** — `VaultBackend` trait with OS keychain (macOS Keychain, Linux Secret Service) and encrypted file fallback
 - **phantom-proxy** — HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, replaces phantom tokens in headers/body with real secrets, forwards over TLS. Uses `hyper` for server, `reqwest` for outbound HTTPS
 - **phantom-cli** — `clap`-based CLI binary. 27 commands: init, exec, start, stop, list, add, remove, reveal, rotate, status, doctor, check, sync, pull, env, setup, login, logout, cloud push, cloud pull, export, import, wrap, unwrap, watch, why, copy, team (list/create/members/invite)
-- **phantom-mcp** — MCP server for Claude Code, Cursor, Windsurf, Codex. Uses `rmcp` 1.3 SDK. Stdio transport. 17 tools: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_copy_secret, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
+- **phantom-mcp** — MCP server for Claude Code, Cursor, Windsurf, Codex. Uses `rmcp` 1.3 SDK. Stdio transport. 24 tools: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_copy_secret, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
 
 ### How the proxy works
 

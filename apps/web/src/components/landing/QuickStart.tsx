@@ -25,7 +25,7 @@ ok  CLAUDE.md updated`,
     out: `$ claude mcp add phantom-secrets-mcp \\
     -- npx phantom-secrets-mcp
 ok  registered phantom-secrets-mcp
-ok  17 tools available to Claude`,
+ok  24 tools available to Claude`,
   },
   {
     n: "03",

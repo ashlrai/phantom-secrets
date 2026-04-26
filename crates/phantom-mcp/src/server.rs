@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use crate::tools::helpers::{internal_err, invalid_params_err, require_confirm, text_result};
 use crate::tools::params::{
     AddSecretParams, CheckParams, CloudPullParams, CloudPushParams, CopySecretParams, DoctorParams,
-    EnvParams, InitParams, RemoveSecretParams, RotateParams, SyncParams, UnwrapParams, WhyParams,
-    WrapParams,
+    EnvParams, InitParams, RemoveSecretParams, RotateParams, SyncParams, TeamCreateParams,
+    TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams, WrapParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -1363,6 +1363,320 @@ impl PhantomMcpServer {
         };
 
         text_result(format!("{status}{config_status}"))
+    }
+
+    // ── Team operations ────────────────────────────────────────────────
+    //
+    // These tools wrap the `phantom team …` CLI surface so an AI agent
+    // can drive the entire team-vault flow (sign in, list, create,
+    // invite, register key, push, pull) without dropping to the shell.
+
+    /// List teams the user belongs to.
+    #[tool(
+        description = "List teams the authenticated user belongs to. Returns team id, name, and the user's role for each. Read-only."
+    )]
+    async fn phantom_team_list(&self) -> Result<CallToolResult, McpError> {
+        let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
+        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let teams = phantom_core::teams::list_teams(&api_base, &token)
+            .await
+            .map_err(|e| internal_err(format!("Failed to list teams: {e}")))?;
+        if teams.is_empty() {
+            return text_result(
+                "No teams yet. Create one with phantom_team_create.".to_string(),
+            );
+        }
+        let mut out = format!("{} team(s):\n", teams.len());
+        for t in &teams {
+            out.push_str(&format!("  {} — \"{}\" ({})\n", t.id, t.name, t.role));
+        }
+        text_result(out)
+    }
+
+    /// Create a new team. Pro-only.
+    #[tool(
+        description = "Create a new team. The authenticated user becomes the owner. Pro plan required. Mutating: requires confirm:true."
+    )]
+    async fn phantom_team_create(
+        &self,
+        Parameters(params): Parameters<TeamCreateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_team_create", params.confirm)?;
+        let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
+        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let team = phantom_core::teams::create_team(&api_base, &token, &params.name)
+            .await
+            .map_err(|e| internal_err(format!("Failed to create team: {e}")))?;
+        text_result(format!(
+            "Created team \"{}\" (id: {}). You are the owner.",
+            team.name, team.id
+        ))
+    }
+
+    /// List members of a team.
+    #[tool(
+        description = "List members of a team by team_id. Returns GitHub login, email, and role for each member. Read-only."
+    )]
+    async fn phantom_team_members(
+        &self,
+        Parameters(params): Parameters<TeamIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
+        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let members = phantom_core::teams::list_members(&api_base, &token, &params.team_id)
+            .await
+            .map_err(|e| internal_err(format!("Failed to list members: {e}")))?;
+        if members.is_empty() {
+            return text_result("No members yet. Invite someone with phantom_team_invite.".to_string());
+        }
+        let mut out = format!("{} member(s):\n", members.len());
+        for m in &members {
+            let email = m.email.as_deref().map(|e| format!(" <{e}>")).unwrap_or_default();
+            out.push_str(&format!("  @{}{} ({})\n", m.github_login, email, m.role));
+        }
+        text_result(out)
+    }
+
+    /// Invite someone to a team by GitHub username.
+    #[tool(
+        description = "Invite someone to a team by GitHub username. Requires owner or admin role. Mutating: requires confirm:true."
+    )]
+    async fn phantom_team_invite(
+        &self,
+        Parameters(params): Parameters<TeamInviteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_team_invite", params.confirm)?;
+        let role = params.role.as_str();
+        if !matches!(role, "member" | "admin" | "owner") {
+            return Err(invalid_params_err(format!(
+                "role must be 'member', 'admin', or 'owner'; got '{role}'"
+            )));
+        }
+        let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
+        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        phantom_core::teams::invite_member(
+            &api_base,
+            &token,
+            &params.team_id,
+            &params.github_login,
+            role,
+        )
+        .await
+        .map_err(|e| internal_err(format!("Failed to invite: {e}")))?;
+        text_result(format!(
+            "Invited @{} to team {} as {}.",
+            params.github_login, params.team_id, role
+        ))
+    }
+
+    /// Register the user's X25519 public key on a team. Required before
+    /// pushing or pulling team vaults. Idempotent.
+    #[tool(
+        description = "Register the caller's team-vault public key on a team they belong to. Required once per team before pushing or pulling vaults. The corresponding private key never leaves the OS keychain."
+    )]
+    async fn phantom_team_key_publish(
+        &self,
+        Parameters(params): Parameters<TeamIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
+        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let kp = phantom_core::auth::get_or_create_team_keypair()
+            .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
+        phantom_core::teams::register_team_key(&api_base, &token, &params.team_id, &kp.public_b64())
+            .await
+            .map_err(|e| internal_err(format!("Failed to register key: {e}")))?;
+        text_result(format!(
+            "Public key registered on team {}.",
+            params.team_id
+        ))
+    }
+
+    /// Push the current project's vault to a team — encrypted client-side
+    /// to every team member that has a registered public key.
+    #[tool(
+        description = "Push the current project's vault to a shared team vault. The vault is encrypted with a fresh symmetric key, then that key is wrapped (X25519 + ChaCha20-Poly1305) for every member with a registered public key. The server only stores ciphertext. Mutating: requires confirm:true."
+    )]
+    async fn phantom_team_vault_push(
+        &self,
+        Parameters(params): Parameters<TeamVaultParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_team_vault_push", params.confirm)?;
+        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        use chacha20poly1305::{
+            aead::{Aead, KeyInit},
+            ChaCha20Poly1305, Nonce,
+        };
+        use rand::RngCore;
+        use std::collections::{BTreeMap, HashMap};
+        use zeroize::Zeroize;
+
+        let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
+        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let kp = phantom_core::auth::get_or_create_team_keypair()
+            .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
+
+        let (config, vault) = self.load_config_and_vault()?;
+        let project_id = config.phantom.project_id.clone();
+
+        // Auto-register our key — keeps team_members.public_key in sync if
+        // it was rotated since the last push.
+        phantom_core::teams::register_team_key(&api_base, &token, &params.team_id, &kp.public_b64())
+            .await
+            .map_err(|e| internal_err(format!("Failed to register own key: {e}")))?;
+
+        let members = phantom_core::teams::list_team_member_keys(
+            &api_base,
+            &token,
+            &params.team_id,
+        )
+        .await
+        .map_err(|e| internal_err(format!("Failed to list member keys: {e}")))?;
+        let recipients: Vec<&phantom_core::teams::TeamMemberKey> =
+            members.iter().filter(|m| m.public_key.is_some()).collect();
+        if recipients.is_empty() {
+            return Err(invalid_params_err(
+                "No team members have registered public keys. Each member should call phantom_team_key_publish first.",
+            ));
+        }
+        let skipped = members.len() - recipients.len();
+
+        let names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to list vault: {e}")))?;
+        if names.is_empty() {
+            return text_result("No secrets to push.".to_string());
+        }
+        let mut secrets = BTreeMap::new();
+        for name in &names {
+            let value = vault
+                .retrieve(name)
+                .map_err(|e| internal_err(format!("Failed to retrieve {name}: {e}")))?;
+            secrets.insert(name.clone(), String::from(value.as_str()));
+        }
+        let mut plaintext = serde_json::to_string(&secrets)
+            .map_err(|e| internal_err(format!("Serialize failed: {e}")))?;
+
+        let sym_key = phantom_core::team_crypto::generate_sym_key();
+        let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher
+            .encrypt(nonce, plaintext.as_bytes())
+            .map_err(|e| internal_err(format!("Encryption failed: {e}")))?;
+        plaintext.zeroize();
+
+        let mut framed = Vec::with_capacity(12 + ciphertext.len());
+        framed.extend_from_slice(&nonce_bytes);
+        framed.extend_from_slice(&ciphertext);
+        let blob_b64 = B64.encode(&framed);
+
+        let mut shares: HashMap<String, phantom_core::team_crypto::KeyShare> = HashMap::new();
+        for m in &recipients {
+            let share = phantom_core::team_crypto::seal_sym_key(
+                &sym_key,
+                m.public_key.as_ref().unwrap(),
+            )
+            .map_err(|e| internal_err(format!("Seal failed: {e}")))?;
+            shares.insert(m.user_id.clone(), share);
+        }
+
+        let new_version = phantom_core::teams::push_team_vault(
+            &api_base,
+            &token,
+            &params.team_id,
+            &project_id,
+            &blob_b64,
+            None,
+            shares,
+        )
+        .await
+        .map_err(|e| internal_err(format!("Push failed: {e}")))?;
+
+        let suffix = if skipped > 0 {
+            format!(" ({skipped} member(s) skipped — no public key registered yet)")
+        } else {
+            String::new()
+        };
+        text_result(format!(
+            "Pushed {} secret(s) to team {} as v{}, wrapped for {} recipient(s).{suffix}",
+            names.len(),
+            params.team_id,
+            new_version,
+            recipients.len()
+        ))
+    }
+
+    /// Pull a team vault into the current project's local vault.
+    #[tool(
+        description = "Pull the current project's team vault into the local vault. Decrypts the per-member key share with the OS keychain's private key, then decrypts the vault and writes secrets locally. Mutating (overwrites local secrets): requires confirm:true."
+    )]
+    async fn phantom_team_vault_pull(
+        &self,
+        Parameters(params): Parameters<TeamVaultParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_team_vault_pull", params.confirm)?;
+        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        use chacha20poly1305::{
+            aead::{Aead, KeyInit},
+            ChaCha20Poly1305, Nonce,
+        };
+        use std::collections::BTreeMap;
+        use zeroize::Zeroize;
+
+        let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
+        let api_base = phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
+        let kp = phantom_core::auth::get_or_create_team_keypair()
+            .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
+
+        let (config, vault) = self.load_config_and_vault()?;
+        let project_id = config.phantom.project_id.clone();
+
+        let pulled = phantom_core::teams::pull_team_vault(
+            &api_base,
+            &token,
+            &params.team_id,
+            &project_id,
+        )
+        .await
+        .map_err(|e| internal_err(format!("Pull failed: {e}")))?
+        .ok_or_else(|| {
+            invalid_params_err(format!(
+                "No team vault for project {project_id} on team {}. Push from a member first.",
+                params.team_id
+            ))
+        })?;
+
+        let sym_key = phantom_core::team_crypto::open_sym_key(&pulled.my_share, &kp)
+            .map_err(|e| internal_err(format!("Decrypt key share failed: {e}")))?;
+        let framed = B64
+            .decode(&pulled.encrypted_blob)
+            .map_err(|e| internal_err(format!("Bad ciphertext base64: {e}")))?;
+        if framed.len() < 12 + 16 {
+            return Err(internal_err("Encrypted blob too short".to_string()));
+        }
+        let (nonce_bytes, ct) = framed.split_at(12);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
+        let mut plaintext = cipher
+            .decrypt(nonce, ct)
+            .map_err(|e| internal_err(format!("Decrypt vault failed: {e}")))?;
+        let secrets: BTreeMap<String, String> = serde_json::from_slice(&plaintext)
+            .map_err(|e| internal_err(format!("Bad vault JSON: {e}")))?;
+        plaintext.zeroize();
+
+        let mut written = 0usize;
+        for (name, value) in &secrets {
+            vault
+                .store(name, value)
+                .map_err(|e| internal_err(format!("Store {name} failed: {e}")))?;
+            written += 1;
+        }
+
+        text_result(format!(
+            "Pulled {written} secret(s) from team {} (v{}). Local vault updated.",
+            params.team_id, pulled.version
+        ))
     }
 }
 

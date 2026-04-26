@@ -8,11 +8,17 @@
 npx phantom-secrets init
 ```
 
-## MCP Server (17 tools)
+## MCP Server (24 tools)
 
 Setup: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
-Tools: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_copy_secret, phantom_doctor, phantom_why, phantom_wrap, phantom_unwrap, phantom_check, phantom_env, phantom_sync, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
+Vault: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_copy_secret
+
+Detection: phantom_doctor, phantom_why, phantom_check, phantom_env
+
+Cloud: phantom_wrap, phantom_unwrap, phantom_sync, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
+
+Teams: phantom_team_list, phantom_team_create, phantom_team_members, phantom_team_invite, phantom_team_key_publish, phantom_team_vault_push, phantom_team_vault_pull
 
 ## CLI (27 commands)
 

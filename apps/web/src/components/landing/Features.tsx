@@ -34,7 +34,7 @@ const FEATURES: Feature[] = [
     ),
     code: `$ claude mcp add phantom-secrets-mcp \\
     -- npx phantom-secrets-mcp
-ok  registered 17 tools`,
+ok  registered 24 tools`,
     logos: [ClaudeLogo, CursorLogo, WindsurfLogo, OpenAILogo],
   },
   {
