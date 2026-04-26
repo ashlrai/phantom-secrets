@@ -1,0 +1,4 @@
+# Adds a "Sponsor" button to the repo sidebar.
+# To enable GitHub Sponsors directly, replace `custom` with `github: ashlrai`
+# after Sponsors is approved on the account.
+custom: ['https://phm.dev']

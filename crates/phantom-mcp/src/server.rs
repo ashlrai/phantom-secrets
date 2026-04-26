@@ -1587,8 +1587,18 @@ mod tests {
                 confirm: true,
             }))
             .unwrap_err();
+        // Two valid rejection paths depending on OS canonicalize semantics:
+        //   Unix: canonicalize fails → "cannot be resolved"
+        //   Some Windows setups: canonicalize succeeds lexically →
+        //     missing .phantom.toml triggers "not phantom-initialized"
+        // Both are correct behavior; both produce INVALID_PARAMS.
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert!(err.message.contains("cannot be resolved"));
+        assert!(
+            err.message.contains("cannot be resolved")
+                || err.message.contains("not phantom-initialized"),
+            "unexpected error message: {}",
+            err.message
+        );
     }
 
     #[test]
