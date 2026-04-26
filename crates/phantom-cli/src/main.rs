@@ -231,6 +231,15 @@ enum Commands {
         #[arg(long, alias = "as")]
         rename: Option<String>,
     },
+
+    /// Open a Phantom page in the browser. Defaults to the dashboard.
+    /// Aliases: dashboard, billing, team, docs, pricing, github, issues, site.
+    /// Any other word becomes https://phm.dev/<word>; full URLs pass through.
+    Open {
+        /// What to open. Defaults to the dashboard if omitted.
+        #[arg(default_value = "")]
+        target: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -351,6 +360,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
         Commands::Unwrap => commands::unwrap::run(),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
+        Commands::Open { target } => commands::open::run(&target),
         Commands::Team { action } => match action {
             TeamAction::List => commands::team::run_list(),
             TeamAction::Create { name } => commands::team::run_create(&name),

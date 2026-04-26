@@ -137,7 +137,7 @@ Add to your MCP configuration:
 
 Phantom works with any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io).
 
-## Cloud Sync
+## Cloud Sync + Dashboard
 
 Sync vaults across machines with end-to-end encryption. The server never sees plaintext.
 
@@ -150,9 +150,40 @@ $ phantom cloud push
 
 $ phantom cloud pull   # on another machine
 # Downloaded and decrypted locally
+
+$ phantom open
+# Opens https://phm.dev/dashboard — read-only view of your projects,
+# vault sizes, last sync, plan tier, and team membership.
 ```
 
 Cloud sync uses ChaCha20-Poly1305 with a client-side passphrase derived via Argon2id. The server stores only ciphertext.
+
+## Team vaults (Pro)
+
+Multiple developers can share a single E2E-encrypted vault per project. Server only ever stores ciphertext + per-member ciphertext shares.
+
+```bash
+$ phantom team create "engineering"
+# Creates a team; you become the owner.
+
+$ phantom team invite <team_id> <github-username>
+# Invites by GitHub login.
+
+$ phantom team key-publish <team_id>
+# Registers your X25519 public key on the team.
+# (Run once per team; the private key stays in the OS keychain.)
+
+$ phantom team vault-push <team_id>
+# Encrypts the current project's vault with a fresh symmetric key,
+# wraps that key (X25519 + ChaCha20-Poly1305) for every member that
+# has a registered public key, then uploads.
+
+$ phantom team vault-pull <team_id>   # on a teammate's machine
+# Pulls, decrypts the per-member share with their private key,
+# decrypts the vault, writes secrets locally.
+```
+
+Membership and pending invites are visible in the read-only dashboard at [phm.dev/dashboard/team](https://phm.dev/dashboard/team).
 
 ## Command Reference
 
@@ -185,6 +216,10 @@ Cloud sync uses ChaCha20-Poly1305 with a client-side passphrase derived via Argo
 | `phantom why <KEY>` | Explain why a key is or is not protected |
 | `phantom copy <KEY>` | Copy a secret to another project's vault |
 | `phantom team list/create/members/invite` | Team vault management |
+| `phantom team key-publish <id>` | Register your X25519 pubkey on a team (once per team) |
+| `phantom team vault-push <id>` | Push current project to shared team vault (E2E encrypted per-member) |
+| `phantom team vault-pull <id>` | Pull team vault into local vault |
+| `phantom open [page]` | Open phm.dev pages in browser (dashboard, billing, team, docs, github, …) |
 
 ## Features
 

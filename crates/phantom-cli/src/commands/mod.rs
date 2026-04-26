@@ -11,6 +11,7 @@ pub mod init;
 pub mod list;
 pub mod login;
 pub mod logout;
+pub mod open;
 pub mod pull;
 pub mod remove;
 pub mod reveal;

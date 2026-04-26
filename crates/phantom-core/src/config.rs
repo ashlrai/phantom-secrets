@@ -141,6 +141,88 @@ impl PhantomConfig {
             },
         );
 
+        // Additional first-class AI providers — every popular model API
+        // ships with default routing so users don't need to hand-author
+        // .phantom.toml entries for the common case.
+
+        services.insert(
+            "xai".to_string(),
+            ServiceConfig {
+                secret_key: "XAI_API_KEY".to_string(),
+                pattern: Some("api.x.ai".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        services.insert(
+            "mistral".to_string(),
+            ServiceConfig {
+                secret_key: "MISTRAL_API_KEY".to_string(),
+                pattern: Some("api.mistral.ai".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        services.insert(
+            "perplexity".to_string(),
+            ServiceConfig {
+                secret_key: "PERPLEXITY_API_KEY".to_string(),
+                pattern: Some("api.perplexity.ai".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        services.insert(
+            "cohere".to_string(),
+            ServiceConfig {
+                secret_key: "COHERE_API_KEY".to_string(),
+                pattern: Some("api.cohere.com".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        services.insert(
+            "replicate".to_string(),
+            ServiceConfig {
+                secret_key: "REPLICATE_API_TOKEN".to_string(),
+                pattern: Some("api.replicate.com".to_string()),
+                header: Some("Authorization".to_string()),
+                // Replicate uses "Token <key>" not "Bearer <key>"
+                header_format: Some("Token {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        services.insert(
+            "huggingface".to_string(),
+            ServiceConfig {
+                secret_key: "HUGGINGFACE_API_KEY".to_string(),
+                pattern: Some("api-inference.huggingface.co".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        services.insert(
+            "google_ai".to_string(),
+            ServiceConfig {
+                secret_key: "GEMINI_API_KEY".to_string(),
+                pattern: Some("generativelanguage.googleapis.com".to_string()),
+                header: Some("x-goog-api-key".to_string()),
+                header_format: Some("{secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
         Self {
             phantom: PhantomMeta {
                 version: "1".to_string(),

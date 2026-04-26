@@ -150,11 +150,63 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     // Detect deployment platforms and suggest sync setup
     prompts::detect_platforms(&project_dir, &cwd);
 
-    println!(
-        "\n{} Run {} to start coding with AI safely.",
-        "next".blue().bold(),
-        "phantom exec -- <your-command>".cyan().bold()
-    );
+    print_next_steps(&config_path);
 
     Ok(())
+}
+
+/// Print a contextual "what's next?" block. Items are conditional on
+/// state — e.g., we don't suggest `phantom login` if the user is already
+/// authenticated, and we promote `phantom cloud push` instead if they
+/// have credentials but no cloud version yet.
+fn print_next_steps(config_path: &Path) {
+    use phantom_core::auth;
+    use phantom_core::config::PhantomConfig;
+
+    let logged_in = auth::load_token().is_some();
+    let has_cloud_version = PhantomConfig::load(config_path)
+        .ok()
+        .and_then(|c| c.cloud)
+        .is_some();
+
+    println!("\n{}", "What's next?".bold());
+
+    let mut step = 1;
+    let mut item = |label: &str, command: &str| {
+        println!(
+            "  {}. {}\n     {}",
+            step.to_string().bold(),
+            label,
+            command.cyan().bold()
+        );
+        step += 1;
+    };
+
+    item(
+        "Run code with secret injection:",
+        "phantom exec -- <your-command>",
+    );
+    item(
+        "Verify everything looks healthy:",
+        "phantom doctor",
+    );
+
+    if !logged_in {
+        item(
+            "Sign in to Phantom Cloud (optional, for E2E-encrypted backups):",
+            "phantom login",
+        );
+    } else if !has_cloud_version {
+        item(
+            "Back up this vault to Phantom Cloud:",
+            "phantom cloud push",
+        );
+    }
+
+    item(
+        "Open your dashboard:",
+        "phantom open",
+    );
+
+    println!();
 }

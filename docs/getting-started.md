@@ -305,6 +305,16 @@ No. Phantom tokens are safe for AI to read. They're random strings that are mean
 
 ---
 
+## Dashboard
+
+Once you've run `phantom login` and `phantom cloud push`, you can see your projects, vault sizes, last sync, plan tier, and team membership at [phm.dev/dashboard](https://phm.dev/dashboard). It's read-only — every mutation still happens via the CLI — but it's useful for "wait, which projects do I have backed up?" moments.
+
+```bash
+$ phantom open
+# Opens https://phm.dev/dashboard in your browser. Aliases:
+# phantom open billing | team | docs | github | pricing
+```
+
 ## Next steps
 
 - [Claude Code integration](./claude-code.md) — MCP tools, workflow examples, what Claude can and cannot do
