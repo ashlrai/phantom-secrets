@@ -34,6 +34,8 @@ arboard = { version = "3", default-features = false }
 indicatif = "0.17"
 base64 = { workspace = true }
 notify = "7"
+chacha20poly1305 = "0.10"
+rand = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2"

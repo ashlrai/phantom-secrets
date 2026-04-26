@@ -28,3 +28,7 @@ base64 = { workspace = true }
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
 tokio = { workspace = true }
 tempfile = "3"
+
+# Team-vault envelope encryption: X25519 + ChaCha20-Poly1305 via crypto_box
+# (sealed-box style with ephemeral sender keys per push for forward secrecy).
+crypto_box = { version = "0.9", features = ["chacha20"] }

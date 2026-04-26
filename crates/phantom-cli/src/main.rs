@@ -257,6 +257,23 @@ enum TeamAction {
         #[arg(long, default_value = "member")]
         role: String,
     },
+    /// Register your team-vault public key on a team you belong to.
+    /// Run this once per team before pushing or pulling vaults.
+    KeyPublish {
+        /// Team ID
+        team_id: String,
+    },
+    /// Push the current project's vault to a team (E2E encrypted to every
+    /// member that has a registered public key).
+    VaultPush {
+        /// Team ID
+        team_id: String,
+    },
+    /// Pull the current project's team vault into your local vault.
+    VaultPull {
+        /// Team ID
+        team_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -343,6 +360,9 @@ fn main() -> anyhow::Result<()> {
                 github_login,
                 role,
             } => commands::team::run_invite(&team_id, &github_login, &role),
+            TeamAction::KeyPublish { team_id } => commands::team::run_key_publish(&team_id),
+            TeamAction::VaultPush { team_id } => commands::team::run_vault_push(&team_id),
+            TeamAction::VaultPull { team_id } => commands::team::run_vault_pull(&team_id),
         },
     }
 }

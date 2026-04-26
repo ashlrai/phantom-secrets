@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 const KEYCHAIN_SERVICE: &str = "phantom-cloud";
 const TOKEN_KEY: &str = "access_token";
 const CLOUD_VAULT_KEY_PREFIX: &str = "phantom-cloud:vault_key";
+const TEAM_PUBKEY: &str = "phantom-cloud:team_pubkey";
+const TEAM_SECKEY: &str = "phantom-cloud:team_seckey";
 
 #[derive(Debug, Deserialize)]
 pub struct DeviceFlowResponse {
@@ -156,6 +158,30 @@ pub fn get_or_create_cloud_passphrase() -> Result<String> {
         .map_err(|e| PhantomError::AuthError(format!("Failed to store vault key: {e}")))?;
 
     Ok(passphrase)
+}
+
+/// Load the user's long-lived team-vault X25519 keypair, generating
+/// and persisting one in the OS keychain on first call. The private key
+/// never leaves the keychain.
+pub fn get_or_create_team_keypair() -> Result<crate::team_crypto::MemberKeypair> {
+    let pub_entry = keyring::Entry::new(KEYCHAIN_SERVICE, TEAM_PUBKEY)
+        .map_err(|e| PhantomError::AuthError(format!("Keychain error: {e}")))?;
+    let sec_entry = keyring::Entry::new(KEYCHAIN_SERVICE, TEAM_SECKEY)
+        .map_err(|e| PhantomError::AuthError(format!("Keychain error: {e}")))?;
+
+    if let (Ok(pub_b64), Ok(sec_b64)) = (pub_entry.get_password(), sec_entry.get_password()) {
+        return crate::team_crypto::MemberKeypair::from_base64(&pub_b64, &sec_b64);
+    }
+
+    // First use — generate and persist.
+    let kp = crate::team_crypto::MemberKeypair::generate();
+    pub_entry
+        .set_password(&kp.public_b64())
+        .map_err(|e| PhantomError::AuthError(format!("Failed to store team pubkey: {e}")))?;
+    sec_entry
+        .set_password(&kp.secret_b64())
+        .map_err(|e| PhantomError::AuthError(format!("Failed to store team seckey: {e}")))?;
+    Ok(kp)
 }
 
 /// Get the API base URL from env var or default.
