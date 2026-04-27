@@ -16,6 +16,42 @@ function Write-PhSay  { param([string]$m) Write-Host "  -> phantom: $m" -Foregro
 function Write-PhWarn { param([string]$m) Write-Host "  !  phantom: $m" -ForegroundColor Yellow }
 function Write-PhDie  { param([string]$m) Write-Host "  X  phantom: $m" -ForegroundColor Red; exit 1 }
 
+# Convert a Windows path (C:\Users\foo\bin) to a Git Bash / MSYS path
+# (/c/Users/foo/bin). Git Bash inherits the Windows User PATH only at
+# shell-start time -- so an already-running bash (e.g. Claude Code on
+# Windows shells out through Git Bash) does NOT see new entries until the
+# session restarts. Writing an explicit export to ~/.bashrc with the
+# unix-style path covers that gap.
+function ConvertTo-BashPath {
+    param([Parameter(Mandatory)][string]$WinPath)
+    $p = $WinPath -replace '\\', '/'
+    if ($p -match '^([A-Za-z]):/(.*)$') {
+        $drive = $Matches[1].ToLower()
+        return "/$drive/$($Matches[2])"
+    }
+    return $p
+}
+
+function Add-ToBashrcPath {
+    param([Parameter(Mandatory)][string]$WinBinDir)
+    # NB: $home is a PowerShell read-only automatic variable -- using a different name.
+    $homeDir = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+    if (-not $homeDir) { return }
+    $bashrc = Join-Path $homeDir '.bashrc'
+    $bashPath = ConvertTo-BashPath -WinPath $WinBinDir
+    $marker = "# phantom-secrets PATH ($bashPath)"
+    try {
+        if ((Test-Path $bashrc) -and (Select-String -Path $bashrc -SimpleMatch $marker -Quiet -ErrorAction SilentlyContinue)) {
+            return
+        }
+        $line = "`n$marker`nexport PATH=`"$bashPath`:`$PATH`"`n"
+        Add-Content -LiteralPath $bashrc -Value $line -Encoding UTF8
+        Write-PhSay "wired $bashPath into $bashrc (for Git Bash / Claude Code)"
+    } catch {
+        Write-PhWarn "could not update $bashrc -- add '$bashPath' to your bash PATH manually. ($_)"
+    }
+}
+
 $Repo       = if ($env:PHANTOM_REPO)        { $env:PHANTOM_REPO }        else { 'ashlrai/phantom-secrets' }
 $InstallDir = if ($env:PHANTOM_INSTALL_DIR) { $env:PHANTOM_INSTALL_DIR } else { Join-Path $env:USERPROFILE '.phantom-secrets\bin' }
 $PinTag     = $env:PHANTOM_TAG
@@ -110,6 +146,11 @@ if ($userPathDirs -notcontains $InstallDir) {
     Write-PhSay "added $InstallDir to user PATH"
 }
 
+# Mirror the install dir into Git Bash's PATH so an already-running bash
+# (Claude Code on Windows shells out through Git Bash) picks up phantom on
+# next session start, not just whenever Windows User PATH propagates.
+Add-ToBashrcPath -WinBinDir $InstallDir
+
 # -----------------------------------------------------------------------
 # 6. Verify.
 # -----------------------------------------------------------------------
@@ -120,7 +161,7 @@ if (Test-Path $exe) {
         $ver = (& $exe --version) 2>$null
         if (-not $ver) { $ver = 'unknown' }
         Write-PhSay "done. $ver"
-        Write-PhSay 'open a new shell, then try: phantom --help'
+        Write-PhSay 'restart your terminal -- and your Claude Code session, if any -- then try: phantom --help'
     } catch {
         Write-PhWarn "binary installed but did not run cleanly. Try: $exe --help"
     }
