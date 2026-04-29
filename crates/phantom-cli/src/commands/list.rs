@@ -1,8 +1,15 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use serde::Serialize;
 
-pub fn run() -> Result<()> {
+#[derive(Serialize)]
+struct SecretEntry<'a> {
+    name: &'a str,
+    detected_service: Option<&'a str>,
+}
+
+pub fn run(json: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -17,6 +24,24 @@ pub fn run() -> Result<()> {
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
     let names = vault.list().context("Failed to list secrets")?;
+
+    if json {
+        let entries: Vec<SecretEntry> = names
+            .iter()
+            .map(|name| SecretEntry {
+                name,
+                detected_service: config
+                    .services
+                    .iter()
+                    .find(|(_, c)| c.secret_key == *name)
+                    .map(|(svc, _)| svc.as_str()),
+            })
+            .collect();
+        let out = serde_json::to_string_pretty(&entries)
+            .context("Failed to serialize secret list to JSON")?;
+        println!("{}", out);
+        return Ok(());
+    }
 
     if names.is_empty() {
         println!("{} No secrets stored.", "!".yellow().bold());
