@@ -1,4 +1,5 @@
 use crate::error::{PhantomError, Result};
+use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -50,6 +51,12 @@ pub struct SyncTarget {
     /// Railway-specific: environment ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment_id: Option<String>,
+    /// Optional key-name glob patterns. When non-empty only secrets whose
+    /// names match at least one pattern are pushed. Patterns use standard
+    /// glob syntax (*, ?, [abc]). Example: ["STRIPE_*", "*_KEY"].
+    /// Configured via `only = ["STRIPE_*"]` in the [[sync]] toml block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub only: Vec<String>,
 }
 
 fn default_targets() -> Vec<String> {
@@ -80,6 +87,40 @@ impl std::fmt::Display for SyncStatus {
             SyncStatus::Error(e) => write!(f, "error: {e}"),
         }
     }
+}
+
+/// Filter a secrets map by a list of glob patterns.
+///
+/// When `patterns` is empty every key passes through (no filter applied).
+/// When non-empty a key is included if it matches **any** pattern
+/// (patterns are OR-ed together). Invalid glob patterns are silently
+/// skipped — a warning is emitted via `tracing::warn!`.
+pub fn filter_by_only<'a>(
+    secrets: &'a BTreeMap<String, String>,
+    patterns: &[String],
+) -> BTreeMap<String, &'a String> {
+    if patterns.is_empty() {
+        // No filter — pass everything through.
+        return secrets.iter().map(|(k, v)| (k.clone(), v)).collect();
+    }
+
+    // Pre-compile patterns; skip any that are invalid glob syntax.
+    let compiled: Vec<Pattern> = patterns
+        .iter()
+        .filter_map(|p| match Pattern::new(p) {
+            Ok(pat) => Some(pat),
+            Err(e) => {
+                tracing::warn!("Ignoring invalid --only pattern {:?}: {}", p, e);
+                None
+            }
+        })
+        .collect();
+
+    secrets
+        .iter()
+        .filter(|(key, _)| compiled.iter().any(|pat| pat.matches(key)))
+        .map(|(k, v)| (k.clone(), v))
+        .collect()
 }
 
 /// Sync secrets to Vercel using their REST API.
@@ -421,4 +462,63 @@ pub async fn pull_from_railway(
     }
 
     Ok(secrets)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_secrets(keys: &[&str]) -> BTreeMap<String, String> {
+        keys.iter()
+            .map(|k| (k.to_string(), "dummy".to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn filter_empty_patterns_passes_all() {
+        let secrets = make_secrets(&["STRIPE_KEY", "OPENAI_KEY", "DATABASE_URL"]);
+        let filtered = filter_by_only(&secrets, &[]);
+        assert_eq!(filtered.len(), 3);
+    }
+
+    #[test]
+    fn filter_stripe_glob_matches_only_stripe() {
+        let secrets = make_secrets(&["STRIPE_KEY", "STRIPE_WEBHOOK_SECRET", "OPENAI_KEY"]);
+        let patterns = vec!["STRIPE_*".to_string()];
+        let filtered = filter_by_only(&secrets, &patterns);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains_key("STRIPE_KEY"));
+        assert!(filtered.contains_key("STRIPE_WEBHOOK_SECRET"));
+        assert!(!filtered.contains_key("OPENAI_KEY"));
+    }
+
+    #[test]
+    fn filter_key_suffix_glob() {
+        let secrets = make_secrets(&["STRIPE_KEY", "OPENAI_KEY", "DATABASE_URL"]);
+        let patterns = vec!["*_KEY".to_string()];
+        let filtered = filter_by_only(&secrets, &patterns);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains_key("STRIPE_KEY"));
+        assert!(filtered.contains_key("OPENAI_KEY"));
+        assert!(!filtered.contains_key("DATABASE_URL"));
+    }
+
+    #[test]
+    fn filter_multiple_patterns_are_ored() {
+        let secrets = make_secrets(&["STRIPE_KEY", "OPENAI_KEY", "DATABASE_URL"]);
+        let patterns = vec!["STRIPE_*".to_string(), "DATABASE_*".to_string()];
+        let filtered = filter_by_only(&secrets, &patterns);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains_key("STRIPE_KEY"));
+        assert!(filtered.contains_key("DATABASE_URL"));
+        assert!(!filtered.contains_key("OPENAI_KEY"));
+    }
+
+    #[test]
+    fn filter_no_matches_returns_empty() {
+        let secrets = make_secrets(&["STRIPE_KEY", "OPENAI_KEY"]);
+        let patterns = vec!["RAILWAY_*".to_string()];
+        let filtered = filter_by_only(&secrets, &patterns);
+        assert!(filtered.is_empty());
+    }
 }
