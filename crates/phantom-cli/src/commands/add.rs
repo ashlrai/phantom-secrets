@@ -2,7 +2,29 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 
-pub fn run(name: &str, value: &str) -> Result<()> {
+/// Returns true when fd 0 is connected to a terminal (not a pipe or redirect).
+fn stdin_is_tty() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: isatty is always safe to call with a valid fd number.
+        unsafe { libc::isatty(0) != 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        // On non-POSIX targets assume tty; users must pass --stdin explicitly
+        // when piping on those platforms.
+        true
+    }
+}
+
+/// `phantom add KEY [VALUE]`
+///
+/// When VALUE is omitted:
+///   - If stdin is a tty, prompt silently on stderr via rpassword.
+///   - If `--stdin` is passed, read one line from stdin (piped use).
+///   - If stdin is not a tty and `--stdin` was not passed, bail with a
+///     clear error so CI jobs don't hang silently.
+pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -13,6 +35,45 @@ pub fn run(name: &str, value: &str) -> Result<()> {
         );
     }
 
+    // ── Resolve the secret value ─────────────────────────────────────
+    let value: String = if let Some(v) = value_arg {
+        // Positional value provided — backward-compatible path.
+        v.to_string()
+    } else if from_stdin {
+        // --stdin: read one line from a pipe (e.g. `echo "$VAL" | phantom add KEY --stdin`).
+        // Trim the trailing newline only — preserve any internal whitespace.
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_line(&mut buf)
+            .context("Failed to read value from stdin")?;
+        let trimmed = buf.trim_end_matches('\n').trim_end_matches('\r').to_string();
+        if trimmed.is_empty() {
+            anyhow::bail!("Received empty value on stdin — aborting.");
+        }
+        trimmed
+    } else {
+        // Interactive: prompt on stderr so that stdout can still be captured,
+        // and read silently from the controlling tty via rpassword.
+        if !stdin_is_tty() {
+            anyhow::bail!(
+                "stdin is not a terminal. \
+                 Pass the value as a positional argument or use {} \
+                 to read it from a pipe.",
+                "--stdin".cyan().bold()
+            );
+        }
+        let prompt = format!("Value for {name}: ");
+        // rpassword::prompt_password_stderr opens /dev/tty directly so it
+        // works even if stdout is redirected.
+        let secret = rpassword::prompt_password(&prompt)
+            .context("Failed to read secret interactively")?;
+        if secret.is_empty() {
+            anyhow::bail!("Empty value — aborting.");
+        }
+        secret
+    };
+
+    // ── Store in vault ───────────────────────────────────────────────
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
@@ -26,7 +87,7 @@ pub fn run(name: &str, value: &str) -> Result<()> {
     }
 
     vault
-        .store(name, value)
+        .store(name, &value)
         .context(format!("Failed to store secret: {name}"))?;
 
     println!(
@@ -46,7 +107,7 @@ pub fn run(name: &str, value: &str) -> Result<()> {
             .lines()
             .any(|l| l.trim().starts_with(&format!("{name}=")))
         {
-            // Key exists, update its value to the phantom token
+            // Key exists — replace its value with the phantom token.
             let new_content: String = content
                 .lines()
                 .map(|line| {
@@ -61,7 +122,7 @@ pub fn run(name: &str, value: &str) -> Result<()> {
                 + "\n";
             std::fs::write(&env_path, new_content)?;
         } else {
-            // Append new entry
+            // Append new entry.
             let mut content = content;
             if !content.is_empty() && !content.ends_with('\n') {
                 content.push('\n');
@@ -78,4 +139,13 @@ pub fn run(name: &str, value: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// Verify the tty-check helper compiles and is callable without panicking.
+    #[test]
+    fn stdin_tty_check_does_not_panic() {
+        let _ = super::stdin_is_tty();
+    }
 }
