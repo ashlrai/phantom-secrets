@@ -1,6 +1,7 @@
 pub mod add;
 pub mod check;
 pub mod cloud;
+pub mod completion;
 pub mod copy;
 pub mod doctor;
 pub mod env;

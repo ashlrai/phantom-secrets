@@ -20,6 +20,7 @@ phantom-core = { workspace = true }
 phantom-vault = { workspace = true }
 phantom-proxy = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

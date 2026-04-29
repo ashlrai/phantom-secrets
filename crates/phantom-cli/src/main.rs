@@ -251,6 +251,19 @@ enum Commands {
         check_only: bool,
     },
 
+    /// Print a shell-completion script to stdout.
+    ///
+    /// Source the output from your shell rc, e.g.
+    ///   bash:       phantom completion bash > ~/.local/share/bash-completion/completions/phantom
+    ///   zsh:        phantom completion zsh > "${fpath[1]}/_phantom"
+    ///   fish:       phantom completion fish > ~/.config/fish/completions/phantom.fish
+    ///   powershell: phantom completion powershell | Out-String | Invoke-Expression
+    Completion {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+
     /// Internal: clear the system clipboard after N seconds. Spawned by
     /// `phantom reveal --copy` so the parent CLI can exit immediately while a
     /// detached child waits, then clears. Hidden from `--help`.
@@ -382,6 +395,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
+        Commands::Completion { shell } => commands::completion::run(shell),
         Commands::ClearClipboardAfter { secs } => commands::reveal::run_clear_after(secs),
         Commands::Team { action } => match action {
             TeamAction::List => commands::team::run_list(),
