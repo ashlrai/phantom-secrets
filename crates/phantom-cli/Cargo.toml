@@ -37,7 +37,6 @@ indicatif = "0.17"
 base64 = { workspace = true }
 notify = "7"
 rpassword = "7"
-libc = "0.2"
 self_update = { version = "0.42", default-features = false, features = ["rustls", "compression-flate2", "compression-zip-deflate", "archive-tar", "archive-zip"] }
 
 [dev-dependencies]

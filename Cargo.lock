@@ -1804,7 +1804,6 @@ dependencies = [
  "colored",
  "dirs",
  "indicatif",
- "libc",
  "notify",
  "open",
  "phantom-secrets-core",

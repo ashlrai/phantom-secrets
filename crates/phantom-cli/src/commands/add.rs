@@ -1,20 +1,11 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use std::io::IsTerminal;
 
-/// Returns true when fd 0 is connected to a terminal (not a pipe or redirect).
+/// Returns true when stdin is connected to a terminal (not a pipe or redirect).
 fn stdin_is_tty() -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: isatty is always safe to call with a valid fd number.
-        unsafe { libc::isatty(0) != 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        // On non-POSIX targets assume tty; users must pass --stdin explicitly
-        // when piping on those platforms.
-        true
-    }
+    std::io::stdin().is_terminal()
 }
 
 /// `phantom add KEY [VALUE]`
