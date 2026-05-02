@@ -58,7 +58,7 @@ phantom --version
 ```
 
 
-## CLI Commands (27 total)
+## CLI Commands (30 total)
 
 ### phantom init
 Read .env, store real secrets in vault, rewrite with phantom tokens, create .phantom.toml.
@@ -78,10 +78,14 @@ phantom stop
 
 ### phantom list
 Show secret names stored in vault. Never shows values.
+Options: --json (emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded)
 
-### phantom add <KEY> <VALUE>
+### phantom add <KEY> [VALUE]
 Add a secret to the vault. Writes phantom token to .env.
-Example: phantom add STRIPE_SECRET_KEY sk_live_abc123...
+With no positional VALUE, prompts silently on the controlling terminal via rpassword — the value never enters shell history or `ps aux`.
+Example (interactive, hidden input): phantom add STRIPE_SECRET_KEY
+Example (positional, backward-compatible): phantom add STRIPE_SECRET_KEY sk_live_abc123...
+Options: --stdin (read one line from a piped stdin; CI-friendly: `echo "$VAL" | phantom add KEY --stdin`)
 
 ### phantom remove <KEY>
 Remove a secret from the vault permanently.
@@ -102,13 +106,16 @@ Health check: config validity, vault access, .env protection, .gitignore, .env.e
 Options: --fix (auto-fix safe issues)
 
 ### phantom check
-Pre-commit hook. Scans .env files for unprotected real secrets. Exit code 1 if found.
+Scans for unprotected real secrets. Exit code 1 if found.
+Options: --staged (read content from the git index instead of the working tree; staged .env files are also scanned — suitable for pre-commit hooks), --runtime (detect phantom tokens in the current environment when the proxy is not running, indicating a leak path)
 Example: phantom check --staged
 
 ### phantom sync
 Push real secrets to deployment platforms.
+Options: --only PATTERN (glob, repeatable; multiple flags OR-ed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`)
 Example: phantom sync --platform vercel --project prj_abc123
 Example: phantom sync --platform railway --project <id>
+Example (filtered): phantom sync --only "STRIPE_*" --only "SENDGRID_*"
 
 ### phantom pull
 Pull secrets from deployment platforms into local vault.
@@ -167,11 +174,20 @@ Explain why an environment variable is or isn't protected (shows classification 
 Copy a secret to another phantom-initialized project without exposing the value.
 Options: --rename <newname>
 
-### phantom team list / create / members / invite
-Team management commands. [TBD: requires Pro tier]
+### phantom team list / create / members / invite / key-publish / vault-push / vault-pull
+Multi-developer shared-vault commands (Pro plan). `list` and `members` are read-only. `create` and `invite` are mutating (require explicit user confirmation when called via MCP). `key-publish` is one-time setup that registers this device's X25519 public key with the team — pubkey only, the private key stays in the OS keychain. `vault-push` wraps the project's secrets with a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305) and uploads ciphertext only; `vault-pull` is the corresponding download/decrypt.
+
+### phantom open [target]
+Open a Phantom page in the browser. Aliases: `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, `site`. Any other word becomes `https://phm.dev/<word>`; full URLs pass through.
+
+### phantom upgrade [--check-only] [--force]
+Self-replace this binary with the latest GitHub release.
+
+### phantom completion <bash|zsh|fish|powershell|elvish>
+Print a shell-completion script to stdout. Source from your shell rc; see the README for per-shell paths.
 
 
-## MCP Server — 17 Tools
+## MCP Server — 25 Tools
 
 Install: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
@@ -273,6 +289,40 @@ phantom_unwrap
   Params: confirm (bool, must be true)
   Effect: restores and removes :raw entries.
 
+### Team tools (Pro plan, multi-developer shared vaults)
+
+phantom_team_list
+  List teams the authenticated user belongs to. Returns team id, name, and the user's role for each.
+  Read-only.
+
+phantom_team_members
+  List members of a team by team_id. Returns GitHub login, email, and role for each.
+  Read-only. Params: team_id
+
+phantom_team_key_publish
+  One-time setup: register this device's X25519 public key with the team so encrypted vaults can be addressed to it.
+  Idempotent — safe to call again after a key rotation. Pubkey only; the private key stays in the OS keychain.
+  Params: team_id
+
+phantom_team_create
+  Create a new team. The authenticated user becomes the owner. Pro plan required.
+  Params: name, confirm (bool, must be true)
+
+phantom_team_invite
+  Invite someone to a team by GitHub username. Requires owner or admin role.
+  Params: team_id, github_login, role ("member" | "admin" | "owner"), confirm (bool, must be true)
+
+phantom_team_vault_push
+  Push this project's secrets to the shared team vault so all members can pull them.
+  Encrypts client-side for each member who has registered a key (phantom_team_key_publish).
+  Server only stores ciphertext.
+  Params: team_id, confirm (bool, must be true)
+
+phantom_team_vault_pull
+  Download and decrypt the team vault for this project into the local vault.
+  Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push.
+  Params: team_id, confirm (bool, must be true). Overwrites local secrets.
+
 ### MCP setup by IDE
 
 Claude Code:
@@ -307,11 +357,11 @@ phantom-proxy
   Full streaming/SSE support for OpenAI and Anthropic APIs.
 
 phantom-cli
-  clap-based CLI binary. 27 commands. Uses colored for output, anyhow for error handling.
+  clap-based CLI binary. 30 commands. Uses colored for output, anyhow for error handling.
   CLI output uses -> (info), ok (success), ! (error), warn (warning) prefixes.
 
 phantom-mcp
-  MCP server using rmcp 1.3 SDK. Stdio transport. 24 tools.
+  MCP server using rmcp 1.3 SDK. Stdio transport. 25 tools.
 
 apps/web
   Next.js backend on Vercel. Supabase for database. Stripe for billing.

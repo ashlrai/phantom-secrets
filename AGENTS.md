@@ -4,7 +4,7 @@
 
 ## MCP Server — Let AI manage secrets directly
 
-Phantom includes an MCP server with 24 tools. Works with Claude Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
+Phantom includes an MCP server with 25 tools. Works with Claude Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
 
 ### Setup by IDE
 
@@ -111,11 +111,11 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 
 ## Project structure
 
-- `crates/phantom-cli/` — CLI binary (27 commands including login, cloud push/pull, export/import)
+- `crates/phantom-cli/` — CLI binary (30 commands including login, cloud push/pull, export/import)
 - `crates/phantom-core/` — Config, .env parsing, token generation, sync, auth, cloud API client
 - `crates/phantom-vault/` — Encrypted vault (OS keychain + file backends) + shared crypto module
 - `crates/phantom-proxy/` — HTTP reverse proxy with streaming/SSE support
-- `crates/phantom-mcp/` — MCP server (24 tools, works with Claude Code, Cursor, Windsurf, Codex)
+- `crates/phantom-mcp/` — MCP server (25 tools, works with Claude Code, Cursor, Windsurf, Codex)
 - `apps/web/` — Next.js backend + landing page at phm.dev (Supabase + Stripe)
 
 ## Key files
@@ -126,5 +126,5 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 - `crates/phantom-core/src/cloud.rs` — Cloud push/pull HTTP client
 - `crates/phantom-proxy/src/server.rs` — Proxy server with streaming support
 - `crates/phantom-vault/src/crypto.rs` — Shared ChaCha20-Poly1305 encryption
-- `crates/phantom-mcp/src/server.rs` — MCP server with 24 tools
+- `crates/phantom-mcp/src/server.rs` — MCP server with 25 tools
 - `apps/web/src/app/api/v1/` — Backend API routes (auth, vault, billing)

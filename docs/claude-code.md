@@ -6,7 +6,7 @@ Claude Code reads your project directory aggressively. It scans `.env` files, in
 
 Phantom solves this at the source: after `phantom init`, your `.env` contains only worthless phantom tokens (`phm_...`). Claude reads the file, sees the tokens, and cannot leak anything. When your code makes an API call at runtime, the local Phantom proxy swaps the token for the real credential before the request leaves your machine — over TLS, never touching Claude's context.
 
-The MCP integration goes further: Claude gains 24 tools to manage secrets directly, so you can ask Claude to add a key, check vault status, or push to cloud sync without leaving the conversation — and without any real secret value ever appearing in the chat.
+The MCP integration goes further: Claude gains 25 tools to manage secrets directly, so you can ask Claude to add a key, check vault status, or push to cloud sync without leaving the conversation — and without any real secret value ever appearing in the chat.
 
 ---
 
@@ -163,7 +163,7 @@ These limits are intentional and enforced at the protocol level.
 
 **Cannot read real secret values.** `phantom_list_secrets` returns names only. There is no MCP tool that returns a secret value. Claude can never retrieve a plaintext credential, even if instructed to.
 
-**Cannot call mutating tools without `confirm: true`.** `phantom_init`, `phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_copy_secret`, `phantom_env`, `phantom_wrap`, `phantom_unwrap`, and team write tools all hard-fail if `confirm` is not explicitly set to `true`. Claude must ask you before proceeding — this prevents prompt injection attacks from silently modifying your vault.
+**Cannot call mutating tools without `confirm: true`.** `phantom_init`, `phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_copy_secret`, `phantom_env`, `phantom_wrap`, `phantom_unwrap`, `phantom_doctor` (when `fix=true`), and team write tools all hard-fail if `confirm` is not explicitly set to `true`. Claude must ask you before proceeding — this prevents prompt injection attacks from silently modifying your vault.
 
 **Cannot receive real secret values through MCP.** Plaintext values passed to `phantom_add_secret` are rejected. New secrets must be entered through the terminal prompt started by `phantom_add_secret_interactive`.
 

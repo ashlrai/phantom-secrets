@@ -32,7 +32,7 @@ Alt: `brew tap ashlrai/phantom && brew install phantom`
 - Never call a destructive tool without `confirm: true` and explicit user consent.
 - Suggest `phantom exec -- <command>` when running code that needs real credentials.
 
-## MCP tools (24 total)
+## MCP tools (25 total)
 
 Read-only (safe to call freely):
 - `phantom_list_secrets` — names only, never values
@@ -45,9 +45,11 @@ Read-only (safe to call freely):
 - `phantom_sync` — preview platform sync
 
 Init / scaffolding:
-- `phantom_init` — protect a fresh `.env`
-- `phantom_wrap` — convert a plaintext value into a vaulted token
-- `phantom_unwrap` — reverse, requires `confirm`
+- `phantom_init` — protect a fresh `.env`. Requires `confirm: true`.
+- `phantom_wrap` — wrap `package.json` scripts with `phantom exec` so secrets are injected via the proxy at runtime
+- `phantom_unwrap` — reverse `phantom_wrap`, restoring original scripts from `:raw` variants
+
+> Note: a legacy `phantom_add_secret` tool exists but is hard-deprecated — it refuses any plaintext value through MCP because tool arguments enter agent context. Use `phantom_add_secret_interactive` (below) instead.
 
 Destructive (require `confirm: true`):
 - `phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`
@@ -61,9 +63,17 @@ Teams (multi-developer shared vaults — Pro plan):
 - `phantom_team_create`, `phantom_team_invite` — require `confirm: true`
 - `phantom_team_vault_push`, `phantom_team_vault_pull` — require `confirm: true`. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305). Server only stores ciphertext.
 
-## CLI surface (28 commands)
+## CLI surface (30 commands)
 
-`init · exec · start · stop · list · add · remove · reveal · rotate · status · doctor · check · sync · pull · env · setup · login · logout · cloud push · cloud pull · export · import · wrap · unwrap · watch · why · copy · team · open`
+`init · exec · start · stop · list · add · remove · reveal · rotate · status · doctor · check · sync · pull · env · setup · login · logout · cloud · team · export · import · wrap · unwrap · watch · why · copy · open · upgrade · completion`
+
+Recently-added flags worth knowing:
+
+- `phantom add KEY --stdin` reads the value from a piped stdin (CI-friendly). Bare `phantom add KEY` (no value) prompts silently on the terminal via `rpassword` so the secret never enters shell history.
+- `phantom list --json` emits a JSON array of `{name, detected_service}` for scripting; values are never included.
+- `phantom sync --only PATTERN` (repeatable; OR-ed) limits which keys get pushed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`.
+- `phantom check --staged` reads from the git index (including staged `.env` files) and is suitable for pre-commit hooks.
+- `phantom completion <bash|zsh|fish|powershell|elvish>` prints a shell-completion script to stdout.
 
 ## Dashboard
 
@@ -80,8 +90,8 @@ Phantom auto-classifies env vars by name + value heuristics. Detected: `OPENAI_A
 - `phantom-core` — config (`.phantom.toml`), `.env` parsing, token generation (256-bit CSPRNG, `phm_` prefix)
 - `phantom-vault` — `VaultBackend` trait. macOS Keychain / Linux Secret Service / encrypted file fallback. ChaCha20-Poly1305 + Argon2id.
 - `phantom-proxy` — HTTP reverse proxy on 127.0.0.1. Header + body + URL-param token replacement. Streaming/SSE preserved.
-- `phantom-cli` — `clap` binary, 27 commands.
-- `phantom-mcp` — `rmcp` 1.3 stdio server, 24 tools.
+- `phantom-cli` — `clap` binary, 30 commands.
+- `phantom-mcp` — `rmcp` 1.3 stdio server, 25 tools.
 
 ## Pricing
 

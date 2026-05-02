@@ -49,7 +49,7 @@ Add to your MCP configuration:
 
 Works with any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io).
 
-## 17 MCP Tools
+## 25 MCP Tools
 
 Read-only tools (safe to call anytime):
 

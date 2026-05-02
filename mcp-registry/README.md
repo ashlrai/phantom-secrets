@@ -12,7 +12,7 @@ The MCP server lets AI agents manage this workflow directly, without ever being 
 
 ## Tools
 
-The server exposes 24 tools over MCP stdio transport.
+The server exposes 25 tools over MCP stdio transport.
 
 **Read-only (safe to call anytime, never returns secret values):**
 
@@ -37,8 +37,8 @@ The server exposes 24 tools over MCP stdio transport.
 | `phantom_remove_secret` | Remove a secret from the vault by name. |
 | `phantom_rotate` | Regenerate all phantom tokens. Old tokens become invalid; real secrets unchanged. |
 | `phantom_copy_secret` | Copy a secret from this project to another project's vault. |
-| `phantom_wrap` | Wrap a plaintext `.env` value into a vaulted `phm_` token. |
-| `phantom_unwrap` | Reverse a wrap — restore plaintext to `.env` from the vault. |
+| `phantom_wrap` | Wrap `package.json` scripts with `npx phantom-secrets exec` so npm scripts run through the proxy and get real credentials at runtime. Originals are saved as `script:raw` variants. |
+| `phantom_unwrap` | Reverse `phantom_wrap`: restore original `package.json` scripts from `:raw` variants and remove the `:raw` entries. |
 | `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted). |
 | `phantom_cloud_pull` | Pull and decrypt vault from Phantom Cloud. |
 

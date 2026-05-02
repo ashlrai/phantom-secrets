@@ -20,9 +20,9 @@ Cloud: phantom_wrap, phantom_unwrap, phantom_sync, phantom_cloud_push, phantom_c
 
 Teams: phantom_team_list, phantom_team_create, phantom_team_members, phantom_team_invite, phantom_team_key_publish, phantom_team_vault_push, phantom_team_vault_pull
 
-## CLI (28 commands)
+## CLI (30 commands)
 
-init, exec, start, stop, list, add, remove, reveal, rotate, status, doctor (--fix), check, sync, pull, env, setup, login, logout, cloud push, cloud pull, wrap, unwrap, watch, why, copy, export, import, team (list/create/members/invite/key-publish/vault-push/vault-pull), open
+init, exec, start, stop, list (--json), add (--stdin), remove, reveal, rotate, status, doctor (--fix), check (--staged), sync (--only PATTERN), pull, env, setup, login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy, export, import, team (list/create/members/invite/key-publish/vault-push/vault-pull), open, upgrade, completion (bash/zsh/fish/powershell/elvish)
 
 ## Dashboard
 
