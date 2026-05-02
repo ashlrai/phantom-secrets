@@ -102,7 +102,10 @@ impl DotenvFile {
                 continue;
             }
 
-            let working = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+            let (working, had_export) = match trimmed.strip_prefix("export ") {
+                Some(rest) => (rest, true),
+                None => (trimmed, false),
+            };
             let Some(eq_pos) = working.find('=') else {
                 out.push(DotenvLine::Other(line.to_string()));
                 continue;
@@ -114,15 +117,20 @@ impl DotenvFile {
                 continue;
             }
 
-            let raw_value = working[eq_pos + 1..].trim_start();
+            let after_eq = &working[eq_pos + 1..];
+            let raw_value = after_eq.trim_start();
 
-            // Track byte offsets in the original `line` so we can splice a
+            // Compute byte offsets in the original `line` so we can splice a
             // replacement value while preserving the surrounding format.
+            // Derived from known structure (leading whitespace + optional
+            // 7-byte "export " prefix) rather than a substring search.
             // Computed unconditionally; consumed only if parsing stays on a
             // single line and produces no embedded escapes.
-            let working_offset = line.find(working).unwrap_or(0);
+            let leading_ws = line.len() - line.trim_start().len();
+            let working_offset = leading_ws + if had_export { "export ".len() } else { 0 };
             let eq_in_line = working_offset + eq_pos;
-            let raw_value_offset = eq_in_line + 1 + (working[eq_pos + 1..].len() - raw_value.len());
+            let ws_after_eq = after_eq.len() - raw_value.len();
+            let raw_value_offset = eq_in_line + 1 + ws_after_eq;
 
             let (value, fmt) = if let Some(after_quote) = raw_value.strip_prefix('"') {
                 // Double-quoted — may span multiple lines (F12).
@@ -189,12 +197,28 @@ impl DotenvFile {
                     }
                 }
             } else {
+                // Unquoted: convention is that `#` preceded by whitespace
+                // starts an inline comment. Strip it from the stored value
+                // (otherwise the comment would be injected as part of the
+                // secret on outbound requests) but keep it in the raw line
+                // so format preservation can splice the new value in front
+                // of it.
+                let comment_offset = raw_value
+                    .char_indices()
+                    .find(|(i, c)| {
+                        *c == '#' && *i > 0 && raw_value.as_bytes()[*i - 1].is_ascii_whitespace()
+                    })
+                    .map(|(i, _)| i);
+                let value_text = match comment_offset {
+                    Some(i) => raw_value[..i].trim_end(),
+                    None => raw_value.trim_end(),
+                };
                 let fmt = Some(RawLineFormat {
                     raw: line.to_string(),
                     value_start: raw_value_offset,
-                    value_end: raw_value_offset + raw_value.len(),
+                    value_end: raw_value_offset + value_text.len(),
                 });
-                (raw_value.to_string(), fmt)
+                (value_text.to_string(), fmt)
             };
 
             out.push(DotenvLine::Entry(
@@ -1000,49 +1024,54 @@ KEY3=unquoted
     /// Format preservation: when a value gets a phantom token, the surrounding
     /// quotes/whitespace/`export` prefix on the same line should survive.
     /// Verifies the splice path rather than the canonical reformat path.
-    fn token_map_for(key: &str, token: &str) -> TokenMap {
+    fn assert_rewrite(key: &str, token: &str, input: &str, expected: &str) {
         let mut tm = TokenMap::new();
         tm.insert_with_token(
             key.to_string(),
             PhantomToken::parse(token).expect("test token must start with phm_"),
         );
-        tm
+        let (out, _) = DotenvFile::parse_str(input).rewrite_with_phantoms(&tm);
+        assert_eq!(out, expected);
     }
 
     #[test]
     fn rewrite_preserves_double_quotes() {
-        let content = "API_KEY=\"sk-real-test\"\n";
-        let dotenv = DotenvFile::parse_str(content);
-        let tm = token_map_for("API_KEY", "phm_aaaa");
-        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
-        assert_eq!(out, "API_KEY=\"phm_aaaa\"\n");
+        assert_rewrite(
+            "API_KEY",
+            "phm_aaaa",
+            "API_KEY=\"sk-real-test\"\n",
+            "API_KEY=\"phm_aaaa\"\n",
+        );
     }
 
     #[test]
     fn rewrite_preserves_single_quotes() {
-        let content = "API_KEY='sk-real-test'\n";
-        let dotenv = DotenvFile::parse_str(content);
-        let tm = token_map_for("API_KEY", "phm_bbbb");
-        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
-        assert_eq!(out, "API_KEY='phm_bbbb'\n");
+        assert_rewrite(
+            "API_KEY",
+            "phm_bbbb",
+            "API_KEY='sk-real-test'\n",
+            "API_KEY='phm_bbbb'\n",
+        );
     }
 
     #[test]
     fn rewrite_preserves_export_prefix() {
-        let content = "export API_KEY=sk-real-test\n";
-        let dotenv = DotenvFile::parse_str(content);
-        let tm = token_map_for("API_KEY", "phm_cccc");
-        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
-        assert_eq!(out, "export API_KEY=phm_cccc\n");
+        assert_rewrite(
+            "API_KEY",
+            "phm_cccc",
+            "export API_KEY=sk-real-test\n",
+            "export API_KEY=phm_cccc\n",
+        );
     }
 
     #[test]
     fn rewrite_preserves_leading_indentation() {
-        let content = "  API_KEY=sk-real-test\n";
-        let dotenv = DotenvFile::parse_str(content);
-        let tm = token_map_for("API_KEY", "phm_dddd");
-        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
-        assert_eq!(out, "  API_KEY=phm_dddd\n");
+        assert_rewrite(
+            "API_KEY",
+            "phm_dddd",
+            "  API_KEY=sk-real-test\n",
+            "  API_KEY=phm_dddd\n",
+        );
     }
 
     #[test]
@@ -1060,21 +1089,60 @@ KEY3=unquoted
     fn rewrite_falls_back_for_multiline_quoted_value() {
         // Multi-line PEM-style values aren't format-preserved; the splice
         // path is skipped and the canonical KEY=value reformat is emitted.
-        let content = "PRIVATE_KEY=\"line1\nline2\"\n";
-        let dotenv = DotenvFile::parse_str(content);
-        let tm = token_map_for("PRIVATE_KEY", "phm_eeee");
-        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
-        assert!(out.contains("PRIVATE_KEY=phm_eeee"));
+        // Asserting an exact match (not just `contains`) verifies the
+        // surrounding quotes have been dropped by the canonical reformat.
+        assert_rewrite(
+            "PRIVATE_KEY",
+            "phm_eeee",
+            "PRIVATE_KEY=\"line1\nline2\"\n",
+            "PRIVATE_KEY=phm_eeee\n",
+        );
     }
 
     #[test]
     fn rewrite_falls_back_for_double_quoted_value_with_escapes() {
         // \n inside double quotes means the parsed value differs from the
         // raw bytes; splicing back would lose the escape, so reformat.
-        let content = "MULTILINE_KEY=\"a\\nb\"\n";
+        assert_rewrite(
+            "MULTILINE_KEY",
+            "phm_ffff",
+            "MULTILINE_KEY=\"a\\nb\"\n",
+            "MULTILINE_KEY=phm_ffff\n",
+        );
+    }
+
+    #[test]
+    fn parse_strips_inline_comment_from_unquoted_value() {
+        // Standard .env convention: `#` preceded by whitespace starts an
+        // inline comment. Without this, the comment would be stored as part
+        // of the secret value and injected into outbound API requests.
+        let content = "API_KEY=sk-real-test  # production key\n";
         let dotenv = DotenvFile::parse_str(content);
-        let tm = token_map_for("MULTILINE_KEY", "phm_ffff");
-        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
-        assert!(out.contains("MULTILINE_KEY=phm_ffff"));
+        let entries = dotenv.entries();
+        assert_eq!(entries[0].key, "API_KEY");
+        assert_eq!(entries[0].value, "sk-real-test");
+    }
+
+    #[test]
+    fn parse_keeps_hash_inside_unquoted_value_when_no_preceding_whitespace() {
+        // `#` not preceded by whitespace is part of the value (e.g. URL
+        // fragments, query strings, base64 padding-adjacent sequences).
+        let content = "URL=https://example.com/path#section\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let entries = dotenv.entries();
+        assert_eq!(entries[0].value, "https://example.com/path#section");
+    }
+
+    #[test]
+    fn rewrite_preserves_inline_comment_after_phantom_token() {
+        // The comment is part of the original line bytes after the value
+        // span, so format preservation should splice the new value in
+        // front of it without disturbing the comment.
+        assert_rewrite(
+            "API_KEY",
+            "phm_gggg",
+            "API_KEY=sk-real-test  # production key\n",
+            "API_KEY=phm_gggg  # production key\n",
+        );
     }
 }
