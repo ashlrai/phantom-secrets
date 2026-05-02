@@ -10,6 +10,9 @@ pub struct InitParams {
     /// Path to the .env file (defaults to .env in current directory)
     #[serde(default = "default_env_path")]
     pub env_path: String,
+    /// Required. Must be true because init stores secrets and rewrites .env.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 fn default_env_path() -> String {
@@ -20,12 +23,24 @@ fn default_env_path() -> String {
 pub struct AddSecretParams {
     /// Name of the secret (e.g., OPENAI_API_KEY)
     pub name: String,
-    /// Value of the secret
+    /// Deprecated: plaintext secret values are not accepted through MCP
+    /// because they enter agent context. Use phantom_add_secret_interactive.
+    #[serde(default)]
     pub value: String,
     /// Required. Must be true — the calling agent must confirm with the user
     /// before invoking this tool. Defends against prompt-injected instructions
     /// in project content (READMEs, issue comments, dependency docs) silently
     /// mutating the vault.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddSecretInteractiveParams {
+    /// Name of the secret to add (e.g., OPENAI_API_KEY)
+    pub name: String,
+    /// Required. Must be true — the calling agent must confirm with the user
+    /// before starting an out-of-band terminal flow.
     #[serde(default)]
     pub confirm: bool,
 }
@@ -95,6 +110,9 @@ pub struct DoctorParams {
     /// Auto-fix safe issues (install hooks, generate .env.example, etc.)
     #[serde(default)]
     pub fix: bool,
+    /// Required when fix=true because files may be created or modified.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -111,10 +129,17 @@ pub struct WrapParams {
     /// Skip specific scripts (by name)
     #[serde(default)]
     pub skip: Vec<String>,
+    /// Required. Must be true because this modifies package.json.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct UnwrapParams {}
+pub struct UnwrapParams {
+    /// Required. Must be true because this modifies package.json.
+    #[serde(default)]
+    pub confirm: bool,
+}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CheckParams {
@@ -128,6 +153,9 @@ pub struct EnvParams {
     /// Output file name (defaults to .env.example)
     #[serde(default = "default_example_output")]
     pub output: String,
+    /// Required. Must be true because this writes an env example file.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 fn default_example_output() -> String {
@@ -160,6 +188,9 @@ pub struct TeamCreateParams {
 pub struct TeamIdParams {
     /// Team identifier (UUID)
     pub team_id: String,
+    /// Required for mutating operations that publish local key material.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]

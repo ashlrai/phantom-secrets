@@ -9,9 +9,10 @@ use std::path::PathBuf;
 
 use crate::tools::helpers::{internal_err, invalid_params_err, require_confirm, text_result};
 use crate::tools::params::{
-    AddSecretParams, CheckParams, CloudPullParams, CloudPushParams, CopySecretParams, DoctorParams,
-    EnvParams, InitParams, RemoveSecretParams, RotateParams, SyncParams, TeamCreateParams,
-    TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams, WrapParams,
+    AddSecretInteractiveParams, AddSecretParams, CheckParams, CloudPullParams, CloudPushParams,
+    CopySecretParams, DoctorParams, EnvParams, InitParams, RemoveSecretParams, RotateParams,
+    SyncParams, TeamCreateParams, TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams,
+    WhyParams, WrapParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -166,6 +167,7 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<InitParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_init", params.confirm)?;
         let env_path = self.project_dir.join(&params.env_path);
 
         let dotenv = DotenvFile::parse_file(&env_path)
@@ -222,57 +224,36 @@ impl PhantomMcpServer {
 
     /// Add a secret to the vault.
     #[tool(
-        description = "Add a new secret to the Phantom vault. DESTRUCTIVE — overwrites any existing secret of the same name and rewrites .env. Requires `confirm: true`; the agent must ask the user for explicit consent before calling. See the `confirm` parameter docs for the threat model."
+        description = "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead."
     )]
     fn phantom_add_secret(
         &self,
-        Parameters(mut params): Parameters<AddSecretParams>,
+        Parameters(params): Parameters<AddSecretParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_add_secret", params.confirm)?;
-        let (_config, vault) = self.load_config_and_vault()?;
-
-        // Zeroize the secret value on all exit paths
-        let secret_value = zeroize::Zeroizing::new(std::mem::take(&mut params.value));
-
-        vault
-            .store(&params.name, &secret_value)
-            .map_err(|e| internal_err(format!("Failed to store secret: {e}")))?;
-
-        // Update .env with phantom token if it exists
-        let env_path = self.env_path();
-        if env_path.exists() {
-            let token = PhantomToken::generate();
-            let content = std::fs::read_to_string(&env_path).unwrap_or_default();
-
-            let new_content = if content
-                .lines()
-                .any(|l| l.trim().starts_with(&format!("{}=", params.name)))
-            {
-                content
-                    .lines()
-                    .map(|line| {
-                        if line.trim().starts_with(&format!("{}=", params.name)) {
-                            format!("{}={}", params.name, token)
-                        } else {
-                            line.to_string()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    + "\n"
-            } else {
-                let mut c = content;
-                if !c.is_empty() && !c.ends_with('\n') {
-                    c.push('\n');
-                }
-                c.push_str(&format!("{}={}\n", params.name, token));
-                c
-            };
-            let _ = std::fs::write(&env_path, new_content);
+        if !params.value.is_empty() {
+            return Err(invalid_params_err(
+                "phantom_add_secret no longer accepts plaintext secret values through MCP. Use phantom_add_secret_interactive, then enter the value in your terminal.",
+            ));
         }
-
         text_result(format!(
-            "Secret '{}' stored in vault. .env updated with phantom token.",
+            "No secret value accepted through MCP for '{}'. Use phantom_add_secret_interactive to start an out-of-band terminal flow.",
+            params.name
+        ))
+    }
+
+    /// Start an out-of-band flow for adding a secret without exposing the value to MCP.
+    #[tool(
+        description = "Safely add a secret by name without passing its value through MCP. Requires confirm:true. The returned command prompts for the value directly in the user's terminal, outside agent context."
+    )]
+    fn phantom_add_secret_interactive(
+        &self,
+        Parameters(params): Parameters<AddSecretInteractiveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_add_secret_interactive", params.confirm)?;
+        text_result(format!(
+            "Run this in a trusted terminal from {}:\n\n  phantom add {}\n\nEnter the real value only at the terminal prompt. Do not paste it into chat or MCP tool arguments.",
+            self.project_dir.display(),
             params.name
         ))
     }
@@ -572,6 +553,9 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<DoctorParams>,
     ) -> Result<CallToolResult, McpError> {
+        if params.fix {
+            require_confirm("phantom_doctor", params.confirm)?;
+        }
         let mut lines: Vec<String> = Vec::new();
         let mut issues = 0u32;
         let mut fixed = 0u32;
@@ -950,6 +934,7 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<WrapParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_wrap", params.confirm)?;
         let pkg_path = self.project_dir.join("package.json");
         if !pkg_path.exists() {
             return Err(internal_err("No package.json found in project directory."));
@@ -1043,8 +1028,9 @@ impl PhantomMcpServer {
     )]
     fn phantom_unwrap(
         &self,
-        #[allow(unused_variables)] Parameters(params): Parameters<UnwrapParams>,
+        Parameters(params): Parameters<UnwrapParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_unwrap", params.confirm)?;
         let pkg_path = self.project_dir.join("package.json");
         if !pkg_path.exists() {
             return Err(internal_err("No package.json found in project directory."));
@@ -1205,6 +1191,7 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<EnvParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_env", params.confirm)?;
         let env_path = self.env_path();
 
         let dotenv = DotenvFile::parse_file(&env_path)
@@ -1485,6 +1472,7 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<TeamIdParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_team_key_publish", params.confirm)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -1658,6 +1646,7 @@ mod tests {
         // Run init to set up config and vault
         let params = InitParams {
             env_path: ".env".to_string(),
+            confirm: true,
         };
         let result = server.phantom_init(Parameters(params)).unwrap();
         let text = get_result_text(&result);
@@ -1689,6 +1678,7 @@ mod tests {
         let result = server
             .phantom_init(Parameters(InitParams {
                 env_path: ".env".to_string(),
+                confirm: true,
             }))
             .unwrap();
         let text = get_result_text(&result);
@@ -1728,35 +1718,18 @@ mod tests {
     }
 
     #[test]
-    fn test_add_and_remove_secret() {
+    fn test_add_secret_rejects_plaintext_value() {
         let (server, _dir) = setup_initialized_project();
 
-        // Add a new secret
-        let result = server
+        let err = server
             .phantom_add_secret(Parameters(AddSecretParams {
                 name: "NEW_SECRET".to_string(),
                 value: "new-value-123".to_string(),
                 confirm: true,
             }))
-            .unwrap();
-        let text = get_result_text(&result);
-        assert!(text.contains("NEW_SECRET"));
-        assert!(text.contains("stored"));
-
-        // Verify it appears in list
-        let list_result = server.phantom_list_secrets().unwrap();
-        let list_text = get_result_text(&list_result);
-        assert!(list_text.contains("NEW_SECRET"));
-
-        // Remove it
-        let remove_result = server
-            .phantom_remove_secret(Parameters(RemoveSecretParams {
-                name: "NEW_SECRET".to_string(),
-                confirm: true,
-            }))
-            .unwrap();
-        let remove_text = get_result_text(&remove_result);
-        assert!(remove_text.contains("removed"));
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("no longer accepts plaintext"));
     }
 
     #[test]

@@ -38,6 +38,7 @@ async fn run_async(cmd: &[String]) -> Result<()> {
     // If a session token leaks (from logs, AI context, etc.), it becomes
     // worthless as soon as this exec session ends.
     let mut session_token_to_secret: HashMap<String, String> = HashMap::new();
+    let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
     let mut env_key_to_session_token: HashMap<String, String> = HashMap::new();
     let mut secret_count = 0;
 
@@ -54,6 +55,8 @@ async fn run_async(cmd: &[String]) -> Result<()> {
                             session_token.as_str().to_string(),
                             String::from(real_value.as_str()),
                         );
+                        secret_name_to_value
+                            .insert(entry.key.clone(), String::from(real_value.as_str()));
                         env_key_to_session_token
                             .insert(entry.key.clone(), session_token.as_str().to_string());
                         secret_count += 1;
@@ -80,7 +83,7 @@ async fn run_async(cmd: &[String]) -> Result<()> {
 
     // Build service registry from config
     let registry = ServiceRegistry::from_config(&config.services);
-    let interceptor = Interceptor::new(session_token_to_secret);
+    let interceptor = Interceptor::new_with_named(session_token_to_secret, secret_name_to_value);
 
     println!(
         "{} Starting proxy with {} secret(s) (session-scoped tokens)...",
