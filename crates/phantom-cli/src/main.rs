@@ -39,7 +39,11 @@ enum Commands {
     },
 
     /// List stored secret names (never shows values)
-    List,
+    List {
+        /// Emit JSON instead of the human-readable table
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Add a secret to the vault
     Add {
@@ -350,7 +354,7 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init { from } => commands::init::run(&from),
-        Commands::List => commands::list::run(),
+        Commands::List { json } => commands::list::run(json),
         Commands::Add { name, value } => commands::add::run(&name, &value),
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
