@@ -192,15 +192,15 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 | `phantom init` | Import `.env` secrets into vault, rewrite with phantom tokens |
 | `phantom exec -- <cmd>` | Start proxy and run a command with secret injection |
 | `phantom start` / `stop` | Manage proxy lifecycle (standalone/daemon mode) |
-| `phantom list` | Show secret names stored in vault (never values) |
-| `phantom add <KEY> <VAL>` | Add a secret to the vault |
+| `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
+| `phantom add <KEY> [VAL]` | Add a secret. With no `VAL`, prompts silently on the terminal; or pipe via `--stdin` |
 | `phantom remove <KEY>` | Remove a secret from the vault |
 | `phantom reveal <KEY>` | Print a secret value (or `--clipboard` to copy) |
 | `phantom status` | Show proxy state, vault info, and mapped services |
 | `phantom rotate` | Regenerate all phantom tokens (old ones become invalid) |
 | `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair) |
 | `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`) |
-| `phantom sync` | Push secrets to Vercel / Railway |
+| `phantom sync` | Push secrets to Vercel / Railway (`--only PATTERN` filters by glob, repeatable) |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
 | `phantom setup` | Configure Claude Code MCP server + hooks |
 | `phantom env` | Generate `.env.example` for team onboarding |
@@ -220,6 +220,8 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 | `phantom team vault-push <id>` | Push current project to shared team vault (E2E encrypted per-member) |
 | `phantom team vault-pull <id>` | Pull team vault into local vault |
 | `phantom open [page]` | Open phm.dev pages in browser (dashboard, billing, team, docs, github, …) |
+| `phantom upgrade` | Self-replace this binary with the latest GitHub release (`--check-only` to inspect first) |
+| `phantom completion <shell>` | Print a shell-completion script (bash, zsh, fish, powershell, elvish) |
 
 ## Features
 
@@ -229,7 +231,7 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 - **Smart detection** -- Heuristic engine distinguishes secrets (`*_KEY`, `*_TOKEN`, `sk-*`, `ghp_*`) from config (`NODE_ENV`, `PORT`)
 - **Platform sync** -- Push/pull secrets to Vercel and Railway
 - **Pre-commit hook** -- Blocks commits containing unprotected secrets
-- **MCP server** -- 24 tools for Claude Code, Cursor, Windsurf, and Codex to manage secrets without seeing values
+- **MCP server** -- 25 tools for Claude Code, Cursor, Windsurf, and Codex to manage secrets without seeing values
 - **Cloud sync** -- E2E encrypted zero-knowledge vault sync across machines
 - **Export/import** -- Encrypted backup and restore with passphrase protection
 - **Response scrubbing** -- Prevents secrets from leaking in API responses back to the AI
@@ -275,8 +277,8 @@ $ cargo install phantom-secrets
 | `phantom-core` | Config (`.phantom.toml`), `.env` parsing/rewriting, token generation, auth, cloud client |
 | `phantom-vault` | `VaultBackend` trait: OS keychain + encrypted file fallback, ChaCha20-Poly1305 crypto |
 | `phantom-proxy` | HTTP reverse proxy on 127.0.0.1 with SSE/streaming, token replacement, TLS forwarding |
-| `phantom-cli` | `clap`-based CLI binary, 27 commands |
-| `phantom-mcp` | MCP server binary (`rmcp` SDK), stdio transport, 24 tools |
+| `phantom-cli` | `clap`-based CLI binary, 30 commands |
+| `phantom-mcp` | MCP server binary (`rmcp` SDK), stdio transport, 25 tools |
 
 **`apps/web`** -- Next.js backend at [phm.dev](https://phm.dev) for cloud vault sync, GitHub OAuth, and Stripe billing.
 

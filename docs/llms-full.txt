@@ -39,18 +39,27 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 - `phantom export --passphrase <pass>` — Export vault to encrypted backup file.
 - `phantom import <file> --passphrase <pass>` — Import secrets from encrypted backup.
 - `phantom start` / `phantom stop` — Standalone proxy lifecycle. `--daemon` mode available.
-- `phantom list` — Show secret names stored in vault (never shows values).
-- `phantom add <KEY> <VALUE>` — Add a secret to the vault.
+- `phantom list` — Show secret names stored in vault (never shows values). Add `--json` to emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded.
+- `phantom add <KEY> [VALUE]` — Add a secret to the vault. With no positional VALUE, prompts silently on the controlling terminal via `rpassword` (the value never enters shell history or `ps aux`). For piped/CI use, pass `--stdin` and provide one line on stdin: `echo "$VAL" | phantom add KEY --stdin`.
 - `phantom remove <KEY>` — Remove a secret from the vault.
 - `phantom reveal <KEY>` — View a secret value. Requires `--yes` in non-interactive contexts.
 - `phantom rotate` — Regenerate all phantom tokens in .env. Supports `--sync` to push updated tokens to deployment platforms.
 - `phantom status` — Show project ID, vault backend, secret count, service mappings.
 - `phantom doctor` — Health check: config, vault, .env, .gitignore, Claude Code MCP, cloud auth.
-- `phantom check` — Pre-commit hook. Scans for unprotected secrets. Exit code 1 if found.
-- `phantom sync --platform vercel --project <id>` — Push secrets to Vercel or Railway.
+- `phantom check` — Scans `.env` files for unprotected real secrets. Exit code 1 if found. Add `--staged` to read content from the git index instead of the working tree (suitable for pre-commit hooks; staged `.env` files are also scanned). Add `--runtime` to detect phantom tokens in the current environment when the proxy is not running.
+- `phantom sync --platform vercel --project <id>` — Push secrets to Vercel or Railway. Use `--only PATTERN` (glob, repeatable, OR-ed) to limit which keys get pushed; the same filter is also honoured via `only = ["PATTERN", ...]` on each `[[sync]]` block in `.phantom.toml`.
 - `phantom pull --from vercel --project <id>` — Pull secrets from platforms into vault.
 - `phantom env` — Generate .env.example with secret values masked.
 - `phantom setup` — Configure Claude Code MCP server and permissions automatically.
+- `phantom watch [--auto]` — Watch `.env` files and detect newly added unprotected secrets in real time. With `--auto`, protect them automatically without prompting.
+- `phantom why <KEY>` — Explain whether a key is classified as Secret, PublicKey, or NotSecret, and which heuristic matched.
+- `phantom copy <KEY> --to <DIR> [--rename NEW]` — Copy a secret from this project's vault to another project's vault without ever exposing the value. Optional rename in the target project.
+- `phantom wrap [--only A,B] [--skip X,Y]` — Wrap `package.json` scripts with `phantom exec` so npm scripts get real credentials at runtime. Originals are preserved as `script:raw` variants.
+- `phantom unwrap` — Reverse `phantom wrap`, restoring originals from `:raw` variants.
+- `phantom team list / create / members / invite / key-publish / vault-push / vault-pull` — Multi-developer shared vault (Pro). Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305); the server only ever stores ciphertext.
+- `phantom open [target]` — Open a Phantom page in the browser. Aliases: `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, `site`. Any other word becomes `https://phm.dev/<word>`; full URLs pass through.
+- `phantom upgrade [--check-only] [--force]` — Self-replace this binary with the latest GitHub release.
+- `phantom completion <bash|zsh|fish|powershell|elvish>` — Print a shell-completion script to stdout.
 
 ## Installation
 
@@ -79,7 +88,7 @@ cargo install phantom --git https://github.com/ashlrai/phantom-secrets
 
 ## MCP Server — Multi-IDE Support
 
-Phantom includes a native MCP server (`phantom-secrets-mcp`) with 9 tools. Works with every major AI coding tool.
+Phantom includes a native MCP server (`phantom-secrets-mcp`) with 25 tools. Works with every major AI coding tool.
 
 ### Setup by IDE
 
@@ -114,6 +123,27 @@ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 - `phantom_cloud_push` — Push local vault to Phantom Cloud. Encrypts client-side with ChaCha20-Poly1305 before upload. Server never sees plaintext.
 - `phantom_cloud_pull` — Pull vault from Phantom Cloud. Params: force (bool). Downloads and decrypts vault, stores secrets locally.
 - `phantom_cloud_status` — Check cloud auth status, plan, and last sync version.
+
+**Diagnostics & Cross-Project:**
+- `phantom_doctor` — Health checks: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook. With `fix=true` auto-repairs safe issues; requires `confirm: true` in that mode.
+- `phantom_why` — Explain whether a key is classified as Secret / PublicKey / NotSecret and which heuristic matched. Params: key.
+- `phantom_check` — Scan for unprotected secrets. With `runtime=true`, scans the current environment for phantom tokens without a proxy (leak detection). With `staged=true`, reads git-staged content (including staged .env files) — suitable for pre-commit hooks. Default scans .env files in the working tree.
+- `phantom_env` — Generate a .env.example file from .env. Secrets become descriptive placeholders; non-secret config values are preserved.
+- `phantom_sync` — Show sync configuration and what secrets would be pushed to deployment platforms (Vercel, Railway). Informational; actual push requires platform API tokens.
+- `phantom_copy_secret` — Copy a secret from this project's vault to another project's vault. The value is never exposed; transfer happens between encrypted vaults. Mutating; requires `confirm: true`.
+
+**Package.json wrapping:**
+- `phantom_wrap` — Wrap `package.json` scripts with `npx phantom-secrets exec` so secrets are injected via the proxy at runtime. Originals are saved as `script:raw` variants. Heuristically picks dev/start/build/serve/deploy scripts and skips lint/test/format scripts. Params: only, skip.
+- `phantom_unwrap` — Reverse `phantom_wrap`: restore original scripts from `:raw` variants and remove the `:raw` entries.
+
+**Teams (Pro plan, multi-developer shared vaults):**
+- `phantom_team_list` — Read-only. List teams the authenticated user belongs to.
+- `phantom_team_members` — Read-only. List members of a team by team_id.
+- `phantom_team_key_publish` — One-time setup. Register this device's X25519 public key with the team so encrypted vaults can be addressed to it. Idempotent. Pubkey only — the private key stays in the OS keychain.
+- `phantom_team_create` — Create a new team. The authenticated user becomes the owner. Pro required. Mutating; requires `confirm: true`.
+- `phantom_team_invite` — Invite someone to a team by GitHub username. Requires owner or admin role. Mutating; requires `confirm: true`. Params: team_id, github_login, role.
+- `phantom_team_vault_push` — Push this project's secrets to the shared team vault. Encrypts client-side for each member who has registered a key. Mutating; requires `confirm: true`.
+- `phantom_team_vault_pull` — Download and decrypt the team vault for this project into the local vault (use this, not phantom_cloud_pull, for team-shared secrets). Overwrites local secrets; requires `confirm: true`.
 
 ### How AI Agents Should Use Phantom
 
@@ -180,7 +210,7 @@ Phantom automatically identifies secrets vs config values using heuristics:
 - phantom-vault: VaultBackend trait, OS keychain + encrypted file backends, shared crypto module
 - phantom-proxy: HTTP reverse proxy with streaming/SSE support, request interceptor
 - phantom-cli: 21 CLI commands via clap (including login, cloud, export/import)
-- phantom-mcp: MCP server via rmcp SDK (stdio transport, 9 tools)
+- phantom-mcp: MCP server via rmcp SDK (stdio transport, 25 tools)
 - apps/web: Next.js backend on Vercel (Supabase + Stripe, device auth, vault API, billing)
 
 56 tests, zero clippy warnings, MIT licensed.
