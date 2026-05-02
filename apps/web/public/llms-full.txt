@@ -229,10 +229,13 @@ phantom_env
 All destructive tools return an error if called without confirm=true.
 The agent must ask the user for explicit consent before calling any of these.
 
+phantom_add_secret_interactive
+  Start a trusted terminal prompt for adding a secret without passing the value through MCP.
+  Params: name (string), confirm (bool, must be true)
+  Effect: returns the terminal command to run; the user enters the value outside agent context.
+
 phantom_add_secret
-  Add a new secret to the vault. Overwrites if name already exists.
-  Params: name (string), value (string), confirm (bool, must be true)
-  Effect: stores secret, writes phantom token to .env.
+  Deprecated compatibility tool. Plaintext values passed through MCP are rejected.
 
 phantom_remove_secret
   Permanently delete a secret from the vault.

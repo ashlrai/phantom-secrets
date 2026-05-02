@@ -104,14 +104,14 @@ Notes:
 
 ## MCP Integration (Claude Code, Cursor, Windsurf, Codex)
 
-Phantom ships an MCP server so AI coding tools can manage secrets directly -- without ever seeing real values. 24 tools across four categories:
+Phantom ships an MCP server so AI coding tools can manage secrets directly -- without ever seeing real values.
 
-- **Vault** — `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret`, `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
+- **Vault** — `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
 - **Detection + diagnostics** — `phantom_doctor`, `phantom_why`, `phantom_check`, `phantom_env`
 - **Local-to-cloud** — `phantom_wrap`, `phantom_unwrap`, `phantom_sync`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`
 - **Teams** — `phantom_team_list`, `phantom_team_create`, `phantom_team_members`, `phantom_team_invite`, `phantom_team_key_publish`, `phantom_team_vault_push`, `phantom_team_vault_pull`
 
-Mutating tools require an explicit `confirm: true` parameter so a prompt-injected agent can't silently mutate state.
+Mutating tools require an explicit `confirm: true` parameter so a prompt-injected agent can't silently mutate state. Real secret values are never accepted as MCP tool arguments; new secrets are entered out-of-band in a trusted terminal.
 
 ### Claude Code
 ```bash

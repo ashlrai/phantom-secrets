@@ -69,7 +69,7 @@ Mutating tools (modify vault or `.env`):
 | Tool | Description |
 |------|-------------|
 | `phantom_init` | Protect secrets in .env files -- store in vault, rewrite with phantom tokens |
-| `phantom_add_secret` | Add a new secret to the vault |
+| `phantom_add_secret_interactive` | Start a terminal prompt for adding a secret without passing the value through MCP |
 | `phantom_remove_secret` | Remove a secret from the vault |
 | `phantom_rotate` | Regenerate all phantom tokens (invalidates old ones) |
 | `phantom_copy_secret` | Copy a secret from this project to another project's vault |
@@ -90,7 +90,7 @@ Team vault tools (Pro plan; multi-developer shared vaults):
 | `phantom_team_vault_push` | Push the current project's vault to a team (envelope-encrypted to every registered member) |
 | `phantom_team_vault_pull` | Pull the team vault into the local vault |
 
-All tools are read-safe: they never return actual secret values. The AI can manage your secrets lifecycle (add, remove, rotate, sync, share with teams) without any risk of key exposure. Mutating tools require `confirm: true`.
+All tools are read-safe: they never return actual secret values, and real secret values are never accepted as MCP tool arguments. The AI can manage your secrets lifecycle (add, remove, rotate, sync, share with teams) without key exposure in agent context. Mutating tools require `confirm: true`.
 
 ## How It Works
 

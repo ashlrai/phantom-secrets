@@ -32,7 +32,8 @@ The server exposes 24 tools over MCP stdio transport.
 | Tool | Description |
 |------|-------------|
 | `phantom_init` | Initialize Phantom in a project. Stores real secrets in the keychain vault and rewrites `.env` with phantom tokens. |
-| `phantom_add_secret` | Add a new secret to the vault. A phantom token is written to `.env`. |
+| `phantom_add_secret_interactive` | Start a trusted terminal prompt for adding a new secret without passing the value through MCP. |
+| `phantom_add_secret` | Deprecated compatibility tool; refuses plaintext values passed through MCP. |
 | `phantom_remove_secret` | Remove a secret from the vault by name. |
 | `phantom_rotate` | Regenerate all phantom tokens. Old tokens become invalid; real secrets unchanged. |
 | `phantom_copy_secret` | Copy a secret from this project to another project's vault. |
