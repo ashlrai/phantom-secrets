@@ -263,6 +263,13 @@ async fn handle_request(
     // Build the outgoing request
     let mut outgoing = state.http_client.request(method.clone(), &target_url);
 
+    // If the route names a vault secret, inject its formatted auth header
+    // server-side. Lets clients skip threading phantom tokens through their
+    // own request setup entirely.
+    let configured_auth_header = state
+        .interceptor
+        .format_header_for_secret_key(&route.header_format, &route.secret_key);
+
     // Copy and transform headers. F9: phm-token substitution is restricted to
     // a whitelist of auth-bearing header names plus the per-route configured
     // header. Tokens present in other headers are passed through unchanged
@@ -278,6 +285,11 @@ async fn handle_request(
                 | "x-phantom-proxy-token"
                 | "content-length"
         ) {
+            continue;
+        }
+        // Drop any client-provided auth header for this route when we're
+        // about to inject our own — avoids ambiguity / double-auth.
+        if configured_auth_header.is_some() && name_str.eq_ignore_ascii_case(&route.header) {
             continue;
         }
 
@@ -301,6 +313,14 @@ async fn handle_request(
         } else {
             outgoing = outgoing.header(name, value.clone());
         }
+    }
+
+    if let Some(header_value) = configured_auth_header {
+        debug!(
+            "Injected configured auth header '{}' for service {}",
+            route.header, route.name
+        );
+        outgoing = outgoing.header(route.header.as_str(), header_value);
     }
 
     // Read body with size limit enforced during read (prevents OOM on large payloads)
@@ -867,6 +887,61 @@ mod tests {
         assert!(
             ua.contains(phantom_token),
             "phm token should be forwarded: {ua}"
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_proxy_injects_configured_header_without_client_auth() {
+        let mock = crate::test_server::MockServer::start().await;
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+
+        let mut named = HashMap::new();
+        named.insert(
+            "TEST_API_KEY".to_string(),
+            "sk-real-configured-key".to_string(),
+        );
+        let interceptor = Interceptor::new_with_named(HashMap::new(), named);
+
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!(
+                "http://127.0.0.1:{}/testapi/v1/models",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].headers.get("authorization").unwrap(),
+            "Bearer sk-real-configured-key"
         );
 
         proxy.shutdown().await;

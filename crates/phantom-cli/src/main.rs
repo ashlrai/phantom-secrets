@@ -49,8 +49,12 @@ enum Commands {
     Add {
         /// Secret name (e.g., OPENAI_API_KEY)
         name: String,
-        /// Secret value
-        value: String,
+        /// Secret value. If omitted, phantom prompts silently on the terminal.
+        /// Use --stdin to read from a pipe instead.
+        value: Option<String>,
+        /// Read the secret value from stdin (for piped use: echo "$VAL" | phantom add KEY --stdin)
+        #[arg(long)]
+        stdin: bool,
     },
 
     /// Remove a secret from the vault
@@ -127,6 +131,11 @@ enum Commands {
         /// Override project ID for this sync
         #[arg(long)]
         project: Option<String>,
+        /// Only push secrets whose names match this glob pattern (e.g. STRIPE_*).
+        /// Repeatable: multiple --only flags are OR-ed together.
+        /// Also honoured via `only = [...]` in each [[sync]] block in .phantom.toml.
+        #[arg(long, value_name = "PATTERN")]
+        only: Vec<String>,
     },
 
     /// Pull secrets from a deployment platform into the vault
@@ -355,7 +364,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Init { from } => commands::init::run(&from),
         Commands::List { json } => commands::list::run(json),
-        Commands::Add { name, value } => commands::add::run(&name, &value),
+        Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
             name,
@@ -377,7 +386,11 @@ fn main() -> anyhow::Result<()> {
             force,
         } => commands::pull::run(&from, &project, environment, service, force),
         Commands::Setup => commands::setup::run(),
-        Commands::Sync { platform, project } => commands::sync::run(platform, project),
+        Commands::Sync {
+            platform,
+            project,
+            only,
+        } => commands::sync::run(platform, project, only),
         Commands::Env { output } => commands::env::run(&output),
         Commands::Export { output, passphrase } => commands::export_cmd::run(&output, &passphrase),
         Commands::Import {

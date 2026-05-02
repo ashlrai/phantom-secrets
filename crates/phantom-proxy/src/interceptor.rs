@@ -7,6 +7,8 @@ use zeroize::Zeroize;
 pub struct Interceptor {
     /// phantom_token_string -> real_secret_value (for outgoing requests)
     token_map: HashMap<String, SecretValue>,
+    /// env var / secret name -> real_secret_value (for configured header injection)
+    named_secrets: HashMap<String, SecretValue>,
     /// real_secret_value -> phantom_token_string (for response scrubbing)
     reverse_map: HashMap<String, String>,
 }
@@ -26,6 +28,15 @@ impl Drop for SecretValue {
 impl Interceptor {
     /// Create a new interceptor with a mapping of phantom tokens to real secrets.
     pub fn new(mappings: HashMap<String, String>) -> Self {
+        Self::new_with_named(mappings, HashMap::new())
+    }
+
+    /// Create a new interceptor with token mappings and name-addressable
+    /// secrets for routes that inject credentials via configured headers.
+    pub fn new_with_named(
+        mappings: HashMap<String, String>,
+        named_mappings: HashMap<String, String>,
+    ) -> Self {
         let reverse_map: HashMap<String, String> = mappings
             .iter()
             .map(|(token, secret)| (secret.clone(), token.clone()))
@@ -34,8 +45,13 @@ impl Interceptor {
             .into_iter()
             .map(|(token, secret)| (token, SecretValue { value: secret }))
             .collect();
+        let named_secrets = named_mappings
+            .into_iter()
+            .map(|(name, secret)| (name, SecretValue { value: secret }))
+            .collect();
         Self {
             token_map,
+            named_secrets,
             reverse_map,
         }
     }
@@ -66,6 +82,13 @@ impl Interceptor {
     pub fn format_header_value(&self, format: &str, phantom_token: &str) -> Option<String> {
         self.token_map
             .get(phantom_token)
+            .map(|secret| format.replace("{secret}", &secret.value))
+    }
+
+    /// Format a header value using a configured secret name.
+    pub fn format_header_for_secret_key(&self, format: &str, secret_key: &str) -> Option<String> {
+        self.named_secrets
+            .get(secret_key)
             .map(|secret| format.replace("{secret}", &secret.value))
     }
 

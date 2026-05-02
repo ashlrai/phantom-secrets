@@ -214,12 +214,15 @@ async fn run_async() -> Result<()> {
 
     // Build token mapping
     let mut token_to_secret: HashMap<String, String> = HashMap::new();
+    let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
     if env_path.exists() {
         let dotenv = DotenvFile::parse_file(&env_path)?;
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
                 if let Ok(real_value) = vault.retrieve(&entry.key) {
                     token_to_secret.insert(entry.value.clone(), String::from(real_value.as_str()));
+                    secret_name_to_value
+                        .insert(entry.key.clone(), String::from(real_value.as_str()));
                 }
             }
         }
@@ -233,7 +236,7 @@ async fn run_async() -> Result<()> {
     }
 
     let registry = ServiceRegistry::from_config(&config.services);
-    let interceptor = Interceptor::new(token_to_secret.clone());
+    let interceptor = Interceptor::new_with_named(token_to_secret.clone(), secret_name_to_value);
     let proxy_token = ProxyServer::generate_proxy_token();
 
     let proxy = ProxyServer::start(

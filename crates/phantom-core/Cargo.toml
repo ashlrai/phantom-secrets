@@ -19,6 +19,7 @@ path = "src/lib.rs"
 serde = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 zeroize = { workspace = true }
@@ -35,3 +36,4 @@ crypto_box = { version = "0.9", features = ["chacha20"] }
 # Used directly by teams_vault for symmetric encryption of the vault blob
 # itself (the per-push sym key, distinct from the per-recipient X25519 wrap).
 chacha20poly1305 = "0.10"
+glob = "0.3"

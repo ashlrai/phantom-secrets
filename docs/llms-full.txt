@@ -105,7 +105,8 @@ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 - `phantom_init` — Initialize Phantom and protect .env. Reads .env, stores real secrets in vault, rewrites with phm_ tokens, saves .phantom.toml config. Supports monorepo subdirectory detection.
 - `phantom_list_secrets` — List secret names with service mappings (never values).
 - `phantom_status` — Show vault and config status (project ID, backend, secret count).
-- `phantom_add_secret` — Add a new secret to the vault. Params: name, value.
+- `phantom_add_secret_interactive` — Add a new secret without passing the value through MCP. Params: name, confirm. The user types the real value only into the trusted terminal prompt.
+- `phantom_add_secret` — Deprecated compatibility tool; refuses plaintext values passed through MCP.
 - `phantom_remove_secret` — Remove a secret from the vault. Params: name.
 - `phantom_rotate` — Regenerate all phantom tokens in .env. Supports `--sync` flag to push to deployment platforms simultaneously.
 
@@ -119,7 +120,7 @@ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 When an AI agent detects a `.env` file with real API keys (sk-*, ghp_*, etc.):
 1. Suggest running `phantom_init` to protect secrets
 2. After init, the .env only contains phm_ tokens — safe for AI to read
-3. Use `phantom_add_secret` to add new keys the user provides
+3. Use `phantom_add_secret_interactive` to add new keys; the user types values only into the trusted terminal prompt
 4. Use `phantom_cloud_push` to back up the vault
 5. Never attempt to read real secret values — use `phantom_list_secrets` to see what's available
 

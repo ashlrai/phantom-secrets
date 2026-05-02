@@ -82,7 +82,8 @@ Claude must ask for explicit user consent before calling any of these. Calling w
 
 | Tool | What it does |
 |------|-------------|
-| `phantom_add_secret` | Store a new secret in the vault and write its phantom token to `.env`. Overwrites if the name already exists. |
+| `phantom_add_secret_interactive` | Return a terminal command for adding a new secret out-of-band, so the real value is typed only into a trusted terminal prompt. |
+| `phantom_add_secret` | Deprecated compatibility tool. Refuses plaintext values passed through MCP. |
 | `phantom_remove_secret` | Permanently delete a secret from the vault. Not recoverable unless you have a cloud backup. |
 | `phantom_rotate` | Regenerate all phantom tokens in `.env`. Old tokens become invalid immediately — any running dev server that cached them will break until it reloads. Real secrets are unchanged. |
 | `phantom_cloud_push` | Encrypt and upload the local vault to Phantom Cloud. Overwrites the existing cloud copy. Requires `phantom login` first. |
@@ -98,16 +99,15 @@ Claude must ask for explicit user consent before calling any of these. Calling w
 Here is a typical conversation that shows how the tools compose in practice.
 
 ```
-You: I need to add a Stripe secret key to this project. Here it is: sk_live_abc123...
+You: I need to add a Stripe secret key to this project.
 
-Claude: I'll store that securely. [calls phantom_add_secret with confirm: true — 
-        pauses and asks you to confirm before proceeding]
+Claude: I'll start the safe add flow. [calls phantom_add_secret_interactive
+        with confirm: true after asking you to confirm]
 
 You: yes, go ahead
 
-Claude: [stores secret, updates .env with phantom token]
-        Done. STRIPE_SECRET_KEY is stored in the vault. Your .env now has the 
-        phantom token; the real value never appeared in this conversation.
+Claude: Run `phantom add STRIPE_SECRET_KEY` in your terminal and enter the
+        real value at the prompt. Do not paste it into chat.
 
 You: can you check our vault is healthy?
 
@@ -128,7 +128,7 @@ Claude: I'll push to Phantom Cloud — this overwrites the existing cloud copy.
 
 ### Integrating a new third-party API
 
-1. Tell Claude the new API key value. Claude calls `phantom_add_secret` (with confirmation) to store it safely.
+1. Tell Claude the secret name, not the value. Claude calls `phantom_add_secret_interactive` (with confirmation), then you enter the value at the terminal prompt.
 2. Claude writes the integration code using the env var name (`process.env.MY_API_KEY`).
 3. `phantom exec -- claude` ensures API test calls during the session go through the proxy.
 
@@ -163,7 +163,9 @@ These limits are intentional and enforced at the protocol level.
 
 **Cannot read real secret values.** `phantom_list_secrets` returns names only. There is no MCP tool that returns a secret value. Claude can never retrieve a plaintext credential, even if instructed to.
 
-**Cannot call destructive tools without `confirm: true`.** `phantom_add_secret`, `phantom_remove_secret`, `phantom_rotate`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_copy_secret`, `phantom_wrap`, and `phantom_unwrap` all hard-fail if `confirm` is not explicitly set to `true`. Claude must ask you before proceeding — this prevents prompt injection attacks from silently modifying your vault.
+**Cannot call mutating tools without `confirm: true`.** `phantom_init`, `phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_copy_secret`, `phantom_env`, `phantom_wrap`, `phantom_unwrap`, and team write tools all hard-fail if `confirm` is not explicitly set to `true`. Claude must ask you before proceeding — this prevents prompt injection attacks from silently modifying your vault.
+
+**Cannot receive real secret values through MCP.** Plaintext values passed to `phantom_add_secret` are rejected. New secrets must be entered through the terminal prompt started by `phantom_add_secret_interactive`.
 
 **Cannot execute sync or pull against platforms.** `phantom_sync` is informational only — it shows configuration but does not call Vercel or Railway APIs. Actual sync requires a CLI command you run directly.
 

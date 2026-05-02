@@ -104,11 +104,20 @@ phantom init --from .env.local
 ### `phantom add` / `phantom remove`
 
 ```bash
+# Positional value (backward-compatible, but ends up in shell history):
 phantom add STRIPE_SECRET_KEY sk_live_abc123...
+
+# Interactive prompt — value is read silently from the terminal (no echo):
+phantom add STRIPE_SECRET_KEY
+
+# Pipe the value from a secret manager or CI helper (no tty required):
+echo "$SECRET_VALUE" | phantom add STRIPE_SECRET_KEY --stdin
+op read "op://Prod/Stripe/key" | phantom add STRIPE_SECRET_KEY --stdin
+
 phantom remove STRIPE_SECRET_KEY
 ```
 
-`add` stores the value and writes a phantom token to `.env`. `remove` deletes from the vault (`.env` token line is left; remove manually if desired).
+`add` stores the value and writes a phantom token to `.env`. When no positional value is given, phantom prompts silently on the terminal so the secret never enters your shell history. Use `--stdin` for non-interactive / CI use. `remove` deletes from the vault (`.env` token line is left; remove manually if desired).
 
 ### `phantom rotate`
 
@@ -136,12 +145,28 @@ Push real secrets to a deployment platform, or pull them from one.
 # Push to Vercel
 phantom sync --platform vercel --project prj_abc123
 
+# Push only Stripe secrets (glob pattern — avoids dev-only keys going to prod)
+phantom sync --platform railway --project <id> --only "STRIPE_*"
+
+# Multiple --only flags are OR-ed together
+phantom sync --platform vercel --project prj_abc123 --only "STRIPE_*" --only "*_KEY"
+
 # Pull from Vercel on a new machine
 phantom pull --from vercel --project prj_abc123
 
 # Railway
 phantom sync --platform railway --project <id>
 phantom pull --from railway --project <id> --environment production
+```
+
+You can also hard-code filters per `[[sync]]` block in `.phantom.toml` so that `phantom sync` (no flags) always respects them:
+
+```toml
+[[sync]]
+platform     = "railway"
+token_env    = "RAILWAY_TOKEN"
+project_id   = "<id>"
+only         = ["STRIPE_*", "SENDGRID_*"]   # never push DEV_* or DEBUG_* to prod
 ```
 
 ### `phantom check`

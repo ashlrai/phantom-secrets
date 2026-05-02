@@ -50,7 +50,7 @@ Init / scaffolding:
 - `phantom_unwrap` — reverse, requires `confirm`
 
 Destructive (require `confirm: true`):
-- `phantom_add_secret`, `phantom_remove_secret`, `phantom_rotate`
+- `phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`
 - `phantom_cloud_push`, `phantom_cloud_pull`
 - `phantom_copy_secret`
 

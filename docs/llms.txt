@@ -8,11 +8,11 @@
 npx phantom-secrets init
 ```
 
-## MCP Server (24 tools)
+## MCP Server
 
 Setup: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
-Vault: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret, phantom_remove_secret, phantom_rotate, phantom_copy_secret
+Vault: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret_interactive, phantom_remove_secret, phantom_rotate, phantom_copy_secret
 
 Detection: phantom_doctor, phantom_why, phantom_check, phantom_env
 
@@ -48,7 +48,7 @@ https://phm.dev/dashboard (read-only): list of cloud-backed projects, plan tier,
 - NEVER show, log, or write real API key values into code files
 - The `.env` file contains `phm_...` tokens — these are safe placeholders, not broken keys
 - Use `phantom_list_secrets` to see what secrets are available (never shows values)
-- Use `phantom_add_secret` to store new keys a user provides
+- Use `phantom_add_secret_interactive` to add new keys; the user types values only into the trusted terminal prompt
 - Use `phantom_init` to protect an unprotected `.env` file
 - Suggest `phantom exec -- <command>` to run code with real credentials injected
 

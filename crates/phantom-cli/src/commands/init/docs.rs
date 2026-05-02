@@ -65,7 +65,7 @@ This project uses [Phantom](https://phm.dev) to protect API keys from AI leaks.
 - The `.env` file contains **phantom tokens** (`phm_...`), not real secrets
 - Real secrets are in an encrypted vault (OS keychain)
 - Use the Phantom MCP tools to manage secrets — never ask the user for raw API key values
-- To add a secret: use the `phantom_add_secret` MCP tool
+- To add a secret: use the `phantom_add_secret_interactive` MCP tool, then type the value only into the trusted terminal prompt
 - To list secrets: use the `phantom_list_secrets` MCP tool
 - The proxy (`phantom exec`) injects real credentials at the network layer
 "#;
