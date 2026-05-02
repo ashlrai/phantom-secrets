@@ -46,7 +46,10 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
         std::io::stdin()
             .read_line(&mut buf)
             .context("Failed to read value from stdin")?;
-        let trimmed = buf.trim_end_matches('\n').trim_end_matches('\r').to_string();
+        let trimmed = buf
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_string();
         if trimmed.is_empty() {
             anyhow::bail!("Received empty value on stdin — aborting.");
         }
@@ -65,8 +68,8 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
         let prompt = format!("Value for {name}: ");
         // rpassword::prompt_password_stderr opens /dev/tty directly so it
         // works even if stdout is redirected.
-        let secret = rpassword::prompt_password(&prompt)
-            .context("Failed to read secret interactively")?;
+        let secret =
+            rpassword::prompt_password(&prompt).context("Failed to read secret interactively")?;
         if secret.is_empty() {
             anyhow::bail!("Empty value — aborting.");
         }

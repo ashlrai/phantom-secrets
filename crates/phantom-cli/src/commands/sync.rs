@@ -5,11 +5,7 @@ use phantom_core::sync::{self, Platform, SyncStatus};
 use std::collections::BTreeMap;
 use zeroize::Zeroize;
 
-pub fn run(
-    platform: Option<String>,
-    project: Option<String>,
-    only: Vec<String>,
-) -> Result<()> {
+pub fn run(platform: Option<String>, project: Option<String>, only: Vec<String>) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_async(platform, project, only))
 }
