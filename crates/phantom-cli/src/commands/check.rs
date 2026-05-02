@@ -6,8 +6,8 @@ use phantom_core::token::PhantomToken;
 /// Check for unprotected secrets in .env files and staged git files.
 /// Returns exit code 1 if found. Designed to be used as a pre-commit hook.
 ///
-/// When `staged_only` is true, skips .env file scanning and only checks
-/// git-staged files for hardcoded secrets. This is faster for pre-commit hooks.
+/// When `staged_only` is true, checks staged content from the git index,
+/// including staged .env files, so pre-commit hooks block newly staged secrets.
 ///
 /// When `runtime` is true, scans the current environment for phantom tokens
 /// that haven't been replaced (proxy not running).
@@ -54,15 +54,48 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
         }
     }
 
-    // Scan staged files for common secret patterns
+    // Scan staged files for .env secrets and common hardcoded secret patterns.
     let staged = get_staged_files();
     for file in &staged {
-        if file.ends_with(".env") || file.contains(".env.") || file.ends_with(".phantom.toml") {
-            continue; // Already handled above or safe
+        if file.ends_with(".phantom.toml") {
+            continue;
         }
 
-        // Check for hardcoded secrets in code files
-        if let Ok(content) = std::fs::read_to_string(project_dir.join(file)) {
+        let content = if staged_only {
+            read_staged_file(file)
+        } else {
+            std::fs::read_to_string(project_dir.join(file)).ok()
+        };
+
+        if let Some(content) = content {
+            if is_env_file(file) {
+                let dotenv = DotenvFile::parse_str(&content);
+                let real_secrets = dotenv.real_secret_entries();
+
+                if !real_secrets.is_empty() {
+                    if issues == 0 {
+                        eprintln!(
+                            "\n{} Unprotected secrets detected!\n",
+                            "BLOCKED".red().bold()
+                        );
+                    }
+
+                    eprintln!(
+                        "  {} staged {} has {} unprotected secret(s):",
+                        "!".red().bold(),
+                        file,
+                        real_secrets.len()
+                    );
+
+                    for entry in &real_secrets {
+                        eprintln!("    {} {}", "-".dimmed(), entry.key.bold());
+                    }
+
+                    issues += real_secrets.len();
+                }
+                continue;
+            }
+
             let secret_patterns = [
                 ("sk-", "OpenAI API key"),
                 ("sk_live_", "Stripe live key"),
@@ -109,6 +142,12 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
 
     println!("{} No unprotected secrets found.", "ok".green().bold());
     Ok(())
+}
+
+fn is_env_file(file: &str) -> bool {
+    file.rsplit('/')
+        .next()
+        .is_some_and(|name| name == ".env" || name.starts_with(".env.") || name.ends_with(".env"))
 }
 
 /// Check if the current environment has phantom tokens in API key variables
@@ -175,4 +214,13 @@ fn get_staged_files() -> Vec<String> {
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|s| s.lines().map(String::from).collect())
         .unwrap_or_default()
+}
+
+fn read_staged_file(file: &str) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["show", &format!(":{file}")])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
 }
