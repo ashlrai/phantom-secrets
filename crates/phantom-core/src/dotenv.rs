@@ -32,10 +32,35 @@ pub struct DotenvFile {
 
 #[derive(Debug, Clone)]
 enum DotenvLine {
-    /// A key=value pair.
-    Entry(EnvEntry),
+    /// A key=value pair. The optional `RawLineFormat` carries enough source
+    /// info to splice a new value into the original line, preserving quotes,
+    /// indentation, the `export ` prefix, and trailing inline comments.
+    /// Multi-line quoted values and entries with embedded escape sequences
+    /// store `None` and fall through to the canonical `KEY=value` reformat.
+    Entry(EnvEntry, Option<RawLineFormat>),
     /// A comment or blank line, stored verbatim.
     Other(String),
+}
+
+/// Captures the byte span occupied by an entry's value within the original
+/// source line, so phantom-token substitution can preserve everything around
+/// it. Only populated for single-line entries that can be safely round-tripped
+/// via value-only splicing.
+#[derive(Debug, Clone)]
+struct RawLineFormat {
+    raw: String,
+    value_start: usize,
+    value_end: usize,
+}
+
+impl RawLineFormat {
+    fn with_value(&self, new_value: &str) -> String {
+        let mut out = String::with_capacity(self.raw.len() + new_value.len());
+        out.push_str(&self.raw[..self.value_start]);
+        out.push_str(new_value);
+        out.push_str(&self.raw[self.value_end..]);
+        out
+    }
 }
 
 impl DotenvFile {
@@ -91,10 +116,35 @@ impl DotenvFile {
 
             let raw_value = working[eq_pos + 1..].trim_start();
 
-            let value = if let Some(after_quote) = raw_value.strip_prefix('"') {
+            // Track byte offsets in the original `line` so we can splice a
+            // replacement value while preserving the surrounding format.
+            // Computed unconditionally; consumed only if parsing stays on a
+            // single line and produces no embedded escapes.
+            let working_offset = line.find(working).unwrap_or(0);
+            let eq_in_line = working_offset + eq_pos;
+            let raw_value_offset = eq_in_line + 1 + (working[eq_pos + 1..].len() - raw_value.len());
+
+            let (value, fmt) = if let Some(after_quote) = raw_value.strip_prefix('"') {
                 // Double-quoted — may span multiple lines (F12).
                 match find_unescaped_quote(after_quote, '"') {
-                    Some(end) => unescape_double_quoted(&after_quote[..end]),
+                    Some(end) => {
+                        let raw_inner = &after_quote[..end];
+                        let unescaped = unescape_double_quoted(raw_inner);
+                        // Format-preservable only when no escape sequence
+                        // changed the bytes; otherwise round-tripping the
+                        // unescaped value back into the source would alter it.
+                        let fmt = if unescaped == raw_inner {
+                            let value_start = raw_value_offset + 1; // skip opening "
+                            Some(RawLineFormat {
+                                raw: line.to_string(),
+                                value_start,
+                                value_end: value_start + raw_inner.len(),
+                            })
+                        } else {
+                            None
+                        };
+                        (unescaped, fmt)
+                    }
                     None => {
                         // Closing quote not on the opening line — consume
                         // subsequent lines until we find it.
@@ -117,27 +167,44 @@ impl DotenvFile {
                             out.push(DotenvLine::Other(line.to_string()));
                             continue;
                         }
-                        unescape_double_quoted(&buf)
+                        // Multi-line: format preservation not attempted.
+                        (unescape_double_quoted(&buf), None)
                     }
                 }
             } else if let Some(after_quote) = raw_value.strip_prefix('\'') {
                 // Single-quoted: literal, single-line.
                 match after_quote.find('\'') {
-                    Some(end) => after_quote[..end].to_string(),
+                    Some(end) => {
+                        let value_start = raw_value_offset + 1; // skip opening '
+                        let fmt = Some(RawLineFormat {
+                            raw: line.to_string(),
+                            value_start,
+                            value_end: value_start + end,
+                        });
+                        (after_quote[..end].to_string(), fmt)
+                    }
                     None => {
                         out.push(DotenvLine::Other(line.to_string()));
                         continue;
                     }
                 }
             } else {
-                raw_value.to_string()
+                let fmt = Some(RawLineFormat {
+                    raw: line.to_string(),
+                    value_start: raw_value_offset,
+                    value_end: raw_value_offset + raw_value.len(),
+                });
+                (raw_value.to_string(), fmt)
             };
 
-            out.push(DotenvLine::Entry(EnvEntry {
-                is_phantom: PhantomToken::is_phantom_token(&value),
-                key,
-                value,
-            }));
+            out.push(DotenvLine::Entry(
+                EnvEntry {
+                    is_phantom: PhantomToken::is_phantom_token(&value),
+                    key,
+                    value,
+                },
+                fmt,
+            ));
         }
 
         Self { lines: out }
@@ -148,7 +215,7 @@ impl DotenvFile {
         self.lines
             .iter()
             .filter_map(|line| match line {
-                DotenvLine::Entry(entry) => Some(entry),
+                DotenvLine::Entry(entry, _) => Some(entry),
                 _ => None,
             })
             .collect()
@@ -198,7 +265,7 @@ impl DotenvFile {
 
         for line in &self.lines {
             match line {
-                DotenvLine::Entry(entry) => {
+                DotenvLine::Entry(entry, _) => {
                     if entry.is_phantom || classify(entry) == SecretClassification::Secret {
                         // Secret → placeholder
                         let placeholder = generate_placeholder(&entry.key, config);
@@ -232,16 +299,25 @@ impl DotenvFile {
 
         for line in &self.lines {
             match line {
-                DotenvLine::Entry(entry) => {
+                DotenvLine::Entry(entry, fmt) => {
                     if let Some(token) = token_map.get_token(&entry.key) {
                         // Replace value with phantom token (works for both initial and rotation)
                         if !entry.is_phantom {
                             original_values.insert(entry.key.clone(), entry.value.clone());
                         }
-                        output_lines.push(format!("{}={}", entry.key, token));
+                        let rendered = match fmt {
+                            Some(f) => f.with_value(token.as_str()),
+                            None => format!("{}={}", entry.key, token),
+                        };
+                        output_lines.push(rendered);
                     } else {
-                        // No mapping for this key, keep as-is (non-secret env vars)
-                        output_lines.push(format!("{}={}", entry.key, entry.value));
+                        // No mapping for this key, keep as-is (non-secret env vars).
+                        // Preserve the original line verbatim when format info exists.
+                        let rendered = match fmt {
+                            Some(f) => f.raw.clone(),
+                            None => format!("{}={}", entry.key, entry.value),
+                        };
+                        output_lines.push(rendered);
                     }
                 }
                 DotenvLine::Other(text) => {
@@ -919,5 +995,86 @@ KEY3=unquoted
         let (rewritten, _) = dotenv.rewrite_with_phantoms(&token_map);
         assert!(rewritten.contains("# This is a comment"));
         assert!(rewritten.contains("# Another comment"));
+    }
+
+    /// Format preservation: when a value gets a phantom token, the surrounding
+    /// quotes/whitespace/`export` prefix on the same line should survive.
+    /// Verifies the splice path rather than the canonical reformat path.
+    fn token_map_for(key: &str, token: &str) -> TokenMap {
+        let mut tm = TokenMap::new();
+        tm.insert_with_token(
+            key.to_string(),
+            PhantomToken::parse(token).expect("test token must start with phm_"),
+        );
+        tm
+    }
+
+    #[test]
+    fn rewrite_preserves_double_quotes() {
+        let content = "API_KEY=\"sk-real-test\"\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let tm = token_map_for("API_KEY", "phm_aaaa");
+        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
+        assert_eq!(out, "API_KEY=\"phm_aaaa\"\n");
+    }
+
+    #[test]
+    fn rewrite_preserves_single_quotes() {
+        let content = "API_KEY='sk-real-test'\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let tm = token_map_for("API_KEY", "phm_bbbb");
+        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
+        assert_eq!(out, "API_KEY='phm_bbbb'\n");
+    }
+
+    #[test]
+    fn rewrite_preserves_export_prefix() {
+        let content = "export API_KEY=sk-real-test\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let tm = token_map_for("API_KEY", "phm_cccc");
+        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
+        assert_eq!(out, "export API_KEY=phm_cccc\n");
+    }
+
+    #[test]
+    fn rewrite_preserves_leading_indentation() {
+        let content = "  API_KEY=sk-real-test\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let tm = token_map_for("API_KEY", "phm_dddd");
+        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
+        assert_eq!(out, "  API_KEY=phm_dddd\n");
+    }
+
+    #[test]
+    fn rewrite_preserves_non_secret_lines_verbatim() {
+        // Lines without a token mapping should round-trip exactly,
+        // including quotes and indentation.
+        let content = "  NODE_ENV=\"production\"\nexport PORT='8080'\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let tm = TokenMap::new();
+        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
+        assert_eq!(out, content);
+    }
+
+    #[test]
+    fn rewrite_falls_back_for_multiline_quoted_value() {
+        // Multi-line PEM-style values aren't format-preserved; the splice
+        // path is skipped and the canonical KEY=value reformat is emitted.
+        let content = "PRIVATE_KEY=\"line1\nline2\"\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let tm = token_map_for("PRIVATE_KEY", "phm_eeee");
+        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
+        assert!(out.contains("PRIVATE_KEY=phm_eeee"));
+    }
+
+    #[test]
+    fn rewrite_falls_back_for_double_quoted_value_with_escapes() {
+        // \n inside double quotes means the parsed value differs from the
+        // raw bytes; splicing back would lose the escape, so reformat.
+        let content = "MULTILINE_KEY=\"a\\nb\"\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let tm = token_map_for("MULTILINE_KEY", "phm_ffff");
+        let (out, _) = dotenv.rewrite_with_phantoms(&tm);
+        assert!(out.contains("MULTILINE_KEY=phm_ffff"));
     }
 }
