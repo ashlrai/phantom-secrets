@@ -364,9 +364,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Init { from } => commands::init::run(&from),
         Commands::List { json } => commands::list::run(json),
-        Commands::Add { name, value, stdin } => {
-            commands::add::run(&name, value.as_deref(), stdin)
-        }
+        Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
             name,
