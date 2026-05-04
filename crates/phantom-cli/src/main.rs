@@ -51,6 +51,10 @@ enum Commands {
         /// With --all: scan and report what would change without modifying anything.
         #[arg(long)]
         dry_run: bool,
+        /// With --all: number of repos to initialise concurrently.
+        /// Defaults to PHANTOM_INIT_JOBS env var, then 4.
+        #[arg(long, short = 'j', value_name = "N")]
+        jobs: Option<usize>,
     },
 
     /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex)
@@ -416,8 +420,18 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        Commands::Init { from, all, dry_run } => match all {
-            Some(root) => commands::init::multi::run(root, dry_run),
+        Commands::Init {
+            from,
+            all,
+            dry_run,
+            jobs,
+        } => match all {
+            Some(root) => {
+                let j = jobs
+                    .or_else(commands::init::multi::jobs_from_env)
+                    .unwrap_or(commands::init::multi::DEFAULT_JOBS);
+                commands::init::multi::run(root, dry_run, j)
+            }
             None => commands::init::run(&from),
         },
         Commands::List { json } => commands::list::run(json),

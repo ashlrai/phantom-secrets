@@ -18,7 +18,8 @@ Phantom provides an MCP server (`npx phantom-secrets-mcp`) with these tools:
 | `phantom_init` | Protect .env secrets — store in vault, rewrite with phm_ tokens | directory (optional) |
 | `phantom_list_secrets` | List secret names with service mappings (never values) | — |
 | `phantom_status` | Show vault backend, secret count, project status | — |
-| `phantom_add_secret` | Add a new secret to the vault | name, value |
+| `phantom_add_secret` | **Deprecated** — refuses plaintext via MCP. Use `phantom_add_secret_interactive` instead | name, value |
+| `phantom_add_secret_interactive` | Prompt the user on the terminal for a value, then store. Value never crosses the MCP wire | name |
 | `phantom_remove_secret` | Remove a secret from the vault | name |
 | `phantom_rotate` | Regenerate all phantom tokens in .env | — |
 | `phantom_cloud_push` | Push encrypted vault to Phantom Cloud | — |
@@ -27,9 +28,19 @@ Phantom provides an MCP server (`npx phantom-secrets-mcp`) with these tools:
 
 ## MCP Setup
 
-```json
-{"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}
+One command writes the right config file for Codex (`~/.codex/config.toml`):
+
+```bash
+phantom setup --client codex
 ```
+
+Or print the snippet for manual paste:
+
+```bash
+phantom setup --client codex --print
+```
+
+If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine.
 
 ## CLI Commands
 
@@ -48,6 +59,6 @@ Phantom provides an MCP server (`npx phantom-secrets-mcp`) with these tools:
 ## When You See API Keys
 
 If a user provides a real API key (`sk-*`, `ghp_*`, `xoxb-*`, etc.):
-1. Use `phantom_add_secret` to store it in the vault
+1. Use `phantom_add_secret_interactive` (the user types the value into their terminal — value never enters the AI context). The deprecated `phantom_add_secret` will refuse plaintext from MCP on purpose.
 2. Reference the phantom token in code, never the real value
 3. Never write the real key value into any file

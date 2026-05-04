@@ -48,10 +48,10 @@ Many Claude Code setups block reading `.env` files by default (it's in the deny 
 
 Fix it automatically:
 ```bash
-phantom setup
+phantom setup --client claude
 ```
 
-This adds `.env` to Claude Code's allow rules in `.claude/settings.local.json`. If you have `.env` in your deny rules, you can safely remove it after running `phantom init`.
+This wires the MCP server AND adds `.env` to Claude Code's allow rules in `.claude/settings.local.json`. For other AI tools, swap in `--client cursor|windsurf|codex`. If you have `.env` in your deny rules, you can safely remove it after running `phantom init`.
 
 You can verify with:
 ```bash
@@ -226,6 +226,39 @@ Cloud sync is per-vault. Make sure you pushed from the same project directory. E
 ### "Subscription required" on cloud push
 
 The free tier allows 1 cloud vault. If you need more, upgrade to Pro ($8/mo) at [phm.dev/pricing](https://phm.dev/pricing).
+
+## Updates and Audit Log
+
+### Enabling the audit log
+
+For compliance or forensic visibility, set `PHANTOM_AUDIT=1` to record every vault store/retrieve/delete:
+
+```bash
+export PHANTOM_AUDIT=1
+phantom exec -- npm run dev
+tail -f ~/.phantom/audit.log
+```
+
+Each line is JSON with `ts`, `op`, `name` (the secret name — **never the value**), `process`, and `pid`. Off by default; enable per-shell or in your `.zprofile` / `.envrc`.
+
+### `phantom upgrade` says "use npm" instead of upgrading
+
+This is intentional. When phantom is installed via npm (binary cached at `~/.phantom-secrets/bin/phantom`), running `phantom upgrade` directly would be reverted by the next `npm install`. Use the npm path instead:
+
+```bash
+npm i -g phantom-secrets@latest
+```
+
+For brew installs, use `brew upgrade phantom`. For curl-installed binaries (`~/.local/bin/phantom`) or cargo-installed (`~/.cargo/bin/phantom`), `phantom upgrade` is the right command.
+
+### npm wrapper feels "stuck on an old version"
+
+The npm wrapper auto-detects when its cached binary's `--version` doesn't match the wrapper's published version and re-downloads. If something is wrong and the cache feels stale, force a refresh:
+
+```bash
+rm -f ~/.phantom-secrets/bin/phantom
+phantom --version       # triggers re-download via the npm wrapper
+```
 
 ### Warning: vault corruption means secret loss
 
