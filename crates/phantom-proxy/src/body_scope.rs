@@ -72,6 +72,88 @@ fn is_json_content_type(ct: &str) -> bool {
     }
 }
 
+/// Phantom token format: `phm_` prefix + 64 lowercase hex chars = 68 bytes.
+/// When streaming, a token can straddle a frame boundary; we carry at most
+/// `PHM_TOKEN_MAX_PARTIAL` bytes from the tail of one frame into the next.
+pub const PHM_TOKEN_LEN: usize = 68; // "phm_" (4) + 64 hex chars
+pub const PHM_TOKEN_MAX_PARTIAL: usize = PHM_TOKEN_LEN - 1; // 67 bytes
+
+/// Returns true for content-types where safe streaming token replacement is
+/// possible without a full body buffer.
+///
+/// Streaming is allowed for:
+/// - `text/*`                              (plain text, event-stream, etc.)
+/// - `application/x-www-form-urlencoded`
+///
+/// `application/json` is intentionally excluded. The JSON path in
+/// `scoped_body_replace` requires a full `serde_json` parse tree to enforce
+/// the field-level substitution allowlist (F9). Streaming JSON without that
+/// tree would bypass F9 and could leak secrets into non-allowed fields such
+/// as `prompt` or `content`. We prefer correctness over memory savings for
+/// the JSON case — JSON always uses the buffered path.
+///
+/// Binary and unknown types also return `false` and remain buffered (passed
+/// through unchanged by `scoped_body_replace`).
+pub fn should_stream_replace(content_type: Option<&str>) -> bool {
+    let ct = match content_type {
+        Some(ct) if !ct.is_empty() => ct,
+        _ => return false,
+    };
+    let mime = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    mime.starts_with("text/") || mime == "application/x-www-form-urlencoded"
+}
+
+/// Perform streaming phantom-token replacement on a single incoming frame.
+///
+/// Prepends `carry` (tail bytes held from the previous frame) to `frame`,
+/// runs `replace_in_bytes` over the combined buffer, then:
+/// - Returns the "ready" prefix (everything except the last
+///   `PHM_TOKEN_MAX_PARTIAL` bytes) for immediate emission.
+/// - Updates `carry` with the held tail for the next call.
+///
+/// After the last frame, call `stream_replace_flush` to drain the carry.
+///
+/// This performs simple substring replacement with no field-level scoping.
+/// It must only be called for content-types where `should_stream_replace`
+/// returns `true`.
+pub fn stream_replace_frame(
+    interceptor: &Interceptor,
+    carry: &mut Vec<u8>,
+    frame: &[u8],
+) -> Vec<u8> {
+    let mut combined = Vec::with_capacity(carry.len() + frame.len());
+    combined.extend_from_slice(carry);
+    combined.extend_from_slice(frame);
+
+    let (replaced, _did_replace) = interceptor.replace_in_bytes(&combined);
+
+    if replaced.len() > PHM_TOKEN_MAX_PARTIAL {
+        let emit_end = replaced.len() - PHM_TOKEN_MAX_PARTIAL;
+        let ready = replaced[..emit_end].to_vec();
+        *carry = replaced[emit_end..].to_vec();
+        ready
+    } else {
+        // Short combined buffer — carry it all; nothing ready yet.
+        *carry = replaced;
+        Vec::new()
+    }
+}
+
+/// Flush the carry buffer after the last frame. Runs a final replacement
+/// pass and returns the bytes to emit.
+pub fn stream_replace_flush(interceptor: &Interceptor, carry: Vec<u8>) -> Vec<u8> {
+    if carry.is_empty() {
+        return Vec::new();
+    }
+    let (replaced, _) = interceptor.replace_in_bytes(&carry);
+    replaced
+}
+
 /// Apply phantom-token substitution to a request body, restricted by
 /// content-type. Returns the (possibly rewritten) body and whether any
 /// substitution happened.
@@ -266,6 +348,8 @@ mod tests {
 
     #[test]
     fn non_json_body_not_replaced() {
+        // scoped_body_replace leaves form-encoded bodies unchanged (no field scoping).
+        // The streaming path handles form-encoded substitution instead.
         let body = format!("grant_type=client_credentials&client_secret={PHM}");
         let (out, did) = scoped_body_replace(
             &interceptor(),
@@ -305,5 +389,127 @@ mod tests {
         assert!(did);
         let out_str = std::str::from_utf8(&out).unwrap();
         assert!(out_str.contains(REAL));
+    }
+
+    // --- should_stream_replace ---
+
+    #[test]
+    fn stream_replace_text_plain() {
+        assert!(should_stream_replace(Some("text/plain")));
+    }
+
+    #[test]
+    fn stream_replace_text_event_stream() {
+        assert!(should_stream_replace(Some("text/event-stream")));
+    }
+
+    #[test]
+    fn stream_replace_text_with_charset() {
+        assert!(should_stream_replace(Some("text/plain; charset=utf-8")));
+    }
+
+    #[test]
+    fn stream_replace_form_encoded() {
+        assert!(should_stream_replace(Some(
+            "application/x-www-form-urlencoded"
+        )));
+    }
+
+    #[test]
+    fn stream_replace_json_excluded() {
+        // JSON must use the buffered path for F9 field-level scoping.
+        assert!(!should_stream_replace(Some("application/json")));
+        assert!(!should_stream_replace(Some("application/vnd.api+json")));
+    }
+
+    #[test]
+    fn stream_replace_binary_excluded() {
+        assert!(!should_stream_replace(Some("application/octet-stream")));
+        assert!(!should_stream_replace(Some("image/png")));
+        assert!(!should_stream_replace(Some("multipart/form-data")));
+    }
+
+    #[test]
+    fn stream_replace_none_excluded() {
+        assert!(!should_stream_replace(None));
+        assert!(!should_stream_replace(Some("")));
+    }
+
+    // --- stream_replace_frame / stream_replace_flush ---
+
+    #[test]
+    fn stream_frame_whole_token_in_one_frame() {
+        let iceptor = interceptor();
+        let mut carry = Vec::new();
+        let input = format!("prefix-{PHM}-suffix");
+        let ready = stream_replace_frame(&iceptor, &mut carry, input.as_bytes());
+        let flushed = stream_replace_flush(&iceptor, carry);
+        let result = [ready, flushed].concat();
+        let s = std::str::from_utf8(&result).unwrap();
+        assert!(s.contains(REAL), "real secret not found: {s}");
+        assert!(!s.contains("phm_"), "phantom token still present: {s}");
+    }
+
+    #[test]
+    fn stream_frame_token_split_across_frames() {
+        let iceptor = interceptor();
+        let mut carry = Vec::new();
+
+        // Split the 68-char token at position 20
+        let split = 20;
+        let part1 = format!("key={}", &PHM[..split]);
+        let part2 = format!("{}&ok=1", &PHM[split..]);
+
+        let ready1 = stream_replace_frame(&iceptor, &mut carry, part1.as_bytes());
+        let ready2 = stream_replace_frame(&iceptor, &mut carry, part2.as_bytes());
+        let flushed = stream_replace_flush(&iceptor, carry);
+
+        let result = [ready1, ready2, flushed].concat();
+        let s = std::str::from_utf8(&result).unwrap();
+        assert!(s.contains(REAL), "real secret not found after split: {s}");
+        assert!(!s.contains("phm_"), "phantom token still present: {s}");
+    }
+
+    #[test]
+    fn stream_frame_token_split_at_every_position() {
+        let iceptor = interceptor();
+        for split in 1..PHM.len() {
+            let mut carry = Vec::new();
+            let part1 = &PHM.as_bytes()[..split];
+            let part2 = &PHM.as_bytes()[split..];
+
+            let r1 = stream_replace_frame(&iceptor, &mut carry, part1);
+            let r2 = stream_replace_frame(&iceptor, &mut carry, part2);
+            let flushed = stream_replace_flush(&iceptor, carry);
+
+            let result = [r1, r2, flushed].concat();
+            let s = std::str::from_utf8(&result).unwrap();
+            assert!(
+                s.contains(REAL),
+                "real secret missing at split={split}: {s}"
+            );
+            assert!(
+                !s.contains("phm_"),
+                "phantom token present at split={split}: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_frame_no_token_passes_through() {
+        let iceptor = interceptor();
+        let mut carry = Vec::new();
+        let input = b"no secrets here, just plain text";
+        let ready = stream_replace_frame(&iceptor, &mut carry, input);
+        let flushed = stream_replace_flush(&iceptor, carry);
+        let result = [ready, flushed].concat();
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn stream_flush_empty_carry() {
+        let iceptor = interceptor();
+        let result = stream_replace_flush(&iceptor, Vec::new());
+        assert!(result.is_empty());
     }
 }
