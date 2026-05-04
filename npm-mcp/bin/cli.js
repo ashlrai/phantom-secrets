@@ -7,7 +7,7 @@ const https = require("https");
 const crypto = require("crypto");
 const { execSync } = require("child_process");
 
-const VERSION = "0.5.1";
+const VERSION = "0.6.0";
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom-mcp";
 const CACHE_DIR = join(

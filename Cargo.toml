@@ -9,7 +9,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/ashlrai/phantom-secrets"
@@ -41,7 +41,7 @@ base64 = "0.22"
 # and similar bare names are already taken on crates.io. The internal Rust
 # crate names stay `phantom_core`, `phantom_vault`, etc. via `[lib] name`
 # in each child Cargo.toml — so `use phantom_core::...` is unchanged.
-phantom-core = { path = "crates/phantom-core", version = "0.5.1", package = "phantom-secrets-core" }
-phantom-vault = { path = "crates/phantom-vault", version = "0.5.1", package = "phantom-secrets-vault" }
-phantom-proxy = { path = "crates/phantom-proxy", version = "0.5.1", package = "phantom-secrets-proxy" }
-phantom-mcp = { path = "crates/phantom-mcp", version = "0.5.1", package = "phantom-secrets-mcp" }
+phantom-core = { path = "crates/phantom-core", version = "0.6.0", package = "phantom-secrets-core" }
+phantom-vault = { path = "crates/phantom-vault", version = "0.6.0", package = "phantom-secrets-vault" }
+phantom-proxy = { path = "crates/phantom-proxy", version = "0.6.0", package = "phantom-secrets-proxy" }
+phantom-mcp = { path = "crates/phantom-mcp", version = "0.6.0", package = "phantom-secrets-mcp" }

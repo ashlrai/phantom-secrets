@@ -43,6 +43,6 @@ copy:
 
 ```bash
 brew install --formula ./integrations/homebrew/Formula/phantom.rb
-phantom --version  # → "phantom 0.5.1"
+phantom --version  # → "phantom 0.6.0"
 brew uninstall phantom
 ```

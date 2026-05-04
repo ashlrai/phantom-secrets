@@ -1802,7 +1802,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phantom-secrets"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1835,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1860,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-mcp"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1880,7 +1880,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-proxy"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "hex",
@@ -1902,7 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-vault"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",

@@ -53,7 +53,7 @@ Download from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/relea
 
 ```bash
 phantom --version
-# phantom 0.5.1
+# phantom 0.6.0
 ```
 
 ---

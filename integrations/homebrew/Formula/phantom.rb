@@ -11,7 +11,7 @@
 class Phantom < Formula
   desc "Stop AI coding agents from leaking your API keys"
   homepage "https://phm.dev"
-  version "0.5.1"
+  version "0.6.0"
   license "MIT"
 
   on_macos do
