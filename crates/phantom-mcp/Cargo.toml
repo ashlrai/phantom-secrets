@@ -11,6 +11,10 @@ description = "MCP server for Phantom Secrets — lets AI tools manage secrets s
 keywords = ["mcp", "mcp-server", "secrets", "ai-safety", "claude"]
 categories = ["development-tools", "command-line-utilities"]
 
+[lib]
+name = "phantom_mcp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "phantom-mcp"
 path = "src/main.rs"

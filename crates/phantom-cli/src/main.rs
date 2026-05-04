@@ -13,7 +13,7 @@ use tracing_subscriber::EnvFilter;
                   A local proxy intercepts API calls, swaps in real credentials at the network layer.\n\
                   The AI agent never sees a real secret.\n\n\
                   Commands are grouped (in display order):\n  \
-                    Setup        init · setup · doctor · completion\n  \
+                    Setup        init · setup · doctor · completion · mcp\n  \
                     Daily use    exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance  upgrade · watch · rotate · open · audit",
@@ -89,6 +89,13 @@ enum Commands {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+
+    /// MCP server commands (Model Context Protocol)
+    #[command(next_help_heading = "Setup")]
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
     },
 
     // ─────────────────────────── Daily use ───────────────────────────
@@ -381,6 +388,12 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum McpAction {
+    /// Run the MCP stdio server in-process (used by AI clients like Claude Code)
+    Serve,
+}
+
+#[derive(Subcommand)]
 enum TeamAction {
     /// List your teams
     List,
@@ -555,6 +568,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
         Commands::Completion { shell } => commands::completion::run(shell),
+        Commands::Mcp { action } => match action {
+            McpAction::Serve => commands::mcp::run_serve(),
+        },
         Commands::ClearClipboardAfter { secs } => commands::reveal::run_clear_after(secs),
         Commands::Team { action } => match action {
             TeamAction::List => commands::team::run_list(),

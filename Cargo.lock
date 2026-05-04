@@ -1816,6 +1816,7 @@ dependencies = [
  "notify",
  "open",
  "phantom-secrets-core",
+ "phantom-secrets-mcp",
  "phantom-secrets-proxy",
  "phantom-secrets-vault",
  "rpassword",

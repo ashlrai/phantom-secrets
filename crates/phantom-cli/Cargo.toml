@@ -19,6 +19,7 @@ path = "src/main.rs"
 phantom-core = { workspace = true }
 phantom-vault = { workspace = true }
 phantom-proxy = { workspace = true }
+phantom-mcp = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 tokio = { workspace = true }
