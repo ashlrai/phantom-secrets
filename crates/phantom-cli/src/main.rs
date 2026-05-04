@@ -254,15 +254,21 @@ enum Commands {
         force: bool,
     },
 
-    /// Export secrets to an encrypted backup file
+    /// Export secrets to an encrypted backup file or as plaintext JSON to stdout
     #[command(next_help_heading = "Sync & teams")]
     Export {
-        /// Output file path
-        #[arg(short, long, default_value = "phantom-export.enc")]
-        output: String,
-        /// Encryption passphrase
+        /// Output file path (encrypted mode)
         #[arg(short, long)]
-        passphrase: String,
+        output: Option<String>,
+        /// Encryption passphrase (encrypted mode)
+        #[arg(short, long)]
+        passphrase: Option<String>,
+        /// Emit secrets as a plaintext JSON object to stdout instead of an encrypted file
+        #[arg(long)]
+        json: bool,
+        /// Required with --json: acknowledge that secrets will be emitted in plaintext
+        #[arg(long)]
+        allow_plaintext: bool,
     },
 
     /// Import secrets from an encrypted backup file
@@ -449,7 +455,17 @@ fn main() -> anyhow::Result<()> {
             only,
         } => commands::sync::run(platform, project, only),
         Commands::Env { output } => commands::env::run(&output),
-        Commands::Export { output, passphrase } => commands::export_cmd::run(&output, &passphrase),
+        Commands::Export {
+            output,
+            passphrase,
+            json,
+            allow_plaintext,
+        } => commands::export_cmd::run(
+            output.as_deref(),
+            passphrase.as_deref(),
+            json,
+            allow_plaintext,
+        ),
         Commands::Import {
             file,
             passphrase,
