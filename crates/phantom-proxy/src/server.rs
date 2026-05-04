@@ -323,46 +323,114 @@ async fn handle_request(
         outgoing = outgoing.header(route.header.as_str(), header_value);
     }
 
-    // Read body with size limit enforced during read (prevents OOM on large payloads)
-    let limited_body = http_body_util::Limited::new(req.into_body(), state.max_body_size);
-    let body_bytes = match limited_body.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            let err_str = e.to_string();
-            if err_str.contains("length limit exceeded") {
-                warn!(
-                    "Request body too large (limit: {} bytes)",
-                    state.max_body_size
-                );
-                return Ok(error_response(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    format!(
-                        r#"{{"error":"request body too large","limit":{}}}"#,
+    // Decide streaming vs. buffered based on request content-type.
+    //
+    // Streaming path (text/*, application/x-www-form-urlencoded):
+    //   Feeds the incoming body frame-by-frame through token replacement
+    //   without ever materialising the full payload. A 67-byte carry buffer
+    //   handles tokens that straddle frame boundaries.
+    //
+    // Buffered path (application/json, unknown, binary):
+    //   Collects up to max_body_size, then runs scoped_body_replace.
+    //   JSON gets field-level F9 scoping; everything else passes through
+    //   unchanged. This is the existing behaviour — preserved verbatim.
+    //
+    // Why JSON is excluded from streaming:
+    //   scoped_body_replace for JSON requires a full serde_json parse tree
+    //   to enforce the field-level substitution allowlist (F9). Streaming
+    //   JSON without that tree would bypass F9 and leak secrets into
+    //   non-allowed fields (e.g. prompt/content). We prefer correctness over
+    //   memory savings for the JSON case.
+    if body_scope::should_stream_replace(request_content_type.as_deref()) {
+        // --- Streaming path ---
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(32);
+        let interceptor = state.interceptor.clone();
+        let max_size = state.max_body_size;
+        let mut incoming_body = req.into_body();
+        tokio::spawn(async move {
+            use http_body_util::BodyExt as _;
+            let mut carry: Vec<u8> = Vec::new();
+            let mut total_bytes: usize = 0;
+            loop {
+                match incoming_body.frame().await {
+                    Some(Ok(frame)) => {
+                        if let Ok(data) = frame.into_data() {
+                            total_bytes += data.len();
+                            if total_bytes > max_size {
+                                warn!("Streaming request body exceeded limit ({} bytes)", max_size);
+                                break;
+                            }
+                            let ready =
+                                body_scope::stream_replace_frame(&interceptor, &mut carry, &data);
+                            if !ready.is_empty() && tx.send(Ok(Bytes::from(ready))).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        debug!("Streaming request body read error: {}", e);
+                        let _ = tx
+                            .send(Err(std::io::Error::new(
+                                std::io::ErrorKind::BrokenPipe,
+                                e.to_string(),
+                            )))
+                            .await;
+                        break;
+                    }
+                    None => {
+                        let tail = body_scope::stream_replace_flush(&interceptor, carry);
+                        if !tail.is_empty() {
+                            let _ = tx.send(Ok(Bytes::from(tail))).await;
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        outgoing = outgoing.body(reqwest::Body::wrap_stream(stream));
+        debug!("Streaming request body with token replacement");
+    } else {
+        // --- Buffered path (original behaviour) ---
+        let limited_body = http_body_util::Limited::new(req.into_body(), state.max_body_size);
+        let body_bytes = match limited_body.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("length limit exceeded") {
+                    warn!(
+                        "Request body too large (limit: {} bytes)",
                         state.max_body_size
-                    ),
+                    );
+                    return Ok(error_response(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        format!(
+                            r#"{{"error":"request body too large","limit":{}}}"#,
+                            state.max_body_size
+                        ),
+                    ));
+                }
+                error!("Failed to read request body: {}", e);
+                return Ok(error_response(
+                    StatusCode::BAD_REQUEST,
+                    r#"{"error":"failed to read request body"}"#,
                 ));
             }
-            error!("Failed to read request body: {}", e);
-            return Ok(error_response(
-                StatusCode::BAD_REQUEST,
-                r#"{"error":"failed to read request body"}"#,
-            ));
+        };
+        if !body_bytes.is_empty() {
+            // F9: content-type-scoped substitution. JSON bodies get field-level
+            // replacement on a whitelist of known-secret fields; other
+            // content-types pass through without substitution.
+            let (replaced_body, did_replace) = body_scope::scoped_body_replace(
+                &state.interceptor,
+                request_content_type.as_deref(),
+                &body_bytes,
+            );
+            if did_replace {
+                debug!("Replaced phantom token(s) in request body (scoped)");
+            }
+            outgoing = outgoing.body(replaced_body);
         }
-    };
-
-    if !body_bytes.is_empty() {
-        // F9: content-type-scoped substitution. JSON bodies get field-level
-        // replacement on a whitelist of known-secret fields; other
-        // content-types pass through without substitution.
-        let (replaced_body, did_replace) = body_scope::scoped_body_replace(
-            &state.interceptor,
-            request_content_type.as_deref(),
-            &body_bytes,
-        );
-        if did_replace {
-            debug!("Replaced phantom token(s) in request body (scoped)");
-        }
-        outgoing = outgoing.body(replaced_body);
     }
 
     // Send the request
@@ -1037,6 +1105,266 @@ mod tests {
         assert_eq!(resp.status(), 413);
         let body = resp.text().await.unwrap();
         assert!(body.contains("request body too large"));
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Streaming body tests
+    // -----------------------------------------------------------------------
+
+    /// A phantom token split across two chunks must still be replaced when the
+    /// request body has a text/* content-type (streaming path).
+    #[tokio::test]
+    async fn test_streaming_token_split_across_chunks() {
+        let mock = crate::test_server::MockServer::start().await;
+
+        let phantom_token = "phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222";
+        let real_secret = "sk-streaming-real-secret";
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+
+        let mut mappings = HashMap::new();
+        mappings.insert(phantom_token.to_string(), real_secret.to_string());
+        let interceptor = Interceptor::new(mappings);
+
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        // Split the token at position 20 across two body chunks.
+        let split_pos = 20;
+        let part1 = format!("key={}", &phantom_token[..split_pos]);
+        let part2 = format!("{}&extra=value", &phantom_token[split_pos..]);
+
+        let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(2);
+        body_tx.send(Ok(Bytes::from(part1))).await.unwrap();
+        body_tx.send(Ok(Bytes::from(part2))).await.unwrap();
+        drop(body_tx);
+
+        let stream = tokio_stream::wrappers::ReceiverStream::new(body_rx);
+        let chunked_body = reqwest::Body::wrap_stream(stream);
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!(
+                "http://127.0.0.1:{}/testapi/v1/upload",
+                proxy.port()
+            ))
+            .header("content-type", "text/plain")
+            .body(chunked_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 1);
+
+        let received_body = String::from_utf8(requests[0].body.clone()).unwrap();
+        assert!(
+            received_body.contains(real_secret),
+            "real secret not found after streaming replace: {received_body}"
+        );
+        assert!(
+            !received_body.contains("phm_"),
+            "phantom token still present after streaming replace: {received_body}"
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    /// SSE response (Content-Type: text/event-stream) containing a real secret
+    /// must be scrubbed back to the phantom token before reaching the client.
+    #[tokio::test]
+    async fn test_sse_response_scrubs_real_secret() {
+        let phantom_token = "phm_bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333";
+        let real_secret = "sk-sse-real-secret-value";
+
+        let sse_body = format!(
+            "data: {{\"key\":\"{real_secret}\"}}
+
+"
+        );
+
+        // Minimal SSE upstream.
+        let sse_addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+        let sse_listener = tokio::net::TcpListener::bind(sse_addr).await.unwrap();
+        let sse_port = sse_listener.local_addr().unwrap().port();
+        let sse_body_clone = sse_body.clone();
+        let (sse_shutdown_tx, mut sse_shutdown_rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    result = sse_listener.accept() => {
+                        match result {
+                            Ok((stream, _)) => {
+                                let body_str = sse_body_clone.clone();
+                                tokio::spawn(async move {
+                                    let io = hyper_util::rt::TokioIo::new(stream);
+                                    let _ = hyper::server::conn::http1::Builder::new()
+                                        .serve_connection(
+                                            io,
+                                            hyper::service::service_fn(move |_req| {
+                                                let b = body_str.clone();
+                                                async move {
+                                                    Ok::<_, hyper::Error>(
+                                                        hyper::Response::builder()
+                                                            .status(200)
+                                                            .header("content-type", "text/event-stream")
+                                                            .header("transfer-encoding", "chunked")
+                                                            .body(http_body_util::Full::new(
+                                                                bytes::Bytes::from(b),
+                                                            ))
+                                                            .unwrap(),
+                                                    )
+                                                }
+                                            }),
+                                        )
+                                        .await;
+                                });
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    _ = sse_shutdown_rx.changed() => {
+                        if *sse_shutdown_rx.borrow() { break; }
+                    }
+                }
+            }
+        });
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "sseapi".to_string(),
+            target_base: format!("http://127.0.0.1:{sse_port}"),
+            secret_key: "SSE_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+
+        let mut mappings = HashMap::new();
+        mappings.insert(phantom_token.to_string(), real_secret.to_string());
+        let interceptor = Interceptor::new(mappings);
+
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!(
+                "http://127.0.0.1:{}/sseapi/v1/stream",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let body_text = resp.text().await.unwrap();
+
+        assert!(
+            !body_text.contains(real_secret),
+            "real secret leaked through SSE response scrubber: {body_text}"
+        );
+        assert!(
+            body_text.contains(phantom_token),
+            "phantom token not present after SSE response scrub: {body_text}"
+        );
+
+        proxy.shutdown().await;
+        let _ = sse_shutdown_tx.send(true);
+    }
+
+    /// Binary content-type (application/octet-stream) uses the buffered path
+    /// and scoped_body_replace leaves it unchanged — no token substitution.
+    #[tokio::test]
+    async fn test_binary_content_type_passthrough_unchanged() {
+        let mock = crate::test_server::MockServer::start().await;
+
+        let phantom_token = "phm_cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333dddd4444";
+        let real_secret = "sk-binary-real-secret";
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+
+        let mut mappings = HashMap::new();
+        mappings.insert(phantom_token.to_string(), real_secret.to_string());
+        let interceptor = Interceptor::new(mappings);
+
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let binary_body = format!(" {phantom_token}");
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!(
+                "http://127.0.0.1:{}/testapi/v1/upload",
+                proxy.port()
+            ))
+            .header("content-type", "application/octet-stream")
+            .body(binary_body.clone())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 1);
+
+        let received_body = String::from_utf8_lossy(&requests[0].body);
+        assert!(
+            !received_body.contains(real_secret),
+            "real secret leaked into binary body: {received_body}"
+        );
+        assert!(
+            received_body.contains(phantom_token),
+            "phantom token in binary body was altered: {received_body}"
+        );
 
         proxy.shutdown().await;
         mock.shutdown().await;
