@@ -4,7 +4,7 @@ use colored::Colorize;
 /// hint when self-update isn't the right path (e.g. npm-installed phantom
 /// gets reverted on the next `npm install` if we replace the cached binary).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InstallSource {
+pub(crate) enum InstallSource {
     Npm,
     Homebrew,
     Cargo,
@@ -12,7 +12,7 @@ enum InstallSource {
     Unknown,
 }
 
-fn detect_install_source() -> InstallSource {
+pub(crate) fn detect_install_source() -> InstallSource {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(_) => return InstallSource::Unknown,

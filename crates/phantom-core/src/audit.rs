@@ -77,7 +77,7 @@ struct AuditEvent {
     pid: u32,
 }
 
-fn log_path() -> std::io::Result<PathBuf> {
+pub fn log_path() -> std::io::Result<PathBuf> {
     if let Some(home) = dirs_home_dir() {
         Ok(home.join(".phantom").join("audit.log"))
     } else {

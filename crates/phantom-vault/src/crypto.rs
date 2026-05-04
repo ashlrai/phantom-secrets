@@ -14,11 +14,23 @@ const KEY_LEN: usize = 32;
 /// Minimum size of an encrypted blob: salt + nonce + at least 1 byte of ciphertext.
 pub const MIN_ENCRYPTED_LEN: usize = SALT_LEN + NONCE_LEN + 1;
 
+/// Argon2id memory cost in KiB (64 MiB).
+pub const ARGON2_M_COST_KIB: u32 = 64 * 1024;
+/// Argon2id time cost (iterations).
+pub const ARGON2_T_COST: u32 = 3;
+/// Argon2id parallelism (lanes).
+pub const ARGON2_P_COST: u32 = 1;
+
 /// Hardened Argon2id parameters (OWASP "balanced" recommendation, 2024+):
 /// 64 MiB memory, 3 iterations, 1 lane, 32-byte output.
 fn hardened_argon2() -> Result<Argon2<'static>> {
-    let params = Params::new(64 * 1024, 3, 1, Some(KEY_LEN))
-        .map_err(|e| PhantomError::VaultError(format!("Argon2 params: {e}")))?;
+    let params = Params::new(
+        ARGON2_M_COST_KIB,
+        ARGON2_T_COST,
+        ARGON2_P_COST,
+        Some(KEY_LEN),
+    )
+    .map_err(|e| PhantomError::VaultError(format!("Argon2 params: {e}")))?;
     Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
 }
 

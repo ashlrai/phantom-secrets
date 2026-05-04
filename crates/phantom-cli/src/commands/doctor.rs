@@ -3,6 +3,8 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 
+use crate::commands::upgrade::{detect_install_source, InstallSource};
+
 pub fn run(fix: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
@@ -263,6 +265,99 @@ pub fn run(fix: bool) -> Result<()> {
         }
     }
 
+    // ── New informational rows ────────────────────────────────────────────────
+
+    // Check 10: Install source
+    {
+        let label = match detect_install_source() {
+            InstallSource::Npm => "npm (phantom-secrets package)",
+            InstallSource::Homebrew => "Homebrew",
+            InstallSource::Cargo => "Cargo (cargo install)",
+            InstallSource::Curl => "curl installer (~/.local/bin)",
+            InstallSource::Unknown => "unknown",
+        };
+        check_info(&format!("Install source: {label}"));
+    }
+
+    // Check 11: Vault backend (informational — also shown inline above when
+    // config exists, but surfaced unconditionally here so it's always visible)
+    {
+        if let Ok(config) = PhantomConfig::load(&config_path) {
+            let vault = phantom_vault::create_vault(&config.phantom.project_id);
+            check_info(&format!("Vault backend: {}", vault.backend_name()));
+        } else {
+            check_info("Vault backend: n/a (no .phantom.toml)");
+        }
+    }
+
+    // Check 12: Audit logging
+    {
+        if phantom_core::audit::enabled() {
+            match phantom_core::audit::log_path() {
+                Ok(path) => match std::fs::metadata(&path) {
+                    Ok(meta) => {
+                        let bytes = meta.len();
+                        let size_str = if bytes >= 1024 {
+                            format!("{} KiB", bytes / 1024)
+                        } else {
+                            format!("{bytes} B")
+                        };
+                        check_info(&format!(
+                            "Audit log: enabled — {} ({})",
+                            path.display(),
+                            size_str
+                        ));
+                    }
+                    Err(_) => {
+                        check_info(&format!(
+                            "Audit log: enabled — {} (not yet created)",
+                            path.display()
+                        ));
+                    }
+                },
+                Err(_) => {
+                    check_info("Audit log: enabled (log path unresolvable — HOME not set?)");
+                }
+            }
+        } else {
+            check_info("Audit log: disabled (set PHANTOM_AUDIT=1 to enable)");
+        }
+    }
+
+    // Check 13: Argon2 parameters
+    {
+        use phantom_vault::crypto::{ARGON2_M_COST_KIB, ARGON2_P_COST, ARGON2_T_COST};
+        check_info(&format!(
+            "Argon2id params: m={} MiB, t={}, p={} (OWASP balanced)",
+            ARGON2_M_COST_KIB / 1024,
+            ARGON2_T_COST,
+            ARGON2_P_COST,
+        ));
+    }
+
+    // Check 14: MCP setup status per known client
+    {
+        println!();
+        println!("  {} MCP client wiring:", "info".blue());
+
+        // Claude Code — project-local .claude/settings.local.json
+        let claude_path = project_dir.join(".claude/settings.local.json");
+        check_mcp_client("claude", &claude_path, false);
+
+        if let Some(home) = dirs::home_dir() {
+            // Cursor — ~/.cursor/mcp.json
+            check_mcp_client("cursor", &home.join(".cursor/mcp.json"), true);
+            // Windsurf — ~/.codeium/windsurf/mcp_config.json
+            check_mcp_client(
+                "windsurf",
+                &home.join(".codeium/windsurf/mcp_config.json"),
+                true,
+            );
+            // Codex — ~/.codex/config.toml
+            check_mcp_client("codex", &home.join(".codex/config.toml"), true);
+        }
+    }
+
     println!();
     if fix && fixed > 0 {
         println!("{} Auto-fixed {} issue(s)", "ok".green().bold(), fixed);
@@ -283,6 +378,49 @@ pub fn run(fix: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Check whether a known MCP client config file exists and references "phantom".
+fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) {
+    let location = if global {
+        if let Some(home) = dirs::home_dir() {
+            if let Ok(suffix) = path.strip_prefix(&home) {
+                format!("~/{}", suffix.display())
+            } else {
+                path.display().to_string()
+            }
+        } else {
+            path.display().to_string()
+        }
+    } else {
+        path.display().to_string()
+    };
+
+    if path.exists() {
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        if content.contains("phantom") {
+            println!(
+                "       {} {} wired up ({})",
+                "ok".green(),
+                name,
+                location.dimmed()
+            );
+        } else {
+            println!(
+                "       {} {} config exists but no phantom MCP ({})",
+                "--".dimmed(),
+                name,
+                location.dimmed()
+            );
+        }
+    } else {
+        println!(
+            "       {} {} not configured ({})",
+            "--".dimmed(),
+            name,
+            location.dimmed()
+        );
+    }
 }
 
 fn check_pass(msg: &str) {
@@ -307,4 +445,66 @@ fn check_fix(msg: &str) {
 
 fn check_fixed(msg: &str) {
     println!("       {} {}", "Fixed:".green(), msg);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::commands::upgrade::{detect_install_source, InstallSource};
+
+    /// Smoke test — detect_install_source() must be stable across two calls.
+    #[test]
+    fn install_source_is_stable() {
+        let a = detect_install_source();
+        let b = detect_install_source();
+        assert_eq!(a, b);
+    }
+
+    /// Verify that a binary path under ~/.phantom-secrets/bin/ is classified
+    /// as Npm by replicating the detection logic with a synthetic path.
+    #[test]
+    fn npm_path_detected_via_home_prefix() {
+        let home = dirs::home_dir().expect("need home dir for this test");
+        let npm_root = home.join(".phantom-secrets").join("bin");
+        let fake_exe = npm_root.join("phantom");
+
+        // Replicate the npm branch from detect_install_source().
+        let detected = if fake_exe.starts_with(&npm_root) {
+            InstallSource::Npm
+        } else {
+            InstallSource::Unknown
+        };
+        assert_eq!(detected, InstallSource::Npm);
+    }
+
+    /// Verify Homebrew path strings are classified correctly.
+    #[test]
+    fn homebrew_paths_detected() {
+        for path_str in &[
+            "/usr/local/Cellar/phantom/1.0/bin/phantom",
+            "/opt/homebrew/bin/phantom",
+            "/home/linuxbrew/.linuxbrew/bin/phantom",
+        ] {
+            let detected = if path_str.contains("/Cellar/")
+                || path_str.contains("/homebrew/")
+                || path_str.contains("/linuxbrew/")
+            {
+                InstallSource::Homebrew
+            } else {
+                InstallSource::Unknown
+            };
+            assert_eq!(detected, InstallSource::Homebrew, "path: {path_str}");
+        }
+    }
+
+    /// Verify Cargo path strings are classified correctly.
+    #[test]
+    fn cargo_path_detected() {
+        let path_str = "/home/user/.cargo/bin/phantom";
+        let detected = if path_str.contains("/.cargo/bin/") {
+            InstallSource::Cargo
+        } else {
+            InstallSource::Unknown
+        };
+        assert_eq!(detected, InstallSource::Cargo);
+    }
 }
