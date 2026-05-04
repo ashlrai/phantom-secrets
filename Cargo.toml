@@ -44,3 +44,4 @@ base64 = "0.22"
 phantom-core = { path = "crates/phantom-core", version = "0.5.1", package = "phantom-secrets-core" }
 phantom-vault = { path = "crates/phantom-vault", version = "0.5.1", package = "phantom-secrets-vault" }
 phantom-proxy = { path = "crates/phantom-proxy", version = "0.5.1", package = "phantom-secrets-proxy" }
+phantom-mcp = { path = "crates/phantom-mcp", version = "0.5.1", package = "phantom-secrets-mcp" }

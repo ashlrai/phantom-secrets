@@ -60,8 +60,14 @@ pub fn run(client: Option<Client>, print: bool) -> Result<()> {
     );
     if mcp.command == "npx" {
         println!(
-            "   {} phantom-mcp not on PATH — using `npx -y phantom-secrets-mcp` as fallback.",
+            "   {} phantom-mcp not found — using `npx -y phantom-secrets-mcp` as fallback.",
             "note".dimmed()
+        );
+    } else if mcp.args.first().map(|a| a == "mcp").unwrap_or(false) {
+        println!(
+            "   {} using bundled MCP server ({} mcp serve)",
+            "note".dimmed(),
+            mcp.command.dimmed()
         );
     }
 
@@ -73,20 +79,34 @@ pub fn run(client: Option<Client>, print: bool) -> Result<()> {
     }
 }
 
-/// Resolve the command + args we want each MCP client to invoke. Prefers a
-/// real `phantom-mcp` binary on disk; falls back to `npx -y phantom-secrets-mcp`
-/// when nothing is found, so the config still works on a fresh machine.
+/// Resolve the command + args we want each MCP client to invoke.
+///
+/// Resolution order:
+///   1. Current executable + `["mcp", "serve"]` — the bundled in-process server
+///      (always preferred: one binary, no PATH dependency).
+///   2. `phantom-mcp` binary on PATH or next to the current exe — legacy standalone.
+///   3. `npx -y phantom-secrets-mcp` — works on a machine that only has Node/npm.
 fn mcp_command_spec() -> McpCommand {
+    // (1) Prefer the bundled subcommand in the current binary.
+    if let Ok(exe) = std::env::current_exe() {
+        return McpCommand {
+            command: exe.to_string_lossy().into_owned(),
+            args: vec!["mcp".to_string(), "serve".to_string()],
+        };
+    }
+
+    // (2) Fall back to a separate phantom-mcp binary on disk / PATH.
     if let Some(path) = find_mcp_binary() {
-        McpCommand {
+        return McpCommand {
             command: path,
             args: vec![],
-        }
-    } else {
-        McpCommand {
-            command: "npx".to_string(),
-            args: vec!["-y".to_string(), "phantom-secrets-mcp".to_string()],
-        }
+        };
+    }
+
+    // (3) Last resort: npx wrapper.
+    McpCommand {
+        command: "npx".to_string(),
+        args: vec!["-y".to_string(), "phantom-secrets-mcp".to_string()],
     }
 }
 
