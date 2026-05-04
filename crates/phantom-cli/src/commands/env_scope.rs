@@ -1,4 +1,3 @@
-
 /// `phantom env` subcommands for environment scoping.
 ///
 /// This module handles `use`, `list`, `new`, and `copy` — the environment
@@ -214,24 +213,6 @@ pub fn run_copy(from: &str, to: &str) -> Result<()> {
         format!("phantom env use {to}").cyan()
     );
 
-    Ok(())
-}
-
-/// `phantom env` with no subcommand — show help hint.
-pub fn run_default(current: &str) -> Result<()> {
-    println!(
-        "{} Active environment: {}",
-        "->".blue().bold(),
-        current.cyan().bold()
-    );
-    println!(
-        "{}",
-        "Use a subcommand: use <name> | list | new <name> | copy --from <src> --to <dst>".dimmed()
-    );
-    println!(
-        "  {} — generate .env.example for team onboarding",
-        "phantom env example".cyan()
-    );
     Ok(())
 }
 

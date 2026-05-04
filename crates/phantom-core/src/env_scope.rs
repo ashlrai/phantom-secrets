@@ -1,13 +1,13 @@
 /// Environment scoping for phantom secrets.
 ///
-/// Secrets are stored under a composite vault key `<env>/<name>` so that the
+/// Secrets are stored under a composite vault key `<env>:<name>` so that the
 /// same logical secret name can hold different values in different environments
 /// (e.g. dev vs staging vs prod).
 ///
 /// The **default** environment uses the legacy bare `<name>` key for full
 /// backward compatibility: when reading under `default` we first try
-/// `default/<name>`, then fall back to the bare `<name>` so existing vaults
-/// work without migration.
+/// `default:<name>`, then fall back to the legacy `default/<name>`, then to
+/// the bare `<name>` so existing vaults work without migration.
 ///
 /// The active environment is persisted in `.phantom/env` (a single line
 /// containing the env name). It is overridable per-invocation via the
@@ -16,19 +16,30 @@ use std::path::Path;
 
 pub const DEFAULT_ENV: &str = "default";
 
+/// Separator used between env name and secret name in vault keys.
+///
+/// `:` is chosen over `/` because `/` is a path separator on Windows and can
+/// cause issues with file-vault backends or Windows Credential Manager entries.
+/// `:` is safe on all platforms and cannot appear in env names (validated by
+/// `validate_env_name`).
+pub const KEY_SEP: char = ':';
+
 /// Return the composite vault key for a given env + secret name.
 ///
-/// `default/<name>` is the canonical form even for the default env; the
-/// backward-compat fallback to bare `<name>` is handled at the vault call
-/// sites (see `retrieve_in_env` / `delete_in_env`).
+/// `default:<name>` is the canonical form even for the default env; the
+/// backward-compat fallback to bare `<name>` (and the legacy `<env>/<name>`
+/// format from pre-v2 vaults) is handled at the vault call sites.
 pub fn namespaced_key(env: &str, name: &str) -> String {
-    format!("{env}/{name}")
+    format!("{env}{KEY_SEP}{name}")
 }
 
 /// Strip the env prefix from a namespaced key, returning `(env, name)`.
-/// Returns `None` if the key has no `/`.
+///
+/// Recognises both the current separator (`:`) and the legacy separator (`/`)
+/// for backward compatibility with vaults written before this change.
+/// Returns `None` if the key has neither separator.
 pub fn split_key(key: &str) -> Option<(&str, &str)> {
-    key.split_once('/')
+    key.split_once(KEY_SEP).or_else(|| key.split_once('/'))
 }
 
 /// Read the active environment name from `.phantom/env` in `project_dir`.
@@ -100,22 +111,46 @@ mod tests {
 
     #[test]
     fn namespaced_key_format() {
-        assert_eq!(namespaced_key("dev", "STRIPE_KEY"), "dev/STRIPE_KEY");
+        assert_eq!(namespaced_key("dev", "STRIPE_KEY"), "dev:STRIPE_KEY");
         assert_eq!(
             namespaced_key("default", "OPENAI_KEY"),
-            "default/OPENAI_KEY"
+            "default:OPENAI_KEY"
         );
     }
 
     #[test]
-    fn split_key_round_trips() {
+    fn namespaced_key_contains_no_path_separators() {
+        // Regression test: the separator must not be `/` (path separator on
+        // Windows) or `\`. This ensures the file-vault backend and Windows
+        // Credential Manager never interpret the key as a file path.
+        let key = namespaced_key("default", "MY_KEY");
+        assert!(
+            !key.contains('/'),
+            "namespaced key must not contain '/' (Windows path separator): {key}"
+        );
+        assert!(
+            !key.contains('\\'),
+            "namespaced key must not contain '\\' (Windows path separator): {key}"
+        );
+    }
+
+    #[test]
+    fn split_key_round_trips_colon() {
+        let (env, name) = split_key("dev:STRIPE_KEY").unwrap();
+        assert_eq!(env, "dev");
+        assert_eq!(name, "STRIPE_KEY");
+    }
+
+    #[test]
+    fn split_key_round_trips_legacy_slash() {
+        // Backward compat: old vaults used `/` — must still parse correctly.
         let (env, name) = split_key("dev/STRIPE_KEY").unwrap();
         assert_eq!(env, "dev");
         assert_eq!(name, "STRIPE_KEY");
     }
 
     #[test]
-    fn split_key_no_slash_returns_none() {
+    fn split_key_no_separator_returns_none() {
         assert!(split_key("BARE_NAME").is_none());
     }
 
@@ -132,13 +167,19 @@ mod tests {
     }
 
     #[test]
+    fn validate_env_name_rejects_colon() {
+        // Colon is the vault key separator — must not be allowed in env names.
+        assert!(validate_env_name("a:b").is_err());
+    }
+
+    #[test]
     fn validate_env_name_rejects_empty() {
         assert!(validate_env_name("").is_err());
     }
 
     #[test]
     fn known_envs_includes_default_and_current() {
-        let keys = vec!["dev/KEY".to_string(), "staging/KEY".to_string()];
+        let keys = vec!["dev:KEY".to_string(), "staging:KEY".to_string()];
         let envs = known_envs_from_keys(&keys, "prod");
         assert!(envs.contains(&"default".to_string()));
         assert!(envs.contains(&"dev".to_string()));
