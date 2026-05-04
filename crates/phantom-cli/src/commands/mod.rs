@@ -6,6 +6,7 @@ pub mod completion;
 pub mod copy;
 pub mod doctor;
 pub mod env;
+pub mod env_scope;
 pub mod exec;
 pub mod export_cmd;
 pub mod import_cmd;

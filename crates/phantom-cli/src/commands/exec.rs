@@ -2,22 +2,23 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
+use phantom_core::env_scope::DEFAULT_ENV;
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 
-pub fn run(cmd: &[String]) -> Result<()> {
+pub fn run(cmd: &[String], env: Option<&str>) -> Result<()> {
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd))
+    rt.block_on(run_async(cmd, env))
 }
 
-async fn run_async(cmd: &[String]) -> Result<()> {
+async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let env_path = project_dir.join(".env");
@@ -31,6 +32,8 @@ async fn run_async(cmd: &[String]) -> Result<()> {
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
+
+    let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
 
     // Session-scoped token rotation:
     // Instead of using the persistent phantom tokens from .env directly,
@@ -47,8 +50,18 @@ async fn run_async(cmd: &[String]) -> Result<()> {
 
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
-                match vault.retrieve(&entry.key) {
-                    Ok(real_value) => {
+                // Build the vault key for this env: try namespaced first, then bare (legacy)
+                let namespaced = phantom_core::env_scope::namespaced_key(&active_env, &entry.key);
+                let real_value = if vault.exists(&namespaced).unwrap_or(false) {
+                    vault.retrieve(&namespaced).ok()
+                } else if active_env == DEFAULT_ENV {
+                    vault.retrieve(&entry.key).ok()
+                } else {
+                    None
+                };
+
+                match real_value {
+                    Some(real_value) => {
                         // Generate a fresh session token for this secret
                         let session_token = PhantomToken::generate();
                         session_token_to_secret.insert(
@@ -61,11 +74,12 @@ async fn run_async(cmd: &[String]) -> Result<()> {
                             .insert(entry.key.clone(), session_token.as_str().to_string());
                         secret_count += 1;
                     }
-                    Err(_) => {
+                    None => {
                         eprintln!(
-                            "{} No vault entry for {} (phantom token in .env but not in vault)",
+                            "{} No vault entry for {} in env '{}' (phantom token in .env but not in vault)",
                             "warn".yellow(),
-                            entry.key
+                            entry.key,
+                            active_env
                         );
                     }
                 }
@@ -86,9 +100,10 @@ async fn run_async(cmd: &[String]) -> Result<()> {
     let interceptor = Interceptor::new_with_named(session_token_to_secret, secret_name_to_value);
 
     println!(
-        "{} Starting proxy with {} secret(s) (session-scoped tokens)...",
+        "{} Starting proxy with {} secret(s) (session-scoped tokens, env: {})...",
         "->".blue().bold(),
-        secret_count
+        secret_count,
+        active_env.cyan()
     );
 
     // Generate proxy session token
@@ -124,7 +139,16 @@ async fn run_async(cmd: &[String]) -> Result<()> {
     let conn_services = config.connection_string_services();
     let mut conn_env_vars: Vec<(String, String)> = Vec::new();
     for (_name, svc) in &conn_services {
-        if let Ok(real_value) = vault.retrieve(&svc.secret_key) {
+        // Try namespaced key first, then bare for default env
+        let namespaced = phantom_core::env_scope::namespaced_key(&active_env, &svc.secret_key);
+        let real_value = if vault.exists(&namespaced).unwrap_or(false) {
+            vault.retrieve(&namespaced).ok()
+        } else if active_env == DEFAULT_ENV {
+            vault.retrieve(&svc.secret_key).ok()
+        } else {
+            None
+        };
+        if let Some(real_value) = real_value {
             conn_env_vars.push((svc.secret_key.clone(), String::from(real_value.as_str())));
             println!(
                 "   {} {} (injected as env var)",
