@@ -2,6 +2,7 @@ mod commands;
 mod util;
 
 use clap::{Parser, Subcommand};
+use commands::audit::AuditAction;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -15,7 +16,7 @@ use tracing_subscriber::EnvFilter;
                     Setup        init · setup · doctor · completion\n  \
                     Daily use    exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
-                    Maintenance  upgrade · watch · rotate · open",
+                    Maintenance  upgrade · watch · rotate · open · audit",
     version
 )]
 struct Cli {
@@ -327,6 +328,13 @@ enum Commands {
         sync: bool,
     },
 
+    /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
+    #[command(next_help_heading = "Maintenance")]
+    Audit {
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+
     /// Open a Phantom page in the browser. Defaults to the dashboard.
     /// Aliases: dashboard, billing, team, docs, pricing, github, issues, site.
     /// Any other word becomes https://phm.dev/<word>; full URLs pass through.
@@ -483,6 +491,18 @@ fn main() -> anyhow::Result<()> {
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
         Commands::Unwrap => commands::unwrap::run(),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
+        Commands::Audit { action } => match action {
+            AuditAction::Show {
+                last,
+                op,
+                name,
+                json,
+            } => commands::audit::run_show(last, op.as_deref(), name.as_deref(), json),
+            AuditAction::Tail { op, name } => {
+                commands::audit::run_tail(op.as_deref(), name.as_deref())
+            }
+            AuditAction::Path => commands::audit::run_path(),
+        },
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
         Commands::Completion { shell } => commands::completion::run(shell),
