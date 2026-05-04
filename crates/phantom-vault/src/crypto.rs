@@ -1,4 +1,4 @@
-use argon2::Argon2;
+use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
@@ -14,11 +14,33 @@ const KEY_LEN: usize = 32;
 /// Minimum size of an encrypted blob: salt + nonce + at least 1 byte of ciphertext.
 pub const MIN_ENCRYPTED_LEN: usize = SALT_LEN + NONCE_LEN + 1;
 
+/// Hardened Argon2id parameters (OWASP "balanced" recommendation, 2024+):
+/// 64 MiB memory, 3 iterations, 1 lane, 32-byte output.
+fn hardened_argon2() -> Result<Argon2<'static>> {
+    let params = Params::new(64 * 1024, 3, 1, Some(KEY_LEN))
+        .map_err(|e| PhantomError::VaultError(format!("Argon2 params: {e}")))?;
+    Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
+}
+
+/// Derive a key using the current (hardened) Argon2id parameters. Used for
+/// every new encryption.
 fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
+    let mut key = [0u8; KEY_LEN];
+    hardened_argon2()?
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
+        .map_err(|e| PhantomError::VaultError(format!("Key derivation failed: {e}")))?;
+    Ok(key)
+}
+
+/// Derive a key using legacy `Argon2::default()` parameters. Tried as a
+/// fallback when [`derive_key`] produces a key that doesn't decrypt — this
+/// preserves compatibility with vaults encrypted under earlier phantom
+/// releases (m=19MiB / t=2 / p=1, the argon2 crate's default).
+fn derive_key_legacy(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
     let mut key = [0u8; KEY_LEN];
     Argon2::default()
         .hash_password_into(passphrase.as_bytes(), salt, &mut key)
-        .map_err(|e| PhantomError::VaultError(format!("Key derivation failed: {e}")))?;
+        .map_err(|e| PhantomError::VaultError(format!("Legacy key derivation failed: {e}")))?;
     Ok(key)
 }
 
@@ -62,18 +84,38 @@ pub fn decrypt(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     let salt = &encrypted[..SALT_LEN];
     let nonce_bytes = &encrypted[SALT_LEN..SALT_LEN + NONCE_LEN];
     let ciphertext = &encrypted[SALT_LEN + NONCE_LEN..];
+    let nonce = Nonce::from_slice(nonce_bytes);
 
-    let mut key = derive_key(passphrase, salt)?;
+    // Try the hardened parameters first; if AEAD verification fails we
+    // fall back to legacy `Argon2::default()` to keep older vaults
+    // decryptable. Either path's key is zeroized before this fn returns.
+    if let Some(plaintext) = try_decrypt_with(derive_key, passphrase, salt, nonce, ciphertext)? {
+        return Ok(plaintext);
+    }
+    if let Some(plaintext) =
+        try_decrypt_with(derive_key_legacy, passphrase, salt, nonce, ciphertext)?
+    {
+        return Ok(plaintext);
+    }
+
+    Err(PhantomError::VaultError(
+        "Decryption failed — wrong passphrase or corrupt data".to_string(),
+    ))
+}
+
+fn try_decrypt_with(
+    derive: fn(&str, &[u8]) -> Result<[u8; KEY_LEN]>,
+    passphrase: &str,
+    salt: &[u8],
+    nonce: &Nonce,
+    ciphertext: &[u8],
+) -> Result<Option<Vec<u8>>> {
+    let mut key = derive(passphrase, salt)?;
     let cipher = ChaCha20Poly1305::new_from_slice(&key)
         .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?;
     key.zeroize();
 
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
-        PhantomError::VaultError("Decryption failed — wrong passphrase or corrupt data".to_string())
-    })?;
-
-    Ok(plaintext)
+    Ok(cipher.decrypt(nonce, ciphertext).ok())
 }
 
 #[cfg(test)]
@@ -113,5 +155,46 @@ mod tests {
         // But both decrypt to the same thing
         assert_eq!(decrypt(&e1, "pass").unwrap(), plaintext);
         assert_eq!(decrypt(&e2, "pass").unwrap(), plaintext);
+    }
+
+    /// Encrypt with the legacy KDF, then verify the current `decrypt` path
+    /// can still read it. This guarantees we never break older vaults when
+    /// we tighten Argon2 parameters.
+    #[test]
+    fn test_legacy_vault_still_decrypts() {
+        use chacha20poly1305::aead::{Aead, KeyInit};
+        let plaintext = b"old-vault-data";
+        let passphrase = "legacy-pass";
+
+        let mut salt = [0u8; SALT_LEN];
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        rand::thread_rng().fill_bytes(&mut salt);
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+
+        let mut key = derive_key_legacy(passphrase, &salt).unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
+        key.zeroize();
+
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ct = cipher.encrypt(nonce, plaintext.as_ref()).unwrap();
+
+        let mut blob = Vec::with_capacity(SALT_LEN + NONCE_LEN + ct.len());
+        blob.extend_from_slice(&salt);
+        blob.extend_from_slice(&nonce_bytes);
+        blob.extend_from_slice(&ct);
+
+        // Real path — should hit the legacy fallback after the hardened
+        // params produce a non-matching key.
+        assert_eq!(decrypt(&blob, passphrase).unwrap(), plaintext);
+    }
+
+    #[test]
+    fn test_hardened_and_legacy_keys_differ() {
+        // Sanity check that the two derivations are actually different —
+        // otherwise the legacy fallback would be silently dead code.
+        let salt = [42u8; SALT_LEN];
+        let h = derive_key("same-pass", &salt).unwrap();
+        let l = derive_key_legacy("same-pass", &salt).unwrap();
+        assert_ne!(h, l);
     }
 }

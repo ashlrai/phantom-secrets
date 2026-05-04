@@ -148,13 +148,17 @@ impl VaultBackend for KeychainVault {
             index.sort();
             self.save_index(&index)?;
         }
+        phantom_core::audit::log("vault.store", Some(name));
         Ok(())
     }
 
     fn retrieve(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
         let entry = self.entry_for(name)?;
         match entry.get_password() {
-            Ok(value) => Ok(zeroize::Zeroizing::new(value)),
+            Ok(value) => {
+                phantom_core::audit::log("vault.retrieve", Some(name));
+                Ok(zeroize::Zeroizing::new(value))
+            }
             Err(keyring::Error::NoEntry) => {
                 // F13 migration: older phantom versions stored entries under
                 // the plaintext name. If we find one, return its value and
@@ -167,6 +171,7 @@ impl VaultBackend for KeychainVault {
                                 let _ = new_entry.set_password(&value);
                             }
                             let _ = legacy.delete_credential();
+                            phantom_core::audit::log("vault.retrieve", Some(name));
                             Ok(zeroize::Zeroizing::new(value))
                         }
                         Err(keyring::Error::NoEntry) => {
@@ -220,11 +225,13 @@ impl VaultBackend for KeychainVault {
         index.retain(|n| n != name);
         if was_in_index {
             self.save_index(&index)?;
+            phantom_core::audit::log("vault.delete", Some(name));
             Ok(())
         } else if matches!(new_result, Err(keyring::Error::NoEntry)) {
             Err(PhantomError::SecretNotFound(name.to_string()))
         } else {
             self.save_index(&index)?;
+            phantom_core::audit::log("vault.delete", Some(name));
             Ok(())
         }
     }
@@ -283,5 +290,35 @@ mod tests {
             h.chars().all(|c| c.is_ascii_hexdigit()),
             "expected lowercase hex: {h}"
         );
+    }
+
+    /// End-to-end round-trip against the real OS keychain. Ignored by
+    /// default because it touches the user's actual keychain (and CI
+    /// may not have one without `keyring`'s mock backend). Run with
+    /// `cargo test -p phantom-secrets-vault -- --ignored` on each
+    /// platform (macOS Keychain, Linux Secret Service, Windows
+    /// Credential Manager) to confirm the backend is wired up.
+    #[test]
+    #[ignore = "touches OS keychain — run with --ignored on each platform"]
+    fn os_keychain_roundtrip() {
+        use crate::traits::VaultBackend;
+
+        // Per-run unique project_id so a previous failed run can't
+        // pollute this one's state.
+        let project_id = format!("phantom-test-{}", std::process::id());
+        let vault = KeychainVault::new(&project_id).expect("keychain backend should initialize");
+
+        let name = "ROUNDTRIP_TEST_KEY";
+        let value = "sk-test-value-do-not-use-12345";
+        vault.store(name, value).expect("store");
+
+        let got = vault.retrieve(name).expect("retrieve");
+        assert_eq!(got.as_str(), value);
+
+        let listed = vault.list().expect("list");
+        assert!(listed.iter().any(|n| n == name));
+
+        vault.delete(name).expect("delete");
+        assert!(vault.retrieve(name).is_err());
     }
 }

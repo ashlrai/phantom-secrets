@@ -67,11 +67,35 @@ function parseSha256File(buf, expectedFilename) {
   return m[1].toLowerCase();
 }
 
+function isCachedBinaryStale(binaryPath) {
+  // The cached binary is "stale" when its `--version` output doesn't include
+  // the version the npm wrapper was published with. This catches the
+  // common case: user ran `npm i -g phantom-secrets@latest`, the wrapper
+  // updated to a newer VERSION, but the cached binary is still the old one.
+  try {
+    const out = execFileSync(binaryPath, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
+    return !out.toString().includes(VERSION);
+  } catch {
+    // If we can't even invoke the binary, treat as stale.
+    return true;
+  }
+}
+
 async function ensureBinary() {
   const binaryPath = getBinaryPath();
 
   if (existsSync(binaryPath)) {
-    return binaryPath;
+    if (!isCachedBinaryStale(binaryPath)) {
+      return binaryPath;
+    }
+    console.error(
+      `Cached phantom is out of date — refreshing to v${VERSION}...`
+    );
+    try {
+      unlinkSync(binaryPath);
+    } catch {
+      // best-effort: if we can't delete, the download below will overwrite anyway.
+    }
   }
 
   const target = getPlatformTarget();

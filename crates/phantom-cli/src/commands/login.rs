@@ -117,5 +117,8 @@ pub fn run() -> Result<()> {
     }
 
     spinner.finish_and_clear();
-    anyhow::bail!("Login timed out. Run `phantom login` to try again.")
+    anyhow::bail!(
+        "Login timed out. Run `phantom login` to try again.\n  {}",
+        crate::util::docs_url("login")
+    )
 }

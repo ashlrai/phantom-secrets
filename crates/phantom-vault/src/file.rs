@@ -140,16 +140,19 @@ impl VaultBackend for FileVault {
         let mut data = self.load()?;
         data.secrets.insert(name.to_string(), value.to_string());
         self.save(&data)?;
+        phantom_core::audit::log("vault.store", Some(name));
         Ok(())
     }
 
     fn retrieve(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
         let data = self.load()?;
-        data.secrets
+        let value = data
+            .secrets
             .get(name)
             .cloned()
-            .map(zeroize::Zeroizing::new)
-            .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))
+            .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
+        phantom_core::audit::log("vault.retrieve", Some(name));
+        Ok(zeroize::Zeroizing::new(value))
     }
 
     fn delete(&self, name: &str) -> Result<()> {
@@ -159,6 +162,7 @@ impl VaultBackend for FileVault {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
         self.save(&data)?;
+        phantom_core::audit::log("vault.delete", Some(name));
         Ok(())
     }
 
