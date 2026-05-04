@@ -101,6 +101,15 @@ phantom init
 phantom init --from .env.local
 ```
 
+**Multi-project — protect every repo in a workspace at once:**
+
+```bash
+phantom init --all ~/code --dry-run    # preview which repos would be touched
+phantom init --all ~/code              # run init in every git repo with a .env
+```
+
+`--all` walks the directory, finds every git repo with one of `.env`, `.env.local`, `.env.development`, `.env.production`, etc., and runs init in each. Skips repos that already have `.phantom.toml`, plus `node_modules`, `target`, `dist`, `build`, and dot-dirs.
+
 ### `phantom add` / `phantom remove`
 
 ```bash
@@ -219,57 +228,33 @@ phantom reveal OPENAI_API_KEY --yes         # bypass interactive check (scripts/
 
 ## Editor integrations
 
-### Claude Code (MCP)
+One command per AI client — Phantom writes the right config file in the right place:
 
 ```bash
-claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
+phantom setup --client claude     # .claude/settings.local.json (project)
+phantom setup --client cursor     # ~/.cursor/mcp.json
+phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
+phantom setup --client codex      # ~/.codex/config.toml
+phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Or use `phantom setup` to configure it automatically alongside `.claude/settings.json`.
+If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine. For Claude Code specifically, `phantom setup --client claude` *also* allow-lists `.env` so Claude can read the (now-tokenized) file. See [claude-code.md](./claude-code.md) for the full workflow — the AI gains 25 Phantom MCP tools.
 
-Once installed, Claude gains 17 Phantom tools and can manage secrets from inside the conversation. See [claude-code.md](./claude-code.md) for the full workflow.
+Restart the AI tool after running `phantom setup` so it picks up the new config.
 
-### Cursor
+---
 
-Add in **Settings > Features > MCP Servers**:
+## Audit log (opt-in)
 
-| Field | Value |
-|-------|-------|
-| Name | `phantom` |
-| Command | `npx` |
-| Args | `phantom-secrets-mcp` |
+For compliance or forensics, set `PHANTOM_AUDIT=1` to record every vault store/retrieve/delete to `~/.phantom/audit.log`:
 
-Then run your project with `phantom exec -- cursor .` so the proxy is active.
-
-### Windsurf
-
-Add to your MCP configuration file:
-
-```json
-{
-  "mcpServers": {
-    "phantom": {
-      "command": "npx",
-      "args": ["phantom-secrets-mcp"]
-    }
-  }
-}
+```bash
+export PHANTOM_AUDIT=1
+phantom exec -- npm run dev
+tail -f ~/.phantom/audit.log
 ```
 
-### OpenAI Codex
-
-Add to `~/.codex/config.json`:
-
-```json
-{
-  "mcpServers": {
-    "phantom": {
-      "command": "npx",
-      "args": ["phantom-secrets-mcp"]
-    }
-  }
-}
-```
+Each line is a JSON object with `ts`, `op`, `name` (the secret name — **never the value**), `process`, and `pid`. Off by default; turn on per-shell or in your `.envrc` / `.zprofile`.
 
 ---
 
@@ -326,7 +311,7 @@ Or download the binary directly from [github.com/ashlrai/phantom-secrets/release
 
 ### Claude Code reads `.env` and sees phantom tokens — is this broken?
 
-No. Phantom tokens are safe for AI to read. They're random strings that are meaningless without the proxy. After `phantom init`, you can explicitly allow `.env` in Claude Code's settings — `phantom setup` does this automatically.
+No. Phantom tokens are safe for AI to read. They're random strings that are meaningless without the proxy. After `phantom init`, you can explicitly allow `.env` in Claude Code's settings — `phantom setup --client claude` does this automatically (or use `--client cursor|windsurf|codex` for other AI tools).
 
 ---
 

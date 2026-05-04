@@ -26,9 +26,9 @@ Note: `~/.cargo/bin/` prefix is needed because cargo is not in PATH on this mach
 5-crate Rust workspace:
 
 - **phantom-core** — Config (.phantom.toml), .env parsing/rewriting, phantom token generation (256-bit CSPRNG, `phm_` prefix), error types
-- **phantom-vault** — `VaultBackend` trait with OS keychain (macOS Keychain, Linux Secret Service) and encrypted file fallback
+- **phantom-vault** — `VaultBackend` trait with OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager) and encrypted file fallback. Argon2id parameters hardened to OWASP balanced (m=64 MiB, t=3, p=1) with legacy-default fallback for older vaults
 - **phantom-proxy** — HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, replaces phantom tokens in headers/body with real secrets, forwards over TLS. Uses `hyper` for server, `reqwest` for outbound HTTPS
-- **phantom-cli** — `clap`-based CLI binary. 30 commands: init, exec, start, stop, list (--json), add (--stdin), remove, reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--only PATTERN), pull, env, setup, login, logout, cloud (push/pull/status), team (list/create/members/invite/key-publish/vault-push/vault-pull), export, import, wrap, unwrap, watch, why, copy, open, upgrade, completion
+- **phantom-cli** — `clap`-based CLI binary. 30 commands: init (--from <file>, --all <DIR>, --dry-run), exec, start, stop, list (--json), add (--stdin), remove, reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), team (list/create/members/invite/key-publish/vault-push/vault-pull), export, import, wrap, unwrap, watch, why, copy, open, upgrade, completion. `--help` is grouped: Setup · Daily use · Sync & teams · Maintenance
 - **phantom-mcp** — MCP server for Claude Code, Cursor, Windsurf, Codex. Uses `rmcp` 1.3 SDK. Stdio transport. 25 tools: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret (deprecated; refuses plaintext), phantom_add_secret_interactive, phantom_remove_secret, phantom_rotate, phantom_copy_secret, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status, phantom_doctor, phantom_why, phantom_check, phantom_env, phantom_sync, phantom_wrap, phantom_unwrap, phantom_team_list, phantom_team_create, phantom_team_members, phantom_team_invite, phantom_team_key_publish, phantom_team_vault_push, phantom_team_vault_pull
 
 ### How the proxy works
@@ -56,3 +56,4 @@ The proxy is a **reverse proxy with URL rewriting**, NOT a forward/CONNECT proxy
 - CLI output uses `colored` crate — prefix lines with `->`, `ok`, `!`, `warn`, etc.
 - Secrets must be `zeroize`d from memory after use
 - Proxy binds to 127.0.0.1 ONLY — never expose to network
+- Audit log is opt-in: `PHANTOM_AUDIT=1` writes JSONL events for vault store/retrieve/delete to `~/.phantom/audit.log`. Schema records the secret **name** only — never the value. New audit hook points should call `phantom_core::audit::log(op, name)`

@@ -20,7 +20,17 @@ npx phantom-secrets init
 
 This installs the CLI and initializes your current project in one step.
 
-### Step 2: add the MCP server
+### Step 2: wire up Claude Code (one command)
+
+```bash
+phantom setup --client claude
+```
+
+This writes `.claude/settings.local.json` with two things at once:
+- The `phantom` MCP server entry (so Claude can call the 25 phantom tools)
+- A permission rule that allows reading `.env` (safe — after `phantom init`, the file contains only phantom tokens)
+
+If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp`. To register the server **globally** instead of per-project, use Claude's CLI:
 
 ```bash
 claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
@@ -33,17 +43,7 @@ claude mcp list
 # phantom-secrets-mcp   npx phantom-secrets-mcp   enabled
 ```
 
-### Step 3: configure Claude Code access (optional but recommended)
-
-`phantom setup` adds `.env` to Claude Code's allow rules so Claude can read the phantomized file:
-
-```bash
-phantom setup
-```
-
-This writes to `.claude/settings.local.json`. After `phantom init`, the `.env` only contains phantom tokens — it is safe for Claude to read.
-
-### Step 4: run Claude with the proxy active
+### Step 3: run Claude with the proxy active
 
 ```bash
 phantom exec -- claude
@@ -53,7 +53,7 @@ The proxy starts on `127.0.0.1`, `*_BASE_URL` environment variables are set, and
 
 ---
 
-## The 24 MCP tools Claude gets
+## The 25 MCP tools Claude gets
 
 Once `phantom-secrets-mcp` is registered, Claude can call these tools.
 

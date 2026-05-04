@@ -189,7 +189,7 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 
 | Command | Description |
 |---------|-------------|
-| `phantom init` | Import `.env` secrets into vault, rewrite with phantom tokens |
+| `phantom init` | Import `.env` secrets into vault, rewrite with phantom tokens. `--all <DIR>` protects every git repo with a `.env` under `<DIR>` in one go (with `--dry-run` to preview) |
 | `phantom exec -- <cmd>` | Start proxy and run a command with secret injection |
 | `phantom start` / `stop` | Manage proxy lifecycle (standalone/daemon mode) |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
@@ -202,7 +202,7 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 | `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`) |
 | `phantom sync` | Push secrets to Vercel / Railway (`--only PATTERN` filters by glob, repeatable) |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
-| `phantom setup` | Configure Claude Code MCP server + hooks |
+| `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, or `codex`. Add `--print` to emit the config snippet to stdout |
 | `phantom env` | Generate `.env.example` for team onboarding |
 | `phantom export` | Export vault to encrypted backup file |
 | `phantom import` | Import vault from encrypted backup |
@@ -225,7 +225,7 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 
 ## Features
 
-- **Encrypted vault** -- OS keychain (macOS Keychain / Secure Enclave, Linux Secret Service) with encrypted file fallback for CI/Docker
+- **Encrypted vault** -- OS keychain (macOS Keychain / Secure Enclave, Linux Secret Service, Windows Credential Manager) with encrypted file fallback for CI/Docker. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
 - **Session-scoped tokens** -- 256-bit CSPRNG phantom tokens with `phm_` prefix, rotatable on demand
 - **Streaming proxy** -- Full SSE/streaming support for OpenAI, Anthropic, and other streaming APIs
 - **Smart detection** -- Heuristic engine distinguishes secrets (`*_KEY`, `*_TOKEN`, `sk-*`, `ghp_*`) from config (`NODE_ENV`, `PORT`)
@@ -237,6 +237,9 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 - **Response scrubbing** -- Prevents secrets from leaking in API responses back to the AI
 - **Script wrapping** -- `phantom wrap` patches package.json so every npm script runs through the proxy
 - **Watch mode** -- `phantom watch` monitors .env files for new unprotected secrets
+- **Multi-project scanner** -- `phantom init --all <DIR>` protects every git repo with a `.env` under `<DIR>` in one command (with `--dry-run`)
+- **Multi-IDE setup** -- `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool, or `--print` for a generic snippet
+- **Opt-in audit log** -- `PHANTOM_AUDIT=1` writes vault store/retrieve/delete events as JSONL to `~/.phantom/audit.log` (records the secret name, never the value)
 - **Secret explainer** -- `phantom why <KEY>` explains detection heuristics
 - **Cross-project copy** -- `phantom copy` shares secrets between project vaults
 - **Team vaults** -- Shared vaults with role-based access control

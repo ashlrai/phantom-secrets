@@ -10,7 +10,14 @@ npx phantom-secrets init
 
 ## MCP Server
 
-Setup: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
+Setup (recommended, one command per AI client):
+- Claude Code: `phantom setup --client claude` (writes .claude/settings.local.json)
+- Cursor: `phantom setup --client cursor` (writes ~/.cursor/mcp.json)
+- Windsurf: `phantom setup --client windsurf` (writes ~/.codeium/windsurf/mcp_config.json)
+- Codex: `phantom setup --client codex` (writes ~/.codex/config.toml)
+- Generic: `phantom setup --client claude --print` (snippet to stdout)
+
+Falls back to `npx -y phantom-secrets-mcp` if `phantom-mcp` is not on PATH. Global registration alternative: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`.
 
 Vault: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret_interactive, phantom_remove_secret, phantom_rotate, phantom_copy_secret
 
@@ -20,9 +27,9 @@ Cloud: phantom_wrap, phantom_unwrap, phantom_sync, phantom_cloud_push, phantom_c
 
 Teams: phantom_team_list, phantom_team_create, phantom_team_members, phantom_team_invite, phantom_team_key_publish, phantom_team_vault_push, phantom_team_vault_pull
 
-## CLI (30 commands)
+## CLI (30 commands, --help is grouped: Setup · Daily use · Sync & teams · Maintenance)
 
-init, exec, start, stop, list (--json), add (--stdin), remove, reveal, rotate, status, doctor (--fix), check (--staged), sync (--only PATTERN), pull, env, setup, login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy, export, import, team (list/create/members/invite/key-publish/vault-push/vault-pull), open, upgrade, completion (bash/zsh/fish/powershell/elvish)
+init (--from <file>, --all <DIR>, --dry-run), exec, start, stop, list (--json), add (--stdin), remove, reveal, rotate, status, doctor (--fix), check (--staged), sync (--only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy, export, import, team (list/create/members/invite/key-publish/vault-push/vault-pull), open, upgrade, completion (bash/zsh/fish/powershell/elvish)
 
 ## Dashboard
 
@@ -33,8 +40,11 @@ https://phm.dev/dashboard (read-only): list of cloud-backed projects, plan tier,
 - Phantom token proxy — replaces real secrets with `phm_` tokens, injects real keys at the network layer
 - Response scrubbing — prevents secrets from leaking in API responses back to the AI
 - Public key awareness — detects and skips publishable/public keys that don't need protection
-- OS keychain storage — macOS Keychain, Linux Secret Service, encrypted file fallback
+- OS keychain storage — macOS Keychain, Linux Secret Service, Windows Credential Manager, encrypted file fallback. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
 - Cloud sync — E2E encrypted zero-knowledge vault sync via phm.dev
+- Multi-project scanner — `phantom init --all <DIR>` protects every git repo with a `.env` under `<DIR>` in one shot
+- Multi-IDE setup — `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool
+- Opt-in audit log — `PHANTOM_AUDIT=1` writes vault store/retrieve/delete events as JSONL to `~/.phantom/audit.log` (records the secret name, never the value)
 - Script wrapping — `phantom wrap` patches package.json so every npm script runs through the proxy
 - Watch mode — `phantom watch` monitors .env files for new unprotected secrets
 - Secret explainer — `phantom why <KEY>` explains detection heuristics
