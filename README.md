@@ -25,6 +25,7 @@ Phantom hands every AI tool a worthless `phm_` token. The local proxy injects th
 
 > **▶ [Watch the 45-second demo](https://github.com/ashlrai/phantom-secrets/releases/download/v0.4.0/phantom-demo.mp4)** &nbsp;·&nbsp;
 > **🛡 [Security model](SECURITY.md)** &nbsp;·&nbsp;
+> **📋 [Threat model](THREAT_MODEL.md)** &nbsp;·&nbsp;
 > **💬 [Discussions](https://github.com/ashlrai/phantom-secrets/discussions)**
 
 ## Why Phantom?
@@ -113,27 +114,17 @@ Phantom ships an MCP server so AI coding tools can manage secrets directly -- wi
 
 Mutating tools require an explicit `confirm: true` parameter so a prompt-injected agent can't silently mutate state. Real secret values are never accepted as MCP tool arguments; new secrets are entered out-of-band in a trusted terminal.
 
-### Claude Code
+One command per AI client — Phantom writes the right config file in the right place:
+
 ```bash
-$ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
+phantom setup --client claude     # .claude/settings.local.json (project)
+phantom setup --client cursor     # ~/.cursor/mcp.json
+phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
+phantom setup --client codex      # ~/.codex/config.toml
+phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-### Cursor
-Add to Cursor Settings > Features > MCP Servers:
-- Name: `phantom`
-- Command: `npx phantom-secrets-mcp`
-
-### Windsurf
-Add to `~/.codeium/windsurf/mcp_config.json`:
-```json
-{"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}
-```
-
-### Codex / Other MCP Clients
-Add to your MCP configuration:
-```json
-{"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}
-```
+If `phantom-mcp` isn't on PATH, Phantom falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine. Restart the AI tool after running `phantom setup` so it picks up the new config.
 
 Phantom works with any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io).
 
@@ -189,7 +180,7 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 
 | Command | Description |
 |---------|-------------|
-| `phantom init` | Import `.env` secrets into vault, rewrite with phantom tokens. `--all <DIR>` protects every git repo with a `.env` under `<DIR>` in one go (with `--dry-run` to preview) |
+| `phantom init` | Import `.env` secrets into vault, rewrite with phantom tokens. `--all <DIR>` protects every git repo with a `.env` under `<DIR>` in one go (with `--dry-run` to preview, `--jobs N` / `-j N` to control parallelism) |
 | `phantom exec -- <cmd>` | Start proxy and run a command with secret injection |
 | `phantom start` / `stop` | Manage proxy lifecycle (standalone/daemon mode) |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
@@ -198,14 +189,18 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 | `phantom reveal <KEY>` | Print a secret value (or `--clipboard` to copy) |
 | `phantom status` | Show proxy state, vault info, and mapped services |
 | `phantom rotate` | Regenerate all phantom tokens (old ones become invalid) |
-| `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair) |
+| `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair). Reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client |
 | `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`) |
 | `phantom sync` | Push secrets to Vercel / Railway (`--only PATTERN` filters by glob, repeatable) |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
 | `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, or `codex`. Add `--print` to emit the config snippet to stdout |
 | `phantom env` | Generate `.env.example` for team onboarding |
-| `phantom export` | Export vault to encrypted backup file |
-| `phantom import` | Import vault from encrypted backup |
+| `phantom export` | Export vault to encrypted backup file (`--passphrase`), or emit plaintext JSON to stdout (`--json --allow-plaintext`) |
+| `phantom import` | Import from encrypted backup (`<FILE> --passphrase`), or migrate from `--from doppler\|infisical\|dotenvx\|1password\|env --file <path>`. Add `--force` to overwrite existing secrets |
+| `phantom audit show` | Print recent audit events (`--last N`, `--op OP`, `--name NAME`, `--json`). Requires `PHANTOM_AUDIT=1` |
+| `phantom audit tail` | Follow the audit log live (`--op`, `--name` filters) |
+| `phantom audit path` | Print the absolute path to the audit log file |
+| `phantom audit verify` | Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected |
 | `phantom login` | Authenticate with Phantom Cloud via GitHub OAuth |
 | `phantom logout` | Clear cloud credentials |
 | `phantom cloud push` | Push encrypted vault to Phantom Cloud |
@@ -227,23 +222,26 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 
 - **Encrypted vault** -- OS keychain (macOS Keychain / Secure Enclave, Linux Secret Service, Windows Credential Manager) with encrypted file fallback for CI/Docker. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
 - **Session-scoped tokens** -- 256-bit CSPRNG phantom tokens with `phm_` prefix, rotatable on demand
-- **Streaming proxy** -- Full SSE/streaming support for OpenAI, Anthropic, and other streaming APIs
+- **Streaming token replacement** -- For `text/*` and `application/x-www-form-urlencoded` request bodies, phantom tokens are replaced frame-by-frame without buffering the full payload; a 67-byte carry buffer handles tokens that straddle chunk boundaries. JSON bodies use a buffered path to preserve field-level F9 scoping.
+- **Full SSE/streaming support** -- Response streaming preserved end-to-end for OpenAI, Anthropic, and other streaming APIs
 - **Smart detection** -- Heuristic engine distinguishes secrets (`*_KEY`, `*_TOKEN`, `sk-*`, `ghp_*`) from config (`NODE_ENV`, `PORT`)
 - **Platform sync** -- Push/pull secrets to Vercel and Railway
 - **Pre-commit hook** -- Blocks commits containing unprotected secrets
 - **MCP server** -- 25 tools for Claude Code, Cursor, Windsurf, and Codex to manage secrets without seeing values
 - **Cloud sync** -- E2E encrypted zero-knowledge vault sync across machines
-- **Export/import** -- Encrypted backup and restore with passphrase protection
+- **Export/import** -- Encrypted backup and restore (`--passphrase`); plaintext JSON export to stdout (`--json --allow-plaintext`); import from Doppler, Infisical, dotenvx, 1Password, or plain `.env` via `--from`
+- **Tamper-evident audit log** -- `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log`. Each entry is chained with HMAC-SHA256; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for log access.
 - **Response scrubbing** -- Prevents secrets from leaking in API responses back to the AI
 - **Script wrapping** -- `phantom wrap` patches package.json so every npm script runs through the proxy
 - **Watch mode** -- `phantom watch` monitors .env files for new unprotected secrets
-- **Multi-project scanner** -- `phantom init --all <DIR>` protects every git repo with a `.env` under `<DIR>` in one command (with `--dry-run`)
+- **Multi-project scanner** -- `phantom init --all <DIR>` protects every git repo with a `.env` under `<DIR>` in one command (with `--dry-run`); `--jobs N` controls parallelism
 - **Multi-IDE setup** -- `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool, or `--print` for a generic snippet
-- **Opt-in audit log** -- `PHANTOM_AUDIT=1` writes vault store/retrieve/delete events as JSONL to `~/.phantom/audit.log` (records the secret name, never the value)
+- **Enriched diagnostics** -- `phantom doctor` reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client
 - **Secret explainer** -- `phantom why <KEY>` explains detection heuristics
 - **Cross-project copy** -- `phantom copy` shares secrets between project vaults
 - **Team vaults** -- Shared vaults with role-based access control
 - **Built-in service routing** -- OpenAI, Anthropic, Stripe, Supabase, and custom services via `.phantom.toml`
+- **Threat model** -- See [THREAT_MODEL.md](THREAT_MODEL.md) for assets, actors, mitigations, and known gaps
 
 ## Installation
 
@@ -279,8 +277,8 @@ $ cargo install phantom-secrets
 |-------|------|
 | `phantom-core` | Config (`.phantom.toml`), `.env` parsing/rewriting, token generation, auth, cloud client |
 | `phantom-vault` | `VaultBackend` trait: OS keychain + encrypted file fallback, ChaCha20-Poly1305 crypto |
-| `phantom-proxy` | HTTP reverse proxy on 127.0.0.1 with SSE/streaming, token replacement, TLS forwarding |
-| `phantom-cli` | `clap`-based CLI binary, 30 commands |
+| `phantom-proxy` | HTTP reverse proxy on 127.0.0.1. Streaming token replacement for `text/*`/form bodies; buffered+scoped replacement for JSON. SSE/streaming preserved. TLS forwarding. |
+| `phantom-cli` | `clap`-based CLI binary, 34 commands (including `audit show/tail/path/verify`, `import --from`, `export --json`) |
 | `phantom-mcp` | MCP server binary (`rmcp` SDK), stdio transport, 25 tools |
 
 **`apps/web`** -- Next.js backend at [phm.dev](https://phm.dev) for cloud vault sync, GitHub OAuth, and Stripe billing.
@@ -299,7 +297,7 @@ $ cargo install phantom-secrets
 - **Secrets zeroized from memory** after injection via the `zeroize` crate
 - **Allowlist model** -- proxy only injects secrets for explicitly configured service patterns
 
-See [SECURITY.md](SECURITY.md) for the full threat model.
+See [SECURITY.md](SECURITY.md) for the responsible disclosure policy and [THREAT_MODEL.md](THREAT_MODEL.md) for the full threat model (assets, actors, mitigations, known gaps, cryptography summary).
 
 ## Pricing
 
@@ -317,6 +315,7 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 - [phm.dev](https://phm.dev) -- Cloud dashboard and account management
 - [Getting Started Guide](docs/getting-started.md)
 - [Security Model](SECURITY.md)
+- [Threat Model](THREAT_MODEL.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Contributing](CONTRIBUTING.md)
 

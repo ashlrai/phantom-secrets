@@ -27,9 +27,9 @@ Cloud: phantom_wrap, phantom_unwrap, phantom_sync, phantom_cloud_push, phantom_c
 
 Teams: phantom_team_list, phantom_team_create, phantom_team_members, phantom_team_invite, phantom_team_key_publish, phantom_team_vault_push, phantom_team_vault_pull
 
-## CLI (30 commands, --help is grouped: Setup · Daily use · Sync & teams · Maintenance)
+## CLI (34 commands, --help is grouped: Setup · Daily use · Sync & teams · Maintenance)
 
-init (--from <file>, --all <DIR>, --dry-run), exec, start, stop, list (--json), add (--stdin), remove, reveal, rotate, status, doctor (--fix), check (--staged), sync (--only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy, export, import, team (list/create/members/invite/key-publish/vault-push/vault-pull), open, upgrade, completion (bash/zsh/fish/powershell/elvish)
+init (--from <file>, --all <DIR>, --dry-run, --jobs/-j N), exec, start, stop, list (--json), add (--stdin), remove, reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy, export (--json --allow-plaintext), import (--from doppler|infisical|dotenvx|1password|env --file <path>), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull), open, upgrade, completion (bash/zsh/fish/powershell/elvish)
 
 ## Dashboard
 
@@ -38,13 +38,17 @@ https://phm.dev/dashboard (read-only): list of cloud-backed projects, plan tier,
 ## Key Features
 
 - Phantom token proxy — replaces real secrets with `phm_` tokens, injects real keys at the network layer
+- Streaming token replacement — `text/*` and form request bodies processed frame-by-frame; JSON bodies buffered with field-level F9 scoping
 - Response scrubbing — prevents secrets from leaking in API responses back to the AI
 - Public key awareness — detects and skips publishable/public keys that don't need protection
 - OS keychain storage — macOS Keychain, Linux Secret Service, Windows Credential Manager, encrypted file fallback. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
 - Cloud sync — E2E encrypted zero-knowledge vault sync via phm.dev
-- Multi-project scanner — `phantom init --all <DIR>` protects every git repo with a `.env` under `<DIR>` in one shot
+- Multi-project scanner — `phantom init --all <DIR>` with `--jobs N` parallelism protects every git repo with a `.env` under `<DIR>` in one shot
 - Multi-IDE setup — `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool
-- Opt-in audit log — `PHANTOM_AUDIT=1` writes vault store/retrieve/delete events as JSONL to `~/.phantom/audit.log` (records the secret name, never the value)
+- Tamper-evident audit log — `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log` (secret name only). HMAC-SHA256 chain; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for access.
+- Competitor import — `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>` migrates secrets directly
+- Plaintext JSON export — `phantom export --json --allow-plaintext` emits vault contents as JSON to stdout (gated by explicit flag)
+- Enriched diagnostics — `phantom doctor` reports install source, vault backend, audit-log status, Argon2 params, MCP wiring per client
 - Script wrapping — `phantom wrap` patches package.json so every npm script runs through the proxy
 - Watch mode — `phantom watch` monitors .env files for new unprotected secrets
 - Secret explainer — `phantom why <KEY>` explains detection heuristics
@@ -52,6 +56,7 @@ https://phm.dev/dashboard (read-only): list of cloud-backed projects, plan tier,
 - Doctor with auto-fix — `phantom doctor --fix` repairs configuration issues
 - Team vaults — shared vaults with role-based access control
 - Pre-commit hook — blocks commits containing unprotected secrets
+- Threat model — see THREAT_MODEL.md for assets, actors, mitigations, known gaps
 
 ## How AI Should Behave
 
