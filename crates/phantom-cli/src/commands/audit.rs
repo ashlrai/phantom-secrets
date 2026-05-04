@@ -1,9 +1,10 @@
 //! `phantom audit` subcommands for reading the JSONL audit log.
 //!
-//! Three actions:
-//!   phantom audit show  [--last N] [--op OP] [--name NAME] [--json]
-//!   phantom audit tail  [--op OP] [--name NAME]
+//! Four actions:
+//!   phantom audit show    [--last N] [--op OP] [--name NAME] [--json]
+//!   phantom audit tail    [--op OP] [--name NAME]
 //!   phantom audit path
+//!   phantom audit verify
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -44,6 +45,8 @@ pub enum AuditAction {
     },
     /// Print the absolute path to the audit log
     Path,
+    /// Verify the HMAC chain integrity of the audit log
+    Verify,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -132,6 +135,63 @@ pub fn run_tail(op: Option<&str>, name: Option<&str>) -> Result<()> {
 pub fn run_path() -> Result<()> {
     let path = resolve_path()?;
     println!("{}", path.display());
+    Ok(())
+}
+
+pub fn run_verify() -> Result<()> {
+    let path = resolve_path()?;
+    if !path.exists() {
+        println!(
+            "{}  No audit log found — set {} to start logging.",
+            "->".blue().bold(),
+            "PHANTOM_AUDIT=1".cyan()
+        );
+        return Ok(());
+    }
+
+    let report = phantom_core::audit::verify_log()
+        .map_err(|e| anyhow::anyhow!("Failed to verify audit log: {e}"))?;
+
+    let status = if report.is_clean() {
+        "ok".green().bold().to_string()
+    } else {
+        "TAMPERED".red().bold().to_string()
+    };
+
+    println!(
+        "{}  verified: {} · tampered: {} · legacy: {}",
+        status,
+        report.verified.to_string().cyan(),
+        if report.tampered > 0 {
+            report.tampered.to_string().red().bold().to_string()
+        } else {
+            report.tampered.to_string()
+        },
+        report.legacy.to_string().dimmed(),
+    );
+
+    if !report.tampered_lines.is_empty() {
+        let line_list: Vec<String> = report
+            .tampered_lines
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        eprintln!(
+            "{}  Tampered at line{}: {}",
+            "!".red().bold(),
+            if report.tampered_lines.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            line_list.join(", ").red()
+        );
+    }
+
+    if report.tampered > 0 {
+        std::process::exit(1);
+    }
+
     Ok(())
 }
 

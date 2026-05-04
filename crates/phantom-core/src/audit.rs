@@ -5,20 +5,49 @@
 //! **name** of secrets accessed (for forensics) but never the **value** —
 //! values must never appear in the log under any circumstance.
 //!
-//! Schema (per line):
+//! ## Schema (per line)
 //! ```json
 //! {"ts": 1714794600, "op": "vault.store", "name": "OPENAI_API_KEY",
-//!  "process": "phantom", "pid": 12345}
+//!  "pid": 12345, "prev_hmac": "<64-hex>", "process": "phantom",
+//!  "hmac": "<64-hex>"}
 //! ```
 //!
 //! `ts` is seconds since the UNIX epoch. `name` is omitted for ops that
 //! don't operate on a single named secret (e.g. `cloud.push`).
+//!
+//! ## HMAC chain
+//!
+//! Each line's `hmac` = HMAC-SHA256(canonical_json_minus_hmac, key) where
+//! `canonical_json_minus_hmac` is the JSON with keys in sorted order
+//! (BTreeMap serialisation), `prev_hmac` included. The key is a per-machine
+//! 32-byte random secret stored at `~/.phantom/audit-hmac-key` with mode
+//! 0600 on Unix. The first line uses `prev_hmac = "GENESIS"`.
+//!
+//! **Security note:** an attacker with the same UID can read both the log
+//! and the key. The integrity property defends against an attacker who only
+//! obtained a copy of the log file (e.g. via a backup exfil).
+//!
+//! ## Backward compatibility
+//!
+//! Old lines without `hmac` are reported as "legacy (unsigned)" by
+//! `verify_log()`. A marker line `{"hmac_chain_started_at": <ts>,
+//! "key_id": "<hex-prefix>"}` is written once when the key is first
+//! generated.
 
+use hmac::{Hmac, Mac};
 use serde::Serialize;
+use sha2::Sha256;
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+type HmacSha256 = Hmac<Sha256>;
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Public API
+// ──────────────────────────────────────────────────────────────────────────────
 
 /// Returns true if audit logging is currently enabled.
 pub fn enabled() -> bool {
@@ -40,18 +69,155 @@ pub fn log(op: &str, name: Option<&str>) {
     let _ = write_event(op, name);
 }
 
+/// Result of a log verification walk.
+#[derive(Debug, Default)]
+pub struct VerifyReport {
+    pub verified: usize,
+    pub tampered: usize,
+    pub legacy: usize,
+    /// 1-based line numbers of lines that failed HMAC validation.
+    pub tampered_lines: Vec<usize>,
+}
+
+impl VerifyReport {
+    /// True if no lines were found to be tampered.
+    pub fn is_clean(&self) -> bool {
+        self.tampered == 0
+    }
+}
+
+/// Walk `~/.phantom/audit.log` and verify the HMAC chain.
+///
+/// - Lines with no `hmac` field are counted as **legacy**.
+/// - The marker line (`hmac_chain_started_at`) is skipped silently.
+/// - Lines with a bad `hmac` are counted as **tampered** and their
+///   1-based line number is recorded in `tampered_lines`.
+///
+/// **Truncation note:** removing the *last* N lines is not detected —
+/// we can only verify forward from the genesis. A missing-tail attack
+/// requires out-of-band detection (e.g. comparing expected line count).
+pub fn verify_log() -> std::io::Result<VerifyReport> {
+    let path = log_path()?;
+    if !path.exists() {
+        return Ok(VerifyReport::default());
+    }
+
+    let key = load_or_skip_hmac_key(&path)?;
+    let content = std::fs::read_to_string(&path)?;
+
+    let mut report = VerifyReport::default();
+    let mut prev_hmac = "GENESIS".to_string();
+    // Once we've seen the first signed line, `chain_started` is true and we
+    // validate all subsequent signed lines against the running prev_hmac.
+    let mut chain_started = false;
+
+    for (idx, raw) in content.lines().enumerate() {
+        let line_no = idx + 1;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let v: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue, // malformed — skip silently
+        };
+
+        // Skip the chain-started marker line.
+        if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+
+        let hmac_field = v
+            .get("hmac")
+            .and_then(|h| h.as_str())
+            .map(|s| s.to_string());
+
+        match hmac_field {
+            None => {
+                // Legacy line — no HMAC.
+                report.legacy += 1;
+                // Don't advance prev_hmac; the chain proper starts at the
+                // first signed line.
+            }
+            Some(recorded_hmac) => {
+                // We need the key to verify. If it's absent (key file
+                // deleted/machine change) we can't verify — treat as legacy.
+                let key_bytes = match &key {
+                    Some(k) => k,
+                    None => {
+                        report.legacy += 1;
+                        continue;
+                    }
+                };
+
+                let line_prev = v
+                    .get("prev_hmac")
+                    .and_then(|h| h.as_str())
+                    .unwrap_or("GENESIS");
+
+                // On the first signed line, accept whatever prev_hmac it
+                // declares (it may follow legacy lines).
+                if !chain_started {
+                    prev_hmac = line_prev.to_string();
+                    chain_started = true;
+                }
+
+                let expected = compute_hmac_for_line(&v, key_bytes);
+                if expected == recorded_hmac && line_prev == prev_hmac {
+                    report.verified += 1;
+                    prev_hmac = recorded_hmac;
+                } else {
+                    report.tampered += 1;
+                    report.tampered_lines.push(line_no);
+                    // Advance prev_hmac to the recorded value so subsequent
+                    // lines can still be checked independently (otherwise
+                    // one tampered line cascades failures everywhere).
+                    prev_hmac = recorded_hmac;
+                }
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Internal — writing
+// ──────────────────────────────────────────────────────────────────────────────
+
 fn write_event(op: &str, name: Option<&str>) -> std::io::Result<()> {
     let path = log_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
+    // Load (or generate) the HMAC key. If anything fails we fall back to
+    // writing unsigned lines — we never want audit writes to hard-fail.
+    let key = load_or_create_hmac_key(&path).ok();
+
+    // Read the last line of the log to get the previous HMAC.
+    let prev_hmac = if key.is_some() {
+        read_last_hmac(&path).unwrap_or_else(|| "GENESIS".to_string())
+    } else {
+        "GENESIS".to_string()
+    };
+
     let event = AuditEvent {
         ts: now_unix(),
         op: op.to_string(),
         name: name.map(|s| s.to_string()),
-        process: process_name(),
         pid: std::process::id(),
+        prev_hmac: key.as_ref().map(|_| prev_hmac.clone()),
+        process: process_name(),
+        hmac: None, // filled in below
+    };
+
+    let hmac_val = key.as_ref().map(|k| compute_hmac_for_event(&event, k));
+
+    let event = AuditEvent {
+        hmac: hmac_val,
+        ..event
     };
 
     let mut line = serde_json::to_vec(&event)
@@ -67,15 +233,198 @@ fn write_event(op: &str, name: Option<&str>) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Scan from the end of the log file to find the last `hmac` value.
+/// Returns `None` (i.e. "GENESIS") if the file is empty or has no signed lines.
+fn read_last_hmac(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for raw in content.lines().rev() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+        if let Some(h) = v.get("hmac").and_then(|h| h.as_str()) {
+            return Some(h.to_string());
+        }
+    }
+    None
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// HMAC key management — file-based, mode 0600
+// ──────────────────────────────────────────────────────────────────────────────
+
+fn hmac_key_path(log_path: &Path) -> PathBuf {
+    log_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("audit-hmac-key")
+}
+
+/// Load existing key or generate + persist a new one.
+/// On first generation, write the chain-started marker to the log.
+fn load_or_create_hmac_key(log_path: &Path) -> std::io::Result<Vec<u8>> {
+    let key_path = hmac_key_path(log_path);
+    if key_path.exists() {
+        return read_hmac_key(&key_path);
+    }
+
+    // Generate a new 32-byte key.
+    let key = generate_key();
+    write_hmac_key(&key_path, &key)?;
+
+    // Write the chain-started marker into the log so `verify` knows
+    // where the signed portion begins.
+    write_chain_marker(log_path, &key)?;
+
+    Ok(key)
+}
+
+/// Load the key for verification; returns `None` if the file doesn't exist.
+fn load_or_skip_hmac_key(log_path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    let key_path = hmac_key_path(log_path);
+    if !key_path.exists() {
+        return Ok(None);
+    }
+    read_hmac_key(&key_path).map(Some)
+}
+
+fn generate_key() -> Vec<u8> {
+    use rand::RngCore;
+    let mut key = vec![0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    key
+}
+
+fn write_hmac_key(key_path: &Path, key: &[u8]) -> std::io::Result<()> {
+    let hex_key = hex::encode(key);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(key_path)?;
+        f.write_all(hex_key.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(key_path)?;
+        f.write_all(hex_key.as_bytes())?;
+    }
+
+    Ok(())
+}
+
+fn read_hmac_key(key_path: &Path) -> std::io::Result<Vec<u8>> {
+    let hex_str = std::fs::read_to_string(key_path)?;
+    hex::decode(hex_str.trim()).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid audit HMAC key: {e}"),
+        )
+    })
+}
+
+fn write_chain_marker(log_path: &Path, key: &[u8]) -> std::io::Result<()> {
+    // key_id is the first 8 hex chars of the key — just for human identification.
+    let key_id = hex::encode(&key[..4]);
+    let marker = serde_json::json!({
+        "hmac_chain_started_at": now_unix(),
+        "key_id": key_id,
+    });
+    let mut line = serde_json::to_vec(&marker)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    line.push(b'\n');
+    let mut f = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(log_path)?;
+    f.write_all(&line)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// HMAC computation
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Compute HMAC for a fully-populated `AuditEvent` (hmac field must be None).
+fn compute_hmac_for_event(event: &AuditEvent, key: &[u8]) -> String {
+    let mut map: BTreeMap<&str, String> = BTreeMap::new();
+    map.insert("op", event.op.clone());
+    map.insert("pid", event.pid.to_string());
+    map.insert(
+        "prev_hmac",
+        event
+            .prev_hmac
+            .clone()
+            .unwrap_or_else(|| "GENESIS".to_string()),
+    );
+    map.insert("process", event.process.clone());
+    map.insert("ts", event.ts.to_string());
+    if let Some(ref n) = event.name {
+        map.insert("name", n.clone());
+    }
+
+    let canonical = serde_json::to_string(&map).expect("BTreeMap serialization is infallible");
+    hmac_sha256(key, canonical.as_bytes())
+}
+
+/// Compute HMAC from a `serde_json::Value` (the recorded line, `hmac` field
+/// excluded). Used during verification.
+fn compute_hmac_for_line(v: &serde_json::Value, key: &[u8]) -> String {
+    let mut map: BTreeMap<&str, String> = BTreeMap::new();
+    for field in &["op", "pid", "prev_hmac", "process", "ts", "name"] {
+        if let Some(val) = v.get(field) {
+            let s = match val {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => val.to_string(),
+            };
+            map.insert(field, s);
+        }
+    }
+    // prev_hmac defaults to GENESIS when absent (shouldn't happen for signed lines).
+    map.entry("prev_hmac")
+        .or_insert_with(|| "GENESIS".to_string());
+
+    let canonical = serde_json::to_string(&map).expect("BTreeMap serialization is infallible");
+    hmac_sha256(key, canonical.as_bytes())
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key size");
+    mac.update(data);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Types
+// ──────────────────────────────────────────────────────────────────────────────
+
 #[derive(Serialize)]
 struct AuditEvent {
     ts: u64,
     op: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
-    process: String,
     pid: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prev_hmac: Option<String>,
+    process: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hmac: Option<String>,
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Shared helpers
+// ──────────────────────────────────────────────────────────────────────────────
 
 pub fn log_path() -> std::io::Result<PathBuf> {
     if let Some(home) = dirs_home_dir() {
@@ -116,6 +465,10 @@ fn process_name() -> String {
         .unwrap_or_else(|| "phantom".to_string())
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Tests
+// ──────────────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +498,31 @@ mod tests {
         }
     }
 
+    // Helper: run a closure with HOME=tmp_dir and PHANTOM_AUDIT=1, then restore.
+    fn with_audit_env<F: FnOnce(&std::path::Path)>(f: F) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempdir().unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        let prev_audit = std::env::var("PHANTOM_AUDIT").ok();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("PHANTOM_AUDIT", "1");
+        }
+        f(tmp.path());
+        unsafe {
+            match prev_home {
+                Some(p) => std::env::set_var("HOME", p),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_audit {
+                Some(p) => std::env::set_var("PHANTOM_AUDIT", p),
+                None => std::env::remove_var("PHANTOM_AUDIT"),
+            }
+        }
+    }
+
+    // ── existing tests (must still pass) ────────────────────────────────────
+
     #[test]
     fn disabled_by_default() {
         with_temp_home("PHANTOM_AUDIT", "", || {
@@ -161,46 +539,35 @@ mod tests {
 
     #[test]
     fn writes_jsonl_line_when_enabled() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = tempdir().unwrap();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_audit = std::env::var("PHANTOM_AUDIT").ok();
-        unsafe {
-            std::env::set_var("HOME", tmp.path());
-            std::env::set_var("PHANTOM_AUDIT", "1");
-        }
+        with_audit_env(|tmp| {
+            log("vault.store", Some("OPENAI_API_KEY"));
+            log("cloud.push", None);
 
-        log("vault.store", Some("OPENAI_API_KEY"));
-        log("cloud.push", None);
+            let path = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&path).expect("audit.log should exist");
+            // 3 lines: marker + 2 events
+            let lines: Vec<&str> = content.lines().collect();
+            assert!(lines.len() >= 2, "expected at least 2 lines");
 
-        let path = tmp.path().join(".phantom").join("audit.log");
-        let content = std::fs::read_to_string(&path).expect("audit.log should exist");
-        let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines.len(), 2);
+            // Find the event lines (skip the marker)
+            let event_lines: Vec<Value> = lines
+                .iter()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .filter(|v: &Value| v.get("hmac_chain_started_at").is_none())
+                .collect();
 
-        let line0: Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(line0["op"], "vault.store");
-        assert_eq!(line0["name"], "OPENAI_API_KEY");
-        assert!(line0["pid"].is_number());
-        assert!(line0["ts"].is_number());
+            assert_eq!(event_lines.len(), 2);
+            assert_eq!(event_lines[0]["op"], "vault.store");
+            assert_eq!(event_lines[0]["name"], "OPENAI_API_KEY");
+            assert!(event_lines[0]["pid"].is_number());
+            assert!(event_lines[0]["ts"].is_number());
 
-        let line1: Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(line1["op"], "cloud.push");
-        assert!(
-            line1.get("name").is_none(),
-            "name should be omitted for None"
-        );
-
-        unsafe {
-            match prev_home {
-                Some(p) => std::env::set_var("HOME", p),
-                None => std::env::remove_var("HOME"),
-            }
-            match prev_audit {
-                Some(p) => std::env::set_var("PHANTOM_AUDIT", p),
-                None => std::env::remove_var("PHANTOM_AUDIT"),
-            }
-        }
+            assert_eq!(event_lines[1]["op"], "cloud.push");
+            assert!(
+                event_lines[1].get("name").is_none(),
+                "name should be omitted for None"
+            );
+        });
     }
 
     #[test]
@@ -241,8 +608,119 @@ mod tests {
             name: Some("KEY".to_string()),
             process: "phantom".to_string(),
             pid: 1,
+            prev_hmac: None,
+            hmac: None,
         };
         let json = serde_json::to_value(&event).unwrap();
         assert!(json.get("value").is_none());
+    }
+
+    // ── new HMAC chain tests ─────────────────────────────────────────────────
+
+    /// Round-trip: write 3 events, verify all OK.
+    #[test]
+    fn hmac_chain_round_trip() {
+        with_audit_env(|_tmp| {
+            log("vault.store", Some("KEY_A"));
+            log("vault.retrieve", Some("KEY_A"));
+            log("cloud.push", None);
+
+            let report = verify_log().expect("verify_log should not error");
+            assert_eq!(report.tampered, 0, "no tampered lines expected");
+            assert_eq!(report.verified, 3, "3 events should be verified");
+            assert!(report.is_clean());
+        });
+    }
+
+    /// Tamper: write 3 events, hand-edit line 2's op, verify reports TAMPERED.
+    #[test]
+    fn hmac_chain_detects_tamper() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+            log("vault.retrieve", Some("KEY_A"));
+            log("cloud.push", None);
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&log_p).unwrap();
+            let lines: Vec<&str> = content.lines().collect();
+
+            // Find the first event line (skip marker) and tamper its op.
+            let mut new_lines: Vec<String> = Vec::new();
+            let mut tampered = false;
+            for line in &lines {
+                let v: Value = match serde_json::from_str(line) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        new_lines.push(line.to_string());
+                        continue;
+                    }
+                };
+                if !tampered
+                    && v.get("hmac_chain_started_at").is_none()
+                    && v.get("op").and_then(|o| o.as_str()) == Some("vault.store")
+                {
+                    let mut obj = v.as_object().unwrap().clone();
+                    obj.insert("op".to_string(), serde_json::json!("TAMPERED"));
+                    new_lines.push(serde_json::to_string(&obj).unwrap());
+                    tampered = true;
+                } else {
+                    new_lines.push(line.to_string());
+                }
+            }
+            assert!(tampered, "should have found a line to tamper");
+            std::fs::write(&log_p, new_lines.join("\n") + "\n").unwrap();
+
+            let report = verify_log().expect("verify_log should not error");
+            assert!(
+                report.tampered >= 1,
+                "should detect at least one tampered line"
+            );
+        });
+    }
+
+    /// Truncation: remove the last event line, verify still OK for remaining lines.
+    /// Documents the known limitation that tail-removal is not detected.
+    #[test]
+    fn hmac_chain_truncation_not_detected() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+            log("vault.retrieve", Some("KEY_B"));
+            log("cloud.push", None);
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&log_p).unwrap();
+            let mut lines: Vec<&str> = content.lines().collect();
+            while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+                lines.pop();
+            }
+            lines.pop(); // remove last event
+            std::fs::write(&log_p, lines.join("\n") + "\n").unwrap();
+
+            let report = verify_log().expect("verify_log should not error");
+            assert_eq!(report.tampered, 0, "truncation is not detected");
+            assert!(report.verified >= 1);
+        });
+    }
+
+    /// Legacy: pre-write unsigned lines, then enable chain; verify reports legacy + verified.
+    #[test]
+    fn hmac_chain_legacy_lines_reported() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            std::fs::create_dir_all(log_p.parent().unwrap()).unwrap();
+
+            let legacy1 = r#"{"ts":1700000000,"op":"vault.store","name":"OLD_KEY","process":"phantom","pid":1}"#;
+            let legacy2 = r#"{"ts":1700000060,"op":"cloud.push","process":"phantom","pid":2}"#;
+            std::fs::write(&log_p, format!("{}\n{}\n", legacy1, legacy2)).unwrap();
+
+            // Now log new events — key is generated, chain starts.
+            log("vault.store", Some("NEW_KEY"));
+            log("cloud.push", None);
+
+            let report = verify_log().expect("verify_log should not error");
+            assert_eq!(report.legacy, 2, "two legacy lines expected");
+            assert_eq!(report.verified, 2, "two signed lines expected");
+            assert_eq!(report.tampered, 0);
+        });
     }
 }
