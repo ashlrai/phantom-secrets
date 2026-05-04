@@ -1,5 +1,7 @@
 # Security Model
 
+For threat model, see [THREAT_MODEL.md](./THREAT_MODEL.md).
+
 ## Threat Model
 
 Phantom is designed to prevent AI coding agents from leaking secrets. Here is the threat model and how each threat is mitigated.
