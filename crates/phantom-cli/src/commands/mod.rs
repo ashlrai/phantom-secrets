@@ -1,4 +1,5 @@
 pub mod add;
+pub mod audit;
 pub mod check;
 pub mod cloud;
 pub mod completion;
