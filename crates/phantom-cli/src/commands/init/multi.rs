@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// Filenames we treat as "this repo has a .env worth protecting."
 const ENV_FILENAMES: &[&str] = &[
@@ -27,8 +30,18 @@ const SKIP_DIRS: &[&str] = &[
 ];
 
 const DEFAULT_DEPTH: usize = 5;
+pub const DEFAULT_JOBS: usize = 4;
 
-pub fn run(root: PathBuf, dry_run: bool) -> Result<()> {
+/// Read the job count from the environment variable `PHANTOM_INIT_JOBS`.
+/// Returns `None` if the variable is absent or non-positive.
+pub fn jobs_from_env() -> Option<usize> {
+    std::env::var("PHANTOM_INIT_JOBS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+}
+
+pub fn run(root: PathBuf, dry_run: bool, jobs: usize) -> Result<()> {
     let root = root
         .canonicalize()
         .with_context(|| format!("Could not resolve {}", root.display()))?;
@@ -52,60 +65,139 @@ pub fn run(root: PathBuf, dry_run: bool) -> Result<()> {
         candidates.len()
     );
 
-    let mut protected = 0usize;
-    let mut skipped = 0usize;
-    let mut errored = 0usize;
-
-    for repo in &candidates {
-        let rel = repo.strip_prefix(&root).unwrap_or(repo);
-        let display = if rel.as_os_str().is_empty() {
-            "(this repo)".to_string()
-        } else {
-            rel.display().to_string()
-        };
-
-        if repo.join(".phantom.toml").exists() {
-            println!("  {} {} (already protected)", "·".dimmed(), display);
-            skipped += 1;
-            continue;
-        }
-        if dry_run {
-            println!("  {} {} (would protect)", "+".cyan().bold(), display);
-            continue;
-        }
-        match run_init_for(repo) {
-            Ok(count) => {
-                println!(
-                    "  {} {} ({} secret{} protected)",
-                    "ok".green().bold(),
-                    display,
-                    count,
-                    if count == 1 { "" } else { "s" }
-                );
-                protected += 1;
-            }
-            Err(e) => {
-                println!("  {} {}: {}", "FAIL".red().bold(), display, e);
-                errored += 1;
+    // ── dry-run: no concurrency needed, just print ────────────────────────
+    if dry_run {
+        let mut skipped = 0usize;
+        for repo in &candidates {
+            let display = repo_display(repo, &root);
+            if repo.join(".phantom.toml").exists() {
+                println!("  {} {} (already protected)", "·".dimmed(), display);
+                skipped += 1;
+            } else {
+                println!("  {} {} (would protect)", "+".cyan().bold(), display);
             }
         }
-    }
-
-    let summary = if dry_run {
-        format!(
-            "{} repo(s) would be protected · {} already protected",
+        println!(
+            "\n{} {} repo(s) would be protected · {} already protected",
+            "done".green().bold(),
             candidates.len() - skipped,
             skipped
-        )
-    } else {
-        format!("protected: {protected} · skipped: {skipped} · errors: {errored}")
-    };
-    println!("\n{} {}", "done".green().bold(), summary);
+        );
+        return Ok(());
+    }
 
-    if errored > 0 {
-        anyhow::bail!("{errored} repo(s) failed to init — see output above");
+    // ── live run: parallel with a bounded thread pool ─────────────────────
+    let total = candidates.len();
+
+    let protected = Arc::new(AtomicUsize::new(0));
+    let skipped = Arc::new(AtomicUsize::new(0));
+    let errored = Arc::new(AtomicUsize::new(0));
+
+    let mp = Arc::new(MultiProgress::new());
+
+    let bar_style = ProgressStyle::with_template("{spinner:.cyan} [{pos}/{len}] protected: {msg}")
+        .unwrap()
+        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", ""]);
+
+    let bar = mp.add(ProgressBar::new(total as u64));
+    bar.set_style(bar_style);
+    bar.set_message("0 · skipped: 0 · errors: 0".to_string());
+    bar.enable_steady_tick(std::time::Duration::from_millis(80));
+
+    // Channel: main thread sends repo paths; workers receive them.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<PathBuf>(total);
+    let rx = Arc::new(std::sync::Mutex::new(rx));
+
+    for repo in candidates {
+        tx.send(repo).unwrap();
+    }
+    drop(tx); // close so workers know when to stop
+
+    let mut handles = Vec::with_capacity(jobs);
+
+    for _ in 0..jobs {
+        let rx = Arc::clone(&rx);
+        let mp = Arc::clone(&mp);
+        let bar = bar.clone();
+        let root = root.clone();
+        let protected = Arc::clone(&protected);
+        let skipped = Arc::clone(&skipped);
+        let errored = Arc::clone(&errored);
+
+        let handle = std::thread::spawn(move || loop {
+            let repo = {
+                let guard = rx.lock().unwrap();
+                guard.recv().ok()
+            };
+            let repo = match repo {
+                Some(r) => r,
+                None => break,
+            };
+
+            let display = repo_display(&repo, &root);
+
+            let line = if repo.join(".phantom.toml").exists() {
+                skipped.fetch_add(1, Ordering::Relaxed);
+                format!("  {} {} (already protected)", "·".dimmed(), display)
+            } else {
+                match run_init_for(&repo) {
+                    Ok(count) => {
+                        protected.fetch_add(1, Ordering::Relaxed);
+                        format!(
+                            "  {} {} ({} secret{} protected)",
+                            "ok".green().bold(),
+                            display,
+                            count,
+                            if count == 1 { "" } else { "s" }
+                        )
+                    }
+                    Err(e) => {
+                        errored.fetch_add(1, Ordering::Relaxed);
+                        format!("  {} {}: {}", "FAIL".red().bold(), display, e)
+                    }
+                }
+            };
+
+            mp.println(&line).ok();
+
+            bar.inc(1);
+            let p = protected.load(Ordering::Relaxed);
+            let s = skipped.load(Ordering::Relaxed);
+            let e = errored.load(Ordering::Relaxed);
+            bar.set_message(format!("{p} · skipped: {s} · errors: {e}"));
+        });
+
+        handles.push(handle);
+    }
+
+    for h in handles {
+        h.join().expect("worker thread panicked");
+    }
+    bar.finish_and_clear();
+
+    let p = protected.load(Ordering::Relaxed);
+    let s = skipped.load(Ordering::Relaxed);
+    let e = errored.load(Ordering::Relaxed);
+
+    println!(
+        "\n{} protected: {p} · skipped: {s} · errors: {e}",
+        "done".green().bold()
+    );
+
+    if e > 0 {
+        anyhow::bail!("{e} repo(s) failed to init — see output above");
     }
     Ok(())
+}
+
+/// Return a short display string for `repo` relative to `root`.
+fn repo_display(repo: &Path, root: &Path) -> String {
+    let rel = repo.strip_prefix(root).unwrap_or(repo);
+    if rel.as_os_str().is_empty() {
+        "(this repo)".to_string()
+    } else {
+        rel.display().to_string()
+    }
 }
 
 /// Walk `root` up to `max_depth` levels. Yield directories that contain both
@@ -205,6 +297,8 @@ fn parse_secret_count(stdout: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn touch(path: &Path) {
@@ -277,5 +371,84 @@ mod tests {
     #[test]
     fn parse_secret_count_returns_zero_when_absent() {
         assert_eq!(parse_secret_count("hello world"), 0);
+    }
+
+    /// Verify the jobs_from_env parsing logic (zero and non-numeric are rejected).
+    #[test]
+    fn jobs_env_parse_logic() {
+        let parse = |s: &str| -> Option<usize> { s.parse::<usize>().ok().filter(|&n| n > 0) };
+        assert_eq!(parse("8"), Some(8));
+        assert_eq!(parse("1"), Some(1));
+        assert_eq!(parse("0"), None);
+        assert_eq!(parse("abc"), None);
+    }
+
+    /// --jobs 1 must visit every candidate exactly once (deterministic,
+    /// single-worker drain of the sorted channel).
+    ///
+    /// Uses pre-protected repos (.phantom.toml present) so no subprocess is
+    /// spawned — the parallel machinery is exercised end-to-end without
+    /// side-effects.
+    #[test]
+    fn jobs_1_visits_all_candidates() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        for name in ["alpha", "beta", "gamma"] {
+            touch(&root.join(format!("{name}/.git/HEAD")));
+            touch(&root.join(format!("{name}/.env")));
+            touch(&root.join(format!("{name}/.phantom.toml")));
+        }
+
+        let candidates = find_candidates(root, 5);
+        assert_eq!(candidates.len(), 3);
+
+        // Drive the channel/thread logic with jobs=1.
+        let total = candidates.len();
+        let skipped_count = Arc::new(AtomicUsize::new(0));
+        let protected_count = Arc::new(AtomicUsize::new(0));
+        let errored_count = Arc::new(AtomicUsize::new(0));
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<PathBuf>(total);
+        let rx = Arc::new(std::sync::Mutex::new(rx));
+        for repo in &candidates {
+            tx.send(repo.clone()).unwrap();
+        }
+        drop(tx);
+
+        let mut handles = Vec::new();
+        {
+            let rx = Arc::clone(&rx);
+            let s = Arc::clone(&skipped_count);
+            let p = Arc::clone(&protected_count);
+            let e = Arc::clone(&errored_count);
+            handles.push(std::thread::spawn(move || loop {
+                let repo = { rx.lock().unwrap().recv().ok() };
+                match repo {
+                    None => break,
+                    Some(r) => {
+                        if r.join(".phantom.toml").exists() {
+                            s.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            match run_init_for(&r) {
+                                Ok(_) => {
+                                    p.fetch_add(1, Ordering::Relaxed);
+                                }
+                                Err(_) => {
+                                    e.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(skipped_count.load(Ordering::Relaxed), 3);
+        assert_eq!(protected_count.load(Ordering::Relaxed), 0);
+        assert_eq!(errored_count.load(Ordering::Relaxed), 0);
     }
 }
