@@ -1,9 +1,9 @@
-#![allow(dead_code)]
+
 /// `phantom env` subcommands for environment scoping.
 ///
 /// This module handles `use`, `list`, `new`, and `copy` — the environment
 /// selector commands. The legacy `phantom env` (generate .env.example) is
-/// still available as `phantom env example` (see `commands/env.rs`).
+/// renamed to `phantom env example` (see `commands/env.rs`).
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
@@ -235,7 +235,7 @@ pub fn run_default(current: &str) -> Result<()> {
     Ok(())
 }
 
-/// Resolve env from flag or persisted file, used by vault call sites.
+/// Resolve env from flag or persisted file; used by vault call sites.
 pub fn effective_env(project_dir: &std::path::Path, flag: Option<&str>) -> String {
     resolve_env(project_dir, flag)
 }

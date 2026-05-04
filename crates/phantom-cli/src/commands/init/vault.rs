@@ -11,8 +11,13 @@ pub fn setup_and_store(
     project_id: &str,
     env_path: &Path,
     dotenv: &phantom_core::dotenv::DotenvFile,
+    env: Option<&str>,
 ) -> Result<TokenMap> {
     let vault = phantom_vault::create_vault(project_id);
+    // Resolve the active environment for namespacing vault keys.
+    // During init the project_dir is the parent of env_path.
+    let project_dir = env_path.parent().unwrap_or(std::path::Path::new("."));
+    let active_env = phantom_core::env_scope::resolve_env(project_dir, env);
     println!(
         "{} Using {} vault backend",
         "->".blue().bold(),
@@ -23,8 +28,9 @@ pub fn setup_and_store(
     let mut token_map = TokenMap::new();
     for entry in real_entries {
         let token = token_map.insert(entry.key.clone());
+        let vault_key = phantom_core::env_scope::namespaced_key(&active_env, &entry.key);
         vault
-            .store(&entry.key, &entry.value)
+            .store(&vault_key, &entry.value)
             .context(format!("Failed to store secret: {}", entry.key))?;
         println!(
             "   {} {} -> {}",

@@ -10,9 +10,10 @@ pub fn run(
     environment: Option<String>,
     service: Option<String>,
     force: bool,
+    env: Option<&str>,
 ) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(from, project, environment, service, force))
+    rt.block_on(run_async(from, project, environment, service, force, env))
 }
 
 async fn run_async(
@@ -21,6 +22,7 @@ async fn run_async(
     environment: Option<String>,
     service: Option<String>,
     force: bool,
+    env_flag: Option<&str>,
 ) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
@@ -78,6 +80,7 @@ async fn run_async(
     };
 
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
     let existing_names = vault.list().unwrap_or_default();
 
     let mut token_map = TokenMap::new();
@@ -86,7 +89,10 @@ async fn run_async(
     let mut skipped_count = 0;
 
     for (key, value) in &pulled {
-        let exists = existing_names.contains(key);
+        // Check both namespaced and bare (legacy) keys
+        let vault_key_check = phantom_core::env_scope::namespaced_key(&active_env, key);
+        let exists = existing_names.contains(&vault_key_check)
+            || (active_env == phantom_core::env_scope::DEFAULT_ENV && existing_names.contains(key));
 
         if exists && !force {
             println!(
@@ -98,9 +104,11 @@ async fn run_async(
             continue;
         }
 
-        // Store in vault
+        // Store in vault under env-scoped key
+        // TODO(env-v2): pull into a specific env via --env flag
+        let vault_key = phantom_core::env_scope::namespaced_key(&active_env, key);
         vault
-            .store(key, value)
+            .store(&vault_key, value)
             .context(format!("Failed to store {key}"))?;
 
         // Generate phantom token for .env

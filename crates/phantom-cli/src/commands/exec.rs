@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
-use phantom_core::env_scope::DEFAULT_ENV;
+use phantom_core::env_scope::{namespaced_key, DEFAULT_ENV};
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
@@ -50,8 +50,8 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
 
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
-                // Build the vault key for this env: try namespaced first, then bare (legacy)
-                let namespaced = phantom_core::env_scope::namespaced_key(&active_env, &entry.key);
+                // Try namespaced key first, then bare name for default env (backward compat)
+                let namespaced = namespaced_key(&active_env, &entry.key);
                 let real_value = if vault.exists(&namespaced).unwrap_or(false) {
                     vault.retrieve(&namespaced).ok()
                 } else if active_env == DEFAULT_ENV {
@@ -95,7 +95,6 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         return run_command_directly(cmd).await;
     }
 
-    // Build service registry from config
     let registry = ServiceRegistry::from_config(&config.services);
     let interceptor = Interceptor::new_with_named(session_token_to_secret, secret_name_to_value);
 
@@ -106,10 +105,8 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         active_env.cyan()
     );
 
-    // Generate proxy session token
     let proxy_token = ProxyServer::generate_proxy_token();
 
-    // Start the proxy
     let proxy = ProxyServer::start(
         ProxyConfig {
             port: 0,
@@ -129,18 +126,17 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         format!("127.0.0.1:{port}").cyan()
     );
 
-    // Print service routes
     let overrides = registry.base_url_overrides_with_token(port, Some(&proxy_token));
     for (env_var, url) in &overrides {
         println!("   {} {} = {}", "->".dimmed(), env_var.bold(), url.cyan());
     }
 
-    // Inject connection string secrets as env vars (with real values, not proxied)
+    // Inject connection string secrets as env vars
     let conn_services = config.connection_string_services();
     let mut conn_env_vars: Vec<(String, String)> = Vec::new();
     for (_name, svc) in &conn_services {
         // Try namespaced key first, then bare for default env
-        let namespaced = phantom_core::env_scope::namespaced_key(&active_env, &svc.secret_key);
+        let namespaced = namespaced_key(&active_env, &svc.secret_key);
         let real_value = if vault.exists(&namespaced).unwrap_or(false) {
             vault.retrieve(&namespaced).ok()
         } else if active_env == DEFAULT_ENV {
@@ -158,25 +154,21 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         }
     }
 
-    // --- Framework auto-detection ---
+    // Framework auto-detection
     let mut framework_env_vars: Vec<(String, String)> = Vec::new();
     let package_json_path = project_dir.join("package.json");
     let is_node_project = package_json_path.exists();
 
     if is_node_project {
-        println!("   {} Detected Node.js project", "->".dimmed(),);
+        println!("   {} Detected Node.js project", "->".dimmed());
 
-        // Detect Next.js: check if the command starts with "next" or package.json
-        // lists "next" as a dependency
         let is_nextjs = cmd[0] == "next"
             || (cmd[0] == "npx" && cmd.get(1) == Some(&"next".to_string()))
             || detect_next_dependency(&package_json_path);
 
         if is_nextjs {
-            println!("   {} Detected Next.js framework", "->".dimmed(),);
+            println!("   {} Detected Next.js framework", "->".dimmed());
 
-            // Pass through NEXT_PUBLIC_ prefixed vars from .env unchanged —
-            // these are non-secret public vars that the Next.js build expects
             if env_path.exists() {
                 if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
                     for entry in dotenv.entries() {
@@ -199,7 +191,6 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         }
     }
 
-    // Summary: proxied secrets vs injected env vars
     let injected_count = conn_env_vars.len() + framework_env_vars.len();
     println!(
         "\n{} {} secret(s) proxied, {} env var(s) injected directly",
@@ -214,7 +205,6 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         cmd.join(" ").cyan().bold()
     );
 
-    // Spawn the child process with proxy env vars
     let program = &cmd[0];
     let args = &cmd[1..];
 
@@ -233,18 +223,14 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
                 .map(|(k, v)| (k.as_str(), v.as_str())),
         )
         .env("PHANTOM_PROXY_PORT", port.to_string())
-        // Note: proxy token is embedded in BASE_URL query params, not exposed as separate env var.
-        // This prevents AI agents from discovering and using the token directly.
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
         .context(format!("Failed to start command: {}", program))?;
 
-    // Wait for the child to exit
     let status = child.wait().await?;
 
-    // Shut down the proxy — session tokens are now invalid
     println!("\n{} Shutting down proxy...", "->".blue().bold());
     proxy.shutdown().await;
 
@@ -258,15 +244,10 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Check if `package.json` lists `next` as a dependency or devDependency.
-/// Uses a lightweight string search to avoid pulling in a JSON parser.
 fn detect_next_dependency(package_json: &Path) -> bool {
     let Ok(contents) = std::fs::read_to_string(package_json) else {
         return false;
     };
-    // Look for "next" as a key in dependencies or devDependencies.
-    // A proper JSON parse would be more robust, but this is intentionally
-    // lightweight — we only need a heuristic for framework detection.
     contents.contains("\"next\"")
 }
 

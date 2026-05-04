@@ -2,6 +2,7 @@ use anyhow::Result;
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
+use phantom_core::env_scope::{namespaced_key, DEFAULT_ENV};
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
@@ -61,12 +62,12 @@ fn shell_hint(syntax: ShellSyntax) -> &'static str {
     }
 }
 
-pub fn run(daemon: bool) -> Result<()> {
+pub fn run(daemon: bool, env: Option<&str>) -> Result<()> {
     if daemon {
         return run_daemon();
     }
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async())
+    rt.block_on(run_async(env))
 }
 
 /// Spawn a detached `phantom start` subprocess (without `--daemon`) and wait
@@ -184,7 +185,7 @@ fn run_daemon() -> Result<()> {
     Ok(())
 }
 
-async fn run_async() -> Result<()> {
+async fn run_async(env_flag: Option<&str>) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let env_path = project_dir.join(".env");
@@ -211,15 +212,25 @@ async fn run_async() -> Result<()> {
 
     let config = PhantomConfig::load(&config_path)?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
 
-    // Build token mapping
+    // Build token mapping (env-scoped)
     let mut token_to_secret: HashMap<String, String> = HashMap::new();
     let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
     if env_path.exists() {
         let dotenv = DotenvFile::parse_file(&env_path)?;
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
-                if let Ok(real_value) = vault.retrieve(&entry.key) {
+                // Try namespaced key first, then bare name for default env (backward compat)
+                let namespaced = namespaced_key(&active_env, &entry.key);
+                let real_value = if vault.exists(&namespaced).unwrap_or(false) {
+                    vault.retrieve(&namespaced).ok()
+                } else if active_env == DEFAULT_ENV {
+                    vault.retrieve(&entry.key).ok()
+                } else {
+                    None
+                };
+                if let Some(real_value) = real_value {
                     token_to_secret.insert(entry.value.clone(), String::from(real_value.as_str()));
                     secret_name_to_value
                         .insert(entry.key.clone(), String::from(real_value.as_str()));

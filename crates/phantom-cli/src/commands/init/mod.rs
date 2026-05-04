@@ -105,6 +105,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         &phantom_config.phantom.project_id,
         &env_path,
         &dotenv,
+        None, // env: init always stores in the persisted active env
     )?;
 
     // Persist public key classifications

@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use phantom_core::env_scope::{split_key, DEFAULT_ENV};
 
-pub fn run(oneline: bool) -> Result<()> {
+pub fn run(oneline: bool, env: Option<&str>) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -21,14 +22,31 @@ pub fn run(oneline: bool) -> Result<()> {
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
-    let names = vault.list().context("Failed to list secrets")?;
+    let all_keys = vault.list().context("Failed to list secrets")?;
+
+    let active_env = crate::commands::env_scope::effective_env(&project_dir, env);
+
+    // Filter names for the active environment
+    let names: Vec<String> = all_keys
+        .iter()
+        .filter_map(|k| {
+            if let Some((e, name)) = split_key(k) {
+                if e == active_env {
+                    return Some(name.to_string());
+                }
+            } else if active_env == DEFAULT_ENV {
+                return Some(k.clone());
+            }
+            None
+        })
+        .collect();
 
     if oneline {
-        // Compact output for shell prompts
         println!(
-            "{} secret{} · proxy off",
+            "{} secret{} · proxy off · env:{}",
             names.len(),
-            if names.len() == 1 { "" } else { "s" }
+            if names.len() == 1 { "" } else { "s" },
+            active_env
         );
         return Ok(());
     }
@@ -37,6 +55,7 @@ pub fn run(oneline: bool) -> Result<()> {
     println!();
     println!("  Project ID:  {}", config.phantom.project_id.dimmed());
     println!("  Vault:       {}", vault.backend_name().cyan());
+    println!("  Environment: {}", active_env.cyan().bold());
     println!("  Secrets:     {}", names.len().to_string().green().bold());
     println!("  Proxy:       {}", "not running".yellow());
 

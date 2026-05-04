@@ -98,6 +98,9 @@ enum Commands {
         /// Command and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
+        /// Environment to use for secret lookup (overrides persisted active env)
+        #[arg(long, short = 'e')]
+        env: Option<String>,
     },
 
     /// Start the proxy server
@@ -106,6 +109,9 @@ enum Commands {
         /// Run in background (daemon mode)
         #[arg(short, long)]
         daemon: bool,
+        /// Environment to load secrets from (overrides persisted active env)
+        #[arg(long, short = 'e')]
+        env: Option<String>,
     },
 
     /// Stop the background proxy server
@@ -118,6 +124,9 @@ enum Commands {
         /// Compact one-line output for shell prompts (e.g., "3 secrets · proxy off")
         #[arg(long)]
         oneline: bool,
+        /// Environment to show status for (overrides persisted active env)
+        #[arg(long, short = 'e')]
+        env: Option<String>,
     },
 
     /// Check for unprotected secrets (pre-commit hook)
@@ -137,6 +146,9 @@ enum Commands {
         /// Emit JSON instead of the human-readable table
         #[arg(long)]
         json: bool,
+        /// Environment to list (overrides persisted active env)
+        #[arg(long, short = 'e')]
+        env: Option<String>,
     },
 
     /// Add a secret to the vault
@@ -150,6 +162,9 @@ enum Commands {
         /// Read the secret value from stdin (for piped use: echo "$VAL" | phantom add KEY --stdin)
         #[arg(long)]
         stdin: bool,
+        /// Environment to add the secret to (overrides persisted active env)
+        #[arg(long, short = 'e')]
+        env: Option<String>,
     },
 
     /// Remove a secret from the vault
@@ -157,6 +172,9 @@ enum Commands {
     Remove {
         /// Secret name to remove
         name: String,
+        /// Environment to remove from (overrides persisted active env)
+        #[arg(long, short = 'e')]
+        env: Option<String>,
     },
 
     /// Reveal a secret value (print to stdout or copy to clipboard)
@@ -170,6 +188,9 @@ enum Commands {
         /// Skip confirmation (required for non-interactive use)
         #[arg(short, long)]
         yes: bool,
+        /// Environment to reveal from (overrides persisted active env)
+        #[arg(long, short = 'e')]
+        env: Option<String>,
     },
 
     /// Copy a secret from this project's vault to another project
@@ -185,12 +206,11 @@ enum Commands {
         rename: Option<String>,
     },
 
-    /// Generate .env.example for team onboarding
+    /// Manage environments (use/list/new/copy) or generate .env.example
     #[command(next_help_heading = "Daily use")]
     Env {
-        /// Output file name (defaults to .env.example)
-        #[arg(short, long, default_value = ".env.example")]
-        output: String,
+        #[command(subcommand)]
+        action: EnvAction,
     },
 
     /// Explain why a key is or isn't protected
@@ -237,6 +257,9 @@ enum Commands {
         /// Also honoured via `only = [...]` in each [[sync]] block in .phantom.toml.
         #[arg(long, value_name = "PATTERN")]
         only: Vec<String>,
+        /// Environment to sync (overrides persisted active env)
+        #[arg(long, short = 'e')]
+        env: Option<String>,
     },
 
     /// Pull secrets from a deployment platform into the vault
@@ -257,6 +280,9 @@ enum Commands {
         /// Overwrite existing local secrets
         #[arg(long)]
         force: bool,
+        /// Phantom environment to pull into (overrides persisted active env)
+        #[arg(long, short = 'e')]
+        env: Option<String>,
     },
 
     /// Export secrets to an encrypted backup file or as plaintext JSON to stdout
@@ -350,6 +376,9 @@ enum Commands {
         /// Also sync secrets to all configured deployment platforms after rotation
         #[arg(long)]
         sync: bool,
+        /// Environment to rotate tokens for (overrides persisted active env)
+        #[arg(long, short = 'e')]
+        env: Option<String>,
     },
 
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
@@ -377,6 +406,37 @@ enum Commands {
         /// Seconds to wait before clearing
         #[arg(long, default_value_t = 30)]
         secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum EnvAction {
+    /// Set the active environment (persisted to .phantom/env)
+    Use {
+        /// Environment name (e.g. dev, staging, prod)
+        name: String,
+    },
+    /// List known environments
+    List,
+    /// Declare a new environment
+    New {
+        /// Environment name
+        name: String,
+    },
+    /// Copy all secrets from one environment to another
+    Copy {
+        /// Source environment
+        #[arg(long)]
+        from: String,
+        /// Destination environment
+        #[arg(long)]
+        to: String,
+    },
+    /// Generate .env.example for team onboarding
+    Example {
+        /// Output file name (defaults to .env.example)
+        #[arg(short, long, default_value = ".env.example")]
+        output: String,
     },
 }
 
@@ -468,19 +528,25 @@ fn main() -> anyhow::Result<()> {
             }
             None => commands::init::run(&from),
         },
-        Commands::List { json } => commands::list::run(json),
-        Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
-        Commands::Remove { name } => commands::remove::run(&name),
+        Commands::List { json, env } => commands::list::run(json, env.as_deref()),
+        Commands::Add {
+            name,
+            value,
+            stdin,
+            env,
+        } => commands::add::run(&name, value.as_deref(), stdin, env.as_deref()),
+        Commands::Remove { name, env } => commands::remove::run(&name, env.as_deref()),
         Commands::Reveal {
             name,
             clipboard,
             yes,
-        } => commands::reveal::run(&name, clipboard, yes),
-        Commands::Status { oneline } => commands::status::run(oneline),
-        Commands::Rotate { sync } => commands::rotate::run(sync),
+            env,
+        } => commands::reveal::run(&name, clipboard, yes, env.as_deref()),
+        Commands::Status { oneline, env } => commands::status::run(oneline, env.as_deref()),
+        Commands::Rotate { sync, env } => commands::rotate::run(sync, env.as_deref()),
         Commands::Doctor { fix } => commands::doctor::run(fix),
-        Commands::Exec { cmd } => commands::exec::run(&cmd, None),
-        Commands::Start { daemon } => commands::start::run(daemon),
+        Commands::Exec { cmd, env } => commands::exec::run(&cmd, env.as_deref()),
+        Commands::Start { daemon, env } => commands::start::run(daemon, env.as_deref()),
         Commands::Stop => commands::stop::run(),
         Commands::Check { staged, runtime } => commands::check::run(staged, runtime),
         Commands::Pull {
@@ -489,14 +555,22 @@ fn main() -> anyhow::Result<()> {
             environment,
             service,
             force,
-        } => commands::pull::run(&from, &project, environment, service, force),
+            env,
+        } => commands::pull::run(&from, &project, environment, service, force, env.as_deref()),
         Commands::Setup { client, print } => commands::setup::run(client, print),
         Commands::Sync {
             platform,
             project,
             only,
-        } => commands::sync::run(platform, project, only),
-        Commands::Env { output } => commands::env::run(&output),
+            env,
+        } => commands::sync::run(platform, project, only, env.as_deref()),
+        Commands::Env { action } => match action {
+            EnvAction::Use { name } => commands::env_scope::run_use(&name),
+            EnvAction::List => commands::env_scope::run_list(),
+            EnvAction::New { name } => commands::env_scope::run_new(&name),
+            EnvAction::Copy { from, to } => commands::env_scope::run_copy(&from, &to),
+            EnvAction::Example { output } => commands::env::run(&output),
+        },
         Commands::Export {
             output,
             passphrase,

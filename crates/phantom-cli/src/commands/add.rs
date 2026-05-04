@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use phantom_core::env_scope::namespaced_key;
 use std::io::IsTerminal;
 
 /// Returns true when stdin is connected to a terminal (not a pipe or redirect).
@@ -15,7 +16,7 @@ fn stdin_is_tty() -> bool {
 ///   - If `--stdin` is passed, read one line from stdin (piped use).
 ///   - If stdin is not a tty and `--stdin` was not passed, bail with a
 ///     clear error so CI jobs don't hang silently.
-pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> {
+pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool, env: Option<&str>) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -28,11 +29,8 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
 
     // ── Resolve the secret value ─────────────────────────────────────
     let value: String = if let Some(v) = value_arg {
-        // Positional value provided — backward-compatible path.
         v.to_string()
     } else if from_stdin {
-        // --stdin: read one line from a pipe (e.g. `echo "$VAL" | phantom add KEY --stdin`).
-        // Trim the trailing newline only — preserve any internal whitespace.
         let mut buf = String::new();
         std::io::stdin()
             .read_line(&mut buf)
@@ -46,8 +44,6 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
         }
         trimmed
     } else {
-        // Interactive: prompt on stderr so that stdout can still be captured,
-        // and read silently from the controlling tty via rpassword.
         if !stdin_is_tty() {
             anyhow::bail!(
                 "stdin is not a terminal. \
@@ -57,8 +53,6 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
             );
         }
         let prompt = format!("Value for {name}: ");
-        // rpassword::prompt_password_stderr opens /dev/tty directly so it
-        // works even if stdout is redirected.
         let secret =
             rpassword::prompt_password(&prompt).context("Failed to read secret interactively")?;
         if secret.is_empty() {
@@ -67,31 +61,35 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
         secret
     };
 
-    // ── Store in vault ───────────────────────────────────────────────
+    // ── Resolve environment and vault key ────────────────────────────
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
-    // Warn if secret already exists
-    if vault.exists(name).unwrap_or(false) {
+    let active_env = crate::commands::env_scope::effective_env(&project_dir, env);
+    let vault_key = namespaced_key(&active_env, name);
+
+    if vault.exists(&vault_key).unwrap_or(false) {
         eprintln!(
-            "{} Secret {} already exists — overwriting with new value",
+            "{} Secret {} already exists in env '{}' — overwriting with new value",
             "warn".yellow(),
-            name.bold()
+            name.bold(),
+            active_env
         );
     }
 
     vault
-        .store(name, &value)
+        .store(&vault_key, &value)
         .context(format!("Failed to store secret: {name}"))?;
 
     println!(
-        "{} Stored {} in vault ({})",
+        "{} Stored {} in vault ({}) [env: {}]",
         "ok".green().bold(),
         name.bold(),
-        vault.backend_name().dimmed()
+        vault.backend_name().dimmed(),
+        active_env.cyan()
     );
 
-    // Also update .env if it exists
+    // Update .env with a phantom token when the key is present there
     let env_path = project_dir.join(".env");
     if env_path.exists() {
         let content = std::fs::read_to_string(&env_path)?;
@@ -101,7 +99,6 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
             .lines()
             .any(|l| l.trim().starts_with(&format!("{name}=")))
         {
-            // Key exists — replace its value with the phantom token.
             let new_content: String = content
                 .lines()
                 .map(|line| {
@@ -116,7 +113,6 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
                 + "\n";
             std::fs::write(&env_path, new_content)?;
         } else {
-            // Append new entry.
             let mut content = content;
             if !content.is_empty() && !content.ends_with('\n') {
                 content.push('\n');
@@ -137,7 +133,6 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
-    /// Verify the tty-check helper compiles and is callable without panicking.
     #[test]
     fn stdin_tty_check_does_not_panic() {
         let _ = super::stdin_is_tty();

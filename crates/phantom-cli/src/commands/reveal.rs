@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use phantom_core::env_scope::{namespaced_key, DEFAULT_ENV};
 use zeroize::Zeroizing;
 
 /// Reveal a single secret value from the vault.
 /// Requires --yes flag or interactive TTY to prevent AI agents from extracting secrets.
-pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
+pub fn run(name: &str, clipboard: bool, yes: bool, env: Option<&str>) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -37,9 +38,22 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
-    let value: Zeroizing<String> = vault
-        .retrieve(name)
-        .context(format!("Secret '{}' not found in vault", name))?;
+    let active_env = crate::commands::env_scope::effective_env(&project_dir, env);
+    let vault_key = namespaced_key(&active_env, name);
+
+    // Try namespaced key; for default env fall back to bare name (backward compat).
+    let value: Zeroizing<String> = match vault.retrieve(&vault_key) {
+        Ok(v) => v,
+        Err(_) if active_env == DEFAULT_ENV && vault.exists(name).unwrap_or(false) => vault
+            .retrieve(name)
+            .context(format!("Secret '{}' not found in vault", name))?,
+        Err(e) => {
+            return Err(e).context(format!(
+                "Secret '{}' not found in vault [env: {}]",
+                name, active_env
+            ))
+        }
+    };
 
     if clipboard {
         if copy_to_clipboard(&value) {
@@ -60,8 +74,6 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
         println!("{}", value.as_str());
     }
 
-    // Zeroizing<String> scrubs memory on drop automatically.
-
     Ok(())
 }
 
@@ -72,16 +84,6 @@ fn copy_to_clipboard(text: &str) -> bool {
     }
 }
 
-/// Spawn a detached child of this same binary that sleeps `delay`, then
-/// clears the clipboard. Cross-platform replacement for the macOS-only
-/// `bash -c 'sleep && pbcopy'` shell-out — works on Windows where there's
-/// no bash, and avoids quoting/PATH fragility on Unix.
-///
-/// We spawn a child rather than a thread so the parent `phantom reveal`
-/// process can exit immediately and return the user to their prompt; a
-/// thread would die when the parent exits, and on macOS/Windows the
-/// clipboard contents persist past process exit so we need a live process
-/// to issue the clear.
 fn schedule_clipboard_clear(delay: std::time::Duration) {
     let exe = match std::env::current_exe() {
         Ok(p) => p,

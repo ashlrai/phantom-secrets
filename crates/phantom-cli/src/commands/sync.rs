@@ -5,15 +5,21 @@ use phantom_core::sync::{self, Platform, SyncStatus};
 use std::collections::BTreeMap;
 use zeroize::Zeroize;
 
-pub fn run(platform: Option<String>, project: Option<String>, only: Vec<String>) -> Result<()> {
+pub fn run(
+    platform: Option<String>,
+    project: Option<String>,
+    only: Vec<String>,
+    env: Option<&str>,
+) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(platform, project, only))
+    rt.block_on(run_async(platform, project, only, env))
 }
 
 async fn run_async(
     platform_filter: Option<String>,
     project_override: Option<String>,
     cli_only: Vec<String>,
+    env_flag: Option<&str>,
 ) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
@@ -30,7 +36,30 @@ async fn run_async(
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
     // Cheap precondition check before decrypting anything.
-    let secret_names = vault.list().context("Failed to list secrets")?;
+    let all_vault_keys = vault.list().context("Failed to list secrets")?;
+
+    // TODO(env-v2): per-env sync targets — for now, strip env prefix when syncing
+    // so the remote platform receives clean key names (e.g. STRIPE_KEY not dev/STRIPE_KEY).
+    let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
+    let secret_names: Vec<String> = {
+        use phantom_core::env_scope::{split_key, DEFAULT_ENV};
+        all_vault_keys
+            .iter()
+            .filter_map(|k| {
+                if let Some((e, name)) = split_key(k) {
+                    if e == active_env {
+                        Some(name.to_string())
+                    } else {
+                        None
+                    }
+                } else if active_env == DEFAULT_ENV {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
     if secret_names.is_empty() {
         println!("{} No secrets in vault to sync.", "!".yellow().bold());
         return Ok(());
@@ -122,7 +151,19 @@ async fn run_async(
     // Anything that exits via `return Ok(())` above never touches plaintext.
     let mut secrets: BTreeMap<String, String> = BTreeMap::new();
     for name in &secret_names {
-        match vault.retrieve(name) {
+        // Resolve the actual vault key (namespaced or bare for default env)
+        let vault_key = {
+            use phantom_core::env_scope::{namespaced_key, DEFAULT_ENV};
+            let nk = namespaced_key(&active_env, name);
+            if vault.exists(&nk).unwrap_or(false) {
+                nk
+            } else if active_env == DEFAULT_ENV {
+                name.clone()
+            } else {
+                nk
+            }
+        };
+        match vault.retrieve(&vault_key) {
             Ok(value) => {
                 secrets.insert(name.clone(), String::from(value.as_str()));
             }
