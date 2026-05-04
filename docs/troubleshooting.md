@@ -42,6 +42,12 @@ The default upstream timeout is 30 seconds. For long-running API calls:
 - Verify the upstream service is accessible
 - The proxy follows redirects automatically (up to 5 hops)
 
+### Streaming request body larger than 10 MB is silently dropped
+
+For `text/*` and `application/x-www-form-urlencoded` content types, the proxy uses a streaming token-replacement path. If the body exceeds the 10 MB limit, the streaming task is dropped and the upstream sees a broken connection (not a clean HTTP 413). For JSON bodies the proxy returns HTTP 413 cleanly.
+
+If you are sending large streaming bodies through the proxy and seeing broken-pipe errors upstream, either split the payload or increase the body limit via a future `.phantom.toml` option (not yet exposed; track [#issues](https://github.com/ashlrai/phantom-secrets/issues)).
+
 ### Claude Code can't read my .env file
 
 Many Claude Code setups block reading `.env` files by default (it's in the deny rules). After running `phantom init`, your `.env` only contains worthless phantom tokens (`phm_...`) — it's **safe for AI to read**.
@@ -227,7 +233,7 @@ Cloud sync is per-vault. Make sure you pushed from the same project directory. E
 
 The free tier allows 1 cloud vault. If you need more, upgrade to Pro ($8/mo) at [phm.dev/pricing](https://phm.dev/pricing).
 
-## Updates and Audit Log
+## Audit Log
 
 ### Enabling the audit log
 
@@ -236,10 +242,64 @@ For compliance or forensic visibility, set `PHANTOM_AUDIT=1` to record every vau
 ```bash
 export PHANTOM_AUDIT=1
 phantom exec -- npm run dev
-tail -f ~/.phantom/audit.log
 ```
 
 Each line is JSON with `ts`, `op`, `name` (the secret name — **never the value**), `process`, and `pid`. Off by default; enable per-shell or in your `.zprofile` / `.envrc`.
+
+### `phantom audit verify` reports tampered entries
+
+The audit log uses an HMAC-SHA256 chain: each entry signs the hash of the previous entry. If `phantom audit verify` exits 1 and reports tampered line numbers, it means those entries were modified, deleted, or inserted after being written.
+
+Possible causes:
+- A log-rotation tool or editor truncated or rewrote the file
+- The log file was manually edited
+- An attacker with write access to `~/.phantom/` modified the file to cover tracks
+
+What to do:
+1. Note the tampered line numbers from the output: `phantom audit verify` prints them to stderr.
+2. Compare against a backup copy if available.
+3. Treat the log as unreliable for the period covered by tampered entries.
+4. If you suspect a security incident, revoke affected secrets via `phantom rotate` and re-add them.
+
+Note: entries written before HMAC chaining was introduced (pre-PR #62) are counted as `legacy` in the verify output and do not fail the check.
+
+### Audit log is empty / "No audit events yet"
+
+The log file is only created once the first event is written. Ensure `PHANTOM_AUDIT=1` is set in the shell where `phantom exec` or vault-mutating commands run. Check the log path with `phantom audit path`.
+
+## Importing from other secret managers
+
+### `phantom import --from` fails to parse the export file
+
+Each importer expects a specific file format:
+
+| Source | Expected format | Notes |
+|--------|----------------|-------|
+| `doppler` | JSON object (`{"KEY": "value", ...}`) | Use `doppler secrets download --no-file --format json > dump.json` |
+| `infisical` | `.env` key=value lines | Use `infisical export --format=dotenv > export.env` |
+| `dotenvx` | Plaintext `.env` | Encrypted `.env.vault` files are **not** supported — run `dotenvx decrypt --stdout > .env` first |
+| `1password` | JSON array of item objects | Use `op item list --format json > 1p-export.json` |
+| `env` | Plaintext `.env` key=value | Any standard dotenv format |
+
+If the file format is wrong, the importer returns a parse error. Re-export from the source tool and retry.
+
+### Existing secrets not overwritten during import
+
+By default, `phantom import --from` prompts before overwriting existing vault entries. Pass `--force` to skip the prompt:
+
+```bash
+phantom import --from doppler --file dump.json --force
+```
+
+### Import succeeds but `.env` still has plaintext secrets
+
+`phantom import --from` stores secrets in the vault but does not rewrite your `.env`. After importing, run:
+
+```bash
+phantom init
+```
+
+This replaces any plaintext secrets in `.env` with phantom tokens.
 
 ### `phantom upgrade` says "use npm" instead of upgrading
 

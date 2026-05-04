@@ -69,24 +69,30 @@ Teams (multi-developer shared vaults — Pro plan):
 - `phantom_team_create`, `phantom_team_invite` — require `confirm: true`
 - `phantom_team_vault_push`, `phantom_team_vault_pull` — require `confirm: true`. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305). Server only stores ciphertext.
 
-## CLI surface (30 commands)
+## CLI surface (34 commands)
 
-`init · exec · start · stop · list · add · remove · reveal · rotate · status · doctor · check · sync · pull · env · setup · login · logout · cloud · team · export · import · wrap · unwrap · watch · why · copy · open · upgrade · completion`
+`init · exec · start · stop · list · add · remove · reveal · rotate · status · doctor · check · sync · pull · env · setup · login · logout · cloud · team · export · import · audit · wrap · unwrap · watch · why · copy · open · upgrade · completion`
 
 Recently-added flags worth knowing:
 
-- `phantom init --all <DIR>` walks a workspace and runs init in every git repo with a `.env` (with `--dry-run` to preview). Skips repos that already have `.phantom.toml`, plus `node_modules` / `target` / `dist`.
+- `phantom init --all <DIR>` walks a workspace and runs init in every git repo with a `.env` (with `--dry-run` to preview, `--jobs N` / `-j N` to control parallelism; default 4, also reads `PHANTOM_INIT_JOBS`). A progress bar shows live status.
 - `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config file per AI tool; `--print` emits the snippet to stdout for any other client.
 - `phantom add KEY --stdin` reads the value from a piped stdin (CI-friendly). Bare `phantom add KEY` (no value) prompts silently on the terminal via `rpassword` so the secret never enters shell history.
 - `phantom list --json` emits a JSON array of `{name, detected_service}` for scripting; values are never included.
 - `phantom sync --only PATTERN` (repeatable; OR-ed) limits which keys get pushed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`.
 - `phantom check --staged` reads from the git index (including staged `.env` files) and is suitable for pre-commit hooks.
+- `phantom export --json --allow-plaintext` emits all vault secrets as a plaintext JSON object to stdout. The `--allow-plaintext` flag is required and acknowledges the risk.
+- `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>` imports secrets from a competitor export file. Use `--force` to overwrite existing entries.
+- `phantom audit show [--last N] [--op OP] [--name NAME] [--json]` — print recent audit events.
+- `phantom audit tail [--op OP] [--name NAME]` — follow the audit log live.
+- `phantom audit path` — print the absolute path to the log file.
+- `phantom audit verify` — verify HMAC-SHA256 chain integrity; exits 1 if tampering detected.
 - `phantom completion <bash|zsh|fish|powershell|elvish>` prints a shell-completion script to stdout.
 - `--help` is grouped: Setup · Daily use · Sync & teams · Maintenance.
 
 Opt-in audit log:
 
-- Set `PHANTOM_AUDIT=1` in your shell to record every vault store/retrieve/delete to `~/.phantom/audit.log` as JSONL. Records the secret name only — never the value. Useful for forensics and compliance; off by default.
+- Set `PHANTOM_AUDIT=1` in your shell to record every vault store/retrieve/delete to `~/.phantom/audit.log` as JSONL. Records the secret name only — never the value. Each entry is chained with HMAC-SHA256; run `phantom audit verify` to check integrity. Useful for forensics and compliance; off by default.
 
 ## Dashboard
 
@@ -102,8 +108,8 @@ Phantom auto-classifies env vars by name + value heuristics. Detected: `OPENAI_A
 
 - `phantom-core` — config (`.phantom.toml`), `.env` parsing, token generation (256-bit CSPRNG, `phm_` prefix)
 - `phantom-vault` — `VaultBackend` trait. macOS Keychain / Linux Secret Service / Windows Credential Manager / encrypted file fallback. ChaCha20-Poly1305 + Argon2id (hardened to OWASP balanced m=64 MiB / t=3 / p=1, with legacy-default fallback for older vaults).
-- `phantom-proxy` — HTTP reverse proxy on 127.0.0.1. Header + body + URL-param token replacement. Streaming/SSE preserved.
-- `phantom-cli` — `clap` binary, 30 commands.
+- `phantom-proxy` — HTTP reverse proxy on 127.0.0.1. Streaming token replacement for `text/*`/form bodies; buffered+scoped for JSON. SSE/streaming preserved.
+- `phantom-cli` — `clap` binary, 34 commands (including `audit show/tail/path/verify`, `import --from`, `export --json`).
 - `phantom-mcp` — `rmcp` 1.3 stdio server, 25 tools.
 
 ## Pricing

@@ -6,7 +6,7 @@ OpenAI Codex runs in a sandboxed environment and executes tasks autonomously. It
 
 After `phantom init`, your `.env` contains only phantom tokens (`phm_...`). Codex reads the tokens, not the real values. When code under test makes API calls, the local Phantom proxy replaces tokens with real credentials before requests leave your machine — Codex never needs the real values to write, test, or integrate code that uses them.
 
-The MCP integration registers 25 Phantom tools in Codex's tool list.
+The MCP integration registers 25 Phantom tools in Codex's tool list. The CLI has 34 commands including `phantom audit show/tail/path/verify`, `phantom import --from`, and `phantom export --json`.
 
 ---
 

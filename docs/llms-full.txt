@@ -27,17 +27,21 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 3. When code makes an API call, the proxy intercepts it, replaces phantom tokens with real credentials in headers and body, and forwards over TLS to the real API endpoint. Full streaming/SSE support for OpenAI and Anthropic.
 4. Session-scoped tokens: each `phantom exec` session generates fresh phantom tokens. If tokens leak from AI logs, they're already invalid.
 
-## CLI Commands
+## CLI Commands (34 total)
 
-- `phantom init` — Import .env secrets into vault, rewrite with phantom tokens. Auto-detects 13+ services. Supports monorepo subdirectory detection.
+- `phantom init` — Import .env secrets into vault, rewrite with phantom tokens. Auto-detects 13+ services. Supports monorepo subdirectory detection. `--all <DIR>` protects every git repo with a .env under a directory in one go (with `--dry-run` to preview, `--jobs N` / `-j N` for parallelism, default 4).
 - `phantom exec -- <cmd>` — Start proxy with session-scoped tokens, run command, shut down proxy on exit.
 - `phantom login` — Sign in to Phantom Cloud via GitHub OAuth (device code flow).
 - `phantom logout` — Sign out of Phantom Cloud.
 - `phantom cloud push` — Push encrypted vault to Phantom Cloud (end-to-end encrypted).
 - `phantom cloud pull` — Pull vault from Phantom Cloud to local machine.
 - `phantom cloud status` — Check cloud auth and sync status.
-- `phantom export --passphrase <pass>` — Export vault to encrypted backup file.
-- `phantom import <file> --passphrase <pass>` — Import secrets from encrypted backup.
+- `phantom export --output <file> --passphrase <pass>` — Export vault to encrypted backup file. Or `--json --allow-plaintext` to emit plaintext JSON to stdout (explicit flag required).
+- `phantom import <file> --passphrase <pass>` — Import secrets from encrypted backup. Or `--from doppler|infisical|dotenvx|1password|env --file <path>` to import from a competitor export. Add `--force` to overwrite existing entries.
+- `phantom audit show [--last N] [--op OP] [--name NAME] [--json]` — Print recent audit events. Requires `PHANTOM_AUDIT=1`.
+- `phantom audit tail` — Follow the audit log live.
+- `phantom audit path` — Print the absolute path to the audit log file.
+- `phantom audit verify` — Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected.
 - `phantom start` / `phantom stop` — Standalone proxy lifecycle. `--daemon` mode available.
 - `phantom list` — Show secret names stored in vault (never shows values). Add `--json` to emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded.
 - `phantom add <KEY> [VALUE]` — Add a secret to the vault. With no positional VALUE, prompts silently on the controlling terminal via `rpassword` (the value never enters shell history or `ps aux`). For piped/CI use, pass `--stdin` and provide one line on stdin: `echo "$VAL" | phantom add KEY --stdin`.
@@ -208,8 +212,8 @@ Phantom automatically identifies secrets vs config values using heuristics:
 5-crate Rust workspace + Next.js backend:
 - phantom-core: Config, .env parsing, token generation, sync, auth, cloud API client
 - phantom-vault: VaultBackend trait, OS keychain + encrypted file backends, shared crypto module
-- phantom-proxy: HTTP reverse proxy with streaming/SSE support, request interceptor
-- phantom-cli: 21 CLI commands via clap (including login, cloud, export/import)
+- phantom-proxy: HTTP reverse proxy with streaming token replacement (text/*/form bodies) and SSE/streaming support, request interceptor
+- phantom-cli: 34 CLI commands via clap (including audit show/tail/path/verify, import --from, export --json)
 - phantom-mcp: MCP server via rmcp SDK (stdio transport, 25 tools)
 - apps/web: Next.js backend on Vercel (Supabase + Stripe, device auth, vault API, billing)
 
@@ -222,7 +226,9 @@ Phantom automatically identifies secrets vs config values using heuristics:
 3. **Multi-device sync**: `phantom login` then `phantom cloud push` on one machine, `phantom cloud pull` on another
 4. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
 5. **New machine onboarding**: `phantom pull --from vercel --project prj_xxx`
-6. **Vault backup**: `phantom export --passphrase mypass` then `phantom import backup.enc --passphrase mypass`
+6. **Vault backup**: `phantom export --output backup.enc --passphrase mypass` then `phantom import backup.enc --passphrase mypass`
+6b. **Migrate from Doppler/Infisical/dotenvx/1Password**: `phantom import --from doppler --file dump.json`
+6c. **Audit trail**: `PHANTOM_AUDIT=1` + `phantom audit show/tail/verify` for compliance and forensics
 7. **Team onboarding**: `phantom env` generates .env.example with placeholders
 8. **CI/CD**: Set PHANTOM_VAULT_PASSPHRASE env var, use phantom in GitHub Actions
 9. **Pre-commit safety**: Add `phantom check` to git hooks or pre-commit framework

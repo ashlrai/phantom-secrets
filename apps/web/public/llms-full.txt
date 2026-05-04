@@ -58,12 +58,16 @@ phantom --version
 ```
 
 
-## CLI Commands (30 total)
+## CLI Commands (34 total)
 
 ### phantom init
 Read .env, store real secrets in vault, rewrite with phantom tokens, create .phantom.toml.
 Options: --from <path> (non-standard .env location)
 Safe to re-run: new secrets are added, existing tokens preserved.
+Multi-project: --all <DIR> walks a workspace and runs init in every git repo with a .env.
+  --dry-run: preview which repos would be touched without modifying anything.
+  --jobs N / -j N: number of repos to initialise concurrently (default: 4; also reads PHANTOM_INIT_JOBS env var).
+  A progress bar shows live status during --all runs.
 
 ### phantom exec -- <cmd>
 Start local proxy, set *_BASE_URL env vars, run command, shut down proxy on exit.
@@ -148,13 +152,47 @@ Options: --force (overwrite existing local secrets)
 Check cloud auth status, plan, and last sync version.
 
 ### phantom export
-Export encrypted backup file independent of cloud sync.
-Example: phantom export --passphrase mypassword
-Creates: phantom-export.enc
+Export vault to an encrypted backup file, or emit plaintext JSON to stdout.
+Encrypted backup: phantom export --output FILE --passphrase PASS
+Plaintext JSON to stdout (gated by explicit acknowledgement flag):
+  phantom export --json --allow-plaintext
+  --json and --passphrase are mutually exclusive.
 
 ### phantom import
-Restore secrets from encrypted backup.
-Example: phantom import phantom-export.enc --passphrase mypassword
+Restore secrets from an encrypted backup, or import from a competitor export file.
+
+Legacy encrypted backup:
+  phantom import <FILE> --passphrase <PASS>
+
+Competitor migration (--from):
+  phantom import --from doppler    --file dump.json
+  phantom import --from infisical  --file export.env
+  phantom import --from dotenvx   --file .env
+  phantom import --from 1password  --file 1p-export.json
+  phantom import --from env        --file .env
+Options: --force (overwrite existing secrets without prompting)
+
+Note: dotenvx encrypted .env.vault files are not supported — run
+  `dotenvx decrypt --stdout > .env` first, then import the plain .env.
+
+### phantom audit
+View and verify the opt-in JSONL audit log at ~/.phantom/audit.log.
+Requires PHANTOM_AUDIT=1 to generate log entries.
+
+Subcommands:
+  phantom audit show [--last N] [--op OP] [--name NAME] [--json]
+    Print the last N events (default 50). Filter by operation or secret name.
+    --json emits raw JSONL instead of pretty-printing.
+  phantom audit tail [--op OP] [--name NAME]
+    Follow the log live (like tail -f). Press Ctrl-C to stop.
+  phantom audit path
+    Print the absolute path to the audit log file.
+  phantom audit verify
+    Verify the HMAC-SHA256 chain integrity of the log. Exits 0 if clean, 1 if tampering detected.
+    Reports count of verified, tampered, and legacy (pre-chain) entries.
+
+Each log entry contains: ts (Unix epoch), op, name (secret name — never value), process, pid.
+Each entry is chained with HMAC-SHA256 over the previous entry's hash so deletions or modifications are detectable.
 
 ### phantom wrap
 Wrap package.json scripts with `npx phantom-secrets exec --` so secrets are injected at runtime.
@@ -354,11 +392,19 @@ phantom-vault
 phantom-proxy
   HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, replaces phantom tokens in headers/body
   with real secrets from vault, forwards over TLS. Uses hyper for server, reqwest for outbound HTTPS.
-  Full streaming/SSE support for OpenAI and Anthropic APIs.
+  Streaming token replacement for text/* and application/x-www-form-urlencoded request bodies
+  (frame-by-frame, 67-byte carry buffer for tokens straddling chunk boundaries).
+  JSON bodies use a buffered path with field-level F9 scoping (tokens in prompt/messages/content
+  fields are not substituted). Full SSE/streaming response support for OpenAI and Anthropic APIs.
+
+phantom-core
+  Also contains: importers module (doppler, infisical, dotenvx, 1password, env parsers);
+  env_scope module for multi-environment vault key namespacing.
 
 phantom-cli
-  clap-based CLI binary. 30 commands. Uses colored for output, anyhow for error handling.
+  clap-based CLI binary. 34 commands. Uses colored for output, anyhow for error handling.
   CLI output uses -> (info), ok (success), ! (error), warn (warning) prefixes.
+  Includes: audit (show/tail/path/verify), import --from, export --json --allow-plaintext.
 
 phantom-mcp
   MCP server using rmcp 1.3 SDK. Stdio transport. 25 tools.
@@ -391,6 +437,11 @@ Cloud tokens stored hashed (SHA-256) in database — never plaintext.
 MCP destructive tools require explicit confirm=true — prompt injection cannot silently modify vaults.
 
 phantom_reveal blocked in non-interactive contexts by default to prevent AI agents from reading real values.
+
+Opt-in audit log: PHANTOM_AUDIT=1 writes vault events as JSONL to ~/.phantom/audit.log (secret name only).
+Each entry is chained with HMAC-SHA256; phantom audit verify detects tampering or deletion.
+
+For the full threat model (assets, actors, mitigations, known gaps, crypto summary), see THREAT_MODEL.md.
 
 
 ## Smart Secret Detection
@@ -533,13 +584,16 @@ Do not commit:
 3. Multi-device sync: phantom login, phantom cloud push on one machine, phantom cloud pull on another
 4. Deploy to Vercel: phantom sync --platform vercel --project prj_xxx
 5. New machine onboarding: phantom pull --from vercel --project prj_xxx
-6. Vault backup: phantom export --passphrase mypass / phantom import backup.enc --passphrase mypass
+6. Vault backup (encrypted): phantom export --output backup.enc --passphrase mypass / phantom import backup.enc --passphrase mypass
+6b. Vault export (plaintext JSON, use with care): phantom export --json --allow-plaintext > secrets.json
 7. Team onboarding: phantom env generates .env.example with placeholders
 8. CI/CD: set PHANTOM_VAULT_PASSPHRASE, use phantom in GitHub Actions
 9. Pre-commit safety: phantom check in git hooks or pre-commit framework
 10. Rotate with sync: phantom rotate --sync regenerates tokens and pushes to deployment platforms
 11. Monorepo: phantom init in each subdirectory — each gets its own vault and config
 12. Multi-IDE team: same MCP server works across Claude Code, Cursor, Windsurf, and Codex
+13. Migrate from Doppler/Infisical/dotenvx/1Password: phantom import --from <source> --file <path>
+14. Audit trail: PHANTOM_AUDIT=1 + phantom audit show/tail/verify for compliance and forensics
 
 
 ## Test and Quality Stats

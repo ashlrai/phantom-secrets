@@ -15,6 +15,10 @@ That's it. Your AI tool never sees a real key again.
 
 Phantom replaces real API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in your OS keychain. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`. API SDKs are redirected to this proxy via `*_BASE_URL` environment variables; the proxy swaps phantom tokens for real credentials in request headers and body before forwarding over TLS to the actual API endpoint. The AI agent reads `.env`, gets only worthless tokens, and its logs and context windows contain nothing sensitive.
 
+For `text/*` and `application/x-www-form-urlencoded` request bodies the proxy replaces tokens frame-by-frame without buffering the full payload (streaming token replacement). JSON bodies use a buffered path with field-level scoping to avoid substituting tokens that appear in non-secret fields such as `prompt` or `messages`. Full SSE/streaming responses (OpenAI, Anthropic) are preserved end-to-end.
+
+For a detailed breakdown of assets protected, threat actors, mitigations, and known gaps, see [THREAT_MODEL.md](../THREAT_MODEL.md).
+
 ---
 
 ## Install
@@ -106,9 +110,10 @@ phantom init --from .env.local
 ```bash
 phantom init --all ~/code --dry-run    # preview which repos would be touched
 phantom init --all ~/code              # run init in every git repo with a .env
+phantom init --all ~/code --jobs 8     # run up to 8 repos concurrently (default: 4)
 ```
 
-`--all` walks the directory, finds every git repo with one of `.env`, `.env.local`, `.env.development`, `.env.production`, etc., and runs init in each. Skips repos that already have `.phantom.toml`, plus `node_modules`, `target`, `dist`, `build`, and dot-dirs.
+`--all` walks the directory, finds every git repo with one of `.env`, `.env.local`, `.env.development`, `.env.production`, etc., and runs init in each. Skips repos that already have `.phantom.toml`, plus `node_modules`, `target`, `dist`, `build`, and dot-dirs. A progress bar shows live status. The parallelism default can also be set via the `PHANTOM_INIT_JOBS` environment variable.
 
 ### `phantom add` / `phantom remove`
 
@@ -251,10 +256,57 @@ For compliance or forensics, set `PHANTOM_AUDIT=1` to record every vault store/r
 ```bash
 export PHANTOM_AUDIT=1
 phantom exec -- npm run dev
-tail -f ~/.phantom/audit.log
 ```
 
 Each line is a JSON object with `ts`, `op`, `name` (the secret name — **never the value**), `process`, and `pid`. Off by default; turn on per-shell or in your `.envrc` / `.zprofile`.
+
+### Viewing and verifying the log
+
+```bash
+# Print the last 50 events (default)
+phantom audit show
+
+# Filter by operation or secret name
+phantom audit show --op vault.store --name OPENAI_API_KEY
+
+# Follow the log live (like tail -f)
+phantom audit tail
+
+# Print the absolute path to the log file
+phantom audit path
+
+# Verify HMAC-SHA256 chain integrity — exits 1 if tampering detected
+phantom audit verify
+```
+
+Each log entry is chained with HMAC-SHA256 so any deletion or modification of entries is detectable by `phantom audit verify`.
+
+---
+
+## Importing from other secret managers
+
+Migrate secrets from Doppler, Infisical, dotenvx, 1Password, or a plain `.env` file without exposing values in your shell:
+
+```bash
+# Doppler: export secrets as JSON first, then import
+phantom import --from doppler --file dump.json
+
+# Infisical: export as .env, then import
+phantom import --from infisical --file export.env
+
+# dotenvx: import a plaintext .env (not an encrypted .env.vault)
+phantom import --from dotenvx --file .env
+
+# 1Password: export as JSON, then import
+phantom import --from 1password --file 1p-export.json
+
+# Plain .env file (same heuristics as phantom init)
+phantom import --from env --file .env
+```
+
+After importing, run `phantom init` to replace any remaining plaintext secrets in your `.env` with phantom tokens.
+
+Use `--force` to overwrite existing vault entries without prompting.
 
 ---
 
@@ -330,5 +382,6 @@ $ phantom open
 - [Claude Code integration](./claude-code.md) — MCP tools, workflow examples, what Claude can and cannot do
 - [CI/CD setup](./ci-cd.md) — GitHub Actions, Docker, encrypted file vault
 - [Troubleshooting](./troubleshooting.md) — extended issue reference
+- [Threat model](../THREAT_MODEL.md) — assets, actors, mitigations, known gaps, cryptography summary
 - [GitHub repository](https://github.com/ashlrai/phantom-secrets) — source, issues, releases
 - [phm.dev](https://phm.dev) — pricing, cloud sync, team features
