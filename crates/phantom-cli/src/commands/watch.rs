@@ -26,7 +26,10 @@ pub fn run(auto: bool) -> Result<()> {
         .collect();
 
     if watched.is_empty() {
-        anyhow::bail!("No .env files found to watch.");
+        anyhow::bail!(
+            "No .env files found to watch.\n  {}",
+            crate::util::docs_url("getting-started")
+        );
     }
 
     println!(

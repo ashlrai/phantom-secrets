@@ -226,5 +226,34 @@ pub fn run_invite(team_id: &str, github_login: &str, role: &str) -> Result<()> {
         role
     );
 
+    println!(
+        "\n{} Send your teammate this checklist so they can join:",
+        "next".blue().bold()
+    );
+    println!(
+        "  {}. Install Phantom:    {}",
+        "1".bold(),
+        "curl -fsSL phm.dev/install | sh".cyan().bold()
+    );
+    println!(
+        "  {}. Sign in:            {}",
+        "2".bold(),
+        "phantom login".cyan().bold()
+    );
+    println!(
+        "  {}. Publish their key:  {}",
+        "3".bold(),
+        format!("phantom team key-publish {team_id}").cyan().bold()
+    );
+    println!(
+        "  {}. Pull this vault:    {}",
+        "4".bold(),
+        format!("phantom team vault-pull {team_id}").cyan().bold()
+    );
+    println!(
+        "\n{} Then re-run `phantom team vault-push {team_id}` so this teammate is sealed in.",
+        "tip".dimmed()
+    );
+
     Ok(())
 }

@@ -10,7 +10,10 @@ pub fn run(key: &str) -> Result<()> {
     let config_path = project_dir.join(".phantom.toml");
 
     if !env_path.exists() {
-        anyhow::bail!("No .env file found in current directory.");
+        anyhow::bail!(
+            "No .env file found in current directory.\n  {}",
+            crate::util::docs_url("getting-started")
+        );
     }
 
     let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env")?;

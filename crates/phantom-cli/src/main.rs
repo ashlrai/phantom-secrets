@@ -1,4 +1,5 @@
 mod commands;
+mod util;
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -9,7 +10,12 @@ use tracing_subscriber::EnvFilter;
     about = "Prevent AI coding agents from leaking your API keys",
     long_about = "Phantom replaces real secrets in your .env with worthless phantom tokens.\n\
                   A local proxy intercepts API calls, swaps in real credentials at the network layer.\n\
-                  The AI agent never sees a real secret.",
+                  The AI agent never sees a real secret.\n\n\
+                  Commands are grouped (in display order):\n  \
+                    Setup        init · setup · doctor · completion\n  \
+                    Daily use    exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
+                    Sync & teams login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
+                    Maintenance  upgrade · watch · rotate · open",
     version
 )]
 struct Cli {
@@ -31,14 +37,97 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    // ───────────────────────────── Setup ─────────────────────────────
     /// Import .env secrets into the vault and rewrite with phantom tokens
+    #[command(next_help_heading = "Setup")]
     Init {
         /// Path to .env file. Auto-detects .env, .env.local, .env.development and searches subdirectories
         #[arg(short, long, default_value = ".env")]
         from: String,
+        /// Protect every git repo with a .env under <DIR> in one go.
+        /// Skips repos that already have .phantom.toml.
+        #[arg(long, value_name = "DIR")]
+        all: Option<std::path::PathBuf>,
+        /// With --all: scan and report what would change without modifying anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex)
+    #[command(next_help_heading = "Setup")]
+    Setup {
+        /// AI client to configure. Defaults to Claude Code if omitted.
+        #[arg(value_enum, long, short = 'c')]
+        client: Option<commands::setup::Client>,
+        /// Print the config snippet to stdout instead of writing files
+        #[arg(long)]
+        print: bool,
+    },
+
+    /// Check configuration and vault health
+    #[command(next_help_heading = "Setup")]
+    Doctor {
+        /// Auto-fix safe issues (install hooks, generate .env.example, etc.)
+        #[arg(long)]
+        fix: bool,
+    },
+
+    /// Print a shell-completion script to stdout.
+    ///
+    /// Source the output from your shell rc, e.g.
+    ///   bash:       phantom completion bash > ~/.local/share/bash-completion/completions/phantom
+    ///   zsh:        phantom completion zsh > "${fpath[1]}/_phantom"
+    ///   fish:       phantom completion fish > ~/.config/fish/completions/phantom.fish
+    ///   powershell: phantom completion powershell | Out-String | Invoke-Expression
+    #[command(next_help_heading = "Setup")]
+    Completion {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+
+    // ─────────────────────────── Daily use ───────────────────────────
+    /// Start the proxy and run a command
+    #[command(next_help_heading = "Daily use")]
+    Exec {
+        /// Command and arguments to run
+        #[arg(trailing_var_arg = true, required = true)]
+        cmd: Vec<String>,
+    },
+
+    /// Start the proxy server
+    #[command(next_help_heading = "Daily use")]
+    Start {
+        /// Run in background (daemon mode)
+        #[arg(short, long)]
+        daemon: bool,
+    },
+
+    /// Stop the background proxy server
+    #[command(next_help_heading = "Daily use")]
+    Stop,
+
+    /// Show proxy status and mapped secrets
+    #[command(next_help_heading = "Daily use")]
+    Status {
+        /// Compact one-line output for shell prompts (e.g., "3 secrets · proxy off")
+        #[arg(long)]
+        oneline: bool,
+    },
+
+    /// Check for unprotected secrets (pre-commit hook)
+    #[command(next_help_heading = "Daily use")]
+    Check {
+        /// Only scan git-staged files (skip .env scanning, faster for pre-commit hooks)
+        #[arg(long)]
+        staged: bool,
+        /// Check if phantom tokens are in environment without proxy running
+        #[arg(long)]
+        runtime: bool,
     },
 
     /// List stored secret names (never shows values)
+    #[command(next_help_heading = "Daily use")]
     List {
         /// Emit JSON instead of the human-readable table
         #[arg(long)]
@@ -46,6 +135,7 @@ enum Commands {
     },
 
     /// Add a secret to the vault
+    #[command(next_help_heading = "Daily use")]
     Add {
         /// Secret name (e.g., OPENAI_API_KEY)
         name: String,
@@ -58,12 +148,14 @@ enum Commands {
     },
 
     /// Remove a secret from the vault
+    #[command(next_help_heading = "Daily use")]
     Remove {
         /// Secret name to remove
         name: String,
     },
 
     /// Reveal a secret value (print to stdout or copy to clipboard)
+    #[command(next_help_heading = "Daily use")]
     Reveal {
         /// Secret name to reveal
         name: String,
@@ -75,55 +167,59 @@ enum Commands {
         yes: bool,
     },
 
-    /// Show proxy status and mapped secrets
-    Status {
-        /// Compact one-line output for shell prompts (e.g., "3 secrets · proxy off")
+    /// Copy a secret from this project's vault to another project
+    #[command(next_help_heading = "Daily use")]
+    Copy {
+        /// Secret name in this project
+        name: String,
+        /// Target project directory
         #[arg(long)]
-        oneline: bool,
+        to: std::path::PathBuf,
+        /// Rename the secret in the target project
+        #[arg(long, alias = "as")]
+        rename: Option<String>,
     },
 
-    /// Regenerate phantom tokens (invalidates old ones)
-    Rotate {
-        /// Also sync secrets to all configured deployment platforms after rotation
-        #[arg(long)]
-        sync: bool,
+    /// Generate .env.example for team onboarding
+    #[command(next_help_heading = "Daily use")]
+    Env {
+        /// Output file name (defaults to .env.example)
+        #[arg(short, long, default_value = ".env.example")]
+        output: String,
     },
 
-    /// Check configuration and vault health
-    Doctor {
-        /// Auto-fix safe issues (install hooks, generate .env.example, etc.)
-        #[arg(long)]
-        fix: bool,
+    /// Explain why a key is or isn't protected
+    #[command(next_help_heading = "Daily use")]
+    Why {
+        /// Environment variable name to explain
+        key: String,
     },
 
-    /// Start the proxy and run a command
-    Exec {
-        /// Command and arguments to run
-        #[arg(trailing_var_arg = true, required = true)]
-        cmd: Vec<String>,
+    // ───────────────────────── Sync & teams ──────────────────────────
+    /// Log in to Phantom Cloud
+    #[command(next_help_heading = "Sync & teams")]
+    Login,
+
+    /// Log out of Phantom Cloud
+    #[command(next_help_heading = "Sync & teams")]
+    Logout,
+
+    /// Cloud vault sync commands
+    #[command(next_help_heading = "Sync & teams")]
+    Cloud {
+        #[command(subcommand)]
+        action: CloudAction,
     },
 
-    /// Start the proxy server
-    Start {
-        /// Run in background (daemon mode)
-        #[arg(short, long)]
-        daemon: bool,
-    },
-
-    /// Stop the background proxy server
-    Stop,
-
-    /// Check for unprotected secrets (pre-commit hook)
-    Check {
-        /// Only scan git-staged files (skip .env scanning, faster for pre-commit hooks)
-        #[arg(long)]
-        staged: bool,
-        /// Check if phantom tokens are in environment without proxy running
-        #[arg(long)]
-        runtime: bool,
+    /// Team vault management
+    #[command(next_help_heading = "Sync & teams")]
+    Team {
+        #[command(subcommand)]
+        action: TeamAction,
     },
 
     /// Sync secrets to deployment platforms (Vercel, Railway)
+    #[command(next_help_heading = "Sync & teams")]
     Sync {
         /// Platform to sync to (vercel, railway). Syncs all configured targets if omitted.
         #[arg(short, long)]
@@ -139,6 +235,7 @@ enum Commands {
     },
 
     /// Pull secrets from a deployment platform into the vault
+    #[command(next_help_heading = "Sync & teams")]
     Pull {
         /// Platform to pull from (vercel, railway)
         #[arg(long)]
@@ -157,17 +254,8 @@ enum Commands {
         force: bool,
     },
 
-    /// Set up Phantom auto-mode for Claude Code (MCP server + hooks)
-    Setup,
-
-    /// Generate .env.example for team onboarding
-    Env {
-        /// Output file name (defaults to .env.example)
-        #[arg(short, long, default_value = ".env.example")]
-        output: String,
-    },
-
     /// Export secrets to an encrypted backup file
+    #[command(next_help_heading = "Sync & teams")]
     Export {
         /// Output file path
         #[arg(short, long, default_value = "phantom-export.enc")]
@@ -178,6 +266,7 @@ enum Commands {
     },
 
     /// Import secrets from an encrypted backup file
+    #[command(next_help_heading = "Sync & teams")]
     Import {
         /// Path to the encrypted backup file
         file: String,
@@ -189,25 +278,8 @@ enum Commands {
         force: bool,
     },
 
-    /// Log in to Phantom Cloud
-    Login,
-
-    /// Log out of Phantom Cloud
-    Logout,
-
-    /// Cloud vault sync commands
-    Cloud {
-        #[command(subcommand)]
-        action: CloudAction,
-    },
-
-    /// Team vault management
-    Team {
-        #[command(subcommand)]
-        action: TeamAction,
-    },
-
     /// Wrap package.json scripts with `phantom exec` (no more manual prefix)
+    #[command(next_help_heading = "Sync & teams")]
     Wrap {
         /// Only wrap specific scripts (by name)
         #[arg(long)]
@@ -218,43 +290,12 @@ enum Commands {
     },
 
     /// Unwrap package.json scripts (restore originals from :raw variants)
+    #[command(next_help_heading = "Sync & teams")]
     Unwrap,
 
-    /// Watch .env files and auto-detect new unprotected secrets
-    Watch {
-        /// Auto-protect new secrets without prompting
-        #[arg(long)]
-        auto: bool,
-    },
-
-    /// Explain why a key is or isn't protected
-    Why {
-        /// Environment variable name to explain
-        key: String,
-    },
-
-    /// Copy a secret from this project's vault to another project
-    Copy {
-        /// Secret name in this project
-        name: String,
-        /// Target project directory
-        #[arg(long)]
-        to: std::path::PathBuf,
-        /// Rename the secret in the target project
-        #[arg(long, alias = "as")]
-        rename: Option<String>,
-    },
-
-    /// Open a Phantom page in the browser. Defaults to the dashboard.
-    /// Aliases: dashboard, billing, team, docs, pricing, github, issues, site.
-    /// Any other word becomes https://phm.dev/<word>; full URLs pass through.
-    Open {
-        /// What to open. Defaults to the dashboard if omitted.
-        #[arg(default_value = "")]
-        target: String,
-    },
-
+    // ───────────────────────── Maintenance ───────────────────────────
     /// Self-replace this binary with the latest GitHub release.
+    #[command(next_help_heading = "Maintenance")]
     Upgrade {
         /// Skip confirmation prompt and upgrade immediately
         #[arg(long)]
@@ -264,17 +305,30 @@ enum Commands {
         check_only: bool,
     },
 
-    /// Print a shell-completion script to stdout.
-    ///
-    /// Source the output from your shell rc, e.g.
-    ///   bash:       phantom completion bash > ~/.local/share/bash-completion/completions/phantom
-    ///   zsh:        phantom completion zsh > "${fpath[1]}/_phantom"
-    ///   fish:       phantom completion fish > ~/.config/fish/completions/phantom.fish
-    ///   powershell: phantom completion powershell | Out-String | Invoke-Expression
-    Completion {
-        /// Shell to generate completions for
-        #[arg(value_enum)]
-        shell: clap_complete::Shell,
+    /// Watch .env files and auto-detect new unprotected secrets
+    #[command(next_help_heading = "Maintenance")]
+    Watch {
+        /// Auto-protect new secrets without prompting
+        #[arg(long)]
+        auto: bool,
+    },
+
+    /// Regenerate phantom tokens (invalidates old ones)
+    #[command(next_help_heading = "Maintenance")]
+    Rotate {
+        /// Also sync secrets to all configured deployment platforms after rotation
+        #[arg(long)]
+        sync: bool,
+    },
+
+    /// Open a Phantom page in the browser. Defaults to the dashboard.
+    /// Aliases: dashboard, billing, team, docs, pricing, github, issues, site.
+    /// Any other word becomes https://phm.dev/<word>; full URLs pass through.
+    #[command(next_help_heading = "Maintenance")]
+    Open {
+        /// What to open. Defaults to the dashboard if omitted.
+        #[arg(default_value = "")]
+        target: String,
     },
 
     /// Internal: clear the system clipboard after N seconds. Spawned by
@@ -362,7 +416,10 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        Commands::Init { from } => commands::init::run(&from),
+        Commands::Init { from, all, dry_run } => match all {
+            Some(root) => commands::init::multi::run(root, dry_run),
+            None => commands::init::run(&from),
+        },
         Commands::List { json } => commands::list::run(json),
         Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
         Commands::Remove { name } => commands::remove::run(&name),
@@ -385,7 +442,7 @@ fn main() -> anyhow::Result<()> {
             service,
             force,
         } => commands::pull::run(&from, &project, environment, service, force),
-        Commands::Setup => commands::setup::run(),
+        Commands::Setup { client, print } => commands::setup::run(client, print),
         Commands::Sync {
             platform,
             project,

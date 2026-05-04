@@ -2,6 +2,7 @@ mod config;
 mod docs;
 mod env;
 mod hooks;
+pub mod multi;
 mod prompts;
 mod vault;
 
@@ -198,6 +199,14 @@ fn print_next_steps(config_path: &Path) {
     }
 
     item("Open your dashboard:", "phantom open");
+    item(
+        "Block raw-secret commits (recommended for teams):",
+        "pre-commit install   # uses .pre-commit-hooks.yaml shipped with phantom",
+    );
+    item(
+        "Other AI tools (Cursor, Windsurf, Codex):",
+        "phantom setup --client cursor|windsurf|codex|claude   # --print to stdout",
+    );
 
     println!();
 }

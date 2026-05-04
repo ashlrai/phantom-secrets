@@ -20,8 +20,9 @@ async fn run_async(
 
     if !config_path.exists() {
         anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
+            "No .phantom.toml found. Run {} first.\n  {}",
+            "phantom init".cyan().bold(),
+            crate::util::docs_url("sync")
         );
     }
 

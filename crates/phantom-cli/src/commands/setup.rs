@@ -1,26 +1,104 @@
 use anyhow::{Context, Result};
+use clap::ValueEnum;
 use colored::Colorize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Set up Phantom auto-mode for Claude Code.
-/// Configures MCP server and hooks in .claude/settings.local.json.
-pub fn run() -> Result<()> {
+/// AI client whose MCP config we know how to write.
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum Client {
+    /// Claude Code — writes .claude/settings.local.json in the project
+    #[value(name = "claude", alias = "claude-code")]
+    ClaudeCode,
+    /// Cursor — writes ~/.cursor/mcp.json
+    Cursor,
+    /// Windsurf — writes ~/.codeium/windsurf/mcp_config.json
+    Windsurf,
+    /// Codex (OpenAI) — patches ~/.codex/config.toml
+    Codex,
+}
+
+impl Client {
+    fn label(self) -> &'static str {
+        match self {
+            Client::ClaudeCode => "Claude Code",
+            Client::Cursor => "Cursor",
+            Client::Windsurf => "Windsurf",
+            Client::Codex => "Codex",
+        }
+    }
+}
+
+/// The command spec we write into each client's MCP config.
+struct McpCommand {
+    command: String,
+    args: Vec<String>,
+}
+
+impl McpCommand {
+    fn args_json(&self) -> serde_json::Value {
+        serde_json::Value::Array(
+            self.args
+                .iter()
+                .map(|a| serde_json::Value::String(a.clone()))
+                .collect(),
+        )
+    }
+}
+
+pub fn run(client: Option<Client>, print: bool) -> Result<()> {
+    let client = client.unwrap_or(Client::ClaudeCode);
+    let mcp = mcp_command_spec();
+
+    if print {
+        return print_snippet(client, &mcp);
+    }
+
+    println!(
+        "{} Setting up Phantom for {}...",
+        "->".blue().bold(),
+        client.label().bold()
+    );
+    if mcp.command == "npx" {
+        println!(
+            "   {} phantom-mcp not on PATH — using `npx -y phantom-secrets-mcp` as fallback.",
+            "note".dimmed()
+        );
+    }
+
+    match client {
+        Client::ClaudeCode => setup_claude_code(&mcp),
+        Client::Cursor => setup_cursor(&mcp),
+        Client::Windsurf => setup_windsurf(&mcp),
+        Client::Codex => setup_codex(&mcp),
+    }
+}
+
+/// Resolve the command + args we want each MCP client to invoke. Prefers a
+/// real `phantom-mcp` binary on disk; falls back to `npx -y phantom-secrets-mcp`
+/// when nothing is found, so the config still works on a fresh machine.
+fn mcp_command_spec() -> McpCommand {
+    if let Some(path) = find_mcp_binary() {
+        McpCommand {
+            command: path,
+            args: vec![],
+        }
+    } else {
+        McpCommand {
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "phantom-secrets-mcp".to_string()],
+        }
+    }
+}
+
+// ───────────────────────── Claude Code ─────────────────────────
+
+fn setup_claude_code(mcp: &McpCommand) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let claude_dir = project_dir.join(".claude");
     let settings_path = claude_dir.join("settings.local.json");
 
-    // Find phantom-mcp binary
-    let mcp_binary = find_mcp_binary();
-
-    println!(
-        "{} Setting up Phantom auto-mode for Claude Code...",
-        "->".blue().bold()
-    );
-
-    // Create .claude directory if needed
     std::fs::create_dir_all(&claude_dir)?;
 
-    // Load existing settings or create new
     let mut settings: serde_json::Value = if settings_path.exists() {
         let content = std::fs::read_to_string(&settings_path)?;
         serde_json::from_str(&content).context("Failed to parse .claude/settings.local.json")?
@@ -28,44 +106,34 @@ pub fn run() -> Result<()> {
         serde_json::json!({})
     };
 
-    // Ensure settings is an object
     let obj = settings
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("settings.local.json is not a JSON object"))?;
 
-    // Add MCP server configuration
-    if let Some(mcp_path) = &mcp_binary {
-        let mcp_servers = obj
-            .entry("mcpServers")
-            .or_insert_with(|| serde_json::json!({}));
+    let mcp_servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
 
-        if let Some(servers) = mcp_servers.as_object_mut() {
-            if !servers.contains_key("phantom") {
-                servers.insert(
-                    "phantom".to_string(),
-                    serde_json::json!({
-                        "command": mcp_path,
-                        "args": []
-                    }),
-                );
-                println!(
-                    "   {} MCP server: {} -> {}",
-                    "+".green().bold(),
-                    "phantom".bold(),
-                    mcp_path.dimmed()
-                );
-            } else {
-                println!("   {} MCP server already configured", "-".dimmed());
-            }
+    if let Some(servers) = mcp_servers.as_object_mut() {
+        if !servers.contains_key("phantom") {
+            servers.insert(
+                "phantom".to_string(),
+                serde_json::json!({
+                    "command": mcp.command,
+                    "args": mcp.args_json(),
+                }),
+            );
+            println!(
+                "   {} MCP server: {} -> {}",
+                "+".green().bold(),
+                "phantom".bold(),
+                mcp.command.dimmed()
+            );
+        } else {
+            println!("   {} MCP server already configured", "-".dimmed());
         }
-    } else {
-        println!(
-            "   {} phantom-mcp binary not found — install it and re-run",
-            "warn".yellow()
-        );
     }
 
-    // Add permissions to allow Claude Code to read .env files
     // After phantom init, .env only contains worthless phantom tokens — safe for AI to read
     let permissions = obj
         .entry("permissions")
@@ -99,7 +167,6 @@ pub fn run() -> Result<()> {
             }
         }
 
-        // Check if .env is in deny rules and warn
         if let Some(deny) = perms.get("deny") {
             if let Some(deny_arr) = deny.as_array() {
                 let has_env_deny = deny_arr
@@ -119,44 +186,248 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // Write settings
     let content =
         serde_json::to_string_pretty(&settings).context("Failed to serialize settings")?;
     std::fs::write(&settings_path, content)?;
 
     println!("\n{} Claude Code configured!", "ok".green().bold());
-
-    if mcp_binary.is_some() {
-        println!(
-            "{} Phantom MCP tools are now available in Claude Code.",
-            "->".blue().bold()
-        );
-    }
-
     println!(
-        "{} .env files are allowed — they only contain phantom tokens after init.",
-        "->".blue().bold()
-    );
-
-    println!(
-        "\n{} Restart Claude Code to activate.",
-        "next".blue().bold()
+        "{} Phantom MCP tools are now available. {} to activate.",
+        "->".blue().bold(),
+        "Restart Claude Code".bold()
     );
 
     Ok(())
 }
 
+// ─────────────────────────── Cursor ────────────────────────────
+
+fn setup_cursor(mcp: &McpCommand) -> Result<()> {
+    let path = home_path(".cursor/mcp.json")?;
+    upsert_mcp_servers_json(&path, mcp)?;
+    println!(
+        "\n{} Cursor configured at {}",
+        "ok".green().bold(),
+        display(&path).dimmed()
+    );
+    println!(
+        "{} {} to activate.",
+        "->".blue().bold(),
+        "Restart Cursor".bold()
+    );
+    Ok(())
+}
+
+// ─────────────────────────── Windsurf ──────────────────────────
+
+fn setup_windsurf(mcp: &McpCommand) -> Result<()> {
+    let path = home_path(".codeium/windsurf/mcp_config.json")?;
+    upsert_mcp_servers_json(&path, mcp)?;
+    println!(
+        "\n{} Windsurf configured at {}",
+        "ok".green().bold(),
+        display(&path).dimmed()
+    );
+    println!(
+        "{} {} to activate.",
+        "->".blue().bold(),
+        "Restart Windsurf".bold()
+    );
+    Ok(())
+}
+
+// ──────────────────────────── Codex ────────────────────────────
+
+fn setup_codex(mcp: &McpCommand) -> Result<()> {
+    let path = home_path(".codex/config.toml")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut doc: toml::Table = if path.exists() {
+        let content = std::fs::read_to_string(&path)?;
+        toml::from_str(&content).context("Failed to parse ~/.codex/config.toml")?
+    } else {
+        toml::Table::new()
+    };
+
+    // Get-or-create [mcp_servers]
+    let mcp_servers = doc
+        .entry("mcp_servers".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let servers = mcp_servers
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("[mcp_servers] is not a table in ~/.codex/config.toml"))?;
+
+    let already = servers.contains_key("phantom");
+    let mut entry = toml::Table::new();
+    entry.insert(
+        "command".to_string(),
+        toml::Value::String(mcp.command.clone()),
+    );
+    entry.insert(
+        "args".to_string(),
+        toml::Value::Array(
+            mcp.args
+                .iter()
+                .map(|a| toml::Value::String(a.clone()))
+                .collect(),
+        ),
+    );
+    servers.insert("phantom".to_string(), toml::Value::Table(entry));
+
+    let serialized = toml::to_string_pretty(&doc).context("Failed to serialize codex config")?;
+    std::fs::write(&path, serialized)?;
+
+    if already {
+        println!(
+            "   {} MCP server already configured -> {}",
+            "-".dimmed(),
+            mcp.command.dimmed()
+        );
+    } else {
+        println!(
+            "   {} MCP server: {} -> {}",
+            "+".green().bold(),
+            "phantom".bold(),
+            mcp.command.dimmed()
+        );
+    }
+    println!(
+        "\n{} Codex configured at {}",
+        "ok".green().bold(),
+        display(&path).dimmed()
+    );
+    println!(
+        "{} {} to activate.",
+        "->".blue().bold(),
+        "Restart Codex".bold()
+    );
+
+    Ok(())
+}
+
+// ─────────────────────── Shared JSON writer ────────────────────
+
+/// Read-or-create a JSON file with `mcpServers.phantom = {command, args}`.
+/// Used by Cursor and Windsurf, which share the same MCP config schema.
+fn upsert_mcp_servers_json(path: &Path, mcp: &McpCommand) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut value: serde_json::Value = if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        if content.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&content)
+                .with_context(|| format!("Failed to parse {}", path.display()))?
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("{} is not a JSON object", path.display()))?;
+
+    let servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+    let servers_obj = servers
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object in {}", path.display()))?;
+
+    let already = servers_obj.contains_key("phantom");
+    servers_obj.insert(
+        "phantom".to_string(),
+        serde_json::json!({
+            "command": mcp.command,
+            "args": mcp.args_json(),
+        }),
+    );
+
+    let content = serde_json::to_string_pretty(&value).context("Failed to serialize MCP config")?;
+    std::fs::write(path, content)?;
+
+    println!(
+        "   {} MCP server: {} -> {}",
+        if already {
+            "-".dimmed()
+        } else {
+            "+".green().bold()
+        },
+        "phantom".bold(),
+        mcp.command.dimmed()
+    );
+
+    Ok(())
+}
+
+// ──────────────────────────── --print ──────────────────────────
+
+fn print_snippet(client: Client, mcp: &McpCommand) -> Result<()> {
+    match client {
+        Client::ClaudeCode | Client::Cursor | Client::Windsurf => {
+            let body = serde_json::json!({
+                "mcpServers": {
+                    "phantom": {
+                        "command": mcp.command,
+                        "args": mcp.args_json(),
+                    }
+                }
+            });
+            let target = match client {
+                Client::ClaudeCode => ".claude/settings.local.json (project)",
+                Client::Cursor => "~/.cursor/mcp.json",
+                Client::Windsurf => "~/.codeium/windsurf/mcp_config.json",
+                _ => unreachable!(),
+            };
+            println!("# {} — {}", client.label(), target);
+            println!("{}", serde_json::to_string_pretty(&body)?);
+        }
+        Client::Codex => {
+            let mut servers = toml::Table::new();
+            let mut entry = toml::Table::new();
+            entry.insert(
+                "command".to_string(),
+                toml::Value::String(mcp.command.clone()),
+            );
+            entry.insert(
+                "args".to_string(),
+                toml::Value::Array(
+                    mcp.args
+                        .iter()
+                        .map(|a| toml::Value::String(a.clone()))
+                        .collect(),
+                ),
+            );
+            servers.insert("phantom".to_string(), toml::Value::Table(entry));
+            let mut doc = toml::Table::new();
+            doc.insert("mcp_servers".to_string(), toml::Value::Table(servers));
+            println!("# Codex — ~/.codex/config.toml");
+            println!("{}", toml::to_string_pretty(&doc)?);
+        }
+    }
+    Ok(())
+}
+
+// ─────────────────────────── Helpers ───────────────────────────
+
 fn find_mcp_binary() -> Option<String> {
-    // Check common locations
     let candidates = [
-        // Same directory as phantom binary
         std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("phantom-mcp")))
             .map(|p| p.to_string_lossy().to_string()),
-        // Cargo install location
-        dirs_home().map(|h| format!("{h}/.cargo/bin/phantom-mcp")),
-        // PATH
+        dirs::home_dir().map(|h| {
+            h.join(".cargo")
+                .join("bin")
+                .join("phantom-mcp")
+                .to_string_lossy()
+                .into_owned()
+        }),
         Some("phantom-mcp".to_string()),
     ];
 
@@ -173,6 +444,98 @@ fn find_mcp_binary() -> Option<String> {
     None
 }
 
-fn dirs_home() -> Option<String> {
-    dirs::home_dir().map(|p| p.to_string_lossy().into_owned())
+fn home_path(rel: &str) -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not resolve home dir"))?;
+    Ok(home.join(rel))
+}
+
+fn display(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(suffix) = path.strip_prefix(&home) {
+            return format!("~/{}", suffix.display());
+        }
+    }
+    path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use tempfile::tempdir;
+
+    fn fake_mcp() -> McpCommand {
+        McpCommand {
+            command: "/usr/local/bin/phantom-mcp".to_string(),
+            args: vec![],
+        }
+    }
+
+    #[test]
+    fn cursor_writer_creates_config_when_missing() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("mcp.json");
+        upsert_mcp_servers_json(&path, &fake_mcp()).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            v["mcpServers"]["phantom"]["command"],
+            "/usr/local/bin/phantom-mcp"
+        );
+        assert_eq!(
+            v["mcpServers"]["phantom"]["args"].as_array().unwrap().len(),
+            0
+        );
+    }
+
+    #[test]
+    fn cursor_writer_preserves_other_settings() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers": {"other": {"command": "x"}}, "extra": 42}"#,
+        )
+        .unwrap();
+        upsert_mcp_servers_json(&path, &fake_mcp()).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["other"]["command"], "x");
+        assert_eq!(
+            v["mcpServers"]["phantom"]["command"],
+            "/usr/local/bin/phantom-mcp"
+        );
+        assert_eq!(v["extra"], 42);
+    }
+
+    #[test]
+    fn cursor_writer_replaces_existing_phantom_entry() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers": {"phantom": {"command": "/old/path", "args": ["x"]}}}"#,
+        )
+        .unwrap();
+        upsert_mcp_servers_json(&path, &fake_mcp()).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            v["mcpServers"]["phantom"]["command"],
+            "/usr/local/bin/phantom-mcp"
+        );
+        assert_eq!(
+            v["mcpServers"]["phantom"]["args"].as_array().unwrap().len(),
+            0
+        );
+    }
+
+    #[test]
+    fn npx_fallback_command_spec() {
+        // Hard to test mcp_command_spec() directly because it depends on env.
+        // Instead verify the args are correct when we construct the npx fallback.
+        let mcp = McpCommand {
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "phantom-secrets-mcp".to_string()],
+        };
+        assert_eq!(mcp.args_json().as_array().unwrap().len(), 2);
+        assert_eq!(mcp.args_json()[0], "-y");
+    }
 }
