@@ -276,15 +276,35 @@ enum Commands {
         allow_plaintext: bool,
     },
 
-    /// Import secrets from an encrypted backup file
+    /// Import secrets from an encrypted backup or a competitor export
+    ///
+    /// Legacy (phantom encrypted backup):
+    ///   phantom import <FILE> --passphrase <PASS>
+    ///
+    /// Competitor migration (--from):
+    ///   phantom import --from doppler    --file dump.json
+    ///   phantom import --from infisical  --file export.env
+    ///   phantom import --from dotenvx   --file .env
+    ///   phantom import --from 1password  --file 1p-export.json
+    ///   phantom import --from env        --file .env
+    ///
+    /// Note: dotenvx encrypted .env.vault files are not supported — run
+    ///   `dotenvx decrypt --stdout > .env` first, then import the plain .env.
     #[command(next_help_heading = "Sync & teams")]
     Import {
-        /// Path to the encrypted backup file
-        file: String,
-        /// Decryption passphrase
-        #[arg(short, long)]
-        passphrase: String,
-        /// Overwrite existing secrets
+        /// Path to the encrypted backup file (legacy mode)
+        #[arg(required_unless_present = "from")]
+        file: Option<String>,
+        /// Decryption passphrase (legacy mode, required without --from)
+        #[arg(short, long, required_unless_present = "from")]
+        passphrase: Option<String>,
+        /// Import source: doppler | infisical | dotenvx | 1password | env
+        #[arg(long, value_name = "SOURCE")]
+        from: Option<String>,
+        /// Path to the export file (required with --from)
+        #[arg(long, value_name = "FILE", required_if_eq_all([("from", "doppler"), ("from", "infisical"), ("from", "dotenvx"), ("from", "1password"), ("from", "env")]))]
+        file_path: Option<String>,
+        /// Overwrite existing secrets without prompting
         #[arg(long)]
         force: bool,
     },
@@ -459,7 +479,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Status { oneline } => commands::status::run(oneline),
         Commands::Rotate { sync } => commands::rotate::run(sync),
         Commands::Doctor { fix } => commands::doctor::run(fix),
-        Commands::Exec { cmd } => commands::exec::run(&cmd),
+        Commands::Exec { cmd } => commands::exec::run(&cmd, None),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
         Commands::Check { staged, runtime } => commands::check::run(staged, runtime),
@@ -491,8 +511,22 @@ fn main() -> anyhow::Result<()> {
         Commands::Import {
             file,
             passphrase,
+            from,
+            file_path,
             force,
-        } => commands::import_cmd::run(&file, &passphrase, force),
+        } => {
+            if let Some(source) = from {
+                let fp = file_path.as_deref().unwrap_or("");
+                commands::import_cmd::run_from(&source, fp, force)
+            } else {
+                // Legacy encrypted-backup path
+                commands::import_cmd::run(
+                    file.as_deref().unwrap_or(""),
+                    passphrase.as_deref().unwrap_or(""),
+                    force,
+                )
+            }
+        }
         Commands::Login => commands::login::run(),
         Commands::Logout => commands::logout::run(),
         Commands::Cloud { action } => match action {
