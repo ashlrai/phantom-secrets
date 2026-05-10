@@ -1,0 +1,13 @@
+# Smithery configuration for phantom-secrets-mcp
+# Stop AI coding agents from leaking your API keys.
+# Local proxy + MCP server that swaps real secrets for phm_ tokens.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', 'phantom-secrets-mcp']
+    })
