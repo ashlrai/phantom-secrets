@@ -93,5 +93,6 @@ Phantom auto-classifies env vars by name + value heuristics. Detected: `OPENAI_A
 
 - Getting started: https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md
 - Claude Code guide: https://github.com/ashlrai/phantom-secrets/blob/main/docs/claude-code.md
+- Cursor guide: https://github.com/ashlrai/phantom-secrets/blob/main/docs/cursor.md
 - Security model: https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md
 - Architecture: https://github.com/ashlrai/phantom-secrets/blob/main/CLAUDE.md

@@ -54,6 +54,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.8,
     },
     {
+      url: `${REPO_URL}/blob/main/docs/cursor.md`,
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.8,
+    },
+    {
       url: `${REPO_URL}/blob/main/SECURITY.md`,
       lastModified: now,
       changeFrequency: "monthly",

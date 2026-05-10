@@ -311,6 +311,8 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 
 - [phm.dev](https://phm.dev) -- Cloud dashboard and account management
 - [Getting Started Guide](docs/getting-started.md)
+- [Phantom + Claude Code](docs/claude-code.md)
+- [Phantom + Cursor](docs/cursor.md)
 - [Security Model](SECURITY.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Contributing](CONTRIBUTING.md)
