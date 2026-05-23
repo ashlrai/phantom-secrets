@@ -20,6 +20,9 @@ pub fn run_push() -> Result<()> {
         return Ok(());
     }
 
+    phantom_core::audit::log_result("cloud.push", None)
+        .context("Failed to write audit event for cloud push")?;
+
     // Collect all secrets into a BTreeMap (sorted for deterministic encryption)
     let mut secrets = BTreeMap::new();
     for name in &secret_names {
@@ -79,6 +82,9 @@ pub fn run_pull(force: bool) -> Result<()> {
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
     println!("{}  Pulling from Phantom Cloud...", "->".blue().bold());
+
+    phantom_core::audit::log_result("cloud.pull", None)
+        .context("Failed to write audit event for cloud pull")?;
 
     let rt = tokio::runtime::Runtime::new()?;
     let pull_result = rt.block_on(cloud::pull(&api_base, &token, &config.phantom.project_id))?;

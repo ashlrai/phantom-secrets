@@ -41,6 +41,7 @@ export async function POST(req: Request) {
       user_code: userCode,
       status: "pending",
       expires_at: expiresAt.toISOString(),
+      device_expires_at: expiresAt.toISOString(),
     });
 
     if (!error) {

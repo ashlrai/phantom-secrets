@@ -233,28 +233,42 @@
               "type": "string"
             },
             "description": "Skip specific scripts (by name)"
+          },
+          "confirm": {
+            "type": "boolean",
+            "description": "Must be true because this modifies package.json."
           }
         },
-        "required": []
+        "required": [
+          "confirm"
+        ]
       }
     },
     {
       "name": "phantom_unwrap",
-      "description": "Reverse phantom_wrap: restore original package.json scripts from their :raw variants and remove the :raw entries."
+      "description": "Reverse phantom_wrap: restore original package.json scripts from their :raw variants and remove the :raw entries.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "description": "Must be true because this modifies package.json."
+          }
+        },
+        "required": [
+          "confirm"
+        ]
+      }
     },
     {
       "name": "phantom_check",
-      "description": "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). With staged=true, checks git-staged content (including staged .env files) for hardcoded secrets, suitable for pre-commit hooks. Otherwise, scans .env files for unprotected real secrets.",
+      "description": "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans .env files for unprotected real secrets.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "runtime": {
             "type": "boolean",
             "description": "Check if phantom tokens are in environment without proxy running"
-          },
-          "staged": {
-            "type": "boolean",
-            "description": "Scan git-staged content (including staged .env files) instead of the working tree. Suitable for pre-commit hooks."
           }
         },
         "required": []
@@ -269,9 +283,15 @@
           "output": {
             "type": "string",
             "description": "Output file name (defaults to .env.example)"
+          },
+          "confirm": {
+            "type": "boolean",
+            "description": "Must be true because this writes an env example file."
           }
         },
-        "required": []
+        "required": [
+          "confirm"
+        ]
       }
     },
     {
@@ -371,10 +391,15 @@
           "team_id": {
             "type": "string",
             "description": "ID of the team to register the device key with"
+          },
+          "confirm": {
+            "type": "boolean",
+            "description": "Must be true because this publishes local key material."
           }
         },
         "required": [
-          "team_id"
+          "team_id",
+          "confirm"
         ]
       }
     },

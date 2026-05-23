@@ -24,13 +24,14 @@ export async function authenticateRequest(
 
   const { data } = await supabase
     .from("device_tokens")
-    .select("user_id, status, expires_at")
+    .select("user_id, status, expires_at, token_expires_at")
     .eq("token_hash", tokenHash)
     .single();
 
   if (!data) return null;
   if (data.status !== "approved") return null;
-  if (new Date(data.expires_at) < new Date()) return null;
+  const expiresAt = data.token_expires_at ?? data.expires_at;
+  if (new Date(expiresAt) < new Date()) return null;
 
   // Get user plan
   const { data: user } = await supabase

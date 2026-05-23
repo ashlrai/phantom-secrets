@@ -60,7 +60,7 @@ Read-only tools (safe to call anytime):
 | `phantom_doctor` | Diagnose configuration and vault health |
 | `phantom_why` | Explain why a key is or is not protected |
 | `phantom_check` | Scan for unprotected secrets (pre-commit-style) |
-| `phantom_env` | List environment variables with protection status (no values) |
+| `phantom_env` | Generate `.env.example` with secrets replaced by placeholders |
 | `phantom_sync` | Preview deployment-platform sync (Vercel, Railway) |
 | `phantom_cloud_status` | Check cloud authentication and sync status |
 
@@ -73,8 +73,8 @@ Mutating tools (modify vault or `.env`):
 | `phantom_remove_secret` | Remove a secret from the vault |
 | `phantom_rotate` | Regenerate all phantom tokens (invalidates old ones) |
 | `phantom_copy_secret` | Copy a secret from this project to another project's vault |
-| `phantom_wrap` | Wrap a plaintext `.env` value into a vaulted `phm_` token |
-| `phantom_unwrap` | Reverse a wrap (restore plaintext to `.env` from vault) |
+| `phantom_wrap` | Wrap `package.json` scripts with `npx phantom-secrets exec` so npm scripts run through the proxy |
+| `phantom_unwrap` | Restore original `package.json` scripts from `:raw` variants |
 | `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted) |
 | `phantom_cloud_pull` | Pull and decrypt vault from Phantom Cloud |
 
@@ -104,7 +104,7 @@ All tools are read-safe: they never return actual secret values, and real secret
 
 - [Phantom Secrets CLI](https://www.npmjs.com/package/phantom-secrets) must be initialized in your project (`npx phantom-secrets init`)
 - Node.js >= 16
-- macOS (arm64/x64) or Linux (x64/arm64)
+- macOS (arm64/x64), Linux (x64/arm64), or Windows (x64)
 
 ## Cloud Sync
 

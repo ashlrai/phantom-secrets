@@ -60,7 +60,12 @@ export async function POST(req: Request) {
   const proRequired = requirePro(authResult);
   if (proRequired) return proRequired;
 
-  const body = await req.json();
+  let body: { name?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+  }
   const { name } = body;
 
   if (!name || typeof name !== "string" || name.trim().length === 0) {
@@ -103,5 +108,14 @@ export async function POST(req: Request) {
     return Response.json({ error: "Failed to create team" }, { status: 500 });
   }
 
-  return Response.json({ team }, { status: 201 });
+  return Response.json(
+    {
+      team: {
+        ...team,
+        role: "owner",
+        joined_at: new Date().toISOString(),
+      },
+    },
+    { status: 201 }
+  );
 }

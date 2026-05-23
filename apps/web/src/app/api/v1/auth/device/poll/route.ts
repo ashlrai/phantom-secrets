@@ -1,8 +1,15 @@
 import { createServiceClient } from "@/lib/supabase-server";
 import { createHash, randomBytes } from "crypto";
 
+const CLI_TOKEN_TTL_DAYS = 90;
+
 export async function POST(req: Request) {
-  const body = await req.json();
+  let body: { device_code?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+  }
   const { device_code } = body;
 
   if (!device_code) {
@@ -13,7 +20,7 @@ export async function POST(req: Request) {
 
   const { data: token } = await supabase
     .from("device_tokens")
-    .select("id, user_id, status, expires_at, token_hash")
+    .select("id, user_id, status, expires_at, device_expires_at, token_hash")
     .eq("device_code", device_code)
     .single();
 
@@ -22,7 +29,8 @@ export async function POST(req: Request) {
   }
 
   // Check expiry
-  if (new Date(token.expires_at) < new Date()) {
+  const deviceExpiresAt = token.device_expires_at ?? token.expires_at;
+  if (new Date(deviceExpiresAt) < new Date()) {
     await supabase
       .from("device_tokens")
       .update({ status: "expired" })
@@ -47,15 +55,24 @@ export async function POST(req: Request) {
     // Generate access token
     const accessToken = randomBytes(64).toString("hex");
     const tokenHash = createHash("sha256").update(accessToken).digest("hex");
+    const tokenExpiresAt = new Date(
+      Date.now() + CLI_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000
+    ).toISOString();
 
     // Store the hash atomically — WHERE token_hash IS NULL prevents TOCTOU race
-    const { error: updateError } = await supabase
+    const { data: claimedToken, error: updateError } = await supabase
       .from("device_tokens")
-      .update({ token_hash: tokenHash })
+      .update({
+        token_hash: tokenHash,
+        token_expires_at: tokenExpiresAt,
+        claimed_at: new Date().toISOString(),
+      })
       .eq("id", token.id)
-      .is("token_hash", null);
+      .is("token_hash", null)
+      .select("id")
+      .maybeSingle();
 
-    if (updateError) {
+    if (updateError || !claimedToken) {
       return Response.json({ status: "already_claimed" });
     }
 

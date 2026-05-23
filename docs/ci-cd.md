@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check for unprotected secrets
-        run: npx phantom-secrets check --staged
+        run: npx phantom-secrets check
 
       - name: Build
         run: npm ci && npm run build
@@ -73,7 +73,7 @@ For CI/CD today:
 
 1. Protect local secrets with `phantom init`.
 2. Sync deploy-time secrets to a supported platform with `phantom sync --platform vercel` or `phantom sync --platform railway`.
-3. Run CI checks such as `phantom check --staged`.
+3. Run CI checks such as `phantom check`.
 4. Let the deployment platform inject secrets into builds and runtime.
 
 Do not use undocumented CI token environment variables for Phantom Cloud pulls. Direct cloud pull in CI will be documented here once the CLI supports it.

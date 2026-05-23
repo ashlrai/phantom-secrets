@@ -23,7 +23,7 @@ The server exposes 25 tools over MCP stdio transport.
 | `phantom_doctor` | Diagnose configuration and vault health. |
 | `phantom_why` | Explain why a key is or is not classified as a secret. |
 | `phantom_check` | Scan the repo for unprotected secrets (pre-commit-style). |
-| `phantom_env` | List environment variables with protection status (no values). |
+| `phantom_env` | Generate `.env.example` with secrets replaced by placeholders. |
 | `phantom_sync` | Preview deployment-platform sync (Vercel, Railway). |
 | `phantom_cloud_status` | Check cloud authentication and sync status. |
 

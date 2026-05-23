@@ -8,7 +8,7 @@ Earlier drafts documented a CI device-token flow (`phantom login --ci`) and acti
 
 - Use `phantom sync --platform vercel --project <id>` or `phantom sync --platform railway --project <id>` before deployment.
 - Use the platform's own secret store during CI/CD after syncing from Phantom.
-- Run `phantom check --staged` in CI to prevent unprotected `.env` secrets from landing in the repository.
+- Run `phantom check` in CI to prevent unprotected `.env` secrets from landing in the repository.
 
 ## Not Supported Yet
 

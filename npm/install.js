@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-// Pre-download the phantom binary during npm install
-// so it's ready when the user first runs `phantom-secrets`
+// Keep installation fast and side-effect-light. The native binary downloads
+// lazily on first run via bin/cli.js.
 
 const { existsSync } = require("fs");
 const { join } = require("path");
@@ -20,8 +20,4 @@ if (existsSync(binaryPath)) {
   process.exit(0);
 }
 
-// Import and run the download from cli.js
-console.log("Pre-downloading phantom binary...");
-// The actual download happens on first run via cli.js
-// This is a no-op placeholder — the binary downloads lazily on first use
 console.log("phantom will download on first use.");

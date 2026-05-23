@@ -67,6 +67,9 @@ fn run_json(allow_plaintext: bool) -> Result<()> {
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
+    phantom_core::audit::log_result("vault.export_plaintext", None)
+        .context("Failed to write audit event for plaintext vault export")?;
+
     let names = vault.list().context("Failed to list secrets")?;
 
     if names.is_empty() {
@@ -83,11 +86,6 @@ fn run_json(allow_plaintext: bool) -> Result<()> {
             .context(format!("Failed to retrieve secret: {name}"))?;
         secrets.insert(name.clone(), String::from(value.as_str()));
     }
-
-    // Audit: vault.export_plaintext (name=None -- full vault dump)
-    // No centralised audit-log infrastructure yet; the event is noted here for
-    // future wiring. When an audit backend is added, emit:
-    //   audit_log.record("vault.export_plaintext", None)
 
     // Serialize to pretty JSON.  serde_json may internally copy values before we
     // zeroize; this is best-effort -- the underlying String allocations are wiped
@@ -121,6 +119,9 @@ fn run_encrypted(output: &str, passphrase: &str) -> Result<()> {
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
+
+    phantom_core::audit::log_result("vault.export_encrypted", None)
+        .context("Failed to write audit event for encrypted vault export")?;
 
     let names = vault.list().context("Failed to list secrets")?;
 

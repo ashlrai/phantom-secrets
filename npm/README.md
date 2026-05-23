@@ -75,7 +75,7 @@ $ phantom exec -- claude
 
 ## MCP Server
 
-Phantom ships a companion MCP server package so AI coding tools can manage secrets directly -- without ever seeing real values. 24 tools available.
+Phantom ships a companion MCP server package so AI coding tools can manage secrets directly -- without ever seeing real values. 25 tools available.
 
 ```bash
 # Claude Code
@@ -111,6 +111,7 @@ See [`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) o
 | macOS | Intel (x64) | Supported |
 | Linux | x64 | Supported |
 | Linux | arm64 | Supported |
+| Windows | x64 | Supported |
 
 ## Security
 

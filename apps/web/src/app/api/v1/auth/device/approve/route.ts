@@ -3,7 +3,12 @@ import { isValidDeviceUserCode, normalizeDeviceUserCode } from "@/lib/device-cod
 import { createClient } from "@supabase/supabase-js";
 
 export async function POST(req: Request) {
-  const body = await req.json();
+  let body: { user_code?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+  }
   const { user_code } = body;
 
   if (!user_code) {
@@ -61,10 +66,10 @@ export async function POST(req: Request) {
   const nowIso = new Date().toISOString();
   const { data: token, error: tokenError } = await supabase
     .from("device_tokens")
-    .select("id, status, expires_at")
+    .select("id, status, expires_at, device_expires_at")
     .eq("user_code", cleanCode)
     .eq("status", "pending")
-    .gte("expires_at", nowIso)
+    .gte("device_expires_at", nowIso)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -76,11 +81,25 @@ export async function POST(req: Request) {
     );
   }
 
-  // Approve
-  await supabase
+  // Approve atomically. A concurrent approval can otherwise reassign user_id.
+  const { data: approvedToken, error: approveError } = await supabase
     .from("device_tokens")
-    .update({ status: "approved", user_id: user.id })
-    .eq("id", token.id);
+    .update({
+      status: "approved",
+      user_id: user.id,
+      approved_at: new Date().toISOString(),
+    })
+    .eq("id", token.id)
+    .eq("status", "pending")
+    .select("id")
+    .maybeSingle();
+
+  if (approveError || !approvedToken) {
+    return Response.json(
+      { error: "Code was already approved. Please start a new login." },
+      { status: 409 }
+    );
+  }
 
   return Response.json({ status: "approved" });
 }

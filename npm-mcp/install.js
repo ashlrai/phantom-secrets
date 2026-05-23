@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-// Pre-download the phantom-mcp binary during npm install
-// so it's ready when the user first runs `phantom-secrets-mcp`
+// Keep installation fast and side-effect-light. The native binary downloads
+// lazily on first run via bin/cli.js.
 
 const { existsSync } = require("fs");
 const { join } = require("path");

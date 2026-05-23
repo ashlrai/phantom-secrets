@@ -68,11 +68,31 @@ function parseSha256File(buf, expectedFilename) {
   return m[1].toLowerCase();
 }
 
+function isCachedBinaryStale(binaryPath) {
+  // The cached binary is stale when its `--version` output does not include
+  // the npm wrapper version. This mirrors the main phantom wrapper and catches
+  // global npm upgrades where the old cached binary would otherwise persist.
+  try {
+    const out = execFileSync(binaryPath, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
+    return !out.toString().includes(VERSION);
+  } catch {
+    return true;
+  }
+}
+
 async function ensureBinary() {
   const binaryPath = getBinaryPath();
 
   if (existsSync(binaryPath)) {
-    return binaryPath;
+    if (!isCachedBinaryStale(binaryPath)) {
+      return binaryPath;
+    }
+    console.error(`Cached phantom-mcp is out of date — refreshing to v${VERSION}...`);
+    try {
+      unlinkSync(binaryPath);
+    } catch {
+      // best-effort: if we can't delete, the download below will overwrite anyway.
+    }
   }
 
   const target = getPlatformTarget();

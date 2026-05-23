@@ -233,7 +233,7 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 6b. **Migrate from Doppler/Infisical/dotenvx/1Password**: `phantom import --from doppler --file dump.json`
 6c. **Audit trail**: `PHANTOM_AUDIT=1` + `phantom audit show/tail/verify` for compliance and forensics
 7. **Team onboarding**: `phantom env` generates .env.example with placeholders
-8. **CI/CD**: Use `phantom check --staged` in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
+8. **CI/CD**: Use `phantom check` in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
 9. **Pre-commit safety**: Add `phantom check` to git hooks or pre-commit framework
 10. **Rotate with sync**: `phantom rotate --sync` regenerates tokens and pushes to deployment platforms
 11. **Monorepo**: Run `phantom init` in each subdirectory — each gets its own vault and config

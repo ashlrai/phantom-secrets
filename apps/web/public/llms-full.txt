@@ -548,7 +548,7 @@ Direct Phantom Cloud pulls from headless CI are not supported in this release be
 
 ```yaml
 - name: Check for unprotected secrets
-  run: npx phantom-secrets check --staged
+  run: npx phantom-secrets check
 
 - name: Build
   run: npm ci && npm run build
@@ -584,7 +584,7 @@ Do not commit:
 6. Vault backup (encrypted): phantom export --output backup.enc --passphrase mypass / phantom import backup.enc --passphrase mypass
 6b. Vault export (plaintext JSON, use with care): phantom export --json --allow-plaintext > secrets.json
 7. Team onboarding: phantom env generates .env.example with placeholders
-8. CI/CD: use phantom check --staged in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
+8. CI/CD: use phantom check in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
 9. Pre-commit safety: phantom check in git hooks or pre-commit framework
 10. Rotate with sync: phantom rotate --sync regenerates tokens and pushes to deployment platforms
 11. Monorepo: phantom init in each subdirectory — each gets its own vault and config
