@@ -13,7 +13,7 @@ use tracing_subscriber::EnvFilter;
                   A local proxy intercepts API calls, swaps in real credentials at the network layer.\n\
                   The AI agent never sees a real secret.\n\n\
                   Commands are grouped (in display order):\n  \
-                    Setup        init · setup · doctor · completion · mcp\n  \
+                    Setup        init · agent · setup · doctor · completion · mcp\n  \
                     Daily use    exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance  upgrade · watch · rotate · open · audit",
@@ -67,6 +67,13 @@ enum Commands {
         /// Print the config snippet to stdout instead of writing files
         #[arg(long)]
         print: bool,
+    },
+
+    /// Agent readiness report, doctor, and setup workflows
+    #[command(next_help_heading = "Setup")]
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
     },
 
     /// Check configuration and vault health
@@ -394,6 +401,27 @@ enum McpAction {
 }
 
 #[derive(Subcommand)]
+enum AgentAction {
+    /// Emit the read-only readiness report
+    Report {
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Human-readable view of the readiness report
+    Doctor,
+    /// Initialize safe defaults for AI-agent use
+    Setup {
+        /// Show planned actions without changing files
+        #[arg(long, conflicts_with = "apply")]
+        dry_run: bool,
+        /// Apply setup actions
+        #[arg(long, conflicts_with = "dry_run")]
+        apply: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum TeamAction {
     /// List your teams
     List,
@@ -452,6 +480,7 @@ enum CloudAction {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let global_json = cli.json;
 
     // Initialize logging — only show tracing output in verbose mode
     let filter = if cli.verbose {
@@ -492,6 +521,11 @@ fn main() -> anyhow::Result<()> {
         Commands::Status { oneline } => commands::status::run(oneline),
         Commands::Rotate { sync } => commands::rotate::run(sync),
         Commands::Doctor { fix } => commands::doctor::run(fix),
+        Commands::Agent { action } => match action {
+            AgentAction::Report { json } => commands::agent::report(json || global_json),
+            AgentAction::Doctor => commands::agent::doctor(),
+            AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
+        },
         Commands::Exec { cmd } => commands::exec::run(&cmd, None),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
