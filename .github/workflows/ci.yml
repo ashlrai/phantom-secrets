@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 # Scope GITHUB_TOKEN down — CI only needs to read the repo.
 permissions:
@@ -35,8 +36,8 @@ jobs:
 
   test-ignored:
     name: Ignored Tests (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
