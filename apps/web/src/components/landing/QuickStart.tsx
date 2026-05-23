@@ -19,13 +19,14 @@ ok  CLAUDE.md updated`,
   },
   {
     n: "02",
-    title: "Wire it to your editor",
-    body: "MCP registration so Claude / Cursor / Windsurf see Phantom as a tool.",
-    cmd: "claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp",
-    out: `$ claude mcp add phantom-secrets-mcp \\
-    -- npx phantom-secrets-mcp
-ok  registered phantom-secrets-mcp
-ok  24 tools available to Claude`,
+    title: "Verify agent readiness",
+    body: "One preflight for Claude Code, Codex, Cursor, Windsurf, and any other agent.",
+    cmd: "phantom agent doctor",
+    out: `$ phantom agent doctor
+ok  status: verified
+ok  vault accessible
+ok  env files protected
+ok  25 MCP tools available`,
   },
   {
     n: "03",
@@ -51,7 +52,7 @@ export function QuickStart() {
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
             Three commands. Real output. Nothing hidden. If anything looks
             different on your machine, run{" "}
-            <code className="font-mono text-blue-b">phantom doctor</code>.
+            <code className="font-mono text-blue-b">phantom agent doctor</code>.
           </p>
         </div>
 

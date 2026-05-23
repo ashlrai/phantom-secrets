@@ -27,9 +27,9 @@ Cloud: phantom_wrap, phantom_unwrap, phantom_sync, phantom_cloud_push, phantom_c
 
 Teams: phantom_team_list, phantom_team_create, phantom_team_members, phantom_team_invite, phantom_team_key_publish, phantom_team_vault_push, phantom_team_vault_pull
 
-## CLI (34 commands, --help is grouped: Setup · Daily use · Sync & teams · Maintenance)
+## CLI surface (--help is grouped: Setup · Daily use · Sync & teams · Maintenance)
 
-init (--from <file>, --all <DIR>, --dry-run, --jobs/-j N), exec, start, stop, list (--json), add (--stdin), remove, reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy, export (--json --allow-plaintext), import (--from doppler|infisical|dotenvx|1password|env --file <path>), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull), open, upgrade, completion (bash/zsh/fish/powershell/elvish)
+init (--from <file>, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor / setup --dry-run|--apply), exec, start, stop, list (--json), add (--stdin), remove, reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy, export (--json --allow-plaintext), import (--from doppler|infisical|dotenvx|1password|env --file <path>), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull), open, upgrade, completion (bash/zsh/fish/powershell/elvish)
 
 ## Dashboard
 

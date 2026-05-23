@@ -27,9 +27,12 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 3. When code makes an API call, the proxy authenticates the local session, removes its local auth token before forwarding, replaces phantom tokens with real credentials in headers and body, and forwards over TLS to the real API endpoint. Full streaming/SSE support for OpenAI and Anthropic.
 4. Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN. Header-aware clients can set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 and send it as x-phantom-proxy-token instead of using path-authenticated local SDK URLs.
 
-## CLI Commands (34 total)
+## CLI Commands
 
 - `phantom init` — Import .env secrets into vault, rewrite with phantom tokens. Auto-detects 13+ services. Supports monorepo subdirectory detection. `--all <DIR>` protects every git repo with a .env under a directory in one go (with `--dry-run` to preview, `--jobs N` / `-j N` for parallelism, default 4).
+- `phantom agent report --json` — Read-only AI-agent readiness report with status, risk_level, findings, fixes, commands, files, requires_approval, and exit_code.
+- `phantom agent doctor` — Human-readable view of the same readiness policy. Status values: unsafe, protected, verified, team-ready, compliance-ready.
+- `phantom agent setup --dry-run|--apply` — Preview or apply safe defaults for agent use, including MCP wiring and .env.example generation.
 - `phantom exec -- <cmd>` — Start an authenticated proxy, run command, shut down proxy on exit.
 - `phantom login` — Sign in to Phantom Cloud via GitHub OAuth (device code flow).
 - `phantom logout` — Sign out of Phantom Cloud.
@@ -87,7 +90,7 @@ brew install phantom
 
 ### Cargo (from source)
 ```
-cargo install phantom --git https://github.com/ashlrai/phantom-secrets
+cargo install phantom-secrets
 ```
 
 ## MCP Server — Multi-IDE Support
@@ -213,11 +216,11 @@ Phantom automatically identifies secrets vs config values using heuristics:
 - phantom-core: Config, .env parsing, token generation, sync, auth, cloud API client
 - phantom-vault: VaultBackend trait, OS keychain + encrypted file backends, shared crypto module
 - phantom-proxy: HTTP reverse proxy with streaming token replacement (text/*/form bodies) and SSE/streaming support, request interceptor
-- phantom-cli: 34 CLI commands via clap (including audit show/tail/path/verify, import --from, export --json)
+- phantom-cli: clap CLI with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows
 - phantom-mcp: MCP server via rmcp SDK (stdio transport, 25 tools)
 - apps/web: Next.js backend on Vercel (Supabase + Stripe, device auth, vault API, billing)
 
-56 tests, zero clippy warnings, MIT licensed.
+MIT licensed. CI runs the Rust test suite and clippy across the workspace before release.
 
 ## Common Use Cases
 

@@ -51,6 +51,15 @@ phantom exec -- claude
 
 The proxy starts on `127.0.0.1`, `*_BASE_URL` environment variables are set, and Claude launches with the full Phantom environment. When your code runs API calls inside the Claude Code session, the proxy handles credential injection.
 
+### Step 4: verify agent readiness
+
+```bash
+phantom agent doctor
+phantom agent report --json
+```
+
+Use this before giving Claude broad autonomy. It checks the repo's `.env` files, Phantom config, vault access, unprotected secrets, MCP wiring, package script wrapping, pre-commit protection, cloud login, team state, audit status, and sync targets. The report returns one state: `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready`.
+
 ---
 
 ## The 25 MCP tools Claude gets

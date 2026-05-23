@@ -49,7 +49,7 @@ Download from: https://github.com/ashlrai/phantom-secrets/releases
 
 ### Cargo (from source)
 ```
-cargo install phantom --git https://github.com/ashlrai/phantom-secrets
+cargo install phantom-secrets
 ```
 
 ### Verify
@@ -58,7 +58,7 @@ phantom --version
 ```
 
 
-## CLI Commands (34 total)
+## CLI Commands
 
 ### phantom init
 Read .env, store real secrets in vault, rewrite with phantom tokens, create .phantom.toml.
@@ -68,6 +68,14 @@ Multi-project: --all <DIR> walks a workspace and runs init in every git repo wit
   --dry-run: preview which repos would be touched without modifying anything.
   --jobs N / -j N: number of repos to initialise concurrently (default: 4; also reads PHANTOM_INIT_JOBS env var).
   A progress bar shows live status during --all runs.
+
+### phantom agent
+Read-only readiness workflow for AI coding agents.
+report --json: stable JSON with status, risk_level, findings, fixes, commands, files, requires_approval, exit_code.
+doctor: human-readable view of the same readiness policy.
+setup --dry-run: preview safe defaults for agent use.
+setup --apply: initialize safe defaults, wire MCP clients, generate .env.example, recommend script wrapping, and write a readiness report.
+Status values: unsafe, protected, verified, team-ready, compliance-ready.
 
 ### phantom exec -- <cmd>
 Start an authenticated local proxy, set *_BASE_URL env vars, run command, shut down proxy on exit.
@@ -402,9 +410,9 @@ phantom-core
   env_scope module for multi-environment vault key namespacing.
 
 phantom-cli
-  clap-based CLI binary. 34 commands. Uses colored for output, anyhow for error handling.
+  clap-based CLI binary. Uses colored for output, anyhow for error handling.
+  Includes agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows.
   CLI output uses -> (info), ok (success), ! (error), warn (warning) prefixes.
-  Includes: audit (show/tail/path/verify), import --from, export --json --allow-plaintext.
 
 phantom-mcp
   MCP server using rmcp 1.3 SDK. Stdio transport. 25 tools.

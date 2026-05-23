@@ -135,7 +135,7 @@ Phantom also ships an MCP server so Claude Code, Cursor, Windsurf, and Codex can
 $ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 ```
 
-Seventeen tools: `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret`, `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`.
+Twenty-five tools cover vault status, init, safe interactive secret entry, checks, diagnostics, cloud sync, package script wrapping, and team vaults. The deprecated plaintext add tool refuses secret values through MCP, so real credentials stay out of the agent context.
 
 ## Architecture: 5-crate Rust workspace
 
@@ -143,11 +143,11 @@ Seventeen tools: `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phan
 phantom-core     Config, .env parsing, token generation (256-bit CSPRNG, phm_ prefix)
 phantom-vault    VaultBackend trait: OS keychain + encrypted file fallback
 phantom-proxy    HTTP reverse proxy (hyper), token replacement, TLS forwarding (reqwest)
-phantom-cli      clap-based CLI, 27 commands
-phantom-mcp      MCP server (rmcp SDK), stdio transport, 17 tools
+phantom-cli      clap-based CLI with agent readiness, proxy, sync, audit, teams
+phantom-mcp      MCP server (rmcp SDK), stdio transport, 25 tools
 ```
 
-The vault uses ChaCha20-Poly1305 for encryption with Argon2id key derivation (for the encrypted file fallback). The `zeroize` crate scrubs secrets from memory after every proxy injection. 69 tests, zero clippy warnings.
+The vault uses ChaCha20-Poly1305 for encryption with Argon2id key derivation (for the encrypted file fallback). The `zeroize` crate scrubs secrets from memory after every proxy injection. CI runs the Rust test suite and clippy before release.
 
 Cloud sync is available for backing up vaults across machines — end-to-end encrypted, zero-knowledge. The server at phm.dev stores only ciphertext.
 

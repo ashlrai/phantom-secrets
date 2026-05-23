@@ -49,6 +49,9 @@ $ npx phantom-secrets init
 # Stores real secrets in OS keychain, rewrites .env with phantom tokens
 # Auto-configures Claude Code MCP server if detected
 
+$ phantom agent doctor
+# One human-readable readiness check for AI-agent safety
+
 $ phantom exec -- claude
 # Authenticated proxy running on 127.0.0.1:54321
 # AI sees phantom tokens; proxy injects real keys
@@ -192,6 +195,9 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 | `phantom status` | Show proxy state, vault info, and mapped services |
 | `phantom rotate` | Regenerate all phantom tokens (old ones become invalid) |
 | `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair). Reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client |
+| `phantom agent report` | Emit a read-only AI-agent readiness report (`--json` for automation). Reports `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready` |
+| `phantom agent doctor` | Human-readable agent readiness view backed by the same policy engine |
+| `phantom agent setup` | Preview or apply safe defaults for agent use (`--dry-run` first, `--apply` to write changes) |
 | `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`) |
 | `phantom sync` | Push secrets to Vercel / Railway (`--only PATTERN` filters by glob, repeatable) |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
@@ -239,6 +245,7 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 - **Watch mode** -- `phantom watch` monitors .env files for new unprotected secrets
 - **Multi-project scanner** -- `phantom init --all <DIR>` protects every git repo with a `.env` under `<DIR>` in one command (with `--dry-run`); `--jobs N` controls parallelism
 - **Multi-IDE setup** -- `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool, or `--print` for a generic snippet
+- **Agent readiness** -- `phantom agent doctor` and `phantom agent report --json` answer whether a repo is safe for Claude Code, Codex, Cursor, Windsurf, and other agents
 - **Enriched diagnostics** -- `phantom doctor` reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client
 - **Secret explainer** -- `phantom why <KEY>` explains detection heuristics
 - **Cross-project copy** -- `phantom copy` shares secrets between project vaults
@@ -281,14 +288,14 @@ $ cargo install phantom-secrets
 | `phantom-core` | Config (`.phantom.toml`), `.env` parsing/rewriting, token generation, auth, cloud client |
 | `phantom-vault` | `VaultBackend` trait: OS keychain + encrypted file fallback, ChaCha20-Poly1305 crypto |
 | `phantom-proxy` | HTTP reverse proxy on 127.0.0.1. Streaming token replacement for `text/*`/form bodies; buffered+scoped replacement for JSON. SSE/streaming preserved. TLS forwarding. |
-| `phantom-cli` | `clap`-based CLI binary, 34 commands (including `audit show/tail/path/verify`, `import --from`, `export --json`) |
+| `phantom-cli` | `clap`-based CLI binary with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows |
 | `phantom-mcp` | MCP server binary (`rmcp` SDK), stdio transport, 25 tools |
 
 **`apps/web`** -- Next.js backend at [phm.dev](https://phm.dev) for cloud vault sync, GitHub OAuth, and Stripe billing.
 
 **npm packages**: [`phantom-secrets`](https://www.npmjs.com/package/phantom-secrets) (CLI), [`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) (MCP server).
 
-103 tests across all crates, zero clippy warnings.
+CI runs the Rust test suite and clippy across the workspace before release.
 
 ## Security
 

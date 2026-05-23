@@ -4,6 +4,7 @@
 
 ```bash
 npx phantom-secrets init   # installs Phantom and protects your .env
+phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code with real secrets injected by proxy
 ```
 
@@ -219,6 +220,19 @@ warn: No pre-commit hook installed
 2 issue(s) found — use --fix to auto-fix
 ```
 
+### `phantom agent`
+
+One command answers whether this repo is ready for autonomous AI coding tools.
+
+```bash
+phantom agent doctor          # human-readable readiness view
+phantom agent report --json   # stable JSON for automation and CI
+phantom agent setup --dry-run # preview safe setup changes
+phantom agent setup --apply   # initialize safe defaults
+```
+
+The readiness engine checks `.env` files, `.phantom.toml`, vault access, unprotected secrets, `.env.example`, `.gitignore`, MCP client wiring, package script wrapping, pre-commit protection, audit status, cloud login, team state, and sync targets. It returns one state: `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready`.
+
 ### `phantom reveal`
 
 Print a real secret value to stdout. Blocked in non-interactive contexts by default.
@@ -246,6 +260,8 @@ phantom setup --client claude --print   # snippet to stdout for any other client
 If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine. For Claude Code specifically, `phantom setup --client claude` *also* allow-lists `.env` so Claude can read the (now-tokenized) file. See [claude-code.md](./claude-code.md) for the full workflow — the AI gains 25 Phantom MCP tools.
 
 Restart the AI tool after running `phantom setup` so it picks up the new config.
+
+Run `phantom agent doctor` after setup to confirm the repo is ready before handing work to Claude Code, Codex, Cursor, Windsurf, or another agent.
 
 ---
 

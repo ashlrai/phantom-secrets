@@ -6,7 +6,7 @@ OpenAI Codex runs in a sandboxed environment and executes tasks autonomously. It
 
 After `phantom init`, your `.env` contains only phantom tokens (`phm_...`). Codex reads the tokens, not the real values. When code under test makes API calls, the local Phantom proxy replaces tokens with real credentials before requests leave your machine — Codex never needs the real values to write, test, or integrate code that uses them.
 
-The MCP integration registers 25 Phantom tools in Codex's tool list. The CLI has 34 commands including `phantom audit show/tail/path/verify`, `phantom import --from`, and `phantom export --json`.
+The MCP integration registers 25 Phantom tools in Codex's tool list. The CLI includes an agent-readiness workflow, proxy lifecycle commands, audit, import/export, cloud sync, team vaults, and safe MCP setup for Codex.
 
 ---
 
@@ -44,7 +44,16 @@ phantom setup --client codex --print
 
 After running setup, **restart Codex** for the MCP server to activate.
 
-### Step 3: run Codex tasks with the proxy active
+### Step 3: verify agent readiness
+
+```bash
+phantom agent doctor
+phantom agent report --json
+```
+
+`phantom agent doctor` is the human-readable preflight for Codex. It checks that env files are phantomized, the vault is available, MCP is wired, package scripts and pre-commit protection are in good shape, and cloud/team/sync state is visible. The JSON report returns `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready` for automation.
+
+### Step 4: run Codex tasks with the proxy active
 
 ```bash
 phantom exec -- codex "add Stripe checkout to checkout.ts"
