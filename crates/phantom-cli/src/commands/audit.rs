@@ -155,17 +155,34 @@ pub fn run_verify() -> Result<()> {
     let status = if report.is_clean() {
         "ok".green().bold().to_string()
     } else {
-        "TAMPERED".red().bold().to_string()
+        "FAILED".red().bold().to_string()
     };
 
     println!(
-        "{}  verified: {} · tampered: {} · legacy: {}",
+        "{}  verified: {} · tampered: {} · malformed: {} · sequence: {} · head: {} · legacy: {}",
         status,
         report.verified.to_string().cyan(),
         if report.tampered > 0 {
             report.tampered.to_string().red().bold().to_string()
         } else {
             report.tampered.to_string()
+        },
+        if report.malformed > 0 {
+            report.malformed.to_string().red().bold().to_string()
+        } else {
+            report.malformed.to_string()
+        },
+        if report.sequence_errors > 0 {
+            report.sequence_errors.to_string().red().bold().to_string()
+        } else {
+            report.sequence_errors.to_string()
+        },
+        if report.head_missing {
+            "missing".red().bold().to_string()
+        } else if report.head_mismatch {
+            "mismatch".red().bold().to_string()
+        } else {
+            "ok".to_string()
         },
         report.legacy.to_string().dimmed(),
     );
@@ -188,7 +205,56 @@ pub fn run_verify() -> Result<()> {
         );
     }
 
-    if report.tampered > 0 {
+    if !report.malformed_lines.is_empty() {
+        let line_list: Vec<String> = report
+            .malformed_lines
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        eprintln!(
+            "{}  Malformed JSON at line{}: {}",
+            "!".red().bold(),
+            if report.malformed_lines.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            line_list.join(", ").red()
+        );
+    }
+
+    if !report.sequence_error_lines.is_empty() {
+        let line_list: Vec<String> = report
+            .sequence_error_lines
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        eprintln!(
+            "{}  Sequence error at line{}: {}",
+            "!".red().bold(),
+            if report.sequence_error_lines.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            line_list.join(", ").red()
+        );
+    }
+
+    if report.head_missing {
+        eprintln!(
+            "{}  Audit head checkpoint is missing; tail truncation cannot be ruled out.",
+            "!".red().bold()
+        );
+    }
+    if report.head_mismatch {
+        eprintln!(
+            "{}  Audit head checkpoint does not match the log tail.",
+            "!".red().bold()
+        );
+    }
+
+    if !report.is_clean() {
         std::process::exit(1);
     }
 

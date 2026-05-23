@@ -68,7 +68,7 @@ export async function GET(req: Request, context: RouteContext) {
 /**
  * POST /api/v1/teams/:team_id/members — Invite a member to the team.
  * Requires the caller to be an owner or admin of the team.
- * Body: { user_id: string, role?: "admin" | "member" }
+ * Body: { user_id?: string, github_login?: string, role?: "admin" | "member" }
  */
 export async function POST(req: Request, context: RouteContext) {
   const authResult = await requireAuth(req);
@@ -95,11 +95,7 @@ export async function POST(req: Request, context: RouteContext) {
   }
 
   const body = await req.json();
-  const { user_id, role } = body;
-
-  if (!user_id || typeof user_id !== "string") {
-    return Response.json({ error: "user_id is required" }, { status: 400 });
-  }
+  const { user_id, github_login, role } = body;
 
   const memberRole = role ?? "member";
   if (!["admin", "member"].includes(memberRole)) {
@@ -109,23 +105,63 @@ export async function POST(req: Request, context: RouteContext) {
     );
   }
 
-  // Cannot invite as owner — there can only be one owner (the creator)
-  if (memberRole === "owner") {
+  let targetUserId: string | null = null;
+
+  if (typeof user_id === "string" && user_id.trim()) {
+    const { data: targetUser } = await supabase
+      .from("users")
+      .select("id")
+      .eq("id", user_id.trim())
+      .single();
+
+    if (!targetUser) {
+      return Response.json({ error: "user not found" }, { status: 404 });
+    }
+
+    targetUserId = targetUser.id;
+  } else if (typeof github_login === "string" && github_login.trim()) {
+    const normalizedLogin = github_login.trim().replace(/^@+/, "");
+
+    if (!normalizedLogin) {
+      return Response.json(
+        { error: "user_id or github_login is required" },
+        { status: 400 }
+      );
+    }
+
+    const { data: targetUsers, error: targetError } = await supabase
+      .from("users")
+      .select("id")
+      .ilike("github_login", normalizedLogin)
+      .limit(2);
+
+    if (targetError) {
+      return Response.json(
+        { error: "Failed to resolve GitHub user" },
+        { status: 500 }
+      );
+    }
+
+    if (!targetUsers || targetUsers.length === 0) {
+      return Response.json(
+        { error: "GitHub user not found; invitee must sign in to Phantom first" },
+        { status: 404 }
+      );
+    }
+
+    if (targetUsers.length > 1) {
+      return Response.json(
+        { error: "GitHub login matches multiple Phantom users" },
+        { status: 409 }
+      );
+    }
+
+    targetUserId = targetUsers[0].id;
+  } else {
     return Response.json(
-      { error: "cannot assign owner role via invitation" },
+      { error: "user_id or github_login is required" },
       { status: 400 }
     );
-  }
-
-  // Verify the target user exists
-  const { data: targetUser } = await supabase
-    .from("users")
-    .select("id")
-    .eq("id", user_id)
-    .single();
-
-  if (!targetUser) {
-    return Response.json({ error: "user not found" }, { status: 404 });
   }
 
   // Add member
@@ -133,7 +169,7 @@ export async function POST(req: Request, context: RouteContext) {
     .from("team_members")
     .insert({
       team_id,
-      user_id,
+      user_id: targetUserId,
       role: memberRole,
       invited_by: authResult.userId,
     })

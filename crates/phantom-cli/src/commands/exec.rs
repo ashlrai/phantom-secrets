@@ -9,6 +9,15 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 
+fn header_auth_only() -> bool {
+    matches!(
+        std::env::var("PHANTOM_PROXY_HEADER_AUTH_ONLY")
+            .ok()
+            .as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
 pub fn run(cmd: &[String], env: Option<&str>) -> Result<()> {
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
@@ -108,12 +117,15 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
 
     // Generate proxy session token
     let proxy_token = ProxyServer::generate_proxy_token();
+    let header_auth_only = header_auth_only();
+    let allow_query_token_auth = !header_auth_only;
 
     // Start the proxy
     let proxy = ProxyServer::start(
         ProxyConfig {
             port: 0,
             proxy_token: proxy_token.clone(),
+            allow_query_token_auth,
             ..ProxyConfig::default()
         },
         registry.clone(),
@@ -130,9 +142,26 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     );
 
     // Print service routes
-    let overrides = registry.base_url_overrides_with_token(port, Some(&proxy_token));
+    let overrides = if header_auth_only {
+        registry.base_url_overrides(port)
+    } else {
+        registry.base_url_overrides_with_token(port, Some(&proxy_token))
+    };
     for (env_var, url) in &overrides {
         println!("   {} {} = {}", "->".dimmed(), env_var.bold(), url.cyan());
+    }
+    if header_auth_only {
+        println!(
+            "   {} {} set for child process",
+            "->".dimmed(),
+            "PHANTOM_PROXY_TOKEN".bold()
+        );
+    } else {
+        println!(
+            "   {} SDK-compatible proxy URLs include a session token; set {} for header-only mode",
+            "->".dimmed(),
+            "PHANTOM_PROXY_HEADER_AUTH_ONLY=1".bold()
+        );
     }
 
     // Inject connection string secrets as env vars (with real values, not proxied)
@@ -233,8 +262,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
                 .map(|(k, v)| (k.as_str(), v.as_str())),
         )
         .env("PHANTOM_PROXY_PORT", port.to_string())
-        // Note: proxy token is embedded in BASE_URL query params, not exposed as separate env var.
-        // This prevents AI agents from discovering and using the token directly.
+        .env("PHANTOM_PROXY_TOKEN", &proxy_token)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

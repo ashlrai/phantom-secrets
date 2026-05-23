@@ -28,6 +28,12 @@ pub struct ProxyConfig {
     pub upstream_timeout_secs: u64,
     /// Connection timeout in seconds (default: 5)
     pub connect_timeout_secs: u64,
+    /// Allow URL-carried proxy authentication for SDK compatibility.
+    ///
+    /// When enabled, both `/_phantom/{token}/` path auth and the legacy
+    /// `phantom_token` query-param auth are accepted. Disabled by default so
+    /// proxy session tokens do not end up in URLs.
+    pub allow_query_token_auth: bool,
 }
 
 impl Default for ProxyConfig {
@@ -38,6 +44,7 @@ impl Default for ProxyConfig {
             max_body_size: 10 * 1024 * 1024, // 10MB
             upstream_timeout_secs: 30,
             connect_timeout_secs: 5,
+            allow_query_token_auth: false,
         }
     }
 }
@@ -69,6 +76,7 @@ impl ProxyServer {
             registry,
             interceptor,
             proxy_token: config.proxy_token,
+            allow_query_token_auth: config.allow_query_token_auth,
             max_body_size: config.max_body_size,
             http_client: reqwest::Client::builder()
                 .danger_accept_invalid_certs(false)
@@ -116,6 +124,7 @@ struct ProxyState {
     registry: ServiceRegistry,
     interceptor: Interceptor,
     proxy_token: String,
+    allow_query_token_auth: bool,
     max_body_size: usize,
     http_client: reqwest::Client,
 }
@@ -179,7 +188,8 @@ async fn handle_request(
     state: Arc<ProxyState>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let method = req.method().clone();
-    let path = req.uri().path().to_string();
+    let original_path = req.uri().path().to_string();
+    let (path, path_token) = strip_path_proxy_token(&original_path);
     // Strip phantom_token from query before forwarding to upstream
     let query = req
         .uri()
@@ -208,16 +218,27 @@ async fn handle_request(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
 
-        if !constant_time_eq(provided_token, &state.proxy_token) {
-            // Also check query param as fallback (for clients that can't set custom headers)
+        let valid_header_token = constant_time_eq(provided_token, &state.proxy_token);
+        let valid_path_token = state.allow_query_token_auth
+            && path_token
+                .as_deref()
+                .map(|token| constant_time_eq(token, &state.proxy_token))
+                .unwrap_or(false);
+
+        if !valid_header_token && !valid_path_token {
+            // URL-carried auth is intentionally opt-in because URLs are often
+            // logged by clients and shells.
             let query_token = req
                 .uri()
                 .query()
                 .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("phantom_token=")))
                 .unwrap_or("");
 
-            if !constant_time_eq(query_token, &state.proxy_token) {
-                warn!("Rejected request without valid proxy token from {}", path);
+            if !state.allow_query_token_auth || !constant_time_eq(query_token, &state.proxy_token) {
+                warn!(
+                    "Rejected request without valid proxy token from {}",
+                    original_path
+                );
                 return Ok(error_response(
                     StatusCode::UNAUTHORIZED,
                     r#"{"error":"missing or invalid proxy token"}"#,
@@ -589,6 +610,24 @@ async fn handle_request(
     }
 }
 
+fn strip_path_proxy_token(path: &str) -> (String, Option<String>) {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    if let Some(idx) = parts.iter().position(|part| *part == "_phantom") {
+        if let Some(token) = parts.get(idx + 1).copied() {
+            let token = token.to_string();
+            parts.drain(idx..=idx + 1);
+            let stripped = parts.join("/");
+            let stripped = if stripped.is_empty() {
+                "/".to_string()
+            } else {
+                stripped
+            };
+            return (stripped, Some(token));
+        }
+    }
+    (path.to_string(), None)
+}
+
 /// Constant-time string compare for the proxy-auth token. Length mismatch
 /// short-circuits (token length is not secret); the byte compare runs in
 /// constant time so an attacker colocated on the loopback interface cannot
@@ -652,6 +691,148 @@ mod tests {
         let interceptor = Interceptor::new(mappings);
 
         (registry, interceptor)
+    }
+
+    #[tokio::test]
+    async fn test_proxy_requires_header_token_by_default() {
+        let (registry, interceptor) = test_state();
+        let token = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.clone(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let query_resp = client
+            .get(format!(
+                "http://127.0.0.1:{}/phantom/health?phantom_token={token}",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(query_resp.status(), 401);
+
+        let header_resp = client
+            .get(format!("http://127.0.0.1:{}/phantom/health", proxy.port()))
+            .header("x-phantom-proxy-token", token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(header_resp.status(), 200);
+
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_proxy_path_token_requires_compatibility_mode() {
+        let (registry, interceptor) = test_state();
+        let token = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.clone(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!(
+                "http://127.0.0.1:{}/phantom/_phantom/{token}/health",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_proxy_query_token_requires_compatibility_mode() {
+        let (registry, interceptor) = test_state();
+        let token = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.clone(),
+                allow_query_token_auth: true,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!(
+                "http://127.0.0.1:{}/phantom/health?phantom_token={token}",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_proxy_accepts_path_token_and_strips_before_routing() {
+        let (registry, interceptor) = test_state();
+        let token = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.clone(),
+                allow_query_token_auth: true,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!(
+                "http://127.0.0.1:{}/test/_phantom/{token}/headers",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        proxy.shutdown().await;
+    }
+
+    #[test]
+    fn test_strip_path_proxy_token() {
+        assert_eq!(
+            strip_path_proxy_token("/openai/_phantom/token/v1/models"),
+            ("/openai/v1/models".to_string(), Some("token".to_string()))
+        );
+        assert_eq!(
+            strip_path_proxy_token("/openai/v1/models"),
+            ("/openai/v1/models".to_string(), None)
+        );
     }
 
     #[tokio::test]

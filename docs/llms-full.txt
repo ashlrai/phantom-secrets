@@ -23,14 +23,14 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 ## How Phantom Works
 
 1. `phantom init` reads your .env, stores real secrets in an encrypted vault (OS keychain or ChaCha20-Poly1305 encrypted file), and rewrites .env with worthless phantom tokens (phm_...).
-2. `phantom exec -- claude` starts a local HTTP reverse proxy on 127.0.0.1, sets BASE_URL environment variables (e.g., OPENAI_BASE_URL=http://127.0.0.1:PORT/openai) so API calls route through the proxy, and launches the specified command.
-3. When code makes an API call, the proxy intercepts it, replaces phantom tokens with real credentials in headers and body, and forwards over TLS to the real API endpoint. Full streaming/SSE support for OpenAI and Anthropic.
-4. Session-scoped tokens: each `phantom exec` session generates fresh phantom tokens. If tokens leak from AI logs, they're already invalid.
+2. `phantom exec -- claude` starts a local HTTP reverse proxy on 127.0.0.1, sets SDK-compatible BASE_URL environment variables (e.g., OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/), exposes a fresh PHANTOM_PROXY_TOKEN to the child process, and launches the specified command.
+3. When code makes an API call, the proxy authenticates the local session, removes its local auth token before forwarding, replaces phantom tokens with real credentials in headers and body, and forwards over TLS to the real API endpoint. Full streaming/SSE support for OpenAI and Anthropic.
+4. Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN. Header-aware clients can set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 and send it as x-phantom-proxy-token instead of using path-authenticated local SDK URLs.
 
 ## CLI Commands (34 total)
 
 - `phantom init` — Import .env secrets into vault, rewrite with phantom tokens. Auto-detects 13+ services. Supports monorepo subdirectory detection. `--all <DIR>` protects every git repo with a .env under a directory in one go (with `--dry-run` to preview, `--jobs N` / `-j N` for parallelism, default 4).
-- `phantom exec -- <cmd>` — Start proxy with session-scoped tokens, run command, shut down proxy on exit.
+- `phantom exec -- <cmd>` — Start an authenticated proxy, run command, shut down proxy on exit.
 - `phantom login` — Sign in to Phantom Cloud via GitHub OAuth (device code flow).
 - `phantom logout` — Sign out of Phantom Cloud.
 - `phantom cloud push` — Push encrypted vault to Phantom Cloud (end-to-end encrypted).
@@ -176,7 +176,7 @@ Phantom Cloud provides end-to-end encrypted vault sync:
 - Proxy token authentication prevents other local processes from using the proxy
 - Secrets zeroized from memory after use
 - Allowlist model: proxy only injects for configured service patterns
-- Session-scoped tokens: fresh per exec session, invalid after session ends
+- Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN; CLI-generated SDK URLs include it locally, and header-aware clients can opt into x-phantom-proxy-token
 - Cloud tokens stored hashed (SHA-256) in database — never plaintext
 - Streaming/SSE support for OpenAI and Anthropic APIs
 
@@ -230,7 +230,7 @@ Phantom automatically identifies secrets vs config values using heuristics:
 6b. **Migrate from Doppler/Infisical/dotenvx/1Password**: `phantom import --from doppler --file dump.json`
 6c. **Audit trail**: `PHANTOM_AUDIT=1` + `phantom audit show/tail/verify` for compliance and forensics
 7. **Team onboarding**: `phantom env` generates .env.example with placeholders
-8. **CI/CD**: Set PHANTOM_VAULT_PASSPHRASE env var, use phantom in GitHub Actions
+8. **CI/CD**: Use `phantom check --staged` in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
 9. **Pre-commit safety**: Add `phantom check` to git hooks or pre-commit framework
 10. **Rotate with sync**: `phantom rotate --sync` regenerates tokens and pushes to deployment platforms
 11. **Monorepo**: Run `phantom init` in each subdirectory — each gets its own vault and config

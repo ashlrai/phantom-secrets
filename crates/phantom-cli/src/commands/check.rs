@@ -1,5 +1,6 @@
 use anyhow::Result;
 use colored::Colorize;
+use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::PhantomToken;
 
@@ -57,10 +58,6 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
     // Scan staged files for .env secrets and common hardcoded secret patterns.
     let staged = get_staged_files();
     for file in &staged {
-        if file.ends_with(".phantom.toml") {
-            continue;
-        }
-
         let content = if staged_only {
             read_staged_file(file)
         } else {
@@ -68,6 +65,11 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
         };
 
         if let Some(content) = content {
+            if file.ends_with(".phantom.toml") {
+                warn_on_config_risks(file, &content);
+                continue;
+            }
+
             if is_env_file(file) {
                 let dotenv = DotenvFile::parse_str(&content);
                 let real_secrets = dotenv.real_secret_entries();
@@ -108,8 +110,14 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
                 ("AKIA", "AWS access key"),
             ];
 
+            let scan_content = if staged_only {
+                staged_added_lines(file).unwrap_or_default()
+            } else {
+                content
+            };
+
             for (pattern, label) in &secret_patterns {
-                if content.contains(pattern) {
+                if scan_content.contains(pattern) {
                     if issues == 0 {
                         eprintln!("\n{} Potential secrets in code!\n", "BLOCKED".red().bold());
                     }
@@ -142,6 +150,35 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
 
     println!("{} No unprotected secrets found.", "ok".green().bold());
     Ok(())
+}
+
+fn warn_on_config_risks(file: &str, content: &str) {
+    let Ok(config) = toml::from_str::<PhantomConfig>(content) else {
+        return;
+    };
+
+    let risks = config.service_risks();
+    if risks.is_empty() {
+        return;
+    }
+
+    eprintln!(
+        "\n{} Risky Phantom service route(s) in {}:\n",
+        "warn".yellow().bold(),
+        file
+    );
+    for risk in risks {
+        eprintln!(
+            "  {} {}: {}",
+            "!".yellow().bold(),
+            risk.service.bold(),
+            risk.message
+        );
+    }
+    eprintln!(
+        "\n{} Review .phantom.toml service mappings before running untrusted code.\n",
+        "note".yellow().bold()
+    );
 }
 
 fn is_env_file(file: &str) -> bool {
@@ -223,4 +260,23 @@ fn read_staged_file(file: &str) -> Option<String> {
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
+}
+
+fn staged_added_lines(file: &str) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["diff", "--cached", "--unified=0", "--", file])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|diff| {
+            diff.lines()
+                .filter_map(|line| {
+                    line.strip_prefix('+')
+                        .filter(|_| !line.starts_with("+++ "))
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
 }

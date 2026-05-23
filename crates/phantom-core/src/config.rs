@@ -2,6 +2,7 @@ use crate::error::{PhantomError, Result};
 use crate::sync::SyncTarget;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::path::Path;
 
 /// The `.phantom.toml` project config file.
@@ -63,6 +64,12 @@ pub struct ServiceConfig {
     /// Type of secret: "api_key" (default) or "connection_string"
     #[serde(default = "default_secret_type")]
     pub secret_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigRisk {
+    pub service: String,
+    pub message: String,
 }
 
 fn default_secret_type() -> String {
@@ -272,6 +279,165 @@ impl PhantomConfig {
             .map(|(name, config)| (name.as_str(), config))
             .collect()
     }
+
+    /// Advisory risk analysis for service routing.
+    ///
+    /// This intentionally does not reject custom providers: OpenAI-compatible
+    /// gateways, self-hosted inference endpoints, and private proxies are valid
+    /// use cases. The goal is to make high-risk routing changes visible in
+    /// doctor/check output so users review them deliberately.
+    pub fn service_risks(&self) -> Vec<ConfigRisk> {
+        let mut risks = Vec::new();
+
+        for (name, service) in &self.services {
+            if service.secret_type != "api_key" {
+                continue;
+            }
+
+            let Some(pattern) = service.pattern.as_deref() else {
+                continue;
+            };
+            let normalized = pattern.trim().to_ascii_lowercase();
+
+            if normalized.contains("://")
+                || normalized.contains('/')
+                || normalized.contains('?')
+                || normalized.contains('#')
+                || normalized.contains('@')
+                || normalized.contains('*')
+                || normalized.is_empty()
+            {
+                risks.push(ConfigRisk {
+                    service: name.clone(),
+                    message: format!(
+                        "service route pattern `{pattern}` should be a bare provider host, not a URL/path/wildcard"
+                    ),
+                });
+            }
+
+            if extract_host_for_risk_check(&normalized)
+                .as_deref()
+                .is_some_and(is_local_or_private_host)
+            {
+                risks.push(ConfigRisk {
+                    service: name.clone(),
+                    message: format!(
+                        "service route pattern `{pattern}` points at localhost or a private IP"
+                    ),
+                });
+            }
+
+            if let Some(expected) = expected_pattern_for_service(name) {
+                if normalized != expected {
+                    risks.push(ConfigRisk {
+                        service: name.clone(),
+                        message: format!(
+                            "built-in service `{name}` routes to `{pattern}` instead of expected `{expected}`"
+                        ),
+                    });
+                }
+            }
+
+            if let Some(expected) = expected_pattern_for_secret(&service.secret_key) {
+                if normalized != expected {
+                    risks.push(ConfigRisk {
+                        service: name.clone(),
+                        message: format!(
+                            "secret `{}` routes to `{pattern}` instead of expected `{expected}`",
+                            service.secret_key
+                        ),
+                    });
+                }
+            }
+
+            if service
+                .header_format
+                .as_deref()
+                .is_some_and(|format| !format.contains("{secret}"))
+            {
+                risks.push(ConfigRisk {
+                    service: name.clone(),
+                    message: "header_format does not contain `{secret}`; proxy injection will not include the secret".to_string(),
+                });
+            }
+        }
+
+        risks
+    }
+}
+
+fn expected_pattern_for_service(name: &str) -> Option<&'static str> {
+    match name {
+        "openai" => Some("api.openai.com"),
+        "anthropic" => Some("api.anthropic.com"),
+        "stripe" => Some("api.stripe.com"),
+        "supabase" => Some("supabase.co"),
+        "xai" => Some("api.x.ai"),
+        "mistral" => Some("api.mistral.ai"),
+        "perplexity" => Some("api.perplexity.ai"),
+        "cohere" => Some("api.cohere.com"),
+        "replicate" => Some("api.replicate.com"),
+        "huggingface" => Some("api-inference.huggingface.co"),
+        "google_ai" => Some("generativelanguage.googleapis.com"),
+        _ => None,
+    }
+}
+
+fn expected_pattern_for_secret(secret_key: &str) -> Option<&'static str> {
+    match secret_key {
+        "OPENAI_API_KEY" => Some("api.openai.com"),
+        "ANTHROPIC_API_KEY" => Some("api.anthropic.com"),
+        "STRIPE_SECRET_KEY" => Some("api.stripe.com"),
+        "SUPABASE_SERVICE_ROLE_KEY" => Some("supabase.co"),
+        "XAI_API_KEY" => Some("api.x.ai"),
+        "MISTRAL_API_KEY" => Some("api.mistral.ai"),
+        "PERPLEXITY_API_KEY" => Some("api.perplexity.ai"),
+        "COHERE_API_KEY" => Some("api.cohere.com"),
+        "REPLICATE_API_TOKEN" => Some("api.replicate.com"),
+        "HUGGINGFACE_API_KEY" => Some("api-inference.huggingface.co"),
+        "GEMINI_API_KEY" => Some("generativelanguage.googleapis.com"),
+        _ => None,
+    }
+}
+
+fn is_local_or_private_host(host: &str) -> bool {
+    if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        return true;
+    }
+
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
+        }
+        Ok(IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Err(_) => false,
+    }
+}
+
+fn extract_host_for_risk_check(pattern: &str) -> Option<String> {
+    let without_scheme = pattern.split("://").last().unwrap_or(pattern);
+    let without_path = without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(without_scheme);
+    let without_userinfo = without_path.rsplit('@').next().unwrap_or(without_path);
+
+    if without_userinfo.starts_with('[') {
+        return without_userinfo
+            .split_once(']')
+            .map(|(host, _)| host.trim_start_matches('[').to_string());
+    }
+
+    let host = without_userinfo
+        .split(':')
+        .next()
+        .unwrap_or(without_userinfo)
+        .trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -363,5 +529,76 @@ header = "Authorization"
         // Round-tripping our own output must never trip deny_unknown_fields.
         let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.services.len(), config.services.len());
+    }
+
+    #[test]
+    fn service_risks_allows_default_config() {
+        let config = PhantomConfig::new_with_defaults("test".to_string());
+        assert!(config.service_risks().is_empty());
+    }
+
+    #[test]
+    fn service_risks_warns_on_builtin_reroute() {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        config.services.get_mut("openai").unwrap().pattern =
+            Some("attacker.example.com".to_string());
+
+        let risks = config.service_risks();
+        assert!(risks
+            .iter()
+            .any(|risk| { risk.service == "openai" && risk.message.contains("built-in service") }));
+        assert!(risks
+            .iter()
+            .any(|risk| { risk.service == "openai" && risk.message.contains("OPENAI_API_KEY") }));
+    }
+
+    #[test]
+    fn service_risks_warns_on_url_like_patterns_private_hosts_and_bad_header_format() {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        config.services.insert(
+            "custom".to_string(),
+            ServiceConfig {
+                secret_key: "CUSTOM_API_KEY".to_string(),
+                pattern: Some("https://127.0.0.1:8080/path?x=1".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer TOKEN".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        let risks = config.service_risks();
+        let custom: Vec<&ConfigRisk> = risks
+            .iter()
+            .filter(|risk| risk.service == "custom")
+            .collect();
+        assert!(custom
+            .iter()
+            .any(|risk| risk.message.contains("bare provider host")));
+        assert!(custom
+            .iter()
+            .any(|risk| risk.message.contains("localhost or a private IP")));
+        assert!(custom
+            .iter()
+            .any(|risk| risk.message.contains("header_format")));
+    }
+
+    #[test]
+    fn service_risks_allows_unknown_custom_provider() {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        config.services.insert(
+            "gateway".to_string(),
+            ServiceConfig {
+                secret_key: "GATEWAY_API_KEY".to_string(),
+                pattern: Some("gateway.example.com".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        assert!(config
+            .service_risks()
+            .iter()
+            .all(|risk| risk.service != "gateway"));
     }
 }

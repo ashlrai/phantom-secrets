@@ -61,6 +61,15 @@ fn shell_hint(syntax: ShellSyntax) -> &'static str {
     }
 }
 
+fn header_auth_only() -> bool {
+    matches!(
+        std::env::var("PHANTOM_PROXY_HEADER_AUTH_ONLY")
+            .ok()
+            .as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
 pub fn run(daemon: bool) -> Result<()> {
     if daemon {
         return run_daemon();
@@ -161,7 +170,12 @@ fn run_daemon() -> Result<()> {
         "->".blue().bold()
     );
     let syntax = detect_shell_syntax();
-    let overrides = registry.base_url_overrides_with_token(port, Some(proxy_token));
+    let header_auth_only = header_auth_only();
+    let overrides = if header_auth_only {
+        registry.base_url_overrides(port)
+    } else {
+        registry.base_url_overrides_with_token(port, Some(proxy_token))
+    };
     for (env_var, url) in &overrides {
         println!("{}", format_export(syntax, env_var, url));
     }
@@ -173,6 +187,13 @@ fn run_daemon() -> Result<()> {
         "{}",
         format_export(syntax, "PHANTOM_PROXY_TOKEN", proxy_token)
     );
+    if header_auth_only {
+        println!("  # Header-only mode: clients must send x-phantom-proxy-token.");
+    } else {
+        println!(
+            "  # SDK-compatible URLs include /_phantom/TOKEN/. Set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 for header-only mode."
+        );
+    }
     println!("\n{}", shell_hint(syntax));
 
     println!(
@@ -243,6 +264,7 @@ async fn run_async() -> Result<()> {
         ProxyConfig {
             port: 0,
             proxy_token: proxy_token.clone(),
+            allow_query_token_auth: !header_auth_only(),
             ..ProxyConfig::default()
         },
         registry.clone(),
@@ -279,7 +301,12 @@ async fn run_async() -> Result<()> {
         "->".blue().bold()
     );
     let syntax = detect_shell_syntax();
-    let overrides = registry.base_url_overrides_with_token(port, Some(&proxy_token));
+    let header_auth_only = header_auth_only();
+    let overrides = if header_auth_only {
+        registry.base_url_overrides(port)
+    } else {
+        registry.base_url_overrides_with_token(port, Some(&proxy_token))
+    };
     for (env_var, url) in &overrides {
         println!("{}", format_export(syntax, env_var, url));
     }
@@ -291,6 +318,13 @@ async fn run_async() -> Result<()> {
         "{}",
         format_export(syntax, "PHANTOM_PROXY_TOKEN", &proxy_token)
     );
+    if header_auth_only {
+        println!("  # Header-only mode: clients must send x-phantom-proxy-token.");
+    } else {
+        println!(
+            "  # SDK-compatible URLs include /_phantom/TOKEN/. Set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 for header-only mode."
+        );
+    }
     println!("\n{}", shell_hint(syntax));
 
     println!("\n{} Press Ctrl-C to stop the proxy.\n", "->".blue().bold());

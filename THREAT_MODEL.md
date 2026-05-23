@@ -35,7 +35,7 @@ The actual API keys, tokens, passwords, and database URLs that Phantom is asked 
 
 ### 1.2 The proxy session token (`PHANTOM_PROXY_TOKEN`)
 
-A 32-byte (256-bit) CSPRNG value generated fresh each time `phantom exec` starts the local proxy. It is required in the `x-phantom-proxy-token` request header (or `phantom_token` query parameter) for every request to the proxy. Without it, the proxy returns HTTP 401.
+A 32-byte (256-bit) CSPRNG value generated fresh each time `phantom exec` starts the local proxy. The proxy accepts it through the `x-phantom-proxy-token` request header. For generic SDK compatibility, `phantom exec` and `phantom start` include it in local `*_BASE_URL` values as `/_phantom/<token>/`; set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` to emit token-free URLs and require the header path.
 
 **Sensitivity:** High during a session. Compromising it allows a local process to use the running proxy to obtain real secrets injected into outbound requests. The token is ephemeral — it disappears when the proxy process exits.
 
@@ -53,7 +53,7 @@ Contains project ID, service mappings (which upstream URLs map to which secret k
 
 ### 1.5 The audit log
 
-Stored at `~/.phantom/audit.log` when `PHANTOM_AUDIT=1`. Contains JSONL records of vault operations: timestamp, operation name, secret name (never value), process name, and PID.
+Stored at `~/.phantom/audit.log` when `PHANTOM_AUDIT=1`. Contains JSONL records of vault operations: monotonic sequence number, timestamp, operation name, secret name (never value), process name, and PID. Signed entries include an HMAC-SHA256 chain over the previous entry hash.
 
 **Sensitivity:** Low for confidentiality (names only, no values). Moderate for integrity — a tampered or deleted log undermines incident response.
 
@@ -130,7 +130,7 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 | Real secret values | LLM calls destructive MCP tools without user consent | All mutating MCP tools require `confirm: true` parameter; tool description instructs the agent to ask the user first | Covered | `crates/phantom-mcp/src/server.rs` — `require_confirm()` called at every mutating entry point |
 | Real secret values | Local process reads vault file | File vault encrypted with ChaCha20-Poly1305 + Argon2id (m=64 MiB); file permissions `0600`; attacker needs passphrase | Covered | `crates/phantom-vault/src/crypto.rs`, `crates/phantom-vault/src/file.rs:130` |
 | Real secret values | Local process reads OS keychain entries | OS keychain access is gated by the session login. Secret names are stored as SHA-256 hashes (first 8 bytes, hex-encoded) so enumeration does not reveal which secrets are stored | Covered | `crates/phantom-vault/src/keychain.rs:12–18` (hashing); OS keychain access control is enforced by the platform |
-| Real secret values | Proxy used without a session token to extract secrets | Proxy validates `x-phantom-proxy-token` header (or `phantom_token` query param) on every request using constant-time comparison; unauthenticated requests receive HTTP 401 | Covered | `crates/phantom-proxy/src/server.rs:208–231`, `server.rs:620–623` |
+| Real secret values | Proxy used without a session token to extract secrets | Proxy validates the session token on every request using constant-time comparison; unauthenticated requests receive HTTP 401. CLI-generated URLs use a local `/_phantom/<token>/` path segment for SDK compatibility unless `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` is set. | Covered | `crates/phantom-proxy/src/server.rs`, proxy auth regression tests |
 | Real secret values | Proxy token brute-forced via timing side-channel | Comparison uses `subtle::ConstantTimeEq`; length mismatch returns early (token length is not secret) | Covered | `crates/phantom-proxy/src/server.rs:620–623` |
 | Real secret values | Secret injected into non-auth fields (prompt injection via body) | F9 scoping: for JSON bodies, token substitution is restricted to a whitelist of known-secret fields; tokens in `prompt`, `messages`, `content` fields are left as phantom tokens and not substituted | Covered | `crates/phantom-proxy/src/server.rs:444–456` and `body_scope.rs` |
 | Real secret values | Secret injected into non-auth headers (e.g. User-Agent) | F9 scoping: header substitution restricted to auth-bearing headers and the per-route configured header | Covered | `crates/phantom-proxy/src/server.rs:282–319` |
@@ -146,7 +146,7 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 | Team X25519 private key | Insider reads another member's private key | Each member's private key never leaves their machine; the team vault push protocol encrypts to public keys only | Covered | `crates/phantom-core/src/team_crypto.rs:109–138` — `seal_sym_key` uses recipient public key only |
 | Team X25519 private key | Key revocation after member leaves team | No automated key-revocation or re-encryption flow exists. Removing a member from the team prevents future pushes encrypting to their key, but does not invalidate past pushes that included them | Not covered — see [§7](#7-known-gaps-and-non-mitigations) |
 | `.phantom.toml` integrity | LLM or PR tampers with service mappings to redirect proxy | No cryptographic integrity protection on `.phantom.toml`. The file is checked into the repository and subject to standard code review. Tampering would require either direct file access or a merged malicious PR | Not covered — relies on code review and filesystem permissions |
-| Audit log | Log tampered or deleted to cover tracks | The log is append-only by file-open mode (`O_APPEND`) but is not cryptographically chained. An attacker with file write access can truncate or overwrite it | Partial — O_APPEND prevents casual concurrent corruption; no HMAC chain — see [§7](#7-known-gaps-and-non-mitigations) |
+| Audit log | Log tampered or deleted to cover tracks | Signed entries use an HMAC-SHA256 chain, monotonic sequence numbers, and a signed `audit-head.json` checkpoint. `phantom audit verify` fails on malformed lines, modified entries, inserted entries, sequence gaps, missing head checkpoints, and log tail/head mismatches. Deleting both log and checkpoint still requires external evidence | Partial — see [§7](#7-known-gaps-and-non-mitigations) |
 | Audit log | Sensitive values written to log | The log schema has no `value` field; callers are typed to pass `name: Option<&str>` only; a compile-time assertion test verifies the serialized schema contains no `value` key | Covered | `crates/phantom-core/src/audit.rs:36`, test at line 237 |
 | Cloud auth token | GitHub OAuth token stolen | Token stored in OS keychain; attacker with the token can call cloud API but cannot decrypt vault data (separate encryption key) | Partial — OS keychain protection; no second-factor for cloud API calls |
 | Cloud auth token | Phishing for GitHub OAuth token | Out of scope — see [§6](#6-out-of-scope) |
@@ -237,7 +237,7 @@ Secret names stored in the OS keychain use a SHA-256 derived identifier (first 8
 |-------|-----------|
 | MCP tool arguments never carry plaintext secrets | `phantom_add_secret` unconditionally rejects calls with a value parameter — `crates/phantom-mcp/src/server.rs:227–240` |
 | Destructive MCP operations have user consent | `require_confirm()` gate on all mutating tools — `crates/phantom-mcp/src/server.rs` |
-| Proxy requests are authenticated | `x-phantom-proxy-token` header checked via constant-time compare before any request is processed — `crates/phantom-proxy/src/server.rs:208–231` |
+| Proxy requests are authenticated | Session token checked via constant-time compare before any request is processed; CLI-generated URLs use `/_phantom/<token>/` for SDK compatibility, while `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` requires `x-phantom-proxy-token` — `crates/phantom-proxy/src/server.rs` |
 | Vault ciphertext integrity | ChaCha20-Poly1305 AEAD — decryption fails with an error if ciphertext has been tampered with |
 | Team vault key registration before send | `seal_sym_key` requires the recipient's public key to be present before encrypting their share — `crates/phantom-core/src/team_crypto.rs:111` |
 
@@ -282,9 +282,9 @@ If an LLM provider incorporates conversation content into training data, phantom
 
 These are security properties that are not yet implemented. They are documented here to be honest with evaluators and to set roadmap expectations.
 
-### 7.1 Audit log has no integrity protection
+### 7.1 Audit log tail truncation and deletion require out-of-band evidence
 
-The audit log at `~/.phantom/audit.log` is append-only by file-open semantics (`O_APPEND`) but has no cryptographic chain. An attacker with write access to the user's home directory can truncate, modify, or delete the log without detection. An HMAC chain (each entry signing the previous entry's hash) is the planned mitigation. No issue number exists yet.
+The audit log at `~/.phantom/audit.log` is append-only by file-open semantics (`O_APPEND`) and signed entries use an HMAC chain with monotonic sequence numbers. `phantom audit verify` detects malformed JSON, modified entries, inserted entries, prefix deletion, and sequence gaps in the remaining signed log. It still cannot prove that the latest N entries were removed, or that the whole log was deleted, without an external checkpoint or backup of the expected head.
 
 ### 7.2 No proxy-layer rate limiting or anomaly detection
 

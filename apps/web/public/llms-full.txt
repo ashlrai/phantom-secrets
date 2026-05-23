@@ -21,11 +21,11 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 
 1. `phantom init` reads your .env, stores real secrets in an encrypted vault (OS keychain or ChaCha20-Poly1305 encrypted file), and rewrites .env with worthless phantom tokens (phm_...).
 
-2. `phantom exec -- claude` starts a local HTTP reverse proxy on 127.0.0.1. It sets BASE_URL environment variables (e.g., OPENAI_BASE_URL=http://127.0.0.1:PORT/openai) so API calls route through the proxy, then launches the specified command.
+2. `phantom exec -- claude` starts a local HTTP reverse proxy on 127.0.0.1. It sets SDK-compatible BASE_URL environment variables (e.g., OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/), exposes a fresh PHANTOM_PROXY_TOKEN to the child process, then launches the specified command.
 
-3. When code makes an API call, the proxy intercepts it, replaces phantom tokens with real credentials in request headers and body, and forwards over TLS to the real API endpoint. Full streaming/SSE support for OpenAI and Anthropic.
+3. When code makes an API call, the proxy authenticates the local session, removes its local auth token before forwarding, replaces phantom tokens with real credentials in request headers and body, and forwards over TLS to the real API endpoint. Full streaming/SSE support for OpenAI and Anthropic.
 
-4. Session-scoped tokens: each `phantom exec` session generates fresh phantom tokens. If tokens leak from AI logs, they are already invalid.
+4. Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN. Header-aware clients can set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 and send it as x-phantom-proxy-token instead of using path-authenticated local SDK URLs.
 
 5. The AI agent never sees, logs, or transmits a real secret.
 
@@ -70,7 +70,7 @@ Multi-project: --all <DIR> walks a workspace and runs init in every git repo wit
   A progress bar shows live status during --all runs.
 
 ### phantom exec -- <cmd>
-Start local proxy, set *_BASE_URL env vars, run command, shut down proxy on exit.
+Start an authenticated local proxy, set *_BASE_URL env vars, run command, shut down proxy on exit.
 Example: phantom exec -- claude
 Example: phantom exec -- cursor .
 Example: phantom exec -- node server.js
@@ -192,7 +192,7 @@ Subcommands:
     Reports count of verified, tampered, and legacy (pre-chain) entries.
 
 Each log entry contains: ts (Unix epoch), op, name (secret name — never value), process, pid.
-Each entry is chained with HMAC-SHA256 over the previous entry's hash so deletions or modifications are detectable.
+Each entry is chained with HMAC-SHA256 over the previous entry's hash and checked against a signed head checkpoint. `phantom audit verify` detects malformed lines, modified or inserted entries, sequence gaps, prefix deletion, and log tail/head mismatches; full log and checkpoint deletion still requires external evidence.
 
 ### phantom wrap
 Wrap package.json scripts with `npx phantom-secrets exec --` so secrets are injected at runtime.
@@ -430,7 +430,7 @@ Secrets zeroized from memory after use (zeroize crate).
 
 Allowlist model: proxy only injects for configured service URL patterns. Unknown services are not modified.
 
-Session-scoped tokens: fresh per exec session. Tokens from previous sessions are immediately invalid.
+Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN; CLI-generated SDK URLs include it locally, and header-aware clients can opt into x-phantom-proxy-token.
 
 Cloud tokens stored hashed (SHA-256) in database — never plaintext.
 
@@ -439,7 +439,7 @@ MCP destructive tools require explicit confirm=true — prompt injection cannot 
 phantom_reveal blocked in non-interactive contexts by default to prevent AI agents from reading real values.
 
 Opt-in audit log: PHANTOM_AUDIT=1 writes vault events as JSONL to ~/.phantom/audit.log (secret name only).
-Each entry is chained with HMAC-SHA256; phantom audit verify detects tampering or deletion.
+Each entry is chained with HMAC-SHA256 and checked against a signed head checkpoint; phantom audit verify detects tampering, sequence gaps, prefix deletion, and tail/head mismatches. Full log and checkpoint deletion still requires external evidence.
 
 For the full threat model (assets, actors, mitigations, known gaps, crypto summary), see THREAT_MODEL.md.
 
@@ -536,28 +536,17 @@ Pricing:
 
 ## CI/CD
 
-In environments without an OS keychain (Docker, GitHub Actions, CI runners), Phantom falls back to an encrypted file vault at ~/.phantom/vaults/. Set the passphrase via environment variable:
+Direct Phantom Cloud pulls from headless CI are not supported in this release because the CLI does not expose a non-interactive cloud login flow. Use GitHub Actions for checks and builds, then sync deploy-time secrets to Vercel or Railway before deployment.
 
-```
-export PHANTOM_VAULT_PASSPHRASE="your-secure-passphrase"
-```
-
-GitHub Actions example:
 ```yaml
-- name: Install Phantom
-  run: cargo install phantom --git https://github.com/ashlrai/phantom-secrets
+- name: Check for unprotected secrets
+  run: npx phantom-secrets check --staged
 
-- name: Pull secrets
-  run: phantom pull --from vercel --project ${{ vars.VERCEL_PROJECT_ID }}
-  env:
-    PHANTOM_VAULT_PASSPHRASE: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
-    VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-
-- name: Run tests
-  run: phantom exec -- npm test
-  env:
-    PHANTOM_VAULT_PASSPHRASE: ${{ secrets.PHANTOM_VAULT_PASSPHRASE }}
+- name: Build
+  run: npm ci && npm run build
 ```
+
+For deploy secrets, run `phantom sync --platform vercel --project <id>` or `phantom sync --platform railway --project <id>` from a trusted environment.
 
 
 ## Monorepo Support
@@ -587,7 +576,7 @@ Do not commit:
 6. Vault backup (encrypted): phantom export --output backup.enc --passphrase mypass / phantom import backup.enc --passphrase mypass
 6b. Vault export (plaintext JSON, use with care): phantom export --json --allow-plaintext > secrets.json
 7. Team onboarding: phantom env generates .env.example with placeholders
-8. CI/CD: set PHANTOM_VAULT_PASSPHRASE, use phantom in GitHub Actions
+8. CI/CD: use phantom check --staged in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
 9. Pre-commit safety: phantom check in git hooks or pre-commit framework
 10. Rotate with sync: phantom rotate --sync regenerates tokens and pushes to deployment platforms
 11. Monorepo: phantom init in each subdirectory — each gets its own vault and config

@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase-server";
+import { isValidDeviceUserCode, normalizeDeviceUserCode } from "@/lib/device-code";
 import { createClient } from "@supabase/supabase-js";
 
 export async function POST(req: Request) {
@@ -52,23 +53,27 @@ export async function POST(req: Request) {
   );
 
   // Find and approve the device token
-  const cleanCode = user_code.replace(/-/g, "").toUpperCase();
+  const cleanCode = normalizeDeviceUserCode(user_code);
+  if (!isValidDeviceUserCode(cleanCode)) {
+    return Response.json({ error: "Invalid code format" }, { status: 400 });
+  }
+
+  const nowIso = new Date().toISOString();
   const { data: token, error: tokenError } = await supabase
     .from("device_tokens")
     .select("id, status, expires_at")
     .eq("user_code", cleanCode)
     .eq("status", "pending")
-    .single();
+    .gte("expires_at", nowIso)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   if (tokenError || !token) {
     return Response.json(
       { error: "Invalid or expired code. Please try again." },
       { status: 400 }
     );
-  }
-
-  if (new Date(token.expires_at) < new Date()) {
-    return Response.json({ error: "Code expired" }, { status: 400 });
   }
 
   // Approve

@@ -13,7 +13,7 @@ That's it. Your AI tool never sees a real key again.
 
 ## What Phantom actually does
 
-Phantom replaces real API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in your OS keychain. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`. API SDKs are redirected to this proxy via `*_BASE_URL` environment variables; the proxy swaps phantom tokens for real credentials in request headers and body before forwarding over TLS to the actual API endpoint. The AI agent reads `.env`, gets only worthless tokens, and its logs and context windows contain nothing sensitive.
+Phantom replaces real API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in your OS keychain. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`, service SDKs are redirected through `*_BASE_URL` environment variables, and the proxy session is authenticated with a fresh `PHANTOM_PROXY_TOKEN`. CLI-generated SDK URLs include the token as a local `/_phantom/<token>/` path segment so unmodified SDKs work; header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token` instead. The proxy removes its local auth token before forwarding, swaps phantom tokens for real credentials in request headers and body, then forwards over TLS to the actual API endpoint. The AI agent reads `.env`, gets only worthless tokens, and its logs and context windows contain nothing sensitive.
 
 For `text/*` and `application/x-www-form-urlencoded` request bodies the proxy replaces tokens frame-by-frame without buffering the full payload (streaming token replacement). JSON bodies use a buffered path with field-level scoping to avoid substituting tokens that appear in non-secret fields such as `prompt` or `messages`. Full SSE/streaming responses (OpenAI, Anthropic) are preserved end-to-end.
 
@@ -279,7 +279,7 @@ phantom audit path
 phantom audit verify
 ```
 
-Each log entry is chained with HMAC-SHA256 so any deletion or modification of entries is detectable by `phantom audit verify`.
+Each log entry is chained with HMAC-SHA256 and a signed head checkpoint. `phantom audit verify` detects malformed lines, modified or inserted entries, sequence gaps, prefix deletion, and log tail/head mismatches. It cannot prove the whole log and checkpoint were both deleted without an external backup or checkpoint.
 
 ---
 

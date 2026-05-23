@@ -7,7 +7,7 @@
 //!
 //! ## Schema (per line)
 //! ```json
-//! {"ts": 1714794600, "op": "vault.store", "name": "OPENAI_API_KEY",
+//! {"seq": 1, "ts": 1714794600, "op": "vault.store", "name": "OPENAI_API_KEY",
 //!  "pid": 12345, "prev_hmac": "<64-hex>", "process": "phantom",
 //!  "hmac": "<64-hex>"}
 //! ```
@@ -34,11 +34,12 @@
 //! "key_id": "<hex-prefix>"}` is written once when the key is first
 //! generated.
 
+use fs2::FileExt;
 use hmac::{Hmac, Mac};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::BTreeMap;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,11 +50,30 @@ type HmacSha256 = Hmac<Sha256>;
 // Public API
 // ──────────────────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditMode {
+    Disabled,
+    BestEffort,
+    Required,
+}
+
+/// Return the current audit mode from `PHANTOM_AUDIT`.
+///
+/// Supported values:
+/// - unset/anything else: disabled
+/// - `1`, `true`: best-effort logging
+/// - `required`, `fail-closed`: propagate audit write failures
+pub fn mode() -> AuditMode {
+    match std::env::var("PHANTOM_AUDIT").ok().as_deref() {
+        Some("1" | "true" | "TRUE" | "True") => AuditMode::BestEffort,
+        Some("required" | "REQUIRED" | "fail-closed" | "FAIL-CLOSED") => AuditMode::Required,
+        _ => AuditMode::Disabled,
+    }
+}
+
 /// Returns true if audit logging is currently enabled.
 pub fn enabled() -> bool {
-    std::env::var("PHANTOM_AUDIT")
-        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "True"))
-        .unwrap_or(false)
+    mode() != AuditMode::Disabled
 }
 
 /// Log an audit event. Best-effort: errors are swallowed so audit failures
@@ -63,10 +83,22 @@ pub fn enabled() -> bool {
 /// `name` MUST be a secret name (e.g. `OPENAI_API_KEY`), never a secret
 /// value. Callers in security-sensitive code paths must not pass values.
 pub fn log(op: &str, name: Option<&str>) {
-    if !enabled() {
-        return;
+    let _ = log_result(op, name);
+}
+
+/// Log an audit event and propagate failures when `PHANTOM_AUDIT=required`.
+///
+/// Most legacy call sites should continue using [`log`]. Security-sensitive
+/// operations that must fail closed can call this function directly.
+pub fn log_result(op: &str, name: Option<&str>) -> std::io::Result<()> {
+    match mode() {
+        AuditMode::Disabled => Ok(()),
+        AuditMode::BestEffort => {
+            let _ = write_event(op, name, false);
+            Ok(())
+        }
+        AuditMode::Required => write_event(op, name, true),
     }
-    let _ = write_event(op, name);
 }
 
 /// Result of a log verification walk.
@@ -75,14 +107,26 @@ pub struct VerifyReport {
     pub verified: usize,
     pub tampered: usize,
     pub legacy: usize,
+    pub malformed: usize,
+    pub sequence_errors: usize,
+    pub head_missing: bool,
+    pub head_mismatch: bool,
     /// 1-based line numbers of lines that failed HMAC validation.
     pub tampered_lines: Vec<usize>,
+    /// 1-based line numbers of malformed JSON lines.
+    pub malformed_lines: Vec<usize>,
+    /// 1-based line numbers of signed events with a non-monotonic `seq`.
+    pub sequence_error_lines: Vec<usize>,
 }
 
 impl VerifyReport {
-    /// True if no lines were found to be tampered.
+    /// True if no lines were found to be tampered, malformed, or out of sequence.
     pub fn is_clean(&self) -> bool {
         self.tampered == 0
+            && self.malformed == 0
+            && self.sequence_errors == 0
+            && !self.head_missing
+            && !self.head_mismatch
     }
 }
 
@@ -90,18 +134,23 @@ impl VerifyReport {
 ///
 /// - Lines with no `hmac` field are counted as **legacy**.
 /// - The marker line (`hmac_chain_started_at`) is skipped silently.
+/// - Malformed JSON lines are counted as **malformed** and fail verification.
 /// - Lines with a bad `hmac` are counted as **tampered** and their
 ///   1-based line number is recorded in `tampered_lines`.
+/// - New signed lines include a monotonic `seq`; sequence gaps or rewinds fail
+///   verification. Older signed lines without `seq` are still accepted.
+/// - New signed lines also update `audit-head.json`; verification fails if
+///   the walked log does not match that signed head checkpoint.
 ///
-/// **Truncation note:** removing the *last* N lines is not detected —
-/// we can only verify forward from the genesis. A missing-tail attack
-/// requires out-of-band detection (e.g. comparing expected line count).
+/// **Deletion note:** deleting both the log and its head checkpoint cannot be
+/// detected without an external checkpoint or backup.
 pub fn verify_log() -> std::io::Result<VerifyReport> {
     let path = log_path()?;
     if !path.exists() {
         return Ok(VerifyReport::default());
     }
 
+    let _lock = acquire_log_lock_shared(&path)?;
     let key = load_or_skip_hmac_key(&path)?;
     let content = std::fs::read_to_string(&path)?;
 
@@ -110,6 +159,9 @@ pub fn verify_log() -> std::io::Result<VerifyReport> {
     // Once we've seen the first signed line, `chain_started` is true and we
     // validate all subsequent signed lines against the running prev_hmac.
     let mut chain_started = false;
+    let mut expected_seq = 1_u64;
+    let mut final_seq = None;
+    let mut final_hmac = None;
 
     for (idx, raw) in content.lines().enumerate() {
         let line_no = idx + 1;
@@ -120,7 +172,11 @@ pub fn verify_log() -> std::io::Result<VerifyReport> {
 
         let v: serde_json::Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
-            Err(_) => continue, // malformed — skip silently
+            Err(_) => {
+                report.malformed += 1;
+                report.malformed_lines.push(line_no);
+                continue;
+            }
         };
 
         // Skip the chain-started marker line.
@@ -166,6 +222,15 @@ pub fn verify_log() -> std::io::Result<VerifyReport> {
                 let expected = compute_hmac_for_line(&v, key_bytes);
                 if expected == recorded_hmac && line_prev == prev_hmac {
                     report.verified += 1;
+                    if let Some(seq) = v.get("seq").and_then(|s| s.as_u64()) {
+                        if seq != expected_seq {
+                            report.sequence_errors += 1;
+                            report.sequence_error_lines.push(line_no);
+                        }
+                        expected_seq = seq.saturating_add(1);
+                        final_seq = Some(seq);
+                        final_hmac = Some(recorded_hmac.clone());
+                    }
                     prev_hmac = recorded_hmac;
                 } else {
                     report.tampered += 1;
@@ -179,6 +244,16 @@ pub fn verify_log() -> std::io::Result<VerifyReport> {
         }
     }
 
+    if let (Some(seq), Some(hmac), Some(key_bytes)) =
+        (final_seq, final_hmac.as_deref(), key.as_deref())
+    {
+        match read_head(&path, key_bytes)? {
+            Some(head) if head.last_seq == seq && head.last_hmac == hmac => {}
+            Some(_) => report.head_mismatch = true,
+            None => report.head_missing = true,
+        }
+    }
+
     Ok(report)
 }
 
@@ -186,15 +261,21 @@ pub fn verify_log() -> std::io::Result<VerifyReport> {
 // Internal — writing
 // ──────────────────────────────────────────────────────────────────────────────
 
-fn write_event(op: &str, name: Option<&str>) -> std::io::Result<()> {
+fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<()> {
     let path = log_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
+    let lock_file = acquire_log_lock(&path)?;
+
     // Load (or generate) the HMAC key. If anything fails we fall back to
-    // writing unsigned lines — we never want audit writes to hard-fail.
-    let key = load_or_create_hmac_key(&path).ok();
+    // writing unsigned lines unless the caller explicitly requires audit.
+    let key = if required {
+        Some(load_or_create_hmac_key(&path)?)
+    } else {
+        load_or_create_hmac_key(&path).ok()
+    };
 
     // Read the last line of the log to get the previous HMAC.
     let prev_hmac = if key.is_some() {
@@ -202,8 +283,14 @@ fn write_event(op: &str, name: Option<&str>) -> std::io::Result<()> {
     } else {
         "GENESIS".to_string()
     };
+    let seq = if key.is_some() {
+        read_last_seq(&path).saturating_add(1)
+    } else {
+        1
+    };
 
     let event = AuditEvent {
+        seq,
         ts: now_unix(),
         op: op.to_string(),
         name: name.map(|s| s.to_string()),
@@ -216,7 +303,7 @@ fn write_event(op: &str, name: Option<&str>) -> std::io::Result<()> {
     let hmac_val = key.as_ref().map(|k| compute_hmac_for_event(&event, k));
 
     let event = AuditEvent {
-        hmac: hmac_val,
+        hmac: hmac_val.clone(),
         ..event
     };
 
@@ -230,7 +317,42 @@ fn write_event(op: &str, name: Option<&str>) -> std::io::Result<()> {
     // are similar with FILE_APPEND_DATA.
     let mut f = OpenOptions::new().append(true).create(true).open(&path)?;
     f.write_all(&line)?;
+    if let (Some(key), Some(hmac)) = (key.as_deref(), hmac_val.as_deref()) {
+        write_head(&path, seq, hmac, key)?;
+    }
+    drop(lock_file);
     Ok(())
+}
+
+fn lock_path(log_path: &Path) -> PathBuf {
+    log_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("audit.lock")
+}
+
+fn acquire_log_lock(log_path: &Path) -> std::io::Result<File> {
+    let lock_path = lock_path(log_path);
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    lock_file.lock_exclusive()?;
+    Ok(lock_file)
+}
+
+fn acquire_log_lock_shared(log_path: &Path) -> std::io::Result<File> {
+    let lock_path = lock_path(log_path);
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    lock_file.lock_shared()?;
+    Ok(lock_file)
 }
 
 /// Scan from the end of the log file to find the last `hmac` value.
@@ -250,6 +372,31 @@ fn read_last_hmac(path: &Path) -> Option<String> {
     None
 }
 
+/// Scan from the end of the log file to find the last signed event sequence.
+/// Older signed lines did not carry `seq`; those are ignored so the first new
+/// sequenced event starts at 1 while preserving HMAC-chain compatibility.
+fn read_last_seq(path: &Path) -> u64 {
+    let Some(content) = std::fs::read_to_string(path).ok() else {
+        return 0;
+    };
+    for raw in content.lines().rev() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some(v) = serde_json::from_str::<serde_json::Value>(trimmed).ok() else {
+            continue;
+        };
+        if v.get("hmac").is_none() {
+            continue;
+        }
+        if let Some(seq) = v.get("seq").and_then(|s| s.as_u64()) {
+            return seq;
+        }
+    }
+    0
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // HMAC key management — file-based, mode 0600
 // ──────────────────────────────────────────────────────────────────────────────
@@ -259,6 +406,13 @@ fn hmac_key_path(log_path: &Path) -> PathBuf {
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("audit-hmac-key")
+}
+
+fn head_path(log_path: &Path) -> PathBuf {
+    log_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("audit-head.json")
 }
 
 /// Load existing key or generate + persist a new one.
@@ -357,6 +511,7 @@ fn write_chain_marker(log_path: &Path, key: &[u8]) -> std::io::Result<()> {
 /// Compute HMAC for a fully-populated `AuditEvent` (hmac field must be None).
 fn compute_hmac_for_event(event: &AuditEvent, key: &[u8]) -> String {
     let mut map: BTreeMap<&str, String> = BTreeMap::new();
+    map.insert("seq", event.seq.to_string());
     map.insert("op", event.op.clone());
     map.insert("pid", event.pid.to_string());
     map.insert(
@@ -380,7 +535,7 @@ fn compute_hmac_for_event(event: &AuditEvent, key: &[u8]) -> String {
 /// excluded). Used during verification.
 fn compute_hmac_for_line(v: &serde_json::Value, key: &[u8]) -> String {
     let mut map: BTreeMap<&str, String> = BTreeMap::new();
-    for field in &["op", "pid", "prev_hmac", "process", "ts", "name"] {
+    for field in &["seq", "op", "pid", "prev_hmac", "process", "ts", "name"] {
         if let Some(val) = v.get(field) {
             let s = match val {
                 serde_json::Value::String(s) => s.clone(),
@@ -404,12 +559,56 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
+fn compute_hmac_for_head(version: u8, last_seq: u64, last_hmac: &str, key: &[u8]) -> String {
+    let mut map: BTreeMap<&str, String> = BTreeMap::new();
+    map.insert("last_hmac", last_hmac.to_string());
+    map.insert("last_seq", last_seq.to_string());
+    map.insert("version", version.to_string());
+    let canonical = serde_json::to_string(&map).expect("BTreeMap serialization is infallible");
+    hmac_sha256(key, canonical.as_bytes())
+}
+
+fn write_head(log_path: &Path, last_seq: u64, last_hmac: &str, key: &[u8]) -> std::io::Result<()> {
+    let version = 1;
+    let head = AuditHead {
+        version,
+        last_seq,
+        last_hmac: last_hmac.to_string(),
+        hmac: compute_hmac_for_head(version, last_seq, last_hmac, key),
+    };
+    let mut bytes = serde_json::to_vec(&head)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    bytes.push(b'\n');
+    crate::fs::atomic_write(&head_path(log_path), &bytes)
+}
+
+fn read_head(log_path: &Path, key: &[u8]) -> std::io::Result<Option<AuditHead>> {
+    let path = head_path(log_path);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let head: AuditHead = serde_json::from_slice(&std::fs::read(&path)?)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let expected = compute_hmac_for_head(head.version, head.last_seq, &head.last_hmac, key);
+    if expected == head.hmac {
+        Ok(Some(head))
+    } else {
+        Ok(Some(AuditHead {
+            hmac: String::new(),
+            last_seq: 0,
+            last_hmac: String::new(),
+            ..head
+        }))
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Types
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct AuditEvent {
+    seq: u64,
     ts: u64,
     op: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -420,6 +619,14 @@ struct AuditEvent {
     process: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     hmac: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct AuditHead {
+    version: u8,
+    last_seq: u64,
+    last_hmac: String,
+    hmac: String,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -473,7 +680,7 @@ fn process_name() -> String {
 mod tests {
     use super::*;
     use serde_json::Value;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Barrier, Mutex};
     use tempfile::tempdir;
 
     /// All tests in this module mutate process-wide env vars
@@ -535,6 +742,45 @@ mod tests {
         with_temp_home("PHANTOM_AUDIT", "1", || {
             assert!(enabled());
         });
+    }
+
+    #[test]
+    fn required_mode_enabled() {
+        with_temp_home("PHANTOM_AUDIT", "required", || {
+            assert_eq!(mode(), AuditMode::Required);
+            assert!(enabled());
+        });
+    }
+
+    #[test]
+    fn log_result_required_errors_when_home_missing() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_home = std::env::var("HOME").ok();
+        let prev_userprofile = std::env::var("USERPROFILE").ok();
+        let prev_audit = std::env::var("PHANTOM_AUDIT").ok();
+        unsafe {
+            std::env::remove_var("HOME");
+            std::env::remove_var("USERPROFILE");
+            std::env::set_var("PHANTOM_AUDIT", "required");
+        }
+
+        let err = log_result("vault.store", Some("KEY")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+
+        unsafe {
+            match prev_home {
+                Some(p) => std::env::set_var("HOME", p),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_userprofile {
+                Some(p) => std::env::set_var("USERPROFILE", p),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+            match prev_audit {
+                Some(p) => std::env::set_var("PHANTOM_AUDIT", p),
+                None => std::env::remove_var("PHANTOM_AUDIT"),
+            }
+        }
     }
 
     #[test]
@@ -603,6 +849,7 @@ mod tests {
     #[test]
     fn schema_has_no_value_field() {
         let event = AuditEvent {
+            seq: 1,
             ts: 0,
             op: "vault.store".to_string(),
             name: Some("KEY".to_string()),
@@ -628,7 +875,63 @@ mod tests {
             let report = verify_log().expect("verify_log should not error");
             assert_eq!(report.tampered, 0, "no tampered lines expected");
             assert_eq!(report.verified, 3, "3 events should be verified");
+            assert_eq!(report.malformed, 0);
+            assert_eq!(report.sequence_errors, 0);
             assert!(report.is_clean());
+        });
+    }
+
+    #[test]
+    fn hmac_chain_writes_monotonic_sequence_numbers() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+            log("vault.retrieve", Some("KEY_A"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&log_p).unwrap();
+            let seqs: Vec<u64> = content
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|v| v.get("hmac_chain_started_at").is_none())
+                .map(|v| v.get("seq").and_then(|s| s.as_u64()).unwrap())
+                .collect();
+            assert_eq!(seqs, vec![1, 2]);
+        });
+    }
+
+    #[test]
+    fn hmac_chain_concurrent_writes_verify_clean() {
+        with_audit_env(|tmp| {
+            let workers = 32;
+            let barrier = Arc::new(Barrier::new(workers));
+            let mut handles = Vec::new();
+
+            for i in 0..workers {
+                let barrier = Arc::clone(&barrier);
+                handles.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    log("vault.retrieve", Some(&format!("KEY_{i}")));
+                }));
+            }
+
+            for handle in handles {
+                handle.join().unwrap();
+            }
+
+            let report = verify_log().expect("verify_log should not error");
+            assert!(report.is_clean(), "report should be clean: {report:?}");
+            assert_eq!(report.verified, workers);
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&log_p).unwrap();
+            let mut seqs: Vec<u64> = content
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|v| v.get("hmac_chain_started_at").is_none())
+                .map(|v| v.get("seq").and_then(|s| s.as_u64()).unwrap())
+                .collect();
+            seqs.sort_unstable();
+            assert_eq!(seqs, (1..=workers as u64).collect::<Vec<_>>());
         });
     }
 
@@ -678,10 +981,71 @@ mod tests {
         });
     }
 
-    /// Truncation: remove the last event line, verify still OK for remaining lines.
-    /// Documents the known limitation that tail-removal is not detected.
     #[test]
-    fn hmac_chain_truncation_not_detected() {
+    fn hmac_chain_detects_malformed_line() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let mut content = std::fs::read_to_string(&log_p).unwrap();
+            content.push_str("{not json}\n");
+            std::fs::write(&log_p, content).unwrap();
+
+            let report = verify_log().expect("verify_log should not error");
+            assert_eq!(report.malformed, 1);
+            assert_eq!(report.malformed_lines, vec![3]);
+            assert!(!report.is_clean());
+        });
+    }
+
+    #[test]
+    fn hmac_chain_detects_sequence_gap() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+            log("vault.retrieve", Some("KEY_A"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&log_p).unwrap();
+            let key = read_hmac_key(&hmac_key_path(&log_p)).unwrap();
+            let mut changed = false;
+            let mut new_lines = Vec::new();
+
+            for line in content.lines() {
+                let Ok(mut v) = serde_json::from_str::<Value>(line) else {
+                    new_lines.push(line.to_string());
+                    continue;
+                };
+                if !changed
+                    && v.get("hmac_chain_started_at").is_none()
+                    && v.get("seq").and_then(|s| s.as_u64()) == Some(2)
+                {
+                    v.as_object_mut()
+                        .unwrap()
+                        .insert("seq".to_string(), serde_json::json!(4));
+                    let new_hmac = compute_hmac_for_line(&v, &key);
+                    v.as_object_mut()
+                        .unwrap()
+                        .insert("hmac".to_string(), serde_json::json!(new_hmac));
+                    changed = true;
+                }
+                new_lines.push(serde_json::to_string(&v).unwrap());
+            }
+
+            assert!(changed, "expected to rewrite the second event");
+            std::fs::write(&log_p, new_lines.join("\n") + "\n").unwrap();
+
+            let report = verify_log().expect("verify_log should not error");
+            assert_eq!(report.tampered, 0);
+            assert_eq!(report.sequence_errors, 1);
+            assert_eq!(report.sequence_error_lines, vec![3]);
+            assert!(!report.is_clean());
+        });
+    }
+
+    /// Truncation: remove the last event line. The remaining HMAC chain is
+    /// valid, but the signed head checkpoint should catch the missing tail.
+    #[test]
+    fn hmac_chain_detects_tail_truncation_with_head_checkpoint() {
         with_audit_env(|tmp| {
             log("vault.store", Some("KEY_A"));
             log("vault.retrieve", Some("KEY_B"));
@@ -697,8 +1061,43 @@ mod tests {
             std::fs::write(&log_p, lines.join("\n") + "\n").unwrap();
 
             let report = verify_log().expect("verify_log should not error");
-            assert_eq!(report.tampered, 0, "truncation is not detected");
+            assert_eq!(report.tampered, 0);
             assert!(report.verified >= 1);
+            assert!(report.head_mismatch);
+            assert!(!report.is_clean());
+        });
+    }
+
+    #[test]
+    fn hmac_chain_requires_head_checkpoint_for_sequenced_events() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            std::fs::remove_file(head_path(&log_p)).unwrap();
+
+            let report = verify_log().expect("verify_log should not error");
+            assert!(report.head_missing);
+            assert!(!report.is_clean());
+        });
+    }
+
+    #[test]
+    fn hmac_chain_detects_tampered_head_checkpoint() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let head_p = head_path(&log_p);
+            let mut head: Value = serde_json::from_slice(&std::fs::read(&head_p).unwrap()).unwrap();
+            head.as_object_mut()
+                .unwrap()
+                .insert("last_seq".to_string(), serde_json::json!(42));
+            std::fs::write(&head_p, serde_json::to_vec(&head).unwrap()).unwrap();
+
+            let report = verify_log().expect("verify_log should not error");
+            assert!(report.head_mismatch);
+            assert!(!report.is_clean());
         });
     }
 

@@ -50,7 +50,8 @@ $ npx phantom-secrets init
 # Auto-configures Claude Code MCP server if detected
 
 $ phantom exec -- claude
-# Proxy running on 127.0.0.1:54321 — AI sees phantom tokens, proxy injects real keys
+# Authenticated proxy running on 127.0.0.1:54321
+# AI sees phantom tokens; proxy injects real keys
 ```
 
 ### Windows
@@ -61,14 +62,14 @@ After `phantom start --daemon`, the CLI detects your shell and prints the matchi
 
 **PowerShell:**
 ```powershell
-$env:OPENAI_BASE_URL = "http://127.0.0.1:PORT/openai"
+$env:OPENAI_BASE_URL = "http://127.0.0.1:PORT/openai/_phantom/TOKEN/"
 $env:PHANTOM_PROXY_PORT = "PORT"
 $env:PHANTOM_PROXY_TOKEN = "TOKEN"
 ```
 
 **cmd.exe:**
 ```cmd
-set OPENAI_BASE_URL=http://127.0.0.1:PORT/openai
+set OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/
 set PHANTOM_PROXY_PORT=PORT
 set PHANTOM_PROXY_TOKEN=TOKEN
 ```
@@ -76,6 +77,7 @@ set PHANTOM_PROXY_TOKEN=TOKEN
 **Git Bash / WSL:** use the `export X=Y` syntax from the main quick-start.
 
 Notes:
+- `PHANTOM_PROXY_TOKEN` is the proxy session authenticator. By default, `phantom exec` and `phantom start` include it in local `*_BASE_URL` values as `/_phantom/TOKEN/` so unmodified SDKs work. Header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token: $PHANTOM_PROXY_TOKEN` instead.
 - If `phantom.exe` fails to run with "Application Control policy has blocked this file," Windows Smart App Control is honoring the downloaded file's Mark-of-the-Web tag. One-time fix from PowerShell: `Get-ChildItem "$env:USERPROFILE\.phantom-secrets\bin\*.exe" | Unblock-File`.
 - The pre-commit hook installed by `phantom init` is a `#!/bin/sh` script. Native git from the command line invokes it via Git for Windows' bundled `sh.exe`, which is what the official Git for Windows installer ships. GUI clients (GitHub Desktop, some IDE integrations) may run with a stripped-down `PATH` that lacks `sh.exe` and silently skip the hook — for these, run commits from a terminal, or use `phantom check --staged` directly. CI is the durable safety net regardless.
 - Windows-on-ARM64 not yet packaged — x64 only. Tracker: [#1](https://github.com/ashlrai/phantom-secrets/issues/1).
@@ -99,9 +101,9 @@ Notes:
 ```
 
 1. `phantom init` reads `.env`, stores real secrets in the OS keychain, rewrites `.env` with `phm_` tokens
-2. `phantom exec -- claude` starts a local reverse proxy, sets `OPENAI_BASE_URL=http://127.0.0.1:PORT/openai` (and equivalents for other services)
-3. API calls hit the proxy, which replaces phantom tokens with real secrets and forwards over TLS
-4. When the session ends, the proxy shuts down. Phantom tokens are worthless outside the proxy.
+2. `phantom exec -- claude` starts a local reverse proxy, sets SDK-compatible service base URLs such as `OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/`, exposes `PHANTOM_PROXY_TOKEN` to the child process, and launches the command
+3. API calls hit the proxy, which authenticates the local session, removes the local auth token before forwarding, replaces phantom tokens with real secrets, and forwards over TLS
+4. When the session ends, the proxy shuts down and the proxy session token is invalid. Phantom tokens remain worthless placeholders outside an authenticated proxy session.
 
 ## MCP Integration (Claude Code, Cursor, Windsurf, Codex)
 
@@ -181,7 +183,7 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 | Command | Description |
 |---------|-------------|
 | `phantom init` | Import `.env` secrets into vault, rewrite with phantom tokens. `--all <DIR>` protects every git repo with a `.env` under `<DIR>` in one go (with `--dry-run` to preview, `--jobs N` / `-j N` to control parallelism) |
-| `phantom exec -- <cmd>` | Start proxy and run a command with secret injection |
+| `phantom exec -- <cmd>` | Start an authenticated proxy and run a command with secret injection |
 | `phantom start` / `stop` | Manage proxy lifecycle (standalone/daemon mode) |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
 | `phantom add <KEY> [VAL]` | Add a secret. With no `VAL`, prompts silently on the terminal; or pipe via `--stdin` |
@@ -221,7 +223,8 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 ## Features
 
 - **Encrypted vault** -- OS keychain (macOS Keychain / Secure Enclave, Linux Secret Service, Windows Credential Manager) with encrypted file fallback for CI/Docker. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
-- **Session-scoped tokens** -- 256-bit CSPRNG phantom tokens with `phm_` prefix, rotatable on demand
+- **Phantom tokens** -- 256-bit CSPRNG `phm_` placeholders in `.env`, rotatable on demand
+- **Authenticated proxy sessions** -- each proxy run generates a fresh `PHANTOM_PROXY_TOKEN`; CLI-generated SDK URLs include it for compatibility, and header-aware clients can opt into `x-phantom-proxy-token` with `PHANTOM_PROXY_HEADER_AUTH_ONLY=1`
 - **Streaming token replacement** -- For `text/*` and `application/x-www-form-urlencoded` request bodies, phantom tokens are replaced frame-by-frame without buffering the full payload; a 67-byte carry buffer handles tokens that straddle chunk boundaries. JSON bodies use a buffered path to preserve field-level F9 scoping.
 - **Full SSE/streaming support** -- Response streaming preserved end-to-end for OpenAI, Anthropic, and other streaming APIs
 - **Smart detection** -- Heuristic engine distinguishes secrets (`*_KEY`, `*_TOKEN`, `sk-*`, `ghp_*`) from config (`NODE_ENV`, `PORT`)

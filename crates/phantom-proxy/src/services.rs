@@ -87,14 +87,17 @@ impl ServiceRegistry {
             .collect()
     }
 
-    /// Get the base URL env var overrides for all services.
+    /// Get the header-auth-only base URL env var overrides for all services.
     /// Returns pairs of (env_var_name, local_url).
-    /// If proxy_token is provided, it's included as a query parameter for auth.
     pub fn base_url_overrides(&self, proxy_port: u16) -> Vec<(String, String)> {
         self.base_url_overrides_with_token(proxy_port, None)
     }
 
-    /// Get base URL overrides with optional proxy token in query params.
+    /// Get base URL overrides with optional proxy token in the local path.
+    ///
+    /// Path-token URLs are used by the CLI for generic SDK compatibility.
+    /// Use `base_url_overrides` plus the `x-phantom-proxy-token` request
+    /// header for strict header-only clients.
     pub fn base_url_overrides_with_token(
         &self,
         proxy_port: u16,
@@ -120,7 +123,7 @@ impl ServiceRegistry {
 
             let local_url = match proxy_token {
                 Some(token) => format!(
-                    "http://127.0.0.1:{}/{}?phantom_token={}",
+                    "http://127.0.0.1:{}/{}/_phantom/{}/",
                     proxy_port, name, token
                 ),
                 None => format!("http://127.0.0.1:{}/{}", proxy_port, name),
@@ -187,5 +190,15 @@ mod tests {
         assert!(overrides
             .iter()
             .any(|(k, v)| k == "ANTHROPIC_BASE_URL" && v == "http://127.0.0.1:54321/anthropic"));
+    }
+
+    #[test]
+    fn test_base_url_overrides_with_token() {
+        let registry = test_registry();
+        let overrides = registry.base_url_overrides_with_token(54321, Some("proxy-token"));
+        assert!(overrides.iter().any(|(k, v)| k == "OPENAI_BASE_URL"
+            && v == "http://127.0.0.1:54321/openai/_phantom/proxy-token/"));
+        assert!(overrides.iter().any(|(k, v)| k == "ANTHROPIC_BASE_URL"
+            && v == "http://127.0.0.1:54321/anthropic/_phantom/proxy-token/"));
     }
 }

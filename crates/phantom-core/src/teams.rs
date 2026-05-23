@@ -17,6 +17,21 @@ pub struct TeamMember {
     pub role: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct TeamsResp {
+    teams: Vec<Team>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TeamResp {
+    team: Team,
+}
+
+#[derive(Debug, Deserialize)]
+struct TeamMembersResp {
+    members: Vec<TeamMember>,
+}
+
 /// List all teams the authenticated user belongs to.
 pub async fn list_teams(api_base: &str, token: &str) -> Result<Vec<Team>> {
     let client = reqwest::Client::new();
@@ -33,10 +48,14 @@ pub async fn list_teams(api_base: &str, token: &str) -> Result<Vec<Team>> {
     let status = resp.status().as_u16();
 
     match status {
-        200 => resp.json().await.map_err(|e| PhantomError::CloudError {
-            status,
-            message: format!("Invalid response: {e}"),
-        }),
+        200 => resp
+            .json::<TeamsResp>()
+            .await
+            .map(|r| r.teams)
+            .map_err(|e| PhantomError::CloudError {
+                status,
+                message: format!("Invalid response: {e}"),
+            }),
         401 => Err(PhantomError::AuthRequired),
         _ => {
             let body = resp.text().await.unwrap_or_default();
@@ -65,10 +84,15 @@ pub async fn create_team(api_base: &str, token: &str, name: &str) -> Result<Team
     let status = resp.status().as_u16();
 
     match status {
-        200 | 201 => resp.json().await.map_err(|e| PhantomError::CloudError {
-            status,
-            message: format!("Invalid response: {e}"),
-        }),
+        200 | 201 => {
+            resp.json::<TeamResp>()
+                .await
+                .map(|r| r.team)
+                .map_err(|e| PhantomError::CloudError {
+                    status,
+                    message: format!("Invalid response: {e}"),
+                })
+        }
         401 => Err(PhantomError::AuthRequired),
         402 => Err(PhantomError::PlanRequired),
         _ => {
@@ -97,10 +121,14 @@ pub async fn list_members(api_base: &str, token: &str, team_id: &str) -> Result<
     let status = resp.status().as_u16();
 
     match status {
-        200 => resp.json().await.map_err(|e| PhantomError::CloudError {
-            status,
-            message: format!("Invalid response: {e}"),
-        }),
+        200 => resp
+            .json::<TeamMembersResp>()
+            .await
+            .map(|r| r.members)
+            .map_err(|e| PhantomError::CloudError {
+                status,
+                message: format!("Invalid response: {e}"),
+            }),
         401 => Err(PhantomError::AuthRequired),
         _ => {
             let body = resp.text().await.unwrap_or_default();
@@ -348,5 +376,56 @@ pub async fn push_team_vault(
                 message: body,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_list_teams_response_envelope() {
+        let resp: TeamsResp = serde_json::from_value(serde_json::json!({
+            "teams": [
+                { "id": "team_1", "name": "Core", "role": "owner" }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(resp.teams.len(), 1);
+        assert_eq!(resp.teams[0].id, "team_1");
+        assert_eq!(resp.teams[0].name, "Core");
+        assert_eq!(resp.teams[0].role, "owner");
+    }
+
+    #[test]
+    fn parses_create_team_response_envelope() {
+        let resp: TeamResp = serde_json::from_value(serde_json::json!({
+            "team": { "id": "team_2", "name": "Platform", "role": "admin" }
+        }))
+        .unwrap();
+
+        assert_eq!(resp.team.id, "team_2");
+        assert_eq!(resp.team.name, "Platform");
+        assert_eq!(resp.team.role, "admin");
+    }
+
+    #[test]
+    fn parses_list_members_response_envelope() {
+        let resp: TeamMembersResp = serde_json::from_value(serde_json::json!({
+            "members": [
+                {
+                    "github_login": "mason",
+                    "email": "mason@example.com",
+                    "role": "member"
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(resp.members.len(), 1);
+        assert_eq!(resp.members[0].github_login, "mason");
+        assert_eq!(resp.members[0].email.as_deref(), Some("mason@example.com"));
+        assert_eq!(resp.members[0].role, "member");
     }
 }

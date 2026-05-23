@@ -2,6 +2,11 @@
 
 import { useState, useEffect, useRef } from "react";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import {
+  formatDeviceUserCode,
+  isValidDeviceUserCode,
+  normalizeDeviceUserCode,
+} from "@/lib/device-code";
 import { posthog } from "@/lib/posthog";
 
 let _supabase: SupabaseClient | null = null;
@@ -22,18 +27,9 @@ export default function DevicePage() {
   >("input");
   const [error, setError] = useState("");
 
-  const formatCode = (val: string) => {
-    const clean = val.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8);
-    if (clean.length > 4) {
-      return clean.slice(0, 4) + "-" + clean.slice(4);
-    }
-    return clean;
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanCode = code.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-    if (cleanCode.length !== 8) {
+    if (!isValidDeviceUserCode(code)) {
       setError("Code must be 8 characters (XXXX-XXXX)");
       return;
     }
@@ -76,7 +72,7 @@ export default function DevicePage() {
           Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
-          user_code: userCode.replace(/-/g, ""),
+          user_code: normalizeDeviceUserCode(userCode),
         }),
       });
 
@@ -163,7 +159,7 @@ export default function DevicePage() {
               <input
                 type="text"
                 value={code}
-                onChange={(e) => setCode(formatCode(e.target.value))}
+                onChange={(e) => setCode(formatDeviceUserCode(e.target.value))}
                 placeholder="XXXX-XXXX"
                 className="w-full text-center text-3xl font-mono tracking-[0.3em] py-4 px-6 bg-[#0a0a12] border border-[#1a1a2c] rounded-lg text-[#f5f5f7] outline-none focus:border-blue-500 placeholder:text-[#333]"
                 maxLength={9}

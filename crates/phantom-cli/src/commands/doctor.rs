@@ -29,6 +29,22 @@ pub fn run(fix: bool) -> Result<()> {
                         .unwrap_or(&config.phantom.project_id)
                 ));
 
+                let service_risks = config.service_risks();
+                if service_risks.is_empty() {
+                    check_pass("Service routes look safe");
+                } else {
+                    for risk in &service_risks {
+                        check_warn(&format!(
+                            "Service route `{}`: {}",
+                            risk.service, risk.message
+                        ));
+                    }
+                    check_fix(
+                        "Review .phantom.toml service mappings before running untrusted code",
+                    );
+                    issues += service_risks.len();
+                }
+
                 // Check 2: Vault accessible
                 let vault = phantom_vault::create_vault(&config.phantom.project_id);
                 check_pass(&format!("Vault backend: {}", vault.backend_name()));
