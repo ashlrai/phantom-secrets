@@ -17,6 +17,7 @@ pub mod login;
 pub mod logout;
 pub mod mcp;
 pub mod open;
+pub mod proxy_state;
 pub mod pull;
 pub mod remove;
 pub mod reveal;

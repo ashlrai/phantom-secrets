@@ -231,11 +231,6 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<AddSecretParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_add_secret", params.confirm)?;
-        if !params.value.is_empty() {
-            return Err(invalid_params_err(
-                "phantom_add_secret no longer accepts plaintext secret values through MCP. Use phantom_add_secret_interactive, then enter the value in your terminal.",
-            ));
-        }
         text_result(format!(
             "No secret value accepted through MCP for '{}'. Use phantom_add_secret_interactive to start an out-of-band terminal flow.",
             params.name
@@ -1718,18 +1713,23 @@ mod tests {
     }
 
     #[test]
-    fn test_add_secret_rejects_plaintext_value() {
-        let (server, _dir) = setup_initialized_project();
+    fn test_add_secret_params_rejects_plaintext_value_field() {
+        let parsed = serde_json::from_value::<AddSecretParams>(serde_json::json!({
+            "name": "NEW_SECRET",
+            "value": "new-value-123",
+            "confirm": true
+        }));
+        assert!(parsed.is_err());
+    }
 
-        let err = server
-            .phantom_add_secret(Parameters(AddSecretParams {
-                name: "NEW_SECRET".to_string(),
-                value: "new-value-123".to_string(),
-                confirm: true,
-            }))
-            .unwrap_err();
-        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert!(err.message.contains("no longer accepts plaintext"));
+    #[test]
+    fn test_add_secret_params_schema_omits_value_field() {
+        let schema = schemars::schema_for!(AddSecretParams);
+        let value = serde_json::to_value(schema).unwrap();
+        let schema_json = serde_json::to_string(&value).unwrap();
+        assert!(schema_json.contains("\"name\""));
+        assert!(schema_json.contains("\"confirm\""));
+        assert!(!schema_json.contains("\"value\""));
     }
 
     #[test]
@@ -1739,7 +1739,6 @@ mod tests {
         let add_err = server
             .phantom_add_secret(Parameters(AddSecretParams {
                 name: "X".to_string(),
-                value: "y".to_string(),
                 confirm: false,
             }))
             .unwrap_err();

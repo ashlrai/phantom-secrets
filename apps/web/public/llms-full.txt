@@ -124,9 +124,10 @@ Example: phantom check --staged
 
 ### phantom sync
 Push real secrets to deployment platforms.
-Options: --only PATTERN (glob, repeatable; multiple flags OR-ed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`)
+Options: --dry-run (preview without decrypting values or calling platform APIs), --json (with --dry-run), --only PATTERN (glob, repeatable; multiple flags OR-ed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`)
 Example: phantom sync --platform vercel --project prj_abc123
 Example: phantom sync --platform railway --project <id>
+Example (safe preview): phantom sync --platform vercel --project prj_abc123 --dry-run --json
 Example (filtered): phantom sync --only "STRIPE_*" --only "SENDGRID_*"
 
 ### phantom pull

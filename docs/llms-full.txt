@@ -54,7 +54,7 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 - `phantom status` — Show project ID, vault backend, secret count, service mappings.
 - `phantom doctor` — Health check: config, vault, .env, .gitignore, Claude Code MCP, cloud auth.
 - `phantom check` — Scans `.env` files for unprotected real secrets. Exit code 1 if found. Add `--staged` to read content from the git index instead of the working tree (suitable for pre-commit hooks; staged `.env` files are also scanned). Add `--runtime` to detect phantom tokens in the current environment when the proxy is not running.
-- `phantom sync --platform vercel --project <id>` — Push secrets to Vercel or Railway. Use `--only PATTERN` (glob, repeatable, OR-ed) to limit which keys get pushed; the same filter is also honoured via `only = ["PATTERN", ...]` on each `[[sync]]` block in `.phantom.toml`.
+- `phantom sync --platform vercel --project <id>` — Push secrets to Vercel or Railway. Use `--dry-run --json` to preview targets, selected key names, skipped key names, token-env presence, and warnings without decrypting values or calling platform APIs. Use `--only PATTERN` (glob, repeatable, OR-ed) to limit which keys get pushed; the same filter is also honoured via `only = ["PATTERN", ...]` on each `[[sync]]` block in `.phantom.toml`.
 - `phantom pull --from vercel --project <id>` — Pull secrets from platforms into vault.
 - `phantom env` — Generate .env.example with secret values masked.
 - `phantom setup` — Configure Claude Code MCP server and permissions automatically.

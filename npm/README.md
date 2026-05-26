@@ -62,7 +62,7 @@ $ phantom exec -- claude
 | `phantom watch` | Watch .env files and auto-detect new unprotected secrets |
 | `phantom why <KEY>` | Explain why a key is or is not protected |
 | `phantom copy <KEY> --to <dir>` | Copy a secret to another project's vault |
-| `phantom sync` | Push secrets to Vercel / Railway |
+| `phantom sync` | Preview or push secrets to Vercel / Railway |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
 | `phantom setup` | Configure Claude Code MCP server + hooks |
 | `phantom env` | Generate `.env.example` for team onboarding |

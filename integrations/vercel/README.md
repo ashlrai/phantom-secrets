@@ -1,48 +1,29 @@
 # Phantom Secrets — Vercel Integration
 
-Auto-sync encrypted secrets from your Phantom vault to Vercel environment variables.
+The production Vercel integration is still under development. Today,
+deployment sync is performed by the CLI with a local `VERCEL_TOKEN`; Phantom
+Cloud does not yet auto-sync vaults into Vercel from connected OAuth tokens.
 
-## How It Works
-
-1. Install the Phantom integration from the [Vercel Marketplace](https://vercel.com/integrations)
-2. Link your Phantom Cloud account (GitHub OAuth)
-3. Select which Vercel projects to sync
-4. `phantom cloud push` now auto-syncs to Vercel — no manual token setup
-
-## Architecture
-
-```
-phantom vault (local)
-    ↓ phantom cloud push
-Phantom Cloud (E2E encrypted)
-    ↓ auto-sync (if Vercel integration installed)
-Vercel Environment Variables
-```
-
-- Phantom decrypts secrets server-side only to push to Vercel API
-- Uses Vercel's OAuth token (stored encrypted in Supabase)
-- Syncs production, preview, and development environments
-
-## Setup
-
-1. Go to [phm.dev/integrations/vercel/install](https://phm.dev/integrations/vercel/install)
-2. Authorize Phantom to access your Vercel account
-3. Select projects to sync
-4. Done — `phantom cloud push` now syncs everywhere
-
-## CLI Usage
+## Current CLI Flow
 
 ```bash
-# Sync to Vercel (uses integration token automatically)
-phantom sync --platform vercel
-
-# Sync to all configured platforms
-phantom sync --all
-
-# Push to cloud + auto-sync to all integrations
-phantom cloud push --sync
+export VERCEL_TOKEN=...
+phantom sync --platform vercel --project prj_your_project_id --dry-run --json
+phantom sync --platform vercel --project prj_your_project_id
 ```
 
-## Status
+`--dry-run --json` previews the target, selected secret names, filters, and
+missing token state without decrypting vault values or calling the Vercel API.
 
-This integration is under development. Currently, `phantom sync --platform vercel` requires a manual `VERCEL_TOKEN` environment variable. The marketplace integration will remove this requirement.
+## Planned Integration
+
+The intended hosted integration will:
+
+1. Require a signed Phantom user session before install.
+2. Validate OAuth state in the callback.
+3. Store Vercel OAuth tokens encrypted at rest.
+4. Show safe connection metadata in the dashboard.
+5. Let the CLI or cloud backend use connected integration credentials without
+   exposing tokens to an AI agent.
+
+Until that lands, use the CLI token flow above.

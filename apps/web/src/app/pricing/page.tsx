@@ -33,8 +33,8 @@ const TIERS: Tier[] = [
       "MCP server for every editor",
       "Agent readiness CLI · 25 MCP tools",
       "Unlimited local secrets",
-      "1 cloud vault (up to 10 secrets)",
-      "Vercel & Railway sync",
+      "1 cloud vault",
+      "Vercel & Railway sync with local platform tokens",
     ],
     cta: {
       kind: "link",
@@ -67,9 +67,9 @@ const TIERS: Tier[] = [
     features: [
       "Everything in Pro",
       "Team vaults & shared secrets",
-      "Audit log + SSO/SAML",
-      "Centralised secret rotation",
-      "On-prem deployment option",
+      "Audit log",
+      "SSO/SAML (planned)",
+      "On-prem deployment option (planned)",
       "Dedicated support",
     ],
     cta: { kind: "link", label: "Talk to sales", href: "mailto:mason@ashlr.ai" },

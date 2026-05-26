@@ -246,6 +246,9 @@ enum Commands {
         /// Override project ID for this sync
         #[arg(long)]
         project: Option<String>,
+        /// Preview targets, filters, and selected secret names without decrypting values or calling platform APIs
+        #[arg(long)]
+        dry_run: bool,
         /// Only push secrets whose names match this glob pattern (e.g. STRIPE_*).
         /// Repeatable: multiple --only flags are OR-ed together.
         /// Also honoured via `only = [...]` in each [[sync]] block in .phantom.toml.
@@ -541,8 +544,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Sync {
             platform,
             project,
+            dry_run,
             only,
-        } => commands::sync::run(platform, project, only),
+        } => commands::sync::run(platform, project, only, dry_run, cli.json),
         Commands::Env { output } => commands::env::run(&output),
         Commands::Export {
             output,

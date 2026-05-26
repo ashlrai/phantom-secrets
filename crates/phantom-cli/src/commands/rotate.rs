@@ -57,7 +57,7 @@ pub fn run(sync_after: bool) -> Result<()> {
             "\n{} Syncing to deployment platforms...",
             "->".blue().bold()
         );
-        crate::commands::sync::run(None, None, vec![])?;
+        crate::commands::sync::run(None, None, vec![], false, false)?;
     }
 
     Ok(())

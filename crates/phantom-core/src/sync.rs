@@ -94,7 +94,8 @@ impl std::fmt::Display for SyncStatus {
 /// When `patterns` is empty every key passes through (no filter applied).
 /// When non-empty a key is included if it matches **any** pattern
 /// (patterns are OR-ed together). Invalid glob patterns are silently
-/// skipped — a warning is emitted via `tracing::warn!`.
+/// skipped — callers that need a stable preflight contract should call
+/// [`validate_only_patterns`] first and surface the result.
 pub fn filter_by_only<'a>(
     secrets: &'a BTreeMap<String, String>,
     patterns: &[String],
@@ -105,21 +106,29 @@ pub fn filter_by_only<'a>(
     }
 
     // Pre-compile patterns; skip any that are invalid glob syntax.
+    // Preflight callers use validate_only_patterns() to report these
+    // explicitly without contaminating JSON output with log lines.
     let compiled: Vec<Pattern> = patterns
         .iter()
-        .filter_map(|p| match Pattern::new(p) {
-            Ok(pat) => Some(pat),
-            Err(e) => {
-                tracing::warn!("Ignoring invalid --only pattern {:?}: {}", p, e);
-                None
-            }
-        })
+        .filter_map(|p| Pattern::new(p).ok())
         .collect();
 
     secrets
         .iter()
         .filter(|(key, _)| compiled.iter().any(|pat| pat.matches(key)))
         .map(|(k, v)| (k.clone(), v))
+        .collect()
+}
+
+/// Return invalid glob patterns and their parser errors.
+pub fn validate_only_patterns(patterns: &[String]) -> Vec<(String, String)> {
+    patterns
+        .iter()
+        .filter_map(|pattern| {
+            Pattern::new(pattern)
+                .err()
+                .map(|err| (pattern.clone(), err.to_string()))
+        })
         .collect()
 }
 
@@ -520,5 +529,12 @@ mod tests {
         let patterns = vec!["RAILWAY_*".to_string()];
         let filtered = filter_by_only(&secrets, &patterns);
         assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn validate_only_patterns_reports_invalid_globs() {
+        let invalid = validate_only_patterns(&["[".to_string(), "STRIPE_*".to_string()]);
+        assert_eq!(invalid.len(), 1);
+        assert_eq!(invalid[0].0, "[");
     }
 }

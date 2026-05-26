@@ -20,13 +20,10 @@ fn default_env_path() -> String {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AddSecretParams {
     /// Name of the secret (e.g., OPENAI_API_KEY)
     pub name: String,
-    /// Deprecated: plaintext secret values are not accepted through MCP
-    /// because they enter agent context. Use phantom_add_secret_interactive.
-    #[serde(default)]
-    pub value: String,
     /// Required. Must be true — the calling agent must confirm with the user
     /// before invoking this tool. Defends against prompt-injected instructions
     /// in project content (READMEs, issue comments, dependency docs) silently

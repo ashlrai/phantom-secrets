@@ -26,7 +26,7 @@ ok  CLAUDE.md updated`,
 ok  status: verified
 ok  vault accessible
 ok  env files protected
-ok  25 MCP tools available`,
+ok  Phantom MCP wiring detected`,
   },
   {
     n: "03",

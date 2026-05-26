@@ -118,7 +118,12 @@ export async function POST(
   const proGate = requirePro(authResult);
   if (proGate) return proGate;
 
-  const body = (await req.json()) as PushBody;
+  let body: PushBody;
+  try {
+    body = (await req.json()) as PushBody;
+  } catch {
+    return Response.json({ error: "invalid_json" }, { status: 400 });
+  }
   const { encrypted_blob, expected_version, key_shares } = body;
 
   if (!encrypted_blob || !key_shares) {
@@ -133,6 +138,17 @@ export async function POST(
       { status: 413 }
     );
   }
+  if (
+    typeof expected_version !== "number" ||
+    !Number.isInteger(expected_version) ||
+    expected_version < 0
+  ) {
+    return Response.json(
+      { error: "expected_version must be a non-negative integer" },
+      { status: 400 }
+    );
+  }
+  const expectedVersion = expected_version;
 
   const supabase = createServiceClient();
 
@@ -189,7 +205,7 @@ export async function POST(
     .eq("project_id", project_id)
     .maybeSingle();
 
-  if (existing && expected_version !== undefined && existing.version !== expected_version) {
+  if (existing && (expectedVersion === 0 || existing.version !== expectedVersion)) {
     return Response.json(
       {
         error: "version_conflict",
@@ -200,21 +216,77 @@ export async function POST(
     );
   }
 
-  const next_version = (existing?.version ?? 0) + 1;
-  const { error } = await supabase
-    .from("team_vault_blobs")
-    .upsert(
-      {
-        team_id,
-        project_id,
+  if (existing) {
+    const next_version = existing.version + 1;
+    const { data: updated, error } = await supabase
+      .from("team_vault_blobs")
+      .update({
         encrypted_blob,
         version: next_version,
         key_shares,
+      })
+      .eq("team_id", team_id)
+      .eq("project_id", project_id)
+      .eq("version", expectedVersion)
+      .select("version")
+      .maybeSingle();
+
+    if (error || !updated) {
+      return Response.json(
+        {
+          error: "version_conflict",
+          server_version: existing.version,
+          message: "Server has a newer version. Pull, merge, and push again.",
+        },
+        { status: 409 }
+      );
+    }
+
+    return Response.json({ version: updated.version, members_covered: required.length });
+  }
+
+  if (expectedVersion !== 0) {
+    return Response.json(
+      {
+        error: "version_conflict",
+        server_version: 0,
+        message: "No team vault exists yet. Push again with expected_version=0.",
       },
-      { onConflict: "team_id,project_id" }
+      { status: 409 }
     );
+  }
+
+  const { data: inserted, error } = await supabase
+    .from("team_vault_blobs")
+    .insert({
+      team_id,
+      project_id,
+      encrypted_blob,
+      version: 1,
+      key_shares,
+    })
+    .select("version")
+    .single();
 
   if (error) {
+    if (error.code === "23505") {
+      const { data: raced } = await supabase
+        .from("team_vault_blobs")
+        .select("version")
+        .eq("team_id", team_id)
+        .eq("project_id", project_id)
+        .maybeSingle();
+
+      return Response.json(
+        {
+          error: "version_conflict",
+          server_version: raced?.version ?? 1,
+          message: "Server has a newer version. Pull, merge, and push again.",
+        },
+        { status: 409 }
+      );
+    }
+
     return Response.json(
       {
         error: "server_error",
@@ -225,5 +297,5 @@ export async function POST(
     );
   }
 
-  return Response.json({ version: next_version, members_covered: required.length });
+  return Response.json({ version: inserted.version, members_covered: required.length });
 }

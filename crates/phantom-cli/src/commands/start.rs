@@ -7,6 +7,8 @@ use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
+use super::proxy_state::{cleanup_if_stale_or_malformed, read_proxy_state, ProxyState};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellSyntax {
     Bash,
@@ -93,15 +95,22 @@ fn run_daemon() -> Result<()> {
         );
     }
 
-    if pid_path.exists() {
-        let pid_str = std::fs::read_to_string(&pid_path).unwrap_or_default();
-        eprintln!(
-            "{} Proxy may already be running (PID file exists: {}). Run {} first.",
-            "!".yellow().bold(),
-            pid_str.trim(),
-            "phantom stop".cyan().bold()
-        );
-        return Ok(());
+    match read_proxy_state(&pid_path) {
+        ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
+            eprintln!(
+                "{} Proxy may already be running on 127.0.0.1:{} (PID {}). Run {} or {} first.",
+                "!".yellow().bold(),
+                pid.port,
+                pid.pid,
+                "phantom status".cyan().bold(),
+                "phantom stop".cyan().bold()
+            );
+            return Ok(());
+        }
+        ProxyState::Stale(_) | ProxyState::Malformed(_) => {
+            cleanup_if_stale_or_malformed(&pid_path)?;
+        }
+        ProxyState::Missing => {}
     }
 
     let exe = std::env::current_exe()?;
@@ -218,16 +227,23 @@ async fn run_async() -> Result<()> {
         );
     }
 
-    // Check if already running
-    if pid_path.exists() {
-        let pid_str = std::fs::read_to_string(&pid_path).unwrap_or_default();
-        eprintln!(
-            "{} Proxy may already be running (PID file exists: {}). Run {} first.",
-            "!".yellow().bold(),
-            pid_str.trim(),
-            "phantom stop".cyan().bold()
-        );
-        return Ok(());
+    // Check if already running.
+    match read_proxy_state(&pid_path) {
+        ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
+            eprintln!(
+                "{} Proxy may already be running on 127.0.0.1:{} (PID {}). Run {} or {} first.",
+                "!".yellow().bold(),
+                pid.port,
+                pid.pid,
+                "phantom status".cyan().bold(),
+                "phantom stop".cyan().bold()
+            );
+            return Ok(());
+        }
+        ProxyState::Stale(_) | ProxyState::Malformed(_) => {
+            cleanup_if_stale_or_malformed(&pid_path)?;
+        }
+        ProxyState::Missing => {}
     }
 
     let config = PhantomConfig::load(&config_path)?;

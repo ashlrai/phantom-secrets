@@ -60,7 +60,6 @@ Read-only tools (safe to call anytime):
 | `phantom_doctor` | Diagnose configuration and vault health |
 | `phantom_why` | Explain why a key is or is not protected |
 | `phantom_check` | Scan for unprotected secrets (pre-commit-style) |
-| `phantom_env` | Generate `.env.example` with secrets replaced by placeholders |
 | `phantom_sync` | Preview deployment-platform sync (Vercel, Railway) |
 | `phantom_cloud_status` | Check cloud authentication and sync status |
 
@@ -69,7 +68,9 @@ Mutating tools (modify vault or `.env`):
 | Tool | Description |
 |------|-------------|
 | `phantom_init` | Protect secrets in .env files -- store in vault, rewrite with phantom tokens |
+| `phantom_env` | Generate `.env.example` with secrets replaced by placeholders |
 | `phantom_add_secret_interactive` | Start a terminal prompt for adding a secret without passing the value through MCP |
+| `phantom_add_secret` | Deprecated compatibility tool; refuses plaintext values through MCP |
 | `phantom_remove_secret` | Remove a secret from the vault |
 | `phantom_rotate` | Regenerate all phantom tokens (invalidates old ones) |
 | `phantom_copy_secret` | Copy a secret from this project to another project's vault |

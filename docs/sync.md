@@ -2,6 +2,13 @@
 
 `phantom sync` pushes secrets from your local vault to deployment platforms (Vercel and Railway). It reads real values from the OS keychain, applies any filters you configure, and calls the platform API directly — no secrets are written to disk or logged.
 
+Use `--dry-run` before a real push. Dry runs never decrypt secret values and never call platform APIs; they report target configuration, selected key names, skipped key names, token-env presence, and warnings.
+
+```bash
+phantom sync --dry-run --json
+phantom sync --platform vercel --project prj_abc123 --dry-run --json
+```
+
 Before using sync, complete the basic setup: [getting-started.md](./getting-started.md).
 
 ---
@@ -48,6 +55,12 @@ Once configured, syncing is one command:
 
 ```bash
 phantom sync
+```
+
+To preview the same configured targets safely:
+
+```bash
+phantom sync --dry-run --json
 ```
 
 To sync only to Vercel when you have multiple platforms configured:

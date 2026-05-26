@@ -43,7 +43,7 @@ ok  registered 25 tools`,
       <>
         <code className="font-mono text-blue-b">phantom check</code> runs as a
         pre-commit hook and blocks any commit containing an unprotected secret.
-        Nothing slips past.
+        CI remains the durable safety net.
       </>
     ),
     code: `$ git commit -m "wip"

@@ -112,7 +112,7 @@ Notes:
 
 Phantom ships an MCP server so AI coding tools can manage secrets directly -- without ever seeing real values.
 
-- **Vault** — `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
+- **Vault** — `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_add_secret` (deprecated; refuses plaintext), `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
 - **Detection + diagnostics** — `phantom_doctor`, `phantom_why`, `phantom_check`, `phantom_env`
 - **Local-to-cloud** — `phantom_wrap`, `phantom_unwrap`, `phantom_sync`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`
 - **Teams** — `phantom_team_list`, `phantom_team_create`, `phantom_team_members`, `phantom_team_invite`, `phantom_team_key_publish`, `phantom_team_vault_push`, `phantom_team_vault_pull`
@@ -179,7 +179,7 @@ $ phantom team vault-pull <team_id>   # on a teammate's machine
 # decrypts the vault, writes secrets locally.
 ```
 
-Membership and pending invites are visible in the read-only dashboard at [phm.dev/dashboard/team](https://phm.dev/dashboard/team).
+Team memberships and member lists are visible in the read-only dashboard at [phm.dev/dashboard/team](https://phm.dev/dashboard/team).
 
 ## Command Reference
 
@@ -199,7 +199,7 @@ Membership and pending invites are visible in the read-only dashboard at [phm.de
 | `phantom agent doctor` | Human-readable agent readiness view backed by the same policy engine |
 | `phantom agent setup` | Preview or apply safe defaults for agent use (`--dry-run` first, `--apply` to write changes) |
 | `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`) |
-| `phantom sync` | Push secrets to Vercel / Railway (`--only PATTERN` filters by glob, repeatable) |
+| `phantom sync` | Push secrets to Vercel / Railway (`--dry-run --json` previews safely; `--only PATTERN` filters by glob, repeatable) |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
 | `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, or `codex`. Add `--print` to emit the config snippet to stdout |
 | `phantom env` | Generate `.env.example` for team onboarding |

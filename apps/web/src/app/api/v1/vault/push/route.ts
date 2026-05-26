@@ -5,7 +5,12 @@ export async function PUT(req: Request) {
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
 
-  const body = await req.json();
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "invalid_json" }, { status: 400 });
+  }
   const { project_id, encrypted_blob, expected_version } = body;
 
   if (!project_id || !encrypted_blob) {
@@ -20,6 +25,12 @@ export async function PUT(req: Request) {
     return Response.json(
       { error: "encrypted_blob too large (max 1MB)" },
       { status: 413 }
+    );
+  }
+  if (!Number.isInteger(expected_version) || expected_version < 0) {
+    return Response.json(
+      { error: "expected_version must be a non-negative integer" },
+      { status: 400 }
     );
   }
 
@@ -55,9 +66,9 @@ export async function PUT(req: Request) {
     .single();
 
   if (existingVault) {
-    // Update — check optimistic concurrency
-    const expectedVer = expected_version ?? 0;
-    if (expectedVer !== 0 && existingVault.version !== expectedVer) {
+    // Update — expected_version is required so clients cannot
+    // accidentally overwrite a newer cloud copy.
+    if (expected_version === 0 || existingVault.version !== expected_version) {
       return Response.json(
         {
           error: "conflict",
@@ -68,36 +79,66 @@ export async function PUT(req: Request) {
     }
 
     const newVersion = existingVault.version + 1;
-    const { error } = await supabase
+    const { data: updatedVault, error } = await supabase
       .from("vault_blobs")
       .update({
         encrypted_blob,
         version: newVersion,
       })
       .eq("id", existingVault.id)
-      .eq("version", existingVault.version); // TOCTOU guard
+      .eq("version", expected_version)
+      .select("version")
+      .maybeSingle(); // Atomic compare-and-swap guard
 
-    if (error) {
+    if (error || !updatedVault) {
       return Response.json(
         { error: "conflict", server_version: existingVault.version },
         { status: 409 }
       );
     }
 
-    return Response.json({ version: newVersion });
+    return Response.json({ version: updatedVault.version });
   } else {
+    if (expected_version !== 0) {
+      return Response.json(
+        {
+          error: "conflict",
+          server_version: 0,
+        },
+        { status: 409 }
+      );
+    }
+
     // Insert new vault
-    const { error } = await supabase.from("vault_blobs").insert({
-      user_id: authResult.userId,
-      project_id,
-      encrypted_blob,
-      version: 1,
-    });
+    const { data: insertedVault, error } = await supabase
+      .from("vault_blobs")
+      .insert({
+        user_id: authResult.userId,
+        project_id,
+        encrypted_blob,
+        version: 1,
+      })
+      .select("version")
+      .single();
 
     if (error) {
+      if (error.code === "23505") {
+        const { data: racedVault } = await supabase
+          .from("vault_blobs")
+          .select("version")
+          .eq("user_id", authResult.userId)
+          .eq("project_id", project_id)
+          .maybeSingle();
+
+        return Response.json(
+          { error: "conflict", server_version: racedVault?.version ?? 1 },
+          { status: 409 }
+        );
+      }
+
       return Response.json({ error: "Failed to create vault" }, { status: 500 });
     }
 
-    return Response.json({ version: 1 }, { status: 201 });
+    return Response.json({ version: insertedVault.version }, { status: 201 });
   }
 }

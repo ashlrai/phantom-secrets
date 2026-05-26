@@ -135,8 +135,20 @@ async fn push_inner(
         shares.insert(m.user_id.clone(), share);
     }
 
+    let expected_version =
+        match teams::pull_team_vault(api_base, token, team_id, project_id).await? {
+            Some(vault) => vault.version,
+            None => 0,
+        };
+
     let new_version = teams::push_team_vault(
-        api_base, token, team_id, project_id, &blob_b64, None, shares,
+        api_base,
+        token,
+        team_id,
+        project_id,
+        &blob_b64,
+        Some(expected_version),
+        shares,
     )
     .await?;
 

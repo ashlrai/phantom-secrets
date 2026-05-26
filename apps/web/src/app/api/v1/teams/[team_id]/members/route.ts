@@ -32,7 +32,7 @@ export async function GET(req: Request, context: RouteContext) {
   // Fetch all members with user info
   const { data: members, error } = await supabase
     .from("team_members")
-    .select("id, user_id, role, invited_by, joined_at")
+    .select("id, user_id, role, invited_by, joined_at, public_key")
     .eq("team_id", team_id);
 
   if (error) {
@@ -58,7 +58,12 @@ export async function GET(req: Request, context: RouteContext) {
   );
 
   const enrichedMembers = members.map((m) => ({
-    ...m,
+    id: m.id,
+    user_id: m.user_id,
+    role: m.role,
+    invited_by: m.invited_by,
+    joined_at: m.joined_at,
+    has_public_key: Boolean(m.public_key),
     ...(usersMap.get(m.user_id) ?? {}),
   }));
 

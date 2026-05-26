@@ -369,6 +369,21 @@ pub async fn push_team_vault(
         }
         401 => Err(PhantomError::AuthRequired),
         402 => Err(PhantomError::PlanRequired),
+        409 => {
+            let body = resp.text().await.unwrap_or_default();
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                let server_version = v["server_version"].as_u64().unwrap_or(0);
+                Err(PhantomError::VersionConflict {
+                    local: expected_version.unwrap_or(0),
+                    remote: server_version,
+                })
+            } else {
+                Err(PhantomError::CloudError {
+                    status,
+                    message: body,
+                })
+            }
+        }
         _ => {
             let body = resp.text().await.unwrap_or_default();
             Err(PhantomError::CloudError {

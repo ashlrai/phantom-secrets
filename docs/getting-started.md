@@ -166,6 +166,9 @@ phantom sync --platform railway --project <id> --only "STRIPE_*"
 # Multiple --only flags are OR-ed together
 phantom sync --platform vercel --project prj_abc123 --only "STRIPE_*" --only "*_KEY"
 
+# Preview without decrypting values or touching platform APIs
+phantom sync --platform vercel --project prj_abc123 --dry-run --json
+
 # Pull from Vercel on a new machine
 phantom pull --from vercel --project prj_abc123
 
