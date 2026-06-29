@@ -1,4 +1,5 @@
 use crate::error::{PhantomError, Result};
+use crate::leak_correlation::AlertingConfig;
 use crate::rotation_strategy::{RotationSchedule, RotationStrategy};
 use crate::sync::SyncTarget;
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,15 @@ pub struct PhantomConfig {
     /// Keys explicitly classified as public (skipped during init)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub public_keys: Vec<String>,
+    /// Leak incident alerting configuration (`[alerting]` section).
+    /// Controls webhook, Slack, and PagerDuty notifications for high-confidence
+    /// proxy response leak incidents detected by the correlation engine.
+    #[serde(default, skip_serializing_if = "alerting_is_default")]
+    pub alerting: AlertingConfig,
+}
+
+fn alerting_is_default(cfg: &AlertingConfig) -> bool {
+    !cfg.enabled && cfg.backends.is_empty()
 }
 
 /// Cloud vault sync configuration.
@@ -441,6 +451,7 @@ impl PhantomConfig {
             sync: Vec::new(),
             cloud: None,
             public_keys: Vec::new(),
+            alerting: AlertingConfig::default(),
         }
     }
 
