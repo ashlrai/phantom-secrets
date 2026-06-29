@@ -613,6 +613,7 @@ fn main() -> anyhow::Result<()> {
             }
             AuditAction::Path => commands::audit::run_path(),
             AuditAction::Verify => commands::audit::run_verify(),
+            AuditAction::Stats { json, top } => commands::audit::run_stats(json, top),
         },
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),

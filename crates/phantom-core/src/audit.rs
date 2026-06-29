@@ -630,6 +630,154 @@ struct AuditHead {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Audit statistics
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Per-secret access statistics derived from the audit log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretStats {
+    /// Secret name (key name, e.g. `OPENAI_API_KEY`).
+    pub name: String,
+    /// Total number of logged operations for this secret.
+    pub total: u64,
+    /// Number of `vault.store` events (initial store or rotation).
+    pub stores: u64,
+    /// Number of `vault.retrieve` events.
+    pub retrieves: u64,
+    /// Number of `vault.delete` events.
+    pub deletes: u64,
+    /// Unix timestamp of the most recent event for this secret.
+    pub last_seen_ts: u64,
+    /// Unix timestamp of the first recorded event for this secret.
+    pub first_seen_ts: u64,
+}
+
+/// Overall audit log statistics.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuditStats {
+    /// Total events in the log (excluding marker lines).
+    pub total_events: u64,
+    /// Total events that name a specific secret.
+    pub secret_events: u64,
+    /// Per-secret breakdown, sorted by total descending.
+    pub secrets: Vec<SecretStats>,
+    /// Unix timestamp of the earliest event in the log.
+    pub first_event_ts: Option<u64>,
+    /// Unix timestamp of the most recent event in the log.
+    pub last_event_ts: Option<u64>,
+}
+
+/// Read `~/.phantom/audit.log` and compute aggregate statistics.
+///
+/// Returns `Ok(AuditStats)` even if the log file doesn't exist (all counts
+/// will be zero). Returns `Err` only on I/O failures.
+pub fn audit_stats() -> std::io::Result<AuditStats> {
+    let path = log_path()?;
+
+    if !path.exists() {
+        return Ok(AuditStats {
+            total_events: 0,
+            secret_events: 0,
+            secrets: vec![],
+            first_event_ts: None,
+            last_event_ts: None,
+        });
+    }
+
+    let _lock = acquire_log_lock_shared(&path)?;
+    let content = std::fs::read_to_string(&path)?;
+
+    // name → mutable stats accumulator
+    let mut by_name: std::collections::BTreeMap<String, SecretStats> =
+        std::collections::BTreeMap::new();
+    let mut total_events: u64 = 0;
+    let mut secret_events: u64 = 0;
+    let mut first_event_ts: Option<u64> = None;
+    let mut last_event_ts: Option<u64> = None;
+
+    for raw in content.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // Skip the chain-started marker line.
+        if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+        // Must have "op" to count as an event.
+        let op = match v.get("op").and_then(|o| o.as_str()) {
+            Some(op) => op.to_string(),
+            None => continue,
+        };
+
+        total_events += 1;
+
+        let ts = v.get("ts").and_then(|t| t.as_u64()).unwrap_or(0);
+        if ts > 0 {
+            first_event_ts = Some(match first_event_ts {
+                Some(prev) => prev.min(ts),
+                None => ts,
+            });
+            last_event_ts = Some(match last_event_ts {
+                Some(prev) => prev.max(ts),
+                None => ts,
+            });
+        }
+
+        if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
+            secret_events += 1;
+            let entry = by_name.entry(name.to_string()).or_insert_with(|| SecretStats {
+                name: name.to_string(),
+                total: 0,
+                stores: 0,
+                retrieves: 0,
+                deletes: 0,
+                last_seen_ts: 0,
+                first_seen_ts: u64::MAX,
+            });
+            entry.total += 1;
+            match op.as_str() {
+                "vault.store" => entry.stores += 1,
+                "vault.retrieve" => entry.retrieves += 1,
+                "vault.delete" => entry.deletes += 1,
+                _ => {}
+            }
+            if ts > 0 {
+                if ts > entry.last_seen_ts {
+                    entry.last_seen_ts = ts;
+                }
+                if ts < entry.first_seen_ts {
+                    entry.first_seen_ts = ts;
+                }
+            }
+        }
+    }
+
+    // Fix up first_seen_ts for entries that never saw a valid ts (leave as 0).
+    for s in by_name.values_mut() {
+        if s.first_seen_ts == u64::MAX {
+            s.first_seen_ts = 0;
+        }
+    }
+
+    // Sort by total descending, then alphabetically.
+    let mut secrets: Vec<SecretStats> = by_name.into_values().collect();
+    secrets.sort_by(|a, b| b.total.cmp(&a.total).then(a.name.cmp(&b.name)));
+
+    Ok(AuditStats {
+        total_events,
+        secret_events,
+        secrets,
+        first_event_ts,
+        last_event_ts,
+    })
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -1098,6 +1246,113 @@ mod tests {
             let report = verify_log().expect("verify_log should not error");
             assert!(report.head_mismatch);
             assert!(!report.is_clean());
+        });
+    }
+
+    // ── audit_stats tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn stats_empty_when_no_log() {
+        with_audit_env(|tmp| {
+            // Don't write any events — just check stats on a fresh dir.
+            let log_p = tmp.join(".phantom").join("audit.log");
+            // File doesn't exist yet.
+            assert!(!log_p.exists());
+            let stats = audit_stats().expect("audit_stats should not error");
+            assert_eq!(stats.total_events, 0);
+            assert_eq!(stats.secret_events, 0);
+            assert!(stats.secrets.is_empty());
+            assert!(stats.first_event_ts.is_none());
+            assert!(stats.last_event_ts.is_none());
+        });
+    }
+
+    #[test]
+    fn stats_counts_ops_correctly() {
+        with_audit_env(|_tmp| {
+            log("vault.store", Some("OPENAI_API_KEY"));
+            log("vault.retrieve", Some("OPENAI_API_KEY"));
+            log("vault.retrieve", Some("OPENAI_API_KEY"));
+            log("vault.store", Some("STRIPE_KEY"));
+            log("cloud.push", None); // no name — counts as total but not secret_events
+
+            let stats = audit_stats().expect("audit_stats should not error");
+            assert_eq!(stats.total_events, 5);
+            assert_eq!(stats.secret_events, 4);
+
+            // Sorted by total desc: OPENAI_API_KEY (3) before STRIPE_KEY (1).
+            assert_eq!(stats.secrets.len(), 2);
+            let openai = &stats.secrets[0];
+            assert_eq!(openai.name, "OPENAI_API_KEY");
+            assert_eq!(openai.total, 3);
+            assert_eq!(openai.stores, 1);
+            assert_eq!(openai.retrieves, 2);
+            assert_eq!(openai.deletes, 0);
+
+            let stripe = &stats.secrets[1];
+            assert_eq!(stripe.name, "STRIPE_KEY");
+            assert_eq!(stripe.total, 1);
+            assert_eq!(stripe.stores, 1);
+        });
+    }
+
+    #[test]
+    fn stats_delete_counted() {
+        with_audit_env(|_tmp| {
+            log("vault.store", Some("MY_KEY"));
+            log("vault.delete", Some("MY_KEY"));
+
+            let stats = audit_stats().expect("audit_stats should not error");
+            let s = &stats.secrets[0];
+            assert_eq!(s.deletes, 1);
+            assert_eq!(s.total, 2);
+        });
+    }
+
+    #[test]
+    fn stats_timestamps_tracked() {
+        with_audit_env(|_tmp| {
+            log("vault.store", Some("K"));
+            log("vault.retrieve", Some("K"));
+
+            let stats = audit_stats().expect("audit_stats should not error");
+            assert!(stats.first_event_ts.is_some());
+            assert!(stats.last_event_ts.is_some());
+            // last >= first
+            assert!(stats.last_event_ts.unwrap() >= stats.first_event_ts.unwrap());
+
+            let s = &stats.secrets[0];
+            assert!(s.last_seen_ts >= s.first_seen_ts);
+        });
+    }
+
+    #[test]
+    fn stats_sorted_by_total_desc_then_alpha() {
+        with_audit_env(|_tmp| {
+            log("vault.retrieve", Some("Z_KEY"));
+            log("vault.retrieve", Some("A_KEY"));
+            log("vault.retrieve", Some("A_KEY"));
+
+            let stats = audit_stats().expect("audit_stats should not error");
+            assert_eq!(stats.secrets[0].name, "A_KEY");  // 2 total
+            assert_eq!(stats.secrets[1].name, "Z_KEY");  // 1 total
+        });
+    }
+
+    #[test]
+    fn stats_skips_marker_and_malformed_lines() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY"));
+
+            // Manually append a malformed line.
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let mut f = std::fs::OpenOptions::new().append(true).open(&log_p).unwrap();
+            use std::io::Write;
+            writeln!(f, "{{not json}}").unwrap();
+
+            let stats = audit_stats().expect("audit_stats should not error");
+            // Malformed line is skipped — only the 1 real event counted.
+            assert_eq!(stats.total_events, 1);
         });
     }
 
