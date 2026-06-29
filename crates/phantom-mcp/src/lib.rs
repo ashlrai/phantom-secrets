@@ -1,5 +1,5 @@
-mod server;
-mod tools;
+pub mod server;
+pub(crate) mod tools;
 
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;

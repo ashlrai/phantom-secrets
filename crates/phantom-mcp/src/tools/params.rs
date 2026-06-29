@@ -262,3 +262,56 @@ pub struct AuditStatsParams {
 fn default_audit_period() -> String {
     "all".to_string()
 }
+
+// ── Audit & compliance tools ──────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditRecentParams {
+    /// Maximum number of recent audit events to return (default: 20, max: 200).
+    #[serde(default = "default_audit_recent_n")]
+    pub n: usize,
+    /// Filter by operation name prefix (e.g. "vault.retrieve", "cloud"). Omit for all ops.
+    #[serde(default)]
+    pub op_filter: Option<String>,
+    /// Filter by secret name (exact match). Omit for all secrets.
+    #[serde(default)]
+    pub name_filter: Option<String>,
+}
+
+fn default_audit_recent_n() -> usize {
+    20
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditAnomaliesParams {
+    /// Time period to analyse: "7d", "30d", or "all". Defaults to "30d".
+    #[serde(default = "default_anomalies_period")]
+    pub period: String,
+    /// Minimum anomaly score to include (0.0–1.0). Defaults to 0.4.
+    #[serde(default = "default_min_anomaly")]
+    pub min_score: f64,
+}
+
+fn default_anomalies_period() -> String {
+    "30d".to_string()
+}
+
+fn default_min_anomaly() -> f64 {
+    0.4
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ComplianceStatusParams {
+    // No parameters needed — reads project state and global audit state.
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RotationDueParams {
+    /// Warn when expiry is within this many days. Defaults to 7.
+    #[serde(default = "default_warn_days")]
+    pub warn_days: u64,
+}
+
+fn default_warn_days() -> u64 {
+    7
+}
