@@ -14,7 +14,7 @@ use crate::tools::params::{
     CopySecretParams, DoctorParams, EnvParams, InitParams, ListWithExpiryParams,
     RemoveSecretParams, RotateParams, RotateWithExpiryParams, RotationDueParams, SyncParams,
     TeamCreateParams, TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams,
-    WrapParams,
+    WrapParams, ValidateSecretParams, ValidateAllParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -2184,6 +2184,143 @@ impl PhantomMcpServer {
             "Pulled {written} secret(s) from team id {} (v{}). Local vault updated.",
             params.team_id, version
         ))
+    }
+
+    // ── Validation / drift-detection tools ────────────────────────────
+
+    /// Query the stored validation status for a specific secret (read-only).
+    #[tool(
+        description = "Query the last-known validation status for a specific secret. \
+            Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), \
+            failure_reason (string or null), validator_name (which validator ran), \
+            and is_stale (whether the check is older than 24 h). \
+            This tool reads persisted ValidationMetadata — it does NOT make a live \
+            HTTP request. Use phantom_validate_all to trigger a fresh check. \
+            Read-only; no confirm required. Secret VALUES are never returned."
+    )]
+    fn phantom_validate_secret(
+        &self,
+        Parameters(params): Parameters<ValidateSecretParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (_config, vault) = self.load_config_and_vault()?;
+
+        // Confirm the secret exists.
+        let exists = vault
+            .exists(&params.name)
+            .map_err(|e| internal_err(format!("Vault access failed: {e}")))?;
+        if !exists {
+            return Err(crate::tools::helpers::invalid_params_err(format!(
+                "Secret '{}' not found in vault.",
+                params.name
+            )));
+        }
+
+        // Load validation metadata (may not exist yet — return a "never checked" record).
+        let meta = vault
+            .get_validation_metadata(&params.name)
+            .unwrap_or_default();
+
+        let is_stale = meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS);
+
+        let out = serde_json::json!({
+            "name": params.name,
+            "last_check_ts": meta.last_check_ts,
+            "is_valid": meta.is_valid,
+            "failure_reason": meta.failure_reason,
+            "validator_name": meta.validator_name,
+            "is_stale": is_stale,
+            "never_checked": meta.never_checked(),
+        });
+
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
+    /// Run live validation checks for all vault secrets and return a compliance report.
+    #[tool(
+        description = "Run live credential health checks for all secrets in the vault. \
+            Each secret is validated against its target API (OpenAI, Stripe, GitHub, \
+            Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: \
+            total, valid, invalid, unreachable, not_checked counts and per-secret entries \
+            (name, validator, status, reason, checked_at). \
+            Secret VALUES are never returned or logged. Read-only; no confirm required. \
+            Note: this makes real outbound HTTP requests — run during maintenance windows \
+            to avoid contributing to rate limits."
+    )]
+    fn phantom_validate_all(
+        &self,
+        Parameters(params): Parameters<ValidateAllParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (_config, vault) = self.load_config_and_vault()?;
+
+        let names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+
+        if names.is_empty() {
+            let out = serde_json::json!({
+                "total": 0,
+                "valid": 0,
+                "invalid": 0,
+                "unreachable": 0,
+                "not_checked": 0,
+                "entries": [],
+                "note": "Vault is empty."
+            });
+            return text_result(
+                serde_json::to_string_pretty(&out)
+                    .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+            );
+        }
+
+        // Retrieve all secrets for validation (zeroized after use).
+        let mut secrets: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
+        for name in &names {
+            let value = vault
+                .retrieve(name)
+                .map_err(|e| internal_err(format!("Failed to retrieve secret '{name}': {e}")))?;
+            secrets.push((name.clone(), zeroize::Zeroizing::new(String::from(value.as_str()))));
+        }
+
+        let jobs = params.jobs.max(1).min(16);
+        let timeout = std::time::Duration::from_secs(10);
+        let validators = phantom_core::validator::default_validators();
+
+        let report = phantom_core::validator::run_validation_pipeline(
+            secrets, &validators, jobs, timeout,
+        );
+
+        // Persist ValidationMetadata for each result so phantom_validate_secret
+        // can answer status queries without re-running HTTP checks.
+        for entry in &report.entries {
+            let meta = match entry.status {
+                phantom_core::validator::ValidationStatus::Valid => {
+                    phantom_core::validator::ValidationMetadata::mark_valid(&entry.validator)
+                }
+                phantom_core::validator::ValidationStatus::Invalid => {
+                    phantom_core::validator::ValidationMetadata::mark_invalid(
+                        &entry.validator,
+                        entry.reason.as_deref().unwrap_or("unknown"),
+                    )
+                }
+                phantom_core::validator::ValidationStatus::Unreachable => {
+                    phantom_core::validator::ValidationMetadata::mark_unreachable(
+                        &entry.validator,
+                        entry.reason.as_deref().unwrap_or("unreachable"),
+                    )
+                }
+                _ => continue,
+            };
+            // Best-effort — don't fail the whole call if metadata persistence fails.
+            let _ = vault.set_validation_metadata(&entry.name, meta);
+        }
+
+        let out = serde_json::to_string_pretty(&report)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
+
+        text_result(out)
     }
 }
 

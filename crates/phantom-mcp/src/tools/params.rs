@@ -246,6 +246,26 @@ pub struct TeamVaultParams {
     pub confirm: bool,
 }
 
+// ── Validation ───────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ValidateSecretParams {
+    /// Name of the secret to query validation status for (e.g. OPENAI_API_KEY).
+    /// Never the value — this tool only reads stored metadata.
+    pub name: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ValidateAllParams {
+    /// Maximum number of concurrent validation jobs (default: 4, max: 16).
+    #[serde(default = "default_validate_jobs")]
+    pub jobs: usize,
+}
+
+fn default_validate_jobs() -> usize {
+    4
+}
+
 // ── Audit analytics ──────────────────────────────────────────────────
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]

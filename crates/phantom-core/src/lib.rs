@@ -14,3 +14,4 @@ pub mod team_crypto;
 pub mod teams;
 pub mod teams_vault;
 pub mod token;
+pub mod validator;

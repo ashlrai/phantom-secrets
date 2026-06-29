@@ -3,6 +3,7 @@ use crate::metadata::SecretMetadata;
 use crate::traits::VaultBackend;
 use fs2::FileExt;
 use phantom_core::error::{PhantomError, Result};
+use phantom_core::validator::ValidationMetadata;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,6 +22,10 @@ struct VaultData {
     /// Absent entries mean "no metadata" — graceful on older vault files.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     metadata: BTreeMap<String, SecretMetadata>,
+    /// Per-secret validation metadata (last check timestamp, is_valid, failure_reason).
+    /// Stored alongside TTL metadata. Absent entries mean "never validated".
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    validation_metadata: BTreeMap<String, ValidationMetadata>,
 }
 
 impl FileVault {
@@ -174,6 +179,7 @@ impl VaultBackend for FileVault {
         }
         // Remove associated metadata so the vault stays consistent.
         data.metadata.remove(name);
+        data.validation_metadata.remove(name);
         self.save(&data)?;
         phantom_core::audit::log("vault.delete", Some(name));
         Ok(())
@@ -205,6 +211,33 @@ impl VaultBackend for FileVault {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
         data.metadata.insert(name.to_string(), meta);
+        self.save(&data)
+    }
+
+    fn get_validation_metadata(
+        &self,
+        name: &str,
+    ) -> phantom_core::error::Result<ValidationMetadata> {
+        let data = self.load()?;
+        Ok(data
+            .validation_metadata
+            .get(name)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn set_validation_metadata(
+        &self,
+        name: &str,
+        meta: ValidationMetadata,
+    ) -> phantom_core::error::Result<()> {
+        let _lock = self.lock_file()?;
+        let mut data = self.load()?;
+        // Only persist if the secret exists.
+        if !data.secrets.contains_key(name) {
+            return Err(PhantomError::SecretNotFound(name.to_string()));
+        }
+        data.validation_metadata.insert(name.to_string(), meta);
         self.save(&data)
     }
 }
