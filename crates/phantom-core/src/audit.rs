@@ -417,6 +417,86 @@ impl RateLimitEvent {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Response leak events
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Severity level for a secret-leak event detected in an upstream API response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeakSeverity {
+    /// A vault secret value was found in the response body / header — confirmed
+    /// exfiltration of a live credential.
+    High,
+    /// A response field matches a known secret format (e.g. `sk_*`, `ghp_*`)
+    /// but does not correspond to a value in the active vault injection map.
+    /// May indicate a hard-coded secret surfaced by the API.
+    Medium,
+}
+
+impl LeakSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LeakSeverity::High => "high",
+            LeakSeverity::Medium => "medium",
+        }
+    }
+}
+
+/// The part of the HTTP response where the leak was detected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeakLocation {
+    /// Leak found inside the response body.
+    Body,
+    /// Leak found inside a response header. Contains the header name.
+    Header(String),
+    /// Leak found in the HTTP status line (unusual, but possible in forwarded errors).
+    StatusLine,
+}
+
+impl LeakLocation {
+    pub fn as_label(&self) -> String {
+        match self {
+            LeakLocation::Body => "body".to_string(),
+            LeakLocation::Header(name) => format!("header:{}", name),
+            LeakLocation::StatusLine => "status-line".to_string(),
+        }
+    }
+}
+
+/// A high-severity audit event emitted when a real secret is detected leaking
+/// back through an upstream API response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeakEvent {
+    /// Unix timestamp (seconds).
+    pub ts: u64,
+    /// Where in the response the leak was detected.
+    pub location: LeakLocation,
+    /// Severity of the detected leak.
+    pub severity: LeakSeverity,
+    /// The secret name (key name, e.g. `OPENAI_API_KEY`) if the leaked value
+    /// matched an active vault entry. `None` for format-only matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_name: Option<String>,
+    /// The matched secret format pattern (e.g. `sk_live_*`, `ghp_*`).
+    pub pattern: String,
+    /// Number of times this pattern was found in the response (for deduplication).
+    pub match_count: usize,
+}
+
+impl LeakEvent {
+    /// Emit this leak event to the audit log (best-effort; never panics).
+    ///
+    /// Writes op `proxy.response_leak` with the secret name if known.
+    pub fn emit(&self) {
+        if !enabled() {
+            return;
+        }
+        log("proxy.response_leak", self.secret_name.as_deref());
+    }
+}
+
 /// Result of a log verification walk.
 #[derive(Debug, Default)]
 pub struct VerifyReport {

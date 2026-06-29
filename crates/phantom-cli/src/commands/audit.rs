@@ -35,6 +35,10 @@ pub enum AuditAction {
         /// Emit raw JSONL instead of pretty-printing
         #[arg(long)]
         json: bool,
+        /// Only show response-leak events (op=proxy.response_leak); high-severity
+        /// incidents where a real secret escaped an upstream API response.
+        #[arg(long)]
+        leaked_secrets: bool,
     },
     /// Follow the audit log (like tail -f)
     Tail {
@@ -86,7 +90,13 @@ pub enum AuditAction {
 // Entry points called from main.rs
 // ──────────────────────────────────────────────────────────────────────────────
 
-pub fn run_show(last: usize, op: Option<&str>, name: Option<&str>, json: bool) -> Result<()> {
+pub fn run_show(
+    last: usize,
+    op: Option<&str>,
+    name: Option<&str>,
+    json: bool,
+    leaked_secrets: bool,
+) -> Result<()> {
     let path = resolve_path()?;
 
     if !path.exists() {
@@ -98,7 +108,14 @@ pub fn run_show(last: usize, op: Option<&str>, name: Option<&str>, json: bool) -
         return Ok(());
     }
 
-    let lines = read_matching_lines(&path, op, name);
+    // --leaked-secrets overrides --op to filter to proxy.response_leak events.
+    let effective_op = if leaked_secrets {
+        Some("proxy.response_leak")
+    } else {
+        op
+    };
+
+    let lines = read_matching_lines(&path, effective_op, name);
 
     if lines.is_empty() {
         println!("{}  No matching audit events.", "->".blue().bold());

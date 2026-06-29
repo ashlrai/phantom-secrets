@@ -6,7 +6,7 @@ pub mod services;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_server;
 
-pub use interceptor::Interceptor;
+pub use interceptor::{Interceptor, ResponseLeakAnalyzer};
 pub use rate_limiter::{AnomalyClass, RateDecision, RateLimitConfig, RateLimiter};
 pub use server::{ProxyConfig, ProxyServer};
 pub use services::{ServiceRegistry, ServiceRoute};

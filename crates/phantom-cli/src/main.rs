@@ -666,7 +666,8 @@ fn main() -> anyhow::Result<()> {
                 op,
                 name,
                 json,
-            } => commands::audit::run_show(last, op.as_deref(), name.as_deref(), json),
+                leaked_secrets,
+            } => commands::audit::run_show(last, op.as_deref(), name.as_deref(), json, leaked_secrets),
             AuditAction::Tail { op, name } => {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
             }
