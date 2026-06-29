@@ -245,3 +245,20 @@ pub struct TeamVaultParams {
     #[serde(default)]
     pub confirm: bool,
 }
+
+// ── Audit analytics ──────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditStatsParams {
+    /// Time period to analyse: "7d", "30d", or "all". Defaults to "all".
+    #[serde(default = "default_audit_period")]
+    pub period: String,
+    /// Only include secrets whose anomaly score is at or above this threshold
+    /// (range 0.0–1.0). Omit or set to 0.0 to return all secrets.
+    #[serde(default)]
+    pub min_anomaly_score: Option<f64>,
+}
+
+fn default_audit_period() -> String {
+    "all".to_string()
+}

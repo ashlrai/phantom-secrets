@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod analytics;
 pub mod audit;
 pub mod auth;
 pub mod cloud;

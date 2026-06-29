@@ -627,7 +627,17 @@ fn main() -> anyhow::Result<()> {
             }
             AuditAction::Path => commands::audit::run_path(),
             AuditAction::Verify => commands::audit::run_verify(),
-            AuditAction::Stats { json, top } => commands::audit::run_stats(json, top),
+            AuditAction::Stats {
+                json,
+                top,
+                analytics,
+                min_anomaly_score,
+            } => commands::audit::run_stats(json, top, analytics, min_anomaly_score),
+            AuditAction::Export {
+                format,
+                period,
+                min_anomaly_score,
+            } => commands::audit::run_export(&format, &period, min_anomaly_score),
         },
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
