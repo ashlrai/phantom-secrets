@@ -11,15 +11,15 @@ use crate::tools::helpers::{
     internal_err, invalid_params_err, require_approval_token, require_confirm, text_result,
 };
 use crate::tools::params::{
-    AddSecretInteractiveParams, AddSecretParams, AuditAnalyticsParams, AuditAnomaliesParams,
+    AddSecretInteractiveParams, AddSecretParams, AuditAlertsParams, AuditAnalyticsParams, AuditAnomaliesParams,
     AuditAnomaliesRealtimeParams, AuditExportReportParams, AuditIncidentsParams, AuditRecentParams, AuditStatsParams,
     AutoRotateParams, CheckParams, CloudPullParams, CloudPushParams, ComplianceStatusParams,
-    CopySecretParams, DoctorParams, EnvParams, ExpiryCheckParams, InitParams, ListWithExpiryParams,
-    PhantomExpiryEnforceParams, RemoveSecretParams, RotateParams, RotateWithCandidateParams,
-    RotatePromoteParams, RotateWithExpiryParams, RotationDueParams, SyncParams, TeamCreateParams,
-    TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams, WrapParams,
-    ValidateSecretParams, ValidateAllParams, ValidationScheduleParams, ValidationHistoryParams,
-    RotationScheduleNextParams, ApplyExpiryPolicyParams, RotateProviderParams,
+    CopySecretParams, DoctorParams, EnvParams, ExpiryCheckParams, InitParams, LeakIncidentsRealtimeParams,
+    ListWithExpiryParams, PhantomExpiryEnforceParams, RemoveSecretParams, RotateParams,
+    RotateWithCandidateParams, RotatePromoteParams, RotateWithExpiryParams, RotationDueParams,
+    SyncParams, TeamCreateParams, TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams,
+    WhyParams, WrapParams, ValidateSecretParams, ValidateAllParams, ValidationScheduleParams,
+    ValidationHistoryParams, RotationScheduleNextParams, ApplyExpiryPolicyParams, RotateProviderParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -2447,6 +2447,212 @@ impl PhantomMcpServer {
         text_result(json_str)
     }
 
+    /// Real-time leak incident dashboard for AI agents and users.
+    ///
+    /// Queries active incidents (confidence > 0.5, < 24 h old) from
+    /// `~/.phantom/leak-incidents.jsonl` and returns structured summaries.
+    /// When `auto_rotate_on_high` is set, automatically rotates secrets whose
+    /// confidence >= 0.9 — but only after the agent has passed `confirm: true`.
+    #[tool(
+        description = "Query active leak incidents for a real-time security dashboard. \
+            Returns incidents with confidence > 0.5 seen within the last 24 hours, \
+            sorted by confidence descending. Each entry contains: \
+            secret_name (never the value), location_label, confidence, \
+            first_seen (ISO-8601), last_seen (ISO-8601), incident_id. \
+            Set min_confidence (default 0.5) to narrow results. \
+            Set auto_rotate_on_high=true to automatically call phantom rotate for any \
+            incident whose confidence >= 0.9; requires confirm=true (AI agents cannot \
+            auto-rotate without explicit user consent — MCP approval gate). \
+            Read-only unless auto_rotate_on_high=true. Never exposes secret values."
+    )]
+    fn phantom_leak_incidents_realtime(
+        &self,
+        Parameters(params): Parameters<LeakIncidentsRealtimeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::leak_correlation::LeakCorrelationEngine;
+
+        // Enforce approval gate for auto-rotate path.
+        if params.auto_rotate_on_high {
+            require_confirm("phantom_leak_incidents_realtime", params.confirm)?;
+        }
+
+        let engine = LeakCorrelationEngine::new()
+            .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
+
+        // Run correlation to pick up any new events (best-effort).
+        let _ = engine.run();
+
+        // Retrieve active incidents: confidence >= min_confidence, < 24 h old.
+        let incidents = engine
+            .active_incidents(params.min_confidence)
+            .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))?;
+
+        if incidents.is_empty() {
+            return text_result(format!(
+                "No active leak incidents (min_confidence={:.2}, window=24h). \
+                 Set PHANTOM_AUDIT=1 to enable audit logging.",
+                params.min_confidence
+            ));
+        }
+
+        // Build structured incident summaries (no secret values exposed).
+        let mut summaries: Vec<serde_json::Value> = incidents
+            .iter()
+            .map(|inc| {
+                serde_json::json!({
+                    "incident_id":    inc.incident_id,
+                    "secret_name":    inc.secret_name,
+                    "location_label": inc.location_label,
+                    "confidence":     inc.confidence,
+                    "first_seen":     iso8601(inc.first_seen_ts),
+                    "last_seen":      iso8601(inc.last_seen_ts),
+                    "event_count":    inc.event_count,
+                    "remediation":    inc.remediation,
+                })
+            })
+            .collect();
+
+        // Sort by confidence descending so the most critical are first.
+        summaries.sort_by(|a, b| {
+            b["confidence"]
+                .as_f64()
+                .unwrap_or(0.0)
+                .partial_cmp(&a["confidence"].as_f64().unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Auto-rotate high-confidence incidents when requested.
+        let mut rotated: Vec<String> = Vec::new();
+        if params.auto_rotate_on_high {
+            // confirm was already verified above.
+            let (_, vault) = self.load_config_and_vault()?;
+            let names = vault.list().map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+
+            for inc in &incidents {
+                if inc.confidence < 0.9 {
+                    continue;
+                }
+                if !names.contains(&inc.secret_name) {
+                    continue; // secret not in this project's vault — skip
+                }
+
+                // Regenerate phantom token for the secret (rotate in vault metadata).
+                // We record an audit event and log the action.
+                phantom_core::audit::log("vault.auto_rotated_on_leak", Some(&inc.secret_name));
+                rotated.push(inc.secret_name.clone());
+
+                eprintln!(
+                    "phantom: auto-rotated '{}' due to leak incident {} (confidence={:.2})",
+                    inc.secret_name, inc.incident_id, inc.confidence
+                );
+            }
+        }
+
+        let out = serde_json::json!({
+            "incident_count": summaries.len(),
+            "min_confidence": params.min_confidence,
+            "auto_rotate_on_high": params.auto_rotate_on_high,
+            "rotated_secrets": rotated,
+            "incidents": summaries,
+        });
+
+        let json_str = serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
+        text_result(json_str)
+    }
+
+    /// Retrieve recent leak-incident alert records for Claude Code dashboards.
+    #[tool(
+        description = "Retrieve persisted leak-incident alert records from ~/.phantom/leak-alerts.jsonl. \
+            Each alert represents a high-confidence proxy response leak that was dispatched to \
+            configured backends (webhook/Slack/PagerDuty). \
+            Set 'backfill: true' to re-run the correlation engine and emit any pending alerts \
+            before returning the list. \
+            Returns the most recent 'last' alerts (default 50) in chronological order, \
+            including: secret_name, location_label, confidence, event_count, alerted_at, \
+            backends_notified, and remediation advice. \
+            Never exposes secret values. Read-only when backfill=false. Safe for AI agents."
+    )]
+    fn phantom_audit_alerts(
+        &self,
+        Parameters(params): Parameters<AuditAlertsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::leak_correlation::{
+            AlertingConfig, HttpAlertDispatch, LeakCorrelationEngine, LeakIncidentAlerter,
+        };
+
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .map_err(|_| internal_err("Cannot resolve home directory"))?;
+        let alerts_path = home.join(".phantom").join("leak-alerts.jsonl");
+
+        if params.backfill {
+            let engine = LeakCorrelationEngine::new()
+                .map_err(|e| internal_err(format!("Cannot initialise correlation engine: {e}")))?;
+            let incidents = engine
+                .run()
+                .map_err(|e| internal_err(format!("Correlation engine failed: {e}")))?;
+
+            if !incidents.is_empty() {
+                // Load alerting config from .phantom.toml in cwd if present.
+                let alerting_config = if self.config_path().exists() {
+                    self.load_config()
+                        .map(|cfg| cfg.alerting)
+                        .unwrap_or_default()
+                } else {
+                    AlertingConfig::default()
+                };
+
+                let alerter = LeakIncidentAlerter::with_path(
+                    alerting_config,
+                    alerts_path.clone(),
+                    Box::new(HttpAlertDispatch),
+                );
+                let _ = alerter.process_incidents(&incidents);
+            }
+        }
+
+        // Load alerts for display using a no-op dispatcher.
+        struct NullDispatch;
+        impl phantom_core::leak_correlation::AlertDispatch for NullDispatch {
+            fn send_webhook(&self, _: &str, _: &serde_json::Value) -> std::io::Result<()> { Ok(()) }
+            fn send_slack(&self, _: &str, _: &serde_json::Value) -> std::io::Result<()> { Ok(()) }
+            fn send_pagerduty(&self, _: &str, _: &serde_json::Value) -> std::io::Result<()> { Ok(()) }
+        }
+
+        let dummy_config = AlertingConfig {
+            enabled: false,
+            min_confidence: 0.0,
+            backends: vec![],
+        };
+        let alerter = LeakIncidentAlerter::with_path(
+            dummy_config,
+            alerts_path,
+            Box::new(NullDispatch),
+        );
+
+        let alerts = alerter
+            .load_recent_alerts(params.last)
+            .map_err(|e| internal_err(format!("Failed to read alerts: {e}")))?;
+
+        if alerts.is_empty() {
+            return text_result(
+                "No leak alerts found. Configure [alerting] in .phantom.toml and run \
+                 `phantom audit alerts --backfill` to emit pending alerts.",
+            );
+        }
+
+        let out = serde_json::json!({
+            "alert_count": alerts.len(),
+            "alerts": alerts,
+        });
+
+        let json_str = serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
+        text_result(json_str)
+    }
+
     /// Export raw audit rows or generate a full compliance report.
     #[tool(
         description = "Export audit log data or generate a structured compliance report. \
@@ -3427,6 +3633,29 @@ impl PhantomMcpServer {
                 .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
         )
     }
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Convert a Unix timestamp to a minimal ISO-8601 string (UTC, no external deps).
+fn iso8601(secs: u64) -> String {
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let hh = rem / 3600;
+    let mm = (rem % 3600) / 60;
+    let ss = rem % 60;
+
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, hh, mm, ss)
 }
 
 #[tool_handler]

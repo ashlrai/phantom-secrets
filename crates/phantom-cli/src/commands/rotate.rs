@@ -483,3 +483,53 @@ pub fn run_with_provider(provider: &str, name: &str, sync_after: bool) -> Result
 
     Ok(())
 }
+
+/// Rotate the phantom token for a **single named secret** without touching
+/// any other secrets in the vault.
+///
+/// This is called automatically by `phantom audit incidents --auto-rotate-on-high`
+/// for each incident whose confidence >= 0.9.  It regenerates only the phantom
+/// token in `.env` for `name` and records a `vault.store` audit event so that
+/// `LeakCorrelationEngine::active_incidents` will clear the incident on the next
+/// call (rotation clears incidents whose `last_seen_ts` predates the rotate).
+///
+/// Returns `Ok(())` if the secret was rotated successfully, or an error if the
+/// secret does not exist in the vault or `.phantom.toml` is missing.
+pub fn run_rotate_single(name: &str) -> Result<()> {
+    let project_dir = std::env::current_dir()?;
+    let config_path = project_dir.join(".phantom.toml");
+    let env_path = project_dir.join(".env");
+
+    if !config_path.exists() {
+        anyhow::bail!(
+            "No .phantom.toml found. Run {} first.",
+            "phantom init".cyan().bold()
+        );
+    }
+
+    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+
+    if !vault
+        .exists(name)
+        .with_context(|| format!("Failed to check if '{name}' exists in vault"))?
+    {
+        anyhow::bail!("Secret '{}' not found in vault.", name);
+    }
+
+    // Generate a new phantom token for this secret only.
+    let mut token_map = TokenMap::new();
+    token_map.insert(name.to_string());
+
+    // Rewrite .env with the new token for this single secret (other tokens unchanged).
+    if env_path.exists() {
+        let dotenv = DotenvFile::parse_file(&env_path)?;
+        dotenv.write_phantomized(&token_map, &env_path)?;
+    }
+
+    // Record a vault.store audit event so the leak-correlation engine will
+    // treat this secret as rotated and clear its active incidents.
+    phantom_core::audit::log("vault.store", Some(name));
+
+    Ok(())
+}

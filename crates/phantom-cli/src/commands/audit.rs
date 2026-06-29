@@ -130,13 +130,22 @@ pub enum AuditAction {
     /// Incidents are grouped by (secret, location) within 24-hour windows.
     /// High-confidence incidents (≥ 0.95) indicate the same secret leaked more
     /// than 3 times within an hour — immediate rotation is advised.
+    ///
+    /// Examples:
+    ///   phantom audit incidents
+    ///   phantom audit incidents --min-confidence 0.5
+    ///   phantom audit incidents --auto-rotate-on-high
     Incidents {
-        /// Only show incidents with confidence ≥ this value (default: 0.7)
-        #[arg(long, default_value_t = 0.7, value_name = "SCORE")]
+        /// Only show incidents with confidence ≥ this value (default: 0.5)
+        #[arg(long, default_value_t = 0.5, value_name = "SCORE")]
         min_confidence: f64,
         /// Emit raw JSON lines instead of human-readable output
         #[arg(long)]
         json: bool,
+        /// Automatically call `phantom rotate <secret>` for any incident with
+        /// confidence >= 0.9, and log the action to the audit log.
+        #[arg(long)]
+        auto_rotate_on_high: bool,
     },
 
     /// Export raw audit log rows filtered by date range, secret, or operation.
@@ -163,6 +172,29 @@ pub enum AuditAction {
         /// Filter to events from this PID only.
         #[arg(long, value_name = "PID")]
         pid: Option<u64>,
+    },
+
+    /// Show persisted leak-incident alert records from ~/.phantom/leak-alerts.jsonl.
+    ///
+    /// Alerts are emitted at most once per incident per 1-hour window. Use
+    /// `--backfill` to re-run the correlation engine and emit any pending alerts
+    /// for incidents that have not yet been notified.
+    ///
+    /// Examples:
+    ///   phantom audit alerts
+    ///   phantom audit alerts --last 20
+    ///   phantom audit alerts --json
+    ///   phantom audit alerts --backfill
+    Alerts {
+        /// Maximum number of recent alerts to return (default: 50)
+        #[arg(long, default_value_t = 50)]
+        last: usize,
+        /// Re-run leak correlation and emit any pending alerts before listing
+        #[arg(long)]
+        backfill: bool,
+        /// Emit raw JSON lines instead of human-readable output
+        #[arg(long)]
+        json: bool,
     },
 
     /// Generate a structured compliance report and save to ~/.phantom/reports/.
@@ -1065,7 +1097,7 @@ pub fn run_anomalies(
     }
 }
 
-pub fn run_incidents(min_confidence: f64, json: bool) -> Result<()> {
+pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool) -> Result<()> {
     use phantom_core::leak_correlation::LeakCorrelationEngine;
 
     let engine = LeakCorrelationEngine::new()
@@ -1094,10 +1126,52 @@ pub fn run_incidents(min_confidence: f64, json: bool) -> Result<()> {
         return Ok(());
     }
 
+    // ── Auto-rotate high-confidence incidents ─────────────────────────────────
+    let mut rotated: Vec<String> = Vec::new();
+    if auto_rotate_on_high {
+        for inc in &incidents {
+            if inc.confidence < 0.9 {
+                continue;
+            }
+            // Call `phantom rotate` for this specific secret by re-using the
+            // rotate command's internal logic, then log the action.
+            match crate::commands::rotate::run_rotate_single(&inc.secret_name) {
+                Ok(()) => {
+                    phantom_core::audit::log(
+                        "vault.auto_rotated_on_leak",
+                        Some(&inc.secret_name),
+                    );
+                    rotated.push(inc.secret_name.clone());
+                    if !json {
+                        println!(
+                            "{}  auto-rotated {} (confidence={:.2})",
+                            "->".green().bold(),
+                            inc.secret_name.bold(),
+                            inc.confidence,
+                        );
+                    }
+                }
+                Err(e) => {
+                    if !json {
+                        eprintln!(
+                            "{}  failed to auto-rotate {}: {e}",
+                            "!!".red().bold(),
+                            inc.secret_name.bold(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     if json {
-        let out = serde_json::to_string_pretty(&incidents)
+        let out = serde_json::json!({
+            "incidents": incidents,
+            "rotated_secrets": rotated,
+        });
+        let s = serde_json::to_string_pretty(&out)
             .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
-        println!("{}", out);
+        println!("{}", s);
         return Ok(());
     }
 
@@ -1109,6 +1183,17 @@ pub fn run_incidents(min_confidence: f64, json: bool) -> Result<()> {
     );
     println!();
 
+    // ── Table header ──────────────────────────────────────────────────────────
+    println!(
+        "  {:<28}  {:<10}  {:<22}  {:<22}  {}",
+        "Name".bold(),
+        "Confidence".bold(),
+        "FirstSeen".bold(),
+        "LastSeen".bold(),
+        "Status".bold(),
+    );
+    println!("  {}", "-".repeat(100).dimmed());
+
     for inc in &incidents {
         let confidence_str = if inc.confidence >= 0.9 {
             format!("{:.2}", inc.confidence).red().bold().to_string()
@@ -1116,33 +1201,207 @@ pub fn run_incidents(min_confidence: f64, json: bool) -> Result<()> {
             format!("{:.2}", inc.confidence).yellow().to_string()
         };
 
-        println!(
-            "  {}  secret={}  location={}  confidence={}  events={}",
-            format_unix_ts(inc.first_seen_ts).dimmed(),
-            inc.secret_name.bold(),
-            inc.location_label.cyan(),
-            confidence_str,
-            inc.event_count,
-        );
+        let status = if rotated.contains(&inc.secret_name) {
+            "rotated".green().bold().to_string()
+        } else if inc.confidence >= 0.9 {
+            "CRITICAL".red().bold().to_string()
+        } else {
+            "active".yellow().to_string()
+        };
 
-        // Time window
-        if inc.first_seen_ts != inc.last_seen_ts {
+        println!(
+            "  {:<28}  {:<10}  {:<22}  {:<22}  {}",
+            inc.secret_name.bold(),
+            confidence_str,
+            format_unix_ts(inc.first_seen_ts),
+            format_unix_ts(inc.last_seen_ts),
+            status,
+        );
+    }
+    println!();
+
+    // Remediation advice for unrotated high-confidence incidents.
+    for inc in &incidents {
+        if inc.confidence >= 0.9 && !rotated.contains(&inc.secret_name) {
             println!(
-                "    window: {} → {}",
-                format_unix_ts(inc.first_seen_ts).dimmed(),
-                format_unix_ts(inc.last_seen_ts).dimmed(),
+                "  {}  {}",
+                "remediation:".yellow().bold(),
+                inc.remediation.dimmed(),
             );
         }
+    }
 
+    if !rotated.is_empty() {
+        println!();
+        println!(
+            "{}  Auto-rotated {} secret(s): {}",
+            "->".green().bold(),
+            rotated.len(),
+            rotated.join(", ").bold(),
+        );
+    }
+
+    Ok(())
+}
+
+/// `phantom audit alerts [--last N] [--backfill] [--json]`
+///
+/// Lists persisted leak-incident alert records from `~/.phantom/leak-alerts.jsonl`.
+/// With `--backfill`, re-runs the correlation engine against the audit log first
+/// and emits any new alerts via configured backends before listing.
+pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
+    use phantom_core::leak_correlation::{
+        AlertingConfig, AlertBackendConfig, HttpAlertDispatch, LeakCorrelationEngine,
+        LeakIncidentAlerter,
+    };
+
+    // Resolve home dir for the alerts file.
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .map_err(|_| anyhow::anyhow!("Cannot resolve home directory"))?;
+    let alerts_path = home.join(".phantom").join("leak-alerts.jsonl");
+
+    if backfill {
+        // Re-run correlation to pick up any new incidents.
+        let engine = LeakCorrelationEngine::new()
+            .map_err(|e| anyhow::anyhow!("Cannot initialise leak correlation engine: {e}"))?;
+        let incidents = engine
+            .run()
+            .map_err(|e| anyhow::anyhow!("Correlation engine failed: {e}"))?;
+
+        if !incidents.is_empty() {
+            // Load alerting config from .phantom.toml if present, else use defaults.
+            let alerting_config = load_alerting_config_from_project();
+            let alerter = LeakIncidentAlerter::with_path(
+                alerting_config,
+                alerts_path.clone(),
+                Box::new(HttpAlertDispatch),
+            );
+            let new_alerts = alerter
+                .process_incidents(&incidents)
+                .map_err(|e| anyhow::anyhow!("Alert dispatch failed: {e}"))?;
+            if !new_alerts.is_empty() && !json {
+                println!(
+                    "{}  Emitted {} new alert(s) via configured backends.",
+                    "->".blue().bold(),
+                    new_alerts.len().to_string().green().bold()
+                );
+            }
+        }
+    }
+
+    // Load alerts from disk via a dummy alerter (no backends needed for read).
+    let dummy_config = AlertingConfig {
+        enabled: false,
+        min_confidence: 0.0,
+        backends: vec![],
+    };
+    let alerter = LeakIncidentAlerter::with_path(
+        dummy_config,
+        alerts_path,
+        Box::new(crate::commands::audit::NullDispatch),
+    );
+
+    let alerts = alerter
+        .load_recent_alerts(last)
+        .map_err(|e| anyhow::anyhow!("Failed to read alerts: {e}"))?;
+
+    if alerts.is_empty() {
+        if json {
+            println!("[]");
+        } else {
+            println!(
+                "{}  No leak alerts found. Run with {} to enable alerting.",
+                "->".blue().bold(),
+                "`phantom audit alerts --backfill`".cyan()
+            );
+        }
+        return Ok(());
+    }
+
+    if json {
+        let out = serde_json::to_string_pretty(&alerts)
+            .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
+        println!("{}", out);
+        return Ok(());
+    }
+
+    println!(
+        "{}  {} leak alert(s) (most recent {} shown)",
+        "->".blue().bold(),
+        alerts.len().to_string().red().bold(),
+        last.min(alerts.len()),
+    );
+    println!();
+
+    for alert in &alerts {
+        let confidence_str = if alert.confidence >= 0.9 {
+            format!("{:.2}", alert.confidence).red().bold().to_string()
+        } else {
+            format!("{:.2}", alert.confidence).yellow().to_string()
+        };
+
+        println!(
+            "  {}  secret={}  location={}  confidence={}  events={}  backends={}",
+            format_unix_ts(alert.alerted_at).dimmed(),
+            alert.secret_name.bold(),
+            alert.location_label.cyan(),
+            confidence_str,
+            alert.event_count,
+            alert.backends_notified.join(",").dimmed(),
+        );
         println!(
             "    {}  {}",
             "remediation:".yellow().bold(),
-            inc.remediation.dimmed(),
+            alert.remediation.dimmed(),
         );
         println!();
     }
 
     Ok(())
+}
+
+/// Load alerting config from the nearest `.phantom.toml`, falling back to
+/// a disabled default if no config file is found or it fails to parse.
+fn load_alerting_config_from_project() -> phantom_core::leak_correlation::AlertingConfig {
+    // Walk up from cwd looking for .phantom.toml
+    if let Ok(cwd) = std::env::current_dir() {
+        let config_path = cwd.join(".phantom.toml");
+        if config_path.exists() {
+            if let Ok(cfg) = phantom_core::config::PhantomConfig::load(&config_path) {
+                return cfg.alerting;
+            }
+        }
+    }
+    phantom_core::leak_correlation::AlertingConfig::default()
+}
+
+/// A no-op alert dispatcher for read-only operations.
+pub(crate) struct NullDispatch;
+
+impl phantom_core::leak_correlation::AlertDispatch for NullDispatch {
+    fn send_webhook(
+        &self,
+        _url: &str,
+        _payload: &serde_json::Value,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn send_slack(
+        &self,
+        _url: &str,
+        _payload: &serde_json::Value,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn send_pagerduty(
+        &self,
+        _integration_key: &str,
+        _payload: &serde_json::Value,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// `phantom audit export-range` — export audit rows with date-range + field filters.

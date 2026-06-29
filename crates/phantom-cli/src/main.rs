@@ -891,7 +891,13 @@ fn main() -> anyhow::Result<()> {
             AuditAction::Incidents {
                 min_confidence,
                 json,
-            } => commands::audit::run_incidents(min_confidence, json),
+                auto_rotate_on_high,
+            } => commands::audit::run_incidents(min_confidence, json, auto_rotate_on_high),
+            AuditAction::Alerts {
+                last,
+                backfill,
+                json,
+            } => commands::audit::run_alerts(last, backfill, json),
             AuditAction::ExportRange {
                 format,
                 from,

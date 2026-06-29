@@ -448,6 +448,50 @@ fn default_min_confidence() -> f64 {
     0.7
 }
 
+// ── Real-time leak incident dashboard ────────────────────────────────────────
+
+/// Parameters for `phantom_leak_incidents_realtime`.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct LeakIncidentsRealtimeParams {
+    /// Only return incidents whose confidence score is at or above this value
+    /// (range 0.0–1.0). Defaults to 0.5 per spec (active incident threshold).
+    #[serde(default = "default_realtime_min_confidence")]
+    pub min_confidence: f64,
+    /// When true, automatically call `phantom rotate <secret>` for any incident
+    /// with confidence >= 0.9 and log the action.
+    /// AI agents MUST set `confirm: true` to enable auto-rotate — the approval
+    /// gate prevents unattended rotation without explicit user consent.
+    #[serde(default)]
+    pub auto_rotate_on_high: bool,
+    /// Required when `auto_rotate_on_high` is true. The calling agent must
+    /// obtain explicit user consent before auto-rotating secrets.
+    /// Defends against prompt-injected instructions silently rotating keys.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+fn default_realtime_min_confidence() -> f64 {
+    0.5
+}
+
+// ── Leak incident alert records ──────────────────────────────────────────────
+
+/// Parameters for `phantom_audit_alerts`.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditAlertsParams {
+    /// Maximum number of recent alerts to return (default: 50).
+    #[serde(default = "default_alerts_last")]
+    pub last: usize,
+    /// If true, re-run the leak correlation engine and emit pending alerts
+    /// before returning the list. Default: false.
+    #[serde(default)]
+    pub backfill: bool,
+}
+
+fn default_alerts_last() -> usize {
+    50
+}
+
 // ── Audit export & compliance report ─────────────────────────────────
 
 /// Parameters for `phantom_audit_export_report`.
