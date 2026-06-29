@@ -10,6 +10,12 @@
 //!   overlap window so secrets split across chunk boundaries are still caught.
 //! * **SSE event parsing** — `data:` lines in `text/event-stream` bodies are
 //!   scrubbed individually so partial-event delimiters are not corrupted.
+//! * **Adaptive / context-aware scrubbing** — the scrubber learns which JSON
+//!   paths habitually carry a given secret by consulting a
+//!   [`ContextualLeakProfileStore`].  After enough observations (≥
+//!   `PROFILE_CONFIDENCE_THRESHOLD`) any string value found at that JSON path
+//!   is aggressively redacted even when it does not match the exact vault
+//!   value — catching rotated keys and paraphrased secrets.
 //!
 //! On any detected leak the scrubber:
 //! 1. Logs a `LeakEvent` to the audit trail (with anomaly flag via `LeakSeverity::High`).
@@ -17,9 +23,13 @@
 //! 3. Emits a warning to proxy stderr so the developer sees it immediately.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::interceptor::ResponseLeakAnalyzer;
 use phantom_core::audit::{LeakEvent, LeakSeverity};
+use phantom_core::leak_correlation::{
+    extract_json_path, value_at_json_path, ContextualLeakProfileStore, RequestContext,
+};
 use tracing::warn;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -73,6 +83,9 @@ pub struct ScrubEvent {
     pub scrubbed: bool,
     /// Audit events for each distinct (pattern × location) leak found.
     pub leak_events: Vec<LeakEvent>,
+    /// Adaptive scrub hits — paths that were aggressively redacted based on
+    /// learned profiles even when no exact vault-value match occurred.
+    pub adaptive_hits: Vec<AdaptiveScrubHit>,
 }
 
 impl ScrubEvent {
@@ -80,6 +93,7 @@ impl ScrubEvent {
         Self {
             scrubbed: false,
             leak_events: Vec::new(),
+            adaptive_hits: Vec::new(),
         }
     }
 
@@ -88,8 +102,29 @@ impl ScrubEvent {
         Self {
             scrubbed,
             leak_events: events,
+            adaptive_hits: Vec::new(),
         }
     }
+
+    fn with_adaptive(mut self, hits: Vec<AdaptiveScrubHit>) -> Self {
+        if !hits.is_empty() {
+            self.scrubbed = true;
+        }
+        self.adaptive_hits = hits;
+        self
+    }
+}
+
+/// A single redaction made by the adaptive scrubber based on a high-confidence
+/// learned profile rather than an exact vault-value match.
+#[derive(Debug, Clone)]
+pub struct AdaptiveScrubHit {
+    /// Secret name whose profile triggered this redaction.
+    pub secret_name: String,
+    /// The JSON path at which the value was redacted.
+    pub json_path: String,
+    /// Confidence of the profile that triggered this hit.
+    pub profile_confidence: f64,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -288,6 +323,310 @@ impl ResponseScrubber {
         }
 
         (output.into_bytes(), all_events)
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// AdaptiveResponseScrubber — context-aware, profile-guided scrubbing
+// ────────────────────────────────────────────────────────────────────────────
+
+/// An enhanced scrubber that combines exact-match vault scrubbing with
+/// adaptive, JSON-path-aware redaction guided by [`ContextualLeakProfileStore`].
+///
+/// ## How it works
+///
+/// 1. **Exact scrub** — delegates to [`ResponseScrubber`] for vault-value and
+///    format-pattern matches (same as the baseline scrubber).
+/// 2. **Profile learning** — after each scrub, if a vault secret was found at a
+///    specific JSON path, that `(secret_name, json_path, content_type, status_code)`
+///    tuple is recorded in the profile store.
+/// 3. **Aggressive path-targeted redaction** — before emitting, for each
+///    high-confidence profile the scrubber walks the parsed JSON tree and
+///    replaces the value at the known path with `[REDACTED:adaptive:<name>]`
+///    even if the exact vault value is absent (covers rotated keys that land
+///    at the same structural location).
+///
+/// The profile store is shared via `Arc<Mutex<_>>` so multiple concurrent
+/// proxy workers can safely read/update it.
+pub struct AdaptiveResponseScrubber {
+    inner: ResponseScrubber,
+    /// Maps secret_key_name → real_secret_value for profile path extraction.
+    named_secrets: HashMap<String, String>,
+    /// Shared profile store.
+    profiles: Arc<Mutex<ContextualLeakProfileStore>>,
+}
+
+impl AdaptiveResponseScrubber {
+    /// Build from a `name → secret_value` map and a shared profile store.
+    pub fn new(
+        named_secrets: HashMap<String, String>,
+        profiles: Arc<Mutex<ContextualLeakProfileStore>>,
+    ) -> Self {
+        Self {
+            inner: ResponseScrubber::from_named_map(&named_secrets),
+            named_secrets,
+            profiles,
+        }
+    }
+
+    /// Build with an in-process-only (non-persisted) profile store.
+    /// Useful for tests and single-process deployments.
+    pub fn ephemeral(named_secrets: HashMap<String, String>) -> Self {
+        let store = ContextualLeakProfileStore::with_path(
+            std::path::PathBuf::from("/dev/null"), // won't persist
+        );
+        Self::new(named_secrets, Arc::new(Mutex::new(store)))
+    }
+
+    /// Scrub a fully-buffered response body with adaptive path-aware redaction.
+    ///
+    /// `ctx` carries the HTTP request metadata used to enrich leak profiles and
+    /// to match against learned profiles for aggressive redaction.
+    pub fn scrub_buffered_adaptive(
+        &self,
+        content_type: Option<&str>,
+        body: &[u8],
+        ctx: Option<&RequestContext>,
+    ) -> (Vec<u8>, ScrubEvent) {
+        if body.is_empty() {
+            return (Vec::new(), ScrubEvent::clean());
+        }
+
+        // Step 1: exact vault + format-pattern scrub.
+        let (scrubbed_bytes, mut event) = self.inner.scrub_buffered(content_type, body);
+
+        // Step 2: profile learning — if vault secrets were found, record paths.
+        if let Some(ctx) = ctx {
+            let ct = content_type.unwrap_or("");
+            if ct.contains("json") || ct.contains("JSON") {
+                // Try to locate each leaked secret in the *original* body to
+                // extract its JSON path before it was redacted.
+                if let Ok(original_str) = std::str::from_utf8(body) {
+                    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(original_str) {
+                        for (name, value) in &self.named_secrets {
+                            if !value.is_empty() && original_str.contains(value.as_str()) {
+                                if let Some(path) = extract_json_path(&json_val, value) {
+                                    if let Ok(mut store) = self.profiles.lock() {
+                                        let _ = store.record_leak(name, &path, ctx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 3: adaptive path-targeted redaction from high-confidence profiles.
+        let (final_bytes, adaptive_hits) =
+            self.apply_adaptive_redaction(&scrubbed_bytes, content_type, ctx);
+
+        event = event.with_adaptive(adaptive_hits);
+
+        // Emit warnings for adaptive hits.
+        for hit in &event.adaptive_hits {
+            warn!(
+                "[phantom-proxy] ADAPTIVE REDACTION: secret='{}' path='{}' confidence={:.2}",
+                hit.secret_name, hit.json_path, hit.profile_confidence
+            );
+            eprintln!(
+                "[phantom-proxy] ADAPTIVE REDACTION: secret='{}' path='{}' confidence={:.2}",
+                hit.secret_name, hit.json_path, hit.profile_confidence
+            );
+        }
+
+        (final_bytes, event)
+    }
+
+    /// Apply high-confidence profile-guided redaction to a JSON body.
+    ///
+    /// For each high-confidence `(secret_name, json_path)` profile, attempts to
+    /// read the value at that path in `body` and replace it with
+    /// `[REDACTED:adaptive:<secret_name>]`.  Non-JSON bodies are returned
+    /// unchanged.
+    fn apply_adaptive_redaction(
+        &self,
+        body: &[u8],
+        content_type: Option<&str>,
+        ctx: Option<&RequestContext>,
+    ) -> (Vec<u8>, Vec<AdaptiveScrubHit>) {
+        let ct = content_type.unwrap_or("");
+        if !ct.contains("json") && !ct.contains("JSON") {
+            return (body.to_vec(), Vec::new());
+        }
+
+        let Ok(text) = std::str::from_utf8(body) else {
+            return (body.to_vec(), Vec::new());
+        };
+
+        let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(text) else {
+            return (body.to_vec(), Vec::new());
+        };
+
+        let profiles_snapshot: Vec<(String, String, f64)> = {
+            match self.profiles.lock() {
+                Ok(store) => store
+                    .all_observations()
+                    .into_iter()
+                    .filter(|obs| {
+                        obs.is_high_confidence()
+                            && ctx
+                                .map(|c| {
+                                    // Match on content_type prefix and status code family.
+                                    c.content_type.starts_with(&obs.content_type[..obs.content_type.find(';').unwrap_or(obs.content_type.len())])
+                                        || obs.status_code == c.status_code
+                                })
+                                .unwrap_or(true)
+                    })
+                    .map(|obs| {
+                        (
+                            obs.secret_name.clone(),
+                            obs.json_path.clone(),
+                            obs.confidence,
+                        )
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        };
+
+        if profiles_snapshot.is_empty() {
+            return (body.to_vec(), Vec::new());
+        }
+
+        let mut hits: Vec<AdaptiveScrubHit> = Vec::new();
+
+        for (secret_name, json_path, confidence) in &profiles_snapshot {
+            // Read the current value at this path.
+            let existing_value = value_at_json_path(&json_val, json_path)
+                .map(|s| s.to_string());
+
+            let Some(val) = existing_value else {
+                continue;
+            };
+
+            // Skip if already redacted (previous scrub pass already handled it).
+            if val.starts_with("[REDACTED:") {
+                continue;
+            }
+
+            // Skip very short values that could be false-positives.
+            if val.len() < 8 {
+                continue;
+            }
+
+            let replacement = format!("[REDACTED:adaptive:{}]", secret_name);
+            if set_json_path_value(&mut json_val, json_path, &replacement) {
+                hits.push(AdaptiveScrubHit {
+                    secret_name: secret_name.clone(),
+                    json_path: json_path.clone(),
+                    profile_confidence: *confidence,
+                });
+            }
+        }
+
+        if hits.is_empty() {
+            return (body.to_vec(), Vec::new());
+        }
+
+        // Serialize back to JSON with same compactness as input.
+        match serde_json::to_vec(&json_val) {
+            Ok(out) => (out, hits),
+            Err(_) => (body.to_vec(), Vec::new()),
+        }
+    }
+
+    /// Expose the inner `ResponseScrubber` for callers that need the basic scrubber.
+    pub fn inner(&self) -> &ResponseScrubber {
+        &self.inner
+    }
+
+    /// Return a snapshot of all current profile observations (for `phantom doctor`).
+    pub fn profile_observations(&self) -> Vec<phantom_core::leak_correlation::LeakPathObservation> {
+        self.profiles
+            .lock()
+            .map(|store| store.all_observations().into_iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+/// Set the string value at a dot-notation JSON path within a mutable
+/// `serde_json::Value`.  Returns `true` if the path existed and was updated.
+fn set_json_path_value(root: &mut serde_json::Value, path: &str, new_value: &str) -> bool {
+    // We need a mutable walk.  Build a Vec of path segments first.
+    let segments = parse_path_segments(path);
+    set_by_segments(root, &segments, new_value)
+}
+
+#[derive(Debug)]
+enum PathSegment {
+    Key(String),
+    Index(usize),
+}
+
+fn parse_path_segments(path: &str) -> Vec<PathSegment> {
+    let mut segments = Vec::new();
+    let mut remaining = path;
+
+    loop {
+        if remaining.is_empty() {
+            break;
+        }
+        if remaining.starts_with('.') {
+            remaining = &remaining[1..];
+            let end = remaining
+                .find(|c| c == '.' || c == '[')
+                .unwrap_or(remaining.len());
+            if end > 0 {
+                segments.push(PathSegment::Key(remaining[..end].to_string()));
+            }
+            remaining = &remaining[end..];
+        } else if remaining.starts_with('[') {
+            let close = match remaining.find(']') {
+                Some(i) => i,
+                None => break,
+            };
+            let idx_str = &remaining[1..close];
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                segments.push(PathSegment::Index(idx));
+            }
+            remaining = &remaining[close + 1..];
+        } else {
+            break;
+        }
+    }
+
+    segments
+}
+
+fn set_by_segments(
+    current: &mut serde_json::Value,
+    segments: &[PathSegment],
+    new_value: &str,
+) -> bool {
+    if segments.is_empty() {
+        if current.is_string() {
+            *current = serde_json::Value::String(new_value.to_string());
+            return true;
+        }
+        return false;
+    }
+
+    match &segments[0] {
+        PathSegment::Key(key) => {
+            if let Some(child) = current.get_mut(key.as_str()) {
+                set_by_segments(child, &segments[1..], new_value)
+            } else {
+                false
+            }
+        }
+        PathSegment::Index(idx) => {
+            if let Some(child) = current.get_mut(*idx) {
+                set_by_segments(child, &segments[1..], new_value)
+            } else {
+                false
+            }
+        }
     }
 }
 

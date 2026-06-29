@@ -9,6 +9,8 @@ pub mod test_server;
 
 pub use interceptor::{Interceptor, ResponseLeakAnalyzer};
 pub use rate_limiter::{AnomalyClass, RateDecision, RateLimitConfig, RateLimiter};
-pub use response_scrubber::{ContentKind, ResponseScrubber, ScrubEvent};
+pub use response_scrubber::{
+    AdaptiveResponseScrubber, AdaptiveScrubHit, ContentKind, ResponseScrubber, ScrubEvent,
+};
 pub use server::{ProxyConfig, ProxyServer};
 pub use services::{ServiceRegistry, ServiceRoute};
