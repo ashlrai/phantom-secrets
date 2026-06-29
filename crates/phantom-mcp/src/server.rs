@@ -9,10 +9,12 @@ use std::path::PathBuf;
 
 use crate::tools::helpers::{internal_err, invalid_params_err, require_confirm, text_result};
 use crate::tools::params::{
-    AddSecretInteractiveParams, AddSecretParams, AuditStatsParams, CheckParams, CloudPullParams,
-    CloudPushParams, CopySecretParams, DoctorParams, EnvParams, InitParams, ListWithExpiryParams,
-    RemoveSecretParams, RotateParams, RotateWithExpiryParams, SyncParams, TeamCreateParams,
-    TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams, WrapParams,
+    AddSecretInteractiveParams, AddSecretParams, AuditAnomaliesParams, AuditRecentParams,
+    AuditStatsParams, CheckParams, CloudPullParams, CloudPushParams, ComplianceStatusParams,
+    CopySecretParams, DoctorParams, EnvParams, InitParams, ListWithExpiryParams,
+    RemoveSecretParams, RotateParams, RotateWithExpiryParams, RotationDueParams, SyncParams,
+    TeamCreateParams, TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams,
+    WrapParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -1737,6 +1739,411 @@ impl PhantomMcpServer {
         crate::tools::helpers::text_result(json_str)
     }
 
+    // ── Audit & Compliance tools ───────────────────────────────────────
+
+    /// List the last N audit events, never exposing secret values.
+    #[tool(
+        description = "List the last N audit events from the HMAC-chained audit log. \
+            Returns structured JSONL — each line is a JSON object with fields: \
+            seq, ts (Unix epoch), op (operation name), name (secret name, if applicable), \
+            pid, process. Secret VALUES are never recorded in the audit log and \
+            will never appear here. Supports optional filtering by op prefix or \
+            exact secret name. Read-only; no confirm required. \
+            Requires PHANTOM_AUDIT=1 to have been set when operations were performed."
+    )]
+    fn phantom_audit_recent(
+        &self,
+        Parameters(params): Parameters<AuditRecentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let n = params.n.min(200).max(1);
+
+        let log_path = phantom_core::audit::log_path()
+            .map_err(|e| internal_err(format!("Cannot resolve audit log path: {e}")))?;
+
+        if !log_path.exists() {
+            let out = serde_json::json!({
+                "events": [],
+                "total_returned": 0,
+                "note": "Audit log does not exist. Set PHANTOM_AUDIT=1 to enable logging."
+            });
+            return text_result(serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?);
+        }
+
+        let content = std::fs::read_to_string(&log_path)
+            .map_err(|e| internal_err(format!("Failed to read audit log: {e}")))?;
+
+        // Parse all non-marker, non-malformed lines, collecting relevant fields only.
+        // NEVER include "value" or any secret material.
+        let mut events: Vec<serde_json::Value> = Vec::new();
+        for raw in content.lines() {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let v: serde_json::Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            // Skip chain-started marker lines.
+            if v.get("hmac_chain_started_at").is_some() {
+                continue;
+            }
+            // Must have an "op" field to be a real event.
+            let op = match v.get("op").and_then(|o| o.as_str()) {
+                Some(op) => op.to_string(),
+                None => continue,
+            };
+
+            // Apply op_filter
+            if let Some(ref filter) = params.op_filter {
+                if !op.starts_with(filter.as_str()) {
+                    continue;
+                }
+            }
+
+            // Apply name_filter
+            let name = v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
+            if let Some(ref nf) = params.name_filter {
+                match &name {
+                    Some(n) if n == nf => {}
+                    _ => continue,
+                }
+            }
+
+            // Build a safe output object — explicitly whitelist fields, never include values.
+            let mut obj = serde_json::Map::new();
+            for field in &["seq", "ts", "pid", "process"] {
+                if let Some(val) = v.get(*field) {
+                    obj.insert(field.to_string(), val.clone());
+                }
+            }
+            obj.insert("op".to_string(), serde_json::Value::String(op));
+            if let Some(ref n) = name {
+                obj.insert("name".to_string(), serde_json::Value::String(n.clone()));
+            }
+
+            events.push(serde_json::Value::Object(obj));
+        }
+
+        // Take the last N events.
+        let total_in_log = events.len();
+        if events.len() > n {
+            let start = events.len() - n;
+            events = events.into_iter().skip(start).collect();
+        }
+
+        let out = serde_json::json!({
+            "events": events,
+            "total_returned": events.len(),
+            "total_in_log": total_in_log,
+        });
+
+        text_result(serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?)
+    }
+
+    /// Query for suspicious access patterns in the audit log.
+    #[tool(
+        description = "Query the audit log for suspicious access patterns. \
+            Returns a findings array where each entry has: name (secret name), \
+            anomaly_type (spike | dormant | first_access), anomaly_score (0.0–1.0), \
+            access_count, last_access (ISO-8601), daily_avg, and context (human-readable \
+            explanation). Secret VALUES are never returned. Read-only; no confirm required. \
+            Anomaly types: 'spike' = single day >3x daily average; \
+            'dormant' = access after >=7 consecutive quiet days. \
+            Use min_score to filter (default 0.4). Use period to limit the window."
+    )]
+    fn phantom_audit_anomalies(
+        &self,
+        Parameters(params): Parameters<AuditAnomaliesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let period =
+            phantom_core::analytics::Period::parse(&params.period).ok_or_else(|| {
+                invalid_params_err(format!(
+                    "Invalid period '{}'. Use: 7d, 30d, or all",
+                    params.period
+                ))
+            })?;
+
+        let report = phantom_core::analytics::compute_analytics(period)
+            .map_err(|e| internal_err(format!("Failed to compute analytics: {e}")))?;
+
+        let findings: Vec<serde_json::Value> = report
+            .secrets
+            .iter()
+            .filter(|s| s.anomaly_score >= params.min_score)
+            .map(|s| {
+                // Determine anomaly type(s) from score thresholds.
+                let anomaly_type = if s.anomaly_score >= 0.6 {
+                    "spike"
+                } else if s.anomaly_score >= 0.5 {
+                    "dormant"
+                } else {
+                    "elevated"
+                };
+
+                let context = if s.anomaly_score >= 0.6 {
+                    format!(
+                        "Access spike detected: max single-day count {} vs daily average {:.2}. \
+                         Investigate whether this volume is expected.",
+                        s.max_daily, s.daily_avg
+                    )
+                } else if s.anomaly_score >= 0.5 {
+                    format!(
+                        "Secret accessed after a dormant period (>=7 quiet days). \
+                         Last access: {}. Total accesses: {}.",
+                        phantom_core::analytics::unix_to_iso8601(s.last_access),
+                        s.access_count
+                    )
+                } else {
+                    format!(
+                        "Elevated anomaly score {:.2}. access_count={}, daily_avg={:.2}",
+                        s.anomaly_score, s.access_count, s.daily_avg
+                    )
+                };
+
+                serde_json::json!({
+                    "name": s.name,
+                    "anomaly_type": anomaly_type,
+                    "anomaly_score": s.anomaly_score,
+                    "access_count": s.access_count,
+                    "last_access": phantom_core::analytics::unix_to_iso8601(s.last_access),
+                    "daily_avg": s.daily_avg,
+                    "max_daily": s.max_daily,
+                    "context": context,
+                })
+            })
+            .collect();
+
+        let out = serde_json::json!({
+            "generated_at": report.generated_at,
+            "period": params.period,
+            "min_score": params.min_score,
+            "findings": findings,
+            "total_findings": findings.len(),
+        });
+
+        text_result(serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?)
+    }
+
+    /// Return a compliance status badge for the current project.
+    #[tool(
+        description = "Return the compliance state of the current Phantom project as a \
+            structured JSON badge. Checks: vault_accessible (vault can be read), \
+            audit_enabled (PHANTOM_AUDIT env var is set), \
+            precommit_installed (git pre-commit hook contains phantom check), \
+            env_clean (no unprotected real secrets in .env), \
+            secrets_have_ttl (all vault secrets have a rotation policy set). \
+            Each check is true/false with an optional detail string. \
+            Overall 'compliant' is true only when all checks pass. Read-only."
+    )]
+    fn phantom_compliance_status(
+        &self,
+        Parameters(_params): Parameters<ComplianceStatusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut checks: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        let mut all_pass = true;
+
+        // Check 1: vault accessible
+        let vault_ok = if self.config_path().exists() {
+            match self.load_config_and_vault() {
+                Ok((_cfg, vault)) => vault.list().is_ok(),
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+        if !vault_ok { all_pass = false; }
+        checks.insert("vault_accessible".to_string(), serde_json::json!({
+            "pass": vault_ok,
+            "detail": if vault_ok { "Vault backend is reachable." } else { "Vault not accessible — run phantom init." },
+        }));
+
+        // Check 2: audit enabled
+        let audit_ok = phantom_core::audit::enabled();
+        if !audit_ok { all_pass = false; }
+        checks.insert("audit_enabled".to_string(), serde_json::json!({
+            "pass": audit_ok,
+            "detail": if audit_ok { "PHANTOM_AUDIT is set." } else { "Set PHANTOM_AUDIT=1 to enable audit logging." },
+        }));
+
+        // Check 3: pre-commit hook installed
+        let git_hook = self.project_dir.join(".git/hooks/pre-commit");
+        let precommit_ok = if git_hook.exists() {
+            std::fs::read_to_string(&git_hook)
+                .map(|c| c.contains("phantom"))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        if !precommit_ok { all_pass = false; }
+        checks.insert("precommit_installed".to_string(), serde_json::json!({
+            "pass": precommit_ok,
+            "detail": if precommit_ok { "Pre-commit hook includes phantom check." } else { "Run phantom doctor --fix to install the pre-commit hook." },
+        }));
+
+        // Check 4: no real secrets in .env
+        let env_path = self.env_path();
+        let (env_clean, env_detail) = if env_path.exists() {
+            match phantom_core::dotenv::DotenvFile::parse_file(&env_path) {
+                Ok(dotenv) => {
+                    let real = dotenv.real_secret_entries();
+                    if real.is_empty() {
+                        (true, "No unprotected secrets in .env.".to_string())
+                    } else {
+                        let names: Vec<&str> = real.iter().map(|e| e.key.as_str()).collect();
+                        (false, format!("{} unprotected secret(s): {}", real.len(), names.join(", ")))
+                    }
+                }
+                Err(e) => (false, format!(".env parse error: {e}")),
+            }
+        } else {
+            (true, "No .env file present.".to_string())
+        };
+        if !env_clean { all_pass = false; }
+        checks.insert("env_clean".to_string(), serde_json::json!({
+            "pass": env_clean,
+            "detail": env_detail,
+        }));
+
+        // Check 5: all secrets have TTL
+        let (ttl_ok, ttl_detail) = if self.config_path().exists() {
+            match self.load_config_and_vault() {
+                Ok((_cfg, vault)) => {
+                    match vault.list_with_metadata() {
+                        Ok(entries) => {
+                            let without_ttl: Vec<&str> = entries
+                                .iter()
+                                .filter(|(_, meta)| {
+                                    meta.as_ref().and_then(|m| m.rotation_policy.as_ref()).is_none()
+                                })
+                                .map(|(name, _)| name.as_str())
+                                .collect();
+                            if without_ttl.is_empty() {
+                                (true, "All secrets have a rotation policy (TTL).".to_string())
+                            } else {
+                                (false, format!("{} secret(s) have no TTL: {}", without_ttl.len(), without_ttl.join(", ")))
+                            }
+                        }
+                        Err(e) => (false, format!("Failed to list secrets: {e}")),
+                    }
+                }
+                Err(_) => (false, "Vault not accessible.".to_string()),
+            }
+        } else {
+            (false, "Phantom not initialized — run phantom init.".to_string())
+        };
+        if !ttl_ok { all_pass = false; }
+        checks.insert("secrets_have_ttl".to_string(), serde_json::json!({
+            "pass": ttl_ok,
+            "detail": ttl_detail,
+        }));
+
+        let out = serde_json::json!({
+            "compliant": all_pass,
+            "checks": checks,
+        });
+
+        text_result(serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?)
+    }
+
+    /// Query which secrets are due for rotation (TTL approaching or exceeded).
+    #[tool(
+        description = "Query which secrets in the vault are due for rotation. \
+            Returns a JSON object with: due (list of secrets already expired), \
+            warning (list of secrets expiring within warn_days, default 7), \
+            ok (list of secrets with sufficient TTL remaining), \
+            no_ttl (list of secrets with no rotation policy set at all). \
+            Each entry has: name, status (expired|warning|ok|no_ttl), \
+            days_remaining (null if no TTL), expires_at (ISO-8601 or null). \
+            Secret VALUES are never returned. Read-only; no confirm required."
+    )]
+    fn phantom_secret_rotation_due(
+        &self,
+        Parameters(params): Parameters<RotationDueParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (_config, vault) = self.load_config_and_vault()?;
+
+        let entries = vault
+            .list_with_metadata()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+
+        let mut due: Vec<serde_json::Value> = Vec::new();
+        let mut warning: Vec<serde_json::Value> = Vec::new();
+        let mut ok: Vec<serde_json::Value> = Vec::new();
+        let mut no_ttl: Vec<serde_json::Value> = Vec::new();
+
+        for (name, meta) in &entries {
+            match meta {
+                None => {
+                    no_ttl.push(serde_json::json!({
+                        "name": name,
+                        "status": "no_ttl",
+                        "days_remaining": null,
+                        "expires_at": null,
+                    }));
+                }
+                Some(m) => {
+                    let expires_iso = m.expires_at.map(phantom_core::analytics::unix_to_iso8601);
+
+                    if m.rotation_policy.is_none() {
+                        no_ttl.push(serde_json::json!({
+                            "name": name,
+                            "status": "no_ttl",
+                            "days_remaining": null,
+                            "expires_at": expires_iso,
+                        }));
+                    } else if m.is_expired() {
+                        let days = m.days_remaining().unwrap_or(0);
+                        due.push(serde_json::json!({
+                            "name": name,
+                            "status": "expired",
+                            "days_remaining": days,
+                            "expires_at": expires_iso,
+                        }));
+                    } else if m.is_expiring_soon(params.warn_days) {
+                        let days = m.days_remaining().unwrap_or(0);
+                        warning.push(serde_json::json!({
+                            "name": name,
+                            "status": "warning",
+                            "days_remaining": days,
+                            "expires_at": expires_iso,
+                        }));
+                    } else {
+                        let days = m.days_remaining();
+                        ok.push(serde_json::json!({
+                            "name": name,
+                            "status": "ok",
+                            "days_remaining": days,
+                            "expires_at": expires_iso,
+                        }));
+                    }
+                }
+            }
+        }
+
+        let out = serde_json::json!({
+            "warn_days": params.warn_days,
+            "due": due,
+            "warning": warning,
+            "ok": ok,
+            "no_ttl": no_ttl,
+            "summary": {
+                "expired": due.len(),
+                "warning": warning.len(),
+                "ok": ok.len(),
+                "no_ttl": no_ttl.len(),
+                "total": entries.len(),
+            }
+        });
+
+        text_result(serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?)
+    }
+
     /// Pull a team vault into the current project's local vault.
     #[tool(
         description = "Download and decrypt the team vault for this project into the local vault. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true."
@@ -2109,5 +2516,682 @@ mod tests {
         assert!(!text.contains("no expiry"));
         // But secret names should still appear
         assert!(text.contains("OPENAI_API_KEY") || text.contains("DATABASE_URL"));
+    }
+
+    // ── Audit & compliance tool tests ─────────────────────────────────
+
+    /// Write synthetic audit log entries to a temp HOME path (no HMAC chain).
+    fn write_synthetic_audit_log(home_dir: &std::path::Path, entries: &[(u64, &str, Option<&str>)]) {
+        let log_path = home_dir.join(".phantom").join("audit.log");
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .unwrap();
+        for (ts, op, name) in entries {
+            let line = if let Some(n) = name {
+                format!(
+                    r#"{{"seq":1,"ts":{ts},"op":"{op}","name":"{n}","pid":1,"process":"phantom"}}"#
+                )
+            } else {
+                format!(r#"{{"seq":1,"ts":{ts},"op":"{op}","pid":1,"process":"phantom"}}"#)
+            };
+            writeln!(f, "{}", line).unwrap();
+        }
+    }
+
+    /// Extract the raw text string from the first Content item in a CallToolResult.
+    fn extract_content_text(result: &CallToolResult) -> String {
+        use rmcp::model::RawContent;
+        result
+            .content
+            .iter()
+            .find_map(|c| {
+                if let RawContent::Text(t) = &c.raw {
+                    Some(t.text.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    fn parse_result_json(result: &CallToolResult) -> serde_json::Value {
+        let text = extract_content_text(result);
+        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    // ── phantom_audit_recent ──────────────────────────────────────────
+
+    #[test]
+    fn test_audit_recent_returns_events_key() {
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[
+                (now - 200, "vault.store", Some("OPENAI_API_KEY")),
+                (now - 100, "vault.retrieve", Some("DATABASE_URL")),
+                (now - 50, "cloud.push", None),
+            ],
+        );
+
+        let result = server
+            .phantom_audit_recent(Parameters(AuditRecentParams {
+                n: 10,
+                op_filter: None,
+                name_filter: None,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(json.get("events").is_some(), "must have 'events' key");
+        assert!(json.get("total_returned").is_some(), "must have 'total_returned'");
+        assert!(json.get("total_in_log").is_some(), "must have 'total_in_log'");
+        let events = json["events"].as_array().unwrap();
+        assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn test_audit_recent_never_exposes_secret_values() {
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now, "vault.store", Some("OPENAI_API_KEY"))],
+        );
+
+        let result = server
+            .phantom_audit_recent(Parameters(AuditRecentParams {
+                n: 10,
+                op_filter: None,
+                name_filter: None,
+            }))
+            .unwrap();
+
+        let text = extract_content_text(&result);
+        assert!(!text.contains("sk-test-key"), "must not expose secret value");
+        assert!(!text.contains("postgres://user:pass"), "must not expose DB credentials");
+        assert!(text.contains("OPENAI_API_KEY"), "should contain secret name");
+    }
+
+    #[test]
+    fn test_audit_recent_op_filter() {
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[
+                (now - 200, "vault.store", Some("OPENAI_API_KEY")),
+                (now - 100, "vault.retrieve", Some("DATABASE_URL")),
+                (now - 50, "cloud.push", None),
+            ],
+        );
+
+        let result = server
+            .phantom_audit_recent(Parameters(AuditRecentParams {
+                n: 10,
+                op_filter: Some("vault.retrieve".to_string()),
+                name_filter: None,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let events = json["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["op"], "vault.retrieve");
+    }
+
+    #[test]
+    fn test_audit_recent_name_filter() {
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[
+                (now - 200, "vault.store", Some("OPENAI_API_KEY")),
+                (now - 100, "vault.retrieve", Some("DATABASE_URL")),
+            ],
+        );
+
+        let result = server
+            .phantom_audit_recent(Parameters(AuditRecentParams {
+                n: 10,
+                op_filter: None,
+                name_filter: Some("DATABASE_URL".to_string()),
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let events = json["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["name"], "DATABASE_URL");
+    }
+
+    #[test]
+    fn test_audit_recent_n_limit() {
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        let entries: Vec<(u64, &str, Option<&str>)> = (0..20_u64)
+            .map(|i| (now - i * 10, "vault.retrieve", Some("OPENAI_API_KEY")))
+            .collect();
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let result = server
+            .phantom_audit_recent(Parameters(AuditRecentParams {
+                n: 5,
+                op_filter: None,
+                name_filter: None,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let events = json["events"].as_array().unwrap();
+        assert_eq!(events.len(), 5);
+        assert_eq!(json["total_in_log"].as_u64().unwrap(), 20);
+    }
+
+    #[test]
+    fn test_audit_recent_no_log_returns_empty_with_note() {
+        let (server, _dir) = setup_initialized_project();
+        let empty_home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", empty_home.path()) };
+
+        let result = server
+            .phantom_audit_recent(Parameters(AuditRecentParams {
+                n: 10,
+                op_filter: None,
+                name_filter: None,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let events = json["events"].as_array().unwrap();
+        assert_eq!(events.len(), 0, "no events when audit log absent");
+        assert!(json.get("note").is_some(), "should include a note");
+    }
+
+    #[test]
+    fn test_audit_recent_event_has_no_value_field() {
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now, "vault.store", Some("OPENAI_API_KEY"))],
+        );
+
+        let result = server
+            .phantom_audit_recent(Parameters(AuditRecentParams {
+                n: 10,
+                op_filter: None,
+                name_filter: None,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        for event in json["events"].as_array().unwrap() {
+            assert!(event.get("value").is_none(), "event must not have 'value' field");
+        }
+    }
+
+    // ── phantom_audit_anomalies ───────────────────────────────────────
+
+    #[test]
+    fn test_audit_anomalies_returns_findings_array() {
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let result = server
+            .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                period: "all".to_string(),
+                min_score: 0.4,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(json.get("findings").is_some(), "must have 'findings'");
+        assert!(json.get("total_findings").is_some(), "must have 'total_findings'");
+        assert!(json.get("generated_at").is_some(), "must have 'generated_at'");
+        assert!(json.get("period").is_some(), "must have 'period'");
+    }
+
+    #[test]
+    fn test_audit_anomalies_detects_spike() {
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let base_day = 1_700_000_000_u64 / 86400 * 86400;
+        let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
+        for i in 1u64..=4 {
+            entries.push((base_day + i * 86400, "vault.retrieve", Some("SPIKE_KEY")));
+        }
+        for j in 0..50u64 {
+            entries.push((base_day + 10 + j, "vault.retrieve", Some("SPIKE_KEY")));
+        }
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let result = server
+            .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                period: "all".to_string(),
+                min_score: 0.4,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let findings = json["findings"].as_array().unwrap();
+        assert!(!findings.is_empty(), "should detect spike anomaly");
+        let f = findings.iter().find(|f| f["name"] == "SPIKE_KEY").unwrap();
+        assert_eq!(f["anomaly_type"], "spike");
+        assert!(f["anomaly_score"].as_f64().unwrap() >= 0.6);
+        assert!(f.get("value").is_none(), "finding must not expose secret value");
+    }
+
+    #[test]
+    fn test_audit_anomalies_detects_dormant() {
+        let (server, _dir) = setup_initialized_project();
+        // Use a separate isolated HOME so this test sees only its own audit events.
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let t0 = 1_700_000_000_u64;
+        let t1 = t0 + 10 * 86400;
+        // Two accesses separated by 10 days: only quiet-period rule fires (score 0.5).
+        // No spike: both days have count=1, daily_avg=1/(10 days)=0.1, 1 is NOT > 3×0.1=0.3.
+        // Wait — 1 > 0.3, so spike also fires! Use a uniform daily spread to avoid spike.
+        // Insert one access per day for 10 days + one more 10 days later.
+        let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
+        // 10 accesses, one per day: daily_avg = 10/10 = 1.0; max_daily = 1; 1 is NOT > 3*1=3
+        for i in 0u64..10 {
+            entries.push((t0 + i * 86400, "vault.retrieve", Some("DORMANT_KEY")));
+        }
+        // Now a gap: access after 8 quiet days (>= 7 threshold) → dormant rule fires
+        entries.push((t0 + 18 * 86400, "vault.retrieve", Some("DORMANT_KEY")));
+
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let result = server
+            .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                period: "all".to_string(),
+                min_score: 0.4,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let findings = json["findings"].as_array().unwrap();
+        let f = findings.iter().find(|f| f["name"] == "DORMANT_KEY").unwrap();
+        // dormant rule: score 0.5; spike: max_daily=1, daily_avg≈0.61, 1 is NOT > 3*0.61=1.83
+        // So anomaly_type should be "dormant"
+        assert_eq!(f["anomaly_type"], "dormant", "anomaly_type should be dormant: {f}");
+        assert!(f["anomaly_score"].as_f64().unwrap() >= 0.5);
+    }
+
+    #[test]
+    fn test_audit_anomalies_finding_schema_no_value() {
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let t0 = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[
+                (t0, "vault.retrieve", Some("TEST_KEY")),
+                (t0 + 10 * 86400, "vault.retrieve", Some("TEST_KEY")),
+            ],
+        );
+
+        let result = server
+            .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                period: "all".to_string(),
+                min_score: 0.0,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        for f in json["findings"].as_array().unwrap() {
+            assert!(f.get("name").is_some(), "finding must have 'name'");
+            assert!(f.get("anomaly_type").is_some(), "finding must have 'anomaly_type'");
+            assert!(f.get("anomaly_score").is_some(), "finding must have 'anomaly_score'");
+            assert!(f.get("access_count").is_some(), "finding must have 'access_count'");
+            assert!(f.get("last_access").is_some(), "finding must have 'last_access'");
+            assert!(f.get("context").is_some(), "finding must have 'context'");
+            assert!(f.get("value").is_none(), "finding must NOT have 'value'");
+        }
+    }
+
+    #[test]
+    fn test_audit_anomalies_min_score_filter() {
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        // Use uniform pattern (10 daily accesses + 8-day gap) that only triggers dormant (0.5)
+        let t0 = 1_700_000_000_u64;
+        let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
+        for i in 0u64..10 { entries.push((t0 + i * 86400, "vault.retrieve", Some("FILTER_KEY"))); }
+        entries.push((t0 + 18 * 86400, "vault.retrieve", Some("FILTER_KEY")));
+        write_synthetic_audit_log(home.path(), &entries);
+
+        // min_score=0.9 should filter out dormant findings (~0.5)
+        let result = server
+            .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                period: "all".to_string(),
+                min_score: 0.9,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(
+            json["findings"].as_array().unwrap().is_empty(),
+            "min_score=0.9 should filter out score~0.5 dormant findings"
+        );
+    }
+
+    #[test]
+    fn test_audit_anomalies_invalid_period_errors() {
+        let (server, _dir) = setup_initialized_project();
+
+        let err = server
+            .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                period: "invalid".to_string(),
+                min_score: 0.4,
+            }))
+            .unwrap_err();
+
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("Invalid period"));
+    }
+
+    // ── phantom_compliance_status ─────────────────────────────────────
+
+    #[test]
+    fn test_compliance_status_has_compliant_and_checks() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(json.get("compliant").is_some(), "must have 'compliant'");
+        assert!(json.get("checks").is_some(), "must have 'checks'");
+    }
+
+    #[test]
+    fn test_compliance_status_all_required_checks_present() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let checks = json["checks"].as_object().unwrap();
+        for check_name in &[
+            "vault_accessible",
+            "audit_enabled",
+            "precommit_installed",
+            "env_clean",
+            "secrets_have_ttl",
+        ] {
+            assert!(
+                checks.contains_key(*check_name),
+                "missing check '{check_name}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_compliance_status_each_check_has_pass_and_detail() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let checks = json["checks"].as_object().unwrap();
+        for (name, check) in checks {
+            assert!(check.get("pass").is_some(), "check '{name}' must have 'pass'");
+            assert!(check.get("detail").is_some(), "check '{name}' must have 'detail'");
+            assert!(check["pass"].is_boolean(), "check '{name}' pass must be boolean");
+        }
+    }
+
+    #[test]
+    fn test_compliance_status_vault_accessible_after_init() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(
+            json["checks"]["vault_accessible"]["pass"].as_bool().unwrap(),
+            "vault_accessible must be true after init"
+        );
+    }
+
+    #[test]
+    fn test_compliance_status_env_clean_after_init() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(
+            json["checks"]["env_clean"]["pass"].as_bool().unwrap(),
+            "env_clean must be true after init replaces secrets with tokens"
+        );
+    }
+
+    #[test]
+    fn test_compliance_status_does_not_expose_secret_values() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+            .unwrap();
+
+        let text = extract_content_text(&result);
+        assert!(!text.contains("sk-test-key"), "must not expose OPENAI secret");
+        assert!(!text.contains("postgres://user:pass"), "must not expose DB credentials");
+    }
+
+    #[test]
+    fn test_compliance_status_secrets_have_ttl_false_without_ttl() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(
+            !json["checks"]["secrets_have_ttl"]["pass"].as_bool().unwrap(),
+            "secrets_have_ttl should be false when no rotation policy set"
+        );
+        assert!(
+            !json["compliant"].as_bool().unwrap(),
+            "compliant must be false when any check fails"
+        );
+    }
+
+    #[test]
+    fn test_compliance_status_secrets_have_ttl_true_after_rotate_with_expiry() {
+        let (server, _dir) = setup_initialized_project();
+
+        server
+            .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
+                days_ttl: 30,
+                confirm: true,
+            }))
+            .unwrap();
+
+        let result = server
+            .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(
+            json["checks"]["secrets_have_ttl"]["pass"].as_bool().unwrap(),
+            "secrets_have_ttl should be true after rotate_with_expiry sets rotation policy"
+        );
+    }
+
+    // ── phantom_secret_rotation_due ───────────────────────────────────
+
+    #[test]
+    fn test_rotation_due_returns_required_keys() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(json.get("due").is_some(), "must have 'due'");
+        assert!(json.get("warning").is_some(), "must have 'warning'");
+        assert!(json.get("ok").is_some(), "must have 'ok'");
+        assert!(json.get("no_ttl").is_some(), "must have 'no_ttl'");
+        assert!(json.get("summary").is_some(), "must have 'summary'");
+        assert!(json.get("warn_days").is_some(), "must have 'warn_days'");
+    }
+
+    #[test]
+    fn test_rotation_due_no_ttl_populated_without_rotation_policy() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let no_ttl = json["no_ttl"].as_array().unwrap();
+        assert!(!no_ttl.is_empty(), "secrets without TTL should appear in no_ttl");
+        for entry in no_ttl {
+            assert!(entry.get("name").is_some(), "entry must have 'name'");
+            assert_eq!(entry["status"], "no_ttl");
+        }
+    }
+
+    #[test]
+    fn test_rotation_due_ok_with_fresh_ttl() {
+        let (server, _dir) = setup_initialized_project();
+
+        server
+            .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
+                days_ttl: 30,
+                confirm: true,
+            }))
+            .unwrap();
+
+        let result = server
+            .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let ok = json["ok"].as_array().unwrap();
+        assert!(!ok.is_empty(), "fresh 30-day TTL should place secrets in 'ok'");
+        for entry in ok {
+            assert_eq!(entry["status"], "ok");
+            let days = entry["days_remaining"].as_i64().unwrap_or(-1);
+            assert!(days > 0, "days_remaining should be positive");
+            assert!(entry["expires_at"].is_string(), "expires_at must be a string");
+        }
+    }
+
+    #[test]
+    fn test_rotation_due_never_exposes_secret_values() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
+            .unwrap();
+
+        let text = get_result_text(&result);
+        assert!(!text.contains("sk-test-key"), "must not expose OPENAI secret");
+        assert!(!text.contains("postgres://user:pass"), "must not expose DB credentials");
+    }
+
+    #[test]
+    fn test_rotation_due_summary_counts_match_arrays() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let due = json["due"].as_array().unwrap().len() as u64;
+        let warn = json["warning"].as_array().unwrap().len() as u64;
+        let ok = json["ok"].as_array().unwrap().len() as u64;
+        let no_ttl = json["no_ttl"].as_array().unwrap().len() as u64;
+        let summary = &json["summary"];
+
+        assert_eq!(summary["expired"].as_u64().unwrap(), due);
+        assert_eq!(summary["warning"].as_u64().unwrap(), warn);
+        assert_eq!(summary["ok"].as_u64().unwrap(), ok);
+        assert_eq!(summary["no_ttl"].as_u64().unwrap(), no_ttl);
+        assert_eq!(summary["total"].as_u64().unwrap(), due + warn + ok + no_ttl);
+    }
+
+    #[test]
+    fn test_rotation_due_entries_have_no_value_field() {
+        let (server, _dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        for category in &["due", "warning", "ok", "no_ttl"] {
+            if let Some(entries) = json[category].as_array() {
+                for entry in entries {
+                    assert!(entry.get("value").is_none(), "entry in '{category}' must not have 'value'");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_rotation_due_warn_days_respected() {
+        let (server, _dir) = setup_initialized_project();
+
+        server
+            .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
+                days_ttl: 30,
+                confirm: true,
+            }))
+            .unwrap();
+
+        // warn_days=31 > ttl=30 → all should be in 'warning'
+        let result = server
+            .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 31 }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let warning = json["warning"].as_array().unwrap();
+        assert!(!warning.is_empty(), "with warn_days=31, 30-day TTL secrets should be in warning");
+        assert!(json["ok"].as_array().unwrap().is_empty(), "ok should be empty");
     }
 }
