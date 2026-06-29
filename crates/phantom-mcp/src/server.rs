@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use crate::tools::helpers::{internal_err, invalid_params_err, require_confirm, text_result};
 use crate::tools::params::{
-    AddSecretInteractiveParams, AddSecretParams, CheckParams, CloudPullParams, CloudPushParams,
-    CopySecretParams, DoctorParams, EnvParams, InitParams, ListWithExpiryParams,
+    AddSecretInteractiveParams, AddSecretParams, AuditStatsParams, CheckParams, CloudPullParams,
+    CloudPushParams, CopySecretParams, DoctorParams, EnvParams, InitParams, ListWithExpiryParams,
     RemoveSecretParams, RotateParams, RotateWithExpiryParams, SyncParams, TeamCreateParams,
     TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams, WrapParams,
 };
@@ -1690,6 +1690,51 @@ impl PhantomMcpServer {
         }
 
         text_result(output)
+    }
+
+    /// Aggregate access statistics and anomaly scores from the HMAC-chained audit log.
+    #[tool(
+        description = "Aggregate access counts, last-access timestamps, daily averages, and anomaly \
+            scores from the HMAC-chained audit log. Returns JSON only — never exposes secret values. \
+            Anomaly detection flags: (1) any single day with >3× the daily average access count \
+            (score 0.6); (2) first access after ≥7 days of inactivity (score 0.5). \
+            Use period to limit the window (\"7d\", \"30d\", \"all\"). \
+            Use min_anomaly_score to filter to flagged secrets only (e.g. 0.5). \
+            Requires PHANTOM_AUDIT=1 to have been set when secrets were accessed."
+    )]
+    fn phantom_audit_stats(
+        &self,
+        Parameters(params): Parameters<AuditStatsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let period = phantom_core::analytics::Period::parse(&params.period).ok_or_else(|| {
+            crate::tools::helpers::invalid_params_err(format!(
+                "Invalid period '{}'. Use: 7d, 30d, or all",
+                params.period
+            ))
+        })?;
+
+        let report = phantom_core::analytics::compute_analytics(period)
+            .map_err(|e| crate::tools::helpers::internal_err(format!("Failed to compute analytics: {e}")))?;
+
+        let secrets: Vec<&phantom_core::analytics::SecretAnalytics> = report
+            .secrets
+            .iter()
+            .filter(|s| {
+                params
+                    .min_anomaly_score
+                    .map_or(true, |min| s.anomaly_score >= min)
+            })
+            .collect();
+
+        let out = serde_json::json!({
+            "generated_at": report.generated_at,
+            "secrets": secrets,
+        });
+
+        let json_str = serde_json::to_string_pretty(&out)
+            .map_err(|e| crate::tools::helpers::internal_err(format!("Serialization error: {e}")))?;
+
+        crate::tools::helpers::text_result(json_str)
     }
 
     /// Pull a team vault into the current project's local vault.
