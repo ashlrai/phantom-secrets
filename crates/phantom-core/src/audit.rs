@@ -1651,6 +1651,131 @@ fn whoami_username() -> String {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Team member lifecycle audit events
+// ──────────────────────────────────────────────────────────────────────────────
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Batch rotation audit events
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Emit `vault.batch_rotation.started` — composite event logged once per batch.
+///
+/// Encodes the `batch_id` and `total_count` into the `name` field so it
+/// passes through the existing single-name audit pipeline.
+/// Best-effort — never panics or propagates errors.
+pub fn log_batch_rotation_started(batch_id: &str, total_count: usize) {
+    if !enabled() {
+        return;
+    }
+    let name = format!("batch_id={batch_id} total={total_count}");
+    log("vault.batch_rotation.started", Some(&name));
+}
+
+/// Emit `vault.batch_rotation.item.succeeded` for a single successfully rotated secret.
+///
+/// Best-effort — never panics or propagates errors.
+pub fn log_batch_item_succeeded(batch_id: &str, secret_name: &str, provider: &str) {
+    if !enabled() {
+        return;
+    }
+    let name = format!("batch_id={batch_id} secret={secret_name} provider={provider}");
+    log("vault.batch_rotation.item.succeeded", Some(&name));
+}
+
+/// Emit `vault.batch_rotation.item.failed` for a secret that failed rotation.
+///
+/// The `reason` field is a short human-readable error description; it MUST NOT
+/// contain secret values.
+/// Best-effort — never panics or propagates errors.
+pub fn log_batch_item_failed(batch_id: &str, secret_name: &str, reason: &str) {
+    if !enabled() {
+        return;
+    }
+    // Truncate reason to 120 chars to avoid bloating the audit log.
+    let safe_reason = if reason.len() > 120 { &reason[..120] } else { reason };
+    let name = format!("batch_id={batch_id} secret={secret_name} reason={safe_reason}");
+    log("vault.batch_rotation.item.failed", Some(&name));
+}
+
+/// Emit `vault.batch_rotation.completed` — composite summary event.
+///
+/// Best-effort — never panics or propagates errors.
+pub fn log_batch_rotation_completed(
+    batch_id: &str,
+    total: usize,
+    succeeded: usize,
+    failed: usize,
+) {
+    if !enabled() {
+        return;
+    }
+    let name = format!(
+        "batch_id={batch_id} total={total} succeeded={succeeded} failed={failed}"
+    );
+    log("vault.batch_rotation.completed", Some(&name));
+}
+
+/// Emit a tamper-proof audit event when a member is revoked from a team vault.
+///
+/// Records:
+/// - `op`: `team.member.revoked`
+/// - `name`: the revoked member's GitHub login
+/// - Extra fields are embedded in the `name` field as structured data so
+///   they pass through the existing single-name audit pipeline. A richer
+///   structured-event system can be layered on top later.
+///
+/// Best-effort — never panics or propagates errors.
+pub fn log_team_member_revoked(
+    team_id: &str,
+    revoked_login: &str,
+    remaining_logins: &[String],
+    new_version: u64,
+) {
+    if !enabled() {
+        return;
+    }
+    // Encode structured context into the `name` field:
+    // "<team_id>/<revoked_login> remaining=N v=<version>"
+    let name = format!(
+        "{team_id}/{revoked_login} remaining={} v={new_version}",
+        remaining_logins.len()
+    );
+    log("team.member.revoked", Some(&name));
+}
+
+/// Emit a tamper-proof audit event when the vault symmetric key is rotated.
+///
+/// Records `op`: `team.vault.key_rotated`.
+/// Best-effort — never panics or propagates errors.
+pub fn log_vault_key_rotated(team_id: &str, project_id: &str, new_version: u64) {
+    if !enabled() {
+        return;
+    }
+    let name = format!("{team_id}/{project_id} v={new_version}");
+    log("team.vault.key_rotated", Some(&name));
+}
+
+/// Emit a tamper-proof audit event recording which members were re-wrapped
+/// after a proactive vault rotation (no revocation).
+///
+/// Records `op`: `team.vault.rotation_members`.
+/// Best-effort — never panics or propagates errors.
+pub fn log_team_vault_rotation_members(
+    team_id: &str,
+    member_logins: &[String],
+    new_version: u64,
+) {
+    if !enabled() {
+        return;
+    }
+    let name = format!(
+        "{team_id} members={} v={new_version}",
+        member_logins.len()
+    );
+    log("team.vault.rotation_members", Some(&name));
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────────
 

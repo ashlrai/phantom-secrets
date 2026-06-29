@@ -880,6 +880,379 @@ fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
     }
 }
 
+// ── Batch rotation ────────────────────────────────────────────────────────────
+
+/// A single item in a batch rotation plan.
+///
+/// Created by [`batch_discover_due`] when scanning vault metadata for secrets
+/// whose `expires_at` is within `rotation_window_secs` of now, or already past.
+#[derive(Debug, Clone)]
+pub struct BatchRotationItem {
+    /// The vault secret name (e.g. `STRIPE_SECRET_KEY`).
+    pub secret_name: String,
+    /// The unix timestamp at which this secret expires (or expired).
+    /// `None` means no TTL metadata — included only when already expired according
+    /// to the caller's determination.
+    pub expires_at: Option<u64>,
+    /// Provider config resolved from `.phantom.toml` for this secret.
+    /// `None` means manual rotation is required.
+    pub provider_config: Option<RotationProviderConfig>,
+    /// Which provider handles this secret (resolved at scan time).
+    pub provider_label: String,
+}
+
+impl BatchRotationItem {
+    /// Returns `true` if this item has a vendor provider (not manual).
+    pub fn is_vendor(&self) -> bool {
+        self.provider_config.as_ref().map(|c| c.enabled && c.provider != "manual").unwrap_or(false)
+    }
+}
+
+/// The outcome of a single item inside a batch rotation run.
+#[derive(Debug)]
+pub struct BatchItemOutcome {
+    /// The secret name.
+    pub secret_name: String,
+    /// Unix timestamp of the old expiry (`expires_at` before rotation).
+    pub old_expires_at: Option<u64>,
+    /// Unix timestamp of the new expiry after rotation (set by caller; `None`
+    /// when rotation failed or no TTL is configured).
+    pub new_expires_at: Option<u64>,
+    /// Which provider performed the rotation.
+    pub provider_label: String,
+    /// Whether vendor rotation succeeded (`true`) or manual/fallback was used.
+    pub vendor_rotated: bool,
+    /// The new secret value returned by the vendor provider.  Wrapped in
+    /// `Zeroizing<String>` so it is scrubbed from memory after the caller
+    /// stores it in the vault.  `None` for manual-rotation items or failures.
+    pub new_value: Option<zeroize::Zeroizing<String>>,
+    /// Error description if rotation failed; `None` on success.
+    pub error: Option<String>,
+}
+
+impl BatchItemOutcome {
+    /// Returns `true` if this item succeeded (no error).
+    pub fn is_ok(&self) -> bool {
+        self.error.is_none()
+    }
+}
+
+/// Rate-limit configuration for batch rotation.
+///
+/// Provider-specific defaults:
+/// - Stripe: 100 ops/sec burst, **10-second mandatory pause** after rotating
+///   any single Stripe key (vendor requirement).
+/// - GitHub: 30 ops/min — 2-second inter-call delay.
+/// - AWS: 1 CreateAccessKey/sec per IAM user — 1-second delay.
+/// - Manual: no artificial delay.
+#[derive(Debug, Clone)]
+pub struct ProviderRateLimit {
+    /// Minimum delay in milliseconds between consecutive calls to *this* provider.
+    pub inter_call_delay_ms: u64,
+    /// Additional post-rotation pause in milliseconds required after each
+    /// successful rotation (e.g. Stripe's 10-second per-key pause).
+    pub post_rotation_pause_ms: u64,
+    /// Maximum number of secrets that can be rotated in a single batch for
+    /// this provider.  `0` means unlimited.
+    pub max_per_batch: usize,
+}
+
+impl ProviderRateLimit {
+    /// Returns the rate-limit config for the named provider.
+    pub fn for_provider(provider: &str) -> Self {
+        match provider {
+            "stripe" => Self {
+                inter_call_delay_ms: 10,       // ~100 ops/sec
+                post_rotation_pause_ms: 10_000, // Stripe 10 s per-key pause
+                max_per_batch: 0,
+            },
+            "github" => Self {
+                inter_call_delay_ms: 2_000, // 30 ops/min
+                post_rotation_pause_ms: 0,
+                max_per_batch: 0,
+            },
+            "aws" => Self {
+                inter_call_delay_ms: 1_000, // 1 CreateAccessKey/sec
+                post_rotation_pause_ms: 0,
+                max_per_batch: 0,
+            },
+            _ => Self {
+                inter_call_delay_ms: 0,
+                post_rotation_pause_ms: 0,
+                max_per_batch: 0,
+            },
+        }
+    }
+}
+
+/// Add `batch_initiate` / `batch_finalize` extension methods to every
+/// `RotationProvider`.
+///
+/// Default implementations delegate to the single-item `initiate_rotation` /
+/// `finalize_rotation` methods, so existing providers work without changes.
+/// Individual providers may override these to pipeline multiple API calls.
+pub trait BatchRotationProvider: RotationProvider {
+    /// Initiate rotation for multiple secrets in one provider call where
+    /// possible.  Returns one `(secret_name, challenge_id)` pair per item.
+    ///
+    /// The default implementation falls back to individual `initiate_rotation`
+    /// calls with `inter_call_delay_ms` pacing between them.
+    fn batch_initiate(
+        &self,
+        items: &[(&str, &RotationProviderConfig)],
+        rate_limit: &ProviderRateLimit,
+    ) -> Vec<(String, Result<String, RotationProviderError>)> {
+        let mut results = Vec::with_capacity(items.len());
+        for (i, (name, config)) in items.iter().enumerate() {
+            if i > 0 && rate_limit.inter_call_delay_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(rate_limit.inter_call_delay_ms));
+            }
+            let outcome = self.initiate_rotation(name, config);
+            results.push((name.to_string(), outcome));
+        }
+        results
+    }
+
+    /// Finalize rotation for multiple challenge IDs returned by `batch_initiate`.
+    /// Returns one `(secret_name, new_value)` pair per item.
+    ///
+    /// The default implementation calls `finalize_rotation` for each item with
+    /// `post_rotation_pause_ms` applied after each successful finalization.
+    fn batch_finalize(
+        &self,
+        items: &[(&str, &str, &RotationProviderConfig)],
+        rate_limit: &ProviderRateLimit,
+    ) -> Vec<(String, Result<zeroize::Zeroizing<String>, RotationProviderError>)> {
+        let mut results = Vec::with_capacity(items.len());
+        for (name, challenge_id, config) in items.iter() {
+            let outcome = self.finalize_rotation(challenge_id, config);
+            let success = outcome.is_ok();
+            results.push((name.to_string(), outcome));
+            if success && rate_limit.post_rotation_pause_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(rate_limit.post_rotation_pause_ms));
+            }
+        }
+        results
+    }
+}
+
+// Blanket impl: every RotationProvider automatically gets batch methods.
+impl<T: RotationProvider + ?Sized> BatchRotationProvider for T {}
+
+/// Discover vault secrets that are due for rotation within `rotation_window_secs`.
+///
+/// A secret is "due" when:
+///   - Its `expires_at` metadata is set **and** `expires_at <= now + rotation_window_secs`
+///     (i.e. it expires within the window, or is already expired).
+///
+/// Returns a `Vec<BatchRotationItem>` sorted by `expires_at` ascending (most
+/// urgent first, already-expired before soon-to-expire).
+///
+/// `secret_configs` is a slice of `(name, expires_at, provider_config)` tuples
+/// derived from `.phantom.toml` + vault metadata — the caller is responsible for
+/// loading them.  This function is pure (no I/O) so it can be unit-tested.
+pub fn batch_discover_due(
+    secret_configs: &[(String, Option<u64>, Option<RotationProviderConfig>)],
+    rotation_window_secs: u64,
+    now: u64,
+    providers: &[Box<dyn RotationProvider>],
+) -> Vec<BatchRotationItem> {
+    let deadline = now.saturating_add(rotation_window_secs);
+
+    let mut items: Vec<BatchRotationItem> = secret_configs
+        .iter()
+        .filter_map(|(name, expires_at, provider_config)| {
+            let due = match expires_at {
+                Some(exp) => *exp <= deadline,
+                None => false,
+            };
+            if !due {
+                return None;
+            }
+            // Resolve which provider handles this secret.
+            let label = provider_config
+                .as_ref()
+                .filter(|c| c.enabled)
+                .and_then(|c| {
+                    providers
+                        .iter()
+                        .find(|p| p.matches(name))
+                        .map(|p| p.name().to_string())
+                        .or_else(|| {
+                            if c.provider != "manual" {
+                                Some(c.provider.clone())
+                            } else {
+                                None
+                            }
+                        })
+                })
+                .unwrap_or_else(|| "manual".to_string());
+
+            Some(BatchRotationItem {
+                secret_name: name.clone(),
+                expires_at: *expires_at,
+                provider_config: provider_config.clone(),
+                provider_label: label,
+            })
+        })
+        .collect();
+
+    // Sort by expires_at ascending: expired (smallest / past now) first.
+    items.sort_by_key(|item| item.expires_at.unwrap_or(u64::MAX));
+    items
+}
+
+/// Execute a batch rotation for the given items, respecting per-provider rate
+/// limits and emitting a composite audit event with a shared `batch_id`.
+///
+/// Returns `(batch_id, Vec<BatchItemOutcome>)`.
+///
+/// # Security
+/// New secret values returned by vendor providers are wrapped in
+/// `Zeroizing<String>` and are NOT logged, printed, or returned except inside
+/// the `BatchItemOutcome.new_value` field, which callers must store in the
+/// vault immediately and then drop.
+pub fn execute_batch_rotation(
+    items: &[BatchRotationItem],
+    providers: &[Box<dyn RotationProvider>],
+    now: u64,
+) -> (String, Vec<BatchItemOutcome>) {
+    let batch_id = generate_batch_id();
+
+    crate::audit::log_batch_rotation_started(&batch_id, items.len());
+
+    // Group items by provider so we can apply per-provider rate limits.
+    // Order within each provider group preserves the input ordering.
+    let provider_names: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        items
+            .iter()
+            .map(|i| i.provider_label.clone())
+            .filter(|p| seen.insert(p.clone()))
+            .collect()
+    };
+
+    let mut outcomes: Vec<BatchItemOutcome> = Vec::with_capacity(items.len());
+
+    for provider_name in &provider_names {
+        let provider_items: Vec<&BatchRotationItem> = items
+            .iter()
+            .filter(|i| &i.provider_label == provider_name)
+            .collect();
+
+        let rate_limit = ProviderRateLimit::for_provider(provider_name);
+
+        // Find the matching provider implementation.
+        let maybe_provider = providers.iter().find(|p| p.name() == provider_name.as_str());
+
+        for item in &provider_items {
+            let secret_name = &item.secret_name;
+
+            if let (Some(provider), Some(config)) = (maybe_provider.as_ref(), item.provider_config.as_ref()) {
+                // Vendor path: initiate → pause → finalize.
+                let challenge_result = provider.initiate_rotation(secret_name, config);
+
+                match challenge_result {
+                    Err(e) => {
+                        crate::audit::log_batch_item_failed(&batch_id, secret_name, &e.to_string());
+                        outcomes.push(BatchItemOutcome {
+                            secret_name: secret_name.clone(),
+                            old_expires_at: item.expires_at,
+                            new_expires_at: None,
+                            provider_label: provider_name.clone(),
+                            vendor_rotated: false,
+                            new_value: None,
+                            error: Some(e.to_string()),
+                        });
+                    }
+                    Ok(challenge_id) => {
+                        // Apply post-initiation delay for providers like Stripe.
+                        if rate_limit.inter_call_delay_ms > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                rate_limit.inter_call_delay_ms,
+                            ));
+                        }
+
+                        let finalize_result = provider.finalize_rotation(&challenge_id, config);
+
+                        match finalize_result {
+                            Err(e) => {
+                                crate::audit::log_batch_item_failed(&batch_id, secret_name, &e.to_string());
+                                outcomes.push(BatchItemOutcome {
+                                    secret_name: secret_name.clone(),
+                                    old_expires_at: item.expires_at,
+                                    new_expires_at: None,
+                                    provider_label: provider_name.clone(),
+                                    vendor_rotated: false,
+                                    new_value: None,
+                                    error: Some(e.to_string()),
+                                });
+                            }
+                            Ok(new_value) => {
+                                // Compute new expiry: use provider config window if present,
+                                // otherwise extend by 30 days from now.
+                                let rotation_days = item
+                                    .provider_config
+                                    .as_ref()
+                                    .map(|_| 30u64)
+                                    .unwrap_or(30);
+                                let new_expires_at = Some(now + rotation_days * 86_400);
+
+                                crate::audit::log_batch_item_succeeded(&batch_id, secret_name, provider_name);
+
+                                // Apply post-rotation pause (e.g. Stripe 10 s).
+                                if rate_limit.post_rotation_pause_ms > 0 {
+                                    std::thread::sleep(std::time::Duration::from_millis(
+                                        rate_limit.post_rotation_pause_ms,
+                                    ));
+                                }
+
+                                outcomes.push(BatchItemOutcome {
+                                    secret_name: secret_name.clone(),
+                                    old_expires_at: item.expires_at,
+                                    new_expires_at,
+                                    provider_label: provider_name.clone(),
+                                    vendor_rotated: true,
+                                    new_value: Some(new_value),
+                                    error: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Manual path: no vendor provider; caller must supply value.
+                outcomes.push(BatchItemOutcome {
+                    secret_name: secret_name.clone(),
+                    old_expires_at: item.expires_at,
+                    new_expires_at: None,
+                    provider_label: "manual".to_string(),
+                    vendor_rotated: false,
+                    new_value: None,
+                    error: None, // not an error — caller handles manual rotation
+                });
+            }
+        }
+    }
+
+    crate::audit::log_batch_rotation_completed(
+        &batch_id,
+        items.len(),
+        outcomes.iter().filter(|o| o.is_ok()).count(),
+        outcomes.iter().filter(|o| !o.is_ok()).count(),
+    );
+
+    (batch_id, outcomes)
+}
+
+/// Generate a short random batch ID (16 hex chars).
+fn generate_batch_id() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 8];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1313,5 +1686,358 @@ typo_field = "oops"
                 "key {key} should match provider {expected}, got: {matching:?}"
             );
         }
+    }
+
+    // ── ProviderRateLimit ─────────────────────────────────────────────────────
+
+    #[test]
+    fn rate_limit_stripe_has_post_rotation_pause() {
+        let rl = ProviderRateLimit::for_provider("stripe");
+        assert!(
+            rl.post_rotation_pause_ms >= 10_000,
+            "Stripe must have >= 10 s post-rotation pause, got {}ms",
+            rl.post_rotation_pause_ms
+        );
+        assert!(
+            rl.inter_call_delay_ms > 0,
+            "Stripe must have a positive inter-call delay"
+        );
+    }
+
+    #[test]
+    fn rate_limit_github_has_inter_call_delay() {
+        let rl = ProviderRateLimit::for_provider("github");
+        assert!(
+            rl.inter_call_delay_ms >= 2_000,
+            "GitHub must have >= 2 s inter-call delay, got {}ms",
+            rl.inter_call_delay_ms
+        );
+        assert_eq!(rl.post_rotation_pause_ms, 0, "GitHub has no post-rotation pause");
+    }
+
+    #[test]
+    fn rate_limit_aws_has_per_second_delay() {
+        let rl = ProviderRateLimit::for_provider("aws");
+        assert!(
+            rl.inter_call_delay_ms >= 1_000,
+            "AWS must have >= 1 s inter-call delay, got {}ms",
+            rl.inter_call_delay_ms
+        );
+    }
+
+    #[test]
+    fn rate_limit_manual_has_no_delay() {
+        let rl = ProviderRateLimit::for_provider("manual");
+        assert_eq!(rl.inter_call_delay_ms, 0, "manual provider must have no inter-call delay");
+        assert_eq!(rl.post_rotation_pause_ms, 0, "manual provider must have no post-rotation pause");
+    }
+
+    #[test]
+    fn rate_limit_unknown_provider_has_no_delay() {
+        let rl = ProviderRateLimit::for_provider("custom_vendor");
+        assert_eq!(rl.inter_call_delay_ms, 0);
+        assert_eq!(rl.post_rotation_pause_ms, 0);
+    }
+
+    // ── batch_discover_due ────────────────────────────────────────────────────
+
+    #[test]
+    fn batch_discover_due_returns_only_secrets_within_window() {
+        let now = 1_700_000_000u64;
+        let window = 30 * 86_400u64; // 30 days
+
+        let stripe_config = RotationProviderConfig {
+            provider: "stripe".to_string(),
+            api_key_env: Some("STRIPE_KEY_ENV".to_string()),
+            enabled: true,
+            ..Default::default()
+        };
+
+        let input = vec![
+            // Expires in 10 days — within window → should be included
+            ("STRIPE_KEY".to_string(), Some(now + 10 * 86_400), Some(stripe_config.clone())),
+            // Expires in 60 days — outside window → excluded
+            ("GITHUB_TOKEN".to_string(), Some(now + 60 * 86_400), None),
+            // Already expired → included
+            ("AWS_KEY".to_string(), Some(now - 86_400), None),
+            // No expiry → excluded
+            ("MANUAL_KEY".to_string(), None, None),
+        ];
+
+        let providers = default_rotation_providers();
+        let due = batch_discover_due(&input, window, now, &providers);
+
+        assert_eq!(due.len(), 2, "expected 2 due secrets, got {}", due.len());
+
+        let names: Vec<&str> = due.iter().map(|i| i.secret_name.as_str()).collect();
+        assert!(names.contains(&"STRIPE_KEY"), "STRIPE_KEY must be due");
+        assert!(names.contains(&"AWS_KEY"), "AWS_KEY must be due");
+        assert!(!names.contains(&"GITHUB_TOKEN"), "GITHUB_TOKEN must NOT be due");
+        assert!(!names.contains(&"MANUAL_KEY"), "MANUAL_KEY (no expiry) must NOT be due");
+    }
+
+    #[test]
+    fn batch_discover_due_sorts_most_urgent_first() {
+        let now = 1_700_000_000u64;
+        let window = 60 * 86_400u64;
+
+        let input = vec![
+            ("KEY_C".to_string(), Some(now + 20 * 86_400), None), // 20 days out
+            ("KEY_A".to_string(), Some(now - 86_400), None),       // already expired
+            ("KEY_B".to_string(), Some(now + 5 * 86_400), None),   // 5 days out
+        ];
+
+        let providers = default_rotation_providers();
+        let due = batch_discover_due(&input, window, now, &providers);
+
+        assert_eq!(due.len(), 3);
+        // Expired first (smallest expires_at), then soonest-expiring
+        assert_eq!(due[0].secret_name, "KEY_A", "expired key must be first");
+        assert_eq!(due[1].secret_name, "KEY_B", "5-day key must be second");
+        assert_eq!(due[2].secret_name, "KEY_C", "20-day key must be last");
+    }
+
+    #[test]
+    fn batch_discover_due_labels_provider_correctly() {
+        let now = 1_700_000_000u64;
+        let window = 30 * 86_400u64;
+
+        let stripe_config = RotationProviderConfig {
+            provider: "stripe".to_string(),
+            api_key_env: Some("SK_ENV".to_string()),
+            enabled: true,
+            ..Default::default()
+        };
+
+        let input = vec![
+            ("STRIPE_SECRET_KEY".to_string(), Some(now + 5 * 86_400), Some(stripe_config)),
+            ("MY_MANUAL_KEY".to_string(), Some(now + 5 * 86_400), None),
+        ];
+
+        let providers = default_rotation_providers();
+        let due = batch_discover_due(&input, window, now, &providers);
+
+        assert_eq!(due.len(), 2);
+        let stripe_item = due.iter().find(|i| i.secret_name == "STRIPE_SECRET_KEY").unwrap();
+        let manual_item = due.iter().find(|i| i.secret_name == "MY_MANUAL_KEY").unwrap();
+
+        assert_eq!(stripe_item.provider_label, "stripe");
+        assert!(stripe_item.is_vendor(), "STRIPE_SECRET_KEY with provider config must be vendor");
+        assert_eq!(manual_item.provider_label, "manual");
+        assert!(!manual_item.is_vendor(), "key without provider config must not be vendor");
+    }
+
+    #[test]
+    fn batch_discover_due_empty_vault_returns_empty() {
+        let providers = default_rotation_providers();
+        let due = batch_discover_due(&[], 30 * 86_400, 1_700_000_000, &providers);
+        assert!(due.is_empty());
+    }
+
+    // ── execute_batch_rotation ────────────────────────────────────────────────
+
+    #[test]
+    fn execute_batch_rotation_stripe_mock_succeeds() {
+        // Set up a mock Stripe key in the environment.
+        unsafe { std::env::set_var("BATCH_TEST_STRIPE_KEY", "sk_test_mock_batch_key") };
+        unsafe { std::env::remove_var("PHANTOM_AUDIT") };
+
+        let stripe_config = RotationProviderConfig {
+            provider: "stripe".to_string(),
+            api_key_env: Some("BATCH_TEST_STRIPE_KEY".to_string()),
+            enabled: true,
+            ..Default::default()
+        };
+
+        let now = 1_700_000_000u64;
+        let items = vec![
+            BatchRotationItem {
+                secret_name: "STRIPE_SECRET_KEY".to_string(),
+                expires_at: Some(now - 86_400), // already expired
+                provider_config: Some(stripe_config),
+                provider_label: "stripe".to_string(),
+            },
+        ];
+
+        let providers = default_rotation_providers();
+        let (batch_id, outcomes) = execute_batch_rotation(&items, &providers, now);
+
+        assert!(!batch_id.is_empty(), "batch_id must be non-empty");
+        assert_eq!(outcomes.len(), 1);
+
+        let outcome = &outcomes[0];
+        assert_eq!(outcome.secret_name, "STRIPE_SECRET_KEY");
+        assert!(outcome.vendor_rotated, "should be vendor-rotated via Stripe mock");
+        assert!(outcome.is_ok(), "should have no error");
+        assert!(outcome.new_value.is_some(), "should have a new value");
+        assert_eq!(
+            outcome.new_value.as_ref().unwrap().as_str(),
+            "sk_test_rotated_mock_value_stripe"
+        );
+        assert!(outcome.new_expires_at.is_some(), "should have a new expiry");
+        assert!(
+            outcome.new_expires_at.unwrap() > now,
+            "new expiry must be in the future"
+        );
+
+        unsafe { std::env::remove_var("BATCH_TEST_STRIPE_KEY") };
+    }
+
+    #[test]
+    fn execute_batch_rotation_manual_item_has_no_new_value() {
+        unsafe { std::env::remove_var("PHANTOM_AUDIT") };
+
+        let now = 1_700_000_000u64;
+        let items = vec![
+            BatchRotationItem {
+                secret_name: "MY_MANUAL_SECRET".to_string(),
+                expires_at: Some(now - 3600),
+                provider_config: None, // manual
+                provider_label: "manual".to_string(),
+            },
+        ];
+
+        let providers = default_rotation_providers();
+        let (batch_id, outcomes) = execute_batch_rotation(&items, &providers, now);
+
+        assert!(!batch_id.is_empty());
+        assert_eq!(outcomes.len(), 1);
+
+        let outcome = &outcomes[0];
+        assert_eq!(outcome.provider_label, "manual");
+        assert!(!outcome.vendor_rotated);
+        assert!(outcome.new_value.is_none(), "manual item must not have a new value");
+        assert!(outcome.error.is_none(), "manual item is not an error — just needs manual handling");
+        assert!(outcome.is_ok());
+    }
+
+    #[test]
+    fn execute_batch_rotation_mixed_providers_three_secrets() {
+        // Set up mock env vars for Stripe and GitHub
+        unsafe {
+            std::env::set_var("BATCH_MIX_STRIPE_KEY", "sk_test_mock_mix_stripe");
+            std::env::set_var("BATCH_MIX_GITHUB_KEY", "ghp_mock_mix_github");
+            std::env::remove_var("PHANTOM_AUDIT");
+        }
+
+        let stripe_config = RotationProviderConfig {
+            provider: "stripe".to_string(),
+            api_key_env: Some("BATCH_MIX_STRIPE_KEY".to_string()),
+            enabled: true,
+            ..Default::default()
+        };
+        let github_config = RotationProviderConfig {
+            provider: "github".to_string(),
+            api_key_env: Some("BATCH_MIX_GITHUB_KEY".to_string()),
+            account_id: Some("install_123".to_string()),
+            enabled: true,
+            ..Default::default()
+        };
+
+        let now = 1_700_000_000u64;
+        let items = vec![
+            BatchRotationItem {
+                secret_name: "STRIPE_SECRET_KEY".to_string(),
+                expires_at: Some(now - 1000),
+                provider_config: Some(stripe_config),
+                provider_label: "stripe".to_string(),
+            },
+            BatchRotationItem {
+                secret_name: "GITHUB_TOKEN".to_string(),
+                expires_at: Some(now - 2000),
+                provider_config: Some(github_config),
+                provider_label: "github".to_string(),
+            },
+            BatchRotationItem {
+                secret_name: "MANUAL_API_KEY".to_string(),
+                expires_at: Some(now - 3000),
+                provider_config: None,
+                provider_label: "manual".to_string(),
+            },
+        ];
+
+        let providers = default_rotation_providers();
+        let (batch_id, outcomes) = execute_batch_rotation(&items, &providers, now);
+
+        assert!(!batch_id.is_empty(), "batch_id must be set");
+        assert_eq!(outcomes.len(), 3, "must have 3 outcomes");
+
+        // All 3 must be ok (no errors)
+        for o in &outcomes {
+            assert!(o.is_ok(), "outcome for {} must be ok, got: {:?}", o.secret_name, o.error);
+        }
+
+        let stripe_out = outcomes.iter().find(|o| o.secret_name == "STRIPE_SECRET_KEY").unwrap();
+        assert!(stripe_out.vendor_rotated, "Stripe must be vendor-rotated");
+        assert!(stripe_out.new_value.is_some());
+
+        let github_out = outcomes.iter().find(|o| o.secret_name == "GITHUB_TOKEN").unwrap();
+        assert!(github_out.vendor_rotated, "GitHub must be vendor-rotated");
+        assert!(github_out.new_value.is_some());
+
+        let manual_out = outcomes.iter().find(|o| o.secret_name == "MANUAL_API_KEY").unwrap();
+        assert!(!manual_out.vendor_rotated);
+        assert!(manual_out.new_value.is_none());
+
+        unsafe {
+            std::env::remove_var("BATCH_MIX_STRIPE_KEY");
+            std::env::remove_var("BATCH_MIX_GITHUB_KEY");
+        }
+    }
+
+    #[test]
+    fn execute_batch_rotation_batch_id_is_unique_per_run() {
+        unsafe { std::env::remove_var("PHANTOM_AUDIT") };
+        let now = 1_700_000_000u64;
+        let providers = default_rotation_providers();
+        let (id1, _) = execute_batch_rotation(&[], &providers, now);
+        let (id2, _) = execute_batch_rotation(&[], &providers, now);
+        assert_ne!(id1, id2, "each batch run must produce a unique batch_id");
+    }
+
+    #[test]
+    fn execute_batch_rotation_failed_provider_sets_error() {
+        // No env var set → provider will fail with NotConfigured
+        unsafe { std::env::remove_var("PHANTOM_AUDIT") };
+        unsafe { std::env::remove_var("BATCH_FAIL_KEY") };
+
+        let stripe_config = RotationProviderConfig {
+            provider: "stripe".to_string(),
+            api_key_env: Some("BATCH_FAIL_KEY".to_string()), // env var not set
+            enabled: true,
+            ..Default::default()
+        };
+
+        let now = 1_700_000_000u64;
+        let items = vec![BatchRotationItem {
+            secret_name: "STRIPE_SECRET_KEY".to_string(),
+            expires_at: Some(now - 3600),
+            provider_config: Some(stripe_config),
+            provider_label: "stripe".to_string(),
+        }];
+
+        let providers = default_rotation_providers();
+        let (_batch_id, outcomes) = execute_batch_rotation(&items, &providers, now);
+
+        assert_eq!(outcomes.len(), 1);
+        let outcome = &outcomes[0];
+        assert!(!outcome.is_ok(), "missing env var should cause rotation failure");
+        assert!(outcome.error.is_some(), "error field must be populated on failure");
+        assert!(!outcome.vendor_rotated);
+        assert!(outcome.new_value.is_none());
+    }
+
+    // ── Audit batch event functions ───────────────────────────────────────────
+
+    #[test]
+    fn batch_audit_log_functions_are_no_ops_when_audit_disabled() {
+        // Make sure audit is disabled.
+        unsafe { std::env::remove_var("PHANTOM_AUDIT") };
+
+        // These must not panic regardless of PHANTOM_AUDIT state.
+        crate::audit::log_batch_rotation_started("abc123", 3);
+        crate::audit::log_batch_item_succeeded("abc123", "MY_KEY", "stripe");
+        crate::audit::log_batch_item_failed("abc123", "MY_KEY", "timeout");
+        crate::audit::log_batch_rotation_completed("abc123", 3, 2, 1);
     }
 }

@@ -12,6 +12,7 @@ pub mod error;
 pub mod fs;
 pub mod importers;
 pub mod mcp_approval;
+pub mod rotation_provider;
 pub mod rotation_strategy;
 pub mod sync;
 pub mod team_crypto;

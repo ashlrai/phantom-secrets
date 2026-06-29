@@ -484,6 +484,204 @@ pub fn run_with_provider(provider: &str, name: &str, sync_after: bool) -> Result
     Ok(())
 }
 
+/// Execute expiry-driven batch rotation across all vault secrets whose TTL
+/// falls within `rotation_window_days`.
+///
+/// For secrets with a `rotation_provider` configured (Stripe, GitHub, AWS),
+/// vendor API calls are made respecting per-provider rate limits.
+/// For manual secrets the item is listed in the summary table but no value
+/// change is made (operator must supply values manually).
+///
+/// Emits a composite audit event with a shared `batch_id` covering all rotations.
+/// Prints a summary table: secret name | old expiry | new expiry | provider.
+pub fn run_batch(rotation_window_days: u64, sync_after: bool, json_output: bool) -> anyhow::Result<()> {
+    use phantom_core::rotation_provider::{batch_discover_due, execute_batch_rotation, default_rotation_providers};
+
+    let project_dir = std::env::current_dir()?;
+    let config_path = project_dir.join(".phantom.toml");
+
+    if !config_path.exists() {
+        anyhow::bail!(
+            "No .phantom.toml found. Run {} first.",
+            "phantom init".cyan().bold()
+        );
+    }
+
+    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+
+    // Gather all secrets with their expiry metadata and provider config.
+    let names = vault.list().context("Failed to list secrets")?;
+    if names.is_empty() {
+        println!("{} No secrets in vault.", "!".yellow().bold());
+        return Ok(());
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Build the scan input: (name, expires_at, provider_config)
+    let mut scan_input: Vec<(String, Option<u64>, Option<phantom_core::rotation_provider::RotationProviderConfig>)> = Vec::new();
+    for name in &names {
+        let expires_at = vault
+            .get_metadata(name)
+            .ok()
+            .flatten()
+            .and_then(|m| m.expires_at);
+        let provider_config = config
+            .phantom
+            .secrets
+            .get(name)
+            .and_then(|ov| ov.rotation_provider.clone());
+        scan_input.push((name.clone(), expires_at, provider_config));
+    }
+
+    let rotation_window_secs = rotation_window_days * 86_400;
+    let providers = default_rotation_providers();
+
+    let due_items = batch_discover_due(&scan_input, rotation_window_secs, now, &providers);
+
+    if due_items.is_empty() {
+        println!(
+            "{} No secrets are due for rotation within the next {} day(s).",
+            "ok".green().bold(),
+            rotation_window_days
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{} Found {} secret(s) due for rotation within {} day(s).",
+        "->".blue().bold(),
+        due_items.len(),
+        rotation_window_days
+    );
+    println!();
+
+    // Execute the batch.
+    let (batch_id, outcomes) = execute_batch_rotation(&due_items, &providers, now);
+
+    // Store any new values returned by vendor providers.
+    for outcome in &outcomes {
+        if let Some(ref new_value) = outcome.new_value {
+            vault
+                .store(&outcome.secret_name, new_value.as_str())
+                .with_context(|| format!("Failed to store rotated value for '{}'", outcome.secret_name))?;
+            phantom_core::audit::log("vault.rotation.provider.stored", Some(&outcome.secret_name));
+        }
+    }
+
+    // Also rotate phantom tokens for all successfully vendor-rotated secrets.
+    let rotated_vendor_names: Vec<&str> = outcomes
+        .iter()
+        .filter(|o| o.vendor_rotated)
+        .map(|o| o.secret_name.as_str())
+        .collect();
+
+    if !rotated_vendor_names.is_empty() {
+        let env_path = project_dir.join(".env");
+        if env_path.exists() {
+            let mut token_map = phantom_core::token::TokenMap::new();
+            for n in &rotated_vendor_names {
+                token_map.insert(n.to_string());
+            }
+            let dotenv = phantom_core::dotenv::DotenvFile::parse_file(&env_path)?;
+            dotenv.write_phantomized(&token_map, &env_path)?;
+        }
+    }
+
+    // Print summary table.
+    if json_output {
+        // Emit JSON array for scripting.
+        let rows: Vec<serde_json::Value> = outcomes
+            .iter()
+            .map(|o| {
+                serde_json::json!({
+                    "secret": o.secret_name,
+                    "old_expires_at": o.old_expires_at,
+                    "new_expires_at": o.new_expires_at,
+                    "provider": o.provider_label,
+                    "vendor_rotated": o.vendor_rotated,
+                    "ok": o.is_ok(),
+                    "error": o.error,
+                    "batch_id": batch_id,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+    } else {
+        println!("{}", "Batch Rotation Summary".bold());
+        println!("{}", "-".repeat(80));
+        println!(
+            "{:<32} {:<20} {:<20} {:<12} {}",
+            "Secret".bold(),
+            "Old Expiry".bold(),
+            "New Expiry".bold(),
+            "Provider".bold(),
+            "Status".bold()
+        );
+        println!("{}", "-".repeat(80));
+
+        for outcome in &outcomes {
+            let old_exp = outcome
+                .old_expires_at
+                .map(|t| chrono_iso(t))
+                .unwrap_or_else(|| "none".to_string());
+            let new_exp = outcome
+                .new_expires_at
+                .map(|t| chrono_iso(t))
+                .unwrap_or_else(|| "none".to_string());
+            let status = if let Some(ref err) = outcome.error {
+                format!("{} {}", "FAIL".red().bold(), err.chars().take(30).collect::<String>())
+            } else if outcome.vendor_rotated {
+                format!("{} via {}", "ok".green().bold(), outcome.provider_label)
+            } else if outcome.new_value.is_none() && outcome.error.is_none() {
+                format!("{} (manual rotation needed)", "!".yellow().bold())
+            } else {
+                "ok".green().bold().to_string()
+            };
+
+            println!(
+                "{:<32} {:<20} {:<20} {:<12} {}",
+                outcome.secret_name.chars().take(31).collect::<String>(),
+                old_exp,
+                new_exp,
+                outcome.provider_label.chars().take(11).collect::<String>(),
+                status
+            );
+        }
+
+        println!("{}", "-".repeat(80));
+        let succeeded = outcomes.iter().filter(|o| o.is_ok() && o.vendor_rotated).count();
+        let manual = outcomes.iter().filter(|o| o.is_ok() && !o.vendor_rotated).count();
+        let failed = outcomes.iter().filter(|o| !o.is_ok()).count();
+        println!(
+            "\n{} Batch {}: {} vendor-rotated, {} manual, {} failed",
+            "ok".green().bold(),
+            batch_id.cyan(),
+            succeeded,
+            manual,
+            failed
+        );
+        println!(
+            "   Audit events tagged with {}",
+            format!("batch_id={batch_id}").cyan()
+        );
+    }
+
+    if sync_after && outcomes.iter().any(|o| o.vendor_rotated) {
+        println!(
+            "\n{} Syncing to deployment platforms…",
+            "->".blue().bold()
+        );
+        crate::commands::sync::run(None, None, vec![], false, false)?;
+    }
+
+    Ok(())
+}
+
 /// Rotate the phantom token for a **single named secret** without touching
 /// any other secrets in the vault.
 ///

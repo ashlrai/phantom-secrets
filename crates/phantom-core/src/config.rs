@@ -77,6 +77,18 @@ pub struct ValidationScheduleConfig {
     /// Per-request HTTP timeout in seconds (default: 30).
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+    /// Hint to the validator which provider to use for this secret.
+    /// Accepted values: `"github"`, `"stripe"`, `"aws"`, `"openai"`,
+    /// `"anthropic"`, or any custom validator name registered in the
+    /// validation pipeline.  When absent the pipeline auto-selects the first
+    /// validator whose `matches()` predicate returns true for the secret name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// When `true`, emit an audit event with op `"vault.validate.invalid"` and
+    /// log a warning whenever a validation run transitions the secret from
+    /// valid → invalid.  Defaults to `true`.
+    #[serde(default = "default_alert_on_invalid")]
+    pub alert_on_invalid: bool,
 }
 
 impl Default for ValidationScheduleConfig {
@@ -85,6 +97,8 @@ impl Default for ValidationScheduleConfig {
             enabled: true,
             schedule: "daily".to_string(),
             timeout_secs: 30,
+            provider: None,
+            alert_on_invalid: true,
         }
     }
 }
@@ -99,6 +113,10 @@ fn default_validation_schedule() -> String {
 
 fn default_timeout_secs() -> u64 {
     30
+}
+
+fn default_alert_on_invalid() -> bool {
+    true
 }
 
 impl ValidationScheduleConfig {
@@ -979,6 +997,8 @@ header = "Authorization"
             enabled: false,
             schedule: "daily".to_string(),
             timeout_secs: 30,
+            provider: None,
+            alert_on_invalid: true,
         };
         // Disabled — never due, even if never checked.
         assert!(!cfg.is_due(0));
@@ -1014,9 +1034,45 @@ header = "Authorization"
             enabled: true,
             schedule: "never".to_string(),
             timeout_secs: 30,
+            provider: None,
+            alert_on_invalid: true,
         };
         assert!(!cfg.is_due(0));
         assert!(!cfg.is_due(1));
+    }
+
+    #[test]
+    fn validation_schedule_config_provider_and_alert_fields() {
+        let cfg = ValidationScheduleConfig {
+            enabled: true,
+            schedule: "daily".to_string(),
+            timeout_secs: 30,
+            provider: Some("github".to_string()),
+            alert_on_invalid: false,
+        };
+        assert_eq!(cfg.provider.as_deref(), Some("github"));
+        assert!(!cfg.alert_on_invalid);
+
+        // Round-trip through JSON.
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: ValidationScheduleConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.provider.as_deref(), Some("github"));
+        assert!(!back.alert_on_invalid);
+    }
+
+    #[test]
+    fn validation_schedule_config_defaults_alert_on_invalid_true() {
+        let cfg = ValidationScheduleConfig::default();
+        assert!(cfg.alert_on_invalid, "alert_on_invalid should default to true");
+        assert!(cfg.provider.is_none(), "provider should default to None");
+    }
+
+    #[test]
+    fn validation_schedule_config_provider_none_omitted_from_toml() {
+        let cfg = ValidationScheduleConfig::default();
+        let toml_str = toml::to_string(&cfg).unwrap();
+        // provider = None → skip_serializing_if → not present in TOML
+        assert!(!toml_str.contains("provider"), "provider=None should be omitted: {toml_str}");
     }
 
     #[test]
@@ -1029,6 +1085,8 @@ header = "Authorization"
                     enabled: true,
                     schedule: "weekly".to_string(),
                     timeout_secs: 60,
+                    provider: Some("stripe".to_string()),
+                    alert_on_invalid: true,
                 }),
                 ..Default::default()
             },
@@ -1043,6 +1101,8 @@ header = "Authorization"
         assert_eq!(val.schedule, "weekly");
         assert_eq!(val.timeout_secs, 60);
         assert!(val.enabled);
+        assert_eq!(val.provider.as_deref(), Some("stripe"));
+        assert!(val.alert_on_invalid);
     }
 
     #[test]

@@ -428,8 +428,21 @@ enum Commands {
         /// Requires --name <KEY> and the secret's rotation_provider config in
         /// .phantom.toml under [phantom.secrets.<KEY>.rotation_provider].
         /// Example: phantom rotate --provider stripe --name STRIPE_SECRET_KEY
-        #[arg(long, value_name = "PROVIDER", conflicts_with_all = ["shadow", "schedule_strategy", "with_expiry"])]
+        #[arg(long, value_name = "PROVIDER", conflicts_with_all = ["shadow", "schedule_strategy", "with_expiry", "batch"])]
         provider: Option<String>,
+
+        /// Scan vault for all secrets expiring within the rotation window and
+        /// rotate them in a single batched run.  Respects per-provider rate
+        /// limits (e.g. Stripe's 10-second post-rotation pause).
+        /// Emits a composite audit event with a shared batch_id.
+        /// Rotation window defaults to 30 days; override with --rotation-window-days.
+        #[arg(long, conflicts_with_all = ["shadow", "schedule_strategy", "provider"])]
+        batch: bool,
+
+        /// With --batch: consider secrets expiring within this many days as due
+        /// for rotation (default: 30).
+        #[arg(long, value_name = "DAYS", default_value_t = 30, requires = "batch")]
+        rotation_window_days: u64,
     },
 
     /// Validate stored secrets against their target APIs (drift detection).
@@ -728,8 +741,10 @@ fn main() -> anyhow::Result<()> {
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status { oneline } => commands::status::run(oneline),
-        Commands::Rotate { sync, with_expiry, shadow, name, schedule_strategy, provider } => {
-            if let Some(ref provider_name) = provider {
+        Commands::Rotate { sync, with_expiry, shadow, name, schedule_strategy, provider, batch, rotation_window_days } => {
+            if batch {
+                commands::rotate::run_batch(rotation_window_days, sync, cli.json)
+            } else if let Some(ref provider_name) = provider {
                 let secret_name = name.ok_or_else(|| {
                     anyhow::anyhow!("--provider requires --name <NAME>")
                 })?;
