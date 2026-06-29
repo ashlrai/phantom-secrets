@@ -4,8 +4,14 @@
 // false. The MCP server returns INVALID_PARAMS unless the calling agent
 // explicitly sets `confirm: true` — defends against prompt-injected
 // instructions in project content silently mutating state.
+//
+// In addition, mutating tools include an optional `approval_token` field.
+// When absent, the MCP server generates a nonce and returns INVALID_PARAMS
+// instructing the user to run `phantom mcp-approve <NONCE>`.  When present,
+// the server validates and consumes the nonce before executing the operation.
+// Format: "<nonce_hex>:<approval_token_hex>"  (both produced by mcp-approve).
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct InitParams {
     /// Path to the .env file (defaults to .env in current directory)
     #[serde(default = "default_env_path")]
@@ -13,14 +19,17 @@ pub struct InitParams {
     /// Required. Must be true because init stores secrets and rewrites .env.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    /// Format: "<nonce_hex>:<approval_token_hex>".
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 fn default_env_path() -> String {
     ".env".to_string()
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AddSecretParams {
     /// Name of the secret (e.g., OPENAI_API_KEY)
     pub name: String,
@@ -30,9 +39,13 @@ pub struct AddSecretParams {
     /// mutating the vault.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    /// Format: "<nonce_hex>:<approval_token_hex>".
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AddSecretInteractiveParams {
     /// Name of the secret to add (e.g., OPENAI_API_KEY)
     pub name: String,
@@ -40,9 +53,12 @@ pub struct AddSecretInteractiveParams {
     /// before starting an out-of-band terminal flow.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RemoveSecretParams {
     /// Name of the secret to remove
     pub name: String,
@@ -51,9 +67,12 @@ pub struct RemoveSecretParams {
     /// deleting secrets.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateParams {
     /// Required. Must be true — the calling agent must confirm with the user
     /// before invoking this tool. Rotating invalidates every live phantom token
@@ -61,9 +80,12 @@ pub struct RotateParams {
     /// `phantom exec` or dev server) until it picks up the new .env.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateWithExpiryParams {
     /// Number of days until secrets expire. Each secret gets `expires_at` set to
     /// `now + days_ttl * 86400` and a `rotation_policy` recording the TTL. After
@@ -75,9 +97,12 @@ pub struct RotateWithExpiryParams {
     /// any cached ones) and sets persistent expiry metadata in the vault.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListWithExpiryParams {
     /// Include TTL/expiry status for each secret (countdown, expired flag, etc.)
     #[serde(default = "default_true")]
@@ -88,7 +113,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct CloudPushParams {
     /// Required. Must be true — the calling agent must confirm with the user
     /// before invoking this tool. A push overwrites the cloud copy of the
@@ -96,9 +121,12 @@ pub struct CloudPushParams {
     /// machine that later pulls.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct CloudPullParams {
     /// Overwrite existing local secrets (default: false)
     #[serde(default)]
@@ -108,9 +136,12 @@ pub struct CloudPullParams {
     /// and (with force=true) overwrites existing values.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct CopySecretParams {
     /// Name of the secret to copy from the current project
     pub name: String,
@@ -125,9 +156,12 @@ pub struct CopySecretParams {
     /// which an attacker can use as an exfiltration primitive.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct DoctorParams {
     /// Auto-fix safe issues (install hooks, generate .env.example, etc.)
     #[serde(default)]
@@ -135,15 +169,19 @@ pub struct DoctorParams {
     /// Required when fix=true because files may be created or modified.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`. Only
+    /// required when fix=true (read-only doctor runs do not need approval).
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct WhyParams {
     /// Environment variable name to explain
     pub key: String,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct WrapParams {
     /// Only wrap specific scripts (by name). If empty, uses default heuristic.
     #[serde(default)]
@@ -154,23 +192,29 @@ pub struct WrapParams {
     /// Required. Must be true because this modifies package.json.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct UnwrapParams {
     /// Required. Must be true because this modifies package.json.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct CheckParams {
     /// Check if phantom tokens are in environment without proxy running
     #[serde(default)]
     pub runtime: bool,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct EnvParams {
     /// Output file name (defaults to .env.example)
     #[serde(default = "default_example_output")]
@@ -178,13 +222,16 @@ pub struct EnvParams {
     /// Required. Must be true because this writes an env example file.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 fn default_example_output() -> String {
     ".env.example".to_string()
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct SyncParams {
     /// Platform to sync to (vercel, railway). If empty, syncs all configured targets.
     #[serde(default)]
@@ -196,7 +243,7 @@ pub struct SyncParams {
 
 // ── Team operations ──────────────────────────────────────────────────
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TeamCreateParams {
     /// Name for the new team (human-readable label)
     pub name: String,
@@ -204,18 +251,24 @@ pub struct TeamCreateParams {
     /// team. Creating a team is a billable Pro action.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TeamIdParams {
     /// Team identifier (UUID)
     pub team_id: String,
     /// Required for mutating operations that publish local key material.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TeamInviteParams {
     /// Team identifier (UUID)
     pub team_id: String,
@@ -229,13 +282,16 @@ pub struct TeamInviteParams {
     /// expanding team membership.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 fn default_member_role() -> String {
     "member".to_string()
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TeamVaultParams {
     /// Team identifier (UUID)
     pub team_id: String,
@@ -244,18 +300,21 @@ pub struct TeamVaultParams {
     /// are write operations that need user consent.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 // ── Validation ───────────────────────────────────────────────────────
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ValidateSecretParams {
     /// Name of the secret to query validation status for (e.g. OPENAI_API_KEY).
     /// Never the value — this tool only reads stored metadata.
     pub name: String,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ValidateAllParams {
     /// Maximum number of concurrent validation jobs (default: 4, max: 16).
     #[serde(default = "default_validate_jobs")]
@@ -268,7 +327,7 @@ fn default_validate_jobs() -> usize {
 
 // ── Audit analytics ──────────────────────────────────────────────────
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AuditStatsParams {
     /// Time period to analyse: "7d", "30d", or "all". Defaults to "all".
     #[serde(default = "default_audit_period")]
@@ -285,7 +344,7 @@ fn default_audit_period() -> String {
 
 // ── Audit & compliance tools ──────────────────────────────────────────
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AuditRecentParams {
     /// Maximum number of recent audit events to return (default: 20, max: 200).
     #[serde(default = "default_audit_recent_n")]
@@ -302,7 +361,7 @@ fn default_audit_recent_n() -> usize {
     20
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AuditAnomaliesParams {
     /// Time period to analyse: "7d", "30d", or "all". Defaults to "30d".
     #[serde(default = "default_anomalies_period")]
@@ -322,7 +381,7 @@ fn default_min_anomaly() -> f64 {
 
 /// Parameters for `phantom_audit_anomalies_realtime` — windowed, per-second
 /// rate-based anomaly check against the current audit log state.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AuditAnomaliesRealtimeParams {
     /// Filter to a single secret name. Omit to check all secrets.
     #[serde(default)]
@@ -347,7 +406,7 @@ fn default_realtime_threshold() -> f64 {
 // ── Audit analytics (full export) ────────────────────────────────────
 
 /// Parameters for `phantom_audit_analytics` — full analytics + access-record export.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AuditAnalyticsParams {
     /// Time window in days (default: 30). 0 means all available history.
     #[serde(default = "default_analytics_window")]
@@ -369,15 +428,67 @@ fn default_analytics_format() -> String {
     "json".to_string()
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ComplianceStatusParams {
     // No parameters needed — reads project state and global audit state.
+}
+
+// ── Leak incident correlation ─────────────────────────────────────────────────
+
+/// Parameters for `phantom_audit_incidents`.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditIncidentsParams {
+    /// Only return incidents whose confidence score is at or above this value
+    /// (range 0.0–1.0). Defaults to 0.7.
+    #[serde(default = "default_min_confidence")]
+    pub min_confidence: f64,
+}
+
+fn default_min_confidence() -> f64 {
+    0.7
+}
+
+// ── Audit export & compliance report ─────────────────────────────────
+
+/// Parameters for `phantom_audit_export_report`.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditExportReportParams {
+    /// Action: "export" to get raw rows as CSV/JSON, or "report" to get a
+    /// full compliance report. Default: "report".
+    #[serde(default = "default_export_action")]
+    pub action: String,
+    /// Output format: "csv" or "json". Default: "json".
+    #[serde(default = "default_export_format_for_report")]
+    pub format: String,
+    /// Start date inclusive (YYYY-MM-DD). Omit for no lower bound.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// End date inclusive (YYYY-MM-DD). Omit for no upper bound.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Filter rows to this secret name only (exact match). Omit for all secrets.
+    #[serde(default)]
+    pub secret_name: Option<String>,
+    /// Filter rows to operations containing this string. Omit for all ops.
+    #[serde(default)]
+    pub operation: Option<String>,
+    /// Save the compliance report to ~/.phantom/reports/ (report action only).
+    #[serde(default)]
+    pub save: bool,
+}
+
+fn default_export_action() -> String {
+    "report".to_string()
+}
+
+fn default_export_format_for_report() -> String {
+    "json".to_string()
 }
 
 // ── Validation scheduler ──────────────────────────────────────────────
 
 /// Parameters for `phantom_validation_schedule` (get/set schedule).
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ValidationScheduleParams {
     /// New schedule interval to set: "hourly", "6h", "daily", "daily@2am",
     /// "weekly", "disabled". Omit to read the current schedule only.
@@ -386,7 +497,7 @@ pub struct ValidationScheduleParams {
 }
 
 /// Parameters for `phantom_validation_history`.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ValidationHistoryParams {
     /// Maximum number of recent runs to return (default: 20, max: 100).
     #[serde(default = "default_history_limit")]
@@ -400,7 +511,7 @@ fn default_history_limit() -> usize {
 // ── Shadow rotation ───────────────────────────────────────────────────
 
 /// Parameters for `phantom_rotate_with_candidate`.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateWithCandidateParams {
     /// Name of the secret to shadow-rotate (e.g. OPENAI_API_KEY).
     pub name: String,
@@ -412,10 +523,13 @@ pub struct RotateWithCandidateParams {
     /// in the vault. The agent must confirm with the user before calling.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 /// Parameters for `phantom_rotate_promote`.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotatePromoteParams {
     /// Name of the secret whose shadow candidate should be promoted
     /// (e.g. OPENAI_API_KEY).
@@ -425,9 +539,12 @@ pub struct RotatePromoteParams {
     /// user before calling.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotationDueParams {
     /// Warn when expiry is within this many days. Defaults to 7.
     #[serde(default = "default_warn_days")]
@@ -441,7 +558,7 @@ fn default_warn_days() -> u64 {
 // ── Expiry check & auto-rotate ────────────────────────────────────────
 
 /// Parameters for `phantom_secrets_expiry_check`.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ExpiryCheckParams {
     /// Warn about secrets expiring within this many days (default: 7).
     /// Set to 0 to return only already-expired secrets.
@@ -450,7 +567,7 @@ pub struct ExpiryCheckParams {
 }
 
 /// Parameters for `phantom_secrets_auto_rotate`.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AutoRotateParams {
     /// Name of the secret to auto-rotate.
     pub name: String,
@@ -463,4 +580,18 @@ pub struct AutoRotateParams {
     /// running services that cached the old token.
     #[serde(default)]
     pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
+}
+
+// ── Expiry enforcement ────────────────────────────────────────────────────────
+
+/// Parameters for `phantom_expiry_enforce`.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct PhantomExpiryEnforceParams {
+    /// If true, also treat secrets with no expiry policy as violations.
+    /// Defaults to false (permissive: only hard-expired secrets are reported).
+    #[serde(default)]
+    pub fail_closed: bool,
 }

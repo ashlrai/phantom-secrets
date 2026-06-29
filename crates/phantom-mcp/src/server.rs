@@ -7,16 +7,18 @@ use rmcp::model::*;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use std::path::PathBuf;
 
-use crate::tools::helpers::{internal_err, invalid_params_err, require_confirm, text_result};
+use crate::tools::helpers::{
+    internal_err, invalid_params_err, require_approval_token, require_confirm, text_result,
+};
 use crate::tools::params::{
     AddSecretInteractiveParams, AddSecretParams, AuditAnalyticsParams, AuditAnomaliesParams,
-    AuditAnomaliesRealtimeParams, AuditRecentParams, AuditStatsParams, AutoRotateParams,
-    CheckParams, CloudPullParams, CloudPushParams, ComplianceStatusParams, CopySecretParams,
-    DoctorParams, EnvParams, ExpiryCheckParams, InitParams, ListWithExpiryParams,
-    RemoveSecretParams, RotateParams, RotateWithCandidateParams, RotatePromoteParams,
-    RotateWithExpiryParams, RotationDueParams, SyncParams, TeamCreateParams, TeamIdParams,
-    TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams, WrapParams, ValidateSecretParams,
-    ValidateAllParams, ValidationScheduleParams, ValidationHistoryParams,
+    AuditAnomaliesRealtimeParams, AuditExportReportParams, AuditIncidentsParams, AuditRecentParams, AuditStatsParams,
+    AutoRotateParams, CheckParams, CloudPullParams, CloudPushParams, ComplianceStatusParams,
+    CopySecretParams, DoctorParams, EnvParams, ExpiryCheckParams, InitParams, ListWithExpiryParams,
+    PhantomExpiryEnforceParams, RemoveSecretParams, RotateParams, RotateWithCandidateParams,
+    RotatePromoteParams, RotateWithExpiryParams, RotationDueParams, SyncParams, TeamCreateParams,
+    TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams, WrapParams,
+    ValidateSecretParams, ValidateAllParams, ValidationScheduleParams, ValidationHistoryParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -77,6 +79,12 @@ impl PhantomMcpServer {
         let cloud_config = config.cloud.get_or_insert_default();
         cloud_config.version = version;
         let _ = config.save(&self.config_path());
+    }
+
+    /// Returns the project identifier used for approval nonce scoping.
+    /// Uses the canonical string of the project directory.
+    fn project_id(&self) -> String {
+        self.project_dir.to_string_lossy().into_owned()
     }
 }
 
@@ -172,6 +180,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<InitParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_init", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_init", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         let env_path = self.project_dir.join(&params.env_path);
 
         let dotenv = DotenvFile::parse_file(&env_path)
@@ -235,6 +245,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<AddSecretParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_add_secret", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_add_secret", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         text_result(format!(
             "No secret value accepted through MCP for '{}'. Use phantom_add_secret_interactive to start an out-of-band terminal flow.",
             params.name
@@ -250,6 +262,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<AddSecretInteractiveParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_add_secret_interactive", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_add_secret_interactive", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         text_result(format!(
             "Run this in a trusted terminal from {}:\n\n  phantom add {}\n\nEnter the real value only at the terminal prompt. Do not paste it into chat or MCP tool arguments.",
             self.project_dir.display(),
@@ -267,6 +281,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_remove_secret", params.confirm)?;
         let (_config, vault) = self.load_config_and_vault()?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_remove_secret", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         vault
             .delete(&params.name)
             .map_err(|e| internal_err(format!("Failed to remove secret: {e}")))?;
@@ -284,6 +300,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_rotate", params.confirm)?;
         let (_config, vault) = self.load_config_and_vault()?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_rotate", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
@@ -323,6 +341,8 @@ impl PhantomMcpServer {
         require_confirm("phantom_rotate_with_candidate", params.confirm)?;
 
         let (config, vault) = self.load_config_and_vault()?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_rotate_with_candidate", params.approval_token.as_deref(), &params_json, &self.project_id())?;
 
         if !vault
             .exists(&params.name)
@@ -394,6 +414,8 @@ impl PhantomMcpServer {
 
         let (config, vault) = self.load_config_and_vault()?;
 
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_rotate_promote", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         use phantom_vault::shadowing::{shadow_dir, ShadowStore, ShadowedSecret};
         let store = ShadowStore::new(shadow_dir(&config.phantom.project_id))
             .map_err(|e| internal_err(format!("Failed to open shadow store: {e}")))?;
@@ -482,6 +504,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<CloudPushParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_push", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_cloud_push", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         use std::collections::BTreeMap;
 
@@ -556,6 +580,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<CloudPullParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_pull", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_cloud_pull", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
         let token = phantom_core::auth::load_token()
@@ -648,6 +674,9 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_copy_secret", params.confirm)?;
 
+        // Reject
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_copy_secret", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         // Reject `..` in the raw input. Canonicalize below collapses traversal,
         // but only once target_dir exists on disk — and an attacker can stage a
         // missing-path case. Guarding at the textual layer is simplest.
@@ -715,6 +744,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         if params.fix {
             require_confirm("phantom_doctor", params.confirm)?;
+            let params_json = serde_json::to_string(&params).unwrap_or_default();
+            require_approval_token("phantom_doctor", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         }
         let mut lines: Vec<String> = Vec::new();
         let mut issues = 0u32;
@@ -1095,6 +1126,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<WrapParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_wrap", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_wrap", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         let pkg_path = self.project_dir.join("package.json");
         if !pkg_path.exists() {
             return Err(internal_err("No package.json found in project directory."));
@@ -1191,6 +1224,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<UnwrapParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_unwrap", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_unwrap", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         let pkg_path = self.project_dir.join("package.json");
         if !pkg_path.exists() {
             return Err(internal_err("No package.json found in project directory."));
@@ -1353,6 +1388,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_env", params.confirm)?;
         let env_path = self.env_path();
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_env", params.approval_token.as_deref(), &params_json, &self.project_id())?;
 
         let dotenv = DotenvFile::parse_file(&env_path)
             .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
@@ -1548,6 +1585,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamCreateParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_create", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_team_create", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -1600,6 +1639,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamInviteParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_invite", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_team_invite", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         let role = params.role.as_str();
         if !matches!(role, "member" | "admin" | "owner") {
             return Err(invalid_params_err(format!(
@@ -1633,6 +1674,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamIdParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_key_publish", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_team_key_publish", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -1661,6 +1704,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamVaultParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_push", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_team_vault_push", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         use std::collections::BTreeMap;
         use zeroize::Zeroizing;
 
@@ -1727,6 +1772,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<RotateWithExpiryParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_rotate_with_expiry", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_rotate_with_expiry", params.approval_token.as_deref(), &params_json, &self.project_id())?;
 
         if params.days_ttl == 0 {
             return Err(invalid_params_err("days_ttl must be > 0"));
@@ -2255,6 +2302,147 @@ impl PhantomMcpServer {
         text_result(json_str)
     }
 
+    /// Read correlated leak incidents without exposing secret values.
+    #[tool(
+        description = "Return active leak incidents derived from proxy.response_leak audit events. \
+            Incidents are correlated by (secret_name, location) within a 24-hour window. \
+            min_confidence (default 0.7) filters by confidence score: \
+            0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. \
+            Each incident includes: incident_id, secret_name (never the value), \
+            location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. \
+            Incidents are cleared automatically when the affected secret is rotated \
+            (vault.store event newer than last_seen_ts). Read-only — safe for AI agents."
+    )]
+    fn phantom_audit_incidents(
+        &self,
+        Parameters(params): Parameters<AuditIncidentsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::leak_correlation::LeakCorrelationEngine;
+
+        let engine = LeakCorrelationEngine::new()
+            .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
+
+        // Run correlation to pick up any new events (best-effort; ignore errors).
+        let _ = engine.run();
+
+        let incidents = engine
+            .active_incidents(params.min_confidence)
+            .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))?;
+
+        if incidents.is_empty() {
+            return text_result(format!(
+                "No active leak incidents (min_confidence={:.2}). \
+                 Set PHANTOM_AUDIT=1 to enable audit logging.",
+                params.min_confidence
+            ));
+        }
+
+        let out = serde_json::json!({
+            "incident_count": incidents.len(),
+            "min_confidence": params.min_confidence,
+            "incidents": incidents,
+        });
+
+        let json_str = serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
+        text_result(json_str)
+    }
+
+    /// Export raw audit rows or generate a full compliance report.
+    #[tool(
+        description = "Export audit log data or generate a structured compliance report. \
+            Two actions: \
+            'export' — return raw audit rows (timestamp, datetime, operation, secret_name, \
+            pid, hostname, severity) filtered by date range, secret name, or operation type, \
+            in CSV or JSON format; \
+            'report' — generate a full compliance report containing: (a) access-frequency \
+            heatmap per secret per calendar day, (b) leak-incident timeline with \
+            incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since \
+            last vault.store per secret, (d) anomaly executive summary of high-score secrets. \
+            Use 'from'/'to' (YYYY-MM-DD) to scope the date range. \
+            Set 'save: true' to persist the report to ~/.phantom/reports/. \
+            Never exposes secret values. Read-only (save=false). Safe for AI agents."
+    )]
+    fn phantom_audit_export_report(
+        &self,
+        Parameters(params): Parameters<AuditExportReportParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::audit_export::{
+            AuditExporter, ExportFilter, parse_date_to_ts, parse_date_to_ts_end,
+        };
+
+        let exporter = AuditExporter::new()
+            .map_err(|e| internal_err(format!("Failed to initialise audit exporter: {e}")))?;
+
+        let from_ts = params.from.as_deref().map(parse_date_to_ts).unwrap_or(0);
+        let to_ts = params.to.as_deref().map(parse_date_to_ts_end).unwrap_or(0);
+
+        match params.action.as_str() {
+            "export" => {
+                let filter = ExportFilter {
+                    from_ts,
+                    to_ts,
+                    secret_name: params.secret_name.clone(),
+                    operation: params.operation.clone(),
+                    pid: None,
+                };
+                let rows = exporter
+                    .export_rows(&filter)
+                    .map_err(|e| internal_err(format!("Export failed: {e}")))?;
+
+                if rows.is_empty() {
+                    return text_result(
+                        "No audit rows match the requested filters. \
+                         Set PHANTOM_AUDIT=1 to enable audit logging."
+                            .to_string(),
+                    );
+                }
+
+                if params.format == "csv" {
+                    return text_result(AuditExporter::rows_to_csv(&rows));
+                }
+
+                let json = AuditExporter::rows_to_json(&rows)
+                    .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
+                text_result(json)
+            }
+
+            "report" | "" => {
+                let report = exporter
+                    .generate_compliance_report(from_ts, to_ts)
+                    .map_err(|e| internal_err(format!("Report generation failed: {e}")))?;
+
+                let saved_path = if params.save {
+                    match exporter.save_report(&report) {
+                        Ok(p) => Some(p.to_string_lossy().into_owned()),
+                        Err(e) => {
+                            // Don't fail the whole call just because save failed.
+                            tracing::warn!("Failed to save compliance report: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let json = serde_json::to_string_pretty(&report)
+                    .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
+
+                if let Some(path) = saved_path {
+                    // Prepend a one-line note so the agent sees where it was saved.
+                    let output = format!("// saved to: {path}\n{json}");
+                    text_result(output)
+                } else {
+                    text_result(json)
+                }
+            }
+
+            other => Err(internal_err(format!(
+                "Unknown action '{other}'. Use 'export' or 'report'."
+            ))),
+        }
+    }
+
     /// Return a compliance status badge for the current project.
     #[tool(
         description = "Return the compliance state of the current Phantom project as a \
@@ -2480,6 +2668,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamVaultParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_pull", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_team_vault_pull", params.approval_token.as_deref(), &params_json, &self.project_id())?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -2818,6 +3008,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<AutoRotateParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_secrets_auto_rotate", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token("phantom_secrets_auto_rotate", params.approval_token.as_deref(), &params_json, &self.project_id())?;
 
         let (_config, vault) = self.load_config_and_vault()?;
 
@@ -2885,6 +3077,85 @@ impl PhantomMcpServer {
             params.name
         ))
     }
+
+    /// Check `.phantom.toml` for expired secrets — returns the list of expired secrets.
+    ///
+    /// Designed for AI agents that need to trigger rotation workflows when secrets expire.
+    /// Read-only; never returns secret values.
+    #[tool(
+        description = "Scan .phantom.toml for expired secrets and return a structured list. \
+            Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), \
+            status (human-readable string). \
+            With fail_closed=true, secrets that have no expiry policy set are also included \
+            with status='no_expiry_policy'. \
+            Returns { expired: [...], ok_count, no_expiry_count, fail_closed, pass }. \
+            pass=true means no action is needed. Read-only; no confirm required. \
+            Secret VALUES are never returned."
+    )]
+    fn phantom_expiry_enforce(
+        &self,
+        Parameters(params): Parameters<PhantomExpiryEnforceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::rotation_strategy::{check_expiry, ExpiryStatus};
+
+        let config = self.load_config().map_err(internal_err)?;
+        let now = phantom_vault::metadata::now_secs();
+
+        let mut expired: Vec<serde_json::Value> = Vec::new();
+        let mut no_expiry_violations: Vec<serde_json::Value> = Vec::new();
+        let mut ok_count: usize = 0;
+        let mut no_expiry_count: usize = 0;
+
+        for (name, override_cfg) in &config.phantom.secrets {
+            match override_cfg.expires_at {
+                None => {
+                    no_expiry_count += 1;
+                    if params.fail_closed {
+                        no_expiry_violations.push(serde_json::json!({
+                            "name": name,
+                            "status": "no_expiry_policy",
+                        }));
+                    }
+                }
+                Some(expires_at) => {
+                    let status = check_expiry(expires_at, 0, now);
+                    if status.is_expired() {
+                        let secs_overdue = match &status {
+                            ExpiryStatus::Expired { secs_overdue } => *secs_overdue,
+                            _ => 0,
+                        };
+                        expired.push(serde_json::json!({
+                            "name": name,
+                            "expires_at": expires_at,
+                            "secs_overdue": secs_overdue,
+                            "status": status.label(),
+                        }));
+                    } else {
+                        ok_count += 1;
+                    }
+                }
+            }
+        }
+
+        // Merge no-expiry violations if fail_closed
+        let mut all_violations = expired.clone();
+        all_violations.extend(no_expiry_violations);
+
+        let pass = all_violations.is_empty();
+
+        let out = serde_json::json!({
+            "expired": all_violations,
+            "ok_count": ok_count,
+            "no_expiry_count": no_expiry_count,
+            "fail_closed": params.fail_closed,
+            "pass": pass,
+        });
+
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
 }
 
 #[tool_handler]
@@ -2921,6 +3192,10 @@ mod tests {
                 "PHANTOM_VAULT_PASSPHRASE",
                 "test-passphrase-do-not-use-in-prod",
             );
+            // Skip nonce-based approval in unit tests — the approval flow requires
+            // an interactive terminal and a real HOME directory. Integration tests
+            // that exercise the full approval flow should unset this.
+            std::env::set_var("PHANTOM_MCP_SKIP_APPROVAL", "1");
         }
 
         let dir = TempDir::new().unwrap();
@@ -2943,6 +3218,7 @@ mod tests {
         let params = InitParams {
             env_path: ".env".to_string(),
             confirm: true,
+            approval_token: None
         };
         let result = server.phantom_init(Parameters(params)).unwrap();
         let text = get_result_text(&result);
@@ -2977,6 +3253,7 @@ mod tests {
             .phantom_init(Parameters(InitParams {
                 env_path: ".env".to_string(),
                 confirm: true,
+            approval_token: None
             }))
             .unwrap();
         let text = get_result_text(&result);
@@ -3048,6 +3325,7 @@ mod tests {
             .phantom_add_secret(Parameters(AddSecretParams {
                 name: "X".to_string(),
                 confirm: false,
+            approval_token: None
             }))
             .unwrap_err();
         assert_eq!(add_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -3057,12 +3335,14 @@ mod tests {
             .phantom_remove_secret(Parameters(RemoveSecretParams {
                 name: "OPENAI_API_KEY".to_string(),
                 confirm: false,
+            approval_token: None
             }))
             .unwrap_err();
         assert_eq!(rm_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
 
         let rotate_err = server
-            .phantom_rotate(Parameters(RotateParams { confirm: false }))
+            .phantom_rotate(Parameters(RotateParams { confirm: false,
+            approval_token: None }))
             .unwrap_err();
         assert_eq!(rotate_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     }
@@ -3077,6 +3357,7 @@ mod tests {
                 target_dir: ".".to_string(),
                 rename: None,
                 confirm: false,
+            approval_token: None
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -3100,6 +3381,7 @@ mod tests {
                     target_dir: bad.to_string(),
                     rename: None,
                     confirm: true,
+            approval_token: None
                 }))
                 .unwrap_err();
             assert_eq!(
@@ -3121,6 +3403,7 @@ mod tests {
                 target_dir: "definitely/does/not/exist".to_string(),
                 rename: None,
                 confirm: true,
+            approval_token: None
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -3137,7 +3420,8 @@ mod tests {
 
         // Rotate
         let result = server
-            .phantom_rotate(Parameters(RotateParams { confirm: true }))
+            .phantom_rotate(Parameters(RotateParams { confirm: true,
+            approval_token: None }))
             .unwrap();
         let text = get_result_text(&result);
         assert!(text.contains("Rotated"));
@@ -3158,6 +3442,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 7,
                 confirm: false,
+            approval_token: None
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -3172,6 +3457,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 0,
                 confirm: true,
+            approval_token: None
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -3186,6 +3472,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 7,
                 confirm: true,
+            approval_token: None
             }))
             .unwrap();
         let text = get_result_text(&result);
@@ -3954,6 +4241,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 30,
                 confirm: true,
+            approval_token: None
             }))
             .unwrap();
 
@@ -4015,6 +4303,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 30,
                 confirm: true,
+            approval_token: None
             }))
             .unwrap();
 
@@ -4098,6 +4387,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 30,
                 confirm: true,
+            approval_token: None
             }))
             .unwrap();
 

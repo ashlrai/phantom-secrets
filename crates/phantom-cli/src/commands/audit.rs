@@ -125,6 +125,74 @@ pub enum AuditAction {
         #[arg(long)]
         json: bool,
     },
+    /// Show correlated leak incidents derived from proxy.response_leak audit events.
+    ///
+    /// Incidents are grouped by (secret, location) within 24-hour windows.
+    /// High-confidence incidents (≥ 0.95) indicate the same secret leaked more
+    /// than 3 times within an hour — immediate rotation is advised.
+    Incidents {
+        /// Only show incidents with confidence ≥ this value (default: 0.7)
+        #[arg(long, default_value_t = 0.7, value_name = "SCORE")]
+        min_confidence: f64,
+        /// Emit raw JSON lines instead of human-readable output
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Export raw audit log rows filtered by date range, secret, or operation.
+    ///
+    /// Examples:
+    ///   phantom audit export-range --format csv --from 2026-01-01 --to 2026-06-29 > audit.csv
+    ///   phantom audit export-range --format json --name OPENAI_API_KEY
+    ExportRange {
+        /// Output format: csv or json (default: json)
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Start date inclusive (YYYY-MM-DD). Omit for no lower bound.
+        #[arg(long, value_name = "DATE", default_value = "")]
+        from: String,
+        /// End date inclusive (YYYY-MM-DD). Omit for no upper bound.
+        #[arg(long, value_name = "DATE", default_value = "")]
+        to: String,
+        /// Filter to a specific secret name (exact match).
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        /// Filter to operations containing this string (e.g. vault.retrieve).
+        #[arg(long, value_name = "OP")]
+        op: Option<String>,
+        /// Filter to events from this PID only.
+        #[arg(long, value_name = "PID")]
+        pid: Option<u64>,
+    },
+
+    /// Generate a structured compliance report and save to ~/.phantom/reports/.
+    ///
+    /// The report includes:
+    ///   - Access-frequency heatmap per secret per day
+    ///   - Leak incident timeline
+    ///   - Rotation timing audit
+    ///   - 1-page anomaly executive summary
+    ///
+    /// Examples:
+    ///   phantom audit report
+    ///   phantom audit report --from 2026-01-01 --to 2026-06-29 --save
+    Report {
+        /// Report type: compliance (default)
+        #[arg(long, default_value = "compliance", value_name = "TYPE")]
+        r#type: String,
+        /// Start date inclusive (YYYY-MM-DD). Omit for full history.
+        #[arg(long, value_name = "DATE", default_value = "")]
+        from: String,
+        /// End date inclusive (YYYY-MM-DD). Omit for no upper bound.
+        #[arg(long, value_name = "DATE", default_value = "")]
+        to: String,
+        /// Save the report to ~/.phantom/reports/ in addition to printing it.
+        #[arg(long)]
+        save: bool,
+        /// Emit compact JSON instead of pretty-printed output.
+        #[arg(long)]
+        compact: bool,
+    },
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -995,6 +1063,199 @@ pub fn run_anomalies(
             emit(r, json_output);
         }
     }
+}
+
+pub fn run_incidents(min_confidence: f64, json: bool) -> Result<()> {
+    use phantom_core::leak_correlation::LeakCorrelationEngine;
+
+    let engine = LeakCorrelationEngine::new()
+        .map_err(|e| anyhow::anyhow!("Cannot initialise leak correlation engine: {e}"))?;
+
+    // Run correlation over the last 24 h of audit events (persists new incidents).
+    let _ = engine.run(); // best-effort; ignore new-incident errors
+
+    // Retrieve active incidents meeting the confidence threshold.
+    let incidents = engine
+        .active_incidents(min_confidence)
+        .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;
+
+    if incidents.is_empty() {
+        if json {
+            println!("[]");
+        } else {
+            println!(
+                "{}  No active leak incidents (min_confidence={:.2}). \
+                 Set {} to enable audit logging.",
+                "->".blue().bold(),
+                min_confidence,
+                "PHANTOM_AUDIT=1".cyan()
+            );
+        }
+        return Ok(());
+    }
+
+    if json {
+        let out = serde_json::to_string_pretty(&incidents)
+            .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
+        println!("{}", out);
+        return Ok(());
+    }
+
+    println!(
+        "{}  {} active leak incident(s) (confidence ≥ {:.2})",
+        "->".blue().bold(),
+        incidents.len().to_string().red().bold(),
+        min_confidence,
+    );
+    println!();
+
+    for inc in &incidents {
+        let confidence_str = if inc.confidence >= 0.9 {
+            format!("{:.2}", inc.confidence).red().bold().to_string()
+        } else {
+            format!("{:.2}", inc.confidence).yellow().to_string()
+        };
+
+        println!(
+            "  {}  secret={}  location={}  confidence={}  events={}",
+            format_unix_ts(inc.first_seen_ts).dimmed(),
+            inc.secret_name.bold(),
+            inc.location_label.cyan(),
+            confidence_str,
+            inc.event_count,
+        );
+
+        // Time window
+        if inc.first_seen_ts != inc.last_seen_ts {
+            println!(
+                "    window: {} → {}",
+                format_unix_ts(inc.first_seen_ts).dimmed(),
+                format_unix_ts(inc.last_seen_ts).dimmed(),
+            );
+        }
+
+        println!(
+            "    {}  {}",
+            "remediation:".yellow().bold(),
+            inc.remediation.dimmed(),
+        );
+        println!();
+    }
+
+    Ok(())
+}
+
+/// `phantom audit export-range` — export audit rows with date-range + field filters.
+///
+/// Writes CSV or JSON to stdout. Rows include: timestamp, datetime, operation,
+/// secret_name, pid, hostname (decrypted from encrypted_context if available), severity.
+pub fn run_export_range(
+    format: &str,
+    from: &str,
+    to: &str,
+    name: Option<&str>,
+    op: Option<&str>,
+    pid: Option<u64>,
+) -> Result<()> {
+    use phantom_core::audit_export::{AuditExporter, ExportFilter, parse_date_to_ts, parse_date_to_ts_end};
+
+    if !matches!(format, "csv" | "json") {
+        return Err(anyhow::anyhow!(
+            "Invalid format '{}'. Use: csv or json",
+            format
+        ));
+    }
+
+    let exporter = AuditExporter::new()
+        .map_err(|e| anyhow::anyhow!("Failed to initialise exporter: {e}"))?;
+
+    let filter = ExportFilter {
+        from_ts: parse_date_to_ts(from),
+        to_ts: parse_date_to_ts_end(to),
+        secret_name: name.map(|s| s.to_string()),
+        operation: op.map(|s| s.to_string()),
+        pid,
+    };
+
+    let rows = exporter
+        .export_rows(&filter)
+        .map_err(|e| anyhow::anyhow!("Failed to export audit rows: {e}"))?;
+
+    if rows.is_empty() {
+        eprintln!(
+            "{}  No audit rows match the requested filters.",
+            "->".blue().bold()
+        );
+        return Ok(());
+    }
+
+    match format {
+        "csv" => print!("{}", AuditExporter::rows_to_csv(&rows)),
+        "json" => {
+            let json = AuditExporter::rows_to_json(&rows)
+                .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
+            println!("{}", json);
+        }
+        _ => unreachable!(),
+    }
+
+    Ok(())
+}
+
+/// `phantom audit report --type compliance` — generate and optionally save a
+/// structured compliance report.
+///
+/// Prints the JSON report to stdout. With `--save`, also persists it to
+/// `~/.phantom/reports/report-<ts>.json`.
+pub fn run_report(
+    report_type: &str,
+    from: &str,
+    to: &str,
+    save: bool,
+    compact: bool,
+) -> Result<()> {
+    use phantom_core::audit_export::{AuditExporter, parse_date_to_ts, parse_date_to_ts_end};
+
+    if report_type != "compliance" {
+        return Err(anyhow::anyhow!(
+            "Unknown report type '{}'. Supported: compliance",
+            report_type
+        ));
+    }
+
+    let exporter = AuditExporter::new()
+        .map_err(|e| anyhow::anyhow!("Failed to initialise exporter: {e}"))?;
+
+    let from_ts = parse_date_to_ts(from);
+    let to_ts = parse_date_to_ts_end(to);
+
+    let report = exporter
+        .generate_compliance_report(from_ts, to_ts)
+        .map_err(|e| anyhow::anyhow!("Failed to generate compliance report: {e}"))?;
+
+    // Serialise.
+    let json = if compact {
+        serde_json::to_string(&report)
+            .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?
+    } else {
+        serde_json::to_string_pretty(&report)
+            .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?
+    };
+
+    println!("{}", json);
+
+    if save {
+        let path = exporter
+            .save_report(&report)
+            .map_err(|e| anyhow::anyhow!("Failed to save report: {e}"))?;
+        eprintln!(
+            "{}  Report saved to {}",
+            "->".blue().bold(),
+            path.display().to_string().cyan()
+        );
+    }
+
+    Ok(())
 }
 
 /// Format a duration in seconds as a human-readable "X ago" string.
