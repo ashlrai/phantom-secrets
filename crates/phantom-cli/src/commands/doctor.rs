@@ -2,10 +2,11 @@ use anyhow::Result;
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
-
 use crate::commands::upgrade::{detect_install_source, InstallSource};
 
-pub fn run(fix: bool) -> Result<()> {
+/// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
+/// TTL metadata and warn about expired or soon-to-expire entries.
+pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let env_path = project_dir.join(".env");
@@ -349,6 +350,113 @@ pub fn run(fix: bool) -> Result<()> {
             ARGON2_T_COST,
             ARGON2_P_COST,
         ));
+    }
+
+    // Check 14 (optional): Validation metadata — surface invalid credentials
+    {
+        if let Ok(config) = PhantomConfig::load(&config_path) {
+            let vault = phantom_vault::create_vault(&config.phantom.project_id);
+            match vault.list() {
+                Ok(names) => {
+                    let mut invalid_count = 0usize;
+                    let mut stale_count = 0usize;
+                    for name in &names {
+                        let meta = vault.get_validation_metadata(name).unwrap_or_default();
+                        if meta.never_checked() {
+                            // Not yet validated — not an issue, just informational.
+                        } else if !meta.is_valid {
+                            invalid_count += 1;
+                            let reason = meta
+                                .failure_reason
+                                .as_deref()
+                                .unwrap_or("unknown reason");
+                            check_fail(&format!(
+                                "Secret '{}' FAILED validation: {}",
+                                name, reason
+                            ));
+                            check_fix("Run: phantom validate --check-all (then rotate if needed)");
+                            issues += 1;
+                        } else if meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS) {
+                            stale_count += 1;
+                        }
+                    }
+                    if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
+                        let all_checked = names.iter().all(|n| {
+                            vault
+                                .get_validation_metadata(n)
+                                .map(|m| !m.never_checked())
+                                .unwrap_or(false)
+                        });
+                        if all_checked {
+                            check_pass("All secrets passed last validation check");
+                        } else {
+                            check_info(
+                                "Validation: run `phantom validate --check-all` to check credential health",
+                            );
+                        }
+                    } else if stale_count > 0 {
+                        check_info(&format!(
+                            "Validation: {} secret(s) have stale check results (>24 h old)",
+                            stale_count
+                        ));
+                        check_fix("Run: phantom validate --check-all");
+                    }
+                }
+                Err(_) => {} // vault already flagged above
+            }
+        }
+    }
+
+    // Check 15 (optional): Secret TTL / expiry status
+    if check_expiry {
+        if let Ok(config) = PhantomConfig::load(&config_path) {
+            let vault = phantom_vault::create_vault(&config.phantom.project_id);
+            match vault.list_with_metadata() {
+                Ok(entries) => {
+                    let mut expired = Vec::new();
+                    let mut expiring_soon = Vec::new();
+                    let mut tracked = 0usize;
+
+                    for (name, meta) in &entries {
+                        if let Some(m) = meta {
+                            if m.expires_at.is_some() {
+                                tracked += 1;
+                                if m.is_expired() {
+                                    expired.push((name.clone(), m.ttl_status()));
+                                } else if m.is_expiring_soon(7) {
+                                    expiring_soon.push((name.clone(), m.ttl_status()));
+                                }
+                            }
+                        }
+                    }
+
+                    if expired.is_empty() && expiring_soon.is_empty() {
+                        if tracked == 0 {
+                            check_info("Expiry: no secrets have TTL configured");
+                            check_info("  Tip: phantom rotate --with-expiry 90 to set a 90-day TTL");
+                        } else {
+                            check_pass(&format!(
+                                "Expiry: {tracked}/{} secret(s) have TTL — all healthy",
+                                entries.len()
+                            ));
+                        }
+                    } else {
+                        for (name, status) in &expired {
+                            check_fail(&format!("Secret '{}' is {}", name, status));
+                            issues += 1;
+                        }
+                        for (name, status) in &expiring_soon {
+                            check_warn(&format!("Secret '{}': {}", name, status));
+                            check_fix("Run: phantom rotate --with-expiry <days>");
+                            issues += 1;
+                        }
+                    }
+                }
+                Err(e) => {
+                    check_warn(&format!("Could not read expiry metadata: {e}"));
+                }
+            }
+        }
     }
 
     // Check 14: MCP setup status per known client

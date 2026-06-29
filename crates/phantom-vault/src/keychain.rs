@@ -1,6 +1,10 @@
+use crate::metadata::SecretMetadata;
 use crate::traits::VaultBackend;
 use phantom_core::error::{PhantomError, Result};
+use phantom_core::validator::ValidationMetadata;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 const SERVICE_PREFIX: &str = "phantom-secrets";
 
@@ -24,6 +28,102 @@ pub struct KeychainVault {
     /// We track stored keys in a special keychain entry since keychain APIs
     /// don't support listing by prefix on all platforms.
     index_key: String,
+}
+
+// ── Metadata sidecar helpers ─────────────────────────────────────────────────
+//
+// The OS keychain stores opaque password strings — there is no structured
+// per-entry metadata slot. We persist TTL/expiry metadata in a small JSON
+// sidecar file alongside the keychain index. The file contains only
+// timestamps and policy config — no secret values — so it is safe to store
+// as plaintext on disk (it is no more sensitive than a .phantom.toml).
+
+fn metadata_dir() -> PathBuf {
+    directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
+        .map(|d| d.data_dir().join("metadata"))
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join(".phantom")
+                .join("metadata")
+        })
+}
+
+fn metadata_path(project_id: &str) -> PathBuf {
+    // Sanitise project_id so it is safe as a filename component.
+    let safe: String = project_id
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    metadata_dir().join(format!("{safe}.meta.json"))
+}
+
+/// Load the full per-project metadata map from the sidecar file.
+fn load_meta_map(project_id: &str) -> BTreeMap<String, SecretMetadata> {
+    let path = metadata_path(project_id);
+    if !path.exists() {
+        return BTreeMap::new();
+    }
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the full per-project metadata map to the sidecar file.
+fn save_meta_map(project_id: &str, map: &BTreeMap<String, SecretMetadata>) -> Result<()> {
+    let path = metadata_path(project_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(map)
+        .map_err(|e| PhantomError::VaultError(format!("Metadata serialize error: {e}")))?;
+    // Atomic write via temp file.
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &json)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+// ── Validation metadata sidecar ──────────────────────────────────────────────
+//
+// Mirrors the TTL metadata sidecar: a separate JSON file stores per-secret
+// validation state (last_check_ts, is_valid, failure_reason). No secret
+// values are ever written here.
+
+fn validation_meta_path(project_id: &str) -> std::path::PathBuf {
+    let safe: String = project_id
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    metadata_dir().join(format!("{safe}.validation.json"))
+}
+
+fn load_validation_meta_map(project_id: &str) -> BTreeMap<String, ValidationMetadata> {
+    let path = validation_meta_path(project_id);
+    if !path.exists() {
+        return BTreeMap::new();
+    }
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_validation_meta_map(
+    project_id: &str,
+    map: &BTreeMap<String, ValidationMetadata>,
+) -> Result<()> {
+    let path = validation_meta_path(project_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(map)
+        .map_err(|e| PhantomError::VaultError(format!("Validation metadata serialize error: {e}")))?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &json)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
 }
 
 impl KeychainVault {
@@ -225,12 +325,30 @@ impl VaultBackend for KeychainVault {
         index.retain(|n| n != name);
         if was_in_index {
             self.save_index(&index)?;
+            // Best-effort cleanup of sidecar metadata.
+            let mut map = load_meta_map(&self.project_id);
+            if map.remove(name).is_some() {
+                let _ = save_meta_map(&self.project_id, &map);
+            }
+            let mut vmap = load_validation_meta_map(&self.project_id);
+            if vmap.remove(name).is_some() {
+                let _ = save_validation_meta_map(&self.project_id, &vmap);
+            }
             phantom_core::audit::log("vault.delete", Some(name));
             Ok(())
         } else if matches!(new_result, Err(keyring::Error::NoEntry)) {
             Err(PhantomError::SecretNotFound(name.to_string()))
         } else {
             self.save_index(&index)?;
+            // Best-effort cleanup of sidecar metadata.
+            let mut map = load_meta_map(&self.project_id);
+            if map.remove(name).is_some() {
+                let _ = save_meta_map(&self.project_id, &map);
+            }
+            let mut vmap = load_validation_meta_map(&self.project_id);
+            if vmap.remove(name).is_some() {
+                let _ = save_validation_meta_map(&self.project_id, &vmap);
+            }
             phantom_core::audit::log("vault.delete", Some(name));
             Ok(())
         }
@@ -242,6 +360,37 @@ impl VaultBackend for KeychainVault {
 
     fn backend_name(&self) -> &str {
         "os-keychain"
+    }
+
+    fn get_metadata(&self, name: &str) -> Result<Option<SecretMetadata>> {
+        let map = load_meta_map(&self.project_id);
+        Ok(map.get(name).cloned())
+    }
+
+    fn set_metadata(&self, name: &str, meta: SecretMetadata) -> Result<()> {
+        // Only allow metadata on keys that actually exist in the vault index.
+        let index = self.load_index()?;
+        if !index.contains(&name.to_string()) {
+            return Err(PhantomError::SecretNotFound(name.to_string()));
+        }
+        let mut map = load_meta_map(&self.project_id);
+        map.insert(name.to_string(), meta);
+        save_meta_map(&self.project_id, &map)
+    }
+
+    fn get_validation_metadata(&self, name: &str) -> Result<ValidationMetadata> {
+        let map = load_validation_meta_map(&self.project_id);
+        Ok(map.get(name).cloned().unwrap_or_default())
+    }
+
+    fn set_validation_metadata(&self, name: &str, meta: ValidationMetadata) -> Result<()> {
+        let index = self.load_index()?;
+        if !index.contains(&name.to_string()) {
+            return Err(PhantomError::SecretNotFound(name.to_string()));
+        }
+        let mut map = load_validation_meta_map(&self.project_id);
+        map.insert(name.to_string(), meta);
+        save_validation_meta_map(&self.project_id, &map)
     }
 }
 

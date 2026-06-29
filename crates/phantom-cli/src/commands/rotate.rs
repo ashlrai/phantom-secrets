@@ -3,8 +3,11 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::TokenMap;
-
-pub fn run(sync_after: bool) -> Result<()> {
+/// Rotate all phantom tokens and optionally set a TTL (expiry) on every secret.
+///
+/// When `expiry_days` is `Some(n)` each secret gets a rotation policy of
+/// `n` days and its `expires_at` is set to `now + n * 86400`.
+pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let env_path = project_dir.join(".env");
@@ -48,7 +51,27 @@ pub fn run(sync_after: bool) -> Result<()> {
     }
 
     for name in &names {
-        println!("   {} {} -> new token", "+".green(), name.bold());
+        if let Some(days) = expiry_days {
+            vault
+                .set_rotation_policy(name, days)
+                .with_context(|| format!("Failed to set rotation policy for {name}"))?;
+            println!(
+                "   {} {} -> new token, expires in {} day(s)",
+                "+".green(),
+                name.bold(),
+                days
+            );
+        } else {
+            println!("   {} {} -> new token", "+".green(), name.bold());
+        }
+    }
+
+    if expiry_days.is_some() {
+        println!(
+            "\n{} TTL metadata updated. Use {} to see expiry status.",
+            "ok".green().bold(),
+            "phantom list --show-expiry".cyan()
+        );
     }
 
     // Sync to all deployment platforms if --sync flag is set

@@ -121,3 +121,59 @@ fn init_no_env_file_fails_gracefully() {
         .assert()
         .failure();
 }
+
+/// `phantom init --empty` creates .phantom.toml in a fresh dir without a .env,
+/// and `phantom add FOO --stdin` then succeeds (auto-init path also covered).
+#[test]
+fn init_empty_creates_config_and_add_works() {
+    let dir = TempDir::new().unwrap();
+
+    // Step 1: phantom init --empty — must succeed and produce .phantom.toml
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["init", "--empty"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .assert()
+        .success();
+
+    assert!(
+        dir.path().join(".phantom.toml").exists(),
+        ".phantom.toml should exist after init --empty"
+    );
+
+    // Step 2: phantom add FOO --stdin — must succeed in the bootstrapped dir
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["add", "FOO", "--stdin"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .write_stdin("supersecretvalue\n")
+        .assert()
+        .success();
+}
+
+/// `phantom add BAR --stdin` in a brand-new directory (no .phantom.toml at all)
+/// must auto-create .phantom.toml and succeed — the auto-init-on-first-add path.
+#[test]
+fn add_auto_inits_when_no_config() {
+    let dir = TempDir::new().unwrap();
+
+    // No init step — go straight to add
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["add", "BAR", "--stdin"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .write_stdin("anothersecret\n")
+        .assert()
+        .success();
+
+    assert!(
+        dir.path().join(".phantom.toml").exists(),
+        ".phantom.toml should be auto-created by phantom add"
+    );
+}

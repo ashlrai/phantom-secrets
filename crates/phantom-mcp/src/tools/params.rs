@@ -64,6 +64,31 @@ pub struct RotateParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RotateWithExpiryParams {
+    /// Number of days until secrets expire. Each secret gets `expires_at` set to
+    /// `now + days_ttl * 86400` and a `rotation_policy` recording the TTL. After
+    /// this call, `phantom list --show-expiry` and `phantom doctor --expiry` will
+    /// report countdown status and warn when secrets approach expiry.
+    pub days_ttl: u64,
+    /// Required. Must be true — the calling agent must confirm with the user
+    /// before invoking this tool. This rotates all phantom tokens (invalidating
+    /// any cached ones) and sets persistent expiry metadata in the vault.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListWithExpiryParams {
+    /// Include TTL/expiry status for each secret (countdown, expired flag, etc.)
+    #[serde(default = "default_true")]
+    pub show_expiry: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CloudPushParams {
     /// Required. Must be true — the calling agent must confirm with the user
     /// before invoking this tool. A push overwrites the cloud copy of the
@@ -219,4 +244,94 @@ pub struct TeamVaultParams {
     /// are write operations that need user consent.
     #[serde(default)]
     pub confirm: bool,
+}
+
+// ── Validation ───────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ValidateSecretParams {
+    /// Name of the secret to query validation status for (e.g. OPENAI_API_KEY).
+    /// Never the value — this tool only reads stored metadata.
+    pub name: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ValidateAllParams {
+    /// Maximum number of concurrent validation jobs (default: 4, max: 16).
+    #[serde(default = "default_validate_jobs")]
+    pub jobs: usize,
+}
+
+fn default_validate_jobs() -> usize {
+    4
+}
+
+// ── Audit analytics ──────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditStatsParams {
+    /// Time period to analyse: "7d", "30d", or "all". Defaults to "all".
+    #[serde(default = "default_audit_period")]
+    pub period: String,
+    /// Only include secrets whose anomaly score is at or above this threshold
+    /// (range 0.0–1.0). Omit or set to 0.0 to return all secrets.
+    #[serde(default)]
+    pub min_anomaly_score: Option<f64>,
+}
+
+fn default_audit_period() -> String {
+    "all".to_string()
+}
+
+// ── Audit & compliance tools ──────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditRecentParams {
+    /// Maximum number of recent audit events to return (default: 20, max: 200).
+    #[serde(default = "default_audit_recent_n")]
+    pub n: usize,
+    /// Filter by operation name prefix (e.g. "vault.retrieve", "cloud"). Omit for all ops.
+    #[serde(default)]
+    pub op_filter: Option<String>,
+    /// Filter by secret name (exact match). Omit for all secrets.
+    #[serde(default)]
+    pub name_filter: Option<String>,
+}
+
+fn default_audit_recent_n() -> usize {
+    20
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditAnomaliesParams {
+    /// Time period to analyse: "7d", "30d", or "all". Defaults to "30d".
+    #[serde(default = "default_anomalies_period")]
+    pub period: String,
+    /// Minimum anomaly score to include (0.0–1.0). Defaults to 0.4.
+    #[serde(default = "default_min_anomaly")]
+    pub min_score: f64,
+}
+
+fn default_anomalies_period() -> String {
+    "30d".to_string()
+}
+
+fn default_min_anomaly() -> f64 {
+    0.4
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ComplianceStatusParams {
+    // No parameters needed — reads project state and global audit state.
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RotationDueParams {
+    /// Warn when expiry is within this many days. Defaults to 7.
+    #[serde(default = "default_warn_days")]
+    pub warn_days: u64,
+}
+
+fn default_warn_days() -> u64 {
+    7
 }

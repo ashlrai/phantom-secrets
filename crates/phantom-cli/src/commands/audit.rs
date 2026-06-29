@@ -1,10 +1,12 @@
 //! `phantom audit` subcommands for reading the JSONL audit log.
 //!
-//! Four actions:
+//! Actions:
 //!   phantom audit show    [--last N] [--op OP] [--name NAME] [--json]
 //!   phantom audit tail    [--op OP] [--name NAME]
 //!   phantom audit path
 //!   phantom audit verify
+//!   phantom audit stats   [--json] [--top N] [--analytics] [--min-anomaly-score F]
+//!   phantom audit export  [--format csv|json] [--period 7d|30d] [--min-anomaly-score F]
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -46,7 +48,38 @@ pub enum AuditAction {
     /// Print the absolute path to the audit log
     Path,
     /// Verify the HMAC chain integrity of the audit log
-    Verify,
+    Verify {
+        /// Decrypt and display the encrypted_context field for each event (forensics mode)
+        #[arg(long)]
+        with_context: bool,
+    },
+    /// Show per-secret access counts and timing from the audit log
+    Stats {
+        /// Emit raw JSON instead of the human-readable table
+        #[arg(long)]
+        json: bool,
+        /// Only show the top N secrets by access count (0 = all)
+        #[arg(long, default_value_t = 0)]
+        top: usize,
+        /// Include anomaly detection scores in the output (implies --json adds extra fields)
+        #[arg(long)]
+        analytics: bool,
+        /// Only show secrets whose anomaly score is at or above this threshold (0.0–1.0)
+        #[arg(long, value_name = "SCORE")]
+        min_anomaly_score: Option<f64>,
+    },
+    /// Export timestamped access records for compliance reports
+    Export {
+        /// Output format: csv or json
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Time period: 7d, 30d, or all
+        #[arg(long, default_value = "30d")]
+        period: String,
+        /// Only export records for secrets whose anomaly score is at or above this threshold
+        #[arg(long, value_name = "SCORE")]
+        min_anomaly_score: Option<f64>,
+    },
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -138,7 +171,7 @@ pub fn run_path() -> Result<()> {
     Ok(())
 }
 
-pub fn run_verify() -> Result<()> {
+pub fn run_verify(with_context: bool) -> Result<()> {
     let path = resolve_path()?;
     if !path.exists() {
         println!(
@@ -147,6 +180,11 @@ pub fn run_verify() -> Result<()> {
             "PHANTOM_AUDIT=1".cyan()
         );
         return Ok(());
+    }
+
+    // When --with-context is requested, use the richer verify path.
+    if with_context {
+        return run_verify_with_context();
     }
 
     let report = phantom_core::audit::verify_log()
@@ -259,6 +297,350 @@ pub fn run_verify() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// `phantom audit verify --with-context`: decrypt and display `encrypted_context`
+/// for every event in the log, providing a forensics-grade view of audit metadata.
+fn run_verify_with_context() -> Result<()> {
+    let (report, events) = phantom_core::audit::verify_log_with_context()
+        .map_err(|e| anyhow::anyhow!("Failed to verify audit log: {e}"))?;
+
+    let status = if report.is_clean() {
+        "ok".green().bold().to_string()
+    } else {
+        "FAILED".red().bold().to_string()
+    };
+
+    println!(
+        "{}  verified: {} · tampered: {} · malformed: {} · sequence: {} · head: {} · legacy: {}",
+        status,
+        report.verified.to_string().cyan(),
+        if report.tampered > 0 {
+            report.tampered.to_string().red().bold().to_string()
+        } else {
+            report.tampered.to_string()
+        },
+        if report.malformed > 0 {
+            report.malformed.to_string().red().bold().to_string()
+        } else {
+            report.malformed.to_string()
+        },
+        if report.sequence_errors > 0 {
+            report.sequence_errors.to_string().red().bold().to_string()
+        } else {
+            report.sequence_errors.to_string()
+        },
+        if report.head_missing {
+            "missing".red().bold().to_string()
+        } else if report.head_mismatch {
+            "mismatch".red().bold().to_string()
+        } else {
+            "ok".to_string()
+        },
+        report.legacy.to_string().dimmed(),
+    );
+
+    println!();
+    println!("{}  Decrypted context per event:", "->".blue().bold());
+    println!();
+
+    for ev in &events {
+        let v: serde_json::Value = match serde_json::from_str(&ev.raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let ts = v["ts"].as_u64().map(format_unix_ts).unwrap_or_default();
+        let op = v["op"].as_str().unwrap_or("?");
+        let seq = v["seq"].as_u64().map(|s| s.to_string()).unwrap_or_default();
+
+        print!(
+            "  {} [{}] {}",
+            ts.dimmed(),
+            seq.cyan(),
+            op.bold()
+        );
+        if let Some(name) = v["name"].as_str() {
+            print!("  {}", name.bold());
+        }
+        println!();
+
+        match (&ev.context, &ev.context_error) {
+            (Some(ctx), _) => {
+                println!(
+                    "    {} process={} hostname={} ppid={} cwd={}",
+                    "context:".green(),
+                    ctx.process_name.cyan(),
+                    ctx.hostname.cyan(),
+                    ctx.ppid.to_string().cyan(),
+                    ctx.cwd.dimmed(),
+                );
+            }
+            (None, Some(err)) => {
+                println!("    {} {}", "context error:".yellow(), err.dimmed());
+            }
+            (None, None) => {
+                println!("    {}", "no encrypted context".dimmed());
+            }
+        }
+    }
+
+    if !report.is_clean() {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+pub fn run_stats(
+    json: bool,
+    top: usize,
+    analytics: bool,
+    min_anomaly_score: Option<f64>,
+) -> Result<()> {
+    // When --analytics is requested (or --min-anomaly-score is provided),
+    // delegate to the analytics engine which returns richer per-secret data.
+    if analytics || min_anomaly_score.is_some() {
+        return run_stats_analytics(json, top, min_anomaly_score);
+    }
+
+    let stats = phantom_core::audit::audit_stats()
+        .map_err(|e| anyhow::anyhow!("Failed to read audit log: {e}"))?;
+
+    if stats.total_events == 0 {
+        println!(
+            "{}  No audit events yet — set {} to start logging.",
+            "->".blue().bold(),
+            "PHANTOM_AUDIT=1".cyan()
+        );
+        return Ok(());
+    }
+
+    let secrets = if top > 0 && top < stats.secrets.len() {
+        &stats.secrets[..top]
+    } else {
+        &stats.secrets[..]
+    };
+
+    if json {
+        // Emit a JSON object with the full stats, limited secrets slice.
+        let out = serde_json::json!({
+            "total_events": stats.total_events,
+            "secret_events": stats.secret_events,
+            "first_event_ts": stats.first_event_ts,
+            "last_event_ts": stats.last_event_ts,
+            "secrets": secrets,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    // Header
+    println!(
+        "{}  {} total events · {} name a secret · log covers {}",
+        "->".blue().bold(),
+        stats.total_events.to_string().cyan(),
+        stats.secret_events.to_string().cyan(),
+        match (stats.first_event_ts, stats.last_event_ts) {
+            (Some(f), Some(l)) =>
+                format!("{} → {}", format_unix_ts(f).dimmed(), format_unix_ts(l).dimmed()),
+            _ => "unknown range".dimmed().to_string(),
+        }
+    );
+
+    if secrets.is_empty() {
+        println!("{}  No per-secret events recorded.", "->".blue().bold());
+        return Ok(());
+    }
+
+    println!();
+
+    // Column widths
+    let name_w = secrets.iter().map(|s| s.name.len()).max().unwrap_or(4).max(4);
+    println!(
+        "  {:<name_w$}  {:>6}  {:>6}  {:>7}  {:>7}  {}",
+        "SECRET".bold(),
+        "TOTAL".bold(),
+        "STORES".bold(),
+        "FETCHES".bold(),
+        "DELETES".bold(),
+        "LAST SEEN".bold(),
+        name_w = name_w,
+    );
+    println!("  {}", "-".repeat(name_w + 38));
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    for s in secrets {
+        let age = if s.last_seen_ts > 0 {
+            human_age(now.saturating_sub(s.last_seen_ts))
+        } else {
+            "unknown".to_string()
+        };
+
+        // Colour-code: yellow if not seen in >7 days, red if >30 days.
+        let age_str = if s.last_seen_ts > 0 {
+            let secs_ago = now.saturating_sub(s.last_seen_ts);
+            if secs_ago > 30 * 86400 {
+                age.red().to_string()
+            } else if secs_ago > 7 * 86400 {
+                age.yellow().to_string()
+            } else {
+                age.dimmed().to_string()
+            }
+        } else {
+            age.dimmed().to_string()
+        };
+
+        println!(
+            "  {:<name_w$}  {:>6}  {:>6}  {:>7}  {:>7}  {}",
+            s.name.bold(),
+            s.total,
+            s.stores,
+            s.retrieves,
+            s.deletes,
+            age_str,
+            name_w = name_w,
+        );
+    }
+
+    Ok(())
+}
+
+/// Run the analytics-enhanced stats path (with anomaly scores).
+fn run_stats_analytics(
+    json: bool,
+    top: usize,
+    min_anomaly_score: Option<f64>,
+) -> Result<()> {
+    let report =
+        phantom_core::analytics::compute_analytics(phantom_core::analytics::Period::All)
+            .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
+
+    if report.secrets.is_empty() {
+        println!(
+            "{}  No audit events yet — set {} to start logging.",
+            "->".blue().bold(),
+            "PHANTOM_AUDIT=1".cyan()
+        );
+        return Ok(());
+    }
+
+    let mut secrets: Vec<&phantom_core::analytics::SecretAnalytics> = report.secrets.iter()
+        .filter(|s| {
+            min_anomaly_score.map_or(true, |min| s.anomaly_score >= min)
+        })
+        .collect();
+
+    if top > 0 && top < secrets.len() {
+        secrets.truncate(top);
+    }
+
+    if json {
+        let out = serde_json::json!({
+            "generated_at": report.generated_at,
+            "secrets": secrets,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    // Human-readable table
+    println!(
+        "{}  Analytics for {} secret(s){}",
+        "->".blue().bold(),
+        secrets.len(),
+        min_anomaly_score
+            .map(|s| format!(" (anomaly_score ≥ {s:.2})"))
+            .unwrap_or_default()
+            .dimmed()
+    );
+    println!();
+
+    let name_w = secrets.iter().map(|s| s.name.len()).max().unwrap_or(4).max(4);
+    println!(
+        "  {:<name_w$}  {:>7}  {:>8}  {:>8}  {:>8}  {:>7}",
+        "SECRET".bold(),
+        "ACCESSES".bold(),
+        "AVG/DAY".bold(),
+        "MAX/DAY".bold(),
+        "MIN/DAY".bold(),
+        "ANOMALY".bold(),
+        name_w = name_w,
+    );
+    println!("  {}", "-".repeat(name_w + 46));
+
+    for s in &secrets {
+        let score_str = if s.anomaly_score >= 0.6 {
+            format!("{:.2}", s.anomaly_score).red().bold().to_string()
+        } else if s.anomaly_score >= 0.4 {
+            format!("{:.2}", s.anomaly_score).yellow().to_string()
+        } else {
+            format!("{:.2}", s.anomaly_score).dimmed().to_string()
+        };
+
+        println!(
+            "  {:<name_w$}  {:>7}  {:>8.2}  {:>8}  {:>8}  {:>7}",
+            s.name.bold(),
+            s.access_count,
+            s.daily_avg,
+            s.max_daily,
+            s.min_daily,
+            score_str,
+            name_w = name_w,
+        );
+    }
+
+    Ok(())
+}
+
+pub fn run_export(format: &str, period: &str, min_anomaly_score: Option<f64>) -> Result<()> {
+    let period = phantom_core::analytics::Period::parse(period)
+        .ok_or_else(|| anyhow::anyhow!("Invalid period '{period}'. Use: 7d, 30d, or all"))?;
+
+    if !matches!(format, "csv" | "json") {
+        return Err(anyhow::anyhow!(
+            "Invalid format '{format}'. Use: csv or json"
+        ));
+    }
+
+    let records = phantom_core::analytics::export_records(period, min_anomaly_score)
+        .map_err(|e| anyhow::anyhow!("Failed to export records: {e}"))?;
+
+    if records.is_empty() {
+        eprintln!(
+            "{}  No access records found for the requested period/filter.",
+            "->".blue().bold()
+        );
+        return Ok(());
+    }
+
+    match format {
+        "csv" => {
+            print!("{}", phantom_core::analytics::records_to_csv(&records));
+        }
+        "json" => {
+            println!("{}", serde_json::to_string_pretty(&records)?);
+        }
+        _ => unreachable!(),
+    }
+
+    Ok(())
+}
+
+/// Format a duration in seconds as a human-readable "X ago" string.
+fn human_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

@@ -56,6 +56,10 @@ enum Commands {
         /// Defaults to PHANTOM_INIT_JOBS env var, then 4.
         #[arg(long, short = 'j', value_name = "N")]
         jobs: Option<usize>,
+        /// Create a valid .phantom.toml and empty vault without requiring a .env file.
+        /// Use this to bootstrap a brand-new project before any secrets exist.
+        #[arg(long, conflicts_with_all = ["all", "dry_run"])]
+        empty: bool,
     },
 
     /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex)
@@ -67,6 +71,9 @@ enum Commands {
         /// Print the config snippet to stdout instead of writing files
         #[arg(long)]
         print: bool,
+        /// Configure audit event encryption mode: none, local, or cloud-signed
+        #[arg(long, value_enum, value_name = "MODE")]
+        audit_mode: Option<commands::setup::AuditMode>,
     },
 
     /// Agent readiness report, doctor, and setup workflows
@@ -82,6 +89,10 @@ enum Commands {
         /// Auto-fix safe issues (install hooks, generate .env.example, etc.)
         #[arg(long)]
         fix: bool,
+        /// Also check secret TTL/expiry status and warn about expired or
+        /// soon-to-expire secrets
+        #[arg(long)]
+        expiry: bool,
     },
 
     /// Print a shell-completion script to stdout.
@@ -151,6 +162,13 @@ enum Commands {
         /// Emit JSON instead of the human-readable table
         #[arg(long)]
         json: bool,
+        /// Show TTL/expiry countdown for each secret
+        #[arg(long)]
+        show_expiry: bool,
+        /// Only show secrets whose anomaly score is >= this value (0=all, 1=caution+, 2=alert only).
+        /// Reads per-secret rate-limit stats from the audit log.
+        #[arg(long, value_name = "SCORE")]
+        min_anomaly_score: Option<u8>,
     },
 
     /// Add a secret to the vault
@@ -367,6 +385,35 @@ enum Commands {
         /// Also sync secrets to all configured deployment platforms after rotation
         #[arg(long)]
         sync: bool,
+        /// Set a TTL (in days) on every secret after rotation. Sets expires_at and
+        /// rotation_policy on each vault entry. Use `phantom list --show-expiry`
+        /// and `phantom doctor --expiry` to monitor status.
+        #[arg(long, value_name = "DAYS")]
+        with_expiry: Option<u64>,
+        /// Shadow mode: generate a candidate credential alongside the current
+        /// primary for staged validation before promotion. The current primary
+        /// remains active until `phantom validate <NAME> --promote` succeeds.
+        /// Requires a secret NAME when used with --shadow.
+        #[arg(long)]
+        shadow: bool,
+        /// Secret name to shadow-rotate (required with --shadow).
+        #[arg(long, value_name = "NAME", requires = "shadow")]
+        name: Option<String>,
+    },
+
+    /// Validate stored secrets against their target APIs (drift detection)
+    #[command(next_help_heading = "Maintenance")]
+    Validate {
+        /// Validate all secrets in the vault
+        #[arg(long)]
+        check_all: bool,
+        /// Number of concurrent validation jobs (default: 4)
+        #[arg(long, short = 'j', value_name = "N")]
+        jobs: Option<usize>,
+        /// Validate the shadow candidate for NAME and atomically promote it to
+        /// primary if validation succeeds.
+        #[arg(long, value_name = "NAME", conflicts_with = "check_all")]
+        promote: Option<String>,
     },
 
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
@@ -504,16 +551,23 @@ fn main() -> anyhow::Result<()> {
             all,
             dry_run,
             jobs,
-        } => match all {
-            Some(root) => {
-                let j = jobs
-                    .or_else(commands::init::multi::jobs_from_env)
-                    .unwrap_or(commands::init::multi::DEFAULT_JOBS);
-                commands::init::multi::run(root, dry_run, j)
+            empty,
+        } => {
+            if empty {
+                commands::init::run_empty()
+            } else {
+                match all {
+                    Some(root) => {
+                        let j = jobs
+                            .or_else(commands::init::multi::jobs_from_env)
+                            .unwrap_or(commands::init::multi::DEFAULT_JOBS);
+                        commands::init::multi::run(root, dry_run, j)
+                    }
+                    None => commands::init::run(&from),
+                }
             }
-            None => commands::init::run(&from),
-        },
-        Commands::List { json } => commands::list::run(json),
+        }
+        Commands::List { json, show_expiry, min_anomaly_score } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
         Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
@@ -522,8 +576,24 @@ fn main() -> anyhow::Result<()> {
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status { oneline } => commands::status::run(oneline),
-        Commands::Rotate { sync } => commands::rotate::run(sync),
-        Commands::Doctor { fix } => commands::doctor::run(fix),
+        Commands::Rotate { sync, with_expiry, shadow, name } => {
+            if shadow {
+                let secret_name = name.ok_or_else(|| {
+                    anyhow::anyhow!("--shadow requires --name <NAME>")
+                })?;
+                commands::rotate::run_shadow(&secret_name).map(|_| ())
+            } else {
+                commands::rotate::run_with_expiry(sync, with_expiry)
+            }
+        }
+        Commands::Validate { check_all, jobs, promote } => {
+            if let Some(secret_name) = promote {
+                commands::rotate::run_validate_promote(&secret_name, true)
+            } else {
+                commands::validate::run(check_all, jobs, cli.json)
+            }
+        }
+        Commands::Doctor { fix, expiry } => commands::doctor::run_doctor(fix, expiry),
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
             AgentAction::Doctor => commands::agent::doctor(),
@@ -540,7 +610,7 @@ fn main() -> anyhow::Result<()> {
             service,
             force,
         } => commands::pull::run(&from, &project, environment, service, force),
-        Commands::Setup { client, print } => commands::setup::run(client, print),
+        Commands::Setup { client, print, audit_mode } => commands::setup::run(client, print, audit_mode),
         Commands::Sync {
             platform,
             project,
@@ -601,7 +671,18 @@ fn main() -> anyhow::Result<()> {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
             }
             AuditAction::Path => commands::audit::run_path(),
-            AuditAction::Verify => commands::audit::run_verify(),
+            AuditAction::Verify { with_context } => commands::audit::run_verify(with_context),
+            AuditAction::Stats {
+                json,
+                top,
+                analytics,
+                min_anomaly_score,
+            } => commands::audit::run_stats(json, top, analytics, min_anomaly_score),
+            AuditAction::Export {
+                format,
+                period,
+                min_anomaly_score,
+            } => commands::audit::run_export(&format, &period, min_anomaly_score),
         },
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
