@@ -1,4 +1,5 @@
 use crate::error::{PhantomError, Result};
+use crate::rotation_strategy::{RotationSchedule, RotationStrategy};
 use crate::sync::SyncTarget;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -43,6 +44,66 @@ pub struct PhantomMeta {
     pub version: String,
     /// Project identifier (hash of project path, for vault namespacing)
     pub project_id: String,
+    /// Global rotation schedule — applies to all secrets unless overridden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_policy: Option<RotationSchedule>,
+    /// Per-secret configuration overrides (keyed by secret name).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, SecretOverride>,
+}
+
+/// Per-secret configuration override stored under `[phantom.secrets.{name}]`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SecretOverride {
+    /// Override the global rotation schedule for this specific secret.
+    /// Accepts a duration string like `"30d"`, `"7d"`, `"90d"` (days only for
+    /// now) which is converted to a `Daily`/`Weekly`/`Monthly` approximation,
+    /// or the caller can set a full `RotationSchedule` by using the structured
+    /// `rotation_schedule` field instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotate_every: Option<String>,
+    /// Full structured rotation schedule override (takes precedence over `rotate_every`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_schedule: Option<RotationSchedule>,
+    /// Audit-log anomaly thresholds for this secret.
+    /// Stored under `[phantom.secrets.{name}.audit]` in `.phantom.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<crate::analytics::AuditThresholdConfig>,
+}
+
+impl SecretOverride {
+    /// Resolve this override to a `RotationSchedule`, if any.
+    pub fn resolve_schedule(&self) -> Option<RotationSchedule> {
+        if let Some(ref sched) = self.rotation_schedule {
+            return Some(sched.clone());
+        }
+        if let Some(ref s) = self.rotate_every {
+            return parse_rotate_every(s);
+        }
+        None
+    }
+}
+
+/// Parse a `rotate_every` string like `"30d"`, `"7d"`, `"90d"` into a
+/// `RotationSchedule`.  Only day-based durations are supported.
+pub fn parse_rotate_every(s: &str) -> Option<RotationSchedule> {
+    let s = s.trim().to_ascii_lowercase();
+    let days: u64 = if let Some(rest) = s.strip_suffix('d') {
+        rest.parse().ok()?
+    } else {
+        return None;
+    };
+
+    let strategy = if days <= 1 {
+        RotationStrategy::Daily
+    } else if days <= 7 {
+        RotationStrategy::Weekly
+    } else {
+        RotationStrategy::Monthly
+    };
+
+    Some(RotationSchedule::from_strategy(strategy))
 }
 
 /// Configuration for how a secret maps to an API service.
@@ -242,12 +303,30 @@ impl PhantomConfig {
             phantom: PhantomMeta {
                 version: "1".to_string(),
                 project_id,
+                rotation_policy: None,
+                secrets: BTreeMap::new(),
             },
             services,
             sync: Vec::new(),
             cloud: None,
             public_keys: Vec::new(),
         }
+    }
+
+    /// Return the effective `RotationSchedule` for `secret_name`.
+    ///
+    /// Resolution order:
+    ///   1. Per-secret `rotation_schedule` in `[phantom.secrets.{name}]`
+    ///   2. Per-secret `rotate_every` in `[phantom.secrets.{name}]`
+    ///   3. Global `[phantom.rotation_policy]`
+    ///   4. `None` — no schedule configured.
+    pub fn get_rotation_schedule(&self, secret_name: &str) -> Option<RotationSchedule> {
+        if let Some(ov) = self.phantom.secrets.get(secret_name) {
+            if let Some(sched) = ov.resolve_schedule() {
+                return Some(sched);
+            }
+        }
+        self.phantom.rotation_policy.clone()
     }
 
     /// Generate a stable project ID from a directory path.
@@ -600,5 +679,116 @@ header = "Authorization"
             .service_risks()
             .iter()
             .all(|risk| risk.service != "gateway"));
+    }
+
+    // ── Rotation policy config tests ──────────────────────────────────────────
+
+    #[test]
+    fn rotation_policy_roundtrip_in_toml() {
+        use crate::rotation_strategy::{RotationSchedule, RotationStrategy, Weekday};
+        let mut config = PhantomConfig::new_with_defaults("rp_test".to_string());
+        config.phantom.rotation_policy = Some(RotationSchedule {
+            strategy: RotationStrategy::Daily,
+            hour: 2,
+            minute: 0,
+            weekday: Weekday::Monday,
+            day_of_month: 1,
+            last_rotated: None,
+        });
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        assert!(toml_str.contains("rotation_policy"), "TOML should contain rotation_policy");
+        let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
+        let rp = parsed.phantom.rotation_policy.unwrap();
+        assert_eq!(rp.strategy, RotationStrategy::Daily);
+        assert_eq!(rp.hour, 2);
+    }
+
+    #[test]
+    fn get_rotation_schedule_falls_back_to_global() {
+        use crate::rotation_strategy::{RotationSchedule, RotationStrategy, Weekday};
+        let mut config = PhantomConfig::new_with_defaults("gs_test".to_string());
+        config.phantom.rotation_policy = Some(RotationSchedule {
+            strategy: RotationStrategy::Weekly,
+            hour: 3,
+            minute: 0,
+            weekday: Weekday::Monday,
+            day_of_month: 1,
+            last_rotated: None,
+        });
+        // No per-secret override — should return global.
+        let sched = config.get_rotation_schedule("OPENAI_API_KEY").unwrap();
+        assert_eq!(sched.strategy, RotationStrategy::Weekly);
+    }
+
+    #[test]
+    fn get_rotation_schedule_per_secret_overrides_global() {
+        use crate::rotation_strategy::{RotationSchedule, RotationStrategy, Weekday};
+        let mut config = PhantomConfig::new_with_defaults("ps_test".to_string());
+        config.phantom.rotation_policy = Some(RotationSchedule {
+            strategy: RotationStrategy::Monthly,
+            hour: 0,
+            minute: 0,
+            weekday: Weekday::Monday,
+            day_of_month: 1,
+            last_rotated: None,
+        });
+        config.phantom.secrets.insert(
+            "STRIPE_KEY".to_string(),
+            SecretOverride {
+                rotate_every: Some("7d".to_string()),
+                rotation_schedule: None,
+                audit: None,
+            },
+        );
+        let sched = config.get_rotation_schedule("STRIPE_KEY").unwrap();
+        assert_eq!(sched.strategy, RotationStrategy::Weekly);
+        // Other secrets still use global.
+        let global = config.get_rotation_schedule("OTHER_KEY").unwrap();
+        assert_eq!(global.strategy, RotationStrategy::Monthly);
+    }
+
+    #[test]
+    fn parse_rotate_every_days() {
+        assert!(parse_rotate_every("1d").is_some());
+        assert!(parse_rotate_every("7d").is_some());
+        assert!(parse_rotate_every("30d").is_some());
+        assert!(parse_rotate_every("90d").is_some());
+        assert!(parse_rotate_every("bad").is_none());
+        assert!(parse_rotate_every("30").is_none());
+    }
+
+    #[test]
+    fn per_secret_rotation_schedule_roundtrip() {
+        use crate::rotation_strategy::{RotationSchedule, RotationStrategy, Weekday};
+        let mut config = PhantomConfig::new_with_defaults("per_s".to_string());
+        config.phantom.secrets.insert(
+            "MY_KEY".to_string(),
+            SecretOverride {
+                rotate_every: None,
+                rotation_schedule: Some(RotationSchedule {
+                    strategy: RotationStrategy::Daily,
+                    hour: 4,
+                    minute: 30,
+                    weekday: Weekday::Friday,
+                    day_of_month: 15,
+                    last_rotated: Some(1_000_000),
+                }),
+                audit: None,
+            },
+        );
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
+        let ov = parsed.phantom.secrets.get("MY_KEY").unwrap();
+        let sched = ov.resolve_schedule().unwrap();
+        assert_eq!(sched.strategy, RotationStrategy::Daily);
+        assert_eq!(sched.hour, 4);
+        assert_eq!(sched.minute, 30);
+        assert_eq!(sched.last_rotated, Some(1_000_000));
+    }
+
+    #[test]
+    fn get_rotation_schedule_returns_none_when_unconfigured() {
+        let config = PhantomConfig::new_with_defaults("none_test".to_string());
+        assert!(config.get_rotation_schedule("OPENAI_API_KEY").is_none());
     }
 }

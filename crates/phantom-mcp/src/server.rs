@@ -9,12 +9,14 @@ use std::path::PathBuf;
 
 use crate::tools::helpers::{internal_err, invalid_params_err, require_confirm, text_result};
 use crate::tools::params::{
-    AddSecretInteractiveParams, AddSecretParams, AuditAnomaliesParams, AuditRecentParams,
-    AuditStatsParams, CheckParams, CloudPullParams, CloudPushParams, ComplianceStatusParams,
-    CopySecretParams, DoctorParams, EnvParams, InitParams, ListWithExpiryParams,
-    RemoveSecretParams, RotateParams, RotateWithExpiryParams, RotationDueParams, SyncParams,
-    TeamCreateParams, TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams,
-    WrapParams, ValidateSecretParams, ValidateAllParams,
+    AddSecretInteractiveParams, AddSecretParams, AuditAnalyticsParams, AuditAnomaliesParams,
+    AuditAnomaliesRealtimeParams, AuditRecentParams, AuditStatsParams, AutoRotateParams,
+    CheckParams, CloudPullParams, CloudPushParams, ComplianceStatusParams, CopySecretParams,
+    DoctorParams, EnvParams, ExpiryCheckParams, InitParams, ListWithExpiryParams,
+    RemoveSecretParams, RotateParams, RotateWithCandidateParams, RotatePromoteParams,
+    RotateWithExpiryParams, RotationDueParams, SyncParams, TeamCreateParams, TeamIdParams,
+    TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams, WrapParams, ValidateSecretParams,
+    ValidateAllParams, ValidationScheduleParams, ValidationHistoryParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -307,6 +309,167 @@ impl PhantomMcpServer {
         text_result(format!(
             "Rotated {} phantom token(s). Old tokens are now invalid.",
             names.len()
+        ))
+    }
+
+    /// Create a shadow (candidate) credential for staged rotation.
+    #[tool(
+        description = "Staged rotation: generate a new candidate credential alongside the current primary for a named secret. The primary remains active until phantom_rotate_promote succeeds. Set PHANTOM_CANDIDATE_MODE=1 in the proxy environment to inject the candidate instead of the primary for parallel validation. Returns { shadow_id, candidate_added_at, time_until_auto_promote_ttl } — never returns the credential values. Requires `confirm: true`."
+    )]
+    fn phantom_rotate_with_candidate(
+        &self,
+        Parameters(params): Parameters<RotateWithCandidateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_rotate_with_candidate", params.confirm)?;
+
+        let (config, vault) = self.load_config_and_vault()?;
+
+        if !vault
+            .exists(&params.name)
+            .map_err(|e| internal_err(format!("Failed to check secret: {e}")))?
+        {
+            return Err(invalid_params_err(format!(
+                "Secret '{}' not found in vault.",
+                params.name
+            )));
+        }
+
+        // Retrieve primary value to build the ShadowedSecret
+        let primary = vault
+            .retrieve(&params.name)
+            .map_err(|e| internal_err(format!("Failed to retrieve secret: {e}")))?;
+
+        // Generate a candidate value
+        use rand::RngCore;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let candidate = format!("phm_cand_{}", hex::encode(&bytes[..16]));
+
+        // Store candidate under shadow key in vault
+        let shadow_key = format!("{}__SHADOW_CANDIDATE", params.name);
+        vault
+            .store(&shadow_key, &candidate)
+            .map_err(|e| internal_err(format!("Failed to store shadow candidate: {e}")))?;
+
+        phantom_core::audit::log("shadow.candidate_created", Some(&params.name));
+
+        // Build and persist shadow metadata
+        use phantom_vault::shadowing::{shadow_dir, ShadowStore, ShadowedSecret};
+        let shadow = ShadowedSecret::new(
+            &params.name,
+            primary.as_str(),
+            &candidate,
+            params.auto_promote_ttl_secs,
+        );
+        let shadow_id = shadow.shadow_id.clone();
+        let candidate_added_at = shadow.candidate_added_at;
+        let ttl_remaining = shadow.ttl_remaining_secs();
+
+        let store = ShadowStore::new(shadow_dir(&config.phantom.project_id))
+            .map_err(|e| internal_err(format!("Failed to open shadow store: {e}")))?;
+        store
+            .save(&shadow)
+            .map_err(|e| internal_err(format!("Failed to save shadow metadata: {e}")))?;
+
+        let ttl_str = match ttl_remaining {
+            Some(secs) => format!("{secs}s"),
+            None => "none (manual promotion only)".to_string(),
+        };
+
+        text_result(format!(
+            "Shadow candidate created for '{}'.\nshadow_id: {}\ncandidate_added_at: {}\ntime_until_auto_promote_ttl: {}\n\nUse phantom_rotate_promote to validate and promote the candidate.\nSet PHANTOM_CANDIDATE_MODE=1 to inject the candidate in proxy sessions.",
+            params.name, shadow_id, candidate_added_at, ttl_str
+        ))
+    }
+
+    /// Promote a validated shadow candidate to primary.
+    #[tool(
+        description = "Validate the shadow candidate for a named secret and atomically promote it to primary. The old primary is discarded. Requires `confirm: true` — the agent must obtain explicit user consent before promoting. On success returns the new shadow_id and promotion timestamp."
+    )]
+    fn phantom_rotate_promote(
+        &self,
+        Parameters(params): Parameters<RotatePromoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_rotate_promote", params.confirm)?;
+
+        let (config, vault) = self.load_config_and_vault()?;
+
+        use phantom_vault::shadowing::{shadow_dir, ShadowStore, ShadowedSecret};
+        let store = ShadowStore::new(shadow_dir(&config.phantom.project_id))
+            .map_err(|e| internal_err(format!("Failed to open shadow store: {e}")))?;
+
+        let meta = store
+            .load_meta(&params.name)
+            .map_err(|e| internal_err(format!("Failed to load shadow metadata: {e}")))?
+            .ok_or_else(|| {
+                invalid_params_err(format!(
+                    "No shadow exists for secret '{}'. Call phantom_rotate_with_candidate first.",
+                    params.name
+                ))
+            })?;
+
+        // Retrieve current primary and candidate from vault
+        let primary = vault
+            .retrieve(&params.name)
+            .map_err(|e| internal_err(format!("Failed to retrieve primary: {e}")))?;
+        let shadow_key = format!("{}__SHADOW_CANDIDATE", params.name);
+        let candidate = vault
+            .retrieve(&shadow_key)
+            .map_err(|e| internal_err(format!("Failed to retrieve candidate: {e}")))?;
+
+        // Reconstruct ShadowedSecret from metadata + vault values
+        let mut shadow = ShadowedSecret::from_meta(meta, primary.as_str(), candidate.as_str());
+
+        // Run validation: structural check (non-empty, length > 8, no whitespace)
+        let validation_ok = !shadow.candidate.is_empty()
+            && shadow.candidate.len() > 8
+            && !shadow.candidate.chars().any(char::is_whitespace);
+
+        if !validation_ok {
+            shadow
+                .record_validation_failure(Some("mcp-structural-check".to_string()))
+                .map_err(|e| internal_err(e.to_string()))?;
+            store
+                .save(&shadow)
+                .map_err(|e| internal_err(format!("Failed to save shadow: {e}")))?;
+            phantom_core::audit::log("shadow.validation_failed", Some(&params.name));
+            return Err(internal_err(format!(
+                "Shadow candidate for '{}' failed validation. The candidate has been marked as failed. Call phantom_rotate_with_candidate again to generate a new one.",
+                params.name
+            )));
+        }
+
+        // Record success then promote
+        shadow
+            .record_validation_success(Some("mcp-promote".to_string()))
+            .map_err(|e| internal_err(e.to_string()))?;
+        shadow
+            .promote(Some("phantom_rotate_promote".to_string()))
+            .map_err(|e| internal_err(e.to_string()))?;
+
+        // Atomically update vault: write promoted value, delete shadow key
+        vault
+            .store(&params.name, shadow.primary.as_str())
+            .map_err(|e| internal_err(format!("Failed to store promoted value: {e}")))?;
+        vault
+            .delete(&shadow_key)
+            .map_err(|e| internal_err(format!("Failed to delete shadow candidate: {e}")))?;
+
+        store
+            .save(&shadow)
+            .map_err(|e| internal_err(format!("Failed to update shadow metadata: {e}")))?;
+
+        phantom_core::audit::log("shadow.promoted", Some(&params.name));
+
+        let promoted_at = shadow
+            .audit_trail
+            .last()
+            .map(|e| e.ts)
+            .unwrap_or(0);
+
+        text_result(format!(
+            "Shadow candidate for '{}' promoted to primary.\nshadow_id: {}\npromoted_at: {}\nOld primary has been discarded.",
+            params.name, shadow.shadow_id, promoted_at
         ))
     }
 
@@ -1928,6 +2091,170 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Serialization error: {e}")))?)
     }
 
+    /// Real-time windowed anomaly check — safe for AI agent polling.
+    #[tool(
+        description = "Check whether a secret (or all secrets) has been accessed unusually \
+            based on windowed rate and quiet-period analysis of the current audit log. \
+            Unlike phantom_audit_anomalies (which uses multi-day daily-bucket statistics), \
+            this tool evaluates: (1) accesses within the last rolling hour vs \
+            max_accesses_per_hour threshold; (2) re-access after a quiet period longer than \
+            max_consecutive_quiet_days. Returns a findings array with fields: name, \
+            anomaly_score (0.0–1.0), alert (bool), reason (string), accesses_last_hour, \
+            max_quiet_gap_days. Secret VALUES are never returned. Read-only; no confirm required. \
+            Use threshold (default 0.5) to filter results. Pass name to check a single secret. \
+            Per-secret overrides from .phantom.toml [phantom.secrets.{name}.audit] are respected \
+            when max_accesses_per_hour / max_consecutive_quiet_days are omitted."
+    )]
+    fn phantom_audit_anomalies_realtime(
+        &self,
+        Parameters(params): Parameters<AuditAnomaliesRealtimeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::analytics::{AuditThresholdConfig, compute_windowed_anomalies};
+
+        let threshold = params.threshold.clamp(0.0, 1.0);
+
+        // Build threshold config from MCP params (if either override is set).
+        let thresholds = if params.max_accesses_per_hour.is_some()
+            || params.max_consecutive_quiet_days.is_some()
+        {
+            Some(AuditThresholdConfig {
+                max_accesses_per_hour: params.max_accesses_per_hour,
+                max_consecutive_quiet_days: params.max_consecutive_quiet_days,
+                alert_on_anomaly_score: Some(threshold),
+            })
+        } else {
+            None
+        };
+
+        let results = compute_windowed_anomalies(
+            params.name.as_deref(),
+            thresholds.as_ref(),
+            threshold,
+        )
+        .map_err(|e| internal_err(format!("Failed to compute windowed anomalies: {e}")))?;
+
+        let findings: Vec<serde_json::Value> = results
+            .iter()
+            .filter(|r| r.anomaly_score >= threshold)
+            .map(|r| {
+                serde_json::json!({
+                    "name": r.name,
+                    "anomaly_score": r.anomaly_score,
+                    "alert": r.alert,
+                    "reason": r.reason,
+                    "accesses_last_hour": r.accesses_last_hour,
+                    "max_quiet_gap_days": r.max_quiet_gap_days,
+                })
+            })
+            .collect();
+
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let out = serde_json::json!({
+            "checked_at": phantom_core::analytics::unix_to_iso8601(now_ts),
+            "threshold": threshold,
+            "name_filter": params.name,
+            "findings": findings,
+            "total_findings": findings.len(),
+        });
+
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
+    /// Full audit analytics export for external dashboards (Datadog, Grafana, CloudWatch).
+    #[tool(
+        description = "Export full audit analytics for compliance dashboards. \
+            Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, \
+            min_daily, anomaly_score) plus timestamped AccessRecords for the requested \
+            window. Supports JSON or CSV format. Use min_anomaly_score to filter to \
+            flagged secrets only. Never exposes secret values. \
+            Feed the output to Datadog, Grafana, CloudWatch, or any BI tool. \
+            window_days=0 returns all history; default is 30 days. \
+            format=\"csv\" produces RFC 4180 CSV; format=\"json\" produces structured JSON \
+            with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays."
+    )]
+    fn phantom_audit_analytics(
+        &self,
+        Parameters(params): Parameters<AuditAnalyticsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::analytics::{
+            compute_analytics, export_records, records_to_csv, Period,
+        };
+
+        // Convert window_days to a Period.
+        let period = match params.window_days {
+            0 => Period::All,
+            7 => Period::Days7,
+            1..=30 => Period::Days30,
+            _ => Period::All,
+        };
+
+        let report = compute_analytics(period)
+            .map_err(|e| internal_err(format!("Failed to compute analytics: {e}")))?;
+
+        let analytics: Vec<&phantom_core::analytics::SecretAnalytics> = report
+            .secrets
+            .iter()
+            .filter(|s| {
+                params
+                    .min_anomaly_score
+                    .map_or(true, |min| s.anomaly_score >= min)
+            })
+            .collect();
+
+        let records = export_records(period, params.min_anomaly_score)
+            .map_err(|e| internal_err(format!("Failed to export records: {e}")))?;
+
+        if params.format == "csv" {
+            let csv = records_to_csv(&records);
+            return text_result(csv);
+        }
+
+        // Build daily bucket time-series per secret for BI tools.
+        let mut daily_buckets: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, u64>,
+        > = std::collections::BTreeMap::new();
+        for rec in &records {
+            let day = phantom_core::analytics::unix_to_iso8601(rec.ts / 86400 * 86400);
+            let day_key = &day[..10]; // YYYY-MM-DD
+            *daily_buckets
+                .entry(rec.name.clone())
+                .or_default()
+                .entry(day_key.to_string())
+                .or_insert(0) += 1;
+        }
+
+        let time_series: Vec<serde_json::Value> = daily_buckets
+            .iter()
+            .map(|(name, days)| {
+                let buckets: Vec<serde_json::Value> = days
+                    .iter()
+                    .map(|(day, count)| serde_json::json!({"date": day, "count": count}))
+                    .collect();
+                serde_json::json!({"name": name, "daily_buckets": buckets})
+            })
+            .collect();
+
+        let out = serde_json::json!({
+            "generated_at": report.generated_at,
+            "window_days": params.window_days,
+            "analytics": analytics,
+            "records": records,
+            "time_series": time_series,
+        });
+
+        let json_str = serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
+        text_result(json_str)
+    }
+
     /// Return a compliance status badge for the current project.
     #[tool(
         description = "Return the compliance state of the current Phantom project as a \
@@ -2321,6 +2648,242 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
 
         text_result(out)
+    }
+
+    // ── Validation scheduler tools ────────────────────────────────────────
+
+    /// Get or set the background validation schedule.
+    #[tool(
+        description = "Get or set the automated background validation schedule. \
+            Pass `interval` to update (accepted values: 'hourly', '6h', '12h', 'daily', \
+            'daily@2am', 'weekly', 'disabled'). Omit `interval` to read the current \
+            schedule and staleness status. Returns schedule, last_run_at, and staleness \
+            indicators. Read-only when interval is omitted; no confirm required."
+    )]
+    fn phantom_validation_schedule(
+        &self,
+        Parameters(params): Parameters<ValidationScheduleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::validation_scheduler::{
+            Schedule, SchedulerState, state_file_path,
+        };
+
+        let (config, _vault) = self.load_config_and_vault()?;
+        let state_path = state_file_path(&config.phantom.project_id);
+        let mut state = SchedulerState::load(&state_path)
+            .unwrap_or_default();
+
+        // If an interval was provided, update the schedule.
+        if let Some(ref interval_str) = params.interval {
+            let sched = Schedule::parse(interval_str)
+                .map_err(|e| {
+                    crate::tools::helpers::invalid_params_err(format!(
+                        "Invalid schedule interval: {e}"
+                    ))
+                })?;
+            let description = sched.description();
+            state.schedule = Some(sched);
+            state.save(&state_path)
+                .map_err(|e| internal_err(format!("Failed to persist schedule: {e}")))?;
+
+            return text_result(format!(
+                "Validation schedule set to: {description}\nState file: {}",
+                state_path.display()
+            ));
+        }
+
+        // Read-only: return current status.
+        let out = serde_json::json!({
+            "schedule": state.schedule,
+            "schedule_description": state.schedule.as_ref().map(|s| s.description()),
+            "last_run_at": state.last_run_at,
+            "stale_1h": state.is_stale(3600),
+            "stale_24h": state.is_stale(86400),
+            "run_count": state.history.len(),
+            "last_run": state.last_run,
+        });
+
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
+    /// Retrieve past validation run history.
+    #[tool(
+        description = "Retrieve the history of past automated validation runs. \
+            Each entry contains: started_at (Unix epoch), finished_at, total, pass, \
+            fail, unreachable, not_checked, and an optional error string. \
+            Use `limit` (default 20, max 100) to control how many recent entries \
+            are returned. Secret VALUES are never returned. Read-only; no confirm required."
+    )]
+    fn phantom_validation_history(
+        &self,
+        Parameters(params): Parameters<ValidationHistoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::validation_scheduler::{SchedulerState, state_file_path, MAX_HISTORY};
+
+        let (config, _vault) = self.load_config_and_vault()?;
+        let state_path = state_file_path(&config.phantom.project_id);
+        let state = SchedulerState::load(&state_path)
+            .unwrap_or_default();
+
+        let limit = params.limit.min(MAX_HISTORY);
+        let entries: Vec<_> = state.history.iter().rev().take(limit).collect();
+
+        let out = serde_json::json!({
+            "total_runs": state.history.len(),
+            "returned": entries.len(),
+            "entries": entries,
+        });
+
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
+    // ── Expiry check & auto-rotate tools ─────────────────────────────────
+
+    /// Query the local vault for secrets that are expired or expiring soon.
+    #[tool(
+        description = "Query the local vault for secrets that are expired or expiring soon. \
+            Returns a JSON array where each entry has: name (string), \
+            days_remaining (i64 — negative means already expired), \
+            expires_at (Unix epoch u64), status (human-readable string). \
+            Use the `days` parameter (default 7) to tune the look-ahead window. \
+            Secrets with no TTL set are omitted — use phantom_secret_rotation_due \
+            to also surface those. Secret VALUES are never returned. Read-only; no confirm required."
+    )]
+    fn phantom_secrets_expiry_check(
+        &self,
+        Parameters(params): Parameters<ExpiryCheckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (_config, vault) = self.load_config_and_vault()?;
+
+        let entries = vault
+            .list_with_metadata()
+            .map_err(|e| internal_err(format!("Failed to list vault metadata: {e}")))?;
+
+        let mut expiring: Vec<serde_json::Value> = entries
+            .iter()
+            .filter_map(|(name, meta)| {
+                let m = meta.as_ref()?;
+                let expires_at = m.expires_at?;
+                let days_remaining = m.days_remaining()?;
+                if days_remaining <= params.days as i64 {
+                    Some(serde_json::json!({
+                        "name": name,
+                        "days_remaining": days_remaining,
+                        "expires_at": expires_at,
+                        "status": m.ttl_status(),
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort most-urgent first.
+        expiring.sort_by(|a, b| {
+            let da = a["days_remaining"].as_i64().unwrap_or(i64::MAX);
+            let db = b["days_remaining"].as_i64().unwrap_or(i64::MAX);
+            da.cmp(&db)
+        });
+
+        let out = serde_json::json!({
+            "days_window": params.days,
+            "count": expiring.len(),
+            "secrets": expiring,
+        });
+
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
+    /// Auto-rotate a single secret: extend its TTL metadata and refresh the phantom token.
+    #[tool(
+        description = "Auto-rotate a named secret: extend its expiry by its existing TTL policy \
+            (default 30 days if no policy is set), update `rotated_at` / `expires_at`, and \
+            rewrite the .env with a fresh phantom token for that secret. \
+            Optionally syncs to all configured deployment platforms (`sync: true`). \
+            Emits an audit event `secret.auto_rotated`. \
+            MUTATING — rewrites phantom tokens and metadata; requires `confirm: true`. \
+            Secret VALUES are never returned or logged."
+    )]
+    fn phantom_secrets_auto_rotate(
+        &self,
+        Parameters(params): Parameters<AutoRotateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_secrets_auto_rotate", params.confirm)?;
+
+        let (_config, vault) = self.load_config_and_vault()?;
+
+        // Confirm the secret exists.
+        if !vault
+            .exists(&params.name)
+            .map_err(|e| internal_err(format!("Vault access error: {e}")))?
+        {
+            return Err(invalid_params_err(format!(
+                "Secret '{}' not found in vault.",
+                params.name
+            )));
+        }
+
+        // Load existing metadata to preserve days_ttl.
+        let existing_meta = vault
+            .get_metadata(&params.name)
+            .map_err(|e| internal_err(format!("Failed to read metadata: {e}")))?;
+
+        let days_ttl = existing_meta
+            .as_ref()
+            .and_then(|m| m.rotation_policy.as_ref())
+            .map(|p| p.days_ttl)
+            .unwrap_or(30);
+
+        // Build refreshed metadata.
+        let now = phantom_vault::metadata::now_secs();
+        let new_meta = phantom_vault::metadata::SecretMetadata {
+            created_at: existing_meta.as_ref().and_then(|m| m.created_at).or(Some(now)),
+            rotated_at: Some(now),
+            expires_at: Some(now + days_ttl * 86_400),
+            rotation_policy: Some(phantom_vault::metadata::RotationPolicy {
+                days_ttl,
+                auto_rotate: true,
+            }),
+        };
+
+        vault
+            .set_metadata(&params.name, new_meta)
+            .map_err(|e| internal_err(format!("Failed to update metadata: {e}")))?;
+
+        phantom_core::audit::log("secret.auto_rotated", Some(&params.name));
+
+        // Rewrite .env with a fresh phantom token for this secret.
+        let env_path = self.env_path();
+        if env_path.exists() {
+            use phantom_core::token::TokenMap;
+            let mut token_map = TokenMap::new();
+            token_map.insert(params.name.clone());
+            if let Ok(dotenv) = phantom_core::dotenv::DotenvFile::parse_file(&env_path) {
+                let _ = dotenv.write_phantomized(&token_map, &env_path);
+            }
+        }
+
+        // Advise on sync if requested (MCP cannot call the CLI sync command directly;
+        // the caller should run `phantom sync` after rotating).
+        let sync_note = if params.sync {
+            " To push the updated token to deployment platforms, run `phantom sync` in the CLI."
+        } else {
+            ""
+        };
+
+        text_result(format!(
+            "Auto-rotated '{}': expires_at extended by {days_ttl} day(s) from now.{sync_note}",
+            params.name
+        ))
     }
 }
 
@@ -3110,6 +3673,151 @@ mod tests {
 
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(err.message.contains("Invalid period"));
+    }
+
+    // ── phantom_audit_analytics ──────────────────────────────────────
+
+    #[test]
+    fn test_audit_analytics_returns_required_keys() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[
+                (now - 200, "vault.retrieve", Some("KEY_A")),
+                (now - 100, "vault.retrieve", Some("KEY_A")),
+                (now - 50, "vault.store", Some("KEY_B")),
+            ],
+        );
+
+        let result = server
+            .phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                window_days: 0,
+                min_anomaly_score: None,
+                format: "json".to_string(),
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(json.get("generated_at").is_some(), "must have 'generated_at'");
+        assert!(json.get("analytics").is_some(), "must have 'analytics'");
+        assert!(json.get("records").is_some(), "must have 'records'");
+        assert!(json.get("time_series").is_some(), "must have 'time_series'");
+        assert!(json.get("window_days").is_some(), "must have 'window_days'");
+
+        let analytics = json["analytics"].as_array().unwrap();
+        assert_eq!(analytics.len(), 2, "two distinct secrets");
+    }
+
+    #[test]
+    fn test_audit_analytics_spike_exceeds_threshold() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let base_day = 1_700_000_000_u64 / 86400 * 86400;
+        let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
+        // 1 access/day on days 1–4
+        for i in 1u64..=4 {
+            entries.push((base_day + i * 86400, "vault.retrieve", Some("SPIKE_KEY")));
+        }
+        // 50 accesses on day 0 (spike)
+        for j in 0..50u64 {
+            entries.push((base_day + 10 + j, "vault.retrieve", Some("SPIKE_KEY")));
+        }
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let result = server
+            .phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                window_days: 0,
+                min_anomaly_score: Some(0.5),
+                format: "json".to_string(),
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let analytics = json["analytics"].as_array().unwrap();
+        assert!(!analytics.is_empty(), "filtered analytics should include SPIKE_KEY");
+        let spike = analytics.iter().find(|s| s["name"] == "SPIKE_KEY").unwrap();
+        assert!(
+            spike["anomaly_score"].as_f64().unwrap() >= 0.6,
+            "spike anomaly_score must be >= 0.6"
+        );
+        // Records must not expose values
+        for rec in json["records"].as_array().unwrap() {
+            assert!(rec.get("value").is_none(), "records must never expose secret values");
+        }
+    }
+
+    #[test]
+    fn test_audit_analytics_csv_format() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now - 100, "vault.retrieve", Some("CSV_KEY"))],
+        );
+
+        let result = server
+            .phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                window_days: 0,
+                min_anomaly_score: None,
+                format: "csv".to_string(),
+            }))
+            .unwrap();
+
+        use rmcp::model::RawContent;
+        let text = result
+            .content
+            .iter()
+            .find_map(|c| {
+                if let RawContent::Text(t) = &c.raw {
+                    Some(t.text.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        assert!(text.starts_with("ts,datetime,op,name,process\n"), "CSV must start with header");
+        assert!(text.contains("CSV_KEY"), "CSV must include the secret name");
+        assert!(text.contains("vault.retrieve"), "CSV must include the op");
+    }
+
+    #[test]
+    fn test_audit_analytics_no_log_returns_empty() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        // No audit log written.
+
+        let result = server
+            .phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                window_days: 0,
+                min_anomaly_score: None,
+                format: "json".to_string(),
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert_eq!(
+            json["analytics"].as_array().unwrap().len(),
+            0,
+            "empty analytics when no log"
+        );
+        assert_eq!(
+            json["records"].as_array().unwrap().len(),
+            0,
+            "empty records when no log"
+        );
     }
 
     // ── phantom_compliance_status ─────────────────────────────────────

@@ -27,6 +27,179 @@ use std::io::BufRead;
 use std::path::Path;
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Per-secret audit threshold configuration
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Per-secret anomaly thresholds stored under
+/// `[phantom.secrets.{name}.audit]` in `.phantom.toml`.
+///
+/// All fields are optional; defaults are applied when absent.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct AuditThresholdConfig {
+    /// Maximum allowed accesses within any rolling 1-hour window.
+    /// Exceeding this contributes a score of 0.7 (override-spike).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_accesses_per_hour: Option<u64>,
+    /// If the secret has been quiet for this many consecutive days and is then
+    /// accessed, score 0.5 (quiet-period). Defaults to 7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_consecutive_quiet_days: Option<u64>,
+    /// Minimum anomaly score at which an alert is emitted (0.0–1.0).
+    /// Defaults to 0.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alert_on_anomaly_score: Option<f64>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Windowed anomaly detection result
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Result of a windowed / real-time anomaly check for a single secret.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowedAnomalyResult {
+    /// Secret name (never the value).
+    pub name: String,
+    /// Computed anomaly score in [0.0, 1.0].
+    pub anomaly_score: f64,
+    /// Human-readable reason string (empty when score == 0.0).
+    pub reason: String,
+    /// Whether this result should trigger an alert given the configured
+    /// `alert_on_anomaly_score` (or the supplied `threshold` argument).
+    pub alert: bool,
+    /// Accesses observed within the most recent 1-hour window.
+    pub accesses_last_hour: u64,
+    /// Length of the longest consecutive quiet period (days) ending at the
+    /// most recent access.
+    pub max_quiet_gap_days: u64,
+}
+
+/// Check recent audit-log events for a single secret against per-second
+/// windowed thresholds.
+///
+/// `now_ts` – current Unix epoch seconds (allows deterministic testing).
+/// `thresholds` – per-secret config loaded from `.phantom.toml`; pass
+///   `None` to use built-in defaults.
+/// `global_threshold` – additional alert gate; if the computed score ≥
+///   this value `alert` is set to `true`.
+pub fn check_windowed_anomaly(
+    name: &str,
+    timestamps: &[u64],
+    now_ts: u64,
+    thresholds: Option<&AuditThresholdConfig>,
+    global_threshold: f64,
+) -> WindowedAnomalyResult {
+    let max_per_hour = thresholds
+        .and_then(|t| t.max_accesses_per_hour)
+        .unwrap_or(100);
+    let quiet_days = thresholds
+        .and_then(|t| t.max_consecutive_quiet_days)
+        .unwrap_or(7);
+    let alert_score = thresholds
+        .and_then(|t| t.alert_on_anomaly_score)
+        .unwrap_or(0.5)
+        .min(1.0)
+        .max(0.0);
+
+    // Accesses within the last 3600 seconds.
+    let window_start = now_ts.saturating_sub(3600);
+    let accesses_last_hour = timestamps.iter().filter(|&&ts| ts >= window_start).count() as u64;
+
+    // Longest quiet gap (days) among consecutive sorted pairs.
+    let max_quiet_gap_days: u64 = if timestamps.len() >= 2 {
+        let mut sorted = timestamps.to_vec();
+        sorted.sort_unstable();
+        sorted
+            .windows(2)
+            .map(|w| w[1].saturating_sub(w[0]) / 86400)
+            .max()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let mut score: f64 = 0.0;
+    let mut reasons: Vec<String> = Vec::new();
+
+    // Rule 1: per-hour rate exceeded.
+    if accesses_last_hour > max_per_hour {
+        score = score.max(0.7);
+        reasons.push(format!(
+            "accesses_last_hour={accesses_last_hour} exceeds max_accesses_per_hour={max_per_hour}"
+        ));
+    }
+
+    // Rule 2: re-access after a quiet period.
+    if max_quiet_gap_days >= quiet_days {
+        score = score.max(0.5);
+        reasons.push(format!(
+            "quiet_gap={max_quiet_gap_days}d >= max_consecutive_quiet_days={quiet_days}d"
+        ));
+    }
+
+    let score = score.min(1.0).max(0.0);
+    // Alert fires when the score meets BOTH the per-secret config threshold AND
+    // the caller-supplied global_threshold (use the higher of the two as the gate).
+    let effective_alert_score = alert_score.max(global_threshold);
+    let alert = score >= effective_alert_score && score > 0.0;
+
+    WindowedAnomalyResult {
+        name: name.to_string(),
+        anomaly_score: score,
+        reason: reasons.join("; "),
+        alert,
+        accesses_last_hour,
+        max_quiet_gap_days,
+    }
+}
+
+/// Convenience wrapper: read the audit log and compute `WindowedAnomalyResult`
+/// for a specific secret (or all secrets when `name_filter` is `None`).
+///
+/// Returns an empty `Vec` when the audit log does not exist.
+pub fn compute_windowed_anomalies(
+    name_filter: Option<&str>,
+    thresholds: Option<&AuditThresholdConfig>,
+    global_threshold: f64,
+) -> std::io::Result<Vec<WindowedAnomalyResult>> {
+    let path = crate::audit::log_path()?;
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+
+    let now = now_unix();
+    let raw = read_events_from_path(&path, 0)?;
+
+    // Group by name.
+    let mut by_name: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for ev in raw {
+        if let Some(n) = ev.name {
+            if name_filter.map_or(true, |f| f == n) {
+                by_name.entry(n).or_default().push(ev.ts);
+            }
+        }
+    }
+
+    let mut results: Vec<WindowedAnomalyResult> = by_name
+        .into_iter()
+        .map(|(name, mut ts)| {
+            ts.sort_unstable();
+            check_windowed_anomaly(&name, &ts, now, thresholds, global_threshold)
+        })
+        .collect();
+
+    // Highest score first.
+    results.sort_by(|a, b| {
+        b.anomaly_score
+            .partial_cmp(&a.anomaly_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.name.cmp(&b.name))
+    });
+
+    Ok(results)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Public types
 // ──────────────────────────────────────────────────────────────────────────────
 

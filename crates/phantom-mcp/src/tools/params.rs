@@ -320,9 +320,111 @@ fn default_min_anomaly() -> f64 {
     0.4
 }
 
+/// Parameters for `phantom_audit_anomalies_realtime` — windowed, per-second
+/// rate-based anomaly check against the current audit log state.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditAnomaliesRealtimeParams {
+    /// Filter to a single secret name. Omit to check all secrets.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Minimum anomaly score (0.0–1.0) to include in results. Defaults to 0.5.
+    #[serde(default = "default_realtime_threshold")]
+    pub threshold: f64,
+    /// Override: max accesses allowed within any rolling 1-hour window before
+    /// flagging a rate spike. Defaults to 100.
+    #[serde(default)]
+    pub max_accesses_per_hour: Option<u64>,
+    /// Override: number of consecutive quiet days after which a re-access
+    /// triggers a quiet-period alert. Defaults to 7.
+    #[serde(default)]
+    pub max_consecutive_quiet_days: Option<u64>,
+}
+
+fn default_realtime_threshold() -> f64 {
+    0.5
+}
+
+// ── Audit analytics (full export) ────────────────────────────────────
+
+/// Parameters for `phantom_audit_analytics` — full analytics + access-record export.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditAnalyticsParams {
+    /// Time window in days (default: 30). 0 means all available history.
+    #[serde(default = "default_analytics_window")]
+    pub window_days: u32,
+    /// Only include secrets whose anomaly score is at or above this threshold
+    /// (range 0.0–1.0). Defaults to 0.0 (return all secrets).
+    #[serde(default)]
+    pub min_anomaly_score: Option<f64>,
+    /// Output format: "json" (default) or "csv".
+    #[serde(default = "default_analytics_format")]
+    pub format: String,
+}
+
+fn default_analytics_window() -> u32 {
+    30
+}
+
+fn default_analytics_format() -> String {
+    "json".to_string()
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ComplianceStatusParams {
     // No parameters needed — reads project state and global audit state.
+}
+
+// ── Validation scheduler ──────────────────────────────────────────────
+
+/// Parameters for `phantom_validation_schedule` (get/set schedule).
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ValidationScheduleParams {
+    /// New schedule interval to set: "hourly", "6h", "daily", "daily@2am",
+    /// "weekly", "disabled". Omit to read the current schedule only.
+    #[serde(default)]
+    pub interval: Option<String>,
+}
+
+/// Parameters for `phantom_validation_history`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ValidationHistoryParams {
+    /// Maximum number of recent runs to return (default: 20, max: 100).
+    #[serde(default = "default_history_limit")]
+    pub limit: usize,
+}
+
+fn default_history_limit() -> usize {
+    20
+}
+
+// ── Shadow rotation ───────────────────────────────────────────────────
+
+/// Parameters for `phantom_rotate_with_candidate`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RotateWithCandidateParams {
+    /// Name of the secret to shadow-rotate (e.g. OPENAI_API_KEY).
+    pub name: String,
+    /// Optional TTL in seconds after which the candidate automatically expires.
+    /// Omit for no automatic expiry (manual promotion only).
+    #[serde(default)]
+    pub auto_promote_ttl_secs: Option<u64>,
+    /// Required. Must be true — creates a candidate credential and stores it
+    /// in the vault. The agent must confirm with the user before calling.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// Parameters for `phantom_rotate_promote`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RotatePromoteParams {
+    /// Name of the secret whose shadow candidate should be promoted
+    /// (e.g. OPENAI_API_KEY).
+    pub name: String,
+    /// Required. Must be true — promotes the candidate to primary, atomically
+    /// replacing the current live credential. The agent must confirm with the
+    /// user before calling.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -334,4 +436,31 @@ pub struct RotationDueParams {
 
 fn default_warn_days() -> u64 {
     7
+}
+
+// ── Expiry check & auto-rotate ────────────────────────────────────────
+
+/// Parameters for `phantom_secrets_expiry_check`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExpiryCheckParams {
+    /// Warn about secrets expiring within this many days (default: 7).
+    /// Set to 0 to return only already-expired secrets.
+    #[serde(default = "default_warn_days")]
+    pub days: u64,
+}
+
+/// Parameters for `phantom_secrets_auto_rotate`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AutoRotateParams {
+    /// Name of the secret to auto-rotate.
+    pub name: String,
+    /// If true, sync to all configured deployment platforms after rotation.
+    #[serde(default)]
+    pub sync: bool,
+    /// Required. Must be true — the calling agent must confirm with the user
+    /// before rotating credentials. Auto-rotation updates metadata and
+    /// rewrites phantom tokens; an attacker-injected call could disrupt
+    /// running services that cached the old token.
+    #[serde(default)]
+    pub confirm: bool,
 }

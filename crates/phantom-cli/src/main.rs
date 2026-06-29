@@ -377,6 +377,11 @@ enum Commands {
         /// Auto-protect new secrets without prompting
         #[arg(long)]
         auto: bool,
+        /// Enable background rotation checks every 30 seconds. Rotates secrets
+        /// when their configured schedule boundary has passed and rewrites .env.
+        /// Requires a rotation_policy to be set (via `phantom rotate --schedule-strategy`).
+        #[arg(long)]
+        auto_rotate: bool,
     },
 
     /// Regenerate phantom tokens (invalidates old ones)
@@ -399,12 +404,21 @@ enum Commands {
         /// Secret name to shadow-rotate (required with --shadow).
         #[arg(long, value_name = "NAME", requires = "shadow")]
         name: Option<String>,
+        /// Persist a rotation schedule in .phantom.toml under [phantom.rotation_policy].
+        /// Accepted values: never | daily | weekly | monthly.
+        /// Use `phantom watch --auto-rotate` to enforce the schedule automatically.
+        #[arg(long, value_name = "STRATEGY")]
+        schedule_strategy: Option<String>,
     },
 
-    /// Validate stored secrets against their target APIs (drift detection)
+    /// Validate stored secrets against their target APIs (drift detection).
+    ///
+    /// Sub-commands: `schedule`, `history`
     #[command(next_help_heading = "Maintenance")]
     Validate {
-        /// Validate all secrets in the vault
+        #[command(subcommand)]
+        action: Option<ValidateAction>,
+        /// Validate all secrets in the vault (top-level shortcut)
         #[arg(long)]
         check_all: bool,
         /// Number of concurrent validation jobs (default: 4)
@@ -433,6 +447,23 @@ enum Commands {
         target: String,
     },
 
+    /// List secrets that are expired or expiring soon, with optional auto-rotate
+    #[command(next_help_heading = "Maintenance")]
+    SecretsExpiringSoon {
+        /// Warn about secrets expiring within this many days (default: 7)
+        #[arg(long, default_value_t = 7)]
+        days: u64,
+        /// Automatically rotate expiring secrets (extend TTL + refresh phantom token)
+        #[arg(long)]
+        auto_rotate: bool,
+        /// After auto-rotate, sync to all configured deployment platforms
+        #[arg(long, requires = "auto_rotate")]
+        sync: bool,
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Internal: clear the system clipboard after N seconds. Spawned by
     /// `phantom reveal --copy` so the parent CLI can exit immediately while a
     /// detached child waits, then clears. Hidden from `--help`.
@@ -441,6 +472,36 @@ enum Commands {
         /// Seconds to wait before clearing
         #[arg(long, default_value_t = 30)]
         secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum ValidateAction {
+    /// Configure or show the background validation schedule.
+    ///
+    /// Examples:
+    ///   phantom validate schedule hourly
+    ///   phantom validate schedule 6h
+    ///   phantom validate schedule daily@2am
+    ///   phantom validate schedule weekly
+    ///   phantom validate schedule --disable
+    ///   phantom validate schedule --status
+    Schedule {
+        /// Schedule interval: hourly, 6h, daily, daily@2am, weekly, disabled
+        #[arg(value_name = "INTERVAL")]
+        interval: Option<String>,
+        /// Show current schedule and staleness without changing anything
+        #[arg(long, conflicts_with = "interval")]
+        status: bool,
+        /// Disable the scheduler
+        #[arg(long, conflicts_with = "interval")]
+        disable: bool,
+    },
+    /// Show past validation run history.
+    History {
+        /// Number of most-recent runs to show (default: 20)
+        #[arg(long, short = 'n', value_name = "N")]
+        last: Option<usize>,
     },
 }
 
@@ -512,6 +573,29 @@ enum TeamAction {
         /// Team ID
         team_id: String,
     },
+    /// Revoke a member from the team vault and rotate the encryption key.
+    ///
+    /// The vault is re-encrypted with a fresh key and re-wrapped for all
+    /// remaining members. The revoked member cannot decrypt any future
+    /// vault versions. Emits tamper-proof audit events.
+    Revoke {
+        /// Team ID
+        team_id: String,
+        /// GitHub username to revoke
+        github_login: String,
+        /// Skip the interactive confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Proactively rotate the team vault's encryption key without removing any member.
+    ///
+    /// Re-encrypts the vault with a fresh symmetric key and re-wraps it for
+    /// all members that have a registered public key. Use this for scheduled
+    /// key rotation or after a suspected credential exposure.
+    RotateVault {
+        /// Team ID
+        team_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -576,21 +660,38 @@ fn main() -> anyhow::Result<()> {
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status { oneline } => commands::status::run(oneline),
-        Commands::Rotate { sync, with_expiry, shadow, name } => {
+        Commands::Rotate { sync, with_expiry, shadow, name, schedule_strategy } => {
             if shadow {
                 let secret_name = name.ok_or_else(|| {
                     anyhow::anyhow!("--shadow requires --name <NAME>")
                 })?;
                 commands::rotate::run_shadow(&secret_name).map(|_| ())
+            } else if let Some(ref strategy_str) = schedule_strategy {
+                commands::rotate::run_with_schedule_strategy(strategy_str, sync, with_expiry)
             } else {
                 commands::rotate::run_with_expiry(sync, with_expiry)
             }
         }
-        Commands::Validate { check_all, jobs, promote } => {
-            if let Some(secret_name) = promote {
-                commands::rotate::run_validate_promote(&secret_name, true)
-            } else {
-                commands::validate::run(check_all, jobs, cli.json)
+        Commands::Validate { action, check_all, jobs, promote } => {
+            match action {
+                Some(ValidateAction::Schedule { interval, status, disable }) => {
+                    commands::validation_scheduler::run_schedule(
+                        interval.as_deref(),
+                        status,
+                        disable,
+                        cli.json,
+                    )
+                }
+                Some(ValidateAction::History { last }) => {
+                    commands::validation_scheduler::run_history(last, cli.json)
+                }
+                None => {
+                    if let Some(secret_name) = promote {
+                        commands::rotate::run_validate_promote(&secret_name, true)
+                    } else {
+                        commands::validate::run(check_all, jobs, cli.json)
+                    }
+                }
             }
         }
         Commands::Doctor { fix, expiry } => commands::doctor::run_doctor(fix, expiry),
@@ -655,7 +756,7 @@ fn main() -> anyhow::Result<()> {
             CloudAction::Pull { force } => commands::cloud::run_pull(force),
             CloudAction::Status => commands::cloud::run_status(),
         },
-        Commands::Watch { auto } => commands::watch::run(auto),
+        Commands::Watch { auto, auto_rotate } => commands::watch::run_with_rotate(auto, auto_rotate),
         Commands::Why { key } => commands::why::run(&key),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
         Commands::Unwrap => commands::unwrap::run(),
@@ -684,6 +785,34 @@ fn main() -> anyhow::Result<()> {
                 period,
                 min_anomaly_score,
             } => commands::audit::run_export(&format, &period, min_anomaly_score),
+            AuditAction::Analytics {
+                window,
+                min_anomaly_score,
+                format,
+                export,
+                auto_alert_on_anomaly,
+            } => commands::audit::run_analytics(
+                window,
+                min_anomaly_score,
+                &format,
+                export.as_deref(),
+                auto_alert_on_anomaly,
+            ),
+            AuditAction::Anomalies {
+                realtime,
+                threshold,
+                name,
+                max_accesses_per_hour,
+                max_quiet_days,
+                json,
+            } => commands::audit::run_anomalies(
+                realtime,
+                threshold,
+                name.as_deref(),
+                max_accesses_per_hour,
+                max_quiet_days,
+                json,
+            ),
         },
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
@@ -691,6 +820,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Mcp { action } => match action {
             McpAction::Serve => commands::mcp::run_serve(),
         },
+        Commands::SecretsExpiringSoon { days, auto_rotate, sync, json } => {
+            commands::expiry::run(days, auto_rotate, sync, json)
+        }
         Commands::ClearClipboardAfter { secs } => commands::reveal::run_clear_after(secs),
         Commands::Team { action } => match action {
             TeamAction::List => commands::team::run_list(),
@@ -704,6 +836,12 @@ fn main() -> anyhow::Result<()> {
             TeamAction::KeyPublish { team_id } => commands::team::run_key_publish(&team_id),
             TeamAction::VaultPush { team_id } => commands::team::run_vault_push(&team_id),
             TeamAction::VaultPull { team_id } => commands::team::run_vault_pull(&team_id),
+            TeamAction::Revoke {
+                team_id,
+                github_login,
+                yes,
+            } => commands::team::run_revoke(&team_id, &github_login, yes),
+            TeamAction::RotateVault { team_id } => commands::team::run_rotate_vault(&team_id),
         },
     }
 }

@@ -1,12 +1,14 @@
 //! `phantom audit` subcommands for reading the JSONL audit log.
 //!
 //! Actions:
-//!   phantom audit show    [--last N] [--op OP] [--name NAME] [--json]
-//!   phantom audit tail    [--op OP] [--name NAME]
+//!   phantom audit show       [--last N] [--op OP] [--name NAME] [--json]
+//!   phantom audit tail       [--op OP] [--name NAME]
 //!   phantom audit path
 //!   phantom audit verify
-//!   phantom audit stats   [--json] [--top N] [--analytics] [--min-anomaly-score F]
-//!   phantom audit export  [--format csv|json] [--period 7d|30d] [--min-anomaly-score F]
+//!   phantom audit stats      [--json] [--top N] [--analytics] [--min-anomaly-score F]
+//!   phantom audit export     [--format csv|json] [--period 7d|30d] [--min-anomaly-score F]
+//!   phantom audit analytics  [--window DAYS] [--min-anomaly-score F] [--format json|csv]
+//!                            [--export PATH] [--auto-alert-on-anomaly]
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -83,6 +85,45 @@ pub enum AuditAction {
         /// Only export records for secrets whose anomaly score is at or above this threshold
         #[arg(long, value_name = "SCORE")]
         min_anomaly_score: Option<f64>,
+    },
+    /// Export full audit analytics for external dashboards (Datadog, Grafana, CloudWatch)
+    Analytics {
+        /// Time window in days (default: 30; 0 = all history)
+        #[arg(long, default_value_t = 30)]
+        window: u32,
+        /// Only include secrets with anomaly score at or above this threshold (0.0–1.0)
+        #[arg(long, value_name = "SCORE")]
+        min_anomaly_score: Option<f64>,
+        /// Output format: json (default) or csv
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Write output to this file path instead of stdout
+        #[arg(long, value_name = "PATH")]
+        export: Option<String>,
+        /// Exit with non-zero status if any secret exceeds the anomaly threshold (CI gate)
+        #[arg(long)]
+        auto_alert_on_anomaly: bool,
+    },
+    /// Stream real-time anomaly alerts by tailing the audit log
+    Anomalies {
+        /// Tail the audit log and emit alerts as new events are written (Ctrl-C to stop)
+        #[arg(long)]
+        realtime: bool,
+        /// Minimum anomaly score (0.0–1.0) at which an alert is emitted (default: 0.5)
+        #[arg(long, default_value_t = 0.5, value_name = "SCORE")]
+        threshold: f64,
+        /// Only check this specific secret (omit to check all secrets)
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        /// Maximum allowed accesses per hour before triggering a rate-spike alert
+        #[arg(long, value_name = "N")]
+        max_accesses_per_hour: Option<u64>,
+        /// Number of consecutive quiet days before a re-access triggers an alert
+        #[arg(long, value_name = "DAYS")]
+        max_quiet_days: Option<u64>,
+        /// Emit output as JSON lines instead of human-readable text
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -647,6 +688,315 @@ pub fn run_export(format: &str, period: &str, min_anomaly_score: Option<f64>) ->
     Ok(())
 }
 
+/// `phantom audit analytics` — full analytics export for external dashboards.
+///
+/// Steps:
+/// 1. Read audit log for the requested window.
+/// 2. Bucket events by calendar day per secret.
+/// 3. Compute analytics (anomaly scores, daily stats) per secret.
+/// 4. Serialize as JSON or CSV.
+/// 5. Write to stdout or `--export PATH`.
+/// 6. If `--auto-alert-on-anomaly` is set, exit 1 if any secret exceeds threshold.
+pub fn run_analytics(
+    window: u32,
+    min_anomaly_score: Option<f64>,
+    format: &str,
+    export: Option<&str>,
+    auto_alert_on_anomaly: bool,
+) -> Result<()> {
+    use phantom_core::analytics::{compute_analytics, export_records, records_to_csv, Period};
+
+    if !matches!(format, "json" | "csv") {
+        return Err(anyhow::anyhow!(
+            "Invalid format '{}'. Use: json or csv",
+            format
+        ));
+    }
+
+    let period = match window {
+        0 => Period::All,
+        1..=7 => Period::Days7,
+        _ => Period::Days30,
+    };
+
+    let report = compute_analytics(period)
+        .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
+
+    let analytics: Vec<&phantom_core::analytics::SecretAnalytics> = report
+        .secrets
+        .iter()
+        .filter(|s| min_anomaly_score.map_or(true, |min| s.anomaly_score >= min))
+        .collect();
+
+    let records = export_records(period, min_anomaly_score)
+        .map_err(|e| anyhow::anyhow!("Failed to export records: {e}"))?;
+
+    // Build the output string.
+    let output = if format == "csv" {
+        records_to_csv(&records)
+    } else {
+        // Build daily bucket time-series for BI tools.
+        let mut daily_buckets: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, u64>,
+        > = std::collections::BTreeMap::new();
+        for rec in &records {
+            let iso = phantom_core::analytics::unix_to_iso8601(rec.ts / 86400 * 86400);
+            let day_key = iso[..10].to_string(); // YYYY-MM-DD
+            *daily_buckets
+                .entry(rec.name.clone())
+                .or_default()
+                .entry(day_key)
+                .or_insert(0) += 1;
+        }
+        let time_series: Vec<serde_json::Value> = daily_buckets
+            .iter()
+            .map(|(name, days)| {
+                let buckets: Vec<serde_json::Value> = days
+                    .iter()
+                    .map(|(day, count)| serde_json::json!({"date": day, "count": count}))
+                    .collect();
+                serde_json::json!({"name": name, "daily_buckets": buckets})
+            })
+            .collect();
+
+        let out = serde_json::json!({
+            "generated_at": report.generated_at,
+            "window_days": window,
+            "analytics": analytics,
+            "records": records,
+            "time_series": time_series,
+        });
+        serde_json::to_string_pretty(&out)?
+    };
+
+    // Write output.
+    if let Some(path) = export {
+        std::fs::write(path, &output)
+            .map_err(|e| anyhow::anyhow!("Failed to write export file '{path}': {e}"))?;
+        eprintln!(
+            "{}  Analytics exported to {}",
+            "->".blue().bold(),
+            path.cyan()
+        );
+    } else {
+        print!("{}", output);
+        // Ensure trailing newline for JSON (CSV already has one).
+        if format == "json" && !output.ends_with('\n') {
+            println!();
+        }
+    }
+
+    // CI gate: exit non-zero if any secret exceeds anomaly threshold.
+    if auto_alert_on_anomaly {
+        let threshold = min_anomaly_score.unwrap_or(0.5);
+        let flagged: Vec<&str> = analytics
+            .iter()
+            .filter(|s| s.anomaly_score >= threshold)
+            .map(|s| s.name.as_str())
+            .collect();
+        if !flagged.is_empty() {
+            eprintln!(
+                "{}  {} secret(s) exceed anomaly threshold {:.2}: {}",
+                "ALERT".red().bold(),
+                flagged.len(),
+                threshold,
+                flagged.join(", ").red()
+            );
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
+/// `phantom audit anomalies [--realtime] [--threshold F]`
+///
+/// Without `--realtime`: performs a one-shot windowed anomaly check and prints
+/// any secrets whose score meets `threshold`.
+///
+/// With `--realtime`: tails the audit log indefinitely. After each new line is
+/// appended, re-evaluates all (or the named) secret's windowed metrics and
+/// emits an alert line whenever the score crosses `threshold`.
+pub fn run_anomalies(
+    realtime: bool,
+    threshold: f64,
+    name_filter: Option<&str>,
+    max_accesses_per_hour: Option<u64>,
+    max_quiet_days: Option<u64>,
+    json_output: bool,
+) -> Result<()> {
+    use phantom_core::analytics::{AuditThresholdConfig, compute_windowed_anomalies};
+
+    let threshold = threshold.clamp(0.0, 1.0);
+
+    // Build per-call threshold config from CLI flags (if any).
+    let thresholds = if max_accesses_per_hour.is_some() || max_quiet_days.is_some() {
+        Some(AuditThresholdConfig {
+            max_accesses_per_hour,
+            max_consecutive_quiet_days: max_quiet_days,
+            alert_on_anomaly_score: Some(threshold),
+        })
+    } else {
+        None
+    };
+
+    /// Emit one result line to stdout.
+    fn emit(r: &phantom_core::analytics::WindowedAnomalyResult, json_output: bool) {
+        if json_output {
+            let v = serde_json::json!({
+                "name": r.name,
+                "anomaly_score": r.anomaly_score,
+                "alert": r.alert,
+                "reason": r.reason,
+                "accesses_last_hour": r.accesses_last_hour,
+                "max_quiet_gap_days": r.max_quiet_gap_days,
+            });
+            println!("{}", v);
+        } else {
+            let score_str = if r.anomaly_score >= 0.7 {
+                format!("{:.2}", r.anomaly_score).red().bold().to_string()
+            } else if r.anomaly_score >= 0.5 {
+                format!("{:.2}", r.anomaly_score).yellow().to_string()
+            } else {
+                format!("{:.2}", r.anomaly_score).dimmed().to_string()
+            };
+
+            let alert_tag = if r.alert {
+                " [ALERT]".red().bold().to_string()
+            } else {
+                String::new()
+            };
+
+            println!(
+                "{}  {}  score={}  per_hour={}  quiet_gap={}d  {}{}",
+                "->".blue().bold(),
+                r.name.bold(),
+                score_str,
+                r.accesses_last_hour,
+                r.max_quiet_gap_days,
+                r.reason.dimmed(),
+                alert_tag,
+            );
+        }
+    }
+
+    if !realtime {
+        // One-shot mode.
+        let results = compute_windowed_anomalies(name_filter, thresholds.as_ref(), threshold)
+            .map_err(|e| anyhow::anyhow!("Failed to compute anomalies: {e}"))?;
+
+        if results.is_empty() {
+            if !json_output {
+                println!(
+                    "{}  No anomalies detected (threshold={:.2}). Set {} to generate audit events.",
+                    "->".blue().bold(),
+                    threshold,
+                    "PHANTOM_AUDIT=1".cyan()
+                );
+            } else {
+                println!("[]");
+            }
+            return Ok(());
+        }
+
+        if json_output {
+            let out: Vec<serde_json::Value> = results
+                .iter()
+                .filter(|r| r.anomaly_score >= threshold)
+                .map(|r| serde_json::json!({
+                    "name": r.name,
+                    "anomaly_score": r.anomaly_score,
+                    "alert": r.alert,
+                    "reason": r.reason,
+                    "accesses_last_hour": r.accesses_last_hour,
+                    "max_quiet_gap_days": r.max_quiet_gap_days,
+                }))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        } else {
+            let flagged: Vec<_> = results.iter().filter(|r| r.anomaly_score >= threshold).collect();
+            if flagged.is_empty() {
+                println!(
+                    "{}  No secrets exceed threshold {:.2}.",
+                    "->".blue().bold(),
+                    threshold
+                );
+                return Ok(());
+            }
+            for r in &flagged {
+                emit(r, false);
+            }
+        }
+        return Ok(());
+    }
+
+    // Real-time tail mode.
+    let log_path = phantom_core::audit::log_path()
+        .map_err(|e| anyhow::anyhow!("Could not resolve audit log path: {e}"))?;
+
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(&log_path)?;
+
+    let mut reader = std::io::BufReader::new(file);
+    // Seek to end — only process new lines.
+    use std::io::Seek;
+    reader.seek(std::io::SeekFrom::End(0))?;
+
+    if !json_output {
+        println!(
+            "{}  Tailing {} for anomalies (threshold={:.2}) — Ctrl-C to stop",
+            "->".blue().bold(),
+            log_path.display().to_string().dimmed(),
+            threshold
+        );
+    }
+
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Parse the new event to extract the secret name — skip non-matching.
+        let v: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let event_name = v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
+
+        // If we're filtering by name and this event doesn't match, skip.
+        if let Some(filter) = name_filter {
+            if event_name.as_deref() != Some(filter) {
+                continue;
+            }
+        }
+
+        // Re-evaluate windowed anomalies for the affected secret (or all if unfiltered).
+        let check_name = name_filter.or(event_name.as_deref());
+        let results = compute_windowed_anomalies(check_name, thresholds.as_ref(), threshold)
+            .unwrap_or_default();
+
+        for r in results.iter().filter(|r| r.anomaly_score >= threshold) {
+            emit(r, json_output);
+        }
+    }
+}
+
 /// Format a duration in seconds as a human-readable "X ago" string.
 fn human_age(secs: u64) -> String {
     if secs < 60 {
@@ -941,5 +1291,166 @@ mod tests {
     #[test]
     fn matches_filters_name_miss() {
         assert!(!matches_filters(LINE_STORE, None, Some("STRIPE_KEY")));
+    }
+
+    // ── run_analytics integration tests ───────────────────────────────
+
+    use std::sync::Mutex;
+    // Serialise tests that mutate HOME / PHANTOM_AUDIT env vars.
+    static ANALYTICS_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_analytics_home<F: FnOnce(&std::path::Path)>(f: F) {
+        let _guard = ANALYTICS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        let prev_audit = std::env::var("PHANTOM_AUDIT").ok();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("PHANTOM_AUDIT", "1");
+        }
+        f(tmp.path());
+        unsafe {
+            match prev_home {
+                Some(p) => std::env::set_var("HOME", p),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_audit {
+                Some(p) => std::env::set_var("PHANTOM_AUDIT", p),
+                None => std::env::remove_var("PHANTOM_AUDIT"),
+            }
+        }
+    }
+
+    fn write_analytics_log(path: &std::path::Path, entries: &[(u64, &str, Option<&str>)]) {
+        use std::io::Write;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        for (ts, op, name) in entries {
+            let line = if let Some(n) = name {
+                format!(
+                    r#"{{"seq":1,"ts":{ts},"op":"{op}","name":"{n}","pid":1,"process":"phantom","prev_hmac":"GENESIS"}}"#
+                )
+            } else {
+                format!(
+                    r#"{{"seq":1,"ts":{ts},"op":"{op}","pid":1,"process":"phantom","prev_hmac":"GENESIS"}}"#
+                )
+            };
+            writeln!(f, "{}", line).unwrap();
+        }
+    }
+
+    #[test]
+    fn analytics_spike_anomaly_above_threshold() {
+        with_analytics_home(|tmp| {
+            let log_path = tmp.join(".phantom/audit.log");
+            let base_day = 1_700_000_000_u64 / 86400 * 86400;
+            let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
+            // 1 access/day on days 1–4
+            for i in 1u64..=4 {
+                entries.push((base_day + i * 86400, "vault.retrieve", Some("SPIKE_KEY")));
+            }
+            // 50 accesses on day 0 (spike → anomaly_score >= 0.6)
+            for j in 0..50u64 {
+                entries.push((base_day + 10 + j, "vault.retrieve", Some("SPIKE_KEY")));
+            }
+            write_analytics_log(&log_path, &entries);
+
+            // Verify anomaly score directly via analytics API.
+            let report = phantom_core::analytics::compute_analytics(
+                phantom_core::analytics::Period::All,
+            )
+            .unwrap();
+            let s = report
+                .secrets
+                .iter()
+                .find(|s| s.name == "SPIKE_KEY")
+                .unwrap();
+            assert!(
+                s.anomaly_score >= 0.6,
+                "spike should have anomaly_score >= 0.6, got {}",
+                s.anomaly_score
+            );
+        });
+    }
+
+    #[test]
+    fn analytics_csv_export_format_validation() {
+        with_analytics_home(|tmp| {
+            let log_path = tmp.join(".phantom/audit.log");
+            let now = 1_700_000_000_u64;
+            write_analytics_log(
+                &log_path,
+                &[
+                    (now - 200, "vault.retrieve", Some("KEY_A")),
+                    (now - 100, "vault.store", Some("KEY_B")),
+                ],
+            );
+
+            let records = phantom_core::analytics::export_records(
+                phantom_core::analytics::Period::All,
+                None,
+            )
+            .unwrap();
+            assert_eq!(records.len(), 2, "should have 2 records");
+
+            let csv = phantom_core::analytics::records_to_csv(&records);
+            // Header must be present.
+            assert!(
+                csv.starts_with("ts,datetime,op,name,process\n"),
+                "CSV must have correct header; got: {:?}",
+                &csv[..csv.find('\n').unwrap_or(csv.len())]
+            );
+            // Both secret names must appear.
+            assert!(csv.contains("KEY_A"), "CSV must contain KEY_A");
+            assert!(csv.contains("KEY_B"), "CSV must contain KEY_B");
+            // No secret values (they are never logged).
+            let lines: Vec<&str> = csv.lines().skip(1).collect();
+            for line in &lines {
+                let fields: Vec<&str> = line.split(',').collect();
+                // CSV has 5 columns: ts,datetime,op,name,process
+                assert_eq!(
+                    fields.len(),
+                    5,
+                    "each CSV data row should have 5 columns, got: {:?}",
+                    line
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn analytics_min_anomaly_score_filters_records() {
+        with_analytics_home(|tmp| {
+            let log_path = tmp.join(".phantom/audit.log");
+            let now = 1_700_000_000_u64;
+            // NORMAL_KEY: 3 accesses spread over 3 consecutive seconds (no anomaly).
+            // QUIET_KEY: 10-day gap → anomaly_score >= 0.5.
+            let mut entries = vec![
+                (now - 2 * 86400, "vault.retrieve", Some("NORMAL_KEY")),
+                (now - 86400, "vault.retrieve", Some("NORMAL_KEY")),
+                (now, "vault.retrieve", Some("NORMAL_KEY")),
+                (now - 11 * 86400, "vault.retrieve", Some("QUIET_KEY")),
+                (now - 86400, "vault.retrieve", Some("QUIET_KEY")),
+            ];
+            // Ensure chronological order.
+            entries.sort_by_key(|e| e.0);
+            write_analytics_log(&log_path, &entries);
+
+            let records = phantom_core::analytics::export_records(
+                phantom_core::analytics::Period::All,
+                Some(0.5),
+            )
+            .unwrap();
+            // Only QUIET_KEY should be included.
+            assert!(
+                records.iter().all(|r| r.name == "QUIET_KEY"),
+                "min_anomaly_score=0.5 should keep only QUIET_KEY; got {:?}",
+                records.iter().map(|r| &r.name).collect::<Vec<_>>()
+            );
+        });
     }
 }
