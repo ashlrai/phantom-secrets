@@ -2341,7 +2341,11 @@ impl ServerHandler for PhantomMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// Shared lock so that tests mutating HOME do not race each other.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn setup_test_project() -> (PhantomMcpServer, TempDir) {
         // Force file-vault backend for test hermeticity. Without this, Windows CI
@@ -2394,6 +2398,7 @@ mod tests {
 
     #[test]
     fn test_status_before_init() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_test_project();
         let result = server.phantom_status().unwrap();
         let text = get_result_text(&result);
@@ -2402,6 +2407,7 @@ mod tests {
 
     #[test]
     fn test_init_protects_secrets() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, dir) = setup_test_project();
 
         let result = server
@@ -2428,6 +2434,7 @@ mod tests {
 
     #[test]
     fn test_list_secrets_after_init() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let result = server.phantom_list_secrets().unwrap();
         let text = get_result_text(&result);
@@ -2439,6 +2446,7 @@ mod tests {
 
     #[test]
     fn test_status_after_init() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let result = server.phantom_status().unwrap();
         let text = get_result_text(&result);
@@ -2448,6 +2456,7 @@ mod tests {
 
     #[test]
     fn test_add_secret_params_rejects_plaintext_value_field() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let parsed = serde_json::from_value::<AddSecretParams>(serde_json::json!({
             "name": "NEW_SECRET",
             "value": "new-value-123",
@@ -2458,6 +2467,7 @@ mod tests {
 
     #[test]
     fn test_add_secret_params_schema_omits_value_field() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let schema = schemars::schema_for!(AddSecretParams);
         let value = serde_json::to_value(schema).unwrap();
         let schema_json = serde_json::to_string(&value).unwrap();
@@ -2468,6 +2478,7 @@ mod tests {
 
     #[test]
     fn test_destructive_tools_require_confirm() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let add_err = server
@@ -2495,6 +2506,7 @@ mod tests {
 
     #[test]
     fn test_copy_secret_rejects_without_confirm() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let err = server
             .phantom_copy_secret(Parameters(CopySecretParams {
@@ -2510,6 +2522,7 @@ mod tests {
 
     #[test]
     fn test_copy_secret_rejects_dot_dot() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         for bad in [
             "../other",
@@ -2537,6 +2550,7 @@ mod tests {
 
     #[test]
     fn test_copy_secret_rejects_unresolvable_target() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let err = server
             .phantom_copy_secret(Parameters(CopySecretParams {
@@ -2552,6 +2566,7 @@ mod tests {
 
     #[test]
     fn test_rotate_tokens() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, dir) = setup_initialized_project();
 
         // Read .env before rotation
@@ -2574,6 +2589,7 @@ mod tests {
 
     #[test]
     fn test_rotate_with_expiry_requires_confirm() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let err = server
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
@@ -2587,6 +2603,7 @@ mod tests {
 
     #[test]
     fn test_rotate_with_expiry_rejects_zero_ttl() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let err = server
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
@@ -2599,6 +2616,7 @@ mod tests {
 
     #[test]
     fn test_rotate_with_expiry_sets_ttl_metadata() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, dir) = setup_initialized_project();
 
         let result = server
@@ -2632,6 +2650,7 @@ mod tests {
 
     #[test]
     fn test_list_with_expiry_no_ttl_shows_no_expiry() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         // No TTL set — all secrets should show "no expiry"
         let result = server
@@ -2643,6 +2662,7 @@ mod tests {
 
     #[test]
     fn test_list_with_expiry_show_expiry_false_omits_ttl() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let result = server
             .phantom_list_with_expiry(Parameters(ListWithExpiryParams { show_expiry: false }))
@@ -2704,8 +2724,11 @@ mod tests {
 
     #[test]
     fn test_audit_recent_returns_events_key() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
         write_synthetic_audit_log(
@@ -2735,8 +2758,11 @@ mod tests {
 
     #[test]
     fn test_audit_recent_never_exposes_secret_values() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
         write_synthetic_audit_log(
@@ -2760,8 +2786,11 @@ mod tests {
 
     #[test]
     fn test_audit_recent_op_filter() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
         write_synthetic_audit_log(
@@ -2789,8 +2818,11 @@ mod tests {
 
     #[test]
     fn test_audit_recent_name_filter() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
         write_synthetic_audit_log(
@@ -2817,8 +2849,11 @@ mod tests {
 
     #[test]
     fn test_audit_recent_n_limit() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
         let entries: Vec<(u64, &str, Option<&str>)> = (0..20_u64)
@@ -2842,8 +2877,11 @@ mod tests {
 
     #[test]
     fn test_audit_recent_no_log_returns_empty_with_note() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let empty_home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", empty_home.path()) };
 
         let result = server
@@ -2862,8 +2900,11 @@ mod tests {
 
     #[test]
     fn test_audit_recent_event_has_no_value_field() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
         write_synthetic_audit_log(
@@ -2889,8 +2930,11 @@ mod tests {
 
     #[test]
     fn test_audit_anomalies_returns_findings_array() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
 
         let result = server
@@ -2909,8 +2953,11 @@ mod tests {
 
     #[test]
     fn test_audit_anomalies_detects_spike() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
 
         let base_day = 1_700_000_000_u64 / 86400 * 86400;
@@ -2941,9 +2988,12 @@ mod tests {
 
     #[test]
     fn test_audit_anomalies_detects_dormant() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         // Use a separate isolated HOME so this test sees only its own audit events.
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
 
         let t0 = 1_700_000_000_u64;
@@ -2980,8 +3030,11 @@ mod tests {
 
     #[test]
     fn test_audit_anomalies_finding_schema_no_value() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
 
         let t0 = 1_700_000_000_u64;
@@ -3014,8 +3067,11 @@ mod tests {
 
     #[test]
     fn test_audit_anomalies_min_score_filter() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
 
         // Use uniform pattern (10 daily accesses + 8-day gap) that only triggers dormant (0.5)
@@ -3042,6 +3098,7 @@ mod tests {
 
     #[test]
     fn test_audit_anomalies_invalid_period_errors() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let err = server
@@ -3059,6 +3116,7 @@ mod tests {
 
     #[test]
     fn test_compliance_status_has_compliant_and_checks() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3072,6 +3130,7 @@ mod tests {
 
     #[test]
     fn test_compliance_status_all_required_checks_present() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3096,6 +3155,7 @@ mod tests {
 
     #[test]
     fn test_compliance_status_each_check_has_pass_and_detail() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3113,6 +3173,7 @@ mod tests {
 
     #[test]
     fn test_compliance_status_vault_accessible_after_init() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3128,6 +3189,7 @@ mod tests {
 
     #[test]
     fn test_compliance_status_env_clean_after_init() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3143,6 +3205,7 @@ mod tests {
 
     #[test]
     fn test_compliance_status_does_not_expose_secret_values() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3156,6 +3219,7 @@ mod tests {
 
     #[test]
     fn test_compliance_status_secrets_have_ttl_false_without_ttl() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3175,6 +3239,7 @@ mod tests {
 
     #[test]
     fn test_compliance_status_secrets_have_ttl_true_after_rotate_with_expiry() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         server
@@ -3199,6 +3264,7 @@ mod tests {
 
     #[test]
     fn test_rotation_due_returns_required_keys() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3216,6 +3282,7 @@ mod tests {
 
     #[test]
     fn test_rotation_due_no_ttl_populated_without_rotation_policy() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3233,6 +3300,7 @@ mod tests {
 
     #[test]
     fn test_rotation_due_ok_with_fresh_ttl() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         server
@@ -3259,6 +3327,7 @@ mod tests {
 
     #[test]
     fn test_rotation_due_never_exposes_secret_values() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3272,6 +3341,7 @@ mod tests {
 
     #[test]
     fn test_rotation_due_summary_counts_match_arrays() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3294,6 +3364,7 @@ mod tests {
 
     #[test]
     fn test_rotation_due_entries_have_no_value_field() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         let result = server
@@ -3312,6 +3383,7 @@ mod tests {
 
     #[test]
     fn test_rotation_due_warn_days_respected() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
         server

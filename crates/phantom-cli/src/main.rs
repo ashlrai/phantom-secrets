@@ -71,6 +71,9 @@ enum Commands {
         /// Print the config snippet to stdout instead of writing files
         #[arg(long)]
         print: bool,
+        /// Configure audit event encryption mode: none, local, or cloud-signed
+        #[arg(long, value_enum, value_name = "MODE")]
+        audit_mode: Option<commands::setup::AuditMode>,
     },
 
     /// Agent readiness report, doctor, and setup workflows
@@ -579,7 +582,7 @@ fn main() -> anyhow::Result<()> {
             service,
             force,
         } => commands::pull::run(&from, &project, environment, service, force),
-        Commands::Setup { client, print } => commands::setup::run(client, print),
+        Commands::Setup { client, print, audit_mode } => commands::setup::run(client, print, audit_mode),
         Commands::Sync {
             platform,
             project,
@@ -640,7 +643,7 @@ fn main() -> anyhow::Result<()> {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
             }
             AuditAction::Path => commands::audit::run_path(),
-            AuditAction::Verify => commands::audit::run_verify(),
+            AuditAction::Verify { with_context } => commands::audit::run_verify(with_context),
             AuditAction::Stats {
                 json,
                 top,
