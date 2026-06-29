@@ -19,6 +19,7 @@ use crate::tools::params::{
     RotatePromoteParams, RotateWithExpiryParams, RotationDueParams, SyncParams, TeamCreateParams,
     TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams, WrapParams,
     ValidateSecretParams, ValidateAllParams, ValidationScheduleParams, ValidationHistoryParams,
+    RotationScheduleNextParams, ApplyExpiryPolicyParams, RotateProviderParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -493,6 +494,104 @@ impl PhantomMcpServer {
             "Shadow candidate for '{}' promoted to primary.\nshadow_id: {}\npromoted_at: {}\nOld primary has been discarded.",
             params.name, shadow.shadow_id, promoted_at
         ))
+    }
+
+    /// Rotate a secret using a vendor-specific provider (Stripe, GitHub, AWS).
+    ///
+    /// Calls the vendor's API to re-issue the credential, stores the new value
+    /// in the vault, and records an audit event. The new secret value is NEVER
+    /// returned in the MCP response — only status metadata is exposed.
+    #[tool(
+        description = "Rotate a secret via a vendor-specific provider (stripe | github | aws). \
+            Calls the vendor API to re-issue the credential server-side, stores the new value \
+            in the encrypted vault, and records a signed audit event. The new secret value is \
+            NEVER exposed in the MCP response — only provider name, status, and audit metadata \
+            are returned. Requires the secret's rotation_provider config to be set in \
+            .phantom.toml under [phantom.secrets.{name}.rotation_provider]. \
+            DESTRUCTIVE — permanently invalidates the current key at the vendor. \
+            Requires `confirm: true`; the agent must obtain user consent before calling."
+    )]
+    fn phantom_rotate_provider(
+        &self,
+        Parameters(params): Parameters<RotateProviderParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_rotate_provider", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token(
+            "phantom_rotate_provider",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
+
+        let (config, vault) = self.load_config_and_vault()?;
+
+        // Verify the secret exists in the vault.
+        if !vault
+            .exists(&params.name)
+            .map_err(|e| internal_err(format!("Failed to check secret existence: {e}")))?
+        {
+            return Err(invalid_params_err(format!(
+                "Secret '{}' not found in vault. Add it with phantom_add_secret first.",
+                params.name
+            )));
+        }
+
+        // Resolve the rotation provider config from .phantom.toml.
+        let provider_config = config
+            .phantom
+            .secrets
+            .get(&params.name)
+            .and_then(|ov| ov.rotation_provider.as_ref());
+
+        // Validate that the configured provider matches the requested provider.
+        if let Some(cfg) = provider_config {
+            if cfg.provider != params.provider {
+                return Err(invalid_params_err(format!(
+                    "Secret '{}' is configured for provider '{}' but '{}' was requested. \
+                     Update [phantom.secrets.{}.rotation_provider] in .phantom.toml.",
+                    params.name, cfg.provider, params.provider, params.name
+                )));
+            }
+        }
+
+        // Build the provider list and attempt vendor rotation.
+        let providers = phantom_core::rotation_provider::default_rotation_providers();
+        let new_value = phantom_core::rotation_provider::auto_sync_rotation(
+            &params.name,
+            provider_config,
+            &providers,
+        )
+        .map_err(|e| internal_err(format!("Provider rotation failed: {e}")))?;
+
+        match new_value {
+            Some(secret) => {
+                // Store the new value in vault — secret is zeroized after this.
+                vault
+                    .store(&params.name, secret.as_str())
+                    .map_err(|e| internal_err(format!("Failed to store rotated secret: {e}")))?;
+
+                phantom_core::audit::log("vault.rotation.provider.stored", Some(&params.name));
+
+                text_result(format!(
+                    "Provider rotation succeeded for '{}'.\n\
+                     provider: {}\n\
+                     status: rotated\n\
+                     The new credential has been stored in the vault.\n\
+                     The secret value was NOT exposed via MCP.",
+                    params.name, params.provider
+                ))
+            }
+            None => {
+                // No provider matched — config may be missing or disabled.
+                Err(invalid_params_err(format!(
+                    "No rotation provider matched secret '{}' with provider '{}'. \
+                     Ensure [phantom.secrets.{}.rotation_provider] is set in .phantom.toml \
+                     with provider = \"{}\" and api_key_env pointing to a valid credential.",
+                    params.name, params.provider, params.name, params.provider
+                )))
+            }
+        }
     }
 
     /// Push encrypted vault to Phantom Cloud.
@@ -3045,6 +3144,7 @@ impl PhantomMcpServer {
                 days_ttl,
                 auto_rotate: true,
             }),
+            vault_mode: phantom_vault::metadata::VaultMode::ReadWrite,
         };
 
         vault
@@ -3149,6 +3249,177 @@ impl PhantomMcpServer {
             "no_expiry_count": no_expiry_count,
             "fail_closed": params.fail_closed,
             "pass": pass,
+        });
+
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
+    // ── Rotation schedule next ────────────────────────────────────────────
+
+    /// Return the next scheduled rotation time for a named secret.
+    #[tool(
+        description = "Return the next scheduled rotation time for a named secret. \
+            Reads the secret's effective RotationSchedule (per-secret override or global policy) \
+            and computes when rotation is next due. \
+            Returns: { name, strategy, next_rotation_unix (u64 or null), \
+            next_rotation_iso (ISO-8601 or null), last_rotated_unix (u64 or null), \
+            last_rotated_iso (ISO-8601 or null), overdue (bool) }. \
+            Read-only; no confirm required. Secret VALUES are never returned."
+    )]
+    fn phantom_rotation_schedule_next(
+        &self,
+        Parameters(params): Parameters<RotationScheduleNextParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::rotation_strategy::next_rotation_after;
+
+        let (config, vault) = self.load_config_and_vault()?;
+
+        // Confirm secret exists.
+        let exists = vault
+            .exists(&params.name)
+            .map_err(|e| internal_err(format!("Vault access failed: {e}")))?;
+        if !exists {
+            return Err(crate::tools::helpers::invalid_params_err(format!(
+                "Secret '{}' not found in vault.",
+                params.name
+            )));
+        }
+
+        let now = phantom_vault::metadata::now_secs();
+
+        let schedule = config.get_rotation_schedule(&params.name);
+        let (strategy_label, next_unix, last_rotated_unix, overdue) = match &schedule {
+            None => ("none".to_string(), None::<u64>, None::<u64>, false),
+            Some(sched) => {
+                let next = next_rotation_after(sched, now);
+                let last = sched.last_rotated;
+                let overdue = sched.should_rotate_now(now);
+                (sched.strategy.as_str().to_string(), next, last, overdue)
+            }
+        };
+
+        let next_iso = next_unix.map(phantom_core::analytics::unix_to_iso8601);
+        let last_iso = last_rotated_unix.map(phantom_core::analytics::unix_to_iso8601);
+
+        let out = serde_json::json!({
+            "name": params.name,
+            "strategy": strategy_label,
+            "next_rotation_unix": next_unix,
+            "next_rotation_iso": next_iso,
+            "last_rotated_unix": last_rotated_unix,
+            "last_rotated_iso": last_iso,
+            "overdue": overdue,
+        });
+
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
+    // ── Apply expiry policy (demotion / promotion) ────────────────────────
+
+    /// Scan the vault and demote expired secrets to read-only mode.
+    #[tool(
+        description = "Scan the vault, apply read-only demotion to secrets whose TTL has expired, \
+            and (optionally) re-promote secrets that were demoted but have since been rotated. \
+            This is the background enforcement step that prevents stale credentials from being \
+            injected by `phantom exec`. \
+            Returns: { demoted: [{ name, expires_at, secs_overdue }], \
+            promoted: [{ name }], skipped_count, total_scanned }. \
+            Requires confirm:true because it writes vault metadata."
+    )]
+    fn phantom_apply_expiry_policy(
+        &self,
+        Parameters(params): Parameters<ApplyExpiryPolicyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_apply_expiry_policy", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token(
+            "phantom_apply_expiry_policy",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
+
+        use phantom_vault::metadata::VaultMode;
+
+        let (_config, vault) = self.load_config_and_vault()?;
+        let now = phantom_vault::metadata::now_secs();
+
+        let entries = vault
+            .list_with_metadata()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+
+        let mut demoted: Vec<serde_json::Value> = Vec::new();
+        let mut promoted: Vec<serde_json::Value> = Vec::new();
+        let mut skipped_count: usize = 0;
+
+        for (name, meta_opt) in &entries {
+            let Some(meta) = meta_opt else {
+                skipped_count += 1;
+                continue;
+            };
+
+            // Check promotion path first: was demoted but has since been rotated.
+            if params.also_promote_rotated
+                && meta.vault_mode.is_read_only()
+            {
+                let rotated_after_expiry = match (meta.rotated_at, meta.expires_at) {
+                    (Some(r), Some(e)) => r > e,
+                    _ => false,
+                };
+                if rotated_after_expiry {
+                    let mut new_meta = meta.clone();
+                    new_meta.vault_mode = VaultMode::ReadWrite;
+                    vault
+                        .set_metadata(name, new_meta)
+                        .map_err(|e| internal_err(format!("Failed to promote {name}: {e}")))?;
+                    phantom_core::audit::log(
+                        "secret.expiry_policy.promoted",
+                        Some(name),
+                    );
+                    promoted.push(serde_json::json!({ "name": name }));
+                    continue;
+                }
+            }
+
+            // Demotion path: expired and currently ReadWrite → demote to ReadOnly.
+            if !meta.vault_mode.is_read_only() {
+                if let Some(exp) = meta.expires_at {
+                    if now >= exp {
+                        let secs_overdue = now - exp;
+                        let mut new_meta = meta.clone();
+                        new_meta.vault_mode = VaultMode::ReadOnly;
+                        vault
+                            .set_metadata(name, new_meta)
+                            .map_err(|e| internal_err(format!("Failed to demote {name}: {e}")))?;
+                        phantom_core::audit::log(
+                            "secret.expiry_policy.demoted",
+                            Some(name),
+                        );
+                        demoted.push(serde_json::json!({
+                            "name": name,
+                            "expires_at": exp,
+                            "secs_overdue": secs_overdue,
+                        }));
+                        continue;
+                    }
+                }
+            }
+
+            skipped_count += 1;
+        }
+
+        let total_scanned = entries.len();
+        let out = serde_json::json!({
+            "demoted": demoted,
+            "promoted": promoted,
+            "skipped_count": skipped_count,
+            "total_scanned": total_scanned,
         });
 
         text_result(

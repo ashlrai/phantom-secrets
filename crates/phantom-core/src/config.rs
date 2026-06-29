@@ -124,7 +124,7 @@ impl ValidationScheduleConfig {
 }
 
 /// Per-secret configuration override stored under `[phantom.secrets.{name}]`.
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct SecretOverride {
     /// Override the global rotation schedule for this specific secret.
@@ -155,6 +155,52 @@ pub struct SecretOverride {
     /// Stored under `[phantom.secrets.{name}.validation]` in `.phantom.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<ValidationScheduleConfig>,
+    /// When `true`, `phantom exec` will hard-block if this secret's
+    /// `rotation_schedule` period has elapsed since `last_rotated`.
+    /// The user must run `phantom rotate <NAME>` to unblock, or pass
+    /// `--skip-rotation-check` (which writes an audit-log warning).
+    /// Default: `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub enforce_rotation_on_access: bool,
+    /// Grace period (in seconds) before a secret's TTL expiry at which
+    /// `phantom doctor` promotes the status from info → warning and a
+    /// daily background check is emitted.
+    /// Default: `604800` (7 days).
+    #[serde(default = "default_expiry_grace_period_secs", skip_serializing_if = "is_default_grace")]
+    pub expiry_grace_period_secs: u64,
+    /// Vendor-specific rotation provider configuration.
+    ///
+    /// When set, `phantom rotate --auto-sync` delegates rotation to the
+    /// named vendor API instead of requiring a manually supplied value.
+    ///
+    /// Example `.phantom.toml` block:
+    /// ```toml
+    /// [phantom.secrets.STRIPE_SECRET_KEY.rotation_provider]
+    /// provider = "stripe"
+    /// api_key_env = "STRIPE_ROTATION_API_KEY"
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_provider: Option<crate::rotation_provider::RotationProviderConfig>,
+}
+
+fn is_false(b: &bool) -> bool { !b }
+fn default_expiry_grace_period_secs() -> u64 { 604_800 }
+fn is_default_grace(v: &u64) -> bool { *v == 604_800 }
+
+impl Default for SecretOverride {
+    fn default() -> Self {
+        Self {
+            rotate_every: None,
+            rotation_schedule: None,
+            audit: None,
+            expires_at: None,
+            rotation_window: None,
+            validation: None,
+            enforce_rotation_on_access: false,
+            expiry_grace_period_secs: 604_800,
+            rotation_provider: None,
+        }
+    }
 }
 
 impl SecretOverride {

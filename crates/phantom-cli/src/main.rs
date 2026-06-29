@@ -423,6 +423,13 @@ enum Commands {
         /// Use `phantom watch --auto-rotate` to enforce the schedule automatically.
         #[arg(long, value_name = "STRATEGY")]
         schedule_strategy: Option<String>,
+        /// Use a vendor-specific rotation provider to re-issue the credential at
+        /// the vendor side. Accepted values: stripe | github | aws.
+        /// Requires --name <KEY> and the secret's rotation_provider config in
+        /// .phantom.toml under [phantom.secrets.<KEY>.rotation_provider].
+        /// Example: phantom rotate --provider stripe --name STRIPE_SECRET_KEY
+        #[arg(long, value_name = "PROVIDER", conflicts_with_all = ["shadow", "schedule_strategy", "with_expiry"])]
+        provider: Option<String>,
     },
 
     /// Validate stored secrets against their target APIs (drift detection).
@@ -721,8 +728,13 @@ fn main() -> anyhow::Result<()> {
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status { oneline } => commands::status::run(oneline),
-        Commands::Rotate { sync, with_expiry, shadow, name, schedule_strategy } => {
-            if shadow {
+        Commands::Rotate { sync, with_expiry, shadow, name, schedule_strategy, provider } => {
+            if let Some(ref provider_name) = provider {
+                let secret_name = name.ok_or_else(|| {
+                    anyhow::anyhow!("--provider requires --name <NAME>")
+                })?;
+                commands::rotate::run_with_provider(provider_name, &secret_name, sync)
+            } else if shadow {
                 let secret_name = name.ok_or_else(|| {
                     anyhow::anyhow!("--shadow requires --name <NAME>")
                 })?;

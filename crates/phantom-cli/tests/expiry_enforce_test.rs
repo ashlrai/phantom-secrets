@@ -194,6 +194,9 @@ mod config_expiry_fields_tests {
                 rotation_schedule: None,
                 audit: None,
                 validation: None,
+                enforce_rotation_on_access: false,
+                expiry_grace_period_secs: 604_800,
+                rotation_provider: None,
             },
         );
         let toml_str = toml::to_string_pretty(&config).unwrap();

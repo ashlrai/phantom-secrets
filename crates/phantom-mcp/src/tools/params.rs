@@ -566,6 +566,48 @@ pub struct ExpiryCheckParams {
     pub days: u64,
 }
 
+// ── Per-secret rotation schedule & expiry policy ──────────────────────
+
+/// Parameters for `phantom_rotation_schedule_next`.
+///
+/// Returns the next scheduled rotation time (ISO-8601 + Unix epoch) for a
+/// named secret, based on its effective `RotationSchedule`.  Read-only; no
+/// confirm required.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RotationScheduleNextParams {
+    /// Name of the secret to query (e.g. `OPENAI_API_KEY`).
+    pub name: String,
+}
+
+/// Parameters for `phantom_apply_expiry_policy`.
+///
+/// Scans the vault, identifies secrets whose TTL has expired, sets
+/// `vault_mode = ReadOnly` on each, and returns a list of affected secrets.
+/// This is the "demotion" step that prevents stale credentials from being
+/// injected by `phantom exec`.
+///
+/// Requires `confirm: true` because it writes metadata.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct ApplyExpiryPolicyParams {
+    /// Must be `true`.  The caller must obtain user consent before demoting
+    /// secrets to read-only mode, as it will break any running process that
+    /// relies on those secrets being injected by `phantom exec`.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
+    /// When `true`, also promote secrets that were previously demoted but have
+    /// since been rotated (vault_mode ReadOnly → ReadWrite if `rotated_at` is
+    /// more recent than `expires_at`).  Default: `true`.
+    #[serde(default = "default_true_flag")]
+    pub also_promote_rotated: bool,
+}
+
+fn default_true_flag() -> bool {
+    true
+}
+
 /// Parameters for `phantom_secrets_auto_rotate`.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AutoRotateParams {
@@ -594,4 +636,31 @@ pub struct PhantomExpiryEnforceParams {
     /// Defaults to false (permissive: only hard-expired secrets are reported).
     #[serde(default)]
     pub fail_closed: bool,
+}
+
+// ── Provider-specific rotation ────────────────────────────────────────────────
+
+/// Parameters for `phantom_rotate_provider`.
+///
+/// Calls a vendor-specific rotation provider (Stripe, GitHub, AWS) to
+/// re-issue the credential server-side and stores the new value in the vault.
+/// The secret value is NEVER exposed in the MCP response — only status,
+/// provider name, and audit metadata are returned.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RotateProviderParams {
+    /// Name of the secret to rotate (e.g. `STRIPE_SECRET_KEY`).
+    pub name: String,
+    /// Which provider to use: `"stripe"`, `"github"`, or `"aws"`.
+    /// Must match the `provider` field in the secret's
+    /// `[phantom.secrets.{name}.rotation_provider]` config block.
+    pub provider: String,
+    /// Required. Must be `true` — the calling agent must confirm with the
+    /// user before rotating a live credential. Vendor rotation calls
+    /// external APIs and permanently invalidates the current key.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    /// Format: `"<nonce_hex>:<approval_token_hex>"`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
