@@ -195,6 +195,91 @@ fn http_check(
     Ok(resp.status().as_u16())
 }
 
+/// Like [`http_check`], but also returns the response body as a `String`.
+///
+/// Needed for APIs (e.g. Google Cloud) that return a 4xx whose JSON body must
+/// be inspected to distinguish "credential disabled/deleted" (Invalid) from a
+/// merely malformed request or a scope/permission issue (Unknown).
+fn http_check_with_body(
+    url: &str,
+    auth_header: Option<(&str, &str)>,
+    timeout: Duration,
+) -> Result<(u16, String), String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .user_agent("phantom-secrets-validator/0.1")
+        .build()
+        .map_err(|e| format!("client build error: {e}"))?;
+
+    let mut req = client.get(url);
+    if let Some((header_name, header_value)) = auth_header {
+        req = req.header(header_name, header_value);
+    }
+
+    let resp = req.send().map_err(|e| {
+        if e.is_timeout() {
+            "timeout".to_string()
+        } else if e.is_connect() {
+            format!("connection refused: {e}")
+        } else {
+            format!("network error: {e}")
+        }
+    })?;
+
+    let status = resp.status().as_u16();
+    // Read the body best-effort; an empty string on read error is fine because
+    // the classifier degrades to Unknown when it cannot positively diagnose.
+    let body = resp.text().unwrap_or_default();
+    Ok((status, body))
+}
+
+/// Classify a Google Cloud HTTP 400 response body into a [`ValidationResult`].
+///
+/// Google surfaces credential problems through the `error.status` /
+/// `error.errors[].reason` fields even on a 400:
+///   - `INVALID_ARGUMENT` combined with a disabled / deleted / not-found signal
+///     means the API key itself is bad → [`ValidationResult::Invalid`].
+///   - A scope / permission / consumer-disabled signal means we cannot tell if
+///     the *credential* is valid → [`ValidationResult::Unreachable`] (Unknown).
+///   - Anything else (e.g. genuinely malformed request) is also treated as
+///     Unknown — a 400 is NEVER defaulted to Valid.
+fn classify_google_400(body: &str) -> ValidationResult {
+    let lower = body.to_lowercase();
+
+    let mentions_invalid_argument = lower.contains("invalid_argument");
+    let key_is_dead = lower.contains("api key not valid")
+        || lower.contains("api_key_invalid")
+        || lower.contains("disabled")
+        || lower.contains("deleted")
+        || lower.contains("not found")
+        || lower.contains("not_found")
+        || lower.contains("expired");
+    let scope_or_permission = lower.contains("scope")
+        || lower.contains("permission")
+        || lower.contains("permission_denied")
+        || lower.contains("insufficient")
+        || lower.contains("forbidden");
+
+    if mentions_invalid_argument && key_is_dead {
+        ValidationResult::Invalid {
+            reason: "Google returned 400 INVALID_ARGUMENT — API key is disabled, deleted, or not valid"
+                .to_string(),
+        }
+    } else if key_is_dead && !scope_or_permission {
+        // Body positively indicates a dead key even without the literal
+        // INVALID_ARGUMENT token (Google wording varies across endpoints).
+        ValidationResult::Invalid {
+            reason: "Google returned 400 — API key is disabled, deleted, or not valid".to_string(),
+        }
+    } else {
+        // Scope/permission problems, or any 400 we cannot positively diagnose,
+        // leave credential validity unknown. Never default a 400 to Valid.
+        ValidationResult::Unreachable {
+            reason: "Google returned 400 — request rejected; credential validity unknown".to_string(),
+        }
+    }
+}
+
 // ── Concrete validators ──────────────────────────────────────────────────────
 
 /// Validates OpenAI API keys by calling `/v1/models` (read-only, no cost).
@@ -468,25 +553,26 @@ impl SecretValidator for GoogleValidator {
             let url = format!(
                 "https://cloudresourcemanager.googleapis.com/v1/projects?pageSize=1&key={value}"
             );
-            match http_check(&url, None, timeout) {
-                Ok(200) => ValidationResult::Valid,
-                Ok(400) => {
-                    // 400 can mean "key valid but request malformed" (e.g. no
-                    // project access) — treat as Valid for key-format check.
-                    ValidationResult::Valid
+            match http_check_with_body(&url, None, timeout) {
+                Ok((200, _)) => ValidationResult::Valid,
+                Ok((400, body)) => {
+                    // A 400 is NEVER valid by default. Parse the error body:
+                    // INVALID_ARGUMENT + disabled/deleted/not-found → Invalid;
+                    // scope/permission or undiagnosable → Unknown (Unreachable).
+                    classify_google_400(&body)
                 }
-                Ok(401) => ValidationResult::Invalid {
+                Ok((401, _)) => ValidationResult::Invalid {
                     reason: "Google returned 401 — API key is invalid or revoked".to_string(),
                 },
-                Ok(403) => ValidationResult::Invalid {
+                Ok((403, _)) => ValidationResult::Invalid {
                     reason: "Google returned 403 — API key has no permissions or is disabled"
                         .to_string(),
                 },
-                Ok(429) => {
+                Ok((429, _)) => {
                     // Rate-limited — key is valid.
                     ValidationResult::Valid
                 }
-                Ok(status) => ValidationResult::Unreachable {
+                Ok((status, _)) => ValidationResult::Unreachable {
                     reason: format!("Google Cloud API returned unexpected status {status}"),
                 },
                 Err(reason) => ValidationResult::Unreachable { reason },

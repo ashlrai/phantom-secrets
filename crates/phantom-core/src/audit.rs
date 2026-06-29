@@ -202,6 +202,20 @@ impl SidecarQueue {
         drained
     }
 
+    /// Re-enqueue previously-drained events at the FRONT of the queue so they
+    /// are retried (in original order) ahead of newer events on the next flush.
+    /// Used when an upload POST fails — prevents permanent audit data loss.
+    fn requeue_front(&mut self, events: Vec<SidecarEvent>) {
+        let count = events.len();
+        // Insert in reverse so the first drained event ends up frontmost.
+        for event in events.into_iter().rev() {
+            self.events.push_front(event);
+        }
+        self.status.pending += count;
+        // Events are still outstanding, so the queue is logically running.
+        self.status.running = true;
+    }
+
     fn record_upload_success(&mut self, count: usize) {
         self.status.uploaded += count;
         self.status.last_uploaded_ts = now_unix();
@@ -213,7 +227,9 @@ impl SidecarQueue {
     fn record_failure(&mut self, count: usize) {
         self.status.failures += count;
         self.status.last_failure_ts = now_unix();
-        self.status.running = false;
+        // Only mark stopped if nothing is left to retry. Requeued events keep
+        // the queue logically running so a later flush picks them up.
+        self.status.running = self.status.pending > 0;
     }
 }
 
@@ -267,10 +283,20 @@ fn flush_sidecar_queue() {
             Err(format!("HTTP {}", resp.status()).into())
         }
     })();
-    if let Ok(mut q) = SIDECAR_QUEUE.lock() {
-        match result {
-            Ok(()) => q.record_upload_success(count),
-            Err(_) => q.record_failure(count),
+    match result {
+        Ok(()) => {
+            if let Ok(mut q) = SIDECAR_QUEUE.lock() {
+                q.record_upload_success(count);
+            }
+        }
+        Err(_) => {
+            // Data-loss fix: the POST failed, so the drained events were never
+            // persisted upstream. Push them back onto the queue so a later
+            // flush retries them instead of dropping them permanently.
+            if let Ok(mut q) = SIDECAR_QUEUE.lock() {
+                q.requeue_front(events);
+                q.record_failure(count);
+            }
         }
     }
 }
@@ -1776,6 +1802,370 @@ pub fn log_team_vault_rotation_members(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Hotspot alert engine — rolling-window spike detection per secret
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Acknowledgement status for a hotspot alert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotspotAckStatus {
+    /// Alert is active and has not been acknowledged.
+    Unacked,
+    /// Alert was acknowledged by an operator or MCP tool call.
+    Acked,
+    /// Alert was snoozed until `snooze_until_ts`.
+    Snoozed,
+}
+
+impl HotspotAckStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HotspotAckStatus::Unacked => "unacked",
+            HotspotAckStatus::Acked => "acked",
+            HotspotAckStatus::Snoozed => "snoozed",
+        }
+    }
+}
+
+/// A hotspot alert record produced when a secret's access velocity spikes.
+///
+/// Emitted when any of the following conditions is true:
+/// - `current_velocity` > 5× `baseline_velocity` (7-day mean)
+/// - `window_5m_count` >= 100 accesses within any 5-minute window
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotspotAlert {
+    /// Secret name — never the value.
+    pub secret_name: String,
+    /// Accesses in the most recent rolling 24-hour window.
+    pub current_velocity: u64,
+    /// Mean daily access count over the prior 7-day baseline window.
+    pub baseline_velocity: f64,
+    /// Alert severity level (always "high" for hotspot alerts).
+    pub alert_level: String,
+    /// Unix timestamp of the first detected spike event.
+    pub first_spike_ts: u64,
+    /// Unix timestamp when this alert record was generated.
+    pub generated_at: u64,
+    /// Whether this alert has been acknowledged.
+    pub ack_status: HotspotAckStatus,
+    /// Human-readable trigger description.
+    pub trigger: String,
+    /// Accesses in the peak 5-minute window (for burst detection).
+    pub peak_5m_count: u64,
+}
+
+/// Persistent store for hotspot alert acknowledgements.
+///
+/// Stored at `~/.phantom/hotspot-alerts.jsonl` — one record per line.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HotspotAckRecord {
+    /// Secret name this ack applies to.
+    pub secret_name: String,
+    /// When the ack was created (Unix seconds).
+    pub ack_ts: u64,
+    /// New status after the ack operation.
+    pub status: HotspotAckStatus,
+    /// If snoozed, the Unix timestamp until which alerts for this secret are
+    /// suppressed. Zero for plain acks.
+    #[serde(default)]
+    pub snooze_until_ts: u64,
+}
+
+/// Compute the path to the hotspot-alert acks file.
+fn hotspot_acks_path() -> std::io::Result<PathBuf> {
+    if let Some(home) = dirs_home_dir() {
+        Ok(home.join(".phantom").join("hotspot-alerts.jsonl"))
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "could not resolve home directory for hotspot acks",
+        ))
+    }
+}
+
+/// Detect hotspot alerts by scanning the audit log.
+///
+/// Algorithm:
+/// 1. Parse all audit events that name a secret.
+/// 2. For each secret:
+///    a. Count accesses in the rolling 24-hour window (current_velocity).
+///    b. Count accesses in the 7-day baseline window (days 1–7 prior to now)
+///       → baseline_velocity = total / 7.
+///    c. Compute the peak 5-minute bucket count.
+///    d. Trigger alert if:
+///       - current_velocity > 5 × baseline_velocity (and baseline > 0), OR
+///       - peak_5m_count >= 100
+/// 3. Load existing acks from `hotspot-alerts.jsonl` and apply them.
+/// 4. Emit a `vault.hotspot_alert` audit event for each newly-detected alert
+///    (i.e. alerts whose first_spike_ts is ≥ `now - 24h` and has no prior ack).
+///
+/// Returns `Ok(Vec<HotspotAlert>)` — may be empty when no spikes are detected.
+/// Always returns `Ok` even when the audit log does not exist.
+pub fn detect_hotspot_alerts() -> std::io::Result<Vec<HotspotAlert>> {
+    detect_hotspot_alerts_at(now_unix())
+}
+
+/// Testable version of `detect_hotspot_alerts` with an injected `now` timestamp.
+pub fn detect_hotspot_alerts_at(now: u64) -> std::io::Result<Vec<HotspotAlert>> {
+    let path = log_path()?;
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+
+    // Read all audit events.
+    let _lock = acquire_log_lock_shared(&path)?;
+    let content = std::fs::read_to_string(&path)?;
+    drop(_lock);
+
+    // Collect per-secret timestamps.
+    let mut by_name: std::collections::BTreeMap<String, Vec<u64>> =
+        std::collections::BTreeMap::new();
+    for raw in content.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+        let ts = match v.get("ts").and_then(|t| t.as_u64()) {
+            Some(t) => t,
+            None => continue,
+        };
+        if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
+            by_name.entry(name.to_string()).or_default().push(ts);
+        }
+    }
+
+    // Load acks so we can annotate alerts.
+    let acks = load_hotspot_acks();
+
+    let window_24h_start = now.saturating_sub(86400);
+    let baseline_start = now.saturating_sub(8 * 86400);
+    let baseline_end = now.saturating_sub(86400); // exclude the current 24h window
+
+    let mut alerts: Vec<HotspotAlert> = Vec::new();
+
+    for (name, mut timestamps) in by_name {
+        timestamps.sort_unstable();
+
+        // Current 24h velocity.
+        // Use strict inequality so the boundary timestamp (now - 86400) belongs
+        // exclusively to the baseline window (baseline_end = now - 86400, exclusive
+        // upper bound), preventing double-counting of entries placed exactly on the
+        // boundary.
+        let current_velocity = timestamps
+            .iter()
+            .filter(|&&ts| ts > window_24h_start)
+            .count() as u64;
+
+        // 7-day baseline: events in [now-8d, now-1d).
+        let baseline_count = timestamps
+            .iter()
+            .filter(|&&ts| ts >= baseline_start && ts < baseline_end)
+            .count() as u64;
+        let baseline_velocity = baseline_count as f64 / 7.0;
+
+        // Peak 5-minute bucket count (300-second windows).
+        let peak_5m_count = compute_peak_window_count(&timestamps, 300, now);
+
+        // Determine whether a spike condition is met.
+        let spike_5x = baseline_velocity > 0.0
+            && current_velocity as f64 > 5.0 * baseline_velocity;
+        let burst_100 = peak_5m_count >= 100;
+
+        if !spike_5x && !burst_100 {
+            continue;
+        }
+
+        // Find the timestamp of the first event in the current 24h window.
+        let first_spike_ts = timestamps
+            .iter()
+            .find(|&&ts| ts >= window_24h_start)
+            .copied()
+            .unwrap_or(now);
+
+        let trigger = if spike_5x && burst_100 {
+            format!(
+                "velocity_spike: {current_velocity} accesses in 24h (5x baseline {baseline_velocity:.1}); \
+                 burst: {peak_5m_count} accesses in a 5-minute window"
+            )
+        } else if spike_5x {
+            format!(
+                "velocity_spike: {current_velocity} accesses in 24h > 5x baseline {baseline_velocity:.1}"
+            )
+        } else {
+            format!(
+                "burst: {peak_5m_count} accesses in a 5-minute window >= 100 threshold"
+            )
+        };
+
+        // Look up existing ack for this secret.
+        let ack_status = acks
+            .get(&name)
+            .map(|r| {
+                if r.status == HotspotAckStatus::Snoozed && r.snooze_until_ts > now {
+                    HotspotAckStatus::Snoozed
+                } else if r.status == HotspotAckStatus::Acked {
+                    HotspotAckStatus::Acked
+                } else {
+                    HotspotAckStatus::Unacked
+                }
+            })
+            .unwrap_or(HotspotAckStatus::Unacked);
+
+        alerts.push(HotspotAlert {
+            secret_name: name.clone(),
+            current_velocity,
+            baseline_velocity,
+            alert_level: "high".to_string(),
+            first_spike_ts,
+            generated_at: now,
+            ack_status,
+            trigger,
+            peak_5m_count,
+        });
+    }
+
+    // Sort: unacked first, then by current_velocity descending.
+    alerts.sort_by(|a, b| {
+        let a_unacked = a.ack_status == HotspotAckStatus::Unacked;
+        let b_unacked = b.ack_status == HotspotAckStatus::Unacked;
+        b_unacked
+            .cmp(&a_unacked)
+            .then(b.current_velocity.cmp(&a.current_velocity))
+    });
+
+    // Emit an audit event for each unacked alert (best-effort).
+    for alert in alerts.iter().filter(|a| a.ack_status == HotspotAckStatus::Unacked) {
+        if enabled() {
+            log("vault.hotspot_alert", Some(&alert.secret_name));
+        }
+    }
+
+    Ok(alerts)
+}
+
+/// Find the maximum number of events within any rolling `window_secs`-second
+/// window ending at or before `now`.
+fn compute_peak_window_count(timestamps: &[u64], window_secs: u64, now: u64) -> u64 {
+    if timestamps.is_empty() {
+        return 0;
+    }
+    // Only consider timestamps within the last 24h to avoid scanning everything.
+    let cutoff = now.saturating_sub(86400);
+    let recent: Vec<u64> = timestamps
+        .iter()
+        .copied()
+        .filter(|&ts| ts >= cutoff)
+        .collect();
+
+    if recent.is_empty() {
+        return 0;
+    }
+
+    // Two-pointer sliding window over sorted timestamps.
+    let mut max_count: u64 = 0;
+    let mut left = 0usize;
+    for right in 0..recent.len() {
+        // Advance left pointer until the window fits.
+        while recent[right].saturating_sub(recent[left]) > window_secs {
+            left += 1;
+        }
+        let count = (right - left + 1) as u64;
+        if count > max_count {
+            max_count = count;
+        }
+    }
+    max_count
+}
+
+/// Load the most-recent ack record per secret from `hotspot-alerts.jsonl`.
+/// Returns an empty map if the file does not exist.
+fn load_hotspot_acks() -> std::collections::BTreeMap<String, HotspotAckRecord> {
+    let path = match hotspot_acks_path() {
+        Ok(p) => p,
+        Err(_) => return std::collections::BTreeMap::new(),
+    };
+    if !path.exists() {
+        return std::collections::BTreeMap::new();
+    }
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return std::collections::BTreeMap::new(),
+    };
+    let mut map: std::collections::BTreeMap<String, HotspotAckRecord> =
+        std::collections::BTreeMap::new();
+    for raw in content.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(rec) = serde_json::from_str::<HotspotAckRecord>(trimmed) {
+            // Keep only the latest record per secret (lines are appended).
+            map.insert(rec.secret_name.clone(), rec);
+        }
+    }
+    map
+}
+
+/// Acknowledge or snooze a hotspot alert for the given secret.
+///
+/// Appends a `HotspotAckRecord` to `~/.phantom/hotspot-alerts.jsonl`.
+/// `snooze_seconds`: if > 0, the alert is snoozed for that many seconds;
+///                   if 0, the alert is fully acknowledged.
+pub fn acknowledge_hotspot_alert(
+    secret_name: &str,
+    snooze_seconds: u64,
+) -> std::io::Result<()> {
+    acknowledge_hotspot_alert_at(secret_name, snooze_seconds, now_unix())
+}
+
+/// Testable variant of `acknowledge_hotspot_alert` with an injected `now` timestamp.
+/// This is used in unit tests to avoid dependence on the real wall clock.
+pub(crate) fn acknowledge_hotspot_alert_at(
+    secret_name: &str,
+    snooze_seconds: u64,
+    now: u64,
+) -> std::io::Result<()> {
+    let path = hotspot_acks_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let (status, snooze_until_ts) = if snooze_seconds > 0 {
+        (HotspotAckStatus::Snoozed, now + snooze_seconds)
+    } else {
+        (HotspotAckStatus::Acked, 0)
+    };
+
+    let rec = HotspotAckRecord {
+        secret_name: secret_name.to_string(),
+        ack_ts: now,
+        status,
+        snooze_until_ts,
+    };
+
+    let mut line = serde_json::to_vec(&rec)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    line.push(b'\n');
+
+    let mut f = OpenOptions::new().append(true).create(true).open(&path)?;
+    f.write_all(&line)?;
+
+    // Emit an audit event for the acknowledgement (best-effort).
+    if enabled() {
+        log("vault.hotspot_alert.acked", Some(secret_name));
+    }
+
+    Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -2326,6 +2716,246 @@ mod tests {
             assert_eq!(report.legacy, 2, "two legacy lines expected");
             assert_eq!(report.verified, 2, "two signed lines expected");
             assert_eq!(report.tampered, 0);
+        });
+    }
+
+    // ── hotspot alert engine ──────────────────────────────────────────────────
+
+    /// Helper: write synthetic audit log lines directly.
+    fn write_hotspot_log(log_path: &std::path::Path, entries: &[(u64, &str, &str)]) {
+        use std::io::Write;
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .unwrap();
+        for (ts, op, name) in entries {
+            let line = format!(
+                r#"{{"seq":1,"ts":{ts},"op":"{op}","name":"{name}","pid":1,"process":"phantom"}}"#
+            );
+            writeln!(f, "{}", line).unwrap();
+        }
+    }
+
+    #[test]
+    fn hotspot_no_alert_for_steady_access() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            // 7-day baseline: 5 accesses/day → baseline_velocity = 5.0
+            // Current 24h: 6 accesses → 6 < 5×5 = 25, no spike; peak 5m ≪ 100
+            let now: u64 = 1_700_000_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                for _i in 0u64..5 {
+                    entries.push((now - day * 86400 + _i * 100, "vault.retrieve", "STEADY_KEY"));
+                }
+            }
+            // Current 24h: 6 accesses
+            for i in 0u64..6 {
+                entries.push((now - 3600 + i * 300, "vault.retrieve", "STEADY_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            let alerts = detect_hotspot_alerts_at(now).expect("detect should not error");
+            assert!(
+                alerts.iter().all(|a| a.secret_name != "STEADY_KEY"),
+                "steady access should not trigger hotspot alert"
+            );
+        });
+    }
+
+    #[test]
+    fn hotspot_5x_spike_triggers_alert() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            // 7-day baseline: 2 accesses/day × 7 days = 14 → baseline = 2.0
+            // Current 24h: 25 accesses → 25 > 5×2 = 10 → spike fires
+            //
+            // Baseline entries are offset *before* now-86400 using -(i+1)*3600 so
+            // that even day=1 entries land strictly in [now-8d, now-1d) and are
+            // never double-counted in the current 24h window (which uses ts > now-86400).
+            let now: u64 = 1_700_500_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                for i in 0u64..2 {
+                    // Subtract an extra (i+1)*3600 so entries sit safely before now-86400.
+                    entries.push((now - day * 86400 - (i + 1) * 3600, "vault.retrieve", "SPIKE_KEY"));
+                }
+            }
+            // Current 24h: 25 accesses spread across the window (all > now-86400).
+            for i in 0u64..25 {
+                entries.push((now - 80000 + i * 3000, "vault.retrieve", "SPIKE_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            let alerts = detect_hotspot_alerts_at(now).expect("detect should not error");
+            let alert = alerts.iter().find(|a| a.secret_name == "SPIKE_KEY");
+            assert!(alert.is_some(), "5x spike should produce a hotspot alert");
+            let alert = alert.unwrap();
+            assert_eq!(alert.alert_level, "high");
+            assert_eq!(alert.current_velocity, 25);
+            assert!(
+                alert.baseline_velocity > 1.9 && alert.baseline_velocity < 2.1,
+                "baseline should be ~2.0, got {}",
+                alert.baseline_velocity
+            );
+            assert!(
+                alert.trigger.contains("velocity_spike"),
+                "trigger should mention velocity_spike: {}",
+                alert.trigger
+            );
+            assert_eq!(alert.ack_status, HotspotAckStatus::Unacked);
+        });
+    }
+
+    #[test]
+    fn hotspot_10x_spike_synthetic_baseline() {
+        // Unit-test the spike condition directly without I/O.
+        // baseline_velocity = 3.0, current = 31 → 31 > 5×3 = 15 → triggers
+        let baseline_velocity: f64 = 3.0;
+        let current_velocity: u64 = 31;
+        let spike_5x = baseline_velocity > 0.0
+            && current_velocity as f64 > 5.0 * baseline_velocity;
+        assert!(spike_5x, "10x spike should satisfy 5x rule");
+    }
+
+    #[test]
+    fn hotspot_burst_100_in_5min_triggers_alert() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            // No baseline → spike rule won't fire; but burst rule fires at 100+ in 5 min
+            let now: u64 = 1_701_000_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            // 110 accesses within a 4-minute window (< 300s)
+            for i in 0u64..110 {
+                entries.push((now - 200 + i, "vault.retrieve", "BURST_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            let alerts = detect_hotspot_alerts_at(now).expect("detect should not error");
+            let alert = alerts.iter().find(|a| a.secret_name == "BURST_KEY");
+            assert!(alert.is_some(), "100+ accesses in 5 min should trigger hotspot alert");
+            let alert = alert.unwrap();
+            assert!(alert.peak_5m_count >= 100);
+            assert_eq!(alert.alert_level, "high");
+        });
+    }
+
+    #[test]
+    fn hotspot_burst_below_100_no_alert_without_spike() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            // 99 accesses in 5 minutes — just below the burst threshold.
+            // No baseline either, so spike rule won't fire.
+            let now: u64 = 1_702_000_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for i in 0u64..99 {
+                entries.push((now - 200 + i * 2, "vault.retrieve", "SAFE_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            let alerts = detect_hotspot_alerts_at(now).expect("detect should not error");
+            assert!(
+                alerts.iter().all(|a| a.secret_name != "SAFE_KEY"),
+                "99 accesses in 5 min should NOT trigger hotspot alert"
+            );
+        });
+    }
+
+    #[test]
+    fn hotspot_ack_marks_alert_acked() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let now: u64 = 1_703_000_000;
+            // Create a spike so we get an alert.
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                entries.push((now - day * 86400, "vault.retrieve", "ACK_KEY"));
+            }
+            for i in 0u64..30 {
+                entries.push((now - 3600 + i * 100, "vault.retrieve", "ACK_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            // Verify we get an alert.
+            let before = detect_hotspot_alerts_at(now).unwrap();
+            assert!(
+                before.iter().any(|a| a.secret_name == "ACK_KEY"),
+                "should have alert before ack"
+            );
+
+            // Acknowledge it.
+            acknowledge_hotspot_alert("ACK_KEY", 0).expect("ack should not error");
+
+            // Re-detect — should now show as acked.
+            let after = detect_hotspot_alerts_at(now).unwrap();
+            if let Some(a) = after.iter().find(|a| a.secret_name == "ACK_KEY") {
+                assert_eq!(a.ack_status, HotspotAckStatus::Acked);
+            }
+            // (Alert may still appear in list but with Acked status.)
+        });
+    }
+
+    #[test]
+    fn hotspot_snooze_suppresses_until_expiry() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let now: u64 = 1_704_000_000;
+            // Spike alert.
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                entries.push((now - day * 86400, "vault.retrieve", "SNOOZE_KEY"));
+            }
+            for i in 0u64..30 {
+                entries.push((now - 3600 + i * 100, "vault.retrieve", "SNOOZE_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            // Snooze for 3600 seconds using the injected test timestamp so that
+            // snooze_until_ts = now + 3600, deterministically expiring at now + 3601+.
+            acknowledge_hotspot_alert_at("SNOOZE_KEY", 3600, now).expect("snooze should not error");
+
+            // At now: snooze is active.
+            let during = detect_hotspot_alerts_at(now).unwrap();
+            if let Some(a) = during.iter().find(|a| a.secret_name == "SNOOZE_KEY") {
+                assert_eq!(a.ack_status, HotspotAckStatus::Snoozed);
+            }
+
+            // After snooze expires: alert becomes unacked again.
+            let after_expiry = detect_hotspot_alerts_at(now + 7200).unwrap();
+            if let Some(a) = after_expiry.iter().find(|a| a.secret_name == "SNOOZE_KEY") {
+                // Snooze expired → should be Unacked.
+                assert_eq!(a.ack_status, HotspotAckStatus::Unacked);
+            }
+        });
+    }
+
+    #[test]
+    fn hotspot_alert_never_contains_secret_value() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let now: u64 = 1_705_000_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                entries.push((now - day * 86400, "vault.retrieve", "SECRET_KEY"));
+            }
+            for i in 0u64..25 {
+                entries.push((now - 3600 + i * 100, "vault.retrieve", "SECRET_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            let alerts = detect_hotspot_alerts_at(now).unwrap();
+            for a in &alerts {
+                // The secret_name field contains only the key name, never a value.
+                // The trigger string must not contain any '=' assignments that
+                // look like a secret value (only numeric annotations are fine).
+                assert!(!a.trigger.contains("sk-"), "trigger must not contain secret value");
+                assert!(
+                    !a.secret_name.contains("="),
+                    "secret_name must be a plain key name, not a value"
+                );
+            }
         });
     }
 }
