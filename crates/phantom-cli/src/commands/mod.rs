@@ -30,6 +30,7 @@ pub mod sync;
 pub mod team;
 pub mod unwrap;
 pub mod upgrade;
+pub mod validate;
 pub mod watch;
 pub mod why;
 pub mod wrap;

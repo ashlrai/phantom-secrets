@@ -385,6 +385,17 @@ enum Commands {
         with_expiry: Option<u64>,
     },
 
+    /// Validate stored secrets against their target APIs (drift detection)
+    #[command(next_help_heading = "Maintenance")]
+    Validate {
+        /// Validate all secrets in the vault
+        #[arg(long)]
+        check_all: bool,
+        /// Number of concurrent validation jobs (default: 4)
+        #[arg(long, short = 'j', value_name = "N")]
+        jobs: Option<usize>,
+    },
+
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
     #[command(next_help_heading = "Maintenance")]
     Audit {
@@ -547,6 +558,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Status { oneline } => commands::status::run(oneline),
         Commands::Rotate { sync, with_expiry } => {
             commands::rotate::run_with_expiry(sync, with_expiry)
+        }
+        Commands::Validate { check_all, jobs } => {
+            commands::validate::run(check_all, jobs, cli.json)
         }
         Commands::Doctor { fix, expiry } => commands::doctor::run_doctor(fix, expiry),
         Commands::Agent { action } => match action {

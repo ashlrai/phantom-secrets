@@ -352,7 +352,62 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         ));
     }
 
-    // Check 14 (optional): Secret TTL / expiry status
+    // Check 14 (optional): Validation metadata — surface invalid credentials
+    {
+        if let Ok(config) = PhantomConfig::load(&config_path) {
+            let vault = phantom_vault::create_vault(&config.phantom.project_id);
+            match vault.list() {
+                Ok(names) => {
+                    let mut invalid_count = 0usize;
+                    let mut stale_count = 0usize;
+                    for name in &names {
+                        let meta = vault.get_validation_metadata(name).unwrap_or_default();
+                        if meta.never_checked() {
+                            // Not yet validated — not an issue, just informational.
+                        } else if !meta.is_valid {
+                            invalid_count += 1;
+                            let reason = meta
+                                .failure_reason
+                                .as_deref()
+                                .unwrap_or("unknown reason");
+                            check_fail(&format!(
+                                "Secret '{}' FAILED validation: {}",
+                                name, reason
+                            ));
+                            check_fix("Run: phantom validate --check-all (then rotate if needed)");
+                            issues += 1;
+                        } else if meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS) {
+                            stale_count += 1;
+                        }
+                    }
+                    if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
+                        let all_checked = names.iter().all(|n| {
+                            vault
+                                .get_validation_metadata(n)
+                                .map(|m| !m.never_checked())
+                                .unwrap_or(false)
+                        });
+                        if all_checked {
+                            check_pass("All secrets passed last validation check");
+                        } else {
+                            check_info(
+                                "Validation: run `phantom validate --check-all` to check credential health",
+                            );
+                        }
+                    } else if stale_count > 0 {
+                        check_info(&format!(
+                            "Validation: {} secret(s) have stale check results (>24 h old)",
+                            stale_count
+                        ));
+                        check_fix("Run: phantom validate --check-all");
+                    }
+                }
+                Err(_) => {} // vault already flagged above
+            }
+        }
+    }
+
+    // Check 15 (optional): Secret TTL / expiry status
     if check_expiry {
         if let Ok(config) = PhantomConfig::load(&config_path) {
             let vault = phantom_vault::create_vault(&config.phantom.project_id);

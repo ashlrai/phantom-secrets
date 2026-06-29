@@ -1,5 +1,6 @@
 use crate::metadata::SecretMetadata;
 use phantom_core::error::Result;
+use phantom_core::validator::ValidationMetadata;
 use zeroize::Zeroizing;
 
 /// Trait for secret storage backends.
@@ -75,5 +76,22 @@ pub trait VaultBackend: Send + Sync {
         let now = crate::metadata::now_secs();
         meta.expires_at = Some(now + days_ttl * 86_400);
         self.set_metadata(name, meta)
+    }
+
+    // ── Validation metadata ──────────────────────────────────────────────
+
+    /// Retrieve the last validation result metadata for a secret.
+    /// Returns `Default` (never_checked) if no record exists or the backend
+    /// does not support validation metadata.
+    fn get_validation_metadata(&self, name: &str) -> Result<ValidationMetadata> {
+        let _ = name;
+        Ok(ValidationMetadata::default())
+    }
+
+    /// Persist validation result metadata for a secret.
+    /// No-op on backends that do not support metadata (graceful degradation).
+    fn set_validation_metadata(&self, name: &str, meta: ValidationMetadata) -> Result<()> {
+        let _ = (name, meta);
+        Ok(())
     }
 }
