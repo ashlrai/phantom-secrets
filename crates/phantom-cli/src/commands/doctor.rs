@@ -2,10 +2,11 @@ use anyhow::Result;
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
-
 use crate::commands::upgrade::{detect_install_source, InstallSource};
 
-pub fn run(fix: bool) -> Result<()> {
+/// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
+/// TTL metadata and warn about expired or soon-to-expire entries.
+pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let env_path = project_dir.join(".env");
@@ -349,6 +350,58 @@ pub fn run(fix: bool) -> Result<()> {
             ARGON2_T_COST,
             ARGON2_P_COST,
         ));
+    }
+
+    // Check 14 (optional): Secret TTL / expiry status
+    if check_expiry {
+        if let Ok(config) = PhantomConfig::load(&config_path) {
+            let vault = phantom_vault::create_vault(&config.phantom.project_id);
+            match vault.list_with_metadata() {
+                Ok(entries) => {
+                    let mut expired = Vec::new();
+                    let mut expiring_soon = Vec::new();
+                    let mut tracked = 0usize;
+
+                    for (name, meta) in &entries {
+                        if let Some(m) = meta {
+                            if m.expires_at.is_some() {
+                                tracked += 1;
+                                if m.is_expired() {
+                                    expired.push((name.clone(), m.ttl_status()));
+                                } else if m.is_expiring_soon(7) {
+                                    expiring_soon.push((name.clone(), m.ttl_status()));
+                                }
+                            }
+                        }
+                    }
+
+                    if expired.is_empty() && expiring_soon.is_empty() {
+                        if tracked == 0 {
+                            check_info("Expiry: no secrets have TTL configured");
+                            check_info("  Tip: phantom rotate --with-expiry 90 to set a 90-day TTL");
+                        } else {
+                            check_pass(&format!(
+                                "Expiry: {tracked}/{} secret(s) have TTL — all healthy",
+                                entries.len()
+                            ));
+                        }
+                    } else {
+                        for (name, status) in &expired {
+                            check_fail(&format!("Secret '{}' is {}", name, status));
+                            issues += 1;
+                        }
+                        for (name, status) in &expiring_soon {
+                            check_warn(&format!("Secret '{}': {}", name, status));
+                            check_fix("Run: phantom rotate --with-expiry <days>");
+                            issues += 1;
+                        }
+                    }
+                }
+                Err(e) => {
+                    check_warn(&format!("Could not read expiry metadata: {e}"));
+                }
+            }
+        }
     }
 
     // Check 14: MCP setup status per known client

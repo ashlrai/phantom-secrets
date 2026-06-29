@@ -86,6 +86,10 @@ enum Commands {
         /// Auto-fix safe issues (install hooks, generate .env.example, etc.)
         #[arg(long)]
         fix: bool,
+        /// Also check secret TTL/expiry status and warn about expired or
+        /// soon-to-expire secrets
+        #[arg(long)]
+        expiry: bool,
     },
 
     /// Print a shell-completion script to stdout.
@@ -155,6 +159,9 @@ enum Commands {
         /// Emit JSON instead of the human-readable table
         #[arg(long)]
         json: bool,
+        /// Show TTL/expiry countdown for each secret
+        #[arg(long)]
+        show_expiry: bool,
     },
 
     /// Add a secret to the vault
@@ -371,6 +378,11 @@ enum Commands {
         /// Also sync secrets to all configured deployment platforms after rotation
         #[arg(long)]
         sync: bool,
+        /// Set a TTL (in days) on every secret after rotation. Sets expires_at and
+        /// rotation_policy on each vault entry. Use `phantom list --show-expiry`
+        /// and `phantom doctor --expiry` to monitor status.
+        #[arg(long, value_name = "DAYS")]
+        with_expiry: Option<u64>,
     },
 
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
@@ -524,7 +536,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::List { json } => commands::list::run(json),
+        Commands::List { json, show_expiry } => commands::list::run_with_expiry(json, show_expiry),
         Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
@@ -533,8 +545,10 @@ fn main() -> anyhow::Result<()> {
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status { oneline } => commands::status::run(oneline),
-        Commands::Rotate { sync } => commands::rotate::run(sync),
-        Commands::Doctor { fix } => commands::doctor::run(fix),
+        Commands::Rotate { sync, with_expiry } => {
+            commands::rotate::run_with_expiry(sync, with_expiry)
+        }
+        Commands::Doctor { fix, expiry } => commands::doctor::run_doctor(fix, expiry),
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
             AgentAction::Doctor => commands::agent::doctor(),
