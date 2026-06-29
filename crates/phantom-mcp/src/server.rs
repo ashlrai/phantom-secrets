@@ -10,9 +10,9 @@ use std::path::PathBuf;
 use crate::tools::helpers::{internal_err, invalid_params_err, require_confirm, text_result};
 use crate::tools::params::{
     AddSecretInteractiveParams, AddSecretParams, CheckParams, CloudPullParams, CloudPushParams,
-    CopySecretParams, DoctorParams, EnvParams, InitParams, RemoveSecretParams, RotateParams,
-    SyncParams, TeamCreateParams, TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams,
-    WhyParams, WrapParams,
+    CopySecretParams, DoctorParams, EnvParams, InitParams, ListWithExpiryParams,
+    RemoveSecretParams, RotateParams, RotateWithExpiryParams, SyncParams, TeamCreateParams,
+    TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams, WhyParams, WrapParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -1547,6 +1547,151 @@ impl PhantomMcpServer {
         ))
     }
 
+    // ── TTL / Expiry tools ─────────────────────────────────────────────
+
+    /// Rotate all phantom tokens and set a TTL (expiry) on every secret.
+    #[tool(
+        description = "Rotate all phantom tokens and set a TTL on every secret. \
+            Sets `expires_at = now + days_ttl * 86400` and stores a `rotation_policy` \
+            on each vault entry. After this call, use `phantom_list_with_expiry` to see \
+            countdown status and `phantom_doctor` to get warned when secrets approach expiry. \
+            DESTRUCTIVE — invalidates all current phantom tokens; requires `confirm: true`."
+    )]
+    fn phantom_rotate_with_expiry(
+        &self,
+        Parameters(params): Parameters<RotateWithExpiryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_rotate_with_expiry", params.confirm)?;
+
+        if params.days_ttl == 0 {
+            return Err(invalid_params_err("days_ttl must be > 0"));
+        }
+
+        let (_config, vault) = self.load_config_and_vault()?;
+        let names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+
+        if names.is_empty() {
+            return text_result("No secrets to rotate.");
+        }
+
+        // Regenerate phantom tokens
+        use phantom_core::token::TokenMap;
+        let mut token_map = TokenMap::new();
+        for name in &names {
+            token_map.insert(name.clone());
+        }
+
+        let env_path = self.env_path();
+        if env_path.exists() {
+            let dotenv = phantom_core::dotenv::DotenvFile::parse_file(&env_path)
+                .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
+            dotenv
+                .write_phantomized(&token_map, &env_path)
+                .map_err(|e| internal_err(format!("Failed to rewrite .env: {e}")))?;
+        }
+
+        // Set rotation policy on every secret
+        let mut failed = Vec::new();
+        for name in &names {
+            if let Err(e) = vault.set_rotation_policy(name, params.days_ttl) {
+                failed.push(format!("{name}: {e}"));
+            }
+        }
+
+        if !failed.is_empty() {
+            return Err(internal_err(format!(
+                "Failed to set expiry on: {}",
+                failed.join(", ")
+            )));
+        }
+
+        text_result(format!(
+            "Rotated {} phantom token(s) and set {}-day TTL on all secrets.\n\
+             Use phantom_list_with_expiry to see countdown status.",
+            names.len(),
+            params.days_ttl
+        ))
+    }
+
+    /// List secrets with TTL/expiry countdown.
+    #[tool(
+        description = "List all secret names with their TTL/expiry status. \
+            Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. \
+            Never returns secret values. Use after `phantom_rotate_with_expiry` to \
+            confirm TTL was applied, or to audit which secrets are approaching expiry."
+    )]
+    fn phantom_list_with_expiry(
+        &self,
+        Parameters(params): Parameters<ListWithExpiryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (config, vault) = self.load_config_and_vault()?;
+
+        let entries = vault
+            .list_with_metadata()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+
+        if entries.is_empty() {
+            return text_result("No secrets stored in vault.");
+        }
+
+        let mut output = format!("{} secret(s) in vault:\n", entries.len());
+        let mut expired_count = 0usize;
+        let mut expiring_soon_count = 0usize;
+
+        for (name, meta) in &entries {
+            let service = config
+                .services
+                .iter()
+                .find(|(_, c)| c.secret_key == *name)
+                .map(|(svc_name, _)| format!(" (service: {svc_name})"));
+
+            let ttl_info = if params.show_expiry {
+                match meta {
+                    Some(m) => {
+                        if m.is_expired() {
+                            expired_count += 1;
+                            format!(" [EXPIRED]")
+                        } else if m.is_expiring_soon(7) {
+                            expiring_soon_count += 1;
+                            format!(" [{}]", m.ttl_status())
+                        } else {
+                            format!(" [{}]", m.ttl_status())
+                        }
+                    }
+                    None => " [no expiry]".to_string(),
+                }
+            } else {
+                String::new()
+            };
+
+            output.push_str(&format!(
+                "  - {}{}{}\n",
+                name,
+                ttl_info,
+                service.unwrap_or_default()
+            ));
+        }
+
+        if params.show_expiry && (expired_count > 0 || expiring_soon_count > 0) {
+            output.push('\n');
+            if expired_count > 0 {
+                output.push_str(&format!(
+                    "WARNING: {expired_count} secret(s) are EXPIRED — rotate immediately.\n"
+                ));
+            }
+            if expiring_soon_count > 0 {
+                output.push_str(&format!(
+                    "WARNING: {expiring_soon_count} secret(s) expire within 7 days.\n"
+                ));
+            }
+            output.push_str("Run phantom_rotate_with_expiry to refresh TTLs.");
+        }
+
+        text_result(output)
+    }
+
     /// Pull a team vault into the current project's local vault.
     #[tool(
         description = "Download and decrypt the team vault for this project into the local vault. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true."
@@ -1834,5 +1979,90 @@ mod tests {
         let after = std::fs::read_to_string(dir.path().join(".env")).unwrap();
         assert_ne!(before, after, "Tokens should change after rotation");
         assert!(after.contains("phm_"));
+    }
+
+    // ── TTL / Expiry MCP tests ────────────────────────────────────────
+
+    #[test]
+    fn test_rotate_with_expiry_requires_confirm() {
+        let (server, _dir) = setup_initialized_project();
+        let err = server
+            .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
+                days_ttl: 7,
+                confirm: false,
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("confirm: true"));
+    }
+
+    #[test]
+    fn test_rotate_with_expiry_rejects_zero_ttl() {
+        let (server, _dir) = setup_initialized_project();
+        let err = server
+            .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
+                days_ttl: 0,
+                confirm: true,
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn test_rotate_with_expiry_sets_ttl_metadata() {
+        let (server, dir) = setup_initialized_project();
+
+        let result = server
+            .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
+                days_ttl: 7,
+                confirm: true,
+            }))
+            .unwrap();
+        let text = get_result_text(&result);
+        assert!(text.contains("Rotated"), "should report rotation");
+        assert!(text.contains("7-day TTL"), "should mention TTL");
+
+        // .env should still have phantom tokens
+        let env_content = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+        assert!(env_content.contains("phm_"));
+
+        // TTL metadata should be visible via list_with_expiry
+        let list_result = server
+            .phantom_list_with_expiry(Parameters(ListWithExpiryParams { show_expiry: true }))
+            .unwrap();
+        let list_text = get_result_text(&list_result);
+        assert!(
+            list_text.contains("days remaining") || list_text.contains("expires today"),
+            "should show days remaining after TTL set: {list_text}"
+        );
+        assert!(
+            !list_text.contains("EXPIRED"),
+            "fresh 7-day TTL should not be expired: {list_text}"
+        );
+    }
+
+    #[test]
+    fn test_list_with_expiry_no_ttl_shows_no_expiry() {
+        let (server, _dir) = setup_initialized_project();
+        // No TTL set — all secrets should show "no expiry"
+        let result = server
+            .phantom_list_with_expiry(Parameters(ListWithExpiryParams { show_expiry: true }))
+            .unwrap();
+        let text = get_result_text(&result);
+        assert!(text.contains("no expiry"), "secrets without TTL: {text}");
+    }
+
+    #[test]
+    fn test_list_with_expiry_show_expiry_false_omits_ttl() {
+        let (server, _dir) = setup_initialized_project();
+        let result = server
+            .phantom_list_with_expiry(Parameters(ListWithExpiryParams { show_expiry: false }))
+            .unwrap();
+        let text = get_result_text(&result);
+        // With show_expiry=false, no TTL info should appear
+        assert!(!text.contains("days remaining"));
+        assert!(!text.contains("no expiry"));
+        // But secret names should still appear
+        assert!(text.contains("OPENAI_API_KEY") || text.contains("DATABASE_URL"));
     }
 }

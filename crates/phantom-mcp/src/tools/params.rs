@@ -64,6 +64,31 @@ pub struct RotateParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RotateWithExpiryParams {
+    /// Number of days until secrets expire. Each secret gets `expires_at` set to
+    /// `now + days_ttl * 86400` and a `rotation_policy` recording the TTL. After
+    /// this call, `phantom list --show-expiry` and `phantom doctor --expiry` will
+    /// report countdown status and warn when secrets approach expiry.
+    pub days_ttl: u64,
+    /// Required. Must be true — the calling agent must confirm with the user
+    /// before invoking this tool. This rotates all phantom tokens (invalidating
+    /// any cached ones) and sets persistent expiry metadata in the vault.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListWithExpiryParams {
+    /// Include TTL/expiry status for each secret (countdown, expired flag, etc.)
+    #[serde(default = "default_true")]
+    pub show_expiry: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CloudPushParams {
     /// Required. Must be true — the calling agent must confirm with the user
     /// before invoking this tool. A push overwrites the cloud copy of the

@@ -1,8 +1,10 @@
 pub mod crypto;
 pub mod file;
 pub mod keychain;
+pub mod metadata;
 pub mod traits;
 
+pub use metadata::{RotationPolicy, SecretMetadata};
 pub use traits::VaultBackend;
 
 const PASSPHRASE_SERVICE: &str = "phantom-secrets-vault";
