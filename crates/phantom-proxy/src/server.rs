@@ -562,6 +562,14 @@ async fn handle_request(
     let status = response.status();
     let mut builder = Response::builder().status(status);
 
+    // Capture response content-type before consuming the response for its body.
+    // Used by ResponseScrubber to apply SSE line-level parsing vs. generic scan.
+    let response_content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     // Copy response headers (skip hop-by-hop and content-length since we stream)
     let is_streaming = response
         .headers()
@@ -569,10 +577,8 @@ async fn handle_request(
         .and_then(|v| v.to_str().ok())
         .map(|v| v.contains("chunked"))
         .unwrap_or(false)
-        || response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
+        || response_content_type
+            .as_deref()
             .map(|v| v.contains("text/event-stream"))
             .unwrap_or(false);
 
@@ -590,37 +596,64 @@ async fn handle_request(
     }
 
     if is_streaming {
-        // Stream the response body chunk-by-chunk (critical for SSE/streaming APIs)
-        // Scrub secrets from each chunk using an overlap window to catch secrets
-        // split across chunk boundaries.
+        // Stream the response body chunk-by-chunk (critical for SSE/streaming APIs).
+        // Two-layer scrubbing:
+        //   1. ResponseScrubber — content-type-aware (SSE line parsing), audit log,
+        //      stderr warning, format-pattern detection.
+        //   2. Interceptor::scrub_response_bytes — fast token→phantom replacement
+        //      (kept as defence-in-depth; already handles the carry window).
         debug!("Streaming response: {}", status);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(32);
 
         let interceptor = state.interceptor.clone();
+        let resp_scrubber = state.interceptor.to_response_scrubber();
+        let resp_ct = response_content_type.clone();
         let byte_stream = response.bytes_stream();
         tokio::spawn(async move {
             tokio::pin!(byte_stream);
+            // Audit carry for ResponseScrubber (detection + logging only).
+            let mut audit_carry: Vec<u8> = Vec::new();
+            // Replace carry for Interceptor overlap-window replacement.
             let overlap_len = interceptor.max_secret_len().saturating_sub(1);
-            let mut carry: Vec<u8> = Vec::new();
+            let mut replace_carry: Vec<u8> = Vec::new();
 
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
-                        // Build combined buffer: carry from previous chunk + current chunk
-                        let mut combined = Vec::with_capacity(carry.len() + chunk.len());
-                        combined.extend_from_slice(&carry);
+                        // Layer 1 (audit only): detect leaks, emit audit events and
+                        // stderr warnings via ResponseScrubber.  Body output is
+                        // intentionally discarded — the scrubber replaces with
+                        // [REDACTED:*] which would conflict with the token→phantom
+                        // substitution performed by layer 2.
+                        let (_, scrub_event) = resp_scrubber.scrub_chunk(
+                            resp_ct.as_deref(),
+                            &mut audit_carry,
+                            &chunk,
+                        );
+                        if scrub_event.scrubbed {
+                            debug!(
+                                "ResponseScrubber intercepted leak(s) in streaming chunk \
+                                 ({} events)",
+                                scrub_event.leak_events.len()
+                            );
+                        }
+
+                        // Layer 2 (body scrub): overlap-window token→phantom replacement.
+                        let mut combined =
+                            Vec::with_capacity(replace_carry.len() + chunk.len());
+                        combined.extend_from_slice(&replace_carry);
                         combined.extend_from_slice(&chunk);
 
-                        let (scrubbed, did_scrub) = interceptor.scrub_response_bytes(&combined);
+                        let (scrubbed, did_scrub) =
+                            interceptor.scrub_response_bytes(&combined);
                         if did_scrub {
                             debug!("Scrubbed secret(s) from streaming response chunk");
                         }
 
                         if overlap_len > 0 && scrubbed.len() > overlap_len {
-                            // Hold back the last overlap_len bytes for the next iteration
                             let emit_end = scrubbed.len() - overlap_len;
                             let to_emit = &scrubbed[..emit_end];
-                            carry = scrubbed[emit_end..].to_vec();
+                            replace_carry = scrubbed[emit_end..].to_vec();
                             if tx
                                 .send(Ok(Frame::data(Bytes::copy_from_slice(to_emit))))
                                 .await
@@ -629,11 +662,9 @@ async fn handle_request(
                                 break;
                             }
                         } else if overlap_len > 0 {
-                            // Entire scrubbed output fits within the overlap window; carry it all
-                            carry = scrubbed;
+                            replace_carry = scrubbed;
                         } else {
-                            // No secrets registered — no overlap needed
-                            carry.clear();
+                            replace_carry.clear();
                             if tx
                                 .send(Ok(Frame::data(Bytes::from(scrubbed))))
                                 .await
@@ -650,9 +681,13 @@ async fn handle_request(
                 }
             }
 
-            // Flush any remaining carry bytes
-            if !carry.is_empty() {
-                let (scrubbed, _) = interceptor.scrub_response_bytes(&carry);
+            // Flush audit carry (discard body — audit only).
+            let _ = resp_scrubber.flush_carry(resp_ct.as_deref(), audit_carry);
+
+            // Flush replacement carry.
+            if !replace_carry.is_empty() {
+                let (scrubbed, _) =
+                    interceptor.scrub_response_bytes(&replace_carry);
                 let _ = tx.send(Ok(Frame::data(Bytes::from(scrubbed)))).await;
             }
         });
@@ -661,7 +696,8 @@ async fn handle_request(
         let body = BoxBody::Right(StreamBody::new(stream));
         Ok(builder.body(body).unwrap())
     } else {
-        // Non-streaming: buffer, scrub secrets, and forward
+        // Non-streaming: buffer, scrub secrets, and forward.
+        // Two-layer scrubbing (same rationale as streaming path above).
         let response_body = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -673,8 +709,24 @@ async fn handle_request(
             }
         };
 
-        // Scrub real secrets from response body to prevent leakage to AI agents
-        let (scrubbed_body, did_scrub) = state.interceptor.scrub_response_bytes(&response_body);
+        // Layer 1 (audit only): ResponseScrubber — detect leaks, emit audit events
+        // and stderr warnings.  Body output is discarded; the scrubber replaces with
+        // [REDACTED:*] which conflicts with the token→phantom replacement in layer 2.
+        let resp_scrubber = state.interceptor.to_response_scrubber();
+        let (_, scrub_event) = resp_scrubber.scrub_buffered(
+            response_content_type.as_deref(),
+            &response_body,
+        );
+        if scrub_event.scrubbed {
+            debug!(
+                "ResponseScrubber intercepted leak(s) in buffered response ({} events)",
+                scrub_event.leak_events.len()
+            );
+        }
+
+        // Layer 2 (body scrub): Interceptor replaces real secrets with phantom tokens.
+        let (scrubbed_body, did_scrub) =
+            state.interceptor.scrub_response_bytes(&response_body);
         if did_scrub {
             debug!(
                 "Scrubbed secret(s) from response body ({} bytes)",
@@ -682,7 +734,7 @@ async fn handle_request(
             );
         }
 
-        // Always set content-length from the final body (may differ after scrubbing)
+        // Always set content-length from the final body (may differ after scrubbing).
         let final_body = if did_scrub {
             Bytes::from(scrubbed_body)
         } else {

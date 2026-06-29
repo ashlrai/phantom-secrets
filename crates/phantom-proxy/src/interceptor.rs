@@ -408,6 +408,19 @@ impl Interceptor {
             .collect();
         find_replace_bytes_via_str(input, &pairs)
     }
+
+    /// Build a [`crate::response_scrubber::ResponseScrubber`] from this interceptor's
+    /// token→secret mapping.  The scrubber adds audit logging and stderr warnings on
+    /// top of the basic byte-replacement already performed by [`scrub_response_bytes`].
+    pub fn to_response_scrubber(&self) -> crate::response_scrubber::ResponseScrubber {
+        // reverse_map is secret→token; we need token→secret for ResponseScrubber.
+        let token_to_secret: std::collections::HashMap<String, String> = self
+            .reverse_map
+            .iter()
+            .map(|(secret, token)| (token.clone(), secret.clone()))
+            .collect();
+        crate::response_scrubber::ResponseScrubber::from_token_map(&token_to_secret)
+    }
 }
 
 /// Find-and-replace multiple string patterns. Returns the result and whether any replacement was made.
