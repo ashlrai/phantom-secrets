@@ -52,6 +52,77 @@ pub struct PhantomMeta {
     pub secrets: BTreeMap<String, SecretOverride>,
 }
 
+/// Validation schedule for a single secret, stored under
+/// `[phantom.secrets.{name}.validation]` in `.phantom.toml`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ValidationScheduleConfig {
+    /// Whether automatic validation is enabled for this secret (default: true).
+    #[serde(default = "default_validation_enabled")]
+    pub enabled: bool,
+    /// How often to re-validate: `"daily"`, `"weekly"`, or `"never"`.
+    /// Defaults to `"daily"`.
+    #[serde(default = "default_validation_schedule")]
+    pub schedule: String,
+    /// Per-request HTTP timeout in seconds (default: 30).
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+impl Default for ValidationScheduleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            schedule: "daily".to_string(),
+            timeout_secs: 30,
+        }
+    }
+}
+
+fn default_validation_enabled() -> bool {
+    true
+}
+
+fn default_validation_schedule() -> String {
+    "daily".to_string()
+}
+
+fn default_timeout_secs() -> u64 {
+    30
+}
+
+impl ValidationScheduleConfig {
+    /// Return the minimum number of seconds between re-validations based on
+    /// the `schedule` field.  Returns `None` when schedule is `"never"`.
+    pub fn interval_secs(&self) -> Option<u64> {
+        match self.schedule.to_lowercase().trim() {
+            "daily" => Some(86_400),
+            "weekly" => Some(7 * 86_400),
+            "never" => None,
+            _ => Some(86_400), // unknown → default to daily
+        }
+    }
+
+    /// Return `true` if the secret should be re-validated now, given the
+    /// timestamp of the last check (`last_check_ts`, 0 = never checked).
+    pub fn is_due(&self, last_check_ts: u64) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let Some(interval) = self.interval_secs() else {
+            return false; // schedule == "never"
+        };
+        if last_check_ts == 0 {
+            return true; // never checked
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now.saturating_sub(last_check_ts) >= interval
+    }
+}
+
 /// Per-secret configuration override stored under `[phantom.secrets.{name}]`.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
@@ -70,6 +141,20 @@ pub struct SecretOverride {
     /// Stored under `[phantom.secrets.{name}.audit]` in `.phantom.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<crate::analytics::AuditThresholdConfig>,
+    /// Unix timestamp (seconds since epoch) after which this secret is expired.
+    /// Set by `phantom expiry set <KEY> <DAYS>`. Used by `phantom expiry enforce`
+    /// and the `phantom_expiry_enforce` MCP tool to block deployments and CI pipelines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    /// Number of days between rotations for this secret. Used by
+    /// `phantom expiry rotate <KEY>` to reset the expiry timer.
+    /// Stored as `rotation_window = <DAYS>` in `.phantom.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_window: Option<u64>,
+    /// Per-secret validation schedule configuration.
+    /// Stored under `[phantom.secrets.{name}.validation]` in `.phantom.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<ValidationScheduleConfig>,
 }
 
 impl SecretOverride {
@@ -738,6 +823,7 @@ header = "Authorization"
                 rotate_every: Some("7d".to_string()),
                 rotation_schedule: None,
                 audit: None,
+                ..Default::default()
             },
         );
         let sched = config.get_rotation_schedule("STRIPE_KEY").unwrap();
@@ -774,6 +860,7 @@ header = "Authorization"
                     last_rotated: Some(1_000_000),
                 }),
                 audit: None,
+                ..Default::default()
             },
         );
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -790,5 +877,130 @@ header = "Authorization"
     fn get_rotation_schedule_returns_none_when_unconfigured() {
         let config = PhantomConfig::new_with_defaults("none_test".to_string());
         assert!(config.get_rotation_schedule("OPENAI_API_KEY").is_none());
+    }
+
+    // ── ValidationScheduleConfig tests ───────────────────────────────────────
+
+    #[test]
+    fn validation_schedule_config_defaults() {
+        let cfg = ValidationScheduleConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.schedule, "daily");
+        assert_eq!(cfg.timeout_secs, 30);
+    }
+
+    #[test]
+    fn validation_schedule_interval_daily() {
+        let cfg = ValidationScheduleConfig {
+            schedule: "daily".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.interval_secs(), Some(86_400));
+    }
+
+    #[test]
+    fn validation_schedule_interval_weekly() {
+        let cfg = ValidationScheduleConfig {
+            schedule: "weekly".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.interval_secs(), Some(7 * 86_400));
+    }
+
+    #[test]
+    fn validation_schedule_interval_never() {
+        let cfg = ValidationScheduleConfig {
+            schedule: "never".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.interval_secs(), None);
+    }
+
+    #[test]
+    fn validation_schedule_disabled_not_due() {
+        let cfg = ValidationScheduleConfig {
+            enabled: false,
+            schedule: "daily".to_string(),
+            timeout_secs: 30,
+        };
+        // Disabled — never due, even if never checked.
+        assert!(!cfg.is_due(0));
+    }
+
+    #[test]
+    fn validation_schedule_never_checked_is_due() {
+        let cfg = ValidationScheduleConfig::default();
+        assert!(cfg.is_due(0));
+    }
+
+    #[test]
+    fn validation_schedule_fresh_check_not_due() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let cfg = ValidationScheduleConfig::default(); // daily
+        // Checked just now — not due.
+        assert!(!cfg.is_due(now));
+    }
+
+    #[test]
+    fn validation_schedule_old_check_is_due() {
+        // last_check_ts = epoch+1 — more than a day ago.
+        let cfg = ValidationScheduleConfig::default(); // daily
+        assert!(cfg.is_due(1));
+    }
+
+    #[test]
+    fn validation_schedule_never_never_due() {
+        let cfg = ValidationScheduleConfig {
+            enabled: true,
+            schedule: "never".to_string(),
+            timeout_secs: 30,
+        };
+        assert!(!cfg.is_due(0));
+        assert!(!cfg.is_due(1));
+    }
+
+    #[test]
+    fn secret_override_validation_field_roundtrip_toml() {
+        let mut config = PhantomConfig::new_with_defaults("val_toml_test".to_string());
+        config.phantom.secrets.insert(
+            "STRIPE_KEY".to_string(),
+            SecretOverride {
+                validation: Some(ValidationScheduleConfig {
+                    enabled: true,
+                    schedule: "weekly".to_string(),
+                    timeout_secs: 60,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        assert!(toml_str.contains("weekly"), "TOML should contain 'weekly'");
+
+        let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
+        let ov = parsed.phantom.secrets.get("STRIPE_KEY").unwrap();
+        let val = ov.validation.as_ref().unwrap();
+        assert_eq!(val.schedule, "weekly");
+        assert_eq!(val.timeout_secs, 60);
+        assert!(val.enabled);
+    }
+
+    #[test]
+    fn secret_override_no_validation_field_is_none_default() {
+        let toml_str = r#"
+[phantom]
+version = "1"
+project_id = "abc"
+
+[phantom.secrets.MY_KEY]
+rotate_every = "30d"
+"#;
+        let parsed: PhantomConfig = toml::from_str(toml_str).unwrap();
+        let ov = parsed.phantom.secrets.get("MY_KEY").unwrap();
+        // validation should be absent (None) when not specified
+        assert!(ov.validation.is_none());
     }
 }

@@ -116,6 +116,20 @@ enum Commands {
         action: McpAction,
     },
 
+    /// Approve a pending MCP nonce for a mutating vault operation.
+    ///
+    /// Run this in a trusted terminal after the MCP server prints a nonce to
+    /// stderr. The returned approval_token must be passed as `approval_token`
+    /// in the subsequent MCP tool call.
+    ///
+    /// Example:
+    ///   phantom mcp-approve d3a9f2...
+    #[command(name = "mcp-approve", next_help_heading = "Setup")]
+    McpApprove {
+        /// The nonce printed by the MCP server to stderr
+        nonce: String,
+    },
+
     // ─────────────────────────── Daily use ───────────────────────────
     /// Start the proxy and run a command
     #[command(next_help_heading = "Daily use")]
@@ -428,6 +442,12 @@ enum Commands {
         /// primary if validation succeeds.
         #[arg(long, value_name = "NAME", conflicts_with = "check_all")]
         promote: Option<String>,
+        /// Run as a background daemon, polling per-secret schedules and writing
+        /// results to ~/.phantom/validation-report.json for MCP tools to consume.
+        /// Respects per-secret [phantom.secrets.{name}.validation] config from
+        /// .phantom.toml (schedule: daily|weekly|never, timeout_secs).
+        #[arg(long, conflicts_with_all = ["check_all", "promote"])]
+        watch: bool,
     },
 
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
@@ -464,6 +484,18 @@ enum Commands {
         json: bool,
     },
 
+    /// TTL-based secret expiry management: set expiry, enforce in CI, rotate to reset timer
+    ///
+    /// Subcommands:
+    ///   phantom expiry set <KEY> <DAYS>      — mark a secret expiring in N days
+    ///   phantom expiry enforce [--fail-closed] — exit 1 if any secret has expired
+    ///   phantom expiry rotate <KEY>          — generate fresh token + reset expiry timer
+    #[command(next_help_heading = "Maintenance")]
+    Expiry {
+        #[command(subcommand)]
+        action: ExpiryAction,
+    },
+
     /// Internal: clear the system clipboard after N seconds. Spawned by
     /// `phantom reveal --copy` so the parent CLI can exit immediately while a
     /// detached child waits, then clears. Hidden from `--help`.
@@ -472,6 +504,35 @@ enum Commands {
         /// Seconds to wait before clearing
         #[arg(long, default_value_t = 30)]
         secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExpiryAction {
+    /// Mark a secret as expiring in N days from now.
+    /// Stores `expires_at` Unix timestamp and `rotation_window` in .phantom.toml.
+    Set {
+        /// Secret name (e.g., STRIPE_KEY)
+        key: String,
+        /// Number of days until the secret expires
+        days: u64,
+    },
+    /// Exit 1 if any secret has an expired TTL (for CI / pre-commit hooks).
+    ///
+    /// With --fail-closed, also exit 1 if any secret has no expiry policy set.
+    Enforce {
+        /// Also fail if any secret has no expiry policy (treat missing TTL as expired)
+        #[arg(long)]
+        fail_closed: bool,
+        /// Emit JSON output instead of human-readable messages
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate a fresh phantom token and reset the expiry timer for a secret.
+    /// Uses the `rotation_window` days stored in .phantom.toml (default 30).
+    Rotate {
+        /// Secret name to rotate
+        key: String,
     },
 }
 
@@ -672,7 +733,7 @@ fn main() -> anyhow::Result<()> {
                 commands::rotate::run_with_expiry(sync, with_expiry)
             }
         }
-        Commands::Validate { action, check_all, jobs, promote } => {
+        Commands::Validate { action, check_all, jobs, promote, watch } => {
             match action {
                 Some(ValidateAction::Schedule { interval, status, disable }) => {
                     commands::validation_scheduler::run_schedule(
@@ -686,7 +747,9 @@ fn main() -> anyhow::Result<()> {
                     commands::validation_scheduler::run_history(last, cli.json)
                 }
                 None => {
-                    if let Some(secret_name) = promote {
+                    if watch {
+                        commands::validate::run_watch(jobs, cli.json)
+                    } else if let Some(secret_name) = promote {
                         commands::rotate::run_validate_promote(&secret_name, true)
                     } else {
                         commands::validate::run(check_all, jobs, cli.json)
@@ -820,9 +883,17 @@ fn main() -> anyhow::Result<()> {
         Commands::Mcp { action } => match action {
             McpAction::Serve => commands::mcp::run_serve(),
         },
+        Commands::McpApprove { nonce } => commands::mcp_approve::run(&nonce),
         Commands::SecretsExpiringSoon { days, auto_rotate, sync, json } => {
             commands::expiry::run(days, auto_rotate, sync, json)
         }
+        Commands::Expiry { action } => match action {
+            ExpiryAction::Set { key, days } => commands::expiry::run_set(&key, days),
+            ExpiryAction::Enforce { fail_closed, json } => {
+                commands::expiry::run_enforce(fail_closed, json)
+            }
+            ExpiryAction::Rotate { key } => commands::expiry::run_rotate(&key),
+        },
         Commands::ClearClipboardAfter { secs } => commands::reveal::run_clear_after(secs),
         Commands::Team { action } => match action {
             TeamAction::List => commands::team::run_list(),
