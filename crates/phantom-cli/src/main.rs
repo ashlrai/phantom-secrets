@@ -56,6 +56,10 @@ enum Commands {
         /// Defaults to PHANTOM_INIT_JOBS env var, then 4.
         #[arg(long, short = 'j', value_name = "N")]
         jobs: Option<usize>,
+        /// Create a valid .phantom.toml and empty vault without requiring a .env file.
+        /// Use this to bootstrap a brand-new project before any secrets exist.
+        #[arg(long, conflicts_with_all = ["all", "dry_run"])]
+        empty: bool,
     },
 
     /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex)
@@ -504,15 +508,22 @@ fn main() -> anyhow::Result<()> {
             all,
             dry_run,
             jobs,
-        } => match all {
-            Some(root) => {
-                let j = jobs
-                    .or_else(commands::init::multi::jobs_from_env)
-                    .unwrap_or(commands::init::multi::DEFAULT_JOBS);
-                commands::init::multi::run(root, dry_run, j)
+            empty,
+        } => {
+            if empty {
+                commands::init::run_empty()
+            } else {
+                match all {
+                    Some(root) => {
+                        let j = jobs
+                            .or_else(commands::init::multi::jobs_from_env)
+                            .unwrap_or(commands::init::multi::DEFAULT_JOBS);
+                        commands::init::multi::run(root, dry_run, j)
+                    }
+                    None => commands::init::run(&from),
+                }
             }
-            None => commands::init::run(&from),
-        },
+        }
         Commands::List { json } => commands::list::run(json),
         Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
         Commands::Remove { name } => commands::remove::run(&name),

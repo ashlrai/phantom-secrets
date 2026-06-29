@@ -77,13 +77,17 @@ fn remove_makes_key_disappear_from_list() {
 }
 
 #[test]
-fn add_without_init_fails() {
-    // No init — .phantom.toml does not exist
+fn add_without_init_auto_inits() {
+    // No init — phantom add should auto-create .phantom.toml and succeed.
     let dir = TempDir::new().unwrap();
     phantom(&dir)
         .args(["add", "SOME_KEY", "some-value"])
         .assert()
-        .failure();
+        .success();
+    assert!(
+        dir.path().join(".phantom.toml").exists(),
+        ".phantom.toml should be auto-created by phantom add"
+    );
 }
 
 #[test]
