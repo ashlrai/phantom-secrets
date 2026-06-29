@@ -98,6 +98,8 @@ pub enum RotationSource {
     GitHub,
     /// Rotated via AWS IAM access-key rotation.
     Aws,
+    /// Rotated via the Google Cloud Secret Manager API.
+    Google,
     /// Rotated via a custom/generic provider.
     Custom { provider_name: String },
 }
@@ -110,6 +112,7 @@ impl RotationSource {
             Self::Stripe => "stripe",
             Self::GitHub => "github",
             Self::Aws => "aws",
+            Self::Google => "google",
             Self::Custom { provider_name } => provider_name.as_str(),
         }
     }
@@ -719,6 +722,181 @@ impl RotationProvider for AwsRotationProvider {
     }
 }
 
+// ── Google Cloud Secret Manager provider ──────────────────────────────────────
+
+/// Google Cloud Secret Manager rotation provider.
+///
+/// Rotates a GCP secret by calling the Secret Manager REST API:
+///
+/// 1. **Add a new secret version** via
+///    `POST /v1/projects/{project}/secrets/{secret}/versions:add`
+///    with the newly generated value as the payload. The new version becomes
+///    the `ENABLED` (latest) version automatically.
+/// 2. **Disable the previous version** (optional; skipped when
+///    `account_id` is not set to a previous-version resource name).
+///
+/// # Configuration in `.phantom.toml`
+///
+/// ```toml
+/// [phantom.secrets.GCP_API_KEY.rotation_provider]
+/// provider     = "google"
+/// api_key_env  = "GCP_ROTATION_ACCESS_TOKEN"   # OAuth2 Bearer or service-account token
+/// account_id   = "projects/my-project/secrets/my-secret"  # full resource name
+/// ```
+///
+/// `api_key_env` must name an environment variable holding a valid OAuth2
+/// Bearer token (e.g. from `gcloud auth print-access-token`) or a service
+/// account access token with `roles/secretmanager.admin` on the secret.
+///
+/// # Mock path
+///
+/// When `api_key_env` resolves to a value starting with `"gcp_mock_"`, the
+/// provider returns deterministic mock values without making real HTTP calls.
+/// This keeps unit tests hermetic.
+pub struct GoogleRotationProvider;
+
+impl RotationProvider for GoogleRotationProvider {
+    fn name(&self) -> &str {
+        "google"
+    }
+
+    fn matches(&self, secret_name: &str) -> bool {
+        let upper = secret_name.to_uppercase();
+        let has_provider = upper.contains("GOOGLE") || upper.contains("GCP");
+        let has_kind = upper.contains("KEY")
+            || upper.contains("TOKEN")
+            || upper.contains("SECRET")
+            || upper.contains("CREDENTIALS")
+            || upper.contains("APIKEY")
+            || upper.contains("API_KEY");
+        has_provider && has_kind
+    }
+
+    fn initiate_rotation(
+        &self,
+        secret_name: &str,
+        config: &RotationProviderConfig,
+    ) -> Result<String, RotationProviderError> {
+        let access_token = resolve_api_key(config)?;
+
+        // ── Mock path ────────────────────────────────────────────────────────
+        if access_token.starts_with("gcp_mock_") {
+            return Ok(format!("mock_challenge_google_{secret_name}"));
+        }
+
+        // ── Real path: add a new secret version ──────────────────────────────
+        //
+        // The `account_id` field holds the full Secret Manager resource name:
+        //   projects/{project}/secrets/{secret}
+        // If absent we fall back to deriving a name from the secret_name itself.
+        let resource_name = config
+            .account_id
+            .as_deref()
+            .unwrap_or(secret_name);
+
+        // Generate a new random secret value (32 bytes, base64-encoded).
+        let new_secret_value = generate_secret_value();
+
+        // Encode the payload as the Secret Manager API expects: base64 of the
+        // raw secret bytes in a JSON `{"payload": {"data": "<base64>"}}` body.
+        use base64::Engine;
+        let data_b64 = base64::engine::general_purpose::STANDARD
+            .encode(new_secret_value.as_bytes());
+
+        let body = serde_json::json!({
+            "payload": {
+                "data": data_b64
+            }
+        });
+
+        let url = format!(
+            "https://secretmanager.googleapis.com/v1/{resource_name}/versions:add"
+        );
+
+        let client = build_http_client(config.timeout_secs)?;
+        let response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .map_err(|e| RotationProviderError::NetworkError {
+                reason: e.to_string(),
+            })?;
+
+        let status = response.status().as_u16();
+        if status == 401 || status == 403 {
+            return Err(RotationProviderError::AuthFailed {
+                reason: format!(
+                    "Google Secret Manager returned HTTP {status} — check access token permissions"
+                ),
+            });
+        }
+        if status != 200 {
+            let body_text = response.text().unwrap_or_default();
+            return Err(RotationProviderError::ApiError {
+                status,
+                reason: body_text,
+            });
+        }
+
+        // The response contains the new version resource name; we encode both
+        // it and the new secret value into the challenge_id so finalize can
+        // return the value without a second API call.
+        let resp_body: serde_json::Value = response
+            .json()
+            .map_err(|e| RotationProviderError::UnexpectedResponse {
+                reason: e.to_string(),
+            })?;
+
+        let version_name = resp_body
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(resource_name);
+
+        // Pack version_name + new_value as "version\x00new_value" then base64.
+        let packed = format!("{version_name}\x00{new_secret_value}");
+        Ok(encode_challenge_payload(&packed))
+    }
+
+    fn finalize_rotation(
+        &self,
+        challenge_id: &str,
+        _config: &RotationProviderConfig,
+    ) -> Result<zeroize::Zeroizing<String>, RotationProviderError> {
+        // Mock path.
+        if challenge_id.starts_with("mock_challenge_google_") {
+            return Ok(zeroize::Zeroizing::new(
+                "gcp_rotated_mock_secret_value_v2".to_string(),
+            ));
+        }
+
+        // Real path: decode the packed payload.
+        let packed = decode_challenge_payload(challenge_id)?;
+        // The new value is after the null-byte separator.
+        let new_value = packed
+            .split_once('\x00')
+            .map(|(_, v)| v)
+            .unwrap_or(packed.as_str());
+        Ok(zeroize::Zeroizing::new(new_value.to_string()))
+    }
+
+    fn rotation_source(&self) -> RotationSource {
+        RotationSource::Google
+    }
+}
+
+/// Generate a cryptographically random secret value (32 bytes, hex-encoded).
+///
+/// This value is used as the *new* secret payload when the Google Secret Manager
+/// provider creates a new version. Callers should store it immediately in the vault.
+fn generate_secret_value() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 // ── Generic provider ──────────────────────────────────────────────────────────
 
 /// A generic rotation provider for custom vendor APIs.
@@ -809,12 +987,13 @@ impl RotationProvider for GenericRotationProvider {
 
 // ── Default providers ─────────────────────────────────────────────────────────
 
-/// Build the default set of rotation providers (Stripe, GitHub, AWS).
+/// Build the default set of rotation providers (Stripe, GitHub, AWS, Google).
 pub fn default_rotation_providers() -> Vec<Box<dyn RotationProvider>> {
     vec![
         Box::new(StripeRotationProvider),
         Box::new(GitHubRotationProvider),
         Box::new(AwsRotationProvider),
+        Box::new(GoogleRotationProvider),
     ]
 }
 
@@ -973,6 +1152,11 @@ impl ProviderRateLimit {
             },
             "aws" => Self {
                 inter_call_delay_ms: 1_000, // 1 CreateAccessKey/sec
+                post_rotation_pause_ms: 0,
+                max_per_batch: 0,
+            },
+            "google" => Self {
+                inter_call_delay_ms: 500, // Secret Manager quota: ~2 writes/sec per secret
                 post_rotation_pause_ms: 0,
                 max_per_batch: 0,
             },
@@ -1267,6 +1451,7 @@ mod tests {
         assert_eq!(RotationSource::Stripe.label(), "stripe");
         assert_eq!(RotationSource::GitHub.label(), "github");
         assert_eq!(RotationSource::Aws.label(), "aws");
+        assert_eq!(RotationSource::Google.label(), "google");
         assert_eq!(
             RotationSource::Custom {
                 provider_name: "acme".to_string()
@@ -1283,6 +1468,7 @@ mod tests {
             RotationSource::Stripe,
             RotationSource::GitHub,
             RotationSource::Aws,
+            RotationSource::Google,
         ] {
             assert_eq!(src.to_string(), src.label());
         }
@@ -1294,6 +1480,8 @@ mod tests {
         assert_eq!(json, r#""stripe""#);
         let json = serde_json::to_string(&RotationSource::GitHub).unwrap();
         assert_eq!(json, r#""github""#);
+        let json = serde_json::to_string(&RotationSource::Google).unwrap();
+        assert_eq!(json, r#""google""#);
     }
 
     // ── RotationProviderConfig ────────────────────────────────────────────────
@@ -1522,6 +1710,283 @@ typo_field = "oops"
         );
 
         unsafe { std::env::remove_var("PHANTOM_TEST_AWS_MOCK_KEY") };
+    }
+
+    // ── Google Cloud mock rotation ────────────────────────────────────────────
+
+    #[test]
+    fn google_provider_matches_gcp_key_names() {
+        let p = GoogleRotationProvider;
+        // Google-prefixed
+        assert!(p.matches("GOOGLE_API_KEY"), "GOOGLE_API_KEY must match");
+        assert!(p.matches("GOOGLE_APPLICATION_CREDENTIALS"), "GOOGLE_APPLICATION_CREDENTIALS must match");
+        assert!(p.matches("GOOGLE_SERVICE_ACCOUNT_KEY"), "GOOGLE_SERVICE_ACCOUNT_KEY must match");
+        assert!(p.matches("GOOGLE_ACCESS_TOKEN"), "GOOGLE_ACCESS_TOKEN must match");
+        assert!(p.matches("MY_GOOGLE_API_KEY"), "MY_GOOGLE_API_KEY must match");
+        // GCP-prefixed
+        assert!(p.matches("GCP_API_KEY"), "GCP_API_KEY must match");
+        assert!(p.matches("GCP_ACCESS_TOKEN"), "GCP_ACCESS_TOKEN must match");
+        assert!(p.matches("GCP_SECRET"), "GCP_SECRET must match");
+        assert!(p.matches("GCP_SERVICE_KEY"), "GCP_SERVICE_KEY must match");
+        // Must NOT match unrelated
+        assert!(!p.matches("STRIPE_SECRET_KEY"), "STRIPE must not match");
+        assert!(!p.matches("GITHUB_TOKEN"), "GITHUB must not match");
+        assert!(!p.matches("AWS_ACCESS_KEY_ID"), "AWS must not match");
+        assert!(!p.matches("OPENAI_API_KEY"), "OPENAI must not match");
+    }
+
+    #[test]
+    fn google_provider_name_is_google() {
+        let p = GoogleRotationProvider;
+        assert_eq!(p.name(), "google");
+    }
+
+    #[test]
+    fn google_provider_rotation_source_is_google() {
+        let p = GoogleRotationProvider;
+        assert_eq!(p.rotation_source(), RotationSource::Google);
+        assert_eq!(p.rotation_source().label(), "google");
+    }
+
+    #[test]
+    fn google_mock_rotation_full_flow() {
+        let provider = GoogleRotationProvider;
+        let config = RotationProviderConfig {
+            provider: "google".to_string(),
+            api_key_env: Some("PHANTOM_TEST_GCP_MOCK_KEY".to_string()),
+            account_id: Some("projects/my-project/secrets/my-secret".to_string()),
+            ..Default::default()
+        };
+
+        unsafe {
+            std::env::set_var("PHANTOM_TEST_GCP_MOCK_KEY", "gcp_mock_access_token_test")
+        };
+
+        let challenge = provider
+            .initiate_rotation("GCP_API_KEY", &config)
+            .expect("initiate_rotation should succeed for mock token");
+        assert!(
+            challenge.starts_with("mock_challenge_google_"),
+            "mock challenge_id must start with 'mock_challenge_google_': {challenge}"
+        );
+
+        let new_value = provider
+            .finalize_rotation(&challenge, &config)
+            .expect("finalize_rotation should succeed");
+        assert!(
+            !new_value.is_empty(),
+            "rotated secret value must not be empty"
+        );
+        assert_eq!(
+            new_value.as_str(),
+            "gcp_rotated_mock_secret_value_v2",
+            "Google mock value must be deterministic"
+        );
+
+        unsafe { std::env::remove_var("PHANTOM_TEST_GCP_MOCK_KEY") };
+    }
+
+    #[test]
+    fn google_mock_rotation_version_increment() {
+        // Simulates a second rotation: calling initiate+finalize twice must
+        // return the same deterministic mock value (idempotent mock).
+        let provider = GoogleRotationProvider;
+        let config = RotationProviderConfig {
+            provider: "google".to_string(),
+            api_key_env: Some("PHANTOM_TEST_GCP_VERSION_KEY".to_string()),
+            account_id: Some("projects/proj/secrets/sec".to_string()),
+            ..Default::default()
+        };
+
+        unsafe {
+            std::env::set_var("PHANTOM_TEST_GCP_VERSION_KEY", "gcp_mock_version_test_token")
+        };
+
+        let ch1 = provider
+            .initiate_rotation("GOOGLE_API_KEY", &config)
+            .expect("first initiate should succeed");
+        let v1 = provider
+            .finalize_rotation(&ch1, &config)
+            .expect("first finalize should succeed");
+
+        let ch2 = provider
+            .initiate_rotation("GOOGLE_API_KEY", &config)
+            .expect("second initiate should succeed");
+        let v2 = provider
+            .finalize_rotation(&ch2, &config)
+            .expect("second finalize should succeed");
+
+        // Both rotations produce the same deterministic mock value.
+        assert_eq!(v1.as_str(), v2.as_str(), "mock rotation must be deterministic");
+        // The challenge IDs must be the same pattern (deterministic mock).
+        assert_eq!(ch1, ch2, "mock challenge IDs must be identical");
+
+        unsafe { std::env::remove_var("PHANTOM_TEST_GCP_VERSION_KEY") };
+    }
+
+    #[test]
+    fn google_rotation_missing_api_key_env_returns_not_configured() {
+        let provider = GoogleRotationProvider;
+        let config = RotationProviderConfig {
+            provider: "google".to_string(),
+            api_key_env: None, // intentionally missing
+            ..Default::default()
+        };
+
+        let err = provider
+            .initiate_rotation("GCP_API_KEY", &config)
+            .expect_err("missing api_key_env must return an error");
+        assert!(
+            matches!(err, RotationProviderError::NotConfigured),
+            "expected NotConfigured, got: {err}"
+        );
+    }
+
+    #[test]
+    fn google_rotation_unset_env_var_returns_not_configured() {
+        let provider = GoogleRotationProvider;
+        let config = RotationProviderConfig {
+            provider: "google".to_string(),
+            api_key_env: Some("PHANTOM_GCP_DEFINITELY_UNSET_ENV_VAR_XYZ".to_string()),
+            ..Default::default()
+        };
+
+        // Ensure it is truly unset.
+        unsafe { std::env::remove_var("PHANTOM_GCP_DEFINITELY_UNSET_ENV_VAR_XYZ") };
+
+        let err = provider
+            .initiate_rotation("GOOGLE_API_KEY", &config)
+            .expect_err("unset env var must return an error");
+        assert!(
+            matches!(err, RotationProviderError::NotConfigured),
+            "expected NotConfigured, got: {err}"
+        );
+    }
+
+    #[test]
+    fn google_rotation_source_serializes_correctly() {
+        let json = serde_json::to_string(&RotationSource::Google).unwrap();
+        assert_eq!(json, r#""google""#, "RotationSource::Google must serialize to \"google\"");
+    }
+
+    #[test]
+    fn google_rotation_source_label_and_display() {
+        assert_eq!(RotationSource::Google.label(), "google");
+        assert_eq!(RotationSource::Google.to_string(), "google");
+    }
+
+    #[test]
+    fn google_rate_limit_has_inter_call_delay() {
+        let rl = ProviderRateLimit::for_provider("google");
+        assert!(
+            rl.inter_call_delay_ms > 0,
+            "Google Secret Manager must have a positive inter-call delay"
+        );
+        assert_eq!(
+            rl.post_rotation_pause_ms, 0,
+            "Google Secret Manager has no mandatory post-rotation pause"
+        );
+    }
+
+    #[test]
+    fn auto_sync_rotation_google_mock_returns_value() {
+        let config = RotationProviderConfig {
+            provider: "google".to_string(),
+            api_key_env: Some("PHANTOM_AUTO_SYNC_GCP_KEY".to_string()),
+            account_id: Some("projects/proj/secrets/mysecret".to_string()),
+            enabled: true,
+            ..Default::default()
+        };
+
+        unsafe {
+            std::env::set_var("PHANTOM_AUTO_SYNC_GCP_KEY", "gcp_mock_auto_sync_token")
+        };
+        unsafe { std::env::remove_var("PHANTOM_AUDIT") };
+
+        let providers = default_rotation_providers();
+        let result = auto_sync_rotation("GCP_API_KEY", Some(&config), &providers);
+        assert!(result.is_ok(), "auto_sync_rotation must not return Err for Google mock");
+        let value = result.unwrap();
+        assert!(value.is_some(), "Google mock provider must return Some(value)");
+        assert_eq!(
+            value.unwrap().as_str(),
+            "gcp_rotated_mock_secret_value_v2"
+        );
+
+        unsafe { std::env::remove_var("PHANTOM_AUTO_SYNC_GCP_KEY") };
+    }
+
+    #[test]
+    fn execute_batch_rotation_google_mock_succeeds() {
+        unsafe {
+            std::env::set_var("BATCH_TEST_GCP_KEY", "gcp_mock_batch_token");
+            std::env::remove_var("PHANTOM_AUDIT");
+        }
+
+        let gcp_config = RotationProviderConfig {
+            provider: "google".to_string(),
+            api_key_env: Some("BATCH_TEST_GCP_KEY".to_string()),
+            account_id: Some("projects/proj/secrets/batch-secret".to_string()),
+            enabled: true,
+            ..Default::default()
+        };
+
+        let now = 1_700_000_000u64;
+        let items = vec![BatchRotationItem {
+            secret_name: "GCP_API_KEY".to_string(),
+            expires_at: Some(now - 86_400),
+            provider_config: Some(gcp_config),
+            provider_label: "google".to_string(),
+        }];
+
+        let providers = default_rotation_providers();
+        let (batch_id, outcomes) = execute_batch_rotation(&items, &providers, now);
+
+        assert!(!batch_id.is_empty(), "batch_id must be non-empty");
+        assert_eq!(outcomes.len(), 1);
+
+        let outcome = &outcomes[0];
+        assert_eq!(outcome.secret_name, "GCP_API_KEY");
+        assert!(outcome.vendor_rotated, "should be vendor-rotated via Google mock");
+        assert!(outcome.is_ok(), "should have no error; got: {:?}", outcome.error);
+        assert!(outcome.new_value.is_some(), "should have a new value");
+        assert_eq!(
+            outcome.new_value.as_ref().unwrap().as_str(),
+            "gcp_rotated_mock_secret_value_v2"
+        );
+        assert!(outcome.new_expires_at.is_some(), "should have a new expiry");
+        assert!(outcome.new_expires_at.unwrap() > now, "new expiry must be in the future");
+
+        unsafe { std::env::remove_var("BATCH_TEST_GCP_KEY") };
+    }
+
+    #[test]
+    fn default_rotation_providers_includes_google() {
+        let providers = default_rotation_providers();
+        let names: Vec<&str> = providers.iter().map(|p| p.name()).collect();
+        assert!(names.contains(&"google"), "default_rotation_providers must include 'google'");
+    }
+
+    #[test]
+    fn default_rotation_providers_google_matches_expected_keys() {
+        let providers = default_rotation_providers();
+        let gcp_keys = vec![
+            ("GCP_API_KEY", "google"),
+            ("GOOGLE_API_KEY", "google"),
+            ("GCP_ACCESS_TOKEN", "google"),
+            ("GOOGLE_APPLICATION_CREDENTIALS", "google"),
+        ];
+        for (key, expected) in gcp_keys {
+            let matched = providers
+                .iter()
+                .filter(|p| p.matches(key))
+                .map(|p| p.name())
+                .any(|n| n == expected);
+            assert!(
+                matched,
+                "key {key} should match provider {expected} in default_rotation_providers"
+            );
+        }
     }
 
     // ── auto_sync_rotation ────────────────────────────────────────────────────
