@@ -47,6 +47,15 @@ pub enum AuditAction {
     Path,
     /// Verify the HMAC chain integrity of the audit log
     Verify,
+    /// Show per-secret access counts and timing from the audit log
+    Stats {
+        /// Emit raw JSON instead of the human-readable table
+        #[arg(long)]
+        json: bool,
+        /// Only show the top N secrets by access count (0 = all)
+        #[arg(long, default_value_t = 0)]
+        top: usize,
+    },
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -259,6 +268,126 @@ pub fn run_verify() -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn run_stats(json: bool, top: usize) -> Result<()> {
+    let stats = phantom_core::audit::audit_stats()
+        .map_err(|e| anyhow::anyhow!("Failed to read audit log: {e}"))?;
+
+    if stats.total_events == 0 {
+        println!(
+            "{}  No audit events yet — set {} to start logging.",
+            "->".blue().bold(),
+            "PHANTOM_AUDIT=1".cyan()
+        );
+        return Ok(());
+    }
+
+    let secrets = if top > 0 && top < stats.secrets.len() {
+        &stats.secrets[..top]
+    } else {
+        &stats.secrets[..]
+    };
+
+    if json {
+        // Emit a JSON object with the full stats, limited secrets slice.
+        let out = serde_json::json!({
+            "total_events": stats.total_events,
+            "secret_events": stats.secret_events,
+            "first_event_ts": stats.first_event_ts,
+            "last_event_ts": stats.last_event_ts,
+            "secrets": secrets,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    // Header
+    println!(
+        "{}  {} total events · {} name a secret · log covers {}",
+        "->".blue().bold(),
+        stats.total_events.to_string().cyan(),
+        stats.secret_events.to_string().cyan(),
+        match (stats.first_event_ts, stats.last_event_ts) {
+            (Some(f), Some(l)) =>
+                format!("{} → {}", format_unix_ts(f).dimmed(), format_unix_ts(l).dimmed()),
+            _ => "unknown range".dimmed().to_string(),
+        }
+    );
+
+    if secrets.is_empty() {
+        println!("{}  No per-secret events recorded.", "->".blue().bold());
+        return Ok(());
+    }
+
+    println!();
+
+    // Column widths
+    let name_w = secrets.iter().map(|s| s.name.len()).max().unwrap_or(4).max(4);
+    println!(
+        "  {:<name_w$}  {:>6}  {:>6}  {:>7}  {:>7}  {}",
+        "SECRET".bold(),
+        "TOTAL".bold(),
+        "STORES".bold(),
+        "FETCHES".bold(),
+        "DELETES".bold(),
+        "LAST SEEN".bold(),
+        name_w = name_w,
+    );
+    println!("  {}", "-".repeat(name_w + 38));
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    for s in secrets {
+        let age = if s.last_seen_ts > 0 {
+            human_age(now.saturating_sub(s.last_seen_ts))
+        } else {
+            "unknown".to_string()
+        };
+
+        // Colour-code: yellow if not seen in >7 days, red if >30 days.
+        let age_str = if s.last_seen_ts > 0 {
+            let secs_ago = now.saturating_sub(s.last_seen_ts);
+            if secs_ago > 30 * 86400 {
+                age.red().to_string()
+            } else if secs_ago > 7 * 86400 {
+                age.yellow().to_string()
+            } else {
+                age.dimmed().to_string()
+            }
+        } else {
+            age.dimmed().to_string()
+        };
+
+        println!(
+            "  {:<name_w$}  {:>6}  {:>6}  {:>7}  {:>7}  {}",
+            s.name.bold(),
+            s.total,
+            s.stores,
+            s.retrieves,
+            s.deletes,
+            age_str,
+            name_w = name_w,
+        );
+    }
+
+    Ok(())
+}
+
+/// Format a duration in seconds as a human-readable "X ago" string.
+fn human_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
