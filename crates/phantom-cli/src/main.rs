@@ -165,6 +165,10 @@ enum Commands {
         /// Show TTL/expiry countdown for each secret
         #[arg(long)]
         show_expiry: bool,
+        /// Only show secrets whose anomaly score is >= this value (0=all, 1=caution+, 2=alert only).
+        /// Reads per-secret rate-limit stats from the audit log.
+        #[arg(long, value_name = "SCORE")]
+        min_anomaly_score: Option<u8>,
     },
 
     /// Add a secret to the vault
@@ -386,6 +390,15 @@ enum Commands {
         /// and `phantom doctor --expiry` to monitor status.
         #[arg(long, value_name = "DAYS")]
         with_expiry: Option<u64>,
+        /// Shadow mode: generate a candidate credential alongside the current
+        /// primary for staged validation before promotion. The current primary
+        /// remains active until `phantom validate <NAME> --promote` succeeds.
+        /// Requires a secret NAME when used with --shadow.
+        #[arg(long)]
+        shadow: bool,
+        /// Secret name to shadow-rotate (required with --shadow).
+        #[arg(long, value_name = "NAME", requires = "shadow")]
+        name: Option<String>,
     },
 
     /// Validate stored secrets against their target APIs (drift detection)
@@ -397,6 +410,10 @@ enum Commands {
         /// Number of concurrent validation jobs (default: 4)
         #[arg(long, short = 'j', value_name = "N")]
         jobs: Option<usize>,
+        /// Validate the shadow candidate for NAME and atomically promote it to
+        /// primary if validation succeeds.
+        #[arg(long, value_name = "NAME", conflicts_with = "check_all")]
+        promote: Option<String>,
     },
 
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
@@ -550,7 +567,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::List { json, show_expiry } => commands::list::run_with_expiry(json, show_expiry),
+        Commands::List { json, show_expiry, min_anomaly_score } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
         Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
@@ -559,11 +576,22 @@ fn main() -> anyhow::Result<()> {
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status { oneline } => commands::status::run(oneline),
-        Commands::Rotate { sync, with_expiry } => {
-            commands::rotate::run_with_expiry(sync, with_expiry)
+        Commands::Rotate { sync, with_expiry, shadow, name } => {
+            if shadow {
+                let secret_name = name.ok_or_else(|| {
+                    anyhow::anyhow!("--shadow requires --name <NAME>")
+                })?;
+                commands::rotate::run_shadow(&secret_name).map(|_| ())
+            } else {
+                commands::rotate::run_with_expiry(sync, with_expiry)
+            }
         }
-        Commands::Validate { check_all, jobs } => {
-            commands::validate::run(check_all, jobs, cli.json)
+        Commands::Validate { check_all, jobs, promote } => {
+            if let Some(secret_name) = promote {
+                commands::rotate::run_validate_promote(&secret_name, true)
+            } else {
+                commands::validate::run(check_all, jobs, cli.json)
+            }
         }
         Commands::Doctor { fix, expiry } => commands::doctor::run_doctor(fix, expiry),
         Commands::Agent { action } => match action {
