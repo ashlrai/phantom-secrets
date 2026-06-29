@@ -330,6 +330,93 @@ pub fn log_result(op: &str, name: Option<&str>) -> std::io::Result<()> {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Rate-limit anomaly classification
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Anomaly classification emitted alongside each proxy rate-limit audit event.
+///
+/// The same enum lives in `phantom_proxy::rate_limiter` — this copy in
+/// `phantom_core` lets the CLI and MCP server reference it without depending
+/// on the proxy crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnomalyClass {
+    /// Request is within normal access patterns.
+    Normal,
+    /// Request is elevated; may warrant monitoring.
+    Caution,
+    /// Burst threshold exceeded; request was rate-limited.
+    Alert,
+}
+
+impl AnomalyClass {
+    /// Numeric score (0 / 1 / 2) for `--min-anomaly-score` CLI filtering.
+    pub fn score(self) -> u8 {
+        match self {
+            AnomalyClass::Normal => 0,
+            AnomalyClass::Caution => 1,
+            AnomalyClass::Alert => 2,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AnomalyClass::Normal => "normal",
+            AnomalyClass::Caution => "caution",
+            AnomalyClass::Alert => "alert",
+        }
+    }
+
+    /// Parse from a string (case-insensitive).
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Some(Self::Normal),
+            "caution" => Some(Self::Caution),
+            "alert" => Some(Self::Alert),
+            _ => None,
+        }
+    }
+}
+
+/// A rate-limit event record — emitted when the proxy records an access and
+/// detects an anomaly.  Written to the audit log as op `proxy.rate_event`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitEvent {
+    /// Secret key name (never its value).
+    pub secret_key: String,
+    /// Requests for this secret in the last 10 seconds.
+    pub per_secret_10s: u64,
+    /// Total requests across all secrets in the last 10 seconds.
+    pub total_10s: u64,
+    /// Requests for this secret in the last 60 seconds.
+    pub per_secret_60s: u64,
+    /// Computed anomaly score 0–100.
+    pub anomaly_score: u8,
+    /// Anomaly classification.
+    pub anomaly_class: AnomalyClass,
+    /// Unix timestamp (seconds).
+    pub ts: u64,
+}
+
+impl RateLimitEvent {
+    /// Write this event to the audit log (best-effort; never panics).
+    pub fn emit(&self) {
+        if !enabled() {
+            return;
+        }
+        // Only log caution/alert events to avoid flooding the audit log with
+        // normal traffic.
+        if self.anomaly_class == AnomalyClass::Normal {
+            return;
+        }
+        log(
+            "proxy.rate_event",
+            Some(self.secret_key.as_str()),
+        );
+    }
+}
+
 /// Result of a log verification walk.
 #[derive(Debug, Default)]
 pub struct VerifyReport {

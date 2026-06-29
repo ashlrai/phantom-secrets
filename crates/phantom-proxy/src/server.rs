@@ -1,5 +1,6 @@
 use crate::body_scope;
 use crate::interceptor::Interceptor;
+use crate::rate_limiter::{RateLimitConfig, RateLimiter};
 use crate::services::ServiceRegistry;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, StreamBody};
@@ -34,6 +35,8 @@ pub struct ProxyConfig {
     /// `phantom_token` query-param auth are accepted. Disabled by default so
     /// proxy session tokens do not end up in URLs.
     pub allow_query_token_auth: bool,
+    /// Rate-limit configuration. Defaults to env-var-driven values.
+    pub rate_limit: RateLimitConfig,
 }
 
 impl Default for ProxyConfig {
@@ -45,6 +48,7 @@ impl Default for ProxyConfig {
             upstream_timeout_secs: 30,
             connect_timeout_secs: 5,
             allow_query_token_auth: false,
+            rate_limit: RateLimitConfig::from_env(),
         }
     }
 }
@@ -75,6 +79,7 @@ impl ProxyServer {
         let state = Arc::new(ProxyState {
             registry,
             interceptor,
+            rate_limiter: RateLimiter::new(config.rate_limit),
             proxy_token: config.proxy_token,
             allow_query_token_auth: config.allow_query_token_auth,
             max_body_size: config.max_body_size,
@@ -123,6 +128,7 @@ impl ProxyServer {
 struct ProxyState {
     registry: ServiceRegistry,
     interceptor: Interceptor,
+    rate_limiter: RateLimiter,
     proxy_token: String,
     allow_query_token_auth: bool,
     max_body_size: usize,
@@ -272,6 +278,84 @@ async fn handle_request(
 
     let target_url = format!("{}{}{}", route.target_base, remainder, query);
     debug!("Proxying to: {}", target_url);
+
+    // ── Rate-limit / anomaly detection ──────────────────────────────────────
+    // Record the access against the matched route's secret key and classify.
+    // Alert-class requests are rejected with 429; caution/normal pass through.
+    {
+        use crate::rate_limiter::AnomalyClass;
+        let decision = state.rate_limiter.record(&route.secret_key);
+        match decision.class {
+            AnomalyClass::Alert => {
+                warn!(
+                    "Rate limit exceeded for secret '{}': {}/10s per-secret, {}/10s total (score {})",
+                    route.secret_key,
+                    decision.per_secret_10s,
+                    decision.total_10s,
+                    decision.anomaly_score,
+                );
+                let mut resp = error_response(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!(
+                        r#"{{"error":"rate limit exceeded","secret_key":"{}","anomaly_class":"alert","per_secret_10s":{},"total_10s":{},"anomaly_score":{}}}"#,
+                        route.secret_key,
+                        decision.per_secret_10s,
+                        decision.total_10s,
+                        decision.anomaly_score,
+                    ),
+                );
+                resp.headers_mut().insert(
+                    "x-phantom-anomaly-class",
+                    hyper::header::HeaderValue::from_static("alert"),
+                );
+                resp.headers_mut().insert(
+                    "x-phantom-anomaly-score",
+                    hyper::header::HeaderValue::from_str(
+                        &decision.anomaly_score.to_string(),
+                    )
+                    .unwrap_or(hyper::header::HeaderValue::from_static("100")),
+                );
+                resp.headers_mut().insert(
+                    "retry-after",
+                    hyper::header::HeaderValue::from_static("10"),
+                );
+                return Ok(resp);
+            }
+            AnomalyClass::Caution => {
+                warn!(
+                    "Elevated access rate for secret '{}': {}/10s per-secret (score {})",
+                    route.secret_key, decision.per_secret_10s, decision.anomaly_score,
+                );
+            }
+            AnomalyClass::Normal => {
+                debug!(
+                    "Rate check ok for '{}': {}/10s (score {})",
+                    route.secret_key, decision.per_secret_10s, decision.anomaly_score,
+                );
+            }
+        }
+        // Emit audit event for caution/alert (best-effort, non-blocking).
+        if decision.class != AnomalyClass::Normal {
+            let event = phantom_core::audit::RateLimitEvent {
+                secret_key: route.secret_key.clone(),
+                per_secret_10s: decision.per_secret_10s,
+                total_10s: decision.total_10s,
+                per_secret_60s: decision.per_secret_60s,
+                anomaly_score: decision.anomaly_score,
+                anomaly_class: match decision.class {
+                    AnomalyClass::Caution => phantom_core::audit::AnomalyClass::Caution,
+                    AnomalyClass::Alert => phantom_core::audit::AnomalyClass::Alert,
+                    AnomalyClass::Normal => phantom_core::audit::AnomalyClass::Normal,
+                },
+                ts: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            };
+            event.emit();
+        }
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     // Capture the request content-type before consuming `req` for its body —
     // we need it to drive content-type-aware body substitution (F9).
