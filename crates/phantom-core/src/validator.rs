@@ -855,6 +855,29 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Run `f` with `PHANTOM_AUDIT` cleared, holding the crate-wide `ENV_LOCK`.
+    ///
+    /// The validator pipeline calls `audit::log()` internally. Without this
+    /// wrapper, those calls race with audit module tests that set `HOME` to a
+    /// temp directory under `ENV_LOCK` — the validator writes stray events into
+    /// the audit test's temp log and corrupts the HMAC-chain count assertions.
+    fn with_audit_disabled<R, F: FnOnce() -> R>(f: F) -> R {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("PHANTOM_AUDIT").ok();
+        // SAFETY: serialized via ENV_LOCK.
+        unsafe { std::env::remove_var("PHANTOM_AUDIT") };
+        let result = f();
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("PHANTOM_AUDIT", v),
+                None => std::env::remove_var("PHANTOM_AUDIT"),
+            }
+        }
+        result
+    }
+
     // ── ValidationMetadata ───────────────────────────────────────────────
 
     #[test]
@@ -1091,172 +1114,188 @@ mod tests {
 
     #[test]
     fn pipeline_all_valid() {
-        let secrets = vec![
-            ("OPENAI_API_KEY".to_string(), zs("sk-valid")),
-            ("STRIPE_SECRET_KEY".to_string(), zs("sk_live_valid")),
-        ];
-        let validators: Vec<Box<dyn SecretValidator>> = vec![
-            mock_valid("openai", "OPENAI"),
-            mock_valid("stripe", "STRIPE"),
-        ];
-        let report = run_validation_pipeline(secrets, &validators, 2, Duration::from_secs(5));
-        assert_eq!(report.total, 2);
-        assert_eq!(report.valid, 2);
-        assert_eq!(report.invalid, 0);
-        assert_eq!(report.unreachable, 0);
-        assert_eq!(report.not_checked, 0);
-        assert!(report.invalid_entries().is_empty());
+        with_audit_disabled(|| {
+            let secrets = vec![
+                ("OPENAI_API_KEY".to_string(), zs("sk-valid")),
+                ("STRIPE_SECRET_KEY".to_string(), zs("sk_live_valid")),
+            ];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![
+                mock_valid("openai", "OPENAI"),
+                mock_valid("stripe", "STRIPE"),
+            ];
+            let report = run_validation_pipeline(secrets, &validators, 2, Duration::from_secs(5));
+            assert_eq!(report.total, 2);
+            assert_eq!(report.valid, 2);
+            assert_eq!(report.invalid, 0);
+            assert_eq!(report.unreachable, 0);
+            assert_eq!(report.not_checked, 0);
+            assert!(report.invalid_entries().is_empty());
+        });
     }
 
     #[test]
     fn pipeline_one_invalid() {
-        let secrets = vec![
-            ("OPENAI_API_KEY".to_string(), zs("sk-revoked")),
-            ("STRIPE_SECRET_KEY".to_string(), zs("sk_live_valid")),
-        ];
-        let validators: Vec<Box<dyn SecretValidator>> = vec![
-            mock_invalid("openai", "OPENAI", "401 Unauthorized"),
-            mock_valid("stripe", "STRIPE"),
-        ];
-        let report = run_validation_pipeline(secrets, &validators, 2, Duration::from_secs(5));
-        assert_eq!(report.total, 2);
-        assert_eq!(report.valid, 1);
-        assert_eq!(report.invalid, 1);
-        assert_eq!(report.not_checked, 0);
-        let inv = report.invalid_entries();
-        assert_eq!(inv.len(), 1);
-        assert_eq!(inv[0].name, "OPENAI_API_KEY");
-        assert!(inv[0].reason.as_deref().unwrap().contains("401"));
+        with_audit_disabled(|| {
+            let secrets = vec![
+                ("OPENAI_API_KEY".to_string(), zs("sk-revoked")),
+                ("STRIPE_SECRET_KEY".to_string(), zs("sk_live_valid")),
+            ];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![
+                mock_invalid("openai", "OPENAI", "401 Unauthorized"),
+                mock_valid("stripe", "STRIPE"),
+            ];
+            let report = run_validation_pipeline(secrets, &validators, 2, Duration::from_secs(5));
+            assert_eq!(report.total, 2);
+            assert_eq!(report.valid, 1);
+            assert_eq!(report.invalid, 1);
+            assert_eq!(report.not_checked, 0);
+            let inv = report.invalid_entries();
+            assert_eq!(inv.len(), 1);
+            assert_eq!(inv[0].name, "OPENAI_API_KEY");
+            assert!(inv[0].reason.as_deref().unwrap().contains("401"));
+        });
     }
 
     #[test]
     fn pipeline_unreachable_does_not_crash() {
-        let secrets = vec![("GITHUB_TOKEN".to_string(), zs("ghp_fake"))];
-        let validators: Vec<Box<dyn SecretValidator>> =
-            vec![mock_unreachable("github", "GITHUB", "connection refused")];
-        let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(1));
-        assert_eq!(report.total, 1);
-        assert_eq!(report.unreachable, 1);
-        assert_eq!(report.valid, 0);
-        assert_eq!(report.invalid, 0);
-        let un = report.unreachable_entries();
-        assert_eq!(un[0].name, "GITHUB_TOKEN");
-        assert!(un[0].reason.as_deref().unwrap().contains("connection refused"));
+        with_audit_disabled(|| {
+            let secrets = vec![("GITHUB_TOKEN".to_string(), zs("ghp_fake"))];
+            let validators: Vec<Box<dyn SecretValidator>> =
+                vec![mock_unreachable("github", "GITHUB", "connection refused")];
+            let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(1));
+            assert_eq!(report.total, 1);
+            assert_eq!(report.unreachable, 1);
+            assert_eq!(report.valid, 0);
+            assert_eq!(report.invalid, 0);
+            let un = report.unreachable_entries();
+            assert_eq!(un[0].name, "GITHUB_TOKEN");
+            assert!(un[0].reason.as_deref().unwrap().contains("connection refused"));
+        });
     }
 
     #[test]
     fn pipeline_no_applicable_validator() {
-        let secrets = vec![("TOTALLY_UNKNOWN_API_KEY".to_string(), zs("abc123"))];
-        let validators: Vec<Box<dyn SecretValidator>> = vec![mock_valid("openai", "OPENAI")];
-        let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(5));
-        assert_eq!(report.total, 1);
-        assert_eq!(report.not_checked, 1);
-        assert_eq!(report.valid, 0);
-        let nc = report.not_checked_entries();
-        assert_eq!(nc[0].name, "TOTALLY_UNKNOWN_API_KEY");
+        with_audit_disabled(|| {
+            let secrets = vec![("TOTALLY_UNKNOWN_API_KEY".to_string(), zs("abc123"))];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![mock_valid("openai", "OPENAI")];
+            let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(5));
+            assert_eq!(report.total, 1);
+            assert_eq!(report.not_checked, 1);
+            assert_eq!(report.valid, 0);
+            let nc = report.not_checked_entries();
+            assert_eq!(nc[0].name, "TOTALLY_UNKNOWN_API_KEY");
+        });
     }
 
     #[test]
     fn pipeline_empty_secrets() {
-        let secrets: Vec<(String, zeroize::Zeroizing<String>)> = vec![];
-        let validators: Vec<Box<dyn SecretValidator>> = vec![mock_valid("openai", "OPENAI")];
-        let report = run_validation_pipeline(secrets, &validators, 4, Duration::from_secs(5));
-        assert_eq!(report.total, 0);
-        assert_eq!(report.valid, 0);
-        assert!(report.entries.is_empty());
+        with_audit_disabled(|| {
+            let secrets: Vec<(String, zeroize::Zeroizing<String>)> = vec![];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![mock_valid("openai", "OPENAI")];
+            let report = run_validation_pipeline(secrets, &validators, 4, Duration::from_secs(5));
+            assert_eq!(report.total, 0);
+            assert_eq!(report.valid, 0);
+            assert!(report.entries.is_empty());
+        });
     }
 
     #[test]
     fn pipeline_empty_validators() {
-        let secrets = vec![("OPENAI_API_KEY".to_string(), zs("sk-test"))];
-        let validators: Vec<Box<dyn SecretValidator>> = vec![];
-        let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(5));
-        assert_eq!(report.total, 1);
-        assert_eq!(report.not_checked, 1);
+        with_audit_disabled(|| {
+            let secrets = vec![("OPENAI_API_KEY".to_string(), zs("sk-test"))];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![];
+            let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(5));
+            assert_eq!(report.total, 1);
+            assert_eq!(report.not_checked, 1);
+        });
     }
 
     #[test]
     fn pipeline_mixed_results() {
-        let secrets = vec![
-            ("OPENAI_API_KEY".to_string(), zs("sk-valid")),
-            ("STRIPE_SECRET_KEY".to_string(), zs("sk_revoked")),
-            ("GITHUB_TOKEN".to_string(), zs("ghp_unreachable")),
-            ("NO_VALIDATOR_KEY".to_string(), zs("abc")),
-        ];
-        let validators: Vec<Box<dyn SecretValidator>> = vec![
-            mock_valid("openai", "OPENAI"),
-            mock_invalid("stripe", "STRIPE", "revoked"),
-            mock_unreachable("github", "GITHUB", "timeout"),
-        ];
-        let report = run_validation_pipeline(secrets, &validators, 4, Duration::from_secs(5));
-        assert_eq!(report.total, 4);
-        assert_eq!(report.valid, 1);
-        assert_eq!(report.invalid, 1);
-        assert_eq!(report.unreachable, 1);
-        assert_eq!(report.not_checked, 1);
+        with_audit_disabled(|| {
+            let secrets = vec![
+                ("OPENAI_API_KEY".to_string(), zs("sk-valid")),
+                ("STRIPE_SECRET_KEY".to_string(), zs("sk_revoked")),
+                ("GITHUB_TOKEN".to_string(), zs("ghp_unreachable")),
+                ("NO_VALIDATOR_KEY".to_string(), zs("abc")),
+            ];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![
+                mock_valid("openai", "OPENAI"),
+                mock_invalid("stripe", "STRIPE", "revoked"),
+                mock_unreachable("github", "GITHUB", "timeout"),
+            ];
+            let report = run_validation_pipeline(secrets, &validators, 4, Duration::from_secs(5));
+            assert_eq!(report.total, 4);
+            assert_eq!(report.valid, 1);
+            assert_eq!(report.invalid, 1);
+            assert_eq!(report.unreachable, 1);
+            assert_eq!(report.not_checked, 1);
+        });
     }
 
     #[test]
     fn pipeline_parallel_matches_sequential() {
-        let secrets_seq = vec![
-            ("OPENAI_API_KEY".to_string(), zs("sk-valid")),
-            ("STRIPE_SECRET_KEY".to_string(), zs("sk_revoked")),
-        ];
-        let secrets_par = vec![
-            ("OPENAI_API_KEY".to_string(), zs("sk-valid")),
-            ("STRIPE_SECRET_KEY".to_string(), zs("sk_revoked")),
-        ];
-        let validators_seq: Vec<Box<dyn SecretValidator>> = vec![
-            mock_valid("openai", "OPENAI"),
-            mock_invalid("stripe", "STRIPE", "revoked"),
-        ];
-        let validators_par: Vec<Box<dyn SecretValidator>> = vec![
-            mock_valid("openai", "OPENAI"),
-            mock_invalid("stripe", "STRIPE", "revoked"),
-        ];
-        let seq = run_validation_pipeline(secrets_seq, &validators_seq, 1, Duration::from_secs(5));
-        let par = run_validation_pipeline_parallel(
-            secrets_par,
-            &validators_par,
-            4,
-            Duration::from_secs(5),
-        );
-        assert_eq!(seq.valid, par.valid);
-        assert_eq!(seq.invalid, par.invalid);
-        assert_eq!(seq.total, par.total);
+        with_audit_disabled(|| {
+            let secrets_seq = vec![
+                ("OPENAI_API_KEY".to_string(), zs("sk-valid")),
+                ("STRIPE_SECRET_KEY".to_string(), zs("sk_revoked")),
+            ];
+            let secrets_par = vec![
+                ("OPENAI_API_KEY".to_string(), zs("sk-valid")),
+                ("STRIPE_SECRET_KEY".to_string(), zs("sk_revoked")),
+            ];
+            let validators_seq: Vec<Box<dyn SecretValidator>> = vec![
+                mock_valid("openai", "OPENAI"),
+                mock_invalid("stripe", "STRIPE", "revoked"),
+            ];
+            let validators_par: Vec<Box<dyn SecretValidator>> = vec![
+                mock_valid("openai", "OPENAI"),
+                mock_invalid("stripe", "STRIPE", "revoked"),
+            ];
+            let seq =
+                run_validation_pipeline(secrets_seq, &validators_seq, 1, Duration::from_secs(5));
+            let par = run_validation_pipeline_parallel(
+                secrets_par,
+                &validators_par,
+                4,
+                Duration::from_secs(5),
+            );
+            assert_eq!(seq.valid, par.valid);
+            assert_eq!(seq.invalid, par.invalid);
+            assert_eq!(seq.total, par.total);
+        });
     }
 
     #[test]
     fn pipeline_timeout_zero_treated_as_unreachable() {
-        // A zero timeout should still produce a result (Unreachable, not panic).
-        let secrets = vec![("OPENAI_API_KEY".to_string(), zs("sk-test"))];
-        let validators: Vec<Box<dyn SecretValidator>> = vec![Box::new(MockValidator {
-            name: "mock-timeout".to_string(),
-            pattern: "OPENAI".to_string(),
-            result: ValidationResult::Unreachable {
-                reason: "zero timeout".to_string(),
-            },
-        })];
-        let report =
-            run_validation_pipeline(secrets, &validators, 1, Duration::from_millis(1));
-        assert_eq!(report.unreachable, 1);
+        with_audit_disabled(|| {
+            // A zero timeout should still produce a result (Unreachable, not panic).
+            let secrets = vec![("OPENAI_API_KEY".to_string(), zs("sk-test"))];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![Box::new(MockValidator {
+                name: "mock-timeout".to_string(),
+                pattern: "OPENAI".to_string(),
+                result: ValidationResult::Unreachable {
+                    reason: "zero timeout".to_string(),
+                },
+            })];
+            let report =
+                run_validation_pipeline(secrets, &validators, 1, Duration::from_millis(1));
+            assert_eq!(report.unreachable, 1);
+        });
     }
 
     #[test]
     fn pipeline_many_secrets_jobs_respected() {
-        // 10 secrets, jobs=3; should complete without panic.
-        let secrets: Vec<_> = (0..10)
-            .map(|i| {
-                (
-                    format!("OPENAI_API_KEY_{i}"),
-                    zs("sk-valid"),
-                )
-            })
-            .collect();
-        let validators: Vec<Box<dyn SecretValidator>> = vec![mock_valid("openai", "OPENAI")];
-        let report = run_validation_pipeline(secrets, &validators, 3, Duration::from_secs(5));
-        assert_eq!(report.total, 10);
-        assert_eq!(report.valid, 10);
+        with_audit_disabled(|| {
+            // 10 secrets, jobs=3; should complete without panic.
+            let secrets: Vec<_> = (0..10)
+                .map(|i| (format!("OPENAI_API_KEY_{i}"), zs("sk-valid")))
+                .collect();
+            let validators: Vec<Box<dyn SecretValidator>> = vec![mock_valid("openai", "OPENAI")];
+            let report = run_validation_pipeline(secrets, &validators, 3, Duration::from_secs(5));
+            assert_eq!(report.total, 10);
+            assert_eq!(report.valid, 10);
+        });
     }
 
     #[test]
@@ -1337,65 +1376,71 @@ mod tests {
 
     #[test]
     fn pipeline_partial_failure_continues() {
-        // If one secret fails with Invalid, remaining secrets still get checked.
-        let secrets = vec![
-            ("STRIPE_SECRET_KEY".to_string(), zs("sk_bad")),
-            ("OPENAI_API_KEY".to_string(), zs("sk-good")),
-            ("GITHUB_TOKEN".to_string(), zs("ghp_good")),
-        ];
-        let validators: Vec<Box<dyn SecretValidator>> = vec![
-            mock_invalid("stripe", "STRIPE", "revoked"),
-            mock_valid("openai", "OPENAI"),
-            mock_valid("github", "GITHUB"),
-        ];
-        let report = run_validation_pipeline(secrets, &validators, 2, Duration::from_secs(5));
-        assert_eq!(report.total, 3);
-        assert_eq!(report.invalid, 1);
-        assert_eq!(report.valid, 2);
+        with_audit_disabled(|| {
+            // If one secret fails with Invalid, remaining secrets still get checked.
+            let secrets = vec![
+                ("STRIPE_SECRET_KEY".to_string(), zs("sk_bad")),
+                ("OPENAI_API_KEY".to_string(), zs("sk-good")),
+                ("GITHUB_TOKEN".to_string(), zs("ghp_good")),
+            ];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![
+                mock_invalid("stripe", "STRIPE", "revoked"),
+                mock_valid("openai", "OPENAI"),
+                mock_valid("github", "GITHUB"),
+            ];
+            let report = run_validation_pipeline(secrets, &validators, 2, Duration::from_secs(5));
+            assert_eq!(report.total, 3);
+            assert_eq!(report.invalid, 1);
+            assert_eq!(report.valid, 2);
+        });
     }
 
     #[test]
     fn pipeline_metadata_timestamp_is_recent() {
-        let secrets = vec![("OPENAI_API_KEY".to_string(), zs("sk-test"))];
-        let validators: Vec<Box<dyn SecretValidator>> = vec![mock_valid("openai", "OPENAI")];
-        let before = now_secs();
-        let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(5));
-        let after = now_secs();
-        let entry = &report.entries[0];
-        assert!(
-            entry.checked_at >= before && entry.checked_at <= after,
-            "checked_at={} not in [{before}, {after}]",
-            entry.checked_at
-        );
+        with_audit_disabled(|| {
+            let secrets = vec![("OPENAI_API_KEY".to_string(), zs("sk-test"))];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![mock_valid("openai", "OPENAI")];
+            let before = now_secs();
+            let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(5));
+            let after = now_secs();
+            let entry = &report.entries[0];
+            assert!(
+                entry.checked_at >= before && entry.checked_at <= after,
+                "checked_at={} not in [{before}, {after}]",
+                entry.checked_at
+            );
+        });
     }
 
     #[test]
     fn not_applicable_result_falls_through_to_next_validator() {
-        // A validator returning NotApplicable should allow the next one to handle the key.
-        struct AlwaysNotApplicable;
-        impl SecretValidator for AlwaysNotApplicable {
-            fn name(&self) -> &str {
-                "not-applicable"
+        with_audit_disabled(|| {
+            // A validator returning NotApplicable should allow the next one to handle the key.
+            struct AlwaysNotApplicable;
+            impl SecretValidator for AlwaysNotApplicable {
+                fn name(&self) -> &str {
+                    "not-applicable"
+                }
+                fn matches(&self, key: &str) -> bool {
+                    key.contains("OPENAI")
+                }
+                fn validate(
+                    &self,
+                    _: &str,
+                    _: &zeroize::Zeroizing<String>,
+                    _: Duration,
+                ) -> ValidationResult {
+                    ValidationResult::NotApplicable
+                }
             }
-            fn matches(&self, key: &str) -> bool {
-                key.contains("OPENAI")
-            }
-            fn validate(
-                &self,
-                _: &str,
-                _: &zeroize::Zeroizing<String>,
-                _: Duration,
-            ) -> ValidationResult {
-                ValidationResult::NotApplicable
-            }
-        }
 
-        let secrets = vec![("OPENAI_API_KEY".to_string(), zs("sk-test"))];
-        let validators: Vec<Box<dyn SecretValidator>> = vec![
-            Box::new(AlwaysNotApplicable),
-            mock_valid("openai-fallback", "OPENAI"),
-        ];
-        let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(5));
-        assert_eq!(report.valid, 1, "fallback validator should have handled it");
+            let secrets = vec![("OPENAI_API_KEY".to_string(), zs("sk-test"))];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![
+                Box::new(AlwaysNotApplicable),
+                mock_valid("openai-fallback", "OPENAI"),
+            ];
+            let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(5));
+            assert_eq!(report.valid, 1, "fallback validator should have handled it");
+        });
     }
 }

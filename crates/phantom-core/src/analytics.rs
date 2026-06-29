@@ -446,12 +446,7 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Serialize env mutations across tests in this crate just like audit.rs
-    // does. We reuse the same mutex name string but it's a different static —
-    // that's fine because within each test binary they're distinct.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_support::ENV_LOCK;
 
     fn with_audit_home<F: FnOnce(&std::path::Path)>(f: F) {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

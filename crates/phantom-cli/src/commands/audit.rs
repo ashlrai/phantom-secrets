@@ -48,7 +48,11 @@ pub enum AuditAction {
     /// Print the absolute path to the audit log
     Path,
     /// Verify the HMAC chain integrity of the audit log
-    Verify,
+    Verify {
+        /// Decrypt and display the encrypted_context field for each event (forensics mode)
+        #[arg(long)]
+        with_context: bool,
+    },
     /// Show per-secret access counts and timing from the audit log
     Stats {
         /// Emit raw JSON instead of the human-readable table
@@ -167,7 +171,7 @@ pub fn run_path() -> Result<()> {
     Ok(())
 }
 
-pub fn run_verify() -> Result<()> {
+pub fn run_verify(with_context: bool) -> Result<()> {
     let path = resolve_path()?;
     if !path.exists() {
         println!(
@@ -176,6 +180,11 @@ pub fn run_verify() -> Result<()> {
             "PHANTOM_AUDIT=1".cyan()
         );
         return Ok(());
+    }
+
+    // When --with-context is requested, use the richer verify path.
+    if with_context {
+        return run_verify_with_context();
     }
 
     let report = phantom_core::audit::verify_log()
@@ -281,6 +290,98 @@ pub fn run_verify() -> Result<()> {
             "{}  Audit head checkpoint does not match the log tail.",
             "!".red().bold()
         );
+    }
+
+    if !report.is_clean() {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// `phantom audit verify --with-context`: decrypt and display `encrypted_context`
+/// for every event in the log, providing a forensics-grade view of audit metadata.
+fn run_verify_with_context() -> Result<()> {
+    let (report, events) = phantom_core::audit::verify_log_with_context()
+        .map_err(|e| anyhow::anyhow!("Failed to verify audit log: {e}"))?;
+
+    let status = if report.is_clean() {
+        "ok".green().bold().to_string()
+    } else {
+        "FAILED".red().bold().to_string()
+    };
+
+    println!(
+        "{}  verified: {} · tampered: {} · malformed: {} · sequence: {} · head: {} · legacy: {}",
+        status,
+        report.verified.to_string().cyan(),
+        if report.tampered > 0 {
+            report.tampered.to_string().red().bold().to_string()
+        } else {
+            report.tampered.to_string()
+        },
+        if report.malformed > 0 {
+            report.malformed.to_string().red().bold().to_string()
+        } else {
+            report.malformed.to_string()
+        },
+        if report.sequence_errors > 0 {
+            report.sequence_errors.to_string().red().bold().to_string()
+        } else {
+            report.sequence_errors.to_string()
+        },
+        if report.head_missing {
+            "missing".red().bold().to_string()
+        } else if report.head_mismatch {
+            "mismatch".red().bold().to_string()
+        } else {
+            "ok".to_string()
+        },
+        report.legacy.to_string().dimmed(),
+    );
+
+    println!();
+    println!("{}  Decrypted context per event:", "->".blue().bold());
+    println!();
+
+    for ev in &events {
+        let v: serde_json::Value = match serde_json::from_str(&ev.raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let ts = v["ts"].as_u64().map(format_unix_ts).unwrap_or_default();
+        let op = v["op"].as_str().unwrap_or("?");
+        let seq = v["seq"].as_u64().map(|s| s.to_string()).unwrap_or_default();
+
+        print!(
+            "  {} [{}] {}",
+            ts.dimmed(),
+            seq.cyan(),
+            op.bold()
+        );
+        if let Some(name) = v["name"].as_str() {
+            print!("  {}", name.bold());
+        }
+        println!();
+
+        match (&ev.context, &ev.context_error) {
+            (Some(ctx), _) => {
+                println!(
+                    "    {} process={} hostname={} ppid={} cwd={}",
+                    "context:".green(),
+                    ctx.process_name.cyan(),
+                    ctx.hostname.cyan(),
+                    ctx.ppid.to_string().cyan(),
+                    ctx.cwd.dimmed(),
+                );
+            }
+            (None, Some(err)) => {
+                println!("    {} {}", "context error:".yellow(), err.dimmed());
+            }
+            (None, None) => {
+                println!("    {}", "no encrypted context".dimmed());
+            }
+        }
     }
 
     if !report.is_clean() {

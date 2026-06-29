@@ -45,3 +45,7 @@ toml = { workspace = true }
 assert_cmd = "2"
 tempfile = "3"
 wiremock = "0.6"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }

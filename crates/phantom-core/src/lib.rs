@@ -15,3 +15,13 @@ pub mod teams;
 pub mod teams_vault;
 pub mod token;
 pub mod validator;
+
+/// Crate-wide test helpers: a single `ENV_LOCK` shared by all modules whose
+/// tests mutate process-wide env vars (`HOME`, `PHANTOM_AUDIT`, etc.).
+/// Using separate per-module statics causes data-races when cargo runs tests
+/// from different modules in parallel within the same test binary.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Mutex;
+    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+}
