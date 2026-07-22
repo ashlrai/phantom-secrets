@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "mode": "replace-detected",
+  "commands": [
+    {
+      "id": "cargo-fmt",
+      "kind": "lint",
+      "cmd": ["cargo", "fmt", "--all", "--", "--check"],
+      "timeoutMs": 120000,
+      "required": true,
+      "profiles": ["quick", "merge"]
+    },
+    {
+      "id": "cargo-build",
+      "kind": "build",
+      "cmd": ["cargo", "build", "--verbose"],
+      "timeoutMs": 300000,
+      "required": true,
+      "profiles": ["quick", "merge"]
+    },
+    {
+      "id": "cargo-test-cli",
+      "kind": "test",
+      "cmd": ["cargo", "test", "-p", "phantom-secrets", "--", "--test-threads=1"],
+      "timeoutMs": 600000,
+      "required": true,
+      "profiles": ["merge"]
+    },
+    {
+      "id": "cargo-test-core",
+      "kind": "test",
+      "cmd": ["cargo", "test", "-p", "phantom-secrets-core"],
+      "timeoutMs": 300000,
+      "required": true,
+      "profiles": ["merge"]
+    },
+    {
+      "id": "cargo-test-mcp",
+      "kind": "test",
+      "cmd": ["cargo", "test", "-p", "phantom-secrets-mcp", "--", "--test-threads=1"],
+      "timeoutMs": 600000,
+      "required": true,
+      "profiles": ["merge"]
+    },
+    {
+      "id": "cargo-test-proxy",
+      "kind": "test",
+      "cmd": ["cargo", "test", "-p", "phantom-secrets-proxy", "--", "--test-threads=1"],
+      "timeoutMs": 300000,
+      "required": true,
+      "profiles": ["merge"]
+    },
+    {
+      "id": "cargo-test-vault",
+      "kind": "test",
+      "cmd": ["cargo", "test", "-p", "phantom-secrets-vault", "--", "--test-threads=1"],
+      "timeoutMs": 300000,
+      "required": true,
+      "profiles": ["merge"]
+    },
+    {
+      "id": "cargo-clippy",
+      "kind": "lint",
+      "cmd": ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"],
+      "timeoutMs": 300000,
+      "required": true,
+      "profiles": ["merge"]
+    }
+  ]
+}
