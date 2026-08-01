@@ -118,10 +118,10 @@ pub fn run(fix: bool) -> Result<()> {
     let gitignore_path = project_dir.join(".gitignore");
     if gitignore_path.exists() {
         let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
-        if content.lines().any(|l| l.trim() == ".env") {
+        if env_is_gitignored(&project_dir, &content) {
             check_pass(".env is in .gitignore");
         } else {
-            check_warn(".env is NOT in .gitignore — secrets could be committed!");
+            check_warn(".env is NOT in .gitignore, secrets could be committed!");
             check_fix("Run: echo '.env' >> .gitignore");
             if fix {
                 let mut c = content;
@@ -137,7 +137,7 @@ pub fn run(fix: bool) -> Result<()> {
             }
         }
     } else {
-        check_warn("No .gitignore — consider adding one");
+        check_warn("No .gitignore, consider adding one");
         if fix {
             std::fs::write(
                 &gitignore_path,
@@ -155,7 +155,7 @@ pub fn run(fix: bool) -> Result<()> {
     if example_path.exists() {
         check_pass(".env.example found (team onboarding ready)");
     } else {
-        check_warn("No .env.example — team onboarding may be difficult");
+        check_warn("No .env.example, team onboarding may be difficult");
         check_fix("Run: phantom env");
         if fix && env_path.exists() {
             if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
@@ -197,13 +197,13 @@ pub fn run(fix: bool) -> Result<()> {
                     .iter()
                     .any(|v| v.as_str().is_some_and(|s| s.contains(".env")));
                 if has_env_deny {
-                    check_warn(".env is in deny rules — after phantom init, .env is safe to read");
+                    check_warn(".env is in deny rules, after phantom init, .env is safe to read");
                     issues += 1;
                 }
             }
         }
     } else {
-        check_info("No Claude Code config — run `phantom setup` for auto-mode");
+        check_info("No Claude Code config, run `phantom setup` for auto-mode");
     }
 
     // Check 7: Cloud auth
@@ -212,7 +212,7 @@ pub fn run(fix: bool) -> Result<()> {
             check_pass("Cloud: logged in (token stored in keychain)");
         }
         None => {
-            check_info("Cloud: not logged in — run `phantom login` for cloud sync");
+            check_info("Cloud: not logged in, run `phantom login` for cloud sync");
         }
     }
 
@@ -264,7 +264,7 @@ pub fn run(fix: bool) -> Result<()> {
             issues += 1;
         }
     } else {
-        check_info("Not a git repo — pre-commit hook not applicable");
+        check_info("Not a git repo, pre-commit hook not applicable");
     }
 
     // Check 9: README mentions Phantom
@@ -295,7 +295,7 @@ pub fn run(fix: bool) -> Result<()> {
         check_info(&format!("Install source: {label}"));
     }
 
-    // Check 11: Vault backend (informational — also shown inline above when
+    // Check 11: Vault backend (informational, also shown inline above when
     // config exists, but surfaced unconditionally here so it's always visible)
     {
         if let Ok(config) = PhantomConfig::load(&config_path) {
@@ -319,20 +319,20 @@ pub fn run(fix: bool) -> Result<()> {
                             format!("{bytes} B")
                         };
                         check_info(&format!(
-                            "Audit log: enabled — {} ({})",
+                            "Audit log: enabled, {} ({})",
                             path.display(),
                             size_str
                         ));
                     }
                     Err(_) => {
                         check_info(&format!(
-                            "Audit log: enabled — {} (not yet created)",
+                            "Audit log: enabled, {} (not yet created)",
                             path.display()
                         ));
                     }
                 },
                 Err(_) => {
-                    check_info("Audit log: enabled (log path unresolvable — HOME not set?)");
+                    check_info("Audit log: enabled (log path unresolvable, HOME not set?)");
                 }
             }
         } else {
@@ -356,20 +356,20 @@ pub fn run(fix: bool) -> Result<()> {
         println!();
         println!("  {} MCP client wiring:", "info".blue());
 
-        // Claude Code — project-local .claude/settings.local.json
+        // Claude Code, project-local .claude/settings.local.json
         let claude_path = project_dir.join(".claude/settings.local.json");
         check_mcp_client("claude", &claude_path, false);
 
         if let Some(home) = dirs::home_dir() {
-            // Cursor — ~/.cursor/mcp.json
+            // Cursor, ~/.cursor/mcp.json
             check_mcp_client("cursor", &home.join(".cursor/mcp.json"), true);
-            // Windsurf — ~/.codeium/windsurf/mcp_config.json
+            // Windsurf, ~/.codeium/windsurf/mcp_config.json
             check_mcp_client(
                 "windsurf",
                 &home.join(".codeium/windsurf/mcp_config.json"),
                 true,
             );
-            // Codex — ~/.codex/config.toml
+            // Codex, ~/.codex/config.toml
             check_mcp_client("codex", &home.join(".codex/config.toml"), true);
         }
     }
@@ -386,7 +386,7 @@ pub fn run(fix: bool) -> Result<()> {
             "!".yellow().bold(),
             issues,
             if !fix {
-                " — run `phantom doctor --fix` to auto-fix"
+                ", run `phantom doctor --fix` to auto-fix"
             } else {
                 ""
             }
@@ -439,6 +439,45 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) {
     }
 }
 
+/// Returns `true` if `.env` (relative to `project_dir`) would be ignored by git.
+///
+/// Prefers `git check-ignore` when a git repo is present (handles wildcards like
+/// `*.env`, `.env*`, `**/.env` natively). Falls back to a text scan of the
+/// supplied `.gitignore` content covering the common patterns Phantom users
+/// reach for: `.env`, `.env*`, `*.env`, `**/.env`.
+fn env_is_gitignored(project_dir: &std::path::Path, gitignore_content: &str) -> bool {
+    if project_dir.join(".git").exists() {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(project_dir)
+            .args(["check-ignore", "-q", ".env"])
+            .output();
+        if let Ok(out) = output {
+            // Exit 0 = ignored, 1 = not ignored, 128 = git unavailable / not a repo.
+            // Trust git only on the unambiguous 0/1 answers.
+            if let Some(code) = out.status.code() {
+                if code == 0 {
+                    return true;
+                }
+                if code == 1 {
+                    return false;
+                }
+            }
+        }
+    }
+    // Fallback: scan .gitignore text for patterns that match `.env`.
+    gitignore_content.lines().any(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+            return false;
+        }
+        matches!(
+            trimmed,
+            ".env" | ".env*" | "*.env" | "**/.env" | "/.env" | "**/.env*"
+        )
+    })
+}
+
 fn check_pass(msg: &str) {
     println!("  {} {}", "pass".green(), msg);
 }
@@ -465,9 +504,70 @@ fn check_fixed(msg: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::env_is_gitignored;
     use crate::commands::upgrade::{detect_install_source, InstallSource};
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
 
-    /// Smoke test — detect_install_source() must be stable across two calls.
+    /// Initialize a real git repo so `git check-ignore` has something to consult.
+    fn init_git_repo(dir: &Path) {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .arg("init")
+            .arg("-q")
+            .output()
+            .expect("git init failed");
+    }
+
+    #[test]
+    fn env_exact_match_in_gitignore_is_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let content = ".env\nnode_modules/\n";
+        fs::write(tmp.path().join(".gitignore"), content).unwrap();
+        assert!(env_is_gitignored(tmp.path(), content));
+    }
+
+    #[test]
+    fn env_missing_from_gitignore_is_not_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let content = "node_modules/\ntarget/\n";
+        fs::write(tmp.path().join(".gitignore"), content).unwrap();
+        assert!(!env_is_gitignored(tmp.path(), content));
+    }
+
+    #[test]
+    fn env_covered_by_wildcard_glob_is_detected() {
+        // `*.env` is the wildcard variant the issue calls out, git check-ignore
+        // treats it as a match for `.env`, and our fallback scan does too.
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let content = "*.env\n";
+        fs::write(tmp.path().join(".gitignore"), content).unwrap();
+        assert!(env_is_gitignored(tmp.path(), content));
+    }
+
+    #[test]
+    fn env_covered_by_double_star_glob_is_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let content = "**/.env\n";
+        fs::write(tmp.path().join(".gitignore"), content).unwrap();
+        assert!(env_is_gitignored(tmp.path(), content));
+    }
+
+    #[test]
+    fn comment_lines_do_not_count_as_a_match() {
+        // Pure-text fallback path (no git repo), comments must not satisfy the check.
+        let tmp = tempfile::tempdir().unwrap();
+        let content = "# .env\nnode_modules/\n";
+        assert!(!env_is_gitignored(tmp.path(), content));
+    }
+
+    /// Smoke test, detect_install_source() must be stable across two calls.
     #[test]
     fn install_source_is_stable() {
         let a = detect_install_source();
