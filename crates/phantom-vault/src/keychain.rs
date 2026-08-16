@@ -53,7 +53,13 @@ fn metadata_path(project_id: &str) -> PathBuf {
     // Sanitise project_id so it is safe as a filename component.
     let safe: String = project_id
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     metadata_dir().join(format!("{safe}.meta.json"))
 }
@@ -94,7 +100,13 @@ fn save_meta_map(project_id: &str, map: &BTreeMap<String, SecretMetadata>) -> Re
 fn validation_meta_path(project_id: &str) -> std::path::PathBuf {
     let safe: String = project_id
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     metadata_dir().join(format!("{safe}.validation.json"))
 }
@@ -118,8 +130,9 @@ fn save_validation_meta_map(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(map)
-        .map_err(|e| PhantomError::VaultError(format!("Validation metadata serialize error: {e}")))?;
+    let json = serde_json::to_string_pretty(map).map_err(|e| {
+        PhantomError::VaultError(format!("Validation metadata serialize error: {e}"))
+    })?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, &json)?;
     std::fs::rename(&tmp, &path)?;

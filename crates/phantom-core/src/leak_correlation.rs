@@ -383,10 +383,7 @@ fn extract_json_path_inner(
 /// For a high-confidence profile, extract the string value at the given
 /// dot-notation JSON path from `json_value`.  Returns `None` if the path
 /// does not exist or the value is not a string.
-pub fn value_at_json_path<'a>(
-    json_value: &'a serde_json::Value,
-    path: &str,
-) -> Option<&'a str> {
+pub fn value_at_json_path<'a>(json_value: &'a serde_json::Value, path: &str) -> Option<&'a str> {
     // Walk the path segments.  We handle `.key`, `[idx]`, and combinations.
     let mut current = json_value;
     let mut remaining = path;
@@ -398,9 +395,7 @@ pub fn value_at_json_path<'a>(
         if remaining.starts_with('.') {
             remaining = &remaining[1..];
             // Find the next `.` or `[` to get the key name.
-            let end = remaining
-                .find(|c| c == '.' || c == '[')
-                .unwrap_or(remaining.len());
+            let end = remaining.find(['.', '[']).unwrap_or(remaining.len());
             let key = &remaining[..end];
             remaining = &remaining[end..];
             current = current.get(key)?;
@@ -574,11 +569,7 @@ impl LeakCorrelationEngine {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    fn read_leak_events(
-        &self,
-        now: u64,
-        window_secs: u64,
-    ) -> std::io::Result<Vec<RawLeakEvent>> {
+    fn read_leak_events(&self, now: u64, window_secs: u64) -> std::io::Result<Vec<RawLeakEvent>> {
         if !self.audit_log_path.exists() {
             return Ok(vec![]);
         }
@@ -821,7 +812,8 @@ fn compute_incident_id(secret_name: &str, location_label: &str, hour_bucket: u64
 
 fn build_remediation(secret_name: &str) -> String {
     if secret_name == "<unknown>" {
-        "Rotate any recently used secrets and audit upstream API responses for credential leakage.".to_string()
+        "Rotate any recently used secrets and audit upstream API responses for credential leakage."
+            .to_string()
     } else {
         format!(
             "Rotate '{}' immediately: `phantom rotate`. \
@@ -907,7 +899,7 @@ pub enum AlertBackendConfig {
 }
 
 /// `[alerting]` section of `.phantom.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AlertingConfig {
     /// Whether alerting is enabled. Default: `false`.
@@ -922,6 +914,19 @@ pub struct AlertingConfig {
 
 fn default_min_alert_confidence() -> f64 {
     0.7
+}
+
+/// Explicit `Default` impl so that `AlertingConfig::default().min_confidence == 0.7`.
+/// `#[derive(Default)]` would use `f64::default() == 0.0`, which disagrees with the
+/// serde default used during deserialization.
+impl Default for AlertingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_confidence: default_min_alert_confidence(),
+            backends: Vec::new(),
+        }
+    }
 }
 
 /// Trait for alert dispatch — one method per backend type.
@@ -966,21 +971,18 @@ fn send_http_post(url: &str, payload: &serde_json::Value) -> std::io::Result<()>
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     let resp = client
         .post(url)
         .header("Content-Type", "application/json")
         .json(payload)
         .send()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("HTTP {status} from {url}"),
-        ));
+        return Err(std::io::Error::other(format!("HTTP {status} from {url}")));
     }
     Ok(())
 }
@@ -1082,10 +1084,7 @@ fn chrono_like_iso(secs: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
 
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        y, m, d, hh, mm, ss
-    )
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, hh, mm, ss)
 }
 
 /// Listens to leak incidents and emits alerts to configured backends,
@@ -1108,10 +1107,7 @@ pub struct LeakIncidentAlerter {
 
 impl LeakIncidentAlerter {
     /// Create an alerter using the default `~/.phantom/leak-alerts.jsonl` path.
-    pub fn new(
-        config: AlertingConfig,
-        dispatch: Box<dyn AlertDispatch>,
-    ) -> std::io::Result<Self> {
+    pub fn new(config: AlertingConfig, dispatch: Box<dyn AlertDispatch>) -> std::io::Result<Self> {
         let home = home_dir()?;
         Ok(Self {
             config,
@@ -1138,10 +1134,7 @@ impl LeakIncidentAlerter {
     /// send to all backends and persist the alert.
     ///
     /// Returns the list of newly emitted alerts.
-    pub fn process_incidents(
-        &self,
-        incidents: &[LeakIncident],
-    ) -> std::io::Result<Vec<LeakAlert>> {
+    pub fn process_incidents(&self, incidents: &[LeakIncident]) -> std::io::Result<Vec<LeakAlert>> {
         if !self.config.enabled || self.config.backends.is_empty() {
             return Ok(vec![]);
         }
@@ -1182,9 +1175,7 @@ impl LeakIncidentAlerter {
                     }
                     AlertBackendConfig::PagerDuty { integration_key } => {
                         let payload = pagerduty_payload(incident, integration_key);
-                        let r = self
-                            .dispatch
-                            .send_pagerduty(integration_key, &payload);
+                        let r = self.dispatch.send_pagerduty(integration_key, &payload);
                         if r.is_ok() {
                             backends_notified.push("pagerduty".to_string());
                         }
@@ -1246,7 +1237,7 @@ impl LeakIncidentAlerter {
     /// Load all alerts, returning at most `last` most-recent ones (by `alerted_at`).
     pub fn load_recent_alerts(&self, last: usize) -> std::io::Result<Vec<LeakAlert>> {
         let mut alerts = self.load_all_alerts()?;
-        alerts.sort_by(|a, b| b.alerted_at.cmp(&a.alerted_at));
+        alerts.sort_by_key(|alert| std::cmp::Reverse(alert.alerted_at));
         alerts.truncate(last);
         // Restore chronological order for display.
         alerts.reverse();
@@ -1306,7 +1297,6 @@ impl LeakIncidentAlerter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
     use tempfile::tempdir;
 
     // Mutex so concurrent test threads don't step on each other's HOME env var.
@@ -1325,9 +1315,7 @@ mod tests {
             .unwrap();
         for (ts, op, name_opt) in entries {
             let line = if let Some(n) = name_opt {
-                format!(
-                    r#"{{"ts":{ts},"op":"{op}","name":"{n}","pid":1,"process":"phantom"}}"#
-                )
+                format!(r#"{{"ts":{ts},"op":"{op}","name":"{n}","pid":1,"process":"phantom"}}"#)
             } else {
                 format!(r#"{{"ts":{ts},"op":"{op}","pid":1,"process":"phantom"}}"#)
             };
@@ -1366,7 +1354,10 @@ mod tests {
         );
 
         // Incident file must have been written.
-        assert!(engine.incidents_path.exists(), "incidents file should exist");
+        assert!(
+            engine.incidents_path.exists(),
+            "incidents file should exist"
+        );
 
         // active_incidents should return it.
         let active = engine.active_incidents(0.0).unwrap();
@@ -1592,11 +1583,7 @@ mod tests {
         config: AlertingConfig,
         spy: SpyDispatch,
     ) -> LeakIncidentAlerter {
-        LeakIncidentAlerter::with_path(
-            config,
-            tmp.join("leak-alerts.jsonl"),
-            Box::new(spy),
-        )
+        LeakIncidentAlerter::with_path(config, tmp.join("leak-alerts.jsonl"), Box::new(spy))
     }
 
     // Test 1: alerter disabled → no calls emitted
@@ -1641,10 +1628,7 @@ mod tests {
         assert_eq!(calls[0].0, "https://hooks.example.com/test");
         // Payload should contain the secret name and event type
         let payload = &calls[0].1;
-        assert_eq!(
-            payload["event"].as_str().unwrap(),
-            "phantom.leak_incident"
-        );
+        assert_eq!(payload["event"].as_str().unwrap(), "phantom.leak_incident");
         assert_eq!(payload["secret_name"].as_str().unwrap(), "OPENAI_API_KEY");
     }
 
@@ -1740,7 +1724,9 @@ mod tests {
         let alerter = make_alerter_with_spy(tmp.path(), config, spy.clone());
         let inc = make_incident("DUP_KEY", 0.95, 4);
 
-        let first = alerter.process_incidents(&[inc.clone()]).unwrap();
+        let first = alerter
+            .process_incidents(std::slice::from_ref(&inc))
+            .unwrap();
         assert_eq!(first.len(), 1, "first call should produce one alert");
 
         let second = alerter.process_incidents(&[inc]).unwrap();
@@ -1862,7 +1848,9 @@ mod tests {
         assert_eq!(alerts[0].backends_notified.len(), 3);
         assert!(alerts[0].backends_notified.contains(&"webhook".to_string()));
         assert!(alerts[0].backends_notified.contains(&"slack".to_string()));
-        assert!(alerts[0].backends_notified.contains(&"pagerduty".to_string()));
+        assert!(alerts[0]
+            .backends_notified
+            .contains(&"pagerduty".to_string()));
         assert_eq!(spy.webhook_calls.lock().unwrap().len(), 1);
         assert_eq!(spy.slack_calls.lock().unwrap().len(), 1);
         assert_eq!(spy.pagerduty_calls.lock().unwrap().len(), 1);
@@ -1913,8 +1901,14 @@ mod tests {
         let slack_calls = spy.slack_calls.lock().unwrap();
         assert_eq!(slack_calls.len(), 1, "Slack called exactly once");
         let text = slack_calls[0].1["text"].as_str().unwrap_or("");
-        assert!(text.contains("INTEGRATION_KEY"), "Slack message should mention the secret");
-        assert!(text.contains("95"), "Slack message should mention 95% confidence");
+        assert!(
+            text.contains("INTEGRATION_KEY"),
+            "Slack message should mention the secret"
+        );
+        assert!(
+            text.contains("95"),
+            "Slack message should mention 95% confidence"
+        );
 
         // Verify alert persisted
         let all_alerts = alerter.load_all_alerts().unwrap();
@@ -1988,8 +1982,7 @@ mod tests {
             min_confidence: 0.7,
             backends: vec![],
         };
-        let alerter =
-            make_alerter_with_spy(tmp.path(), config, SpyDispatch::default());
+        let alerter = make_alerter_with_spy(tmp.path(), config, SpyDispatch::default());
         let inc = make_incident("NO_BACKEND_KEY", 0.95, 4);
         let alerts = alerter.process_incidents(&[inc]).unwrap();
         assert!(alerts.is_empty());
@@ -2008,8 +2001,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempdir().unwrap();
         let config = AlertingConfig::default();
-        let alerter =
-            make_alerter_with_spy(tmp.path(), config, SpyDispatch::default());
+        let alerter = make_alerter_with_spy(tmp.path(), config, SpyDispatch::default());
         let alerts = alerter.load_all_alerts().unwrap();
         assert!(alerts.is_empty());
     }

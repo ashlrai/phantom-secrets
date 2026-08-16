@@ -87,10 +87,7 @@ fn extract_path_deeply_nested() {
     )
     .unwrap();
     let path = extract_json_path(&json, "AKIAIOSFODNN7EXAMPLE");
-    assert_eq!(
-        path,
-        Some(".result.credentials.access_key".to_string())
-    );
+    assert_eq!(path, Some(".result.credentials.access_key".to_string()));
 }
 
 #[test]
@@ -111,8 +108,7 @@ fn extract_path_second_array_element() {
 
 #[test]
 fn extract_path_not_found_returns_none() {
-    let json: serde_json::Value =
-        serde_json::from_str(r#"{"message": "hello world"}"#).unwrap();
+    let json: serde_json::Value = serde_json::from_str(r#"{"message": "hello world"}"#).unwrap();
     let path = extract_json_path(&json, "sk_live_nothere");
     assert!(path.is_none());
 }
@@ -132,8 +128,7 @@ fn extract_path_partial_match_in_string() {
 
 #[test]
 fn value_at_path_simple_key() {
-    let json: serde_json::Value =
-        serde_json::from_str(r#"{"secret": "sk_live_abc"}"#).unwrap();
+    let json: serde_json::Value = serde_json::from_str(r#"{"secret": "sk_live_abc"}"#).unwrap();
     assert_eq!(value_at_json_path(&json, ".secret"), Some("sk_live_abc"));
 }
 
@@ -151,23 +146,18 @@ fn value_at_path_nested() {
 fn value_at_path_array_index() {
     let json: serde_json::Value =
         serde_json::from_str(r#"{"list": ["a", "b", "sk_live_third"]}"#).unwrap();
-    assert_eq!(
-        value_at_json_path(&json, ".list[2]"),
-        Some("sk_live_third")
-    );
+    assert_eq!(value_at_json_path(&json, ".list[2]"), Some("sk_live_third"));
 }
 
 #[test]
 fn value_at_path_missing_returns_none() {
-    let json: serde_json::Value =
-        serde_json::from_str(r#"{"foo": "bar"}"#).unwrap();
+    let json: serde_json::Value = serde_json::from_str(r#"{"foo": "bar"}"#).unwrap();
     assert!(value_at_json_path(&json, ".missing").is_none());
 }
 
 #[test]
 fn value_at_path_non_string_returns_none() {
-    let json: serde_json::Value =
-        serde_json::from_str(r#"{"count": 42}"#).unwrap();
+    let json: serde_json::Value = serde_json::from_str(r#"{"count": 42}"#).unwrap();
     assert!(value_at_json_path(&json, ".count").is_none());
 }
 
@@ -179,10 +169,15 @@ fn value_at_path_non_string_returns_none() {
 fn profile_store_single_observation_low_confidence() {
     let mut store = ContextualLeakProfileStore::with_path("/dev/null".into());
     let ctx = json_ctx();
-    store.record_leak("STRIPE_KEY", ".data.live_key", &ctx).unwrap();
+    store
+        .record_leak("STRIPE_KEY", ".data.live_key", &ctx)
+        .unwrap();
     let obs = store.all_paths_for("STRIPE_KEY");
     assert_eq!(obs.len(), 1);
-    assert!(obs[0].confidence < 0.5, "single observation should be low confidence");
+    assert!(
+        obs[0].confidence < 0.5,
+        "single observation should be low confidence"
+    );
     assert!(!obs[0].is_high_confidence());
 }
 
@@ -234,7 +229,9 @@ fn profile_store_persistence_roundtrip() {
         let mut store = ContextualLeakProfileStore::with_path(path.clone());
         let ctx = json_ctx();
         for _ in 0..PROFILE_CONFIDENCE_THRESHOLD {
-            store.record_leak("PERSIST_KEY", ".nested.secret", &ctx).unwrap();
+            store
+                .record_leak("PERSIST_KEY", ".nested.secret", &ctx)
+                .unwrap();
         }
     }
 
@@ -262,7 +259,10 @@ fn adaptive_scrubber_exact_vault_match_still_scrubbed() {
     );
     let s = String::from_utf8(out).unwrap();
     assert!(event.scrubbed);
-    assert!(!s.contains("sk_live_realstripekey12345"), "exact secret must be scrubbed: {s}");
+    assert!(
+        !s.contains("sk_live_realstripekey12345"),
+        "exact secret must be scrubbed: {s}"
+    );
     assert!(s.contains("[REDACTED:"), "must have redaction marker: {s}");
 }
 
@@ -310,7 +310,10 @@ fn adaptive_redacts_rotated_stripe_key_at_known_path() {
     }
 
     // Now use a *different* Stripe key value (simulating rotation) at the same path.
-    let scrubber = persistent_scrubber(&[("STRIPE_KEY", "sk_live_originalkey123456789")], Arc::clone(&store));
+    let scrubber = persistent_scrubber(
+        &[("STRIPE_KEY", "sk_live_originalkey123456789")],
+        Arc::clone(&store),
+    );
     let body = r#"{"data":{"live_key":"sk_live_ROTATED_NEW_KEY_ABCDE"},"id":"cus_xyz"}"#;
     let (out, event) = scrubber.scrub_buffered_adaptive(
         Some("application/json"),
@@ -338,11 +341,8 @@ fn openai_error_response_exact_match_and_profile_learned() {
         r#"{{"error":{{"message":"Invalid API key: {secret}","type":"invalid_request_error","code":"invalid_api_key"}}}}"#
     );
     let ctx = RequestContext::new("POST", "/v1/chat/completions", "application/json", 401);
-    let (out, event) = scrubber.scrub_buffered_adaptive(
-        Some("application/json"),
-        body.as_bytes(),
-        Some(&ctx),
-    );
+    let (out, event) =
+        scrubber.scrub_buffered_adaptive(Some("application/json"), body.as_bytes(), Some(&ctx));
     let s = String::from_utf8(out).unwrap();
     assert!(event.scrubbed, "should have been scrubbed");
     assert!(!s.contains(secret), "secret must not appear in output: {s}");
@@ -366,7 +366,10 @@ fn stripe_webhook_nested_object_exact_scrub() {
     );
     let s = String::from_utf8(out).unwrap();
     assert!(event.scrubbed);
-    assert!(!s.contains("sk_live_webhookkey12345678"), "Stripe key must be scrubbed: {s}");
+    assert!(
+        !s.contains("sk_live_webhookkey12345678"),
+        "Stripe key must be scrubbed: {s}"
+    );
 }
 
 /// AWS SDK response returning access key in `.Credentials.AccessKeyId`.
@@ -381,7 +384,10 @@ fn aws_credentials_response_exact_scrub() {
     );
     let s = String::from_utf8(out).unwrap();
     assert!(event.scrubbed);
-    assert!(!s.contains("AKIAIOSFODNN7EXAMPLE0"), "AWS key must be scrubbed: {s}");
+    assert!(
+        !s.contains("AKIAIOSFODNN7EXAMPLE0"),
+        "AWS key must be scrubbed: {s}"
+    );
     assert!(s.contains("hidden"), "non-secret field must survive");
 }
 
@@ -397,8 +403,14 @@ fn secret_in_array_of_objects_exact_scrub() {
     );
     let s = String::from_utf8(out).unwrap();
     assert!(event.scrubbed);
-    assert!(!s.contains("sk-arr-secret-abcdef123456789"), "array secret must be scrubbed: {s}");
-    assert!(s.contains("safe_value"), "non-secret array element must survive");
+    assert!(
+        !s.contains("sk-arr-secret-abcdef123456789"),
+        "array secret must be scrubbed: {s}"
+    );
+    assert!(
+        s.contains("safe_value"),
+        "non-secret array element must survive"
+    );
 }
 
 /// Multi-secret response — both secrets scrubbed independently.
@@ -416,8 +428,14 @@ fn multi_secret_response_both_scrubbed() {
     );
     let s = String::from_utf8(out).unwrap();
     assert!(event.scrubbed);
-    assert!(!s.contains("sk-openai-multi-test-abc123"), "OpenAI key must be scrubbed: {s}");
-    assert!(!s.contains("sk_live_multi_test_xyz789"), "Stripe key must be scrubbed: {s}");
+    assert!(
+        !s.contains("sk-openai-multi-test-abc123"),
+        "OpenAI key must be scrubbed: {s}"
+    );
+    assert!(
+        !s.contains("sk_live_multi_test_xyz789"),
+        "Stripe key must be scrubbed: {s}"
+    );
 }
 
 /// Non-JSON body — adaptive layer must not touch it (no JSON parsing attempted).
@@ -425,17 +443,20 @@ fn multi_secret_response_both_scrubbed() {
 fn non_json_body_not_touched_by_adaptive_layer() {
     let scrubber = ephemeral_scrubber(&[("K", "sk_live_plaintextkey12345")]);
     let body = "Authorization: Bearer sk_live_plaintextkey12345\nContent-Length: 0";
-    let (out, event) = scrubber.scrub_buffered_adaptive(
-        Some("text/plain"),
-        body.as_bytes(),
-        Some(&json_ctx()),
-    );
+    let (out, event) =
+        scrubber.scrub_buffered_adaptive(Some("text/plain"), body.as_bytes(), Some(&json_ctx()));
     let s = String::from_utf8(out).unwrap();
     // The exact vault match will scrub via the inner scrubber.
     assert!(event.scrubbed);
-    assert!(!s.contains("sk_live_plaintextkey12345"), "plain-text secret must be scrubbed via inner scrubber");
+    assert!(
+        !s.contains("sk_live_plaintextkey12345"),
+        "plain-text secret must be scrubbed via inner scrubber"
+    );
     // Adaptive hits should be empty for non-JSON.
-    assert!(event.adaptive_hits.is_empty(), "no adaptive hits expected for non-JSON");
+    assert!(
+        event.adaptive_hits.is_empty(),
+        "no adaptive hits expected for non-JSON"
+    );
 }
 
 /// Already-redacted value at a high-confidence path must NOT be re-wrapped.
@@ -486,7 +507,10 @@ fn short_value_at_known_path_not_adaptively_redacted() {
         }
     }
 
-    let scrubber = persistent_scrubber(&[("SHORT_KEY", "sk_live_longoriginalvalue")], Arc::clone(&store));
+    let scrubber = persistent_scrubber(
+        &[("SHORT_KEY", "sk_live_longoriginalvalue")],
+        Arc::clone(&store),
+    );
     let body = r#"{"val":"abc"}"#; // only 3 chars — below threshold
     let (out, event) = scrubber.scrub_buffered_adaptive(
         Some("application/json"),
@@ -511,11 +535,15 @@ fn adaptive_hit_metadata_correct() {
         let mut s = store.lock().unwrap();
         let ctx = stripe_ctx();
         for _ in 0..PROFILE_CONFIDENCE_THRESHOLD {
-            s.record_leak("META_KEY", ".credentials.token", &ctx).unwrap();
+            s.record_leak("META_KEY", ".credentials.token", &ctx)
+                .unwrap();
         }
     }
 
-    let scrubber = persistent_scrubber(&[("META_KEY", "sk_live_original_meta_key_abc")], Arc::clone(&store));
+    let scrubber = persistent_scrubber(
+        &[("META_KEY", "sk_live_original_meta_key_abc")],
+        Arc::clone(&store),
+    );
     // Use a different value at the learned path (simulating rotation).
     let body = r#"{"credentials":{"token":"sk_live_rotated_new_value_xyz_abc_def"},"status":"ok"}"#;
     let (out, event) = scrubber.scrub_buffered_adaptive(
@@ -529,9 +557,15 @@ fn adaptive_hit_metadata_correct() {
         let hit = &event.adaptive_hits[0];
         assert_eq!(hit.secret_name, "META_KEY");
         assert_eq!(hit.json_path, ".credentials.token");
-        assert!(hit.profile_confidence >= 0.90, "confidence should be high: {}", hit.profile_confidence);
-        assert!(!s.contains("sk_live_rotated_new_value_xyz_abc_def"),
-            "adaptively-hit value must be redacted: {s}");
+        assert!(
+            hit.profile_confidence >= 0.90,
+            "confidence should be high: {}",
+            hit.profile_confidence
+        );
+        assert!(
+            !s.contains("sk_live_rotated_new_value_xyz_abc_def"),
+            "adaptively-hit value must be redacted: {s}"
+        );
     }
 }
 
@@ -549,27 +583,42 @@ fn profile_observations_returned_correctly() {
     }
 
     let scrubber = persistent_scrubber(
-        &[("OBS_KEY", "sk_live_obs_key_123"), ("OBS_KEY2", "sk_live_obs_key2_456")],
+        &[
+            ("OBS_KEY", "sk_live_obs_key_123"),
+            ("OBS_KEY2", "sk_live_obs_key2_456"),
+        ],
         Arc::clone(&store),
     );
     let obs = scrubber.profile_observations();
     assert_eq!(obs.len(), 2);
     let names: Vec<_> = obs.iter().map(|o| o.secret_name.as_str()).collect();
-    assert!(names.contains(&"OBS_KEY"), "OBS_KEY should be in observations");
-    assert!(names.contains(&"OBS_KEY2"), "OBS_KEY2 should be in observations");
+    assert!(
+        names.contains(&"OBS_KEY"),
+        "OBS_KEY should be in observations"
+    );
+    assert!(
+        names.contains(&"OBS_KEY2"),
+        "OBS_KEY2 should be in observations"
+    );
 }
 
 /// Baseline `ResponseScrubber` (non-adaptive) still works unchanged.
 #[test]
 fn baseline_scrubber_still_works_after_adaptive_additions() {
     let mut m = HashMap::new();
-    m.insert("TOK".to_string(), "sk_live_baselinekey123456789".to_string());
+    m.insert(
+        "TOK".to_string(),
+        "sk_live_baselinekey123456789".to_string(),
+    );
     let scrubber = ResponseScrubber::from_token_map(&m);
     let body = r#"{"msg":"key is sk_live_baselinekey123456789"}"#;
     let (out, event) = scrubber.scrub_buffered(Some("application/json"), body.as_bytes());
     let s = String::from_utf8(out).unwrap();
     assert!(event.scrubbed);
-    assert!(!s.contains("sk_live_baselinekey123456789"), "baseline scrubber must still work: {s}");
+    assert!(
+        !s.contains("sk_live_baselinekey123456789"),
+        "baseline scrubber must still work: {s}"
+    );
 }
 
 /// The adaptive scrubber's inner() accessor returns a working ResponseScrubber.
@@ -581,7 +630,9 @@ fn inner_scrubber_accessible_and_functional() {
     let (out, event) = inner.scrub_buffered(Some("text/plain"), body);
     assert!(event.scrubbed);
     assert!(
-        !String::from_utf8(out).unwrap().contains("sk_live_innertest12345678"),
+        !String::from_utf8(out)
+            .unwrap()
+            .contains("sk_live_innertest12345678"),
         "inner scrubber must be functional"
     );
 }
@@ -623,7 +674,10 @@ fn leak_path_observation_confidence_progression() {
     let c3 = store.all_paths_for("CONF_KEY")[0].confidence;
     assert!(c3 >= 0.90, "3 obs → ≥0.90, got {c3}");
 
-    assert!(c3 > c2 && c2 > c1, "confidence must be monotonically increasing");
+    assert!(
+        c3 > c2 && c2 > c1,
+        "confidence must be monotonically increasing"
+    );
 }
 
 /// Profile store `all_observations()` sorted by confidence descending.
@@ -674,15 +728,21 @@ fn high_confidence_paths_for_filters_correctly() {
 
     // One low-confidence observation.
     store.record_leak("FC_KEY", ".low", &ctx).unwrap();
-    assert!(store.high_confidence_paths_for("FC_KEY").is_empty(),
-        "1 observation should not be high confidence");
+    assert!(
+        store.high_confidence_paths_for("FC_KEY").is_empty(),
+        "1 observation should not be high confidence"
+    );
 
     // Pump to high confidence.
     for _ in 1..PROFILE_CONFIDENCE_THRESHOLD {
         store.record_leak("FC_KEY", ".low", &ctx).unwrap();
     }
     let high = store.high_confidence_paths_for("FC_KEY");
-    assert!(!high.is_empty(), "should be high confidence after {} observations", PROFILE_CONFIDENCE_THRESHOLD);
+    assert!(
+        !high.is_empty(),
+        "should be high confidence after {} observations",
+        PROFILE_CONFIDENCE_THRESHOLD
+    );
 }
 
 /// Adaptive scrubber with no profiles does a clean pass-through on benign JSON.
@@ -702,12 +762,14 @@ fn adaptive_scrubber_no_profiles_passthrough_benign() {
 /// PROFILE_CONFIDENCE_THRESHOLD is exported and is a reasonable value.
 #[test]
 fn profile_confidence_threshold_is_reasonable() {
-    assert!(
-        PROFILE_CONFIDENCE_THRESHOLD >= 2,
-        "threshold must be at least 2 to avoid false positives"
-    );
-    assert!(
-        PROFILE_CONFIDENCE_THRESHOLD <= 10,
-        "threshold must not be unreasonably high"
-    );
+    const {
+        assert!(
+            PROFILE_CONFIDENCE_THRESHOLD >= 2,
+            "threshold must be at least 2 to avoid false positives"
+        );
+        assert!(
+            PROFILE_CONFIDENCE_THRESHOLD <= 10,
+            "threshold must not be unreasonably high"
+        );
+    }
 }

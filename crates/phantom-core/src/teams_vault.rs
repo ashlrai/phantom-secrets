@@ -311,8 +311,7 @@ pub async fn revoke_member(
     // 4. Re-wrap the new key for all remaining recipients.
     let mut shares: HashMap<String, team_crypto::KeyShare> = HashMap::new();
     for m in &recipients {
-        let share =
-            team_crypto::seal_sym_key(&sym_key, m.public_key.as_ref().unwrap())?;
+        let share = team_crypto::seal_sym_key(&sym_key, m.public_key.as_ref().unwrap())?;
         shares.insert(m.user_id.clone(), share);
     }
 
@@ -332,10 +331,7 @@ pub async fn revoke_member(
     .await?;
 
     // 6. Emit audit events (best-effort — never fail the rotation).
-    let remaining_logins: Vec<String> = remaining
-        .iter()
-        .map(|m| m.user_id.clone())
-        .collect();
+    let remaining_logins: Vec<String> = remaining.iter().map(|m| m.user_id.clone()).collect();
     crate::audit::log_team_member_revoked(
         team_id,
         revoked_github_login,
@@ -373,8 +369,10 @@ pub async fn rotate_vault(
     teams::register_team_key(api_base, token, team_id, &kp.public_b64()).await?;
 
     let all_members = teams::list_team_member_keys(api_base, token, team_id).await?;
-    let recipients: Vec<&teams::TeamMemberKey> =
-        all_members.iter().filter(|m| m.public_key.is_some()).collect();
+    let recipients: Vec<&teams::TeamMemberKey> = all_members
+        .iter()
+        .filter(|m| m.public_key.is_some())
+        .collect();
     if recipients.is_empty() {
         return Err(PhantomError::Other(format!(
             "No team members have registered public keys yet for team {team_id}."
@@ -407,8 +405,7 @@ pub async fn rotate_vault(
 
     let mut shares: HashMap<String, team_crypto::KeyShare> = HashMap::new();
     for m in &recipients {
-        let share =
-            team_crypto::seal_sym_key(&sym_key, m.public_key.as_ref().unwrap())?;
+        let share = team_crypto::seal_sym_key(&sym_key, m.public_key.as_ref().unwrap())?;
         shares.insert(m.user_id.clone(), share);
     }
 
@@ -491,7 +488,10 @@ pub fn decrypt_blob_with_key(
     let raw: BTreeMap<String, String> = serde_json::from_slice(&plaintext)
         .map_err(|e| PhantomError::Other(format!("Bad vault JSON: {e}")))?;
     plaintext.zeroize();
-    Ok(raw.into_iter().map(|(k, v)| (k, Zeroizing::new(v))).collect())
+    Ok(raw
+        .into_iter()
+        .map(|(k, v)| (k, Zeroizing::new(v)))
+        .collect())
 }
 
 #[cfg(test)]
@@ -556,8 +556,7 @@ mod tests {
         // Rotation: Alice is revoked. New vault encrypted only for Bob.
         let decrypted_v1 =
             decrypt_blob_with_key(&blob_v1, &sym_key_v1).expect("decrypt v1 for rotation");
-        let (blob_v2, sym_key_v2) =
-            encrypt_secrets_to_blob(&decrypted_v1).expect("v2 encrypt");
+        let (blob_v2, sym_key_v2) = encrypt_secrets_to_blob(&decrypted_v1).expect("v2 encrypt");
         assert_ne!(*sym_key_v1, *sym_key_v2, "new key must differ");
         let bob_share_v2 =
             team_crypto::seal_sym_key(&sym_key_v2, &bob.public_b64()).expect("seal bob v2");
@@ -569,8 +568,8 @@ mod tests {
 
         // Alice has no v2 share — attempting to use her old share against the new
         // blob must fail (wrong key → AEAD tag mismatch).
-        let alice_key_wrong = team_crypto::open_sym_key(&alice_share_v1, &alice)
-            .expect("alice still has old share");
+        let alice_key_wrong =
+            team_crypto::open_sym_key(&alice_share_v1, &alice).expect("alice still has old share");
         // The key decrypts fine but produces wrong bytes for the new ciphertext.
         assert_ne!(*alice_key_wrong, *sym_key_v2, "alice must not know v2 key");
         let alice_attempt = decrypt_blob_with_key(&blob_v2, &alice_key_wrong);

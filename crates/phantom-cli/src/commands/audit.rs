@@ -511,12 +511,7 @@ fn run_verify_with_context() -> Result<()> {
         let op = v["op"].as_str().unwrap_or("?");
         let seq = v["seq"].as_u64().map(|s| s.to_string()).unwrap_or_default();
 
-        print!(
-            "  {} [{}] {}",
-            ts.dimmed(),
-            seq.cyan(),
-            op.bold()
-        );
+        print!("  {} [{}] {}", ts.dimmed(), seq.cyan(), op.bold());
         if let Some(name) = v["name"].as_str() {
             print!("  {}", name.bold());
         }
@@ -599,8 +594,11 @@ pub fn run_stats(
         stats.total_events.to_string().cyan(),
         stats.secret_events.to_string().cyan(),
         match (stats.first_event_ts, stats.last_event_ts) {
-            (Some(f), Some(l)) =>
-                format!("{} → {}", format_unix_ts(f).dimmed(), format_unix_ts(l).dimmed()),
+            (Some(f), Some(l)) => format!(
+                "{} → {}",
+                format_unix_ts(f).dimmed(),
+                format_unix_ts(l).dimmed()
+            ),
             _ => "unknown range".dimmed().to_string(),
         }
     );
@@ -613,7 +611,12 @@ pub fn run_stats(
     println!();
 
     // Column widths
-    let name_w = secrets.iter().map(|s| s.name.len()).max().unwrap_or(4).max(4);
+    let name_w = secrets
+        .iter()
+        .map(|s| s.name.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
     println!(
         "  {:<name_w$}  {:>6}  {:>6}  {:>7}  {:>7}  {}",
         "SECRET".bold(),
@@ -668,14 +671,9 @@ pub fn run_stats(
 }
 
 /// Run the analytics-enhanced stats path (with anomaly scores).
-fn run_stats_analytics(
-    json: bool,
-    top: usize,
-    min_anomaly_score: Option<f64>,
-) -> Result<()> {
-    let report =
-        phantom_core::analytics::compute_analytics(phantom_core::analytics::Period::All)
-            .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
+fn run_stats_analytics(json: bool, top: usize, min_anomaly_score: Option<f64>) -> Result<()> {
+    let report = phantom_core::analytics::compute_analytics(phantom_core::analytics::Period::All)
+        .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
 
     if report.secrets.is_empty() {
         println!(
@@ -686,10 +684,10 @@ fn run_stats_analytics(
         return Ok(());
     }
 
-    let mut secrets: Vec<&phantom_core::analytics::SecretAnalytics> = report.secrets.iter()
-        .filter(|s| {
-            min_anomaly_score.map_or(true, |min| s.anomaly_score >= min)
-        })
+    let mut secrets: Vec<&phantom_core::analytics::SecretAnalytics> = report
+        .secrets
+        .iter()
+        .filter(|s| min_anomaly_score.is_none_or(|min| s.anomaly_score >= min))
         .collect();
 
     if top > 0 && top < secrets.len() {
@@ -717,7 +715,12 @@ fn run_stats_analytics(
     );
     println!();
 
-    let name_w = secrets.iter().map(|s| s.name.len()).max().unwrap_or(4).max(4);
+    let name_w = secrets
+        .iter()
+        .map(|s| s.name.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
     println!(
         "  {:<name_w$}  {:>7}  {:>8}  {:>8}  {:>8}  {:>7}",
         "SECRET".bold(),
@@ -825,7 +828,7 @@ pub fn run_analytics(
     let analytics: Vec<&phantom_core::analytics::SecretAnalytics> = report
         .secrets
         .iter()
-        .filter(|s| min_anomaly_score.map_or(true, |min| s.anomaly_score >= min))
+        .filter(|s| min_anomaly_score.is_none_or(|min| s.anomaly_score >= min))
         .collect();
 
     let records = export_records(period, min_anomaly_score)
@@ -926,7 +929,7 @@ pub fn run_anomalies(
     max_quiet_days: Option<u64>,
     json_output: bool,
 ) -> Result<()> {
-    use phantom_core::analytics::{AuditThresholdConfig, compute_windowed_anomalies};
+    use phantom_core::analytics::{compute_windowed_anomalies, AuditThresholdConfig};
 
     let threshold = threshold.clamp(0.0, 1.0);
 
@@ -1004,18 +1007,23 @@ pub fn run_anomalies(
             let out: Vec<serde_json::Value> = results
                 .iter()
                 .filter(|r| r.anomaly_score >= threshold)
-                .map(|r| serde_json::json!({
-                    "name": r.name,
-                    "anomaly_score": r.anomaly_score,
-                    "alert": r.alert,
-                    "reason": r.reason,
-                    "accesses_last_hour": r.accesses_last_hour,
-                    "max_quiet_gap_days": r.max_quiet_gap_days,
-                }))
+                .map(|r| {
+                    serde_json::json!({
+                        "name": r.name,
+                        "anomaly_score": r.anomaly_score,
+                        "alert": r.alert,
+                        "reason": r.reason,
+                        "accesses_last_hour": r.accesses_last_hour,
+                        "max_quiet_gap_days": r.max_quiet_gap_days,
+                    })
+                })
                 .collect();
             println!("{}", serde_json::to_string_pretty(&out)?);
         } else {
-            let flagged: Vec<_> = results.iter().filter(|r| r.anomaly_score >= threshold).collect();
+            let flagged: Vec<_> = results
+                .iter()
+                .filter(|r| r.anomaly_score >= threshold)
+                .collect();
             if flagged.is_empty() {
                 println!(
                     "{}  No secrets exceed threshold {:.2}.",
@@ -1077,7 +1085,10 @@ pub fn run_anomalies(
             Ok(v) => v,
             Err(_) => continue,
         };
-        let event_name = v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
+        let event_name = v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string());
 
         // If we're filtering by name and this event doesn't match, skip.
         if let Some(filter) = name_filter {
@@ -1137,10 +1148,7 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
             // rotate command's internal logic, then log the action.
             match crate::commands::rotate::run_rotate_single(&inc.secret_name) {
                 Ok(()) => {
-                    phantom_core::audit::log(
-                        "vault.auto_rotated_on_leak",
-                        Some(&inc.secret_name),
-                    );
+                    phantom_core::audit::log("vault.auto_rotated_on_leak", Some(&inc.secret_name));
                     rotated.push(inc.secret_name.clone());
                     if !json {
                         println!(
@@ -1251,8 +1259,7 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
 /// and emits any new alerts via configured backends before listing.
 pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
     use phantom_core::leak_correlation::{
-        AlertingConfig, AlertBackendConfig, HttpAlertDispatch, LeakCorrelationEngine,
-        LeakIncidentAlerter,
+        AlertingConfig, HttpAlertDispatch, LeakCorrelationEngine, LeakIncidentAlerter,
     };
 
     // Resolve home dir for the alerts file.
@@ -1381,18 +1388,10 @@ fn load_alerting_config_from_project() -> phantom_core::leak_correlation::Alerti
 pub(crate) struct NullDispatch;
 
 impl phantom_core::leak_correlation::AlertDispatch for NullDispatch {
-    fn send_webhook(
-        &self,
-        _url: &str,
-        _payload: &serde_json::Value,
-    ) -> std::io::Result<()> {
+    fn send_webhook(&self, _url: &str, _payload: &serde_json::Value) -> std::io::Result<()> {
         Ok(())
     }
-    fn send_slack(
-        &self,
-        _url: &str,
-        _payload: &serde_json::Value,
-    ) -> std::io::Result<()> {
+    fn send_slack(&self, _url: &str, _payload: &serde_json::Value) -> std::io::Result<()> {
         Ok(())
     }
     fn send_pagerduty(
@@ -1416,7 +1415,9 @@ pub fn run_export_range(
     op: Option<&str>,
     pid: Option<u64>,
 ) -> Result<()> {
-    use phantom_core::audit_export::{AuditExporter, ExportFilter, parse_date_to_ts, parse_date_to_ts_end};
+    use phantom_core::audit_export::{
+        parse_date_to_ts, parse_date_to_ts_end, AuditExporter, ExportFilter,
+    };
 
     if !matches!(format, "csv" | "json") {
         return Err(anyhow::anyhow!(
@@ -1425,8 +1426,8 @@ pub fn run_export_range(
         ));
     }
 
-    let exporter = AuditExporter::new()
-        .map_err(|e| anyhow::anyhow!("Failed to initialise exporter: {e}"))?;
+    let exporter =
+        AuditExporter::new().map_err(|e| anyhow::anyhow!("Failed to initialise exporter: {e}"))?;
 
     let filter = ExportFilter {
         from_ts: parse_date_to_ts(from),
@@ -1473,7 +1474,7 @@ pub fn run_report(
     save: bool,
     compact: bool,
 ) -> Result<()> {
-    use phantom_core::audit_export::{AuditExporter, parse_date_to_ts, parse_date_to_ts_end};
+    use phantom_core::audit_export::{parse_date_to_ts, parse_date_to_ts_end, AuditExporter};
 
     if report_type != "compliance" {
         return Err(anyhow::anyhow!(
@@ -1482,8 +1483,8 @@ pub fn run_report(
         ));
     }
 
-    let exporter = AuditExporter::new()
-        .map_err(|e| anyhow::anyhow!("Failed to initialise exporter: {e}"))?;
+    let exporter =
+        AuditExporter::new().map_err(|e| anyhow::anyhow!("Failed to initialise exporter: {e}"))?;
 
     let from_ts = parse_date_to_ts(from);
     let to_ts = parse_date_to_ts_end(to);
@@ -1494,8 +1495,7 @@ pub fn run_report(
 
     // Serialise.
     let json = if compact {
-        serde_json::to_string(&report)
-            .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?
+        serde_json::to_string(&report).map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?
     } else {
         serde_json::to_string_pretty(&report)
             .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?
@@ -1815,12 +1815,12 @@ mod tests {
 
     // ── run_analytics integration tests ───────────────────────────────
 
-    use std::sync::Mutex;
+    use crate::test_support::ENV_LOCK;
+
     // Serialise tests that mutate HOME / PHANTOM_AUDIT env vars.
-    static ANALYTICS_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_analytics_home<F: FnOnce(&std::path::Path)>(f: F) {
-        let _guard = ANALYTICS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let prev_home = std::env::var("HOME").ok();
         let prev_audit = std::env::var("PHANTOM_AUDIT").ok();
@@ -1880,10 +1880,9 @@ mod tests {
             write_analytics_log(&log_path, &entries);
 
             // Verify anomaly score directly via analytics API.
-            let report = phantom_core::analytics::compute_analytics(
-                phantom_core::analytics::Period::All,
-            )
-            .unwrap();
+            let report =
+                phantom_core::analytics::compute_analytics(phantom_core::analytics::Period::All)
+                    .unwrap();
             let s = report
                 .secrets
                 .iter()
@@ -1910,11 +1909,9 @@ mod tests {
                 ],
             );
 
-            let records = phantom_core::analytics::export_records(
-                phantom_core::analytics::Period::All,
-                None,
-            )
-            .unwrap();
+            let records =
+                phantom_core::analytics::export_records(phantom_core::analytics::Period::All, None)
+                    .unwrap();
             assert_eq!(records.len(), 2, "should have 2 records");
 
             let csv = phantom_core::analytics::records_to_csv(&records);

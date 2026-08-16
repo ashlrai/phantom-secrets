@@ -91,14 +91,20 @@ impl Default for RateLimitConfig {
 impl RateLimitConfig {
     /// Load from environment variables, falling back to defaults.
     pub fn from_env() -> Self {
-        let per_secret_rps = std::env::var("PHANTOM_RATE_LIMIT_PER_SECRET")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(5);
-        let burst_total_10s = std::env::var("PHANTOM_RATE_LIMIT_BURST")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(20);
+        Self::from_vars(
+            std::env::var("PHANTOM_RATE_LIMIT_PER_SECRET").ok(),
+            std::env::var("PHANTOM_RATE_LIMIT_BURST").ok(),
+        )
+    }
+
+    /// Parse config from optional raw values (the testable core of
+    /// [`from_env`](Self::from_env)). Unset or unparseable values fall back to
+    /// the defaults. Kept separate so tests can exercise the parsing without
+    /// mutating process-wide environment variables, which races across
+    /// parallel test threads.
+    pub fn from_vars(per_secret: Option<String>, burst: Option<String>) -> Self {
+        let per_secret_rps = per_secret.and_then(|v| v.parse::<u64>().ok()).unwrap_or(5);
+        let burst_total_10s = burst.and_then(|v| v.parse::<u64>().ok()).unwrap_or(20);
         Self {
             per_secret_rps,
             burst_total_10s,
@@ -222,16 +228,16 @@ impl RateLimiterInner {
 
         // Anomaly score 0–100:
         // proportional to the higher of (per_secret_10s / limit) and (total_10s / burst).
-        let per_secret_pct = if per_secret_limit_10s > 0 {
-            (per_secret_10s * 100 / per_secret_limit_10s).min(100)
-        } else {
-            0
-        };
-        let burst_pct = if burst_limit > 0 {
-            (total_10s * 100 / burst_limit).min(100)
-        } else {
-            0
-        };
+        let per_secret_pct = per_secret_10s
+            .saturating_mul(100)
+            .checked_div(per_secret_limit_10s)
+            .unwrap_or(0)
+            .min(100);
+        let burst_pct = total_10s
+            .saturating_mul(100)
+            .checked_div(burst_limit)
+            .unwrap_or(0)
+            .min(100);
         let anomaly_score = per_secret_pct.max(burst_pct) as u8;
 
         RateDecision {

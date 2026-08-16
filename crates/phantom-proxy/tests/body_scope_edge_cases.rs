@@ -111,8 +111,14 @@ fn streaming_token_with_surrounding_content() {
     let p2 = full.as_bytes()[split..].to_vec();
     let result = stream_frames(&iceptor, &[&p1, &p2]);
     assert!(result.contains(REAL), "real secret missing: {result}");
-    assert!(!result.contains("phm_"), "phantom token still present: {result}");
-    assert!(result.contains(suffix.trim_start_matches(PHM)), "suffix lost");
+    assert!(
+        !result.contains("phm_"),
+        "phantom token still present: {result}"
+    );
+    assert!(
+        result.contains(suffix.trim_start_matches(PHM)),
+        "suffix lost"
+    );
 }
 
 /// Multiple tokens in one stream, each potentially at frame boundaries.
@@ -176,9 +182,7 @@ fn streaming_empty_frames_interspersed() {
 /// Nested JSON object with an allowed field several levels deep.
 #[test]
 fn scoped_json_nested_deep_allowed_field_replaced() {
-    let body = format!(
-        r#"{{"level1":{{"level2":{{"level3":{{"api_key":"{PHM}"}}}}}}}}"#
-    );
+    let body = format!(r#"{{"level1":{{"level2":{{"level3":{{"api_key":"{PHM}"}}}}}}}}"#);
     let (out, did) = scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
     assert!(did, "expected replacement");
     let s = std::str::from_utf8(&out).unwrap();
@@ -189,11 +193,12 @@ fn scoped_json_nested_deep_allowed_field_replaced() {
 /// JSON array containing allowed-field objects — all entries replaced.
 #[test]
 fn scoped_json_array_of_objects_with_allowed_fields() {
-    let body = format!(
-        r#"[{{"api_key":"{PHM}"}},{{"token":"{PHM2}"}}]"#
+    let body = format!(r#"[{{"api_key":"{PHM}"}},{{"token":"{PHM2}"}}]"#);
+    let (out, did) = scoped_body_replace(
+        &dual_interceptor(),
+        Some("application/json"),
+        body.as_bytes(),
     );
-    let (out, did) =
-        scoped_body_replace(&dual_interceptor(), Some("application/json"), body.as_bytes());
     assert!(did, "expected replacement");
     let s = std::str::from_utf8(&out).unwrap();
     assert!(s.contains(REAL), "REAL missing: {s}");
@@ -216,15 +221,16 @@ fn scoped_json_escaped_string_in_allowed_field() {
 /// Token in JSON sibling field that is NOT allowed — sibling replaced, rest not.
 #[test]
 fn scoped_json_sibling_field_not_replaced() {
-    let body = format!(
-        r#"{{"api_key":"{PHM}","prompt":"User said {PHM}"}}"#
-    );
+    let body = format!(r#"{{"api_key":"{PHM}","prompt":"User said {PHM}"}}"#);
     let (out, did) = scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
     assert!(did, "expected api_key to be replaced");
     let s = std::str::from_utf8(&out).unwrap();
     assert!(s.contains(REAL), "api_key replacement missing: {s}");
     // prompt must still contain the raw phantom token
-    assert!(s.contains(PHM), "prompt phantom token was wrongly scrubbed: {s}");
+    assert!(
+        s.contains(PHM),
+        "prompt phantom token was wrongly scrubbed: {s}"
+    );
 }
 
 // ============================================================================
@@ -235,8 +241,7 @@ fn scoped_json_sibling_field_not_replaced() {
 #[test]
 fn malformed_json_missing_close_brace() {
     let body = format!(r#"{{"api_key":"{PHM}""#);
-    let (out, did) =
-        scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
+    let (out, did) = scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
     assert!(!did, "must not replace in malformed JSON");
     assert_eq!(out, body.as_bytes(), "body must be unchanged");
 }
@@ -247,8 +252,7 @@ fn malformed_json_truncated_token_mid_string() {
     // Token is valid hex but string is not closed
     let partial_token = &PHM[..30];
     let body = format!(r#"{{"api_key":"{partial_token}"#);
-    let (out, did) =
-        scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
+    let (out, did) = scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
     assert!(!did);
     assert_eq!(out, body.as_bytes());
 }
@@ -257,8 +261,7 @@ fn malformed_json_truncated_token_mid_string() {
 #[test]
 fn malformed_json_completely_invalid() {
     let body = b"not json at all { garbage [[[";
-    let (out, did) =
-        scoped_body_replace(&interceptor(), Some("application/json"), body);
+    let (out, did) = scoped_body_replace(&interceptor(), Some("application/json"), body);
     assert!(!did);
     assert_eq!(out.as_slice(), body);
 }
@@ -294,8 +297,7 @@ fn malformed_invalid_utf8_in_non_json_body() {
 #[test]
 fn malformed_json_trailing_comma() {
     let body = format!(r#"{{"api_key":"{PHM}",}}"#);
-    let (out, did) =
-        scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
+    let (out, did) = scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
     // serde_json rejects trailing commas; body must be passed through
     assert!(!did);
     assert_eq!(out, body.as_bytes());
@@ -356,7 +358,9 @@ fn content_type_vendor_plus_json() {
 /// `multipart/form-data` is NOT JSON — body passed through unchanged.
 #[test]
 fn content_type_multipart_not_replaced() {
-    let body = format!("--boundary\r\nContent-Disposition: form-data; name=\"key\"\r\n\r\n{PHM}\r\n--boundary--");
+    let body = format!(
+        "--boundary\r\nContent-Disposition: form-data; name=\"key\"\r\n\r\n{PHM}\r\n--boundary--"
+    );
     let (out, did) = scoped_body_replace(
         &interceptor(),
         Some("multipart/form-data; boundary=boundary"),
@@ -397,8 +401,11 @@ fn content_type_base64_payload_not_decoded() {
     // must NOT decode-and-inspect it.
     let json = format!(r#"{{"api_key":"{PHM}"}}"#);
     let encoded = base64_encode(json.as_bytes());
-    let (out, did) =
-        scoped_body_replace(&interceptor(), Some("application/octet-stream"), encoded.as_bytes());
+    let (out, did) = scoped_body_replace(
+        &interceptor(),
+        Some("application/octet-stream"),
+        encoded.as_bytes(),
+    );
     assert!(!did, "base64 payload must not be decoded/replaced");
     assert_eq!(out, encoded.as_bytes());
 }
@@ -416,8 +423,11 @@ fn content_type_absent_body_unchanged() {
 #[test]
 fn content_type_unknown_body_unchanged() {
     let body = format!("key={PHM}");
-    let (out, did) =
-        scoped_body_replace(&interceptor(), Some("application/x-custom-format"), body.as_bytes());
+    let (out, did) = scoped_body_replace(
+        &interceptor(),
+        Some("application/x-custom-format"),
+        body.as_bytes(),
+    );
     assert!(!did);
     assert_eq!(out, body.as_bytes());
 }
@@ -426,7 +436,9 @@ fn content_type_unknown_body_unchanged() {
 #[test]
 fn should_stream_replace_json_excluded() {
     assert!(!should_stream_replace(Some("application/json")));
-    assert!(!should_stream_replace(Some("application/json; charset=utf-8")));
+    assert!(!should_stream_replace(Some(
+        "application/json; charset=utf-8"
+    )));
     assert!(!should_stream_replace(Some("application/vnd.api+json")));
 }
 
@@ -468,20 +480,24 @@ fn scoped_prompt_field_not_replaced() {
     let (out, did) = scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
     assert!(!did);
     let s = std::str::from_utf8(&out).unwrap();
-    assert!(s.contains(PHM), "phantom token wrongly scrubbed from prompt");
+    assert!(
+        s.contains(PHM),
+        "phantom token wrongly scrubbed from prompt"
+    );
     assert!(!s.contains(REAL), "real secret leaked into prompt");
 }
 
 /// Tokens in `content` field (message content) must NOT be replaced.
 #[test]
 fn scoped_content_field_not_replaced() {
-    let body = format!(
-        r#"{{"messages":[{{"role":"user","content":"My key is {PHM}"}}]}}"#
-    );
+    let body = format!(r#"{{"messages":[{{"role":"user","content":"My key is {PHM}"}}]}}"#);
     let (out, did) = scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
     assert!(!did);
     let s = std::str::from_utf8(&out).unwrap();
-    assert!(s.contains(PHM), "phantom token wrongly scrubbed from content");
+    assert!(
+        s.contains(PHM),
+        "phantom token wrongly scrubbed from content"
+    );
     assert!(!s.contains(REAL));
 }
 
@@ -520,9 +536,7 @@ fn scoped_text_field_not_replaced() {
 /// Mixed body: `api_key` replaced, `prompt` not replaced, in same object.
 #[test]
 fn scoped_mixed_allowed_and_disallowed_fields() {
-    let body = format!(
-        r#"{{"api_key":"{PHM}","prompt":"User typed {PHM}","model":"gpt-4"}}"#
-    );
+    let body = format!(r#"{{"api_key":"{PHM}","prompt":"User typed {PHM}","model":"gpt-4"}}"#);
     let (out, did) = scoped_body_replace(&interceptor(), Some("application/json"), body.as_bytes());
     assert!(did, "api_key must be replaced");
     let s = std::str::from_utf8(&out).unwrap();

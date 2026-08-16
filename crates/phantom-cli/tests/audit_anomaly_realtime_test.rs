@@ -105,9 +105,7 @@ fn spike_detection_exactly_at_limit_no_trigger() {
     // Exactly 100 accesses within the last hour → NOT > 100 → no rate spike.
     let now = 1_700_000_000_u64;
     let window_start = now - 3600;
-    let timestamps: Vec<u64> = (0..100_u64)
-        .map(|i| window_start + i * 36)
-        .collect();
+    let timestamps: Vec<u64> = (0..100_u64).map(|i| window_start + i * 36).collect();
 
     let result = check_windowed_anomaly("EXACT_KEY", &timestamps, now, None, 0.5);
     assert!(
@@ -147,9 +145,7 @@ fn per_secret_threshold_max_accesses_per_hour_override() {
     // Custom threshold: max 10/hr. 15 accesses within last hour should trigger.
     let now = 1_700_000_000_u64;
     let window_start = now - 3600;
-    let timestamps: Vec<u64> = (0..15_u64)
-        .map(|i| window_start + i * 200)
-        .collect();
+    let timestamps: Vec<u64> = (0..15_u64).map(|i| window_start + i * 200).collect();
 
     let thresholds = AuditThresholdConfig {
         max_accesses_per_hour: Some(10),
@@ -179,8 +175,7 @@ fn per_secret_threshold_quiet_days_override() {
         alert_on_anomaly_score: Some(0.5),
     };
 
-    let result =
-        check_windowed_anomaly("CUSTOM_QUIET", &[t0, t1], t1 + 60, Some(&thresholds), 0.5);
+    let result = check_windowed_anomaly("CUSTOM_QUIET", &[t0, t1], t1 + 60, Some(&thresholds), 0.5);
     assert!(
         result.anomaly_score >= 0.5,
         "4-day gap with custom quiet=3 should score >= 0.5, got {}",
@@ -336,8 +331,14 @@ fn compute_windowed_anomalies_name_filter_isolates_secret() {
         );
 
         let results = compute_windowed_anomalies(Some("KEY_A"), None, 0.5).unwrap();
-        assert!(results.iter().all(|r| r.name == "KEY_A"), "filter should isolate KEY_A");
-        assert!(results.iter().all(|r| r.name != "KEY_B"), "KEY_B should be excluded");
+        assert!(
+            results.iter().all(|r| r.name == "KEY_A"),
+            "filter should isolate KEY_A"
+        );
+        assert!(
+            results.iter().all(|r| r.name != "KEY_B"),
+            "KEY_B should be excluded"
+        );
     });
 }
 
@@ -427,6 +428,7 @@ fn per_secret_thresholds_roundtrip_through_config_toml() {
                 max_consecutive_quiet_days: Some(3),
                 alert_on_anomaly_score: Some(0.6),
             }),
+            ..Default::default()
         },
     );
 

@@ -28,6 +28,30 @@ pub struct RotationPolicy {
     pub auto_rotate: bool,
 }
 
+/// Access mode for a vault secret.
+///
+/// `ReadOnly` is set by `phantom_apply_expiry_policy` when a secret has
+/// expired its TTL.  While in `ReadOnly` mode the secret can be read for
+/// inspection but `phantom exec` will refuse to inject it into the
+/// environment until it is rotated (which resets the mode to `ReadWrite`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VaultMode {
+    /// Normal read-write access — the secret can be injected by `phantom exec`.
+    #[default]
+    ReadWrite,
+    /// Read-only mode — `phantom exec` will refuse to inject this secret until
+    /// it is rotated.  Set automatically when a secret TTL expires and
+    /// `phantom_apply_expiry_policy` is run.
+    ReadOnly,
+}
+
+impl VaultMode {
+    pub fn is_read_only(&self) -> bool {
+        matches!(self, VaultMode::ReadOnly)
+    }
+}
+
 /// Metadata attached to a single vault secret.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SecretMetadata {
@@ -39,6 +63,11 @@ pub struct SecretMetadata {
     pub expires_at: Option<Timestamp>,
     /// Rotation policy (TTL configuration).
     pub rotation_policy: Option<RotationPolicy>,
+    /// Vault access mode.  Defaults to `ReadWrite`.  Set to `ReadOnly` by
+    /// `phantom_apply_expiry_policy` when a secret is expired; reset to
+    /// `ReadWrite` on rotation.
+    #[serde(default)]
+    pub vault_mode: VaultMode,
 }
 
 impl SecretMetadata {
@@ -49,6 +78,7 @@ impl SecretMetadata {
             rotated_at: None,
             expires_at: None,
             rotation_policy: None,
+            vault_mode: VaultMode::default(),
         }
     }
 
@@ -64,16 +94,21 @@ impl SecretMetadata {
                 days_ttl: days,
                 auto_rotate: false,
             }),
+            vault_mode: VaultMode::default(),
         }
     }
 
     /// Record a rotation event (update `rotated_at` and recalculate `expires_at`).
+    /// Also resets `vault_mode` to `ReadWrite` so that a previously demoted
+    /// secret becomes injectable again after the rotation is complete.
     pub fn record_rotation(&mut self) {
         let now = now_secs();
         self.rotated_at = Some(now);
         if let Some(ref policy) = self.rotation_policy.clone() {
             self.expires_at = Some(now + policy.days_ttl * 86_400);
         }
+        // Reset read-only demotion: rotating a secret makes it valid again.
+        self.vault_mode = VaultMode::ReadWrite;
     }
 
     /// Returns `true` if the secret is currently expired.

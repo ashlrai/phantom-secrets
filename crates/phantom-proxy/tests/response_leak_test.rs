@@ -11,9 +11,9 @@
 //! - Leak location labels are correct
 //! - LeakEvent.emit() writes op=proxy.response_leak to the audit log
 
-use std::collections::HashMap;
-use phantom_proxy::ResponseLeakAnalyzer;
 use phantom_core::audit::{LeakLocation, LeakSeverity};
+use phantom_proxy::ResponseLeakAnalyzer;
+use std::collections::HashMap;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -64,7 +64,10 @@ fn test_api_error_body_contains_real_secret() {
         .iter()
         .filter(|e| e.severity == LeakSeverity::High)
         .collect();
-    assert!(!high.is_empty(), "expected at least one HIGH severity event");
+    assert!(
+        !high.is_empty(),
+        "expected at least one HIGH severity event"
+    );
 
     let ev = &high[0];
     assert_eq!(ev.secret_name.as_deref(), Some("OPENAI_API_KEY"));
@@ -91,7 +94,10 @@ fn test_body_multiple_occurrences() {
     assert!(!high.is_empty());
     // match_count should reflect 3 occurrences
     let total_matches: usize = high.iter().map(|e| e.match_count).sum();
-    assert!(total_matches >= 3, "expected at least 3 match counts, got {total_matches}");
+    assert!(
+        total_matches >= 3,
+        "expected at least 3 match counts, got {total_matches}"
+    );
 }
 
 /// Secret embedded inside a JSON "message" field (partial context).
@@ -133,7 +139,10 @@ fn test_format_only_match_is_medium_severity() {
         .iter()
         .filter(|e| e.severity == LeakSeverity::Medium)
         .collect();
-    assert!(!medium.is_empty(), "expected MEDIUM severity for format-only hit");
+    assert!(
+        !medium.is_empty(),
+        "expected MEDIUM severity for format-only hit"
+    );
     assert!(
         !events.iter().any(|e| e.severity == LeakSeverity::High),
         "should not be HIGH when not in vault"
@@ -152,7 +161,10 @@ fn test_no_false_positives_public_data() {
     // Content must be unchanged
     assert_eq!(body, scrubbed_str, "clean body should not be modified");
     // No leak events
-    assert!(events.is_empty(), "expected no leak events on clean body, got: {events:?}");
+    assert!(
+        events.is_empty(),
+        "expected no leak events on clean body, got: {events:?}"
+    );
 }
 
 /// No false positives on a random UUID-like string.
@@ -176,7 +188,10 @@ fn test_no_false_positives_short_token() {
     let body = r#"{"token":"sk-abc","status":"ok"}"#;
 
     let (_scrubbed, events) = analyzer.analyze_body(body.as_bytes());
-    assert!(events.is_empty(), "short sk- token should not trigger: {events:?}");
+    assert!(
+        events.is_empty(),
+        "short sk- token should not trigger: {events:?}"
+    );
 }
 
 /// Multiple secrets in one response body, each replaced correctly.
@@ -201,8 +216,14 @@ fn test_multiple_secrets_in_body() {
         .filter(|e| e.severity == LeakSeverity::High)
         .filter_map(|e| e.secret_name.as_deref())
         .collect();
-    assert!(high_names.contains(&"OPENAI_API_KEY"), "expected OPENAI_API_KEY high event");
-    assert!(high_names.contains(&"STRIPE_KEY"), "expected STRIPE_KEY high event");
+    assert!(
+        high_names.contains(&"OPENAI_API_KEY"),
+        "expected OPENAI_API_KEY high event"
+    );
+    assert!(
+        high_names.contains(&"STRIPE_KEY"),
+        "expected STRIPE_KEY high event"
+    );
 }
 
 /// GitHub PAT format detected even without vault entry.
@@ -221,7 +242,10 @@ fn test_github_pat_format_detected() {
         !scrubbed_str.contains(&raw_token),
         "original ghp_ token value should be redacted: {scrubbed_str}"
     );
-    assert!(scrubbed_str.contains("[REDACTED:"), "should have a REDACTED marker: {scrubbed_str}");
+    assert!(
+        scrubbed_str.contains("[REDACTED:"),
+        "should have a REDACTED marker: {scrubbed_str}"
+    );
     assert!(!events.is_empty(), "expected leak event for ghp_ pattern");
 }
 
@@ -251,12 +275,17 @@ fn test_leak_in_custom_response_header() {
 
     let (scrubbed, events) = analyzer.analyze_header(header_name, header_value);
 
-    assert!(!scrubbed.contains("sk-real-openai-key-abcdef1234567890"),
-        "header value must be scrubbed: {scrubbed}");
+    assert!(
+        !scrubbed.contains("sk-real-openai-key-abcdef1234567890"),
+        "header value must be scrubbed: {scrubbed}"
+    );
     assert!(scrubbed.contains("[REDACTED:"));
 
     assert!(!events.is_empty(), "expected leak events for header");
-    let ev = events.iter().find(|e| e.severity == LeakSeverity::High).unwrap();
+    let ev = events
+        .iter()
+        .find(|e| e.severity == LeakSeverity::High)
+        .unwrap();
     match &ev.location {
         LeakLocation::Header(name) => assert_eq!(name, header_name),
         other => panic!("expected Header location, got {other:?}"),
@@ -300,7 +329,9 @@ fn test_leak_in_status_line() {
 
     assert!(!scrubbed.contains("sk-real-openai-key-abcdef1234567890"));
     assert!(!events.is_empty());
-    assert!(events.iter().any(|e| e.location == LeakLocation::StatusLine));
+    assert!(events
+        .iter()
+        .any(|e| e.location == LeakLocation::StatusLine));
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -380,7 +411,9 @@ fn test_leak_event_emit_writes_audit_entry() {
     event.emit();
 
     // Verify audit.log was written with the right op
-    let log_path = std::path::PathBuf::from(&tmp).join(".phantom").join("audit.log");
+    let log_path = std::path::PathBuf::from(&tmp)
+        .join(".phantom")
+        .join("audit.log");
     let content = std::fs::read_to_string(&log_path).expect("audit.log should exist");
     let found = content
         .lines()

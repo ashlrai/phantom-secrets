@@ -1,6 +1,13 @@
 mod commands;
 mod util;
 
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Mutex;
+
+    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+}
+
 use clap::{Parser, Subcommand};
 use commands::audit::AuditAction;
 use tracing_subscriber::EnvFilter;
@@ -415,18 +422,28 @@ enum Commands {
         /// Requires a secret NAME when used with --shadow.
         #[arg(long)]
         shadow: bool,
-        /// Secret name to shadow-rotate (required with --shadow).
-        #[arg(long, value_name = "NAME", requires = "shadow")]
+        /// Secret name to rotate. With --shadow: shadow-rotate this secret.
+        /// With --provider (or alone, when the secret has a rotation_provider
+        /// block in .phantom.toml): rotate the real credential at the vendor.
+        #[arg(long, value_name = "NAME")]
         name: Option<String>,
         /// Persist a rotation schedule in .phantom.toml under [phantom.rotation_policy].
         /// Accepted values: never | daily | weekly | monthly.
         /// Use `phantom watch --auto-rotate` to enforce the schedule automatically.
-        #[arg(long, value_name = "STRATEGY")]
+        #[arg(long, value_name = "STRATEGY", conflicts_with = "name")]
         schedule_strategy: Option<String>,
         /// Use a vendor-specific rotation provider to re-issue the credential at
-        /// the vendor side. Accepted values: stripe | github | aws.
+        /// the vendor side. Accepted values: stripe | github | aws | google | vercel.
+        /// (sentry and supabase are recognized but report manual-rotation-required
+        /// with a dashboard link — those vendors expose no token-minting API.)
         /// Requires --name <KEY> and the secret's rotation_provider config in
         /// .phantom.toml under [phantom.secrets.<KEY>.rotation_provider].
+        /// May be omitted when that config block names the provider:
+        /// `phantom rotate --name <KEY>` resolves it from .phantom.toml.
+        /// The bootstrap credential named by api_key_env is read from the
+        /// environment first, then from the vault under the same name.
+        /// The new value is stored in the vault and never printed; pass the
+        /// global --json flag for a metadata-only JSON result.
         /// Example: phantom rotate --provider stripe --name STRIPE_SECRET_KEY
         #[arg(long, value_name = "PROVIDER", conflicts_with_all = ["shadow", "schedule_strategy", "with_expiry", "batch"])]
         provider: Option<String>,
@@ -732,7 +749,11 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::List { json, show_expiry, min_anomaly_score } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
+        Commands::List {
+            json,
+            show_expiry,
+            min_anomaly_score,
+        } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
         Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
@@ -741,49 +762,67 @@ fn main() -> anyhow::Result<()> {
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status { oneline } => commands::status::run(oneline),
-        Commands::Rotate { sync, with_expiry, shadow, name, schedule_strategy, provider, batch, rotation_window_days } => {
+        Commands::Rotate {
+            sync,
+            with_expiry,
+            shadow,
+            name,
+            schedule_strategy,
+            provider,
+            batch,
+            rotation_window_days,
+        } => {
             if batch {
                 commands::rotate::run_batch(rotation_window_days, sync, cli.json)
-            } else if let Some(ref provider_name) = provider {
-                let secret_name = name.ok_or_else(|| {
-                    anyhow::anyhow!("--provider requires --name <NAME>")
-                })?;
-                commands::rotate::run_with_provider(provider_name, &secret_name, sync)
             } else if shadow {
-                let secret_name = name.ok_or_else(|| {
-                    anyhow::anyhow!("--shadow requires --name <NAME>")
-                })?;
+                let secret_name =
+                    name.ok_or_else(|| anyhow::anyhow!("--shadow requires --name <NAME>"))?;
                 commands::rotate::run_shadow(&secret_name).map(|_| ())
+            } else if provider.is_some() || name.is_some() {
+                let secret_name =
+                    name.ok_or_else(|| anyhow::anyhow!("--provider requires --name <NAME>"))?;
+                commands::rotate::run_with_provider(
+                    provider.as_deref(),
+                    &secret_name,
+                    sync,
+                    cli.json,
+                )
             } else if let Some(ref strategy_str) = schedule_strategy {
                 commands::rotate::run_with_schedule_strategy(strategy_str, sync, with_expiry)
             } else {
                 commands::rotate::run_with_expiry(sync, with_expiry)
             }
         }
-        Commands::Validate { action, check_all, jobs, promote, watch } => {
-            match action {
-                Some(ValidateAction::Schedule { interval, status, disable }) => {
-                    commands::validation_scheduler::run_schedule(
-                        interval.as_deref(),
-                        status,
-                        disable,
-                        cli.json,
-                    )
-                }
-                Some(ValidateAction::History { last }) => {
-                    commands::validation_scheduler::run_history(last, cli.json)
-                }
-                None => {
-                    if watch {
-                        commands::validate::run_watch(jobs, cli.json)
-                    } else if let Some(secret_name) = promote {
-                        commands::rotate::run_validate_promote(&secret_name, true)
-                    } else {
-                        commands::validate::run(check_all, jobs, cli.json)
-                    }
+        Commands::Validate {
+            action,
+            check_all,
+            jobs,
+            promote,
+            watch,
+        } => match action {
+            Some(ValidateAction::Schedule {
+                interval,
+                status,
+                disable,
+            }) => commands::validation_scheduler::run_schedule(
+                interval.as_deref(),
+                status,
+                disable,
+                cli.json,
+            ),
+            Some(ValidateAction::History { last }) => {
+                commands::validation_scheduler::run_history(last, cli.json)
+            }
+            None => {
+                if watch {
+                    commands::validate::run_watch(jobs, cli.json)
+                } else if let Some(secret_name) = promote {
+                    commands::rotate::run_validate_promote(&secret_name, true)
+                } else {
+                    commands::validate::run(check_all, jobs, cli.json)
                 }
             }
-        }
+        },
         Commands::Doctor { fix, expiry } => commands::doctor::run_doctor(fix, expiry),
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
@@ -801,7 +840,11 @@ fn main() -> anyhow::Result<()> {
             service,
             force,
         } => commands::pull::run(&from, &project, environment, service, force),
-        Commands::Setup { client, print, audit_mode } => commands::setup::run(client, print, audit_mode),
+        Commands::Setup {
+            client,
+            print,
+            audit_mode,
+        } => commands::setup::run(client, print, audit_mode),
         Commands::Sync {
             platform,
             project,
@@ -846,7 +889,9 @@ fn main() -> anyhow::Result<()> {
             CloudAction::Pull { force } => commands::cloud::run_pull(force),
             CloudAction::Status => commands::cloud::run_status(),
         },
-        Commands::Watch { auto, auto_rotate } => commands::watch::run_with_rotate(auto, auto_rotate),
+        Commands::Watch { auto, auto_rotate } => {
+            commands::watch::run_with_rotate(auto, auto_rotate)
+        }
         Commands::Why { key } => commands::why::run(&key),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
         Commands::Unwrap => commands::unwrap::run(),
@@ -858,7 +903,13 @@ fn main() -> anyhow::Result<()> {
                 name,
                 json,
                 leaked_secrets,
-            } => commands::audit::run_show(last, op.as_deref(), name.as_deref(), json, leaked_secrets),
+            } => commands::audit::run_show(
+                last,
+                op.as_deref(),
+                name.as_deref(),
+                json,
+                leaked_secrets,
+            ),
             AuditAction::Tail { op, name } => {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
             }
@@ -943,9 +994,12 @@ fn main() -> anyhow::Result<()> {
             McpAction::Serve => commands::mcp::run_serve(),
         },
         Commands::McpApprove { nonce } => commands::mcp_approve::run(&nonce),
-        Commands::SecretsExpiringSoon { days, auto_rotate, sync, json } => {
-            commands::expiry::run(days, auto_rotate, sync, json)
-        }
+        Commands::SecretsExpiringSoon {
+            days,
+            auto_rotate,
+            sync,
+            json,
+        } => commands::expiry::run(days, auto_rotate, sync, json),
         Commands::Expiry { action } => match action {
             ExpiryAction::Set { key, days } => commands::expiry::run_set(&key, days),
             ExpiryAction::Enforce { fail_closed, json } => {

@@ -30,6 +30,7 @@ fn default_env_path() -> String {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AddSecretParams {
     /// Name of the secret (e.g., OPENAI_API_KEY)
     pub name: String,
@@ -694,10 +695,13 @@ pub struct PhantomExpiryEnforceParams {
 pub struct RotateProviderParams {
     /// Name of the secret to rotate (e.g. `STRIPE_SECRET_KEY`).
     pub name: String,
-    /// Which provider to use: `"stripe"`, `"github"`, or `"aws"`.
-    /// Must match the `provider` field in the secret's
-    /// `[phantom.secrets.{name}.rotation_provider]` config block.
-    pub provider: String,
+    /// Which provider to use: `"stripe"`, `"github"`, `"aws"`, `"google"`,
+    /// or `"vercel"`. When set, it must match the `provider` field in the
+    /// secret's `[phantom.secrets.{name}.rotation_provider]` config block.
+    /// Optional — when omitted, the provider is resolved from that config
+    /// block in `.phantom.toml`.
+    #[serde(default)]
+    pub provider: Option<String>,
     /// Required. Must be `true` — the calling agent must confirm with the
     /// user before rotating a live credential. Vendor rotation calls
     /// external APIs and permanently invalidates the current key.

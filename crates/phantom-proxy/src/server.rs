@@ -310,15 +310,11 @@ async fn handle_request(
                 );
                 resp.headers_mut().insert(
                     "x-phantom-anomaly-score",
-                    hyper::header::HeaderValue::from_str(
-                        &decision.anomaly_score.to_string(),
-                    )
-                    .unwrap_or(hyper::header::HeaderValue::from_static("100")),
+                    hyper::header::HeaderValue::from_str(&decision.anomaly_score.to_string())
+                        .unwrap_or(hyper::header::HeaderValue::from_static("100")),
                 );
-                resp.headers_mut().insert(
-                    "retry-after",
-                    hyper::header::HeaderValue::from_static("10"),
-                );
+                resp.headers_mut()
+                    .insert("retry-after", hyper::header::HeaderValue::from_static("10"));
                 return Ok(resp);
             }
             AnomalyClass::Caution => {
@@ -625,11 +621,8 @@ async fn handle_request(
                         // intentionally discarded — the scrubber replaces with
                         // [REDACTED:*] which would conflict with the token→phantom
                         // substitution performed by layer 2.
-                        let (_, scrub_event) = resp_scrubber.scrub_chunk(
-                            resp_ct.as_deref(),
-                            &mut audit_carry,
-                            &chunk,
-                        );
+                        let (_, scrub_event) =
+                            resp_scrubber.scrub_chunk(resp_ct.as_deref(), &mut audit_carry, &chunk);
                         if scrub_event.scrubbed {
                             debug!(
                                 "ResponseScrubber intercepted leak(s) in streaming chunk \
@@ -639,13 +632,11 @@ async fn handle_request(
                         }
 
                         // Layer 2 (body scrub): overlap-window token→phantom replacement.
-                        let mut combined =
-                            Vec::with_capacity(replace_carry.len() + chunk.len());
+                        let mut combined = Vec::with_capacity(replace_carry.len() + chunk.len());
                         combined.extend_from_slice(&replace_carry);
                         combined.extend_from_slice(&chunk);
 
-                        let (scrubbed, did_scrub) =
-                            interceptor.scrub_response_bytes(&combined);
+                        let (scrubbed, did_scrub) = interceptor.scrub_response_bytes(&combined);
                         if did_scrub {
                             debug!("Scrubbed secret(s) from streaming response chunk");
                         }
@@ -686,8 +677,7 @@ async fn handle_request(
 
             // Flush replacement carry.
             if !replace_carry.is_empty() {
-                let (scrubbed, _) =
-                    interceptor.scrub_response_bytes(&replace_carry);
+                let (scrubbed, _) = interceptor.scrub_response_bytes(&replace_carry);
                 let _ = tx.send(Ok(Frame::data(Bytes::from(scrubbed)))).await;
             }
         });
@@ -713,10 +703,8 @@ async fn handle_request(
         // and stderr warnings.  Body output is discarded; the scrubber replaces with
         // [REDACTED:*] which conflicts with the token→phantom replacement in layer 2.
         let resp_scrubber = state.interceptor.to_response_scrubber();
-        let (_, scrub_event) = resp_scrubber.scrub_buffered(
-            response_content_type.as_deref(),
-            &response_body,
-        );
+        let (_, scrub_event) =
+            resp_scrubber.scrub_buffered(response_content_type.as_deref(), &response_body);
         if scrub_event.scrubbed {
             debug!(
                 "ResponseScrubber intercepted leak(s) in buffered response ({} events)",
@@ -725,8 +713,7 @@ async fn handle_request(
         }
 
         // Layer 2 (body scrub): Interceptor replaces real secrets with phantom tokens.
-        let (scrubbed_body, did_scrub) =
-            state.interceptor.scrub_response_bytes(&response_body);
+        let (scrubbed_body, did_scrub) = state.interceptor.scrub_response_bytes(&response_body);
         if did_scrub {
             debug!(
                 "Scrubbed secret(s) from response body ({} bytes)",

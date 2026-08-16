@@ -175,11 +175,7 @@ impl ResponseScrubber {
     /// JSON and plain-text the body is scanned as a single string.
     ///
     /// Returns `(scrubbed_body_bytes, ScrubEvent)`.
-    pub fn scrub_buffered(
-        &self,
-        content_type: Option<&str>,
-        body: &[u8],
-    ) -> (Vec<u8>, ScrubEvent) {
+    pub fn scrub_buffered(&self, content_type: Option<&str>, body: &[u8]) -> (Vec<u8>, ScrubEvent) {
         if body.is_empty() {
             return (Vec::new(), ScrubEvent::clean());
         }
@@ -250,11 +246,7 @@ impl ResponseScrubber {
     /// Flush the remaining carry buffer at end-of-stream.
     ///
     /// Returns `(final_bytes, ScrubEvent)`.
-    pub fn flush_carry(
-        &self,
-        content_type: Option<&str>,
-        carry: Vec<u8>,
-    ) -> (Vec<u8>, ScrubEvent) {
+    pub fn flush_carry(&self, content_type: Option<&str>, carry: Vec<u8>) -> (Vec<u8>, ScrubEvent) {
         if carry.is_empty() {
             return (Vec::new(), ScrubEvent::clean());
         }
@@ -292,29 +284,26 @@ impl ResponseScrubber {
         let n = lines.len();
         // Determine the real last index: if the input ends with '\n' the last
         // element of `lines` is always "" and should not be emitted as a line.
-        let last_real = if text.ends_with('\n') && n > 0 { n - 1 } else { n };
-        for i in 0..last_real {
-            let line = lines[i];
+        let last_real = if text.ends_with('\n') && n > 0 {
+            n - 1
+        } else {
+            n
+        };
+        for (i, line) in lines.iter().enumerate().take(last_real) {
             if i > 0 {
                 output.push('\n');
             }
             if let Some(payload) = line.strip_prefix("data:") {
-                let (scrubbed_payload, events) =
-                    self.analyzer.analyze_body(payload.as_bytes());
+                let (scrubbed_payload, events) = self.analyzer.analyze_body(payload.as_bytes());
                 all_events.extend(events);
                 output.push_str("data:");
-                output.push_str(
-                    std::str::from_utf8(&scrubbed_payload).unwrap_or(payload),
-                );
+                output.push_str(std::str::from_utf8(&scrubbed_payload).unwrap_or(payload));
             } else {
                 // Non-data lines (event:, id:, retry:, comments, blank) pass through.
                 // Still scan them in case a secret slipped into an event: field.
-                let (scrubbed_line, events) =
-                    self.analyzer.analyze_body(line.as_bytes());
+                let (scrubbed_line, events) = self.analyzer.analyze_body(line.as_bytes());
                 all_events.extend(events);
-                output.push_str(
-                    std::str::from_utf8(&scrubbed_line).unwrap_or(line),
-                );
+                output.push_str(std::str::from_utf8(&scrubbed_line).unwrap_or(line));
             }
         }
         // Restore the trailing '\n' if the original had one.
@@ -473,8 +462,12 @@ impl AdaptiveResponseScrubber {
                             && ctx
                                 .map(|c| {
                                     // Match on content_type prefix and status code family.
-                                    c.content_type.starts_with(&obs.content_type[..obs.content_type.find(';').unwrap_or(obs.content_type.len())])
-                                        || obs.status_code == c.status_code
+                                    c.content_type.starts_with(
+                                        &obs.content_type[..obs
+                                            .content_type
+                                            .find(';')
+                                            .unwrap_or(obs.content_type.len())],
+                                    ) || obs.status_code == c.status_code
                                 })
                                 .unwrap_or(true)
                     })
@@ -498,8 +491,7 @@ impl AdaptiveResponseScrubber {
 
         for (secret_name, json_path, confidence) in &profiles_snapshot {
             // Read the current value at this path.
-            let existing_value = value_at_json_path(&json_val, json_path)
-                .map(|s| s.to_string());
+            let existing_value = value_at_json_path(&json_val, json_path).map(|s| s.to_string());
 
             let Some(val) = existing_value else {
                 continue;
@@ -574,9 +566,7 @@ fn parse_path_segments(path: &str) -> Vec<PathSegment> {
         }
         if remaining.starts_with('.') {
             remaining = &remaining[1..];
-            let end = remaining
-                .find(|c| c == '.' || c == '[')
-                .unwrap_or(remaining.len());
+            let end = remaining.find(['.', '[']).unwrap_or(remaining.len());
             if end > 0 {
                 segments.push(PathSegment::Key(remaining[..end].to_string()));
             }
@@ -673,7 +663,9 @@ fn emit_leak_warnings(events: &[LeakEvent], content_type: Option<&str>) {
             event.pattern,
             event.location.as_label(),
             event.match_count,
-            event.secret_name.as_deref()
+            event
+                .secret_name
+                .as_deref()
                 .map(|n| format!(", key={n}"))
                 .unwrap_or_default(),
         );
@@ -782,8 +774,7 @@ mod tests {
         let body = format!(
             r#"{{"error":{{"message":"Invalid API key: {secret}","type":"invalid_request_error","code":"invalid_api_key"}}}}"#
         );
-        let (out, event) =
-            scrubber.scrub_buffered(Some("application/json"), body.as_bytes());
+        let (out, event) = scrubber.scrub_buffered(Some("application/json"), body.as_bytes());
         let out_str = String::from_utf8(out).unwrap();
 
         assert!(event.scrubbed, "expected scrub but got clean");
@@ -805,15 +796,11 @@ mod tests {
         let body = format!(
             r#"{{"id":"evt_xxx","object":"event","data":{{"object":{{"key":"{secret}"}}}}}}"#
         );
-        let (out, event) =
-            scrubber.scrub_buffered(Some("application/json"), body.as_bytes());
+        let (out, event) = scrubber.scrub_buffered(Some("application/json"), body.as_bytes());
         let out_str = String::from_utf8(out).unwrap();
 
         assert!(event.scrubbed);
-        assert!(
-            !out_str.contains(secret),
-            "Stripe secret leaked: {out_str}"
-        );
+        assert!(!out_str.contains(secret), "Stripe secret leaked: {out_str}");
         // Pattern-level detection should also catch it (sk_live_*)
         let has_redaction = out_str.contains("[REDACTED:");
         assert!(has_redaction, "no redaction marker in: {out_str}");
@@ -825,8 +812,7 @@ mod tests {
     fn scrub_buffered_plain_text_redacts_secret() {
         let scrubber = scrubber_with(PHM, SECRET);
         let body = format!("Authorization: Bearer {SECRET}");
-        let (out, event) =
-            scrubber.scrub_buffered(Some("text/plain"), body.as_bytes());
+        let (out, event) = scrubber.scrub_buffered(Some("text/plain"), body.as_bytes());
         let out_str = String::from_utf8(out).unwrap();
         assert!(event.scrubbed);
         assert!(!out_str.contains(SECRET));
@@ -840,11 +826,8 @@ mod tests {
         let token = "phm_dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333dddd4444eeee5555";
         let scrubber = scrubber_with(token, secret);
 
-        let body = format!(
-            "data: {{\"key\":\"{secret}\"}}\n\ndata: {{\"delta\":\"hello\"}}\n\n"
-        );
-        let (out, event) =
-            scrubber.scrub_buffered(Some("text/event-stream"), body.as_bytes());
+        let body = format!("data: {{\"key\":\"{secret}\"}}\n\ndata: {{\"delta\":\"hello\"}}\n\n");
+        let (out, event) = scrubber.scrub_buffered(Some("text/event-stream"), body.as_bytes());
         let out_str = String::from_utf8(out).unwrap();
 
         assert!(event.scrubbed, "SSE body not scrubbed");
@@ -886,10 +869,12 @@ mod tests {
         let mut carry = Vec::new();
         let mut emitted = Vec::new();
 
-        let (part1, _) = scrubber.scrub_chunk(Some("text/event-stream"), &mut carry, chunk1.as_bytes());
+        let (part1, _) =
+            scrubber.scrub_chunk(Some("text/event-stream"), &mut carry, chunk1.as_bytes());
         emitted.extend_from_slice(&part1);
 
-        let (part2, event2) = scrubber.scrub_chunk(Some("text/event-stream"), &mut carry, chunk2.as_bytes());
+        let (part2, event2) =
+            scrubber.scrub_chunk(Some("text/event-stream"), &mut carry, chunk2.as_bytes());
         emitted.extend_from_slice(&part2);
 
         let (tail, _) = scrubber.flush_carry(Some("text/event-stream"), carry);
@@ -1004,10 +989,7 @@ mod tests {
         let out_str = String::from_utf8(out).unwrap();
 
         assert!(event.scrubbed);
-        assert!(
-            !out_str.contains(secret),
-            "GitHub token leaked: {out_str}"
-        );
+        assert!(!out_str.contains(secret), "GitHub token leaked: {out_str}");
     }
 
     // ── Integration: malicious MCP exfiltration via response ─────────────────
@@ -1034,10 +1016,8 @@ mod tests {
             }}"#
         );
 
-        let (scrubbed, event) = scrubber.scrub_buffered(
-            Some("application/json"),
-            malicious_response.as_bytes(),
-        );
+        let (scrubbed, event) =
+            scrubber.scrub_buffered(Some("application/json"), malicious_response.as_bytes());
         let scrubbed_str = String::from_utf8(scrubbed).unwrap();
 
         // The real secret must NOT reach the AI agent.

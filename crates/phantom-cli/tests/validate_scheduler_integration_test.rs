@@ -139,13 +139,25 @@ fn validate_all_mixed_results_report_counts_and_exit_signal() {
 
     // The CLI exits 1 when report.invalid > 0.
     let has_invalid = report.invalid > 0;
-    assert!(has_invalid, "has_invalid should be true for a mixed-result run");
+    assert!(
+        has_invalid,
+        "has_invalid should be true for a mixed-result run"
+    );
 
     // JSON serialisation must not leak any secret values.
     let json = serde_json::to_string_pretty(&report).expect("serialize report");
-    assert!(!json.contains("sk-valid"), "JSON must not contain secret values");
-    assert!(!json.contains("sk_revoked"), "JSON must not contain secret values");
-    assert!(!json.contains("ghp_unreachable"), "JSON must not contain secret values");
+    assert!(
+        !json.contains("sk-valid"),
+        "JSON must not contain secret values"
+    );
+    assert!(
+        !json.contains("sk_revoked"),
+        "JSON must not contain secret values"
+    );
+    assert!(
+        !json.contains("ghp_unreachable"),
+        "JSON must not contain secret values"
+    );
 }
 
 // ── Test 2: watch mode detects fresh invalid secret and updates report ────────
@@ -167,8 +179,14 @@ fn watch_mode_detects_fresh_invalid_secret_and_updates_report() {
     vault.store("STRIPE_SECRET_KEY", "sk_revoked").unwrap();
 
     // Initially neither has been validated.
-    assert!(vault.get_validation_metadata("OPENAI_API_KEY").unwrap().never_checked());
-    assert!(vault.get_validation_metadata("STRIPE_SECRET_KEY").unwrap().never_checked());
+    assert!(vault
+        .get_validation_metadata("OPENAI_API_KEY")
+        .unwrap()
+        .never_checked());
+    assert!(vault
+        .get_validation_metadata("STRIPE_SECRET_KEY")
+        .unwrap()
+        .never_checked());
 
     // Simulate one watch tick: run pipeline.
     let secrets = vec![
@@ -206,7 +224,11 @@ fn watch_mode_detects_fresh_invalid_secret_and_updates_report() {
     let stripe_meta = vault.get_validation_metadata("STRIPE_SECRET_KEY").unwrap();
     assert!(!stripe_meta.is_valid, "STRIPE should be marked invalid");
     assert!(
-        stripe_meta.failure_reason.as_deref().unwrap_or("").contains("401"),
+        stripe_meta
+            .failure_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("401"),
         "failure_reason should contain 401, got: {:?}",
         stripe_meta.failure_reason
     );
@@ -227,7 +249,10 @@ fn watch_mode_detects_fresh_invalid_secret_and_updates_report() {
     let raw = std::fs::read_to_string(&report_file).unwrap();
     let read_back: WatchReport = serde_json::from_str(&raw).unwrap();
 
-    assert!(read_back.has_invalid, "has_invalid should be true in the written report");
+    assert!(
+        read_back.has_invalid,
+        "has_invalid should be true in the written report"
+    );
     assert_eq!(read_back.invalid_count, 1);
     assert_eq!(read_back.valid_count, 1);
     assert_eq!(read_back.total, 2);
@@ -245,10 +270,14 @@ fn per_secret_schedule_daily_not_rechecked_if_fresh() {
         enabled: true,
         schedule: "daily".to_string(),
         timeout_secs: 30,
+        ..Default::default()
     };
 
     // Never checked (ts=0) — always due.
-    assert!(daily_cfg.is_due(0), "never-checked secret should always be due");
+    assert!(
+        daily_cfg.is_due(0),
+        "never-checked secret should always be due"
+    );
 
     // Checked 23 h 59 m ago — NOT due (< 24 h elapsed).
     let almost_day_ago = now_secs().saturating_sub(23 * 3600 + 59 * 60);
@@ -276,6 +305,7 @@ fn per_secret_schedule_daily_not_rechecked_if_fresh() {
         enabled: true,
         schedule: "weekly".to_string(),
         timeout_secs: 30,
+        ..Default::default()
     };
     let six_days_ago = now_secs().saturating_sub(6 * 86_400);
     assert!(
@@ -295,18 +325,32 @@ fn per_secret_schedule_daily_not_rechecked_if_fresh() {
         enabled: true,
         schedule: "never".to_string(),
         timeout_secs: 30,
+        ..Default::default()
     };
-    assert!(!never_cfg.is_due(0), "never schedule: ts=0 should not be due");
-    assert!(!never_cfg.is_due(1), "never schedule: old ts should not be due");
+    assert!(
+        !never_cfg.is_due(0),
+        "never schedule: ts=0 should not be due"
+    );
+    assert!(
+        !never_cfg.is_due(1),
+        "never schedule: old ts should not be due"
+    );
 
     // Disabled: never due regardless of schedule.
     let disabled_cfg = ValidationScheduleConfig {
         enabled: false,
         schedule: "daily".to_string(),
         timeout_secs: 30,
+        ..Default::default()
     };
-    assert!(!disabled_cfg.is_due(0), "disabled validation: ts=0 should not be due");
-    assert!(!disabled_cfg.is_due(1), "disabled validation: old ts should not be due");
+    assert!(
+        !disabled_cfg.is_due(0),
+        "disabled validation: ts=0 should not be due"
+    );
+    assert!(
+        !disabled_cfg.is_due(1),
+        "disabled validation: old ts should not be due"
+    );
 }
 
 // ── Test 4: ValidationMetadata round-trips through FileVault after pipeline ───
@@ -316,12 +360,9 @@ fn per_secret_schedule_daily_not_rechecked_if_fresh() {
 #[test]
 fn pipeline_metadata_persisted_in_file_vault_after_run() {
     let dir = TempDir::new().unwrap();
-    let vault = phantom_vault::file::FileVault::new(
-        dir.path(),
-        "test-meta-roundtrip",
-        "pass".to_string(),
-    )
-    .unwrap();
+    let vault =
+        phantom_vault::file::FileVault::new(dir.path(), "test-meta-roundtrip", "pass".to_string())
+            .unwrap();
 
     vault.store("ANTHROPIC_API_KEY", "sk-ant-test").unwrap();
     vault.store("GITHUB_TOKEN", "ghp_test").unwrap();
@@ -349,21 +390,28 @@ fn pipeline_metadata_persisted_in_file_vault_after_run() {
     }
 
     // Reload vault to confirm on-disk persistence.
-    let vault2 = phantom_vault::file::FileVault::new(
-        dir.path(),
-        "test-meta-roundtrip",
-        "pass".to_string(),
-    )
-    .unwrap();
+    let vault2 =
+        phantom_vault::file::FileVault::new(dir.path(), "test-meta-roundtrip", "pass".to_string())
+            .unwrap();
 
     let anthropic_meta = vault2.get_validation_metadata("ANTHROPIC_API_KEY").unwrap();
-    assert!(anthropic_meta.is_valid, "ANTHROPIC should be valid after persist+reload");
+    assert!(
+        anthropic_meta.is_valid,
+        "ANTHROPIC should be valid after persist+reload"
+    );
     assert_eq!(anthropic_meta.validator_name.as_deref(), Some("anthropic"));
 
     let github_meta = vault2.get_validation_metadata("GITHUB_TOKEN").unwrap();
-    assert!(!github_meta.is_valid, "GITHUB should be invalid (unreachable) after persist+reload");
     assert!(
-        github_meta.failure_reason.as_deref().unwrap_or("").contains("unreachable"),
+        !github_meta.is_valid,
+        "GITHUB should be invalid (unreachable) after persist+reload"
+    );
+    assert!(
+        github_meta
+            .failure_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("unreachable"),
         "failure_reason should contain 'unreachable', got: {:?}",
         github_meta.failure_reason
     );

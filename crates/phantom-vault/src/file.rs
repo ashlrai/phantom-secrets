@@ -199,11 +199,7 @@ impl VaultBackend for FileVault {
         Ok(data.metadata.get(name).cloned())
     }
 
-    fn set_metadata(
-        &self,
-        name: &str,
-        meta: SecretMetadata,
-    ) -> phantom_core::error::Result<()> {
+    fn set_metadata(&self, name: &str, meta: SecretMetadata) -> phantom_core::error::Result<()> {
         let _lock = self.lock_file()?;
         let mut data = self.load()?;
         // Only set metadata for secrets that actually exist in the vault.
@@ -423,7 +419,7 @@ mod tests {
         assert!(meta.expires_at.is_some());
         assert!(!meta.is_expired(), "7-day TTL should not be expired yet");
         let days = meta.days_remaining().unwrap();
-        assert!(days >= 6 && days <= 7, "days_remaining={days}");
+        assert!((6..=7).contains(&days), "days_remaining={days}");
     }
 
     #[test]

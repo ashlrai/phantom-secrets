@@ -88,10 +88,7 @@ pub enum AuditEventEncryption {
 impl AuditEventEncryption {
     /// Parse from `PHANTOM_AUDIT_ENCRYPTION` env var.
     pub fn from_env() -> Self {
-        match std::env::var("PHANTOM_AUDIT_ENCRYPTION")
-            .ok()
-            .as_deref()
-        {
+        match std::env::var("PHANTOM_AUDIT_ENCRYPTION").ok().as_deref() {
             Some("local" | "LOCAL" | "local-only" | "LOCAL-ONLY") => Self::LocalOnly,
             Some("cloud-signed" | "CLOUD-SIGNED" | "cloud_signed") => Self::CloudSigned,
             _ => Self::Disabled,
@@ -395,6 +392,7 @@ impl AnomalyClass {
     }
 
     /// Parse from a string (case-insensitive).
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "normal" => Some(Self::Normal),
@@ -436,10 +434,7 @@ impl RateLimitEvent {
         if self.anomaly_class == AnomalyClass::Normal {
             return;
         }
-        log(
-            "proxy.rate_event",
-            Some(self.secret_key.as_str()),
-        );
+        log("proxy.rate_event", Some(self.secret_key.as_str()));
     }
 }
 
@@ -612,8 +607,7 @@ fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<
 
     let enc_mode = AuditEventEncryption::from_env();
     let encrypted_context = if enc_mode.is_active() {
-        key.as_ref()
-            .and_then(|k| encrypt_context(k, enc_mode).ok())
+        key.as_ref().and_then(|k| encrypt_context(k, enc_mode).ok())
     } else {
         None
     };
@@ -1086,15 +1080,17 @@ pub fn audit_stats() -> std::io::Result<AuditStats> {
 
         if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
             secret_events += 1;
-            let entry = by_name.entry(name.to_string()).or_insert_with(|| SecretStats {
-                name: name.to_string(),
-                total: 0,
-                stores: 0,
-                retrieves: 0,
-                deletes: 0,
-                last_seen_ts: 0,
-                first_seen_ts: u64::MAX,
-            });
+            let entry = by_name
+                .entry(name.to_string())
+                .or_insert_with(|| SecretStats {
+                    name: name.to_string(),
+                    total: 0,
+                    stores: 0,
+                    retrieves: 0,
+                    deletes: 0,
+                    last_seen_ts: 0,
+                    first_seen_ts: u64::MAX,
+                });
             entry.total += 1;
             match op.as_str() {
                 "vault.store" => entry.stores += 1,
@@ -1256,13 +1252,10 @@ pub fn setup_ed25519_keypair() -> std::io::Result<([u8; 32], String)> {
 
     // Store private key in OS keychain.
     let privkey_hex = hex::encode(signing_key.to_bytes());
-    let kr = keyring::Entry::new(
-        ed25519_privkey_keychain_service(),
-        &whoami_username(),
-    )
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    let kr = keyring::Entry::new(ed25519_privkey_keychain_service(), &whoami_username())
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     kr.set_password(&privkey_hex)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     // Write public key to disk.
     let log_p = log_path()?;
@@ -1301,11 +1294,7 @@ pub fn setup_ed25519_keypair() -> std::io::Result<([u8; 32], String)> {
 
 /// Load the ED25519 signing key from the OS keychain, if present.
 fn load_signing_key() -> Option<ed25519_dalek::SigningKey> {
-    let kr = keyring::Entry::new(
-        ed25519_privkey_keychain_service(),
-        &whoami_username(),
-    )
-    .ok()?;
+    let kr = keyring::Entry::new(ed25519_privkey_keychain_service(), &whoami_username()).ok()?;
     let privkey_hex = kr.get_password().ok()?;
     let privkey_bytes = hex::decode(privkey_hex.trim()).ok()?;
     let bytes: [u8; 32] = privkey_bytes.try_into().ok()?;
@@ -1356,8 +1345,7 @@ fn build_sidecar_event(
     if let Some(ref n) = event.name {
         canonical_map.insert("name", n.clone());
     }
-    let payload =
-        serde_json::to_vec(&canonical_map).expect("BTreeMap serialization is infallible");
+    let payload = serde_json::to_vec(&canonical_map).expect("BTreeMap serialization is infallible");
     let signature = signing_key.sign(&payload);
     let sig_hex = hex::encode(signature.to_bytes());
 
@@ -1409,8 +1397,7 @@ pub fn verify_sidecar_event(event: &SidecarEvent) -> bool {
     if let Some(ref n) = event.name {
         canonical_map.insert("name", n.clone());
     }
-    let payload =
-        serde_json::to_vec(&canonical_map).expect("BTreeMap serialization is infallible");
+    let payload = serde_json::to_vec(&canonical_map).expect("BTreeMap serialization is infallible");
 
     verifying_key.verify(&payload, &signature).is_ok()
 }
@@ -1518,9 +1505,7 @@ fn verify_log_content(
         }
     }
 
-    if let (Some(seq), Some(hmac), Some(key_bytes)) =
-        (final_seq, final_hmac.as_deref(), key)
-    {
+    if let (Some(seq), Some(hmac), Some(key_bytes)) = (final_seq, final_hmac.as_deref(), key) {
         match read_head(log_path, key_bytes)? {
             Some(head) if head.last_seq == seq && head.last_hmac == hmac => {}
             Some(_) => report.head_mismatch = true,
@@ -1531,8 +1516,7 @@ fn verify_log_content(
     Ok(report)
 }
 
-pub fn verify_log_with_context()
--> std::io::Result<(VerifyReport, Vec<VerifiedEventWithContext>)> {
+pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedEventWithContext>)> {
     let path = log_path()?;
     if !path.exists() {
         return Ok((VerifyReport::default(), vec![]));
@@ -1718,7 +1702,11 @@ pub fn log_batch_item_failed(batch_id: &str, secret_name: &str, reason: &str) {
         return;
     }
     // Truncate reason to 120 chars to avoid bloating the audit log.
-    let safe_reason = if reason.len() > 120 { &reason[..120] } else { reason };
+    let safe_reason = if reason.len() > 120 {
+        &reason[..120]
+    } else {
+        reason
+    };
     let name = format!("batch_id={batch_id} secret={secret_name} reason={safe_reason}");
     log("vault.batch_rotation.item.failed", Some(&name));
 }
@@ -1726,18 +1714,11 @@ pub fn log_batch_item_failed(batch_id: &str, secret_name: &str, reason: &str) {
 /// Emit `vault.batch_rotation.completed` — composite summary event.
 ///
 /// Best-effort — never panics or propagates errors.
-pub fn log_batch_rotation_completed(
-    batch_id: &str,
-    total: usize,
-    succeeded: usize,
-    failed: usize,
-) {
+pub fn log_batch_rotation_completed(batch_id: &str, total: usize, succeeded: usize, failed: usize) {
     if !enabled() {
         return;
     }
-    let name = format!(
-        "batch_id={batch_id} total={total} succeeded={succeeded} failed={failed}"
-    );
+    let name = format!("batch_id={batch_id} total={total} succeeded={succeeded} failed={failed}");
     log("vault.batch_rotation.completed", Some(&name));
 }
 
@@ -1786,18 +1767,11 @@ pub fn log_vault_key_rotated(team_id: &str, project_id: &str, new_version: u64) 
 ///
 /// Records `op`: `team.vault.rotation_members`.
 /// Best-effort — never panics or propagates errors.
-pub fn log_team_vault_rotation_members(
-    team_id: &str,
-    member_logins: &[String],
-    new_version: u64,
-) {
+pub fn log_team_vault_rotation_members(team_id: &str, member_logins: &[String], new_version: u64) {
     if !enabled() {
         return;
     }
-    let name = format!(
-        "{team_id} members={} v={new_version}",
-        member_logins.len()
-    );
+    let name = format!("{team_id} members={} v={new_version}", member_logins.len());
     log("team.vault.rotation_members", Some(&name));
 }
 
@@ -1890,7 +1864,7 @@ fn hotspot_acks_path() -> std::io::Result<PathBuf> {
 /// 2. For each secret:
 ///    a. Count accesses in the rolling 24-hour window (current_velocity).
 ///    b. Count accesses in the 7-day baseline window (days 1–7 prior to now)
-///       → baseline_velocity = total / 7.
+///    -> baseline_velocity = total / 7.
 ///    c. Compute the peak 5-minute bucket count.
 ///    d. Trigger alert if:
 ///       - current_velocity > 5 × baseline_velocity (and baseline > 0), OR
@@ -1974,8 +1948,7 @@ pub fn detect_hotspot_alerts_at(now: u64) -> std::io::Result<Vec<HotspotAlert>> 
         let peak_5m_count = compute_peak_window_count(&timestamps, 300, now);
 
         // Determine whether a spike condition is met.
-        let spike_5x = baseline_velocity > 0.0
-            && current_velocity as f64 > 5.0 * baseline_velocity;
+        let spike_5x = baseline_velocity > 0.0 && current_velocity as f64 > 5.0 * baseline_velocity;
         let burst_100 = peak_5m_count >= 100;
 
         if !spike_5x && !burst_100 {
@@ -1999,9 +1972,7 @@ pub fn detect_hotspot_alerts_at(now: u64) -> std::io::Result<Vec<HotspotAlert>> 
                 "velocity_spike: {current_velocity} accesses in 24h > 5x baseline {baseline_velocity:.1}"
             )
         } else {
-            format!(
-                "burst: {peak_5m_count} accesses in a 5-minute window >= 100 threshold"
-            )
+            format!("burst: {peak_5m_count} accesses in a 5-minute window >= 100 threshold")
         };
 
         // Look up existing ack for this secret.
@@ -2041,7 +2012,10 @@ pub fn detect_hotspot_alerts_at(now: u64) -> std::io::Result<Vec<HotspotAlert>> 
     });
 
     // Emit an audit event for each unacked alert (best-effort).
-    for alert in alerts.iter().filter(|a| a.ack_status == HotspotAckStatus::Unacked) {
+    for alert in alerts
+        .iter()
+        .filter(|a| a.ack_status == HotspotAckStatus::Unacked)
+    {
         if enabled() {
             log("vault.hotspot_alert", Some(&alert.secret_name));
         }
@@ -2118,10 +2092,7 @@ fn load_hotspot_acks() -> std::collections::BTreeMap<String, HotspotAckRecord> {
 /// Appends a `HotspotAckRecord` to `~/.phantom/hotspot-alerts.jsonl`.
 /// `snooze_seconds`: if > 0, the alert is snoozed for that many seconds;
 ///                   if 0, the alert is fully acknowledged.
-pub fn acknowledge_hotspot_alert(
-    secret_name: &str,
-    snooze_seconds: u64,
-) -> std::io::Result<()> {
+pub fn acknowledge_hotspot_alert(secret_name: &str, snooze_seconds: u64) -> std::io::Result<()> {
     acknowledge_hotspot_alert_at(secret_name, snooze_seconds, now_unix())
 }
 
@@ -2675,8 +2646,8 @@ mod tests {
             log("vault.retrieve", Some("A_KEY"));
 
             let stats = audit_stats().expect("audit_stats should not error");
-            assert_eq!(stats.secrets[0].name, "A_KEY");  // 2 total
-            assert_eq!(stats.secrets[1].name, "Z_KEY");  // 1 total
+            assert_eq!(stats.secrets[0].name, "A_KEY"); // 2 total
+            assert_eq!(stats.secrets[1].name, "Z_KEY"); // 1 total
         });
     }
 
@@ -2687,7 +2658,10 @@ mod tests {
 
             // Manually append a malformed line.
             let log_p = tmp.join(".phantom").join("audit.log");
-            let mut f = std::fs::OpenOptions::new().append(true).open(&log_p).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log_p)
+                .unwrap();
             use std::io::Write;
             writeln!(f, "{{not json}}").unwrap();
 
@@ -2780,7 +2754,11 @@ mod tests {
             for day in 1u64..=7 {
                 for i in 0u64..2 {
                     // Subtract an extra (i+1)*3600 so entries sit safely before now-86400.
-                    entries.push((now - day * 86400 - (i + 1) * 3600, "vault.retrieve", "SPIKE_KEY"));
+                    entries.push((
+                        now - day * 86400 - (i + 1) * 3600,
+                        "vault.retrieve",
+                        "SPIKE_KEY",
+                    ));
                 }
             }
             // Current 24h: 25 accesses spread across the window (all > now-86400).
@@ -2815,8 +2793,7 @@ mod tests {
         // baseline_velocity = 3.0, current = 31 → 31 > 5×3 = 15 → triggers
         let baseline_velocity: f64 = 3.0;
         let current_velocity: u64 = 31;
-        let spike_5x = baseline_velocity > 0.0
-            && current_velocity as f64 > 5.0 * baseline_velocity;
+        let spike_5x = baseline_velocity > 0.0 && current_velocity as f64 > 5.0 * baseline_velocity;
         assert!(spike_5x, "10x spike should satisfy 5x rule");
     }
 
@@ -2835,7 +2812,10 @@ mod tests {
 
             let alerts = detect_hotspot_alerts_at(now).expect("detect should not error");
             let alert = alerts.iter().find(|a| a.secret_name == "BURST_KEY");
-            assert!(alert.is_some(), "100+ accesses in 5 min should trigger hotspot alert");
+            assert!(
+                alert.is_some(),
+                "100+ accesses in 5 min should trigger hotspot alert"
+            );
             let alert = alert.unwrap();
             assert!(alert.peak_5m_count >= 100);
             assert_eq!(alert.alert_level, "high");
@@ -2950,7 +2930,10 @@ mod tests {
                 // The secret_name field contains only the key name, never a value.
                 // The trigger string must not contain any '=' assignments that
                 // look like a secret value (only numeric annotations are fine).
-                assert!(!a.trigger.contains("sk-"), "trigger must not contain secret value");
+                assert!(
+                    !a.trigger.contains("sk-"),
+                    "trigger must not contain secret value"
+                );
                 assert!(
                     !a.secret_name.contains("="),
                     "secret_name must be a plain key name, not a value"

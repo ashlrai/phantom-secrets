@@ -1,8 +1,8 @@
+use crate::commands::upgrade::{detect_install_source, InstallSource};
 use anyhow::Result;
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
-use crate::commands::upgrade::{detect_install_source, InstallSource};
 
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
@@ -356,53 +356,44 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     {
         if let Ok(config) = PhantomConfig::load(&config_path) {
             let vault = phantom_vault::create_vault(&config.phantom.project_id);
-            match vault.list() {
-                Ok(names) => {
-                    let mut invalid_count = 0usize;
-                    let mut stale_count = 0usize;
-                    for name in &names {
-                        let meta = vault.get_validation_metadata(name).unwrap_or_default();
-                        if meta.never_checked() {
-                            // Not yet validated — not an issue, just informational.
-                        } else if !meta.is_valid {
-                            invalid_count += 1;
-                            let reason = meta
-                                .failure_reason
-                                .as_deref()
-                                .unwrap_or("unknown reason");
-                            check_fail(&format!(
-                                "Secret '{}' FAILED validation: {}",
-                                name, reason
-                            ));
-                            check_fix("Run: phantom validate --check-all (then rotate if needed)");
-                            issues += 1;
-                        } else if meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS) {
-                            stale_count += 1;
-                        }
-                    }
-                    if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
-                        let all_checked = names.iter().all(|n| {
-                            vault
-                                .get_validation_metadata(n)
-                                .map(|m| !m.never_checked())
-                                .unwrap_or(false)
-                        });
-                        if all_checked {
-                            check_pass("All secrets passed last validation check");
-                        } else {
-                            check_info(
-                                "Validation: run `phantom validate --check-all` to check credential health",
-                            );
-                        }
-                    } else if stale_count > 0 {
-                        check_info(&format!(
-                            "Validation: {} secret(s) have stale check results (>24 h old)",
-                            stale_count
-                        ));
-                        check_fix("Run: phantom validate --check-all");
+            if let Ok(names) = vault.list() {
+                let mut invalid_count = 0usize;
+                let mut stale_count = 0usize;
+                for name in &names {
+                    let meta = vault.get_validation_metadata(name).unwrap_or_default();
+                    if meta.never_checked() {
+                        // Not yet validated — not an issue, just informational.
+                    } else if !meta.is_valid {
+                        invalid_count += 1;
+                        let reason = meta.failure_reason.as_deref().unwrap_or("unknown reason");
+                        check_fail(&format!("Secret '{}' FAILED validation: {}", name, reason));
+                        check_fix("Run: phantom validate --check-all (then rotate if needed)");
+                        issues += 1;
+                    } else if meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS) {
+                        stale_count += 1;
                     }
                 }
-                Err(_) => {} // vault already flagged above
+                if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
+                    let all_checked = names.iter().all(|n| {
+                        vault
+                            .get_validation_metadata(n)
+                            .map(|m| !m.never_checked())
+                            .unwrap_or(false)
+                    });
+                    if all_checked {
+                        check_pass("All secrets passed last validation check");
+                    } else {
+                        check_info(
+                            "Validation: run `phantom validate --check-all` to check credential health",
+                        );
+                    }
+                } else if stale_count > 0 {
+                    check_info(&format!(
+                        "Validation: {} secret(s) have stale check results (>24 h old)",
+                        stale_count
+                    ));
+                    check_fix("Run: phantom validate --check-all");
+                }
             }
         }
     }
@@ -433,7 +424,9 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                     if expired.is_empty() && expiring_soon.is_empty() {
                         if tracked == 0 {
                             check_info("Expiry: no secrets have TTL configured");
-                            check_info("  Tip: phantom rotate --with-expiry 90 to set a 90-day TTL");
+                            check_info(
+                                "  Tip: phantom rotate --with-expiry 90 to set a 90-day TTL",
+                            );
                         } else {
                             check_pass(&format!(
                                 "Expiry: {tracked}/{} secret(s) have TTL — all healthy",

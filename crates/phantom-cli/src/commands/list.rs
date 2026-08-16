@@ -77,10 +77,7 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
         .iter()
         .filter(|(name, _)| {
             if let Some(min_score) = min_anomaly_score {
-                let score = anomalies
-                    .get(name.as_str())
-                    .map(|(s, _)| *s)
-                    .unwrap_or(0);
+                let score = anomalies.get(name.as_str()).map(|(s, _)| *s).unwrap_or(0);
                 score >= min_score
             } else {
                 true

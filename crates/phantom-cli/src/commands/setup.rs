@@ -493,9 +493,7 @@ fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
                 "->".blue().bold(),
                 "disabled".yellow()
             );
-            println!(
-                "   Remove PHANTOM_AUDIT_ENCRYPTION from your shell profile to revert."
-            );
+            println!("   Remove PHANTOM_AUDIT_ENCRYPTION from your shell profile to revert.");
         }
         AuditMode::Local => {
             println!(
@@ -507,9 +505,7 @@ fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
                 "   Add to your shell profile: {}",
                 "export PHANTOM_AUDIT_ENCRYPTION=local".cyan()
             );
-            println!(
-                "   Use `phantom audit verify --with-context` to decrypt event metadata."
-            );
+            println!("   Use `phantom audit verify --with-context` to decrypt event metadata.");
         }
         AuditMode::CloudSigned => {
             println!(
@@ -520,10 +516,7 @@ fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
 
             match phantom_core::audit::setup_ed25519_keypair() {
                 Ok((_, pubkey_hash)) => {
-                    println!(
-                        "   {} ED25519 keypair generated.",
-                        "+".green().bold()
-                    );
+                    println!("   {} ED25519 keypair generated.", "+".green().bold());
                     println!(
                         "   {} Private key stored in OS keychain.",
                         "+".green().bold()
@@ -551,7 +544,8 @@ fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
                         "   Audit events will be signed and uploaded to phm.dev asynchronously."
                     );
                     println!(
-                        "\n{} Cloud-signed audit mode configured!", "ok".green().bold()
+                        "\n{} Cloud-signed audit mode configured!",
+                        "ok".green().bold()
                     );
                 }
                 Err(e) => {
@@ -560,9 +554,7 @@ fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
                         "error".red().bold(),
                         e
                     );
-                    eprintln!(
-                        "   Ensure your OS keychain is accessible and try again."
-                    );
+                    eprintln!("   Ensure your OS keychain is accessible and try again.");
                     return Err(anyhow::anyhow!("ED25519 keypair setup failed: {e}"));
                 }
             }

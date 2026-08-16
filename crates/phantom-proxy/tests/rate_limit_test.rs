@@ -135,7 +135,7 @@ async fn test_multi_secret_concurrent_load_independent() {
             port: 0,
             proxy_token: String::new(),
             rate_limit: RateLimitConfig {
-                per_secret_rps: 5,  // limit=50/10s each
+                per_secret_rps: 5, // limit=50/10s each
                 burst_total_10s: 20,
             },
             ..ProxyConfig::default()
@@ -213,14 +213,20 @@ async fn test_rate_limit_headers_injected_in_429() {
         .get("x-phantom-anomaly-class")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert_eq!(anomaly_class, "alert", "x-phantom-anomaly-class should be 'alert'");
+    assert_eq!(
+        anomaly_class, "alert",
+        "x-phantom-anomaly-class should be 'alert'"
+    );
 
     let retry_after = resp
         .headers()
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert!(!retry_after.is_empty(), "retry-after header should be present");
+    assert!(
+        !retry_after.is_empty(),
+        "retry-after header should be present"
+    );
 
     let anomaly_score = resp
         .headers()
@@ -290,7 +296,7 @@ fn test_rate_limiter_unit_normal_class() {
 #[test]
 fn test_rate_limiter_unit_alert_per_secret() {
     let rl = RateLimiter::new(RateLimitConfig {
-        per_secret_rps: 1,  // limit = 10/10s
+        per_secret_rps: 1, // limit = 10/10s
         burst_total_10s: 1000,
     });
     for _ in 0..10 {
@@ -317,7 +323,7 @@ fn test_rate_limiter_unit_alert_global_burst() {
 #[test]
 fn test_rate_limiter_unit_caution_at_half_limit() {
     let rl = RateLimiter::new(RateLimitConfig {
-        per_secret_rps: 10,  // limit = 100/10s
+        per_secret_rps: 10, // limit = 100/10s
         burst_total_10s: 200,
     });
     // Send 50 requests = 50% of per-secret limit → Caution threshold
@@ -328,27 +334,31 @@ fn test_rate_limiter_unit_caution_at_half_limit() {
     assert_eq!(d.class, AnomalyClass::Caution);
 }
 
+// NOTE: these use `RateLimitConfig::from_vars` (the parsing core of
+// `from_env`) instead of setting real environment variables, because env
+// mutation is process-wide and races across parallel test threads: one test's
+// `remove_var` can fire between another test's `set_var` and `from_env`.
+
 #[test]
 fn test_rate_limiter_env_config_defaults() {
     // Without env vars set, should use default values
-    std::env::remove_var("PHANTOM_RATE_LIMIT_PER_SECRET");
-    std::env::remove_var("PHANTOM_RATE_LIMIT_BURST");
-    let config = RateLimitConfig::from_env();
+    let config = RateLimitConfig::from_vars(None, None);
     assert_eq!(config.per_secret_rps, 5);
     assert_eq!(config.burst_total_10s, 20);
 }
 
 #[test]
 fn test_rate_limiter_env_config_custom() {
-    // Safety: these env vars only affect RateLimitConfig parsing, not the
-    // running process behavior, so safe to set briefly in a test.
-    std::env::set_var("PHANTOM_RATE_LIMIT_PER_SECRET", "15");
-    std::env::set_var("PHANTOM_RATE_LIMIT_BURST", "100");
-    let config = RateLimitConfig::from_env();
-    std::env::remove_var("PHANTOM_RATE_LIMIT_PER_SECRET");
-    std::env::remove_var("PHANTOM_RATE_LIMIT_BURST");
+    let config = RateLimitConfig::from_vars(Some("15".into()), Some("100".into()));
     assert_eq!(config.per_secret_rps, 15);
     assert_eq!(config.burst_total_10s, 100);
+}
+
+#[test]
+fn test_rate_limiter_env_config_unparseable_falls_back() {
+    let config = RateLimitConfig::from_vars(Some("not-a-number".into()), Some("-3".into()));
+    assert_eq!(config.per_secret_rps, 5);
+    assert_eq!(config.burst_total_10s, 20);
 }
 
 #[test]

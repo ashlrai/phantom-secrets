@@ -78,6 +78,40 @@ pub trait VaultBackend: Send + Sync {
         self.set_metadata(name, meta)
     }
 
+    /// Record that a vendor-provider rotation replaced this secret's value,
+    /// updating `rotated_at` and recomputing `expires_at` so the secret does
+    /// not stay perpetually "due" after a successful rotation.
+    ///
+    /// Expiry resolution order:
+    /// 1. `expires_override` (e.g. GitHub installation tokens expire in 1 h);
+    /// 2. the secret's existing `rotation_policy.days_ttl`;
+    /// 3. when the secret previously had an `expires_at` but no policy, a
+    ///    default TTL of 30 days (so expiry-driven batch rotation converges);
+    /// 4. otherwise no expiry is set.
+    ///
+    /// Returns the `expires_at` that was persisted (if any).
+    fn record_provider_rotation(
+        &self,
+        name: &str,
+        expires_override: Option<u64>,
+    ) -> Result<Option<u64>> {
+        const DEFAULT_ROTATION_TTL_DAYS: u64 = 30;
+        let mut meta = self.get_metadata(name)?.unwrap_or_default();
+        let had_expiry = meta.expires_at.is_some();
+        // record_rotation() stamps rotated_at and recomputes expires_at when a
+        // rotation policy exists.
+        meta.record_rotation();
+        if let Some(exp) = expires_override {
+            meta.expires_at = Some(exp);
+        } else if meta.rotation_policy.is_none() && had_expiry {
+            meta.expires_at =
+                Some(crate::metadata::now_secs() + DEFAULT_ROTATION_TTL_DAYS * 86_400);
+        }
+        let expires_at = meta.expires_at;
+        self.set_metadata(name, meta)?;
+        Ok(expires_at)
+    }
+
     // ── Validation metadata ──────────────────────────────────────────────
 
     /// Retrieve the last validation result metadata for a secret.

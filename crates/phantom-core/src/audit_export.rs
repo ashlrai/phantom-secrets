@@ -352,7 +352,8 @@ impl AuditExporter {
 
     /// Render `rows` as RFC 4180 CSV with header.
     pub fn rows_to_csv(rows: &[AuditExportRow]) -> String {
-        let mut out = String::from("timestamp,datetime,operation,secret_name,pid,hostname,severity\n");
+        let mut out =
+            String::from("timestamp,datetime,operation,secret_name,pid,hostname,severity\n");
         for r in rows {
             let datetime = csv_escape(&r.datetime);
             let operation = csv_escape(&r.operation);
@@ -483,10 +484,10 @@ impl AuditExporter {
             .filter_map(|entry| entry.ok())
             .map(|e| e.path())
             .filter(|p| {
-                p.extension().map_or(false, |ext| ext == "json")
+                p.extension().is_some_and(|ext| ext == "json")
                     && p.file_name()
                         .and_then(|n| n.to_str())
-                        .map_or(false, |n| n.starts_with("report-"))
+                        .is_some_and(|n| n.starts_with("report-"))
             })
             .collect();
         paths.sort();
@@ -583,7 +584,9 @@ impl AuditExporter {
             if row.secret_name.is_empty() {
                 continue;
             }
-            let e = first_seen.entry(row.secret_name.clone()).or_insert(row.timestamp);
+            let e = first_seen
+                .entry(row.secret_name.clone())
+                .or_insert(row.timestamp);
             if row.timestamp < *e {
                 *e = row.timestamp;
             }
@@ -617,8 +620,7 @@ impl AuditExporter {
                 } else {
                     first_seen.get(&name).copied().unwrap_or(now_ts)
                 };
-                let days_since_rotation =
-                    now_ts.saturating_sub(baseline_ts) / 86400;
+                let days_since_rotation = now_ts.saturating_sub(baseline_ts) / 86400;
 
                 let last_validated_ts = last_validate.get(&name).copied().unwrap_or(0);
                 let (days_since_validation, last_validated_at) = if last_validated_ts > 0 {
@@ -846,9 +848,7 @@ pub fn parse_date_to_ts_end(s: &str) -> u64 {
     if s.is_empty() {
         return 0;
     }
-    parse_date_inner(s)
-        .map(|ts| ts + 86399)
-        .unwrap_or(0)
+    parse_date_inner(s).map(|ts| ts + 86399).unwrap_or(0)
 }
 
 fn parse_date_inner(s: &str) -> Option<u64> {
@@ -864,8 +864,8 @@ fn parse_date_inner(s: &str) -> Option<u64> {
     }
     // Algorithm: http://howardhinnant.github.io/date_algorithms.html (ymd_to_days)
     let y = if month <= 2 { year - 1 } else { year };
-    let m = month as i64;
-    let d = day as i64;
+    let m = month;
+    let d = day;
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
@@ -907,9 +907,7 @@ mod tests {
             .unwrap();
         for (ts, op, name) in entries {
             let line = if let Some(n) = name {
-                format!(
-                    r#"{{"ts":{ts},"op":"{op}","name":"{n}","pid":42,"process":"phantom"}}"#
-                )
+                format!(r#"{{"ts":{ts},"op":"{op}","name":"{n}","pid":42,"process":"phantom"}}"#)
             } else {
                 format!(r#"{{"ts":{ts},"op":"{op}","pid":42,"process":"phantom"}}"#)
             };
@@ -1044,10 +1042,11 @@ mod tests {
         }];
 
         let csv = AuditExporter::rows_to_csv(&rows);
-        assert!(csv.starts_with(
-            "timestamp,datetime,operation,secret_name,pid,hostname,severity\n"
-        ));
-        assert!(csv.contains("\"KEY,WITH,COMMAS\""), "commas should be CSV-escaped");
+        assert!(csv.starts_with("timestamp,datetime,operation,secret_name,pid,hostname,severity\n"));
+        assert!(
+            csv.contains("\"KEY,WITH,COMMAS\""),
+            "commas should be CSV-escaped"
+        );
         assert!(csv.contains("low"));
         assert!(csv.contains("myhost"));
     }
@@ -1080,7 +1079,10 @@ mod tests {
         assert_eq!(api_entry.total, 3);
         // day0 bucket should have count 2
         let day0_str = &unix_to_iso8601(day0)[..10];
-        assert_eq!(api_entry.daily_counts.get(day0_str).copied().unwrap_or(0), 2);
+        assert_eq!(
+            api_entry.daily_counts.get(day0_str).copied().unwrap_or(0),
+            2
+        );
     }
 
     // ── Test 7: compliance report leak timeline includes incidents ────────────
@@ -1203,7 +1205,11 @@ mod tests {
     fn parse_date_to_ts_end_is_end_of_day() {
         let ts_start = parse_date_to_ts("2023-11-14");
         let ts_end = parse_date_to_ts_end("2023-11-14");
-        assert_eq!(ts_end - ts_start, 86399, "end-of-day should be 86399s after start");
+        assert_eq!(
+            ts_end - ts_start,
+            86399,
+            "end-of-day should be 86399s after start"
+        );
     }
 
     #[test]
@@ -1228,7 +1234,7 @@ mod tests {
         let path = ex.save_report(&report).unwrap();
 
         assert!(path.exists(), "report file should exist");
-        assert!(path.extension().map_or(false, |e| e == "json"));
+        assert!(path.extension().is_some_and(|e| e == "json"));
 
         let listed = ex.list_reports().unwrap();
         assert_eq!(listed.len(), 1);

@@ -21,6 +21,7 @@ pub enum RotationStrategy {
 
 impl RotationStrategy {
     /// Parse from a CLI string (`never`, `daily`, `weekly`, `monthly`).
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "never" => Some(Self::Never),
@@ -74,6 +75,7 @@ impl Weekday {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "monday" | "mon" => Some(Self::Monday),
@@ -118,9 +120,15 @@ pub struct RotationSchedule {
     pub last_rotated: Option<u64>,
 }
 
-fn default_hour() -> u8 { 2 }
-fn default_weekday() -> Weekday { Weekday::Monday }
-fn default_day_of_month() -> u8 { 1 }
+fn default_hour() -> u8 {
+    2
+}
+fn default_weekday() -> Weekday {
+    Weekday::Monday
+}
+fn default_day_of_month() -> u8 {
+    1
+}
 
 impl RotationSchedule {
     /// Build a schedule from a CLI `--schedule-strategy` value using sensible
@@ -208,8 +216,7 @@ impl RotationSchedule {
                 let days_since_epoch = now_secs / 86_400;
                 let current_weekday = (days_since_epoch + 3) % 7; // 0=Monday
                 let target_weekday = self.weekday.iso_index() as u64;
-                let slot_secs =
-                    (self.hour as u64) * 3600 + (self.minute as u64) * 60;
+                let slot_secs = (self.hour as u64) * 3600 + (self.minute as u64) * 60;
 
                 let days_ago = (current_weekday + 7 - target_weekday) % 7;
                 let target_midnight = (days_since_epoch - days_ago) * 86_400;
@@ -229,19 +236,15 @@ impl RotationSchedule {
                 let approx_month = days_since_epoch / 30;
                 let month_start_day = approx_month * 30;
                 let target_day_offset = (self.day_of_month as u64).saturating_sub(1);
-                let slot_secs =
-                    (self.hour as u64) * 3600 + (self.minute as u64) * 60;
-                let target_slot =
-                    (month_start_day + target_day_offset) * 86_400 + slot_secs;
+                let slot_secs = (self.hour as u64) * 3600 + (self.minute as u64) * 60;
+                let target_slot = (month_start_day + target_day_offset) * 86_400 + slot_secs;
 
                 if target_slot <= now_secs {
                     Some(target_slot)
                 } else {
                     // Slot hasn't fired yet this month — use last month's.
                     let prev_month_start = month_start_day.saturating_sub(30);
-                    Some(
-                        (prev_month_start + target_day_offset) * 86_400 + slot_secs,
-                    )
+                    Some((prev_month_start + target_day_offset) * 86_400 + slot_secs)
                 }
             }
         }
@@ -322,8 +325,7 @@ impl RotationEnforcementStatus {
     pub fn is_blocked(&self) -> bool {
         matches!(
             self,
-            RotationEnforcementStatus::Overdue { .. }
-                | RotationEnforcementStatus::NeverRotated
+            RotationEnforcementStatus::Overdue { .. } | RotationEnforcementStatus::NeverRotated
         )
     }
 
@@ -475,8 +477,7 @@ pub fn next_rotation_after(schedule: &RotationSchedule, now_secs: u64) -> Option
     match schedule.strategy {
         RotationStrategy::Never => None,
         RotationStrategy::Daily => {
-            let slot_secs =
-                (schedule.hour as u64) * 3600 + (schedule.minute as u64) * 60;
+            let slot_secs = (schedule.hour as u64) * 3600 + (schedule.minute as u64) * 60;
             let today_midnight = (now_secs / 86_400) * 86_400;
             let today_slot = today_midnight + slot_secs;
             if today_slot > now_secs {
@@ -489,10 +490,8 @@ pub fn next_rotation_after(schedule: &RotationSchedule, now_secs: u64) -> Option
             let days_since_epoch = now_secs / 86_400;
             let current_weekday = (days_since_epoch + 3) % 7;
             let target_weekday = schedule.weekday.iso_index() as u64;
-            let slot_secs =
-                (schedule.hour as u64) * 3600 + (schedule.minute as u64) * 60;
-            let days_until =
-                (target_weekday + 7 - current_weekday) % 7;
+            let slot_secs = (schedule.hour as u64) * 3600 + (schedule.minute as u64) * 60;
+            let days_until = (target_weekday + 7 - current_weekday) % 7;
             let candidate_day = days_since_epoch + days_until;
             let candidate_slot = candidate_day * 86_400 + slot_secs;
             if candidate_slot > now_secs {
@@ -506,10 +505,8 @@ pub fn next_rotation_after(schedule: &RotationSchedule, now_secs: u64) -> Option
             let approx_month = days_since_epoch / 30;
             let month_start_day = approx_month * 30;
             let target_day_offset = (schedule.day_of_month as u64).saturating_sub(1);
-            let slot_secs =
-                (schedule.hour as u64) * 3600 + (schedule.minute as u64) * 60;
-            let this_month_slot =
-                (month_start_day + target_day_offset) * 86_400 + slot_secs;
+            let slot_secs = (schedule.hour as u64) * 3600 + (schedule.minute as u64) * 60;
+            let this_month_slot = (month_start_day + target_day_offset) * 86_400 + slot_secs;
             if this_month_slot > now_secs {
                 Some(this_month_slot)
             } else {
@@ -628,7 +625,7 @@ mod tests {
     #[test]
     fn daily_does_not_rotate_before_slot() {
         // now = 01:00 UTC, slot = 02:00 → today's slot hasn't fired yet
-        let now = 20633 * 86_400 + 1 * 3600; // 01:00
+        let now = 20633 * 86_400 + 3600; // 01:00
         let sched = RotationSchedule {
             strategy: RotationStrategy::Daily,
             hour: 2,
@@ -693,7 +690,7 @@ mod tests {
     fn weekly_does_not_rotate_before_slot_this_week() {
         // now = Monday 01:00, slot = Monday@03:00 → today's slot hasn't fired.
         // last_rotated = last Monday's slot.
-        let now = 20633 * 86_400 + 1 * 3600;
+        let now = 20633 * 86_400 + 3600;
         let last_monday_slot = 20626 * 86_400 + 3 * 3600;
         let sched = RotationSchedule {
             strategy: RotationStrategy::Weekly,
@@ -746,10 +743,22 @@ mod tests {
 
     #[test]
     fn strategy_from_str_all_variants() {
-        assert_eq!(RotationStrategy::from_str("never"), Some(RotationStrategy::Never));
-        assert_eq!(RotationStrategy::from_str("daily"), Some(RotationStrategy::Daily));
-        assert_eq!(RotationStrategy::from_str("weekly"), Some(RotationStrategy::Weekly));
-        assert_eq!(RotationStrategy::from_str("monthly"), Some(RotationStrategy::Monthly));
+        assert_eq!(
+            RotationStrategy::from_str("never"),
+            Some(RotationStrategy::Never)
+        );
+        assert_eq!(
+            RotationStrategy::from_str("daily"),
+            Some(RotationStrategy::Daily)
+        );
+        assert_eq!(
+            RotationStrategy::from_str("weekly"),
+            Some(RotationStrategy::Weekly)
+        );
+        assert_eq!(
+            RotationStrategy::from_str("monthly"),
+            Some(RotationStrategy::Monthly)
+        );
         assert_eq!(RotationStrategy::from_str("bogus"), None);
     }
 
@@ -801,6 +810,9 @@ mod tests {
         let desc = overdue_description(&sched, now);
         assert!(desc.is_some());
         let s = desc.unwrap();
-        assert!(s.contains("past schedule"), "expected 'past schedule' in: {s}");
+        assert!(
+            s.contains("past schedule"),
+            "expected 'past schedule' in: {s}"
+        );
     }
 }

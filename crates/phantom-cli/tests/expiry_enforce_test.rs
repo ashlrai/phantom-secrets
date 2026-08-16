@@ -8,9 +8,7 @@
 
 #[cfg(test)]
 mod core_expiry_tests {
-    use phantom_core::rotation_strategy::{
-        check_expiry, compute_new_expires_at, ExpiryStatus,
-    };
+    use phantom_core::rotation_strategy::{check_expiry, compute_new_expires_at, ExpiryStatus};
 
     // ── check_expiry: basic cases ─────────────────────────────────────────
 
@@ -20,7 +18,10 @@ mod core_expiry_tests {
         let now = 1_000_000u64;
         let expires_at = now + 30 * 86_400;
         let status = check_expiry(expires_at, 7, now);
-        assert!(status.is_valid(), "30 days out should be Valid, got {status:?}");
+        assert!(
+            status.is_valid(),
+            "30 days out should be Valid, got {status:?}"
+        );
     }
 
     #[test]
@@ -117,7 +118,9 @@ mod core_expiry_tests {
 
     #[test]
     fn label_expired_multiple_days() {
-        let s = ExpiryStatus::Expired { secs_overdue: 3 * 86_400 };
+        let s = ExpiryStatus::Expired {
+            secs_overdue: 3 * 86_400,
+        };
         let label = s.label();
         assert!(label.contains("3"), "got: {label}");
         assert!(label.contains("EXPIRED"), "got: {label}");
@@ -387,7 +390,11 @@ mod enforce_logic_tests {
         let now = 1_000_000u64;
         let secrets = vec![("KEY", Some(now))]; // now == expires_at
         let (expired, _) = enforce(&secrets, now, false);
-        assert_eq!(expired.len(), 1, "boundary case: now == expires_at should fail");
+        assert_eq!(
+            expired.len(),
+            1,
+            "boundary case: now == expires_at should fail"
+        );
     }
 
     #[test]

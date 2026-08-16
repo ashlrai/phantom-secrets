@@ -31,11 +31,11 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use phantom_proxy::rate_limiter::{AnomalyClass, RateLimitConfig, RateLimiter};
 use phantom_proxy::{
-    AdaptiveResponseScrubber, ContentKind, Interceptor, ProxyConfig, ProxyServer, ResponseScrubber,
+    AdaptiveResponseScrubber, Interceptor, ProxyConfig, ProxyServer, ResponseScrubber,
     ServiceRegistry, ServiceRoute,
 };
 use std::collections::HashMap;
@@ -59,7 +59,7 @@ struct ConfigurableMock {
 
 #[derive(Clone, Debug)]
 struct RecordedReq {
-    method: String,
+    _method: String,
     path: String,
     headers: HashMap<String, String>,
     body: Vec<u8>,
@@ -167,7 +167,7 @@ async fn serve_configurable(
     let body = req.collect().await?.to_bytes().to_vec();
 
     requests.lock().unwrap().push(RecordedReq {
-        method,
+        _method: method,
         path: path.clone(),
         headers,
         body,
@@ -252,7 +252,10 @@ async fn test_multi_secret_routing_no_cross_contamination() {
 
     let mut named = HashMap::new();
     named.insert("OPENAI_API_KEY".to_string(), openai_secret.to_string());
-    named.insert("ANTHROPIC_API_KEY".to_string(), anthropic_secret.to_string());
+    named.insert(
+        "ANTHROPIC_API_KEY".to_string(),
+        anthropic_secret.to_string(),
+    );
 
     let mut token_map = HashMap::new();
     token_map.insert(phantom_openai.to_string(), openai_secret.to_string());
@@ -292,16 +295,17 @@ async fn test_multi_secret_routing_no_cross_contamination() {
 
     // --- OpenAI route ---
     let resp_openai = client
-        .post(format!(
-            "http://127.0.0.1:{}/openai/v1/chat",
-            proxy.port()
-        ))
+        .post(format!("http://127.0.0.1:{}/openai/v1/chat", proxy.port()))
         .header("content-type", "application/json")
         .body(r#"{"model":"gpt-4","messages":[]}"#)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp_openai.status().as_u16(), 200, "openai route should succeed");
+    assert_eq!(
+        resp_openai.status().as_u16(),
+        200,
+        "openai route should succeed"
+    );
     let openai_body = resp_openai.text().await.unwrap();
 
     // Real secret must not reach the client — scrubber must redact it.
@@ -347,7 +351,10 @@ async fn test_multi_secret_routing_no_cross_contamination() {
     assert_eq!(reqs.len(), 2, "expected exactly 2 upstream requests");
 
     // Find each upstream request by path.
-    let openai_req = reqs.iter().find(|r| r.path.starts_with("/v1/chat")).unwrap();
+    let openai_req = reqs
+        .iter()
+        .find(|r| r.path.starts_with("/v1/chat"))
+        .unwrap();
     let auth_openai = openai_req.headers.get("authorization").unwrap();
     assert_eq!(
         auth_openai,
@@ -365,8 +372,7 @@ async fn test_multi_secret_routing_no_cross_contamination() {
         .unwrap();
     let auth_anthropic = anthropic_req.headers.get("x-api-key").unwrap();
     assert_eq!(
-        auth_anthropic,
-        anthropic_secret,
+        auth_anthropic, anthropic_secret,
         "upstream received wrong secret for anthropic: {auth_anthropic}"
     );
     assert!(
@@ -621,7 +627,10 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
     // Proxy should not crash; mock returns 200.
     assert_eq!(resp.status().as_u16(), 200, "truncated JSON should not 500");
     let reqs = mock.recorded();
-    assert!(!reqs.is_empty(), "upstream should have received truncated JSON");
+    assert!(
+        !reqs.is_empty(),
+        "upstream should have received truncated JSON"
+    );
     let last = reqs.last().unwrap();
     let body_str = String::from_utf8_lossy(&last.body);
     // Malformed JSON: scoped_body_replace falls back to unchanged (F9 safety).
@@ -639,7 +648,11 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp_empty.status().as_u16(), 200, "empty body should succeed");
+    assert_eq!(
+        resp_empty.status().as_u16(),
+        200,
+        "empty body should succeed"
+    );
 
     // --- 3c: application/octet-stream — phantom token must NOT be substituted (F9) ---
     let binary_body = format!("raw-data-prefix-{phantom_token}-raw-data-suffix");
@@ -650,7 +663,11 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp_binary.status().as_u16(), 200, "octet-stream should succeed");
+    assert_eq!(
+        resp_binary.status().as_u16(),
+        200,
+        "octet-stream should succeed"
+    );
     let reqs_now = mock.recorded();
     let binary_req = reqs_now.last().unwrap();
     let binary_body_received = String::from_utf8_lossy(&binary_req.body);
@@ -673,7 +690,11 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp_form.status().as_u16(), 200, "form-urlencoded should succeed");
+    assert_eq!(
+        resp_form.status().as_u16(),
+        200,
+        "form-urlencoded should succeed"
+    );
     let reqs_final = mock.recorded();
     let form_req = reqs_final.last().unwrap();
     let form_received = String::from_utf8_lossy(&form_req.body);
@@ -779,9 +800,10 @@ async fn test_response_scrubbing_adaptive_profiles_under_load() {
         "unregistered sk_live_ key should still be redacted: {out_str}"
     );
     assert!(
-        event.leak_events.iter().any(|e| {
-            e.severity == phantom_core::audit::LeakSeverity::Medium
-        }),
+        event
+            .leak_events
+            .iter()
+            .any(|e| { e.severity == phantom_core::audit::LeakSeverity::Medium }),
         "expected MEDIUM severity for unregistered format match"
     );
 
@@ -850,7 +872,7 @@ async fn test_response_scrubbing_adaptive_profiles_under_load() {
         r#"{{"error":{{"api_key":"{}","code":"invalid_key"}}}}"#,
         rotated_secret
     );
-    let (adaptive_out, adaptive_event) = adaptive.scrub_buffered_adaptive(
+    let (adaptive_out, _adaptive_event) = adaptive.scrub_buffered_adaptive(
         Some("application/json"),
         rotated_body.as_bytes(),
         Some(&ctx),
@@ -1002,7 +1024,10 @@ fn test_rate_limiter_two_secrets_independent_counters() {
         AnomalyClass::Normal,
         "KEY_B should be Normal after KEY_A hit Alert"
     );
-    assert_eq!(b_first.per_secret_10s, 1, "KEY_B per-secret count should be 1");
+    assert_eq!(
+        b_first.per_secret_10s, 1,
+        "KEY_B per-secret count should be 1"
+    );
 }
 
 #[test]
@@ -1069,7 +1094,10 @@ async fn test_rate_limiter_429_response_headers_and_body() {
         .get("x-phantom-anomaly-class")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert_eq!(anomaly_class, "alert", "x-phantom-anomaly-class must be 'alert'");
+    assert_eq!(
+        anomaly_class, "alert",
+        "x-phantom-anomaly-class must be 'alert'"
+    );
 
     let retry_after = resp
         .headers()
@@ -1089,7 +1117,10 @@ async fn test_rate_limiter_429_response_headers_and_body() {
     // Structured JSON body.
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "rate limit exceeded", "error field mismatch");
-    assert_eq!(body["anomaly_class"], "alert", "anomaly_class field mismatch");
+    assert_eq!(
+        body["anomaly_class"], "alert",
+        "anomaly_class field mismatch"
+    );
     assert!(
         body["per_secret_10s"].as_u64().unwrap_or(0) >= 1,
         "per_secret_10s must be ≥ 1"

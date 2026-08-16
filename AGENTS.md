@@ -51,6 +51,7 @@ If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets
 | `phantom_team_key_publish` | Register the caller's X25519 public key on a team. Required once per team before pushing/pulling vaults. Private key stays in OS keychain | team_id |
 | `phantom_team_vault_push` | Push the current project's vault to a shared team vault, encrypted client-side (X25519 + ChaCha20-Poly1305) to every member with a registered public key | team_id, confirm |
 | `phantom_team_vault_pull` | Pull the current project's team vault into the local vault. Decrypts the per-member key share locally | team_id, confirm |
+| `phantom_rotate_with_candidate` / `phantom_rotate_promote` / `phantom_rotate_provider` | Stage, promote, or provider-rotate credentials without returning values. For `phantom_rotate_provider`, `provider` is optional (resolved from the secret's rotation_provider config) and the bootstrap credential is sourced from the server environment or the vault — never the MCP wire | name, provider (optional), confirm |
 
 ## When to recommend Phantom
 

@@ -11,15 +11,17 @@ use crate::tools::helpers::{
     internal_err, invalid_params_err, require_approval_token, require_confirm, text_result,
 };
 use crate::tools::params::{
-    AddSecretInteractiveParams, AddSecretParams, AuditAlertsParams, AuditAnalyticsParams, AuditAnomaliesParams,
-    AuditAnomaliesRealtimeParams, AuditExportReportParams, AuditIncidentsParams, AuditRecentParams, AuditStatsParams,
+    AddSecretInteractiveParams, AddSecretParams, ApplyExpiryPolicyParams, AuditAlertsParams,
+    AuditAnalyticsParams, AuditAnomaliesParams, AuditAnomaliesRealtimeParams,
+    AuditExportReportParams, AuditIncidentsParams, AuditRecentParams, AuditStatsParams,
     AutoRotateParams, CheckParams, CloudPullParams, CloudPushParams, ComplianceStatusParams,
-    CopySecretParams, DoctorParams, EnvParams, ExpiryCheckParams, InitParams, LeakIncidentsRealtimeParams,
-    ListWithExpiryParams, PhantomExpiryEnforceParams, RemoveSecretParams, RotateParams,
-    RotateWithCandidateParams, RotatePromoteParams, RotateWithExpiryParams, RotationDueParams,
-    SyncParams, TeamCreateParams, TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams,
-    WhyParams, WrapParams, ValidateSecretParams, ValidateAllParams, ValidationScheduleParams,
-    ValidationHistoryParams, RotationScheduleNextParams, ApplyExpiryPolicyParams, RotateProviderParams,
+    CopySecretParams, DoctorParams, EnvParams, ExpiryCheckParams, InitParams,
+    LeakIncidentsRealtimeParams, ListWithExpiryParams, PhantomExpiryEnforceParams,
+    RemoveSecretParams, RotateParams, RotatePromoteParams, RotateProviderParams,
+    RotateWithCandidateParams, RotateWithExpiryParams, RotationDueParams,
+    RotationScheduleNextParams, SyncParams, TeamCreateParams, TeamIdParams, TeamInviteParams,
+    TeamVaultParams, UnwrapParams, ValidateAllParams, ValidateSecretParams,
+    ValidationHistoryParams, ValidationScheduleParams, WhyParams, WrapParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -182,7 +184,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_init", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_init", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_init",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let env_path = self.project_dir.join(&params.env_path);
 
         let dotenv = DotenvFile::parse_file(&env_path)
@@ -247,7 +254,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_add_secret", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_add_secret", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_add_secret",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         text_result(format!(
             "No secret value accepted through MCP for '{}'. Use phantom_add_secret_interactive to start an out-of-band terminal flow.",
             params.name
@@ -264,7 +276,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_add_secret_interactive", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_add_secret_interactive", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_add_secret_interactive",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         text_result(format!(
             "Run this in a trusted terminal from {}:\n\n  phantom add {}\n\nEnter the real value only at the terminal prompt. Do not paste it into chat or MCP tool arguments.",
             self.project_dir.display(),
@@ -283,7 +300,12 @@ impl PhantomMcpServer {
         require_confirm("phantom_remove_secret", params.confirm)?;
         let (_config, vault) = self.load_config_and_vault()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_remove_secret", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_remove_secret",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         vault
             .delete(&params.name)
             .map_err(|e| internal_err(format!("Failed to remove secret: {e}")))?;
@@ -302,7 +324,12 @@ impl PhantomMcpServer {
         require_confirm("phantom_rotate", params.confirm)?;
         let (_config, vault) = self.load_config_and_vault()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_rotate", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_rotate",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
@@ -343,7 +370,12 @@ impl PhantomMcpServer {
 
         let (config, vault) = self.load_config_and_vault()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_rotate_with_candidate", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_rotate_with_candidate",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
 
         if !vault
             .exists(&params.name)
@@ -416,7 +448,12 @@ impl PhantomMcpServer {
         let (config, vault) = self.load_config_and_vault()?;
 
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_rotate_promote", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_rotate_promote",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         use phantom_vault::shadowing::{shadow_dir, ShadowStore, ShadowedSecret};
         let store = ShadowStore::new(shadow_dir(&config.phantom.project_id))
             .map_err(|e| internal_err(format!("Failed to open shadow store: {e}")))?;
@@ -484,11 +521,7 @@ impl PhantomMcpServer {
 
         phantom_core::audit::log("shadow.promoted", Some(&params.name));
 
-        let promoted_at = shadow
-            .audit_trail
-            .last()
-            .map(|e| e.ts)
-            .unwrap_or(0);
+        let promoted_at = shadow.audit_trail.last().map(|e| e.ts).unwrap_or(0);
 
         text_result(format!(
             "Shadow candidate for '{}' promoted to primary.\nshadow_id: {}\npromoted_at: {}\nOld primary has been discarded.",
@@ -496,21 +529,25 @@ impl PhantomMcpServer {
         ))
     }
 
-    /// Rotate a secret using a vendor-specific provider (Stripe, GitHub, AWS).
+    /// Rotate a secret using a vendor-specific provider (Stripe, GitHub, AWS,
+    /// Google, Vercel).
     ///
     /// Calls the vendor's API to re-issue the credential, stores the new value
     /// in the vault, and records an audit event. The new secret value is NEVER
     /// returned in the MCP response — only status metadata is exposed.
-    #[tool(
-        description = "Rotate a secret via a vendor-specific provider (stripe | github | aws). \
+    #[tool(description = "Rotate a secret via a vendor-specific provider \
+            (stripe | github | aws | google | vercel; sentry and supabase report \
+            manual-rotation-required with a dashboard link). \
             Calls the vendor API to re-issue the credential server-side, stores the new value \
             in the encrypted vault, and records a signed audit event. The new secret value is \
             NEVER exposed in the MCP response — only provider name, status, and audit metadata \
             are returned. Requires the secret's rotation_provider config to be set in \
-            .phantom.toml under [phantom.secrets.{name}.rotation_provider]. \
+            .phantom.toml under [phantom.secrets.{name}.rotation_provider]; the `provider` \
+            parameter is optional and defaults to the provider named there. The bootstrap \
+            credential named by api_key_env is sourced from the server environment first, \
+            then from the vault under the same name — it never crosses the MCP wire. \
             DESTRUCTIVE — permanently invalidates the current key at the vendor. \
-            Requires `confirm: true`; the agent must obtain user consent before calling."
-    )]
+            Requires `confirm: true`; the agent must obtain user consent before calling.")]
     fn phantom_rotate_provider(
         &self,
         Parameters(params): Parameters<RotateProviderParams>,
@@ -544,23 +581,49 @@ impl PhantomMcpServer {
             .get(&params.name)
             .and_then(|ov| ov.rotation_provider.as_ref());
 
-        // Validate that the configured provider matches the requested provider.
-        if let Some(cfg) = provider_config {
-            if cfg.provider != params.provider {
+        // Effective provider: explicit param, else the one named in config.
+        let effective_provider: String = match (params.provider.as_deref(), provider_config) {
+            (Some(requested), Some(cfg)) => {
+                if cfg.provider != requested {
+                    return Err(invalid_params_err(format!(
+                        "Secret '{}' is configured for provider '{}' but '{}' was requested. \
+                         Update [phantom.secrets.{}.rotation_provider] in .phantom.toml.",
+                        params.name, cfg.provider, requested, params.name
+                    )));
+                }
+                requested.to_string()
+            }
+            (_, None) => {
                 return Err(invalid_params_err(format!(
-                    "Secret '{}' is configured for provider '{}' but '{}' was requested. \
-                     Update [phantom.secrets.{}.rotation_provider] in .phantom.toml.",
-                    params.name, cfg.provider, params.provider, params.name
+                    "No rotation_provider configured for secret '{}'. \
+                     Add [phantom.secrets.{}.rotation_provider] to .phantom.toml with \
+                     provider and api_key_env fields.",
+                    params.name, params.name
                 )));
             }
-        }
+            (None, Some(cfg)) => cfg.provider.clone(),
+        };
+
+        // Bootstrap credential: environment variable first, then the vault
+        // under the same name. Zeroized after the call; never in the response.
+        let bootstrap = provider_config
+            .and_then(|cfg| cfg.api_key_env.as_deref())
+            .filter(|env_name| std::env::var(env_name).is_err())
+            .and_then(|env_name| vault.retrieve(env_name).ok());
 
         // Build the provider list and attempt vendor rotation.
         let providers = phantom_core::rotation_provider::default_rotation_providers();
-        let new_value = phantom_core::rotation_provider::auto_sync_rotation(
+
+        // Capture the outgoing value BEFORE overwriting it: providers that
+        // revoke the old credential (Vercel) do so only after the new value is
+        // durably stored, authenticating with the old value itself.
+        let old_value = vault.retrieve(&params.name).ok();
+
+        let new_value = phantom_core::rotation_provider::auto_sync_rotation_with_bootstrap(
             &params.name,
             provider_config,
             &providers,
+            bootstrap,
         )
         .map_err(|e| internal_err(format!("Provider rotation failed: {e}")))?;
 
@@ -573,22 +636,69 @@ impl PhantomMcpServer {
 
                 phantom_core::audit::log("vault.rotation.provider.stored", Some(&params.name));
 
+                // Refresh the phm_ token for this secret in .env — same flow
+                // as the CLI — so a client that captured the pre-rotation
+                // phm_ token cannot resolve it to the new credential.
+                let env_path = self.env_path();
+                let mut env_token_refreshed = false;
+                if env_path.exists() {
+                    let mut token_map = TokenMap::new();
+                    token_map.insert(params.name.clone());
+                    let dotenv = DotenvFile::parse_file(&env_path)
+                        .map_err(|e| internal_err(format!("Failed to parse .env: {e}")))?;
+                    dotenv
+                        .write_phantomized(&token_map, &env_path)
+                        .map_err(|e| internal_err(format!("Failed to rewrite .env: {e}")))?;
+                    env_token_refreshed = true;
+                }
+
+                // Persist rotation metadata (rotated_at + recomputed
+                // expires_at). GitHub App installation tokens expire in 1 h.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let expires_override = if effective_provider.eq_ignore_ascii_case("github") {
+                    Some(now + phantom_core::rotation_provider::GITHUB_INSTALLATION_TOKEN_TTL_SECS)
+                } else {
+                    None
+                };
+                let expires_line = vault
+                    .record_provider_rotation(&params.name, expires_override)
+                    .unwrap_or(None)
+                    .map(|ts| format!("expires_at: {ts}\n"))
+                    .unwrap_or_default();
+
+                // New value is durably stored — best-effort revoke of the old
+                // credential at the vendor (audited, fail-open).
+                if let (Some(provider), Some(cfg)) = (
+                    providers
+                        .iter()
+                        .find(|p| p.name().eq_ignore_ascii_case(&effective_provider)),
+                    provider_config,
+                ) {
+                    let _ = provider.post_store_cleanup(&params.name, cfg, old_value.as_ref());
+                }
+
                 text_result(format!(
                     "Provider rotation succeeded for '{}'.\n\
                      provider: {}\n\
                      status: rotated\n\
-                     The new credential has been stored in the vault.\n\
+                     env_token_refreshed: {}\n\
+                     {}The new credential has been stored in the vault.\n\
                      The secret value was NOT exposed via MCP.",
-                    params.name, params.provider
+                    params.name, effective_provider, env_token_refreshed, expires_line
                 ))
             }
             None => {
-                // No provider matched — config may be missing or disabled.
+                // auto_sync returns Ok(None) only for provider = "manual";
+                // disabled configs and unknown provider names surface above
+                // as distinct errors.
                 Err(invalid_params_err(format!(
-                    "No rotation provider matched secret '{}' with provider '{}'. \
-                     Ensure [phantom.secrets.{}.rotation_provider] is set in .phantom.toml \
-                     with provider = \"{}\" and api_key_env pointing to a valid credential.",
-                    params.name, params.provider, params.name, params.provider
+                    "Secret '{}' is configured with provider = \"manual\" — there is no \
+                     vendor API to call. Rotate the credential manually, then store it \
+                     with phantom_add_secret.",
+                    params.name
                 )))
             }
         }
@@ -604,7 +714,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_push", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_cloud_push", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_cloud_push",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         use std::collections::BTreeMap;
 
@@ -680,7 +795,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_pull", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_cloud_pull", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_cloud_pull",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
         let token = phantom_core::auth::load_token()
@@ -775,7 +895,12 @@ impl PhantomMcpServer {
 
         // Reject
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_copy_secret", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_copy_secret",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         // Reject `..` in the raw input. Canonicalize below collapses traversal,
         // but only once target_dir exists on disk — and an attacker can stage a
         // missing-path case. Guarding at the textual layer is simplest.
@@ -844,7 +969,12 @@ impl PhantomMcpServer {
         if params.fix {
             require_confirm("phantom_doctor", params.confirm)?;
             let params_json = serde_json::to_string(&params).unwrap_or_default();
-            require_approval_token("phantom_doctor", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+            require_approval_token(
+                "phantom_doctor",
+                params.approval_token.as_deref(),
+                &params_json,
+                &self.project_id(),
+            )?;
         }
         let mut lines: Vec<String> = Vec::new();
         let mut issues = 0u32;
@@ -1226,7 +1356,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_wrap", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_wrap", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_wrap",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let pkg_path = self.project_dir.join("package.json");
         if !pkg_path.exists() {
             return Err(internal_err("No package.json found in project directory."));
@@ -1324,7 +1459,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_unwrap", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_unwrap", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_unwrap",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let pkg_path = self.project_dir.join("package.json");
         if !pkg_path.exists() {
             return Err(internal_err("No package.json found in project directory."));
@@ -1488,7 +1628,12 @@ impl PhantomMcpServer {
         require_confirm("phantom_env", params.confirm)?;
         let env_path = self.env_path();
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_env", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_env",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
 
         let dotenv = DotenvFile::parse_file(&env_path)
             .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
@@ -1685,7 +1830,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_create", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_team_create", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_team_create",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -1739,7 +1889,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_invite", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_team_invite", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_team_invite",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let role = params.role.as_str();
         if !matches!(role, "member" | "admin" | "owner") {
             return Err(invalid_params_err(format!(
@@ -1774,7 +1929,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_key_publish", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_team_key_publish", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_team_key_publish",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -1804,7 +1964,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_push", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_team_vault_push", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_team_vault_push",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         use std::collections::BTreeMap;
         use zeroize::Zeroizing;
 
@@ -1872,7 +2037,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_rotate_with_expiry", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_rotate_with_expiry", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_rotate_with_expiry",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
 
         if params.days_ttl == 0 {
             return Err(invalid_params_err("days_ttl must be > 0"));
@@ -1927,12 +2097,10 @@ impl PhantomMcpServer {
     }
 
     /// List secrets with TTL/expiry countdown.
-    #[tool(
-        description = "List all secret names with their TTL/expiry status. \
+    #[tool(description = "List all secret names with their TTL/expiry status. \
             Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. \
             Never returns secret values. Use after `phantom_rotate_with_expiry` to \
-            confirm TTL was applied, or to audit which secrets are approaching expiry."
-    )]
+            confirm TTL was applied, or to audit which secrets are approaching expiry.")]
     fn phantom_list_with_expiry(
         &self,
         Parameters(params): Parameters<ListWithExpiryParams>,
@@ -1963,7 +2131,7 @@ impl PhantomMcpServer {
                     Some(m) => {
                         if m.is_expired() {
                             expired_count += 1;
-                            format!(" [EXPIRED]")
+                            " [EXPIRED]".to_string()
                         } else if m.is_expiring_soon(7) {
                             expiring_soon_count += 1;
                             format!(" [{}]", m.ttl_status())
@@ -2024,8 +2192,9 @@ impl PhantomMcpServer {
             ))
         })?;
 
-        let report = phantom_core::analytics::compute_analytics(period)
-            .map_err(|e| crate::tools::helpers::internal_err(format!("Failed to compute analytics: {e}")))?;
+        let report = phantom_core::analytics::compute_analytics(period).map_err(|e| {
+            crate::tools::helpers::internal_err(format!("Failed to compute analytics: {e}"))
+        })?;
 
         let secrets: Vec<&phantom_core::analytics::SecretAnalytics> = report
             .secrets
@@ -2033,7 +2202,7 @@ impl PhantomMcpServer {
             .filter(|s| {
                 params
                     .min_anomaly_score
-                    .map_or(true, |min| s.anomaly_score >= min)
+                    .is_none_or(|min| s.anomaly_score >= min)
             })
             .collect();
 
@@ -2042,8 +2211,9 @@ impl PhantomMcpServer {
             "secrets": secrets,
         });
 
-        let json_str = serde_json::to_string_pretty(&out)
-            .map_err(|e| crate::tools::helpers::internal_err(format!("Serialization error: {e}")))?;
+        let json_str = serde_json::to_string_pretty(&out).map_err(|e| {
+            crate::tools::helpers::internal_err(format!("Serialization error: {e}"))
+        })?;
 
         crate::tools::helpers::text_result(json_str)
     }
@@ -2064,7 +2234,7 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AuditRecentParams>,
     ) -> Result<CallToolResult, McpError> {
-        let n = params.n.min(200).max(1);
+        let n = params.n.clamp(1, 200);
 
         let log_path = phantom_core::audit::log_path()
             .map_err(|e| internal_err(format!("Cannot resolve audit log path: {e}")))?;
@@ -2075,8 +2245,10 @@ impl PhantomMcpServer {
                 "total_returned": 0,
                 "note": "Audit log does not exist. Set PHANTOM_AUDIT=1 to enable logging."
             });
-            return text_result(serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?);
+            return text_result(
+                serde_json::to_string_pretty(&out)
+                    .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+            );
         }
 
         let content = std::fs::read_to_string(&log_path)
@@ -2112,7 +2284,10 @@ impl PhantomMcpServer {
             }
 
             // Apply name_filter
-            let name = v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
+            let name = v
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string());
             if let Some(ref nf) = params.name_filter {
                 match &name {
                     Some(n) if n == nf => {}
@@ -2148,32 +2323,31 @@ impl PhantomMcpServer {
             "total_in_log": total_in_log,
         });
 
-        text_result(serde_json::to_string_pretty(&out)
-            .map_err(|e| internal_err(format!("Serialization error: {e}")))?)
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
     }
 
     /// Query for suspicious access patterns in the audit log.
-    #[tool(
-        description = "Query the audit log for suspicious access patterns. \
+    #[tool(description = "Query the audit log for suspicious access patterns. \
             Returns a findings array where each entry has: name (secret name), \
             anomaly_type (spike | dormant | first_access), anomaly_score (0.0–1.0), \
             access_count, last_access (ISO-8601), daily_avg, and context (human-readable \
             explanation). Secret VALUES are never returned. Read-only; no confirm required. \
             Anomaly types: 'spike' = single day >3x daily average; \
             'dormant' = access after >=7 consecutive quiet days. \
-            Use min_score to filter (default 0.4). Use period to limit the window."
-    )]
+            Use min_score to filter (default 0.4). Use period to limit the window.")]
     fn phantom_audit_anomalies(
         &self,
         Parameters(params): Parameters<AuditAnomaliesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let period =
-            phantom_core::analytics::Period::parse(&params.period).ok_or_else(|| {
-                invalid_params_err(format!(
-                    "Invalid period '{}'. Use: 7d, 30d, or all",
-                    params.period
-                ))
-            })?;
+        let period = phantom_core::analytics::Period::parse(&params.period).ok_or_else(|| {
+            invalid_params_err(format!(
+                "Invalid period '{}'. Use: 7d, 30d, or all",
+                params.period
+            ))
+        })?;
 
         let report = phantom_core::analytics::compute_analytics(period)
             .map_err(|e| internal_err(format!("Failed to compute analytics: {e}")))?;
@@ -2233,8 +2407,10 @@ impl PhantomMcpServer {
             "total_findings": findings.len(),
         });
 
-        text_result(serde_json::to_string_pretty(&out)
-            .map_err(|e| internal_err(format!("Serialization error: {e}")))?)
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
     }
 
     /// Real-time windowed anomaly check — safe for AI agent polling.
@@ -2255,7 +2431,7 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AuditAnomaliesRealtimeParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::analytics::{AuditThresholdConfig, compute_windowed_anomalies};
+        use phantom_core::analytics::{compute_windowed_anomalies, AuditThresholdConfig};
 
         let threshold = params.threshold.clamp(0.0, 1.0);
 
@@ -2272,12 +2448,9 @@ impl PhantomMcpServer {
             None
         };
 
-        let results = compute_windowed_anomalies(
-            params.name.as_deref(),
-            thresholds.as_ref(),
-            threshold,
-        )
-        .map_err(|e| internal_err(format!("Failed to compute windowed anomalies: {e}")))?;
+        let results =
+            compute_windowed_anomalies(params.name.as_deref(), thresholds.as_ref(), threshold)
+                .map_err(|e| internal_err(format!("Failed to compute windowed anomalies: {e}")))?;
 
         let findings: Vec<serde_json::Value> = results
             .iter()
@@ -2329,9 +2502,7 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AuditAnalyticsParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::analytics::{
-            compute_analytics, export_records, records_to_csv, Period,
-        };
+        use phantom_core::analytics::{compute_analytics, export_records, records_to_csv, Period};
 
         // Convert window_days to a Period.
         let period = match params.window_days {
@@ -2350,7 +2521,7 @@ impl PhantomMcpServer {
             .filter(|s| {
                 params
                     .min_anomaly_score
-                    .map_or(true, |min| s.anomaly_score >= min)
+                    .is_none_or(|min| s.anomaly_score >= min)
             })
             .collect();
 
@@ -2526,7 +2697,9 @@ impl PhantomMcpServer {
         if params.auto_rotate_on_high {
             // confirm was already verified above.
             let (_, vault) = self.load_config_and_vault()?;
-            let names = vault.list().map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+            let names = vault
+                .list()
+                .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
             for inc in &incidents {
                 if inc.confidence < 0.9 {
@@ -2616,9 +2789,15 @@ impl PhantomMcpServer {
         // Load alerts for display using a no-op dispatcher.
         struct NullDispatch;
         impl phantom_core::leak_correlation::AlertDispatch for NullDispatch {
-            fn send_webhook(&self, _: &str, _: &serde_json::Value) -> std::io::Result<()> { Ok(()) }
-            fn send_slack(&self, _: &str, _: &serde_json::Value) -> std::io::Result<()> { Ok(()) }
-            fn send_pagerduty(&self, _: &str, _: &serde_json::Value) -> std::io::Result<()> { Ok(()) }
+            fn send_webhook(&self, _: &str, _: &serde_json::Value) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn send_slack(&self, _: &str, _: &serde_json::Value) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn send_pagerduty(&self, _: &str, _: &serde_json::Value) -> std::io::Result<()> {
+                Ok(())
+            }
         }
 
         let dummy_config = AlertingConfig {
@@ -2626,11 +2805,8 @@ impl PhantomMcpServer {
             min_confidence: 0.0,
             backends: vec![],
         };
-        let alerter = LeakIncidentAlerter::with_path(
-            dummy_config,
-            alerts_path,
-            Box::new(NullDispatch),
-        );
+        let alerter =
+            LeakIncidentAlerter::with_path(dummy_config, alerts_path, Box::new(NullDispatch));
 
         let alerts = alerter
             .load_recent_alerts(params.last)
@@ -2673,7 +2849,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<AuditExportReportParams>,
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::audit_export::{
-            AuditExporter, ExportFilter, parse_date_to_ts, parse_date_to_ts_end,
+            parse_date_to_ts, parse_date_to_ts_end, AuditExporter, ExportFilter,
         };
 
         let exporter = AuditExporter::new()
@@ -2775,7 +2951,9 @@ impl PhantomMcpServer {
         } else {
             false
         };
-        if !vault_ok { all_pass = false; }
+        if !vault_ok {
+            all_pass = false;
+        }
         checks.insert("vault_accessible".to_string(), serde_json::json!({
             "pass": vault_ok,
             "detail": if vault_ok { "Vault backend is reachable." } else { "Vault not accessible — run phantom init." },
@@ -2783,7 +2961,9 @@ impl PhantomMcpServer {
 
         // Check 2: audit enabled
         let audit_ok = phantom_core::audit::enabled();
-        if !audit_ok { all_pass = false; }
+        if !audit_ok {
+            all_pass = false;
+        }
         checks.insert("audit_enabled".to_string(), serde_json::json!({
             "pass": audit_ok,
             "detail": if audit_ok { "PHANTOM_AUDIT is set." } else { "Set PHANTOM_AUDIT=1 to enable audit logging." },
@@ -2798,7 +2978,9 @@ impl PhantomMcpServer {
         } else {
             false
         };
-        if !precommit_ok { all_pass = false; }
+        if !precommit_ok {
+            all_pass = false;
+        }
         checks.insert("precommit_installed".to_string(), serde_json::json!({
             "pass": precommit_ok,
             "detail": if precommit_ok { "Pre-commit hook includes phantom check." } else { "Run phantom doctor --fix to install the pre-commit hook." },
@@ -2814,7 +2996,10 @@ impl PhantomMcpServer {
                         (true, "No unprotected secrets in .env.".to_string())
                     } else {
                         let names: Vec<&str> = real.iter().map(|e| e.key.as_str()).collect();
-                        (false, format!("{} unprotected secret(s): {}", real.len(), names.join(", ")))
+                        (
+                            false,
+                            format!("{} unprotected secret(s): {}", real.len(), names.join(", ")),
+                        )
                     }
                 }
                 Err(e) => (false, format!(".env parse error: {e}")),
@@ -2822,52 +3007,77 @@ impl PhantomMcpServer {
         } else {
             (true, "No .env file present.".to_string())
         };
-        if !env_clean { all_pass = false; }
-        checks.insert("env_clean".to_string(), serde_json::json!({
-            "pass": env_clean,
-            "detail": env_detail,
-        }));
+        if !env_clean {
+            all_pass = false;
+        }
+        checks.insert(
+            "env_clean".to_string(),
+            serde_json::json!({
+                "pass": env_clean,
+                "detail": env_detail,
+            }),
+        );
 
         // Check 5: all secrets have TTL
         let (ttl_ok, ttl_detail) = if self.config_path().exists() {
             match self.load_config_and_vault() {
-                Ok((_cfg, vault)) => {
-                    match vault.list_with_metadata() {
-                        Ok(entries) => {
-                            let without_ttl: Vec<&str> = entries
-                                .iter()
-                                .filter(|(_, meta)| {
-                                    meta.as_ref().and_then(|m| m.rotation_policy.as_ref()).is_none()
-                                })
-                                .map(|(name, _)| name.as_str())
-                                .collect();
-                            if without_ttl.is_empty() {
-                                (true, "All secrets have a rotation policy (TTL).".to_string())
-                            } else {
-                                (false, format!("{} secret(s) have no TTL: {}", without_ttl.len(), without_ttl.join(", ")))
-                            }
+                Ok((_cfg, vault)) => match vault.list_with_metadata() {
+                    Ok(entries) => {
+                        let without_ttl: Vec<&str> = entries
+                            .iter()
+                            .filter(|(_, meta)| {
+                                meta.as_ref()
+                                    .and_then(|m| m.rotation_policy.as_ref())
+                                    .is_none()
+                            })
+                            .map(|(name, _)| name.as_str())
+                            .collect();
+                        if without_ttl.is_empty() {
+                            (
+                                true,
+                                "All secrets have a rotation policy (TTL).".to_string(),
+                            )
+                        } else {
+                            (
+                                false,
+                                format!(
+                                    "{} secret(s) have no TTL: {}",
+                                    without_ttl.len(),
+                                    without_ttl.join(", ")
+                                ),
+                            )
                         }
-                        Err(e) => (false, format!("Failed to list secrets: {e}")),
                     }
-                }
+                    Err(e) => (false, format!("Failed to list secrets: {e}")),
+                },
                 Err(_) => (false, "Vault not accessible.".to_string()),
             }
         } else {
-            (false, "Phantom not initialized — run phantom init.".to_string())
+            (
+                false,
+                "Phantom not initialized — run phantom init.".to_string(),
+            )
         };
-        if !ttl_ok { all_pass = false; }
-        checks.insert("secrets_have_ttl".to_string(), serde_json::json!({
-            "pass": ttl_ok,
-            "detail": ttl_detail,
-        }));
+        if !ttl_ok {
+            all_pass = false;
+        }
+        checks.insert(
+            "secrets_have_ttl".to_string(),
+            serde_json::json!({
+                "pass": ttl_ok,
+                "detail": ttl_detail,
+            }),
+        );
 
         let out = serde_json::json!({
             "compliant": all_pass,
             "checks": checks,
         });
 
-        text_result(serde_json::to_string_pretty(&out)
-            .map_err(|e| internal_err(format!("Serialization error: {e}")))?)
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
     }
 
     /// Query which secrets are due for rotation (TTL approaching or exceeded).
@@ -2960,8 +3170,10 @@ impl PhantomMcpServer {
             }
         });
 
-        text_result(serde_json::to_string_pretty(&out)
-            .map_err(|e| internal_err(format!("Serialization error: {e}")))?)
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
     }
 
     /// Pull a team vault into the current project's local vault.
@@ -2974,7 +3186,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_pull", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_team_vault_pull", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_team_vault_pull",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -3103,16 +3320,18 @@ impl PhantomMcpServer {
             let value = vault
                 .retrieve(name)
                 .map_err(|e| internal_err(format!("Failed to retrieve secret '{name}': {e}")))?;
-            secrets.push((name.clone(), zeroize::Zeroizing::new(String::from(value.as_str()))));
+            secrets.push((
+                name.clone(),
+                zeroize::Zeroizing::new(String::from(value.as_str())),
+            ));
         }
 
-        let jobs = params.jobs.max(1).min(16);
+        let jobs = params.jobs.clamp(1, 16);
         let timeout = std::time::Duration::from_secs(10);
         let validators = phantom_core::validator::default_validators();
 
-        let report = phantom_core::validator::run_validation_pipeline(
-            secrets, &validators, jobs, timeout,
-        );
+        let report =
+            phantom_core::validator::run_validation_pipeline(secrets, &validators, jobs, timeout);
 
         // Persist ValidationMetadata for each result so phantom_validate_secret
         // can answer status queries without re-running HTTP checks.
@@ -3159,26 +3378,21 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<ValidationScheduleParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::validation_scheduler::{
-            Schedule, SchedulerState, state_file_path,
-        };
+        use phantom_core::validation_scheduler::{state_file_path, Schedule, SchedulerState};
 
         let (config, _vault) = self.load_config_and_vault()?;
         let state_path = state_file_path(&config.phantom.project_id);
-        let mut state = SchedulerState::load(&state_path)
-            .unwrap_or_default();
+        let mut state = SchedulerState::load(&state_path).unwrap_or_default();
 
         // If an interval was provided, update the schedule.
         if let Some(ref interval_str) = params.interval {
-            let sched = Schedule::parse(interval_str)
-                .map_err(|e| {
-                    crate::tools::helpers::invalid_params_err(format!(
-                        "Invalid schedule interval: {e}"
-                    ))
-                })?;
+            let sched = Schedule::parse(interval_str).map_err(|e| {
+                crate::tools::helpers::invalid_params_err(format!("Invalid schedule interval: {e}"))
+            })?;
             let description = sched.description();
             state.schedule = Some(sched);
-            state.save(&state_path)
+            state
+                .save(&state_path)
                 .map_err(|e| internal_err(format!("Failed to persist schedule: {e}")))?;
 
             return text_result(format!(
@@ -3216,12 +3430,11 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<ValidationHistoryParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::validation_scheduler::{SchedulerState, state_file_path, MAX_HISTORY};
+        use phantom_core::validation_scheduler::{state_file_path, SchedulerState, MAX_HISTORY};
 
         let (config, _vault) = self.load_config_and_vault()?;
         let state_path = state_file_path(&config.phantom.project_id);
-        let state = SchedulerState::load(&state_path)
-            .unwrap_or_default();
+        let state = SchedulerState::load(&state_path).unwrap_or_default();
 
         let limit = params.limit.min(MAX_HISTORY);
         let entries: Vec<_> = state.history.iter().rev().take(limit).collect();
@@ -3314,7 +3527,12 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_secrets_auto_rotate", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token("phantom_secrets_auto_rotate", params.approval_token.as_deref(), &params_json, &self.project_id())?;
+        require_approval_token(
+            "phantom_secrets_auto_rotate",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
 
         let (_config, vault) = self.load_config_and_vault()?;
 
@@ -3343,7 +3561,10 @@ impl PhantomMcpServer {
         // Build refreshed metadata.
         let now = phantom_vault::metadata::now_secs();
         let new_meta = phantom_vault::metadata::SecretMetadata {
-            created_at: existing_meta.as_ref().and_then(|m| m.created_at).or(Some(now)),
+            created_at: existing_meta
+                .as_ref()
+                .and_then(|m| m.created_at)
+                .or(Some(now)),
             rotated_at: Some(now),
             expires_at: Some(now + days_ttl * 86_400),
             rotation_policy: Some(phantom_vault::metadata::RotationPolicy {
@@ -3571,9 +3792,7 @@ impl PhantomMcpServer {
             };
 
             // Check promotion path first: was demoted but has since been rotated.
-            if params.also_promote_rotated
-                && meta.vault_mode.is_read_only()
-            {
+            if params.also_promote_rotated && meta.vault_mode.is_read_only() {
                 let rotated_after_expiry = match (meta.rotated_at, meta.expires_at) {
                     (Some(r), Some(e)) => r > e,
                     _ => false,
@@ -3584,10 +3803,7 @@ impl PhantomMcpServer {
                     vault
                         .set_metadata(name, new_meta)
                         .map_err(|e| internal_err(format!("Failed to promote {name}: {e}")))?;
-                    phantom_core::audit::log(
-                        "secret.expiry_policy.promoted",
-                        Some(name),
-                    );
+                    phantom_core::audit::log("secret.expiry_policy.promoted", Some(name));
                     promoted.push(serde_json::json!({ "name": name }));
                     continue;
                 }
@@ -3603,10 +3819,7 @@ impl PhantomMcpServer {
                         vault
                             .set_metadata(name, new_meta)
                             .map_err(|e| internal_err(format!("Failed to demote {name}: {e}")))?;
-                        phantom_core::audit::log(
-                            "secret.expiry_policy.demoted",
-                            Some(name),
-                        );
+                        phantom_core::audit::log("secret.expiry_policy.demoted", Some(name));
                         demoted.push(serde_json::json!({
                             "name": name,
                             "expires_at": exp,
@@ -3718,7 +3931,7 @@ mod tests {
         let params = InitParams {
             env_path: ".env".to_string(),
             confirm: true,
-            approval_token: None
+            approval_token: None,
         };
         let result = server.phantom_init(Parameters(params)).unwrap();
         let text = get_result_text(&result);
@@ -3753,7 +3966,7 @@ mod tests {
             .phantom_init(Parameters(InitParams {
                 env_path: ".env".to_string(),
                 confirm: true,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap();
         let text = get_result_text(&result);
@@ -3825,7 +4038,7 @@ mod tests {
             .phantom_add_secret(Parameters(AddSecretParams {
                 name: "X".to_string(),
                 confirm: false,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap_err();
         assert_eq!(add_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -3835,14 +4048,16 @@ mod tests {
             .phantom_remove_secret(Parameters(RemoveSecretParams {
                 name: "OPENAI_API_KEY".to_string(),
                 confirm: false,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap_err();
         assert_eq!(rm_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
 
         let rotate_err = server
-            .phantom_rotate(Parameters(RotateParams { confirm: false,
-            approval_token: None }))
+            .phantom_rotate(Parameters(RotateParams {
+                confirm: false,
+                approval_token: None,
+            }))
             .unwrap_err();
         assert_eq!(rotate_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     }
@@ -3857,7 +4072,7 @@ mod tests {
                 target_dir: ".".to_string(),
                 rename: None,
                 confirm: false,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -3881,7 +4096,7 @@ mod tests {
                     target_dir: bad.to_string(),
                     rename: None,
                     confirm: true,
-            approval_token: None
+                    approval_token: None,
                 }))
                 .unwrap_err();
             assert_eq!(
@@ -3903,7 +4118,7 @@ mod tests {
                 target_dir: "definitely/does/not/exist".to_string(),
                 rename: None,
                 confirm: true,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -3920,8 +4135,10 @@ mod tests {
 
         // Rotate
         let result = server
-            .phantom_rotate(Parameters(RotateParams { confirm: true,
-            approval_token: None }))
+            .phantom_rotate(Parameters(RotateParams {
+                confirm: true,
+                approval_token: None,
+            }))
             .unwrap();
         let text = get_result_text(&result);
         assert!(text.contains("Rotated"));
@@ -3942,7 +4159,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 7,
                 confirm: false,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -3957,7 +4174,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 0,
                 confirm: true,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -3972,7 +4189,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 7,
                 confirm: true,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap();
         let text = get_result_text(&result);
@@ -4028,7 +4245,10 @@ mod tests {
     // ── Audit & compliance tool tests ─────────────────────────────────
 
     /// Write synthetic audit log entries to a temp HOME path (no HMAC chain).
-    fn write_synthetic_audit_log(home_dir: &std::path::Path, entries: &[(u64, &str, Option<&str>)]) {
+    fn write_synthetic_audit_log(
+        home_dir: &std::path::Path,
+        entries: &[(u64, &str, Option<&str>)],
+    ) {
         let log_path = home_dir.join(".phantom").join("audit.log");
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         use std::io::Write;
@@ -4077,7 +4297,6 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
@@ -4100,8 +4319,14 @@ mod tests {
 
         let json = parse_result_json(&result);
         assert!(json.get("events").is_some(), "must have 'events' key");
-        assert!(json.get("total_returned").is_some(), "must have 'total_returned'");
-        assert!(json.get("total_in_log").is_some(), "must have 'total_in_log'");
+        assert!(
+            json.get("total_returned").is_some(),
+            "must have 'total_returned'"
+        );
+        assert!(
+            json.get("total_in_log").is_some(),
+            "must have 'total_in_log'"
+        );
         let events = json["events"].as_array().unwrap();
         assert_eq!(events.len(), 3);
     }
@@ -4111,14 +4336,10 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
-        write_synthetic_audit_log(
-            home.path(),
-            &[(now, "vault.store", Some("OPENAI_API_KEY"))],
-        );
+        write_synthetic_audit_log(home.path(), &[(now, "vault.store", Some("OPENAI_API_KEY"))]);
 
         let result = server
             .phantom_audit_recent(Parameters(AuditRecentParams {
@@ -4129,9 +4350,18 @@ mod tests {
             .unwrap();
 
         let text = extract_content_text(&result);
-        assert!(!text.contains("sk-test-key"), "must not expose secret value");
-        assert!(!text.contains("postgres://user:pass"), "must not expose DB credentials");
-        assert!(text.contains("OPENAI_API_KEY"), "should contain secret name");
+        assert!(
+            !text.contains("sk-test-key"),
+            "must not expose secret value"
+        );
+        assert!(
+            !text.contains("postgres://user:pass"),
+            "must not expose DB credentials"
+        );
+        assert!(
+            text.contains("OPENAI_API_KEY"),
+            "should contain secret name"
+        );
     }
 
     #[test]
@@ -4139,7 +4369,6 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
@@ -4171,7 +4400,6 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
@@ -4202,7 +4430,6 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
@@ -4230,7 +4457,6 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let empty_home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", empty_home.path()) };
 
@@ -4253,14 +4479,10 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
         let now = 1_700_000_000_u64;
-        write_synthetic_audit_log(
-            home.path(),
-            &[(now, "vault.store", Some("OPENAI_API_KEY"))],
-        );
+        write_synthetic_audit_log(home.path(), &[(now, "vault.store", Some("OPENAI_API_KEY"))]);
 
         let result = server
             .phantom_audit_recent(Parameters(AuditRecentParams {
@@ -4272,7 +4494,10 @@ mod tests {
 
         let json = parse_result_json(&result);
         for event in json["events"].as_array().unwrap() {
-            assert!(event.get("value").is_none(), "event must not have 'value' field");
+            assert!(
+                event.get("value").is_none(),
+                "event must not have 'value' field"
+            );
         }
     }
 
@@ -4283,7 +4508,6 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
 
@@ -4296,8 +4520,14 @@ mod tests {
 
         let json = parse_result_json(&result);
         assert!(json.get("findings").is_some(), "must have 'findings'");
-        assert!(json.get("total_findings").is_some(), "must have 'total_findings'");
-        assert!(json.get("generated_at").is_some(), "must have 'generated_at'");
+        assert!(
+            json.get("total_findings").is_some(),
+            "must have 'total_findings'"
+        );
+        assert!(
+            json.get("generated_at").is_some(),
+            "must have 'generated_at'"
+        );
         assert!(json.get("period").is_some(), "must have 'period'");
     }
 
@@ -4306,7 +4536,6 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
 
@@ -4333,7 +4562,10 @@ mod tests {
         let f = findings.iter().find(|f| f["name"] == "SPIKE_KEY").unwrap();
         assert_eq!(f["anomaly_type"], "spike");
         assert!(f["anomaly_score"].as_f64().unwrap() >= 0.6);
-        assert!(f.get("value").is_none(), "finding must not expose secret value");
+        assert!(
+            f.get("value").is_none(),
+            "finding must not expose secret value"
+        );
     }
 
     #[test]
@@ -4342,12 +4574,10 @@ mod tests {
         let (server, _dir) = setup_initialized_project();
         // Use a separate isolated HOME so this test sees only its own audit events.
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
 
         let t0 = 1_700_000_000_u64;
-        let t1 = t0 + 10 * 86400;
         // Two accesses separated by 10 days: only quiet-period rule fires (score 0.5).
         // No spike: both days have count=1, daily_avg=1/(10 days)=0.1, 1 is NOT > 3×0.1=0.3.
         // Wait — 1 > 0.3, so spike also fires! Use a uniform daily spread to avoid spike.
@@ -4371,10 +4601,16 @@ mod tests {
 
         let json = parse_result_json(&result);
         let findings = json["findings"].as_array().unwrap();
-        let f = findings.iter().find(|f| f["name"] == "DORMANT_KEY").unwrap();
+        let f = findings
+            .iter()
+            .find(|f| f["name"] == "DORMANT_KEY")
+            .unwrap();
         // dormant rule: score 0.5; spike: max_daily=1, daily_avg≈0.61, 1 is NOT > 3*0.61=1.83
         // So anomaly_type should be "dormant"
-        assert_eq!(f["anomaly_type"], "dormant", "anomaly_type should be dormant: {f}");
+        assert_eq!(
+            f["anomaly_type"], "dormant",
+            "anomaly_type should be dormant: {f}"
+        );
         assert!(f["anomaly_score"].as_f64().unwrap() >= 0.5);
     }
 
@@ -4383,7 +4619,6 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
 
@@ -4406,10 +4641,22 @@ mod tests {
         let json = parse_result_json(&result);
         for f in json["findings"].as_array().unwrap() {
             assert!(f.get("name").is_some(), "finding must have 'name'");
-            assert!(f.get("anomaly_type").is_some(), "finding must have 'anomaly_type'");
-            assert!(f.get("anomaly_score").is_some(), "finding must have 'anomaly_score'");
-            assert!(f.get("access_count").is_some(), "finding must have 'access_count'");
-            assert!(f.get("last_access").is_some(), "finding must have 'last_access'");
+            assert!(
+                f.get("anomaly_type").is_some(),
+                "finding must have 'anomaly_type'"
+            );
+            assert!(
+                f.get("anomaly_score").is_some(),
+                "finding must have 'anomaly_score'"
+            );
+            assert!(
+                f.get("access_count").is_some(),
+                "finding must have 'access_count'"
+            );
+            assert!(
+                f.get("last_access").is_some(),
+                "finding must have 'last_access'"
+            );
             assert!(f.get("context").is_some(), "finding must have 'context'");
             assert!(f.get("value").is_none(), "finding must NOT have 'value'");
         }
@@ -4420,14 +4667,15 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
         let home = tempfile::TempDir::new().unwrap();
-        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _prev_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", home.path()) };
 
         // Use uniform pattern (10 daily accesses + 8-day gap) that only triggers dormant (0.5)
         let t0 = 1_700_000_000_u64;
         let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
-        for i in 0u64..10 { entries.push((t0 + i * 86400, "vault.retrieve", Some("FILTER_KEY"))); }
+        for i in 0u64..10 {
+            entries.push((t0 + i * 86400, "vault.retrieve", Some("FILTER_KEY")));
+        }
         entries.push((t0 + 18 * 86400, "vault.retrieve", Some("FILTER_KEY")));
         write_synthetic_audit_log(home.path(), &entries);
 
@@ -4489,7 +4737,10 @@ mod tests {
             .unwrap();
 
         let json = parse_result_json(&result);
-        assert!(json.get("generated_at").is_some(), "must have 'generated_at'");
+        assert!(
+            json.get("generated_at").is_some(),
+            "must have 'generated_at'"
+        );
         assert!(json.get("analytics").is_some(), "must have 'analytics'");
         assert!(json.get("records").is_some(), "must have 'records'");
         assert!(json.get("time_series").is_some(), "must have 'time_series'");
@@ -4528,7 +4779,10 @@ mod tests {
 
         let json = parse_result_json(&result);
         let analytics = json["analytics"].as_array().unwrap();
-        assert!(!analytics.is_empty(), "filtered analytics should include SPIKE_KEY");
+        assert!(
+            !analytics.is_empty(),
+            "filtered analytics should include SPIKE_KEY"
+        );
         let spike = analytics.iter().find(|s| s["name"] == "SPIKE_KEY").unwrap();
         assert!(
             spike["anomaly_score"].as_f64().unwrap() >= 0.6,
@@ -4536,7 +4790,10 @@ mod tests {
         );
         // Records must not expose values
         for rec in json["records"].as_array().unwrap() {
-            assert!(rec.get("value").is_none(), "records must never expose secret values");
+            assert!(
+                rec.get("value").is_none(),
+                "records must never expose secret values"
+            );
         }
     }
 
@@ -4573,7 +4830,10 @@ mod tests {
             })
             .unwrap_or_default();
 
-        assert!(text.starts_with("ts,datetime,op,name,process\n"), "CSV must start with header");
+        assert!(
+            text.starts_with("ts,datetime,op,name,process\n"),
+            "CSV must start with header"
+        );
         assert!(text.contains("CSV_KEY"), "CSV must include the secret name");
         assert!(text.contains("vault.retrieve"), "CSV must include the op");
     }
@@ -4660,9 +4920,18 @@ mod tests {
         let json = parse_result_json(&result);
         let checks = json["checks"].as_object().unwrap();
         for (name, check) in checks {
-            assert!(check.get("pass").is_some(), "check '{name}' must have 'pass'");
-            assert!(check.get("detail").is_some(), "check '{name}' must have 'detail'");
-            assert!(check["pass"].is_boolean(), "check '{name}' pass must be boolean");
+            assert!(
+                check.get("pass").is_some(),
+                "check '{name}' must have 'pass'"
+            );
+            assert!(
+                check.get("detail").is_some(),
+                "check '{name}' must have 'detail'"
+            );
+            assert!(
+                check["pass"].is_boolean(),
+                "check '{name}' pass must be boolean"
+            );
         }
     }
 
@@ -4677,7 +4946,9 @@ mod tests {
 
         let json = parse_result_json(&result);
         assert!(
-            json["checks"]["vault_accessible"]["pass"].as_bool().unwrap(),
+            json["checks"]["vault_accessible"]["pass"]
+                .as_bool()
+                .unwrap(),
             "vault_accessible must be true after init"
         );
     }
@@ -4708,8 +4979,14 @@ mod tests {
             .unwrap();
 
         let text = extract_content_text(&result);
-        assert!(!text.contains("sk-test-key"), "must not expose OPENAI secret");
-        assert!(!text.contains("postgres://user:pass"), "must not expose DB credentials");
+        assert!(
+            !text.contains("sk-test-key"),
+            "must not expose OPENAI secret"
+        );
+        assert!(
+            !text.contains("postgres://user:pass"),
+            "must not expose DB credentials"
+        );
     }
 
     #[test]
@@ -4723,7 +5000,9 @@ mod tests {
 
         let json = parse_result_json(&result);
         assert!(
-            !json["checks"]["secrets_have_ttl"]["pass"].as_bool().unwrap(),
+            !json["checks"]["secrets_have_ttl"]["pass"]
+                .as_bool()
+                .unwrap(),
             "secrets_have_ttl should be false when no rotation policy set"
         );
         assert!(
@@ -4741,7 +5020,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 30,
                 confirm: true,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap();
 
@@ -4751,7 +5030,9 @@ mod tests {
 
         let json = parse_result_json(&result);
         assert!(
-            json["checks"]["secrets_have_ttl"]["pass"].as_bool().unwrap(),
+            json["checks"]["secrets_have_ttl"]["pass"]
+                .as_bool()
+                .unwrap(),
             "secrets_have_ttl should be true after rotate_with_expiry sets rotation policy"
         );
     }
@@ -4787,7 +5068,10 @@ mod tests {
 
         let json = parse_result_json(&result);
         let no_ttl = json["no_ttl"].as_array().unwrap();
-        assert!(!no_ttl.is_empty(), "secrets without TTL should appear in no_ttl");
+        assert!(
+            !no_ttl.is_empty(),
+            "secrets without TTL should appear in no_ttl"
+        );
         for entry in no_ttl {
             assert!(entry.get("name").is_some(), "entry must have 'name'");
             assert_eq!(entry["status"], "no_ttl");
@@ -4803,7 +5087,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 30,
                 confirm: true,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap();
 
@@ -4813,12 +5097,18 @@ mod tests {
 
         let json = parse_result_json(&result);
         let ok = json["ok"].as_array().unwrap();
-        assert!(!ok.is_empty(), "fresh 30-day TTL should place secrets in 'ok'");
+        assert!(
+            !ok.is_empty(),
+            "fresh 30-day TTL should place secrets in 'ok'"
+        );
         for entry in ok {
             assert_eq!(entry["status"], "ok");
             let days = entry["days_remaining"].as_i64().unwrap_or(-1);
             assert!(days > 0, "days_remaining should be positive");
-            assert!(entry["expires_at"].is_string(), "expires_at must be a string");
+            assert!(
+                entry["expires_at"].is_string(),
+                "expires_at must be a string"
+            );
         }
     }
 
@@ -4832,8 +5122,14 @@ mod tests {
             .unwrap();
 
         let text = get_result_text(&result);
-        assert!(!text.contains("sk-test-key"), "must not expose OPENAI secret");
-        assert!(!text.contains("postgres://user:pass"), "must not expose DB credentials");
+        assert!(
+            !text.contains("sk-test-key"),
+            "must not expose OPENAI secret"
+        );
+        assert!(
+            !text.contains("postgres://user:pass"),
+            "must not expose DB credentials"
+        );
     }
 
     #[test]
@@ -4872,7 +5168,10 @@ mod tests {
         for category in &["due", "warning", "ok", "no_ttl"] {
             if let Some(entries) = json[category].as_array() {
                 for entry in entries {
-                    assert!(entry.get("value").is_none(), "entry in '{category}' must not have 'value'");
+                    assert!(
+                        entry.get("value").is_none(),
+                        "entry in '{category}' must not have 'value'"
+                    );
                 }
             }
         }
@@ -4887,7 +5186,7 @@ mod tests {
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
                 days_ttl: 30,
                 confirm: true,
-            approval_token: None
+                approval_token: None,
             }))
             .unwrap();
 
@@ -4898,7 +5197,13 @@ mod tests {
 
         let json = parse_result_json(&result);
         let warning = json["warning"].as_array().unwrap();
-        assert!(!warning.is_empty(), "with warn_days=31, 30-day TTL secrets should be in warning");
-        assert!(json["ok"].as_array().unwrap().is_empty(), "ok should be empty");
+        assert!(
+            !warning.is_empty(),
+            "with warn_days=31, 30-day TTL secrets should be in warning"
+        );
+        assert!(
+            json["ok"].as_array().unwrap().is_empty(),
+            "ok should be empty"
+        );
     }
 }

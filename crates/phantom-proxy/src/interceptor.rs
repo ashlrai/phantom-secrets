@@ -149,9 +149,9 @@ impl ResponseLeakAnalyzer {
             // Check whether any of the remaining matches are vault values
             // (they would already have been replaced in step 1; if they're still
             // here they're unrecognised format-only hits → MEDIUM severity).
-            let is_vault_confirmed = matches.iter().any(|m| {
-                self.vault_values.contains_key(m.as_str())
-            });
+            let is_vault_confirmed = matches
+                .iter()
+                .any(|m| self.vault_values.contains_key(m.as_str()));
             let severity = if is_vault_confirmed {
                 LeakSeverity::High
             } else {
@@ -163,7 +163,7 @@ impl ResponseLeakAnalyzer {
             if scrubbed != result {
                 result = scrubbed;
                 // Avoid duplicate events if vault-match already fired for this pattern.
-                let already_reported = events.iter().any(|e| &e.pattern == *label);
+                let already_reported = events.iter().any(|e| e.pattern == *label);
                 if !already_reported {
                     events.push(LeakEvent {
                         ts: now,
@@ -181,7 +181,11 @@ impl ResponseLeakAnalyzer {
     }
 
     /// Byte-level vault-only check for non-UTF-8 bodies.
-    fn scan_bytes_vault_only(&self, input: &[u8], location: LeakLocation) -> (Vec<u8>, Vec<LeakEvent>) {
+    fn scan_bytes_vault_only(
+        &self,
+        input: &[u8],
+        location: LeakLocation,
+    ) -> (Vec<u8>, Vec<LeakEvent>) {
         let mut result = input.to_vec();
         let mut events = Vec::new();
         let now = now_unix();
@@ -215,8 +219,18 @@ impl ResponseLeakAnalyzer {
 fn format_pattern_label(value: &str) -> String {
     // Try to match a known prefix.
     let known_prefixes = [
-        "sk_live_", "sk_test_", "sk-", "ghp_", "github_pat_",
-        "AKIA", "AIza", "xoxb-", "xoxp-", "SG.", "AC", "phm_",
+        "sk_live_",
+        "sk_test_",
+        "sk-",
+        "ghp_",
+        "github_pat_",
+        "AKIA",
+        "AIza",
+        "xoxb-",
+        "xoxp-",
+        "SG.",
+        "AC",
+        "phm_",
     ];
     for prefix in &known_prefixes {
         if value.starts_with(prefix) {

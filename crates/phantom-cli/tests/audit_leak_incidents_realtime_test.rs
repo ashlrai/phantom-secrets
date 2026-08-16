@@ -24,7 +24,13 @@ fn now_unix() -> u64 {
 }
 
 /// Returns (engine, audit_log_path, incidents_path).
-fn make_engine(tmp: &std::path::Path) -> (LeakCorrelationEngine, std::path::PathBuf, std::path::PathBuf) {
+fn make_engine(
+    tmp: &std::path::Path,
+) -> (
+    LeakCorrelationEngine,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
     let audit = tmp.join(".phantom").join("audit.log");
     let incidents = tmp.join(".phantom").join("leak-incidents.jsonl");
     let engine = LeakCorrelationEngine::with_paths(audit.clone(), incidents.clone());
@@ -84,7 +90,11 @@ fn realtime_default_confidence_returns_single_event_incident() {
 
     // min_confidence=0.5 — the default for the realtime dashboard.
     let active = engine.active_incidents(0.5).unwrap();
-    assert_eq!(active.len(), 1, "single-event incident should be active at min_confidence=0.5");
+    assert_eq!(
+        active.len(),
+        1,
+        "single-event incident should be active at min_confidence=0.5"
+    );
     assert_eq!(active[0].secret_name, "STRIPE_KEY");
     assert!((active[0].confidence - 0.50).abs() < 1e-9);
 }
@@ -116,10 +126,20 @@ fn realtime_incident_has_all_required_summary_fields() {
     // All fields required by the MCP tool spec must be present.
     assert!(!inc.incident_id.is_empty(), "incident_id must be present");
     assert_eq!(inc.secret_name, "OPENAI_KEY");
-    assert!(!inc.location_label.is_empty(), "location_label must be present");
+    assert!(
+        !inc.location_label.is_empty(),
+        "location_label must be present"
+    );
     assert!(inc.first_seen_ts > 0, "first_seen_ts must be set");
-    assert!(inc.last_seen_ts >= inc.first_seen_ts, "last_seen_ts >= first_seen_ts");
-    assert!((inc.confidence - 0.95).abs() < 1e-9, "4 events in <1h => confidence 0.95, got {}", inc.confidence);
+    assert!(
+        inc.last_seen_ts >= inc.first_seen_ts,
+        "last_seen_ts >= first_seen_ts"
+    );
+    assert!(
+        (inc.confidence - 0.95).abs() < 1e-9,
+        "4 events in <1h => confidence 0.95, got {}",
+        inc.confidence
+    );
     assert_eq!(inc.event_count, 4);
     assert!(!inc.remediation.is_empty(), "remediation must be non-empty");
 }
@@ -158,8 +178,11 @@ fn realtime_incidents_ordered_by_confidence_descending() {
     });
 
     assert_eq!(active.len(), 2);
-    assert_eq!(active[0].secret_name, "HIGH_KEY", "highest confidence first");
-    assert_eq!(active[1].secret_name, "LOW_KEY",  "lowest confidence last");
+    assert_eq!(
+        active[0].secret_name, "HIGH_KEY",
+        "highest confidence first"
+    );
+    assert_eq!(active[1].secret_name, "LOW_KEY", "lowest confidence last");
     assert!(active[0].confidence > active[1].confidence);
 }
 
@@ -234,7 +257,10 @@ fn realtime_rotation_clears_incident() {
     );
 
     let active = engine.active_incidents(0.5).unwrap();
-    assert!(active.is_empty(), "rotated incident should not appear in realtime dashboard");
+    assert!(
+        active.is_empty(),
+        "rotated incident should not appear in realtime dashboard"
+    );
 }
 
 // ── Test 6: min_confidence=0.5 boundary — exactly 0.5 incident is included ───
@@ -261,7 +287,11 @@ fn realtime_exactly_0_5_confidence_is_included() {
 
     // min_confidence=0.5 should include confidence=0.5 (>= not >).
     let active = engine.active_incidents(0.5).unwrap();
-    assert_eq!(active.len(), 1, "incident at exactly confidence=0.5 should be included");
+    assert_eq!(
+        active.len(),
+        1,
+        "incident at exactly confidence=0.5 should be included"
+    );
 }
 
 // ── Test 7: auto_rotate clears incident via vault.store audit event ────────────
@@ -300,7 +330,10 @@ fn realtime_auto_rotate_audit_event_clears_incident() {
 
     // After rotation, the incident should be cleared.
     let after = engine.active_incidents(0.5).unwrap();
-    assert!(after.is_empty(), "auto-rotate clears the high-confidence incident");
+    assert!(
+        after.is_empty(),
+        "auto-rotate clears the high-confidence incident"
+    );
 }
 
 // ── Test 8: auto_rotate gate — high-confidence threshold is exactly 0.9 ───────
@@ -361,23 +394,33 @@ fn mcp_confirm_gate_blocks_auto_rotate_without_confirm() {
     use phantom_mcp::LeakIncidentsRealtimeParams;
 
     // Default params: confirm=false, auto_rotate_on_high=false.
-    let default_params: LeakIncidentsRealtimeParams =
-        serde_json::from_str(r#"{}"#).unwrap();
+    let default_params: LeakIncidentsRealtimeParams = serde_json::from_str(r#"{}"#).unwrap();
     assert!(!default_params.confirm, "confirm must default to false");
-    assert!(!default_params.auto_rotate_on_high, "auto_rotate_on_high must default to false");
-    assert!((default_params.min_confidence - 0.5).abs() < 1e-9,
-        "min_confidence must default to 0.5");
+    assert!(
+        !default_params.auto_rotate_on_high,
+        "auto_rotate_on_high must default to false"
+    );
+    assert!(
+        (default_params.min_confidence - 0.5).abs() < 1e-9,
+        "min_confidence must default to 0.5"
+    );
 
     // With auto_rotate_on_high=true and confirm=false, the gate should reject.
     let risky_params: LeakIncidentsRealtimeParams =
         serde_json::from_str(r#"{"auto_rotate_on_high": true, "confirm": false}"#).unwrap();
     assert!(risky_params.auto_rotate_on_high);
-    assert!(!risky_params.confirm, "confirm=false must block auto-rotate");
+    assert!(
+        !risky_params.confirm,
+        "confirm=false must block auto-rotate"
+    );
 
     // Only confirm=true should pass the gate.
     let approved_params: LeakIncidentsRealtimeParams =
         serde_json::from_str(r#"{"auto_rotate_on_high": true, "confirm": true}"#).unwrap();
-    assert!(approved_params.confirm, "confirm=true is required to allow auto-rotate");
+    assert!(
+        approved_params.confirm,
+        "confirm=true is required to allow auto-rotate"
+    );
 }
 
 // ── Test 10: multiple incidents all get structured summaries ──────────────────

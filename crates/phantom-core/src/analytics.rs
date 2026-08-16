@@ -98,8 +98,7 @@ pub fn check_windowed_anomaly(
     let alert_score = thresholds
         .and_then(|t| t.alert_on_anomaly_score)
         .unwrap_or(0.5)
-        .min(1.0)
-        .max(0.0);
+        .clamp(0.0, 1.0);
 
     // Accesses within the last 3600 seconds.
     let window_start = now_ts.saturating_sub(3600);
@@ -137,7 +136,7 @@ pub fn check_windowed_anomaly(
         ));
     }
 
-    let score = score.min(1.0).max(0.0);
+    let score = score.clamp(0.0, 1.0);
     // Alert fires when the score meets BOTH the per-secret config threshold AND
     // the caller-supplied global_threshold (use the higher of the two as the gate).
     let effective_alert_score = alert_score.max(global_threshold);
@@ -174,7 +173,7 @@ pub fn compute_windowed_anomalies(
     let mut by_name: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     for ev in raw {
         if let Some(n) = ev.name {
-            if name_filter.map_or(true, |f| f == n) {
+            if name_filter.is_none_or(|f| f == n) {
                 by_name.entry(n).or_default().push(ev.ts);
             }
         }
@@ -413,7 +412,9 @@ fn compute_secret_analytics(name: String, timestamps: &[u64]) -> SecretAnalytics
 
     // daily_avg = total accesses / span in days (at least 1).
     let span_days = if last_access > first_access {
-        ((last_access - first_access) as f64 / 86400.0).ceil().max(1.0)
+        ((last_access - first_access) as f64 / 86400.0)
+            .ceil()
+            .max(1.0)
     } else {
         1.0
     };
@@ -441,11 +442,7 @@ fn compute_secret_analytics(name: String, timestamps: &[u64]) -> SecretAnalytics
 /// 2. First access (or re-access) after ≥ 7 consecutive quiet days → score 0.5
 ///
 /// Result = max of triggered rule scores (range [0.0, 1.0]).
-fn compute_anomaly_score(
-    daily: &BTreeMap<u64, u64>,
-    daily_avg: f64,
-    timestamps: &[u64],
-) -> f64 {
+fn compute_anomaly_score(daily: &BTreeMap<u64, u64>, daily_avg: f64, timestamps: &[u64]) -> f64 {
     let mut score: f64 = 0.0;
 
     // Rule 1: spike detection — any day with count > 3× daily_avg.
@@ -472,7 +469,7 @@ fn compute_anomaly_score(
     }
 
     // Clamp to [0.0, 1.0] for safety.
-    score.min(1.0).max(0.0)
+    score.clamp(0.0, 1.0)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -710,7 +707,7 @@ mod tests {
     fn spike_rule_triggers_on_3x_daily_avg() {
         // avg = 2.0, day 0 has 7 accesses (> 3×2=6)
         let day0: u64 = 1_700_000_000 / 86400 * 86400;
-        let timestamps: Vec<u64> = std::iter::repeat(day0).take(7).collect();
+        let timestamps: Vec<u64> = std::iter::repeat_n(day0, 7).collect();
         let mut daily: BTreeMap<u64, u64> = BTreeMap::new();
         for &ts in &timestamps {
             *daily.entry(ts / 86400).or_insert(0) += 1;
@@ -727,7 +724,7 @@ mod tests {
     fn spike_rule_does_not_trigger_at_exactly_3x() {
         // avg = 2.0, day 0 has exactly 6 accesses (= 3×2, not strictly ">")
         let day0: u64 = 1_700_000_000 / 86400 * 86400;
-        let timestamps: Vec<u64> = std::iter::repeat(day0).take(6).collect();
+        let timestamps: Vec<u64> = std::iter::repeat_n(day0, 6).collect();
         let mut daily: BTreeMap<u64, u64> = BTreeMap::new();
         for &ts in &timestamps {
             *daily.entry(ts / 86400).or_insert(0) += 1;
@@ -781,8 +778,8 @@ mod tests {
         // Spike (0.6) + quiet gap (0.5) → max = 0.6, not 1.1
         let t0: u64 = 1_700_000_000;
         let t1 = t0 + 8 * 86400; // quiet gap triggers (0.5)
-        // Add a spike on day 0 (7 accesses) with avg=2.0 (0.6)
-        let mut timestamps: Vec<u64> = std::iter::repeat(t0).take(7).collect();
+                                 // Add a spike on day 0 (7 accesses) with avg=2.0 (0.6)
+        let mut timestamps: Vec<u64> = std::iter::repeat_n(t0, 7).collect();
         timestamps.push(t1);
         timestamps.sort_unstable();
         let mut daily: BTreeMap<u64, u64> = BTreeMap::new();
@@ -791,10 +788,7 @@ mod tests {
         }
         let daily_avg = 2.0;
         let score = compute_anomaly_score(&daily, daily_avg, &timestamps);
-        assert!(
-            score <= 1.0,
-            "score must not exceed 1.0, got {score}"
-        );
+        assert!(score <= 1.0, "score must not exceed 1.0, got {score}");
         assert!(
             (score - 0.6).abs() < f64::EPSILON,
             "max of 0.6 and 0.5 should be 0.6, got {score}"
@@ -926,8 +920,16 @@ mod tests {
             let now = now_unix();
             // One very old event (40 days ago) and one recent (1 day ago)
             let entries = vec![
-                (now.saturating_sub(40 * 86400), "vault.retrieve", Some("OLD_KEY")),
-                (now.saturating_sub(86400), "vault.retrieve", Some("RECENT_KEY")),
+                (
+                    now.saturating_sub(40 * 86400),
+                    "vault.retrieve",
+                    Some("OLD_KEY"),
+                ),
+                (
+                    now.saturating_sub(86400),
+                    "vault.retrieve",
+                    Some("RECENT_KEY"),
+                ),
             ];
             write_synthetic_log(&log_path, &entries);
 

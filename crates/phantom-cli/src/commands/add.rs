@@ -22,10 +22,8 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
     if !config_path.exists() {
         // Auto-bootstrap: create .phantom.toml + empty vault on first add,
         // so the user doesn't need a .env file just to seed a single secret.
-        let project_id =
-            phantom_core::config::PhantomConfig::project_id_from_path(&project_dir);
-        let new_config =
-            phantom_core::config::PhantomConfig::new_with_defaults(project_id.clone());
+        let project_id = phantom_core::config::PhantomConfig::project_id_from_path(&project_dir);
+        let new_config = phantom_core::config::PhantomConfig::new_with_defaults(project_id.clone());
         new_config
             .save(&config_path)
             .context("Failed to create .phantom.toml")?;

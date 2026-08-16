@@ -14,9 +14,9 @@
 //! - `phantom audit verify --with-context` integration
 
 use phantom_core::audit::{
-    decrypt_context, encrypt_context_for_test, log, log_result, sidecar_status,
-    verify_log, verify_log_with_context, AuditContext, AuditEventEncryption, AuditMode,
-    SidecarEvent, enqueue_sidecar_event, verify_sidecar_event,
+    decrypt_context, encrypt_context_for_test, enqueue_sidecar_event, log, log_result,
+    sidecar_status, verify_log, verify_log_with_context, verify_sidecar_event, AuditContext,
+    AuditEventEncryption, SidecarEvent,
 };
 use std::sync::{Arc, Barrier, Mutex};
 use tempfile::tempdir;
@@ -74,7 +74,10 @@ fn encryption_disabled_by_default() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let prev = std::env::var("PHANTOM_AUDIT_ENCRYPTION").ok();
     unsafe { std::env::remove_var("PHANTOM_AUDIT_ENCRYPTION") };
-    assert_eq!(AuditEventEncryption::from_env(), AuditEventEncryption::Disabled);
+    assert_eq!(
+        AuditEventEncryption::from_env(),
+        AuditEventEncryption::Disabled
+    );
     unsafe {
         match prev {
             Some(p) => std::env::set_var("PHANTOM_AUDIT_ENCRYPTION", p),
@@ -128,7 +131,10 @@ fn encryption_unknown_value_gives_disabled() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let prev = std::env::var("PHANTOM_AUDIT_ENCRYPTION").ok();
     unsafe { std::env::set_var("PHANTOM_AUDIT_ENCRYPTION", "foobar") };
-    assert_eq!(AuditEventEncryption::from_env(), AuditEventEncryption::Disabled);
+    assert_eq!(
+        AuditEventEncryption::from_env(),
+        AuditEventEncryption::Disabled
+    );
     unsafe {
         match prev {
             Some(p) => std::env::set_var("PHANTOM_AUDIT_ENCRYPTION", p),
@@ -305,9 +311,10 @@ fn hmac_chain_detects_tampered_encrypted_context() {
                     return line.to_string();
                 }
                 if v.get("encrypted_context").is_some() {
-                    v.as_object_mut()
-                        .unwrap()
-                        .insert("encrypted_context".to_string(), serde_json::json!("TAMPERED=="));
+                    v.as_object_mut().unwrap().insert(
+                        "encrypted_context".to_string(),
+                        serde_json::json!("TAMPERED=="),
+                    );
                 }
                 serde_json::to_string(&v).unwrap()
             })
@@ -348,7 +355,10 @@ fn concurrent_writes_with_local_encryption_verify_clean() {
         }
 
         let report = verify_log().expect("verify_log should not error");
-        assert!(report.is_clean(), "concurrent encrypted log should be clean: {report:?}");
+        assert!(
+            report.is_clean(),
+            "concurrent encrypted log should be clean: {report:?}"
+        );
         assert_eq!(report.verified, workers, "all events verified");
 
         // All event lines should have encrypted_context
@@ -432,7 +442,7 @@ fn sidecar_event_ed25519_sign_verify_roundtrip() {
     // Build a sidecar event manually to test sign/verify without keychain.
     // We use ed25519-dalek directly here since we can't call setup_ed25519_keypair
     // in tests (it writes to the real OS keychain).
-    use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+    use ed25519_dalek::{Signer, SigningKey};
     use std::collections::BTreeMap;
 
     let mut csprng = rand::thread_rng();
@@ -462,7 +472,10 @@ fn sidecar_event_ed25519_sign_verify_roundtrip() {
         pubkey: pubkey_hex,
     };
 
-    assert!(verify_sidecar_event(&event), "valid signature should verify");
+    assert!(
+        verify_sidecar_event(&event),
+        "valid signature should verify"
+    );
 }
 
 #[test]
@@ -496,7 +509,10 @@ fn sidecar_event_invalid_signature_rejected() {
         pubkey: pubkey_hex,
     };
 
-    assert!(!verify_sidecar_event(&event), "bad signature should be rejected");
+    assert!(
+        !verify_sidecar_event(&event),
+        "bad signature should be rejected"
+    );
 }
 
 #[test]
@@ -619,14 +635,20 @@ fn enqueue_sidecar_event_increments_pending() {
 #[test]
 fn audit_context_collect_has_process_name() {
     let ctx = AuditContext::collect();
-    assert!(!ctx.process_name.is_empty(), "process_name should not be empty");
+    assert!(
+        !ctx.process_name.is_empty(),
+        "process_name should not be empty"
+    );
 }
 
 #[test]
 fn audit_context_collect_has_hostname() {
     let ctx = AuditContext::collect();
     // hostname is best-effort; at minimum it should be a string
-    assert!(ctx.hostname.len() < 1024, "hostname should be a reasonable string");
+    assert!(
+        ctx.hostname.len() < 1024,
+        "hostname should be a reasonable string"
+    );
 }
 
 #[test]
@@ -799,7 +821,10 @@ fn sidecar_event_omits_name_when_none() {
         pubkey: "ghi".to_string(),
     };
     let json = serde_json::to_value(&event).unwrap();
-    assert!(json.get("name").is_none(), "name should be omitted when None");
+    assert!(
+        json.get("name").is_none(),
+        "name should be omitted when None"
+    );
 }
 
 #[test]

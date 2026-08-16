@@ -130,7 +130,9 @@ pub fn run_with_schedule_strategy(
         let mut config =
             PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
         config.phantom.rotation_policy = Some(schedule.clone());
-        config.save(&config_path).context("Failed to save .phantom.toml")?;
+        config
+            .save(&config_path)
+            .context("Failed to save .phantom.toml")?;
     }
 
     println!(
@@ -145,10 +147,7 @@ pub fn run_with_schedule_strategy(
     );
 
     if strategy != RotationStrategy::Never {
-        println!(
-            "\n{} Running initial rotation…",
-            "->".blue().bold()
-        );
+        println!("\n{} Running initial rotation…", "->".blue().bold());
         run_with_expiry(sync_after, expiry_days)?;
     } else {
         println!(
@@ -164,6 +163,14 @@ pub fn run_with_schedule_strategy(
     );
 
     Ok(())
+}
+
+/// Current Unix timestamp in seconds.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Format a Unix timestamp as an ISO-8601-like UTC string for display.
@@ -203,7 +210,10 @@ pub fn run_shadow(name: &str) -> Result<String> {
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
-    if !vault.exists(name).context("Failed to check secret existence")? {
+    if !vault
+        .exists(name)
+        .context("Failed to check secret existence")?
+    {
         anyhow::bail!("Secret '{}' not found in vault.", name);
     }
 
@@ -235,7 +245,9 @@ pub fn run_shadow(name: &str) -> Result<String> {
 
     let store = ShadowStore::new(shadow_dir(&config.phantom.project_id))
         .context("Failed to open shadow store")?;
-    store.save(&shadow).context("Failed to save shadow metadata")?;
+    store
+        .save(&shadow)
+        .context("Failed to save shadow metadata")?;
 
     println!(
         "{} Shadow candidate created for {}",
@@ -281,7 +293,11 @@ pub fn run_validate_promote(name: &str, promote: bool) -> Result<()> {
     let meta = store
         .load_meta(name)
         .context("Failed to load shadow metadata")?
-        .ok_or_else(|| anyhow::anyhow!("No shadow exists for secret '{name}'. Run `phantom rotate {name} --shadow` first."))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No shadow exists for secret '{name}'. Run `phantom rotate {name} --shadow` first."
+            )
+        })?;
 
     println!(
         "{} Shadow status for {}: {}",
@@ -298,9 +314,8 @@ pub fn run_validate_promote(name: &str, promote: bool) -> Result<()> {
 
     // Run lightweight validation: check the candidate is non-empty and
     // structurally plausible (length > 8, no whitespace).
-    let validation_ok = !candidate.is_empty()
-        && candidate.len() > 8
-        && !candidate.chars().any(char::is_whitespace);
+    let validation_ok =
+        !candidate.is_empty() && candidate.len() > 8 && !candidate.chars().any(char::is_whitespace);
 
     // Reload as mutable ShadowedSecret to record the validation result
     let primary = vault
@@ -334,7 +349,9 @@ pub fn run_validate_promote(name: &str, promote: bool) -> Result<()> {
                 .delete(&shadow_key)
                 .context("Failed to clean up shadow candidate")?;
 
-            store.save(&shadow).context("Failed to update shadow metadata")?;
+            store
+                .save(&shadow)
+                .context("Failed to update shadow metadata")?;
 
             phantom_core::audit::log("shadow.promoted", Some(name));
 
@@ -344,7 +361,9 @@ pub fn run_validate_promote(name: &str, promote: bool) -> Result<()> {
                 name.bold()
             );
         } else {
-            store.save(&shadow).context("Failed to save shadow metadata")?;
+            store
+                .save(&shadow)
+                .context("Failed to save shadow metadata")?;
             println!(
                 "   Run {} to promote the validated candidate.",
                 format!("phantom validate {name} --promote").cyan()
@@ -354,7 +373,9 @@ pub fn run_validate_promote(name: &str, promote: bool) -> Result<()> {
         shadow
             .record_validation_failure(Some("structural-check-failed".to_string()))
             .context("Failed to record validation failure")?;
-        store.save(&shadow).context("Failed to save shadow metadata")?;
+        store
+            .save(&shadow)
+            .context("Failed to save shadow metadata")?;
 
         phantom_core::audit::log("shadow.validation_failed", Some(name));
 
@@ -380,16 +401,34 @@ fn generate_candidate_value() -> String {
 
 /// Rotate a single named secret using a vendor-specific rotation provider.
 ///
-/// Called by `phantom rotate --provider stripe|github|aws --name <KEY>`.
+/// Called by `phantom rotate --name <KEY> [--provider stripe|github|aws|google|vercel]`.
+/// (`sentry` / `supabase` are recognized but report manual-rotation-required.)
+///
+/// When `provider` is `None` the provider is resolved from the secret's
+/// `[phantom.secrets.<KEY>.rotation_provider]` block in `.phantom.toml`.
+/// The bootstrap credential named by `api_key_env` is sourced from the
+/// process environment first, then from the vault under the same name —
+/// it is never echoed.
 ///
 /// This delegates to the appropriate [`phantom_core::rotation_provider`]
 /// implementation, which calls the vendor API to re-issue the credential.
-/// The new value is stored in the vault; it is never printed to stdout.
-pub fn run_with_provider(provider: &str, name: &str, sync_after: bool) -> Result<()> {
-    use phantom_core::rotation_provider::{auto_sync_rotation, default_rotation_providers};
+/// The new value is stored in the vault (same write path as `phantom add`)
+/// and the secret's `phm_` token in `.env` is refreshed; the value itself
+/// is never printed to stdout. With `--json`, a metadata-only JSON object
+/// is emitted for scripting.
+pub fn run_with_provider(
+    provider: Option<&str>,
+    name: &str,
+    sync_after: bool,
+    json_output: bool,
+) -> Result<()> {
+    use phantom_core::rotation_provider::{
+        auto_sync_rotation_with_bootstrap, default_rotation_providers,
+    };
 
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
+    let env_path = project_dir.join(".env");
 
     if !config_path.exists() {
         anyhow::bail!(
@@ -415,69 +454,166 @@ pub fn run_with_provider(provider: &str, name: &str, sync_after: bool) -> Result
         .get(name)
         .and_then(|ov| ov.rotation_provider.as_ref());
 
-    // If a provider config is present, verify it matches the requested provider.
-    if let Some(cfg) = provider_config {
-        if cfg.provider != provider {
+    // Determine the effective provider: explicit --provider flag, else the
+    // provider named in the secret's rotation_provider config block.
+    let effective_provider: String = match (provider, provider_config) {
+        (Some(requested), Some(cfg)) => {
+            if cfg.provider != requested {
+                anyhow::bail!(
+                    "Secret '{}' is configured for provider '{}' but '{}' was requested.\n\
+                     Update [phantom.secrets.{}.rotation_provider] in .phantom.toml.",
+                    name,
+                    cfg.provider,
+                    requested,
+                    name
+                );
+            }
+            requested.to_string()
+        }
+        (requested, None) => {
+            // No config in .phantom.toml — inform the user how to add it.
             anyhow::bail!(
-                "Secret '{}' is configured for provider '{}' but '{}' was requested.\n\
-                 Update [phantom.secrets.{}.rotation_provider] in .phantom.toml.",
-                name, cfg.provider, provider, name
+                "No rotation_provider configured for secret '{}'.\n\
+                 Add the following to .phantom.toml:\n\n\
+                 [phantom.secrets.{}.rotation_provider]\n\
+                 provider = \"{}\"\n\
+                 api_key_env = \"<ENV_VAR_OR_VAULT_NAME_HOLDING_ROTATION_CREDENTIAL>\"",
+                name,
+                name,
+                requested.unwrap_or("stripe")
             );
         }
-    } else {
-        // No config in .phantom.toml — inform the user how to add it.
-        anyhow::bail!(
-            "No rotation_provider configured for secret '{}'.\n\
-             Add the following to .phantom.toml:\n\n\
-             [phantom.secrets.{}.rotation_provider]\n\
-             provider = \"{}\"\n\
-             api_key_env = \"<ENV_VAR_HOLDING_ROTATION_CREDENTIAL>\"",
-            name, name, provider
+        (None, Some(cfg)) => {
+            if !json_output {
+                println!(
+                    "{} Using provider {} from .phantom.toml",
+                    "->".blue().bold(),
+                    cfg.provider.cyan().bold()
+                );
+            }
+            cfg.provider.clone()
+        }
+    };
+
+    // Source the bootstrap credential: environment variable first, then the
+    // vault under the same name. The value is zeroized after the call and is
+    // never printed.
+    let bootstrap = provider_config
+        .and_then(|cfg| cfg.api_key_env.as_deref())
+        .filter(|env_name| std::env::var(env_name).is_err())
+        .and_then(|env_name| vault.retrieve(env_name).ok());
+
+    if !json_output {
+        println!(
+            "{} Calling {} rotation API for {}…",
+            "->".blue().bold(),
+            effective_provider.cyan().bold(),
+            name.bold()
         );
     }
 
-    println!(
-        "{} Calling {} rotation API for {}…",
-        "->".blue().bold(),
-        provider.cyan().bold(),
-        name.bold()
-    );
-
     let providers = default_rotation_providers();
-    let new_value = auto_sync_rotation(name, provider_config, &providers)
+
+    // Capture the outgoing value BEFORE overwriting it: providers that revoke
+    // the old credential at the vendor (Vercel) do so only after the new value
+    // is durably stored, authenticating with the old value itself.
+    let old_value = vault.retrieve(name).ok();
+
+    let new_value = auto_sync_rotation_with_bootstrap(name, provider_config, &providers, bootstrap)
         .map_err(|e| anyhow::anyhow!("Provider rotation failed for '{}': {}", name, e))?;
 
     match new_value {
         Some(secret) => {
+            // Same vault write path as `phantom add`.
             vault
                 .store(name, secret.as_str())
                 .with_context(|| format!("Failed to store rotated value for '{name}'"))?;
 
             phantom_core::audit::log("vault.rotation.provider.stored", Some(name));
 
-            println!(
-                "{} Provider rotation succeeded for {} via {}.",
-                "ok".green().bold(),
-                name.bold(),
-                provider.cyan()
-            );
-            println!("   The new credential has been stored in the vault.");
-            println!("   The secret value was not printed for security.");
+            // Refresh the phm_ token for this secret in .env so the old
+            // token cannot resolve to the new credential.
+            let mut env_token_refreshed = false;
+            if env_path.exists() {
+                let mut token_map = TokenMap::new();
+                token_map.insert(name.to_string());
+                let dotenv = DotenvFile::parse_file(&env_path)?;
+                dotenv.write_phantomized(&token_map, &env_path)?;
+                env_token_refreshed = true;
+            }
+
+            // Persist rotation metadata (rotated_at + recomputed expires_at).
+            // GitHub App installation tokens expire after 1 hour, so stamp the
+            // real short TTL instead of leaving a dead token looking fresh.
+            let expires_override = if effective_provider.eq_ignore_ascii_case("github") {
+                Some(
+                    now_unix()
+                        + phantom_core::rotation_provider::GITHUB_INSTALLATION_TOKEN_TTL_SECS,
+                )
+            } else {
+                None
+            };
+            let expires_at = vault
+                .record_provider_rotation(name, expires_override)
+                .unwrap_or(None);
+
+            // The new value is stored — now (and only now) let the provider
+            // best-effort revoke the OLD credential at the vendor.
+            if let (Some(provider), Some(cfg)) = (
+                providers
+                    .iter()
+                    .find(|p| p.name().eq_ignore_ascii_case(&effective_provider)),
+                provider_config,
+            ) {
+                let _ = provider.post_store_cleanup(name, cfg, old_value.as_ref());
+            }
+
+            if json_output {
+                let obj = serde_json::json!({
+                    "secret": name,
+                    "provider": effective_provider,
+                    "status": "rotated",
+                    "vendor_rotated": true,
+                    "stored_in_vault": true,
+                    "env_token_refreshed": env_token_refreshed,
+                    "expires_at": expires_at,
+                    "value_printed": false,
+                });
+                println!("{}", serde_json::to_string_pretty(&obj)?);
+            } else {
+                println!(
+                    "{} Provider rotation succeeded for {} via {}.",
+                    "ok".green().bold(),
+                    name.bold(),
+                    effective_provider.cyan()
+                );
+                println!("   The new credential has been stored in the vault.");
+                if env_token_refreshed {
+                    println!("   The phm_ token for {name} in .env was refreshed.");
+                }
+                if let Some(ts) = expires_at {
+                    println!("   Expires at: {}", chrono_iso(ts));
+                }
+                println!("   The secret value was not printed for security.");
+            }
         }
         None => {
+            // auto_sync returns Ok(None) only for provider = "manual" now;
+            // disabled configs and unknown provider names are hard errors
+            // surfaced above with their own messages.
             anyhow::bail!(
-                "No rotation provider matched secret '{}' with provider '{}'.\n\
-                 Check that api_key_env resolves to a valid credential in the environment.",
-                name, provider
+                "Secret '{}' is configured with provider = \"manual\" — there is no vendor \
+                 API to call.\nRotate the credential manually, then store it with `phantom add {}`.",
+                name,
+                name
             );
         }
     }
 
     if sync_after {
-        println!(
-            "\n{} Syncing to deployment platforms…",
-            "->".blue().bold()
-        );
+        if !json_output {
+            println!("\n{} Syncing to deployment platforms…", "->".blue().bold());
+        }
         crate::commands::sync::run(None, None, vec![], false, false)?;
     }
 
@@ -494,8 +630,14 @@ pub fn run_with_provider(provider: &str, name: &str, sync_after: bool) -> Result
 ///
 /// Emits a composite audit event with a shared `batch_id` covering all rotations.
 /// Prints a summary table: secret name | old expiry | new expiry | provider.
-pub fn run_batch(rotation_window_days: u64, sync_after: bool, json_output: bool) -> anyhow::Result<()> {
-    use phantom_core::rotation_provider::{batch_discover_due, execute_batch_rotation, default_rotation_providers};
+pub fn run_batch(
+    rotation_window_days: u64,
+    sync_after: bool,
+    json_output: bool,
+) -> anyhow::Result<()> {
+    use phantom_core::rotation_provider::{
+        batch_discover_due, default_rotation_providers, execute_batch_rotation,
+    };
 
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
@@ -523,7 +665,11 @@ pub fn run_batch(rotation_window_days: u64, sync_after: bool, json_output: bool)
         .as_secs();
 
     // Build the scan input: (name, expires_at, provider_config)
-    let mut scan_input: Vec<(String, Option<u64>, Option<phantom_core::rotation_provider::RotationProviderConfig>)> = Vec::new();
+    let mut scan_input: Vec<(
+        String,
+        Option<u64>,
+        Option<phantom_core::rotation_provider::RotationProviderConfig>,
+    )> = Vec::new();
     for name in &names {
         let expires_at = vault
             .get_metadata(name)
@@ -561,15 +707,54 @@ pub fn run_batch(rotation_window_days: u64, sync_after: bool, json_output: bool)
     println!();
 
     // Execute the batch.
-    let (batch_id, outcomes) = execute_batch_rotation(&due_items, &providers, now);
+    let (batch_id, mut outcomes) = execute_batch_rotation(&due_items, &providers, now);
 
-    // Store any new values returned by vendor providers.
-    for outcome in &outcomes {
+    // Store any new values returned by vendor providers, persist the new
+    // expiry metadata (otherwise the same secrets stay perpetually "due" and
+    // get re-rotated at the vendor on every run), and only then let the
+    // provider best-effort revoke the old credential.
+    for outcome in &mut outcomes {
         if let Some(ref new_value) = outcome.new_value {
+            // Capture the outgoing value BEFORE overwriting it (needed by
+            // providers whose post-store cleanup revokes the old credential).
+            let old_value = vault.retrieve(&outcome.secret_name).ok();
+
             vault
                 .store(&outcome.secret_name, new_value.as_str())
-                .with_context(|| format!("Failed to store rotated value for '{}'", outcome.secret_name))?;
+                .with_context(|| {
+                    format!(
+                        "Failed to store rotated value for '{}'",
+                        outcome.secret_name
+                    )
+                })?;
             phantom_core::audit::log("vault.rotation.provider.stored", Some(&outcome.secret_name));
+
+            // Persist rotated_at + recomputed expires_at so the reported new
+            // expiry is REAL. GitHub App installation tokens expire in 1 hour.
+            let expires_override = if outcome.provider_label.eq_ignore_ascii_case("github") {
+                Some(now + phantom_core::rotation_provider::GITHUB_INSTALLATION_TOKEN_TTL_SECS)
+            } else {
+                None
+            };
+            outcome.new_expires_at = vault
+                .record_provider_rotation(&outcome.secret_name, expires_override)
+                .unwrap_or(None);
+
+            // New value is durably stored — run post-store cleanup.
+            if let Some(item) = due_items
+                .iter()
+                .find(|i| i.secret_name == outcome.secret_name)
+            {
+                if let (Some(provider), Some(cfg)) = (
+                    providers
+                        .iter()
+                        .find(|p| p.name().eq_ignore_ascii_case(&outcome.provider_label)),
+                    item.provider_config.as_ref(),
+                ) {
+                    let _ =
+                        provider.post_store_cleanup(&outcome.secret_name, cfg, old_value.as_ref());
+                }
+            }
         }
     }
 
@@ -627,14 +812,18 @@ pub fn run_batch(rotation_window_days: u64, sync_after: bool, json_output: bool)
         for outcome in &outcomes {
             let old_exp = outcome
                 .old_expires_at
-                .map(|t| chrono_iso(t))
+                .map(chrono_iso)
                 .unwrap_or_else(|| "none".to_string());
             let new_exp = outcome
                 .new_expires_at
-                .map(|t| chrono_iso(t))
+                .map(chrono_iso)
                 .unwrap_or_else(|| "none".to_string());
             let status = if let Some(ref err) = outcome.error {
-                format!("{} {}", "FAIL".red().bold(), err.chars().take(30).collect::<String>())
+                format!(
+                    "{} {}",
+                    "FAIL".red().bold(),
+                    err.chars().take(30).collect::<String>()
+                )
             } else if outcome.vendor_rotated {
                 format!("{} via {}", "ok".green().bold(), outcome.provider_label)
             } else if outcome.new_value.is_none() && outcome.error.is_none() {
@@ -654,8 +843,14 @@ pub fn run_batch(rotation_window_days: u64, sync_after: bool, json_output: bool)
         }
 
         println!("{}", "-".repeat(80));
-        let succeeded = outcomes.iter().filter(|o| o.is_ok() && o.vendor_rotated).count();
-        let manual = outcomes.iter().filter(|o| o.is_ok() && !o.vendor_rotated).count();
+        let succeeded = outcomes
+            .iter()
+            .filter(|o| o.is_ok() && o.vendor_rotated)
+            .count();
+        let manual = outcomes
+            .iter()
+            .filter(|o| o.is_ok() && !o.vendor_rotated)
+            .count();
         let failed = outcomes.iter().filter(|o| !o.is_ok()).count();
         println!(
             "\n{} Batch {}: {} vendor-rotated, {} manual, {} failed",
@@ -672,10 +867,7 @@ pub fn run_batch(rotation_window_days: u64, sync_after: bool, json_output: bool)
     }
 
     if sync_after && outcomes.iter().any(|o| o.vendor_rotated) {
-        println!(
-            "\n{} Syncing to deployment platforms…",
-            "->".blue().bold()
-        );
+        println!("\n{} Syncing to deployment platforms…", "->".blue().bold());
         crate::commands::sync::run(None, None, vec![], false, false)?;
     }
 

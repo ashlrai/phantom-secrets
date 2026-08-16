@@ -153,7 +153,10 @@ fn validation_metadata_json_round_trip_valid() {
     assert_eq!(back.validator_name, m.validator_name);
     assert_eq!(back.failure_reason, m.failure_reason);
     assert!(json.contains("\"is_valid\":true"));
-    assert!(!json.contains("\"failure_reason\""), "None should be omitted: {json}");
+    assert!(
+        !json.contains("\"failure_reason\""),
+        "None should be omitted: {json}"
+    );
 }
 
 #[test]
@@ -218,7 +221,10 @@ fn github_gh_prefix_does_not_match() {
     // The GitHubValidator pattern requires "GITHUB" — "GH_TOKEN" does not match.
     // This is intentional: short-form GH_* vars require an explicit custom validator.
     let v = GitHubValidator;
-    assert!(!v.matches("GH_TOKEN"), "GH_TOKEN should not match — pattern requires GITHUB");
+    assert!(
+        !v.matches("GH_TOKEN"),
+        "GH_TOKEN should not match — pattern requires GITHUB"
+    );
 }
 
 #[test]
@@ -325,7 +331,11 @@ fn pipeline_unreachable_does_not_affect_others() {
     let un = report.unreachable_entries();
     assert_eq!(un.len(), 1);
     assert_eq!(un[0].name, "GITHUB_TOKEN");
-    assert!(un[0].reason.as_deref().unwrap().contains("connection refused"));
+    assert!(un[0]
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("connection refused"));
 }
 
 #[test]
@@ -395,8 +405,12 @@ fn pipeline_timeout_resilience() {
     // A validator that simulates a timeout should produce Unreachable, not panic.
     struct SlowValidator;
     impl SecretValidator for SlowValidator {
-        fn name(&self) -> &str { "slow" }
-        fn matches(&self, key: &str) -> bool { key.contains("SLOW") }
+        fn name(&self) -> &str {
+            "slow"
+        }
+        fn matches(&self, key: &str) -> bool {
+            key.contains("SLOW")
+        }
         fn validate(
             &self,
             _: &str,
@@ -438,8 +452,7 @@ fn pipeline_parallel_variant_all_valid() {
         mock_valid("openai", "OPENAI"),
         mock_valid("stripe", "STRIPE"),
     ];
-    let report =
-        run_validation_pipeline_parallel(secrets, &validators, 4, Duration::from_secs(5));
+    let report = run_validation_pipeline_parallel(secrets, &validators, 4, Duration::from_secs(5));
     assert_eq!(report.total, 2);
     assert_eq!(report.valid, 2);
     assert_eq!(report.invalid, 0);
@@ -455,8 +468,7 @@ fn pipeline_parallel_variant_invalid_detected() {
         mock_invalid("openai", "OPENAI", "401"),
         mock_valid("stripe", "STRIPE"),
     ];
-    let report =
-        run_validation_pipeline_parallel(secrets, &validators, 2, Duration::from_secs(5));
+    let report = run_validation_pipeline_parallel(secrets, &validators, 2, Duration::from_secs(5));
     assert_eq!(report.total, 2);
     assert_eq!(report.invalid, 1);
     assert_eq!(report.valid, 1);
@@ -524,7 +536,12 @@ fn file_vault_validation_metadata_round_trip() {
 #[test]
 fn file_vault_validation_metadata_invalid_persisted() {
     let vault = phantom_vault::file::FileVault::new(
-        &{let d = TempDir::new().unwrap(); let p = d.path().to_path_buf(); std::mem::forget(d); p},
+        &{
+            let d = TempDir::new().unwrap();
+            let p = d.path().to_path_buf();
+            std::mem::forget(d);
+            p
+        },
         "test-val-invalid",
         "pass".to_string(),
     )
@@ -546,7 +563,12 @@ fn file_vault_validation_metadata_invalid_persisted() {
 #[test]
 fn file_vault_validation_metadata_cleared_on_delete() {
     let vault = phantom_vault::file::FileVault::new(
-        &{let d = TempDir::new().unwrap(); let p = d.path().to_path_buf(); std::mem::forget(d); p},
+        &{
+            let d = TempDir::new().unwrap();
+            let p = d.path().to_path_buf();
+            std::mem::forget(d);
+            p
+        },
         "test-val-delete",
         "pass".to_string(),
     )
@@ -567,22 +589,28 @@ fn file_vault_validation_metadata_cleared_on_delete() {
     // Re-store and check metadata is gone
     vault.store("GITHUB_TOKEN", "ghp_new").unwrap();
     let m2 = vault.get_validation_metadata("GITHUB_TOKEN").unwrap();
-    assert!(m2.never_checked(), "metadata should be cleared after delete+re-store");
+    assert!(
+        m2.never_checked(),
+        "metadata should be cleared after delete+re-store"
+    );
 }
 
 #[test]
 fn file_vault_validation_metadata_nonexistent_secret_errors() {
     let vault = phantom_vault::file::FileVault::new(
-        &{let d = TempDir::new().unwrap(); let p = d.path().to_path_buf(); std::mem::forget(d); p},
+        &{
+            let d = TempDir::new().unwrap();
+            let p = d.path().to_path_buf();
+            std::mem::forget(d);
+            p
+        },
         "test-val-nonexistent",
         "pass".to_string(),
     )
     .unwrap();
 
-    let result = vault.set_validation_metadata(
-        "NONEXISTENT_KEY",
-        ValidationMetadata::mark_valid("openai"),
-    );
+    let result =
+        vault.set_validation_metadata("NONEXISTENT_KEY", ValidationMetadata::mark_valid("openai"));
     assert!(result.is_err(), "should error for nonexistent secret");
 }
 
@@ -610,9 +638,7 @@ fn file_vault_validation_metadata_survives_reload() {
         let vault2 =
             phantom_vault::file::FileVault::new(&path, "test-val-persist", "pass".to_string())
                 .unwrap();
-        let m = vault2
-            .get_validation_metadata("ANTHROPIC_API_KEY")
-            .unwrap();
+        let m = vault2.get_validation_metadata("ANTHROPIC_API_KEY").unwrap();
         assert!(m.is_valid, "metadata should persist across vault reload");
         assert_eq!(m.validator_name.as_deref(), Some("anthropic"));
     }
@@ -758,10 +784,17 @@ fn default_validators_cover_all_required_services() {
 fn not_applicable_falls_through_to_next_validator() {
     struct NotApplicableFirst;
     impl SecretValidator for NotApplicableFirst {
-        fn name(&self) -> &str { "na-first" }
-        fn matches(&self, key: &str) -> bool { key.contains("OPENAI") }
+        fn name(&self) -> &str {
+            "na-first"
+        }
+        fn matches(&self, key: &str) -> bool {
+            key.contains("OPENAI")
+        }
         fn validate(
-            &self, _: &str, _: &zeroize::Zeroizing<String>, _: Duration,
+            &self,
+            _: &str,
+            _: &zeroize::Zeroizing<String>,
+            _: Duration,
         ) -> ValidationResult {
             ValidationResult::NotApplicable
         }

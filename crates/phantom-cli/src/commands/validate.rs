@@ -104,7 +104,10 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
     let mut secrets: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
     for name in &names {
         let value = vault.retrieve(name)?;
-        secrets.push((name.clone(), zeroize::Zeroizing::new(String::from(value.as_str()))));
+        secrets.push((
+            name.clone(),
+            zeroize::Zeroizing::new(String::from(value.as_str())),
+        ));
     }
 
     if !json {
@@ -123,18 +126,14 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
     for entry in &report.entries {
         let meta = match entry.status {
             ValidationStatus::Valid => ValidationMetadata::mark_valid(&entry.validator),
-            ValidationStatus::Invalid => {
-                ValidationMetadata::mark_invalid(
-                    &entry.validator,
-                    entry.reason.as_deref().unwrap_or("unknown"),
-                )
-            }
-            ValidationStatus::Unreachable => {
-                ValidationMetadata::mark_unreachable(
-                    &entry.validator,
-                    entry.reason.as_deref().unwrap_or("network error"),
-                )
-            }
+            ValidationStatus::Invalid => ValidationMetadata::mark_invalid(
+                &entry.validator,
+                entry.reason.as_deref().unwrap_or("unknown"),
+            ),
+            ValidationStatus::Unreachable => ValidationMetadata::mark_unreachable(
+                &entry.validator,
+                entry.reason.as_deref().unwrap_or("network error"),
+            ),
             ValidationStatus::NotChecked | ValidationStatus::Skipped => continue,
         };
         // Best-effort — ignore errors (keychain vault may not support metadata).
@@ -376,4 +375,3 @@ fn format_now() -> String {
     // Simple relative formatting — good enough for a watch-mode status line.
     format!("t={secs}")
 }
-

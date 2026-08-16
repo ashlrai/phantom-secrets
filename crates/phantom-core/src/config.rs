@@ -194,7 +194,10 @@ pub struct SecretOverride {
     /// `phantom doctor` promotes the status from info → warning and a
     /// daily background check is emitted.
     /// Default: `604800` (7 days).
-    #[serde(default = "default_expiry_grace_period_secs", skip_serializing_if = "is_default_grace")]
+    #[serde(
+        default = "default_expiry_grace_period_secs",
+        skip_serializing_if = "is_default_grace"
+    )]
     pub expiry_grace_period_secs: u64,
     /// Vendor-specific rotation provider configuration.
     ///
@@ -211,9 +214,15 @@ pub struct SecretOverride {
     pub rotation_provider: Option<crate::rotation_provider::RotationProviderConfig>,
 }
 
-fn is_false(b: &bool) -> bool { !b }
-fn default_expiry_grace_period_secs() -> u64 { 604_800 }
-fn is_default_grace(v: &u64) -> bool { *v == 604_800 }
+fn is_false(b: &bool) -> bool {
+    !b
+}
+fn default_expiry_grace_period_secs() -> u64 {
+    604_800
+}
+fn is_default_grace(v: &u64) -> bool {
+    *v == 604_800
+}
 
 impl Default for SecretOverride {
     fn default() -> Self {
@@ -856,7 +865,10 @@ header = "Authorization"
             last_rotated: None,
         });
         let toml_str = toml::to_string_pretty(&config).unwrap();
-        assert!(toml_str.contains("rotation_policy"), "TOML should contain rotation_policy");
+        assert!(
+            toml_str.contains("rotation_policy"),
+            "TOML should contain rotation_policy"
+        );
         let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
         let rp = parsed.phantom.rotation_policy.unwrap();
         assert_eq!(rp.strategy, RotationStrategy::Daily);
@@ -1017,7 +1029,7 @@ header = "Authorization"
             .unwrap()
             .as_secs();
         let cfg = ValidationScheduleConfig::default(); // daily
-        // Checked just now — not due.
+                                                       // Checked just now — not due.
         assert!(!cfg.is_due(now));
     }
 
@@ -1063,7 +1075,10 @@ header = "Authorization"
     #[test]
     fn validation_schedule_config_defaults_alert_on_invalid_true() {
         let cfg = ValidationScheduleConfig::default();
-        assert!(cfg.alert_on_invalid, "alert_on_invalid should default to true");
+        assert!(
+            cfg.alert_on_invalid,
+            "alert_on_invalid should default to true"
+        );
         assert!(cfg.provider.is_none(), "provider should default to None");
     }
 
@@ -1072,7 +1087,10 @@ header = "Authorization"
         let cfg = ValidationScheduleConfig::default();
         let toml_str = toml::to_string(&cfg).unwrap();
         // provider = None → skip_serializing_if → not present in TOML
-        assert!(!toml_str.contains("provider"), "provider=None should be omitted: {toml_str}");
+        assert!(
+            !toml_str.contains("provider"),
+            "provider=None should be omitted: {toml_str}"
+        );
     }
 
     #[test]

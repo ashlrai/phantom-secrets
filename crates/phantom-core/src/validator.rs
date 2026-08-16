@@ -262,8 +262,9 @@ fn classify_google_400(body: &str) -> ValidationResult {
 
     if mentions_invalid_argument && key_is_dead {
         ValidationResult::Invalid {
-            reason: "Google returned 400 INVALID_ARGUMENT — API key is disabled, deleted, or not valid"
-                .to_string(),
+            reason:
+                "Google returned 400 INVALID_ARGUMENT — API key is disabled, deleted, or not valid"
+                    .to_string(),
         }
     } else if key_is_dead && !scope_or_permission {
         // Body positively indicates a dead key even without the literal
@@ -275,7 +276,8 @@ fn classify_google_400(body: &str) -> ValidationResult {
         // Scope/permission problems, or any 400 we cannot positively diagnose,
         // leave credential validity unknown. Never default a 400 to Valid.
         ValidationResult::Unreachable {
-            reason: "Google returned 400 — request rejected; credential validity unknown".to_string(),
+            reason: "Google returned 400 — request rejected; credential validity unknown"
+                .to_string(),
         }
     }
 }
@@ -292,7 +294,8 @@ impl SecretValidator for OpenAiValidator {
 
     fn matches(&self, key: &str) -> bool {
         let upper = key.to_uppercase();
-        upper.contains("OPENAI") && (upper.contains("KEY") || upper.contains("TOKEN") || upper.contains("SECRET"))
+        upper.contains("OPENAI")
+            && (upper.contains("KEY") || upper.contains("TOKEN") || upper.contains("SECRET"))
     }
 
     fn validate(
@@ -337,7 +340,8 @@ impl SecretValidator for StripeValidator {
 
     fn matches(&self, key: &str) -> bool {
         let upper = key.to_uppercase();
-        upper.contains("STRIPE") && (upper.contains("KEY") || upper.contains("SECRET") || upper.contains("TOKEN"))
+        upper.contains("STRIPE")
+            && (upper.contains("KEY") || upper.contains("SECRET") || upper.contains("TOKEN"))
     }
 
     fn validate(
@@ -380,7 +384,8 @@ impl SecretValidator for GitHubValidator {
 
     fn matches(&self, key: &str) -> bool {
         let upper = key.to_uppercase();
-        upper.contains("GITHUB") && (upper.contains("TOKEN") || upper.contains("KEY") || upper.contains("SECRET"))
+        upper.contains("GITHUB")
+            && (upper.contains("TOKEN") || upper.contains("KEY") || upper.contains("SECRET"))
     }
 
     fn validate(
@@ -420,7 +425,8 @@ impl SecretValidator for AnthropicValidator {
 
     fn matches(&self, key: &str) -> bool {
         let upper = key.to_uppercase();
-        upper.contains("ANTHROPIC") && (upper.contains("KEY") || upper.contains("TOKEN") || upper.contains("SECRET"))
+        upper.contains("ANTHROPIC")
+            && (upper.contains("KEY") || upper.contains("TOKEN") || upper.contains("SECRET"))
     }
 
     fn validate(
@@ -466,7 +472,8 @@ impl SecretValidator for AwsValidator {
         let upper = key.to_uppercase();
         // Only the access key ID is needed to detect AWS; the validator
         // reports NotApplicable for keys it can't independently verify.
-        upper.contains("AWS") && (upper.contains("KEY") || upper.contains("TOKEN") || upper.contains("SECRET"))
+        upper.contains("AWS")
+            && (upper.contains("KEY") || upper.contains("TOKEN") || upper.contains("SECRET"))
     }
 
     fn validate(
@@ -522,8 +529,7 @@ impl SecretValidator for GoogleValidator {
 
     fn matches(&self, key: &str) -> bool {
         let upper = key.to_uppercase();
-        let has_provider =
-            upper.contains("GOOGLE") || upper.contains("GCP");
+        let has_provider = upper.contains("GOOGLE") || upper.contains("GCP");
         let has_kind = upper.contains("KEY")
             || upper.contains("TOKEN")
             || upper.contains("SECRET")
@@ -618,11 +624,7 @@ pub struct GenericHttpValidator {
 }
 
 impl GenericHttpValidator {
-    pub fn new(
-        name: impl Into<String>,
-        key_patterns: Vec<String>,
-        url: impl Into<String>,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, key_patterns: Vec<String>, url: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             key_patterns,
@@ -777,9 +779,7 @@ pub enum AutoRotationTriggerResult {
     },
     /// Auto-rotation was attempted but failed. The caller should fall back to
     /// manual rotation.
-    Failed {
-        reason: String,
-    },
+    Failed { reason: String },
 }
 
 /// Check whether a valid secret is approaching its rotation deadline; if so,
@@ -830,10 +830,11 @@ pub fn check_and_trigger_auto_rotation(
 
     match crate::rotation_provider::auto_sync_rotation(secret_name, Some(config), providers) {
         Ok(Some(new_value)) => {
-            // Determine source label from provider.
+            // Determine source label from the provider actually dispatched —
+            // dispatch is by config.provider identity, never name heuristics.
             let source = providers
                 .iter()
-                .find(|p| p.matches(secret_name))
+                .find(|p| p.name().eq_ignore_ascii_case(&config.provider))
                 .map(|p| p.rotation_source().label().to_string())
                 .unwrap_or_else(|| "vendor".to_string());
             AutoRotationTriggerResult::Rotated { new_value, source }
@@ -917,8 +918,6 @@ pub fn run_validation_pipeline(
     jobs: usize,
     timeout: Duration,
 ) -> ValidationReport {
-    
-
     let _jobs = jobs.max(1);
     let now = now_secs();
 
@@ -1021,8 +1020,8 @@ pub fn run_validation_pipeline_parallel(
     let now = now_secs();
 
     // Build a shared work queue.
-    let work: Arc<Mutex<Vec<(String, zeroize::Zeroizing<String>)>>> =
-        Arc::new(Mutex::new(secrets));
+    type SecretWorkQueue = Arc<Mutex<Vec<(String, zeroize::Zeroizing<String>)>>>;
+    let work: SecretWorkQueue = Arc::new(Mutex::new(secrets));
 
     // Snapshot validator name/match decisions (avoids Arc<dyn Trait> complexity).
     // We serialise validator selection on the calling thread, then dispatch
@@ -1088,8 +1087,6 @@ pub fn run_validation_pipeline_parallel(
     for (validator_idx, items) in buckets {
         let validator_name = validators[validator_idx].name().to_string();
         let tx = tx.clone();
-        let timeout = timeout;
-        let now = now;
 
         // Build a snapshot of what the validator needs for each item.
         struct CheckTask {
@@ -1286,7 +1283,10 @@ mod tests {
     fn metadata_none_failure_reason_omitted_from_json() {
         let m = ValidationMetadata::mark_valid("openai");
         let json = serde_json::to_string(&m).expect("serialize");
-        assert!(!json.contains("failure_reason"), "should skip_serializing None");
+        assert!(
+            !json.contains("failure_reason"),
+            "should skip_serializing None"
+        );
     }
 
     // ── ValidationResult ────────────────────────────────────────────────
@@ -1380,20 +1380,41 @@ mod tests {
         let v = GoogleValidator;
         // Google-prefixed names
         assert!(v.matches("GOOGLE_API_KEY"), "GOOGLE_API_KEY must match");
-        assert!(v.matches("GOOGLE_CLOUD_API_KEY"), "GOOGLE_CLOUD_API_KEY must match");
-        assert!(v.matches("GOOGLE_APPLICATION_CREDENTIALS"), "GOOGLE_APPLICATION_CREDENTIALS must match");
-        assert!(v.matches("GOOGLE_SERVICE_ACCOUNT_KEY"), "GOOGLE_SERVICE_ACCOUNT_KEY must match");
+        assert!(
+            v.matches("GOOGLE_CLOUD_API_KEY"),
+            "GOOGLE_CLOUD_API_KEY must match"
+        );
+        assert!(
+            v.matches("GOOGLE_APPLICATION_CREDENTIALS"),
+            "GOOGLE_APPLICATION_CREDENTIALS must match"
+        );
+        assert!(
+            v.matches("GOOGLE_SERVICE_ACCOUNT_KEY"),
+            "GOOGLE_SERVICE_ACCOUNT_KEY must match"
+        );
         assert!(v.matches("GOOGLE_TOKEN"), "GOOGLE_TOKEN must match");
-        assert!(v.matches("MY_GOOGLE_API_KEY"), "MY_GOOGLE_API_KEY must match");
+        assert!(
+            v.matches("MY_GOOGLE_API_KEY"),
+            "MY_GOOGLE_API_KEY must match"
+        );
         // GCP-prefixed names
         assert!(v.matches("GCP_API_KEY"), "GCP_API_KEY must match");
         assert!(v.matches("GCP_SERVICE_KEY"), "GCP_SERVICE_KEY must match");
         assert!(v.matches("GCP_ACCESS_TOKEN"), "GCP_ACCESS_TOKEN must match");
         assert!(v.matches("GCP_SECRET"), "GCP_SECRET must match");
         // Must NOT match unrelated services
-        assert!(!v.matches("OPENAI_API_KEY"), "OPENAI_API_KEY must not match");
-        assert!(!v.matches("STRIPE_SECRET_KEY"), "STRIPE_SECRET_KEY must not match");
-        assert!(!v.matches("AWS_ACCESS_KEY_ID"), "AWS_ACCESS_KEY_ID must not match");
+        assert!(
+            !v.matches("OPENAI_API_KEY"),
+            "OPENAI_API_KEY must not match"
+        );
+        assert!(
+            !v.matches("STRIPE_SECRET_KEY"),
+            "STRIPE_SECRET_KEY must not match"
+        );
+        assert!(
+            !v.matches("AWS_ACCESS_KEY_ID"),
+            "AWS_ACCESS_KEY_ID must not match"
+        );
         assert!(!v.matches("GITHUB_TOKEN"), "GITHUB_TOKEN must not match");
         // Must not match bare "KEY" without provider prefix
         assert!(!v.matches("API_KEY"), "plain API_KEY must not match");
@@ -1410,7 +1431,10 @@ mod tests {
         // Mock: inject a validator that recognises AIza keys and returns Valid.
         // We cannot hit real GCP APIs in unit tests, so we test via MockValidator.
         with_audit_disabled(|| {
-            let secrets = vec![("GOOGLE_API_KEY".to_string(), zs("AIzaSyFakeKey1234567890ABCDE"))];
+            let secrets = vec![(
+                "GOOGLE_API_KEY".to_string(),
+                zs("AIzaSyFakeKey1234567890ABCDE"),
+            )];
             let validators: Vec<Box<dyn SecretValidator>> = vec![mock_valid("google", "GOOGLE")];
             let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(5));
             assert_eq!(report.total, 1);
@@ -1422,9 +1446,11 @@ mod tests {
     fn google_validator_invalid_key_mock_invalid() {
         with_audit_disabled(|| {
             let secrets = vec![("GOOGLE_API_KEY".to_string(), zs("AIzaSyRevoked"))];
-            let validators: Vec<Box<dyn SecretValidator>> = vec![
-                mock_invalid("google", "GOOGLE", "Google returned 403 — API key has no permissions or is disabled"),
-            ];
+            let validators: Vec<Box<dyn SecretValidator>> = vec![mock_invalid(
+                "google",
+                "GOOGLE",
+                "Google returned 403 — API key has no permissions or is disabled",
+            )];
             let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(5));
             assert_eq!(report.total, 1);
             assert_eq!(report.invalid, 1);
@@ -1441,9 +1467,8 @@ mod tests {
     fn google_validator_unreachable_network_error() {
         with_audit_disabled(|| {
             let secrets = vec![("GCP_ACCESS_TOKEN".to_string(), zs("ya29.FakeToken"))];
-            let validators: Vec<Box<dyn SecretValidator>> = vec![
-                mock_unreachable("google", "GCP", "connection refused"),
-            ];
+            let validators: Vec<Box<dyn SecretValidator>> =
+                vec![mock_unreachable("google", "GCP", "connection refused")];
             let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(1));
             assert_eq!(report.total, 1);
             assert_eq!(report.unreachable, 1);
@@ -1464,7 +1489,10 @@ mod tests {
     fn default_validators_includes_google() {
         let validators = default_validators();
         let names: Vec<&str> = validators.iter().map(|v| v.name()).collect();
-        assert!(names.contains(&"google"), "default_validators must include 'google'");
+        assert!(
+            names.contains(&"google"),
+            "default_validators must include 'google'"
+        );
     }
 
     #[test]
@@ -1477,7 +1505,9 @@ mod tests {
             "GCP_ACCESS_TOKEN",
         ];
         for key in gcp_keys {
-            let matched = validators.iter().any(|v| v.matches(key) && v.name() == "google");
+            let matched = validators
+                .iter()
+                .any(|v| v.matches(key) && v.name() == "google");
             assert!(
                 matched,
                 "default_validators: 'google' validator should match {key}"
@@ -1634,7 +1664,11 @@ mod tests {
             assert_eq!(report.invalid, 0);
             let un = report.unreachable_entries();
             assert_eq!(un[0].name, "GITHUB_TOKEN");
-            assert!(un[0].reason.as_deref().unwrap().contains("connection refused"));
+            assert!(un[0]
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("connection refused"));
         });
     }
 
@@ -1743,8 +1777,7 @@ mod tests {
                     reason: "zero timeout".to_string(),
                 },
             })];
-            let report =
-                run_validation_pipeline(secrets, &validators, 1, Duration::from_millis(1));
+            let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_millis(1));
             assert_eq!(report.unreachable, 1);
         });
     }
@@ -1947,7 +1980,9 @@ mod tests {
     }
 
     impl RotationProvider for MockRotationProvider {
-        fn name(&self) -> &str { &self.name }
+        fn name(&self) -> &str {
+            &self.name
+        }
         fn matches(&self, key: &str) -> bool {
             key.to_uppercase().contains(&self.pattern.to_uppercase())
         }
@@ -1975,7 +2010,9 @@ mod tests {
             }
             Ok(zeroize::Zeroizing::new(self.new_value.clone()))
         }
-        fn rotation_source(&self) -> RotationSource { RotationSource::Stripe }
+        fn rotation_source(&self) -> RotationSource {
+            RotationSource::Stripe
+        }
     }
 
     fn mock_provider(pattern: &str, new_value: &str) -> Box<dyn RotationProvider> {
@@ -2075,9 +2112,8 @@ mod tests {
             // Set a dummy env var so resolve_api_key succeeds.
             unsafe { std::env::set_var("PHANTOM_TRIGGER_TEST_KEY", "sk_test_mock_trigger") };
 
-            let providers: Vec<Box<dyn RotationProvider>> = vec![
-                mock_provider("STRIPE", "sk_test_new_rotated_value"),
-            ];
+            let providers: Vec<Box<dyn RotationProvider>> =
+                vec![mock_provider("STRIPE", "sk_test_new_rotated_value")];
 
             let result = check_and_trigger_auto_rotation(
                 "STRIPE_SECRET_KEY",
@@ -2114,9 +2150,7 @@ mod tests {
             };
             unsafe { std::env::set_var("PHANTOM_TRIGGER_FAIL_KEY", "sk_test_mock_fail") };
 
-            let providers: Vec<Box<dyn RotationProvider>> = vec![
-                failing_provider("STRIPE"),
-            ];
+            let providers: Vec<Box<dyn RotationProvider>> = vec![failing_provider("STRIPE")];
 
             let result = check_and_trigger_auto_rotation(
                 "STRIPE_SECRET_KEY",
@@ -2206,13 +2240,17 @@ mod tests {
             emit_validation_transition_event(
                 "STRIPE_KEY",
                 &prev_inv,
-                &ValidationResult::Invalid { reason: "still bad".to_string() },
+                &ValidationResult::Invalid {
+                    reason: "still bad".to_string(),
+                },
             );
             // unreachable never triggers transitions
             emit_validation_transition_event(
                 "GITHUB_TOKEN",
                 &prev,
-                &ValidationResult::Unreachable { reason: "timeout".to_string() },
+                &ValidationResult::Unreachable {
+                    reason: "timeout".to_string(),
+                },
             );
         });
     }
