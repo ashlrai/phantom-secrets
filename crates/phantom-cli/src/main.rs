@@ -710,7 +710,31 @@ enum CloudAction {
     Status,
 }
 
+/// Stack size for the real main thread.
+///
+/// Windows gives the process main thread a 1 MiB stack (unix platforms give
+/// 8 MiB). Debug builds of this CLI need more than 1 MiB — the clap-derive
+/// parser for our large `Commands` enum alone overflows 1 MiB before any
+/// subcommand output (STATUS_STACK_OVERFLOW / 0xC00000FD on windows-latest
+/// CI, reproducible on unix with `ulimit -s 1024`). Run the real main on a
+/// spawned thread with an explicit, platform-independent stack size instead
+/// of relying on the OS default.
+const MAIN_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 fn main() -> anyhow::Result<()> {
+    let handle = std::thread::Builder::new()
+        .name("phantom-main".into())
+        .stack_size(MAIN_STACK_SIZE)
+        .spawn(run)?;
+    match handle.join() {
+        Ok(result) => result,
+        // Propagate a panic on the worker thread as if it happened here so
+        // the process still dies with the standard panic exit status.
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let global_json = cli.json;
 
