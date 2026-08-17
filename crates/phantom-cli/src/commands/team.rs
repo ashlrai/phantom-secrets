@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::{auth, config::PhantomConfig, teams, teams_vault};
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use zeroize::Zeroizing;
 
 pub fn run_list() -> Result<()> {
@@ -194,6 +195,128 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
         written,
         team_id,
         version
+    );
+    Ok(())
+}
+
+fn confirm_destructive(prompt: &str) -> Result<()> {
+    print!("{prompt} [type 'yes' to confirm]: ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    if input.trim().eq_ignore_ascii_case("yes") {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("Aborted."))
+    }
+}
+
+pub fn run_revoke(team_id: &str, github_login: &str, yes: bool) -> Result<()> {
+    let token = auth::require_token()?;
+    let api_base = auth::api_base_url()?;
+    let kp = auth::get_or_create_team_keypair()?;
+
+    let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
+        .context("No .phantom.toml found. Run `phantom init` first.")?;
+    let project_id = config.phantom.project_id.clone();
+
+    println!(
+        "{}  This will revoke @{} from team {} and rotate the vault key.",
+        "warn".yellow().bold(),
+        github_login,
+        team_id
+    );
+    println!(
+        "{}  All remaining members will be re-wrapped with a new key.",
+        "    ".dimmed()
+    );
+    println!(
+        "{}  @{} will no longer be able to decrypt any future vault versions.",
+        "    ".dimmed(),
+        github_login
+    );
+
+    if !yes {
+        confirm_destructive(&format!("Revoke @{github_login} from team {team_id}?"))?;
+    }
+
+    println!(
+        "{}  Revoking @{} and rotating vault key...",
+        "->".blue().bold(),
+        github_login
+    );
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let outcome = rt.block_on(teams_vault::revoke_member(
+        &api_base,
+        &token,
+        team_id,
+        &project_id,
+        github_login,
+        &kp,
+    ))?;
+
+    println!(
+        "{}  @{} revoked from team {}. Vault rotated to v{} ({} secret(s), \
+         re-encrypted for {} member(s){}).",
+        "ok".green().bold(),
+        github_login,
+        team_id,
+        outcome.new_version,
+        outcome.secret_count,
+        outcome.recipients,
+        if outcome.skipped > 0 {
+            format!(", {} skipped — no key registered", outcome.skipped)
+        } else {
+            String::new()
+        }
+    );
+    println!(
+        "{}  Audit events recorded: team.member.revoked + team.vault.key_rotated",
+        "   ".dimmed()
+    );
+    Ok(())
+}
+
+pub fn run_rotate_vault(team_id: &str) -> Result<()> {
+    let token = auth::require_token()?;
+    let api_base = auth::api_base_url()?;
+    let kp = auth::get_or_create_team_keypair()?;
+
+    let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
+        .context("No .phantom.toml found. Run `phantom init` first.")?;
+    let project_id = config.phantom.project_id.clone();
+
+    println!(
+        "{}  Rotating vault key for team {} (all members will be re-wrapped)...",
+        "->".blue().bold(),
+        team_id
+    );
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let outcome = rt.block_on(teams_vault::rotate_vault(
+        &api_base,
+        &token,
+        team_id,
+        &project_id,
+        &kp,
+    ))?;
+
+    println!(
+        "{}  Vault rotated to v{} ({} secret(s), re-encrypted for {} member(s){}).",
+        "ok".green().bold(),
+        outcome.new_version,
+        outcome.secret_count,
+        outcome.recipients,
+        if outcome.skipped > 0 {
+            format!(", {} skipped — no key registered", outcome.skipped)
+        } else {
+            String::new()
+        }
+    );
+    println!(
+        "{}  Audit events recorded: team.vault.key_rotated + team.vault.rotation_members",
+        "   ".dimmed()
     );
     Ok(())
 }

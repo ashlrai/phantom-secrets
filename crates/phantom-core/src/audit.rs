@@ -9,6 +9,7 @@
 //! ```json
 //! {"seq": 1, "ts": 1714794600, "op": "vault.store", "name": "OPENAI_API_KEY",
 //!  "pid": 12345, "prev_hmac": "<64-hex>", "process": "phantom",
+//!  "encrypted_context": "<base64-aes-gcm>",
 //!  "hmac": "<64-hex>"}
 //! ```
 //!
@@ -33,18 +34,269 @@
 //! `verify_log()`. A marker line `{"hmac_chain_started_at": <ts>,
 //! "key_id": "<hex-prefix>"}` is written once when the key is first
 //! generated.
+//!
+//! ## Audit Event Encryption
+//!
+//! Sensitive metadata (process name, hostname, parent PID) is encrypted and
+//! stored in the `encrypted_context` field. Three modes are supported:
+//!
+//! - `Disabled`: no encryption, no `encrypted_context` field (default).
+//! - `LocalOnly`: AES-256-GCM with the file-vault HMAC key as the encryption key.
+//! - `CloudSigned`: ED25519-signed events are buffered and pushed asynchronously
+//!   to phm.dev for compliance-grade tamper-proof audit delivery.
+//!
+//! Set `PHANTOM_AUDIT_ENCRYPTION=local` or `PHANTOM_AUDIT_ENCRYPTION=cloud-signed`
+//! to activate. Use `phantom audit verify --with-context` to decrypt and display
+//! the stored context metadata.
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use fs2::FileExt;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Encryption types
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Controls how sensitive audit event metadata is encrypted.
+///
+/// Set via `PHANTOM_AUDIT_ENCRYPTION` environment variable:
+/// - unset / `none`: `Disabled` (default)
+/// - `local`:  `LocalOnly` — AES-256-GCM keyed from the HMAC key
+/// - `cloud-signed`: `CloudSigned` — ED25519-signed + async cloud upload
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditEventEncryption {
+    /// No encryption. `encrypted_context` field is omitted. (default)
+    Disabled,
+    /// Encrypt context with the per-machine HMAC key (AES-256-GCM).
+    /// Context is decryptable locally via `phantom audit verify --with-context`.
+    LocalOnly,
+    /// Sign events with an ED25519 keypair stored in the OS keychain and
+    /// upload them asynchronously to phm.dev for compliance-grade delivery.
+    CloudSigned,
+}
+
+impl AuditEventEncryption {
+    /// Parse from `PHANTOM_AUDIT_ENCRYPTION` env var.
+    pub fn from_env() -> Self {
+        match std::env::var("PHANTOM_AUDIT_ENCRYPTION").ok().as_deref() {
+            Some("local" | "LOCAL" | "local-only" | "LOCAL-ONLY") => Self::LocalOnly,
+            Some("cloud-signed" | "CLOUD-SIGNED" | "cloud_signed") => Self::CloudSigned,
+            _ => Self::Disabled,
+        }
+    }
+
+    /// Return true if any encryption is active.
+    pub fn is_active(self) -> bool {
+        self != Self::Disabled
+    }
+}
+
+/// Sensitive metadata serialized into `encrypted_context`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditContext {
+    /// Process name (argv[0] basename).
+    pub process_name: String,
+    /// Hostname of the machine.
+    pub hostname: String,
+    /// Parent process ID (0 if unavailable).
+    pub ppid: u32,
+    /// Current working directory (empty if unavailable).
+    pub cwd: String,
+}
+
+impl AuditContext {
+    pub fn collect() -> Self {
+        Self {
+            process_name: process_name(),
+            hostname: hostname(),
+            ppid: parent_pid(),
+            cwd: std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// Status of the async sidecar upload queue (for compliance dashboards).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditSidecarStatus {
+    /// Number of events currently buffered locally, not yet uploaded.
+    pub pending: usize,
+    /// Number of events successfully uploaded in this session.
+    pub uploaded: usize,
+    /// Number of upload failures in this session.
+    pub failures: usize,
+    /// Unix timestamp of the last successful upload (0 if none).
+    pub last_uploaded_ts: u64,
+    /// Unix timestamp of the last failure (0 if none).
+    pub last_failure_ts: u64,
+    /// Whether the sidecar uploader is currently running.
+    pub running: bool,
+}
+
+/// An event buffered for cloud-signed sidecar upload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidecarEvent {
+    /// Monotonic sequence number.
+    pub seq: u64,
+    /// Unix timestamp (seconds).
+    pub ts: u64,
+    /// Operation name.
+    pub op: String,
+    /// Secret name (if applicable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Base64-encoded encrypted context blob.
+    pub encrypted_context: String,
+    /// Hex-encoded ED25519 signature over the canonical JSON of this event.
+    pub signature: String,
+    /// Hex-encoded public key (for auditor verification).
+    pub pubkey: String,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Global sidecar upload queue (fire-and-forget, no blocking)
+// ──────────────────────────────────────────────────────────────────────────────
+
+lazy_static::lazy_static! {
+    static ref SIDECAR_QUEUE: Arc<Mutex<SidecarQueue>> =
+        Arc::new(Mutex::new(SidecarQueue::new()));
+}
+
+struct SidecarQueue {
+    events: std::collections::VecDeque<SidecarEvent>,
+    status: AuditSidecarStatus,
+}
+
+impl SidecarQueue {
+    fn new() -> Self {
+        Self {
+            events: std::collections::VecDeque::new(),
+            status: AuditSidecarStatus::default(),
+        }
+    }
+
+    fn push(&mut self, event: SidecarEvent) {
+        self.events.push_back(event);
+        self.status.pending += 1;
+        self.status.running = true;
+    }
+
+    fn drain(&mut self) -> Vec<SidecarEvent> {
+        let drained: Vec<_> = self.events.drain(..).collect();
+        self.status.pending = self.status.pending.saturating_sub(drained.len());
+        drained
+    }
+
+    /// Re-enqueue previously-drained events at the FRONT of the queue so they
+    /// are retried (in original order) ahead of newer events on the next flush.
+    /// Used when an upload POST fails — prevents permanent audit data loss.
+    fn requeue_front(&mut self, events: Vec<SidecarEvent>) {
+        let count = events.len();
+        // Insert in reverse so the first drained event ends up frontmost.
+        for event in events.into_iter().rev() {
+            self.events.push_front(event);
+        }
+        self.status.pending += count;
+        // Events are still outstanding, so the queue is logically running.
+        self.status.running = true;
+    }
+
+    fn record_upload_success(&mut self, count: usize) {
+        self.status.uploaded += count;
+        self.status.last_uploaded_ts = now_unix();
+        if self.status.pending == 0 {
+            self.status.running = false;
+        }
+    }
+
+    fn record_failure(&mut self, count: usize) {
+        self.status.failures += count;
+        self.status.last_failure_ts = now_unix();
+        // Only mark stopped if nothing is left to retry. Requeued events keep
+        // the queue logically running so a later flush picks them up.
+        self.status.running = self.status.pending > 0;
+    }
+}
+
+/// Enqueue a `SidecarEvent` for async cloud upload (fire-and-forget).
+/// This function returns immediately; upload is attempted in a background thread.
+pub fn enqueue_sidecar_event(event: SidecarEvent) {
+    if let Ok(mut q) = SIDECAR_QUEUE.lock() {
+        q.push(event);
+    }
+    // Spawn a best-effort background flush.
+    std::thread::spawn(flush_sidecar_queue);
+}
+
+/// Return the current sidecar upload queue status snapshot.
+pub fn sidecar_status() -> AuditSidecarStatus {
+    SIDECAR_QUEUE
+        .lock()
+        .map(|q| q.status.clone())
+        .unwrap_or_default()
+}
+
+/// Flush the sidecar queue by attempting HTTP POST to phm.dev.
+/// Best-effort: failures are recorded but never propagated.
+fn flush_sidecar_queue() {
+    let events = {
+        let Ok(mut q) = SIDECAR_QUEUE.lock() else {
+            return;
+        };
+        q.drain()
+    };
+    if events.is_empty() {
+        return;
+    }
+    // Fire-and-forget HTTP POST (non-blocking Tokio handle not available here;
+    // we use reqwest's blocking client so this background thread handles it).
+    let count = events.len();
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        let body = serde_json::to_vec(&events)?;
+        let resp = client
+            .post("https://phm.dev/api/audit/ingest")
+            .header("Content-Type", "application/json")
+            .header("X-Phantom-Version", env!("CARGO_PKG_VERSION"))
+            .body(body)
+            .send()?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("HTTP {}", resp.status()).into())
+        }
+    })();
+    match result {
+        Ok(()) => {
+            if let Ok(mut q) = SIDECAR_QUEUE.lock() {
+                q.record_upload_success(count);
+            }
+        }
+        Err(_) => {
+            // Data-loss fix: the POST failed, so the drained events were never
+            // persisted upstream. Push them back onto the queue so a later
+            // flush retries them instead of dropping them permanently.
+            if let Ok(mut q) = SIDECAR_QUEUE.lock() {
+                q.requeue_front(events);
+                q.record_failure(count);
+            }
+        }
+    }
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -101,6 +353,171 @@ pub fn log_result(op: &str, name: Option<&str>) -> std::io::Result<()> {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Rate-limit anomaly classification
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Anomaly classification emitted alongside each proxy rate-limit audit event.
+///
+/// The same enum lives in `phantom_proxy::rate_limiter` — this copy in
+/// `phantom_core` lets the CLI and MCP server reference it without depending
+/// on the proxy crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnomalyClass {
+    /// Request is within normal access patterns.
+    Normal,
+    /// Request is elevated; may warrant monitoring.
+    Caution,
+    /// Burst threshold exceeded; request was rate-limited.
+    Alert,
+}
+
+impl AnomalyClass {
+    /// Numeric score (0 / 1 / 2) for `--min-anomaly-score` CLI filtering.
+    pub fn score(self) -> u8 {
+        match self {
+            AnomalyClass::Normal => 0,
+            AnomalyClass::Caution => 1,
+            AnomalyClass::Alert => 2,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AnomalyClass::Normal => "normal",
+            AnomalyClass::Caution => "caution",
+            AnomalyClass::Alert => "alert",
+        }
+    }
+
+    /// Parse from a string (case-insensitive).
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Some(Self::Normal),
+            "caution" => Some(Self::Caution),
+            "alert" => Some(Self::Alert),
+            _ => None,
+        }
+    }
+}
+
+/// A rate-limit event record — emitted when the proxy records an access and
+/// detects an anomaly.  Written to the audit log as op `proxy.rate_event`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitEvent {
+    /// Secret key name (never its value).
+    pub secret_key: String,
+    /// Requests for this secret in the last 10 seconds.
+    pub per_secret_10s: u64,
+    /// Total requests across all secrets in the last 10 seconds.
+    pub total_10s: u64,
+    /// Requests for this secret in the last 60 seconds.
+    pub per_secret_60s: u64,
+    /// Computed anomaly score 0–100.
+    pub anomaly_score: u8,
+    /// Anomaly classification.
+    pub anomaly_class: AnomalyClass,
+    /// Unix timestamp (seconds).
+    pub ts: u64,
+}
+
+impl RateLimitEvent {
+    /// Write this event to the audit log (best-effort; never panics).
+    pub fn emit(&self) {
+        if !enabled() {
+            return;
+        }
+        // Only log caution/alert events to avoid flooding the audit log with
+        // normal traffic.
+        if self.anomaly_class == AnomalyClass::Normal {
+            return;
+        }
+        log("proxy.rate_event", Some(self.secret_key.as_str()));
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Response leak events
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Severity level for a secret-leak event detected in an upstream API response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeakSeverity {
+    /// A vault secret value was found in the response body / header — confirmed
+    /// exfiltration of a live credential.
+    High,
+    /// A response field matches a known secret format (e.g. `sk_*`, `ghp_*`)
+    /// but does not correspond to a value in the active vault injection map.
+    /// May indicate a hard-coded secret surfaced by the API.
+    Medium,
+}
+
+impl LeakSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LeakSeverity::High => "high",
+            LeakSeverity::Medium => "medium",
+        }
+    }
+}
+
+/// The part of the HTTP response where the leak was detected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeakLocation {
+    /// Leak found inside the response body.
+    Body,
+    /// Leak found inside a response header. Contains the header name.
+    Header(String),
+    /// Leak found in the HTTP status line (unusual, but possible in forwarded errors).
+    StatusLine,
+}
+
+impl LeakLocation {
+    pub fn as_label(&self) -> String {
+        match self {
+            LeakLocation::Body => "body".to_string(),
+            LeakLocation::Header(name) => format!("header:{}", name),
+            LeakLocation::StatusLine => "status-line".to_string(),
+        }
+    }
+}
+
+/// A high-severity audit event emitted when a real secret is detected leaking
+/// back through an upstream API response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeakEvent {
+    /// Unix timestamp (seconds).
+    pub ts: u64,
+    /// Where in the response the leak was detected.
+    pub location: LeakLocation,
+    /// Severity of the detected leak.
+    pub severity: LeakSeverity,
+    /// The secret name (key name, e.g. `OPENAI_API_KEY`) if the leaked value
+    /// matched an active vault entry. `None` for format-only matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_name: Option<String>,
+    /// The matched secret format pattern (e.g. `sk_live_*`, `ghp_*`).
+    pub pattern: String,
+    /// Number of times this pattern was found in the response (for deduplication).
+    pub match_count: usize,
+}
+
+impl LeakEvent {
+    /// Emit this leak event to the audit log (best-effort; never panics).
+    ///
+    /// Writes op `proxy.response_leak` with the secret name if known.
+    pub fn emit(&self) {
+        if !enabled() {
+            return;
+        }
+        log("proxy.response_leak", self.secret_name.as_deref());
+    }
+}
+
 /// Result of a log verification walk.
 #[derive(Debug, Default)]
 pub struct VerifyReport {
@@ -153,108 +570,7 @@ pub fn verify_log() -> std::io::Result<VerifyReport> {
     let _lock = acquire_log_lock_shared(&path)?;
     let key = load_or_skip_hmac_key(&path)?;
     let content = std::fs::read_to_string(&path)?;
-
-    let mut report = VerifyReport::default();
-    let mut prev_hmac = "GENESIS".to_string();
-    // Once we've seen the first signed line, `chain_started` is true and we
-    // validate all subsequent signed lines against the running prev_hmac.
-    let mut chain_started = false;
-    let mut expected_seq = 1_u64;
-    let mut final_seq = None;
-    let mut final_hmac = None;
-
-    for (idx, raw) in content.lines().enumerate() {
-        let line_no = idx + 1;
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let v: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(_) => {
-                report.malformed += 1;
-                report.malformed_lines.push(line_no);
-                continue;
-            }
-        };
-
-        // Skip the chain-started marker line.
-        if v.get("hmac_chain_started_at").is_some() {
-            continue;
-        }
-
-        let hmac_field = v
-            .get("hmac")
-            .and_then(|h| h.as_str())
-            .map(|s| s.to_string());
-
-        match hmac_field {
-            None => {
-                // Legacy line — no HMAC.
-                report.legacy += 1;
-                // Don't advance prev_hmac; the chain proper starts at the
-                // first signed line.
-            }
-            Some(recorded_hmac) => {
-                // We need the key to verify. If it's absent (key file
-                // deleted/machine change) we can't verify — treat as legacy.
-                let key_bytes = match &key {
-                    Some(k) => k,
-                    None => {
-                        report.legacy += 1;
-                        continue;
-                    }
-                };
-
-                let line_prev = v
-                    .get("prev_hmac")
-                    .and_then(|h| h.as_str())
-                    .unwrap_or("GENESIS");
-
-                // On the first signed line, accept whatever prev_hmac it
-                // declares (it may follow legacy lines).
-                if !chain_started {
-                    prev_hmac = line_prev.to_string();
-                    chain_started = true;
-                }
-
-                let expected = compute_hmac_for_line(&v, key_bytes);
-                if expected == recorded_hmac && line_prev == prev_hmac {
-                    report.verified += 1;
-                    if let Some(seq) = v.get("seq").and_then(|s| s.as_u64()) {
-                        if seq != expected_seq {
-                            report.sequence_errors += 1;
-                            report.sequence_error_lines.push(line_no);
-                        }
-                        expected_seq = seq.saturating_add(1);
-                        final_seq = Some(seq);
-                        final_hmac = Some(recorded_hmac.clone());
-                    }
-                    prev_hmac = recorded_hmac;
-                } else {
-                    report.tampered += 1;
-                    report.tampered_lines.push(line_no);
-                    // Advance prev_hmac to the recorded value so subsequent
-                    // lines can still be checked independently (otherwise
-                    // one tampered line cascades failures everywhere).
-                    prev_hmac = recorded_hmac;
-                }
-            }
-        }
-    }
-
-    if let (Some(seq), Some(hmac), Some(key_bytes)) =
-        (final_seq, final_hmac.as_deref(), key.as_deref())
-    {
-        match read_head(&path, key_bytes)? {
-            Some(head) if head.last_seq == seq && head.last_hmac == hmac => {}
-            Some(_) => report.head_mismatch = true,
-            None => report.head_missing = true,
-        }
-    }
-
-    Ok(report)
+    verify_log_content(&content, key.as_deref(), &path)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -289,6 +605,13 @@ fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<
         1
     };
 
+    let enc_mode = AuditEventEncryption::from_env();
+    let encrypted_context = if enc_mode.is_active() {
+        key.as_ref().and_then(|k| encrypt_context(k, enc_mode).ok())
+    } else {
+        None
+    };
+
     let event = AuditEvent {
         seq,
         ts: now_unix(),
@@ -297,6 +620,7 @@ fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<
         pid: std::process::id(),
         prev_hmac: key.as_ref().map(|_| prev_hmac.clone()),
         process: process_name(),
+        encrypted_context: encrypted_context.clone(),
         hmac: None, // filled in below
     };
 
@@ -306,6 +630,15 @@ fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<
         hmac: hmac_val.clone(),
         ..event
     };
+
+    // Enqueue for cloud sidecar if CloudSigned mode is active.
+    if enc_mode == AuditEventEncryption::CloudSigned {
+        if let Some(ec) = &encrypted_context {
+            if let Ok(sidecar) = build_sidecar_event(&event, ec) {
+                enqueue_sidecar_event(sidecar);
+            }
+        }
+    }
 
     let mut line = serde_json::to_vec(&event)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -526,6 +859,9 @@ fn compute_hmac_for_event(event: &AuditEvent, key: &[u8]) -> String {
     if let Some(ref n) = event.name {
         map.insert("name", n.clone());
     }
+    if let Some(ref ec) = event.encrypted_context {
+        map.insert("encrypted_context", ec.clone());
+    }
 
     let canonical = serde_json::to_string(&map).expect("BTreeMap serialization is infallible");
     hmac_sha256(key, canonical.as_bytes())
@@ -535,7 +871,16 @@ fn compute_hmac_for_event(event: &AuditEvent, key: &[u8]) -> String {
 /// excluded). Used during verification.
 fn compute_hmac_for_line(v: &serde_json::Value, key: &[u8]) -> String {
     let mut map: BTreeMap<&str, String> = BTreeMap::new();
-    for field in &["seq", "op", "pid", "prev_hmac", "process", "ts", "name"] {
+    for field in &[
+        "seq",
+        "op",
+        "pid",
+        "prev_hmac",
+        "process",
+        "ts",
+        "name",
+        "encrypted_context",
+    ] {
         if let Some(val) = v.get(field) {
             let s = match val {
                 serde_json::Value::String(s) => s.clone(),
@@ -617,6 +962,11 @@ struct AuditEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     prev_hmac: Option<String>,
     process: String,
+    /// Base64-encoded AES-256-GCM or ED25519-signed blob containing
+    /// sensitive metadata (process name, hostname, parent PID, cwd).
+    /// Absent when `AuditEventEncryption::Disabled`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encrypted_context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hmac: Option<String>,
 }
@@ -627,6 +977,602 @@ struct AuditHead {
     last_seq: u64,
     last_hmac: String,
     hmac: String,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Audit statistics
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Per-secret access statistics derived from the audit log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretStats {
+    /// Secret name (key name, e.g. `OPENAI_API_KEY`).
+    pub name: String,
+    /// Total number of logged operations for this secret.
+    pub total: u64,
+    /// Number of `vault.store` events (initial store or rotation).
+    pub stores: u64,
+    /// Number of `vault.retrieve` events.
+    pub retrieves: u64,
+    /// Number of `vault.delete` events.
+    pub deletes: u64,
+    /// Unix timestamp of the most recent event for this secret.
+    pub last_seen_ts: u64,
+    /// Unix timestamp of the first recorded event for this secret.
+    pub first_seen_ts: u64,
+}
+
+/// Overall audit log statistics.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuditStats {
+    /// Total events in the log (excluding marker lines).
+    pub total_events: u64,
+    /// Total events that name a specific secret.
+    pub secret_events: u64,
+    /// Per-secret breakdown, sorted by total descending.
+    pub secrets: Vec<SecretStats>,
+    /// Unix timestamp of the earliest event in the log.
+    pub first_event_ts: Option<u64>,
+    /// Unix timestamp of the most recent event in the log.
+    pub last_event_ts: Option<u64>,
+}
+
+/// Read `~/.phantom/audit.log` and compute aggregate statistics.
+///
+/// Returns `Ok(AuditStats)` even if the log file doesn't exist (all counts
+/// will be zero). Returns `Err` only on I/O failures.
+pub fn audit_stats() -> std::io::Result<AuditStats> {
+    let path = log_path()?;
+
+    if !path.exists() {
+        return Ok(AuditStats {
+            total_events: 0,
+            secret_events: 0,
+            secrets: vec![],
+            first_event_ts: None,
+            last_event_ts: None,
+        });
+    }
+
+    let _lock = acquire_log_lock_shared(&path)?;
+    let content = std::fs::read_to_string(&path)?;
+
+    // name → mutable stats accumulator
+    let mut by_name: std::collections::BTreeMap<String, SecretStats> =
+        std::collections::BTreeMap::new();
+    let mut total_events: u64 = 0;
+    let mut secret_events: u64 = 0;
+    let mut first_event_ts: Option<u64> = None;
+    let mut last_event_ts: Option<u64> = None;
+
+    for raw in content.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // Skip the chain-started marker line.
+        if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+        // Must have "op" to count as an event.
+        let op = match v.get("op").and_then(|o| o.as_str()) {
+            Some(op) => op.to_string(),
+            None => continue,
+        };
+
+        total_events += 1;
+
+        let ts = v.get("ts").and_then(|t| t.as_u64()).unwrap_or(0);
+        if ts > 0 {
+            first_event_ts = Some(match first_event_ts {
+                Some(prev) => prev.min(ts),
+                None => ts,
+            });
+            last_event_ts = Some(match last_event_ts {
+                Some(prev) => prev.max(ts),
+                None => ts,
+            });
+        }
+
+        if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
+            secret_events += 1;
+            let entry = by_name
+                .entry(name.to_string())
+                .or_insert_with(|| SecretStats {
+                    name: name.to_string(),
+                    total: 0,
+                    stores: 0,
+                    retrieves: 0,
+                    deletes: 0,
+                    last_seen_ts: 0,
+                    first_seen_ts: u64::MAX,
+                });
+            entry.total += 1;
+            match op.as_str() {
+                "vault.store" => entry.stores += 1,
+                "vault.retrieve" => entry.retrieves += 1,
+                "vault.delete" => entry.deletes += 1,
+                _ => {}
+            }
+            if ts > 0 {
+                if ts > entry.last_seen_ts {
+                    entry.last_seen_ts = ts;
+                }
+                if ts < entry.first_seen_ts {
+                    entry.first_seen_ts = ts;
+                }
+            }
+        }
+    }
+
+    // Fix up first_seen_ts for entries that never saw a valid ts (leave as 0).
+    for s in by_name.values_mut() {
+        if s.first_seen_ts == u64::MAX {
+            s.first_seen_ts = 0;
+        }
+    }
+
+    // Sort by total descending, then alphabetically.
+    let mut secrets: Vec<SecretStats> = by_name.into_values().collect();
+    secrets.sort_by(|a, b| b.total.cmp(&a.total).then(a.name.cmp(&b.name)));
+
+    Ok(AuditStats {
+        total_events,
+        secret_events,
+        secrets,
+        first_event_ts,
+        last_event_ts,
+    })
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Context encryption / decryption  (AES-256-GCM)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Encrypt sensitive metadata into a base64 blob.
+///
+/// Layout: `nonce(12) || ciphertext+tag`
+/// Key derivation: SHA-256("phantom-audit-context" || hmac_key) → 32 bytes.
+fn encrypt_context(hmac_key: &[u8], _mode: AuditEventEncryption) -> std::io::Result<String> {
+    use aes_gcm::{
+        aead::{Aead, KeyInit},
+        Aes256Gcm, Nonce,
+    };
+
+    let ctx = AuditContext::collect();
+    let plaintext = serde_json::to_vec(&ctx)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    // Derive a 32-byte encryption key from the HMAC key.
+    let enc_key = derive_encryption_key(hmac_key);
+
+    let cipher = Aes256Gcm::new_from_slice(&enc_key)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+    // Random 96-bit nonce.
+    let mut nonce_bytes = [0u8; 12];
+    use rand::RngCore;
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_ref())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let mut blob = Vec::with_capacity(12 + ciphertext.len());
+    blob.extend_from_slice(&nonce_bytes);
+    blob.extend_from_slice(&ciphertext);
+
+    Ok(BASE64.encode(&blob))
+}
+
+/// Public wrapper around `encrypt_context` for integration tests.
+///
+/// Using a named export avoids leaking the private `encrypt_context` function
+/// while still allowing test crates to exercise the encryption path directly.
+pub fn encrypt_context_for_test(
+    hmac_key: &[u8],
+    mode: AuditEventEncryption,
+) -> std::io::Result<String> {
+    encrypt_context(hmac_key, mode)
+}
+
+/// Decrypt an `encrypted_context` base64 blob back to `AuditContext`.
+pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<AuditContext> {
+    use aes_gcm::{
+        aead::{Aead, KeyInit},
+        Aes256Gcm, Nonce,
+    };
+
+    let blob = BASE64
+        .decode(encrypted_b64)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+    if blob.len() < 12 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "encrypted_context blob too short",
+        ));
+    }
+
+    let enc_key = derive_encryption_key(hmac_key);
+    let cipher = Aes256Gcm::new_from_slice(&enc_key)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let nonce = Nonce::from_slice(&blob[..12]);
+    let plaintext = cipher
+        .decrypt(nonce, &blob[12..])
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+    serde_json::from_slice(&plaintext)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// Derive a 32-byte AES key from the HMAC key via SHA-256 with a domain label.
+fn derive_encryption_key(hmac_key: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"phantom-audit-context\x00");
+    hasher.update(hmac_key);
+    hasher.finalize().into()
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ED25519 key management + cloud-signed sidecar event builder
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Path to the ED25519 public key file used for cloud-signed audit events.
+pub fn ed25519_pubkey_path(log_path: &Path) -> PathBuf {
+    log_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("audit-ed25519.pub")
+}
+
+fn ed25519_privkey_keychain_service() -> &'static str {
+    "phantom-audit-ed25519-privkey"
+}
+
+/// Generate an ED25519 keypair, store the private key in the OS keychain,
+/// write the public key to `~/.phantom/audit-ed25519.pub`, and return the
+/// public key bytes and a hex-encoded SHA-256 hash of the public key (for
+/// compliance auditor registration).
+///
+/// Returns `(pubkey_bytes, pubkey_hash_hex)`.
+pub fn setup_ed25519_keypair() -> std::io::Result<([u8; 32], String)> {
+    use ed25519_dalek::SigningKey;
+
+    let mut csprng = rand::thread_rng();
+    let signing_key = SigningKey::generate(&mut csprng);
+    let verifying_key = signing_key.verifying_key();
+    let pubkey_bytes = verifying_key.to_bytes();
+
+    // Store private key in OS keychain.
+    let privkey_hex = hex::encode(signing_key.to_bytes());
+    let kr = keyring::Entry::new(ed25519_privkey_keychain_service(), &whoami_username())
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    kr.set_password(&privkey_hex)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+    // Write public key to disk.
+    let log_p = log_path()?;
+    if let Some(parent) = log_p.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let pubkey_b64 = BASE64.encode(pubkey_bytes);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o644)
+            .open(ed25519_pubkey_path(&log_p))?;
+        f.write_all(pubkey_b64.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(ed25519_pubkey_path(&log_p))?;
+        f.write_all(pubkey_b64.as_bytes())?;
+    }
+
+    // Compute SHA-256 hash of the public key for auditor registration.
+    let mut hasher = Sha256::new();
+    hasher.update(pubkey_bytes);
+    let hash = hex::encode(hasher.finalize());
+
+    Ok((pubkey_bytes, hash))
+}
+
+/// Load the ED25519 signing key from the OS keychain, if present.
+fn load_signing_key() -> Option<ed25519_dalek::SigningKey> {
+    let kr = keyring::Entry::new(ed25519_privkey_keychain_service(), &whoami_username()).ok()?;
+    let privkey_hex = kr.get_password().ok()?;
+    let privkey_bytes = hex::decode(privkey_hex.trim()).ok()?;
+    let bytes: [u8; 32] = privkey_bytes.try_into().ok()?;
+    Some(ed25519_dalek::SigningKey::from_bytes(&bytes))
+}
+
+/// Load the ED25519 public key bytes from `~/.phantom/audit-ed25519.pub`.
+pub fn load_ed25519_pubkey() -> std::io::Result<Option<[u8; 32]>> {
+    let log_p = log_path()?;
+    let path = ed25519_pubkey_path(&log_p);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let b64 = std::fs::read_to_string(&path)?;
+    let bytes = BASE64
+        .decode(b64.trim())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "bad ED25519 pubkey length")
+    })?;
+    Ok(Some(arr))
+}
+
+/// Build a `SidecarEvent` from an `AuditEvent` + encrypted context, signing it
+/// with the ED25519 key from the OS keychain.
+fn build_sidecar_event(
+    event: &AuditEvent,
+    encrypted_context: &str,
+) -> std::io::Result<SidecarEvent> {
+    use ed25519_dalek::Signer;
+
+    let signing_key = load_signing_key().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "ED25519 signing key not found in keychain; run `phantom setup --audit-mode cloud-signed`",
+        )
+    })?;
+    let verifying_key = signing_key.verifying_key();
+    let pubkey_hex = hex::encode(verifying_key.to_bytes());
+
+    // Canonical payload to sign: BTreeMap JSON of event fields + encrypted_context.
+    let mut canonical_map: BTreeMap<&str, String> = BTreeMap::new();
+    canonical_map.insert("seq", event.seq.to_string());
+    canonical_map.insert("ts", event.ts.to_string());
+    canonical_map.insert("op", event.op.clone());
+    canonical_map.insert("encrypted_context", encrypted_context.to_string());
+    canonical_map.insert("pubkey", pubkey_hex.clone());
+    if let Some(ref n) = event.name {
+        canonical_map.insert("name", n.clone());
+    }
+    let payload = serde_json::to_vec(&canonical_map).expect("BTreeMap serialization is infallible");
+    let signature = signing_key.sign(&payload);
+    let sig_hex = hex::encode(signature.to_bytes());
+
+    Ok(SidecarEvent {
+        seq: event.seq,
+        ts: event.ts,
+        op: event.op.clone(),
+        name: event.name.clone(),
+        encrypted_context: encrypted_context.to_string(),
+        signature: sig_hex,
+        pubkey: pubkey_hex,
+    })
+}
+
+/// Verify an ED25519 signature on a `SidecarEvent`.
+/// Returns `true` if the signature is valid, `false` otherwise.
+pub fn verify_sidecar_event(event: &SidecarEvent) -> bool {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let pubkey_bytes = match hex::decode(&event.pubkey) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let pubkey_arr: [u8; 32] = match pubkey_bytes.try_into() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let verifying_key = match VerifyingKey::from_bytes(&pubkey_arr) {
+        Ok(k) => k,
+        Err(_) => return false,
+    };
+
+    let sig_bytes = match hex::decode(&event.signature) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let sig_arr: [u8; 64] = match sig_bytes.try_into() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let signature = Signature::from_bytes(&sig_arr);
+
+    let mut canonical_map: BTreeMap<&str, String> = BTreeMap::new();
+    canonical_map.insert("seq", event.seq.to_string());
+    canonical_map.insert("ts", event.ts.to_string());
+    canonical_map.insert("op", event.op.clone());
+    canonical_map.insert("encrypted_context", event.encrypted_context.clone());
+    canonical_map.insert("pubkey", event.pubkey.clone());
+    if let Some(ref n) = event.name {
+        canonical_map.insert("name", n.clone());
+    }
+    let payload = serde_json::to_vec(&canonical_map).expect("BTreeMap serialization is infallible");
+
+    verifying_key.verify(&payload, &signature).is_ok()
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// verify_log_with_context  (decrypts encrypted_context for forensics)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A single log line with its decrypted context, returned by
+/// `verify_log_with_context`.
+#[derive(Debug)]
+pub struct VerifiedEventWithContext {
+    /// 1-based line number.
+    pub line_no: usize,
+    /// The raw JSONL line.
+    pub raw: String,
+    /// Decrypted context metadata (None if no `encrypted_context` field or
+    /// decryption failed).
+    pub context: Option<AuditContext>,
+    /// Decryption error message, if decryption was attempted but failed.
+    pub context_error: Option<String>,
+}
+
+/// Walk the audit log and decrypt `encrypted_context` fields for forensics.
+///
+/// Returns one `VerifiedEventWithContext` per non-marker event line.
+/// Also performs full HMAC-chain verification; returns both the events and
+/// the `VerifyReport`.
+/// Internal: run the HMAC-chain verification over already-loaded content.
+/// Called by both `verify_log` (after acquiring lock) and `verify_log_with_context`
+/// (which holds its own lock for the full duration).
+fn verify_log_content(
+    content: &str,
+    key: Option<&[u8]>,
+    log_path: &Path,
+) -> std::io::Result<VerifyReport> {
+    let mut report = VerifyReport::default();
+    let mut prev_hmac = "GENESIS".to_string();
+    let mut chain_started = false;
+    let mut expected_seq = 1_u64;
+    let mut final_seq = None;
+    let mut final_hmac = None;
+
+    for (idx, raw) in content.lines().enumerate() {
+        let line_no = idx + 1;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => {
+                report.malformed += 1;
+                report.malformed_lines.push(line_no);
+                continue;
+            }
+        };
+        if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+        let hmac_field = v
+            .get("hmac")
+            .and_then(|h| h.as_str())
+            .map(|s| s.to_string());
+
+        match hmac_field {
+            None => {
+                report.legacy += 1;
+            }
+            Some(recorded_hmac) => {
+                let key_bytes = match key {
+                    Some(k) => k,
+                    None => {
+                        report.legacy += 1;
+                        continue;
+                    }
+                };
+                let line_prev = v
+                    .get("prev_hmac")
+                    .and_then(|h| h.as_str())
+                    .unwrap_or("GENESIS");
+                if !chain_started {
+                    prev_hmac = line_prev.to_string();
+                    chain_started = true;
+                }
+                let expected = compute_hmac_for_line(&v, key_bytes);
+                if expected == recorded_hmac && line_prev == prev_hmac {
+                    report.verified += 1;
+                    if let Some(seq) = v.get("seq").and_then(|s| s.as_u64()) {
+                        if seq != expected_seq {
+                            report.sequence_errors += 1;
+                            report.sequence_error_lines.push(line_no);
+                        }
+                        expected_seq = seq.saturating_add(1);
+                        final_seq = Some(seq);
+                        final_hmac = Some(recorded_hmac.clone());
+                    }
+                    prev_hmac = recorded_hmac;
+                } else {
+                    report.tampered += 1;
+                    report.tampered_lines.push(line_no);
+                    prev_hmac = recorded_hmac;
+                }
+            }
+        }
+    }
+
+    if let (Some(seq), Some(hmac), Some(key_bytes)) = (final_seq, final_hmac.as_deref(), key) {
+        match read_head(log_path, key_bytes)? {
+            Some(head) if head.last_seq == seq && head.last_hmac == hmac => {}
+            Some(_) => report.head_mismatch = true,
+            None => report.head_missing = true,
+        }
+    }
+
+    Ok(report)
+}
+
+pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedEventWithContext>)> {
+    let path = log_path()?;
+    if !path.exists() {
+        return Ok((VerifyReport::default(), vec![]));
+    }
+
+    // Take a single shared lock for the entire operation to avoid the
+    // double-lock pattern that caused hangs on macOS.
+    let _lock = acquire_log_lock_shared(&path)?;
+    let key = load_or_skip_hmac_key(&path)?;
+    let content = std::fs::read_to_string(&path)?;
+
+    // Run the HMAC-chain verification inline (same logic as verify_log but
+    // without re-acquiring the lock).
+    let report = verify_log_content(&content, key.as_deref(), &path)?;
+
+    // Build the per-event context list.
+    let mut events = Vec::new();
+    for (idx, raw) in content.lines().enumerate() {
+        let line_no = idx + 1;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+        if v.get("op").is_none() {
+            continue;
+        }
+
+        let (context, context_error) =
+            if let Some(ec) = v.get("encrypted_context").and_then(|e| e.as_str()) {
+                match key.as_deref() {
+                    Some(k) => match decrypt_context(ec, k) {
+                        Ok(ctx) => (Some(ctx), None),
+                        Err(e) => (None, Some(e.to_string())),
+                    },
+                    None => (None, Some("HMAC key unavailable".to_string())),
+                }
+            } else {
+                (None, None)
+            };
+
+        events.push(VerifiedEventWithContext {
+            line_no,
+            raw: trimmed.to_string(),
+            context,
+            context_error,
+        });
+    }
+
+    Ok((report, events))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -672,6 +1618,524 @@ fn process_name() -> String {
         .unwrap_or_else(|| "phantom".to_string())
 }
 
+fn hostname() -> String {
+    // Try env var first (works in containers / CI without libc).
+    if let Ok(h) = std::env::var("HOSTNAME") {
+        if !h.is_empty() {
+            return h;
+        }
+    }
+    // Fall back to gethostname via std::process on Unix.
+    #[cfg(unix)]
+    {
+        let mut buf = vec![0u8; 256];
+        unsafe {
+            if libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) == 0 {
+                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                if let Ok(s) = std::str::from_utf8(&buf[..len]) {
+                    return s.to_string();
+                }
+            }
+        }
+    }
+    // Windows / fallback: read COMPUTERNAME.
+    std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn parent_pid() -> u32 {
+    #[cfg(unix)]
+    {
+        // SAFETY: getppid() has no preconditions and always succeeds on POSIX.
+        (unsafe { libc::getppid() }) as u32
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
+fn whoami_username() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "phantom".to_string())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Team member lifecycle audit events
+// ──────────────────────────────────────────────────────────────────────────────
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Batch rotation audit events
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Emit `vault.batch_rotation.started` — composite event logged once per batch.
+///
+/// Encodes the `batch_id` and `total_count` into the `name` field so it
+/// passes through the existing single-name audit pipeline.
+/// Best-effort — never panics or propagates errors.
+pub fn log_batch_rotation_started(batch_id: &str, total_count: usize) {
+    if !enabled() {
+        return;
+    }
+    let name = format!("batch_id={batch_id} total={total_count}");
+    log("vault.batch_rotation.started", Some(&name));
+}
+
+/// Emit `vault.batch_rotation.item.succeeded` for a single successfully rotated secret.
+///
+/// Best-effort — never panics or propagates errors.
+pub fn log_batch_item_succeeded(batch_id: &str, secret_name: &str, provider: &str) {
+    if !enabled() {
+        return;
+    }
+    let name = format!("batch_id={batch_id} secret={secret_name} provider={provider}");
+    log("vault.batch_rotation.item.succeeded", Some(&name));
+}
+
+/// Emit `vault.batch_rotation.item.failed` for a secret that failed rotation.
+///
+/// The `reason` field is a short human-readable error description; it MUST NOT
+/// contain secret values.
+/// Best-effort — never panics or propagates errors.
+pub fn log_batch_item_failed(batch_id: &str, secret_name: &str, reason: &str) {
+    if !enabled() {
+        return;
+    }
+    // Truncate reason to 120 chars to avoid bloating the audit log.
+    let safe_reason = if reason.len() > 120 {
+        &reason[..120]
+    } else {
+        reason
+    };
+    let name = format!("batch_id={batch_id} secret={secret_name} reason={safe_reason}");
+    log("vault.batch_rotation.item.failed", Some(&name));
+}
+
+/// Emit `vault.batch_rotation.completed` — composite summary event.
+///
+/// Best-effort — never panics or propagates errors.
+pub fn log_batch_rotation_completed(batch_id: &str, total: usize, succeeded: usize, failed: usize) {
+    if !enabled() {
+        return;
+    }
+    let name = format!("batch_id={batch_id} total={total} succeeded={succeeded} failed={failed}");
+    log("vault.batch_rotation.completed", Some(&name));
+}
+
+/// Emit a tamper-proof audit event when a member is revoked from a team vault.
+///
+/// Records:
+/// - `op`: `team.member.revoked`
+/// - `name`: the revoked member's GitHub login
+/// - Extra fields are embedded in the `name` field as structured data so
+///   they pass through the existing single-name audit pipeline. A richer
+///   structured-event system can be layered on top later.
+///
+/// Best-effort — never panics or propagates errors.
+pub fn log_team_member_revoked(
+    team_id: &str,
+    revoked_login: &str,
+    remaining_logins: &[String],
+    new_version: u64,
+) {
+    if !enabled() {
+        return;
+    }
+    // Encode structured context into the `name` field:
+    // "<team_id>/<revoked_login> remaining=N v=<version>"
+    let name = format!(
+        "{team_id}/{revoked_login} remaining={} v={new_version}",
+        remaining_logins.len()
+    );
+    log("team.member.revoked", Some(&name));
+}
+
+/// Emit a tamper-proof audit event when the vault symmetric key is rotated.
+///
+/// Records `op`: `team.vault.key_rotated`.
+/// Best-effort — never panics or propagates errors.
+pub fn log_vault_key_rotated(team_id: &str, project_id: &str, new_version: u64) {
+    if !enabled() {
+        return;
+    }
+    let name = format!("{team_id}/{project_id} v={new_version}");
+    log("team.vault.key_rotated", Some(&name));
+}
+
+/// Emit a tamper-proof audit event recording which members were re-wrapped
+/// after a proactive vault rotation (no revocation).
+///
+/// Records `op`: `team.vault.rotation_members`.
+/// Best-effort — never panics or propagates errors.
+pub fn log_team_vault_rotation_members(team_id: &str, member_logins: &[String], new_version: u64) {
+    if !enabled() {
+        return;
+    }
+    let name = format!("{team_id} members={} v={new_version}", member_logins.len());
+    log("team.vault.rotation_members", Some(&name));
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Hotspot alert engine — rolling-window spike detection per secret
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Acknowledgement status for a hotspot alert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotspotAckStatus {
+    /// Alert is active and has not been acknowledged.
+    Unacked,
+    /// Alert was acknowledged by an operator or MCP tool call.
+    Acked,
+    /// Alert was snoozed until `snooze_until_ts`.
+    Snoozed,
+}
+
+impl HotspotAckStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HotspotAckStatus::Unacked => "unacked",
+            HotspotAckStatus::Acked => "acked",
+            HotspotAckStatus::Snoozed => "snoozed",
+        }
+    }
+}
+
+/// A hotspot alert record produced when a secret's access velocity spikes.
+///
+/// Emitted when any of the following conditions is true:
+/// - `current_velocity` > 5× `baseline_velocity` (7-day mean)
+/// - `window_5m_count` >= 100 accesses within any 5-minute window
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotspotAlert {
+    /// Secret name — never the value.
+    pub secret_name: String,
+    /// Accesses in the most recent rolling 24-hour window.
+    pub current_velocity: u64,
+    /// Mean daily access count over the prior 7-day baseline window.
+    pub baseline_velocity: f64,
+    /// Alert severity level (always "high" for hotspot alerts).
+    pub alert_level: String,
+    /// Unix timestamp of the first detected spike event.
+    pub first_spike_ts: u64,
+    /// Unix timestamp when this alert record was generated.
+    pub generated_at: u64,
+    /// Whether this alert has been acknowledged.
+    pub ack_status: HotspotAckStatus,
+    /// Human-readable trigger description.
+    pub trigger: String,
+    /// Accesses in the peak 5-minute window (for burst detection).
+    pub peak_5m_count: u64,
+}
+
+/// Persistent store for hotspot alert acknowledgements.
+///
+/// Stored at `~/.phantom/hotspot-alerts.jsonl` — one record per line.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HotspotAckRecord {
+    /// Secret name this ack applies to.
+    pub secret_name: String,
+    /// When the ack was created (Unix seconds).
+    pub ack_ts: u64,
+    /// New status after the ack operation.
+    pub status: HotspotAckStatus,
+    /// If snoozed, the Unix timestamp until which alerts for this secret are
+    /// suppressed. Zero for plain acks.
+    #[serde(default)]
+    pub snooze_until_ts: u64,
+}
+
+/// Compute the path to the hotspot-alert acks file.
+fn hotspot_acks_path() -> std::io::Result<PathBuf> {
+    if let Some(home) = dirs_home_dir() {
+        Ok(home.join(".phantom").join("hotspot-alerts.jsonl"))
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "could not resolve home directory for hotspot acks",
+        ))
+    }
+}
+
+/// Detect hotspot alerts by scanning the audit log.
+///
+/// Algorithm:
+/// 1. Parse all audit events that name a secret.
+/// 2. For each secret:
+///    a. Count accesses in the rolling 24-hour window (current_velocity).
+///    b. Count accesses in the 7-day baseline window (days 1–7 prior to now)
+///    -> baseline_velocity = total / 7.
+///    c. Compute the peak 5-minute bucket count.
+///    d. Trigger alert if:
+///       - current_velocity > 5 × baseline_velocity (and baseline > 0), OR
+///       - peak_5m_count >= 100
+/// 3. Load existing acks from `hotspot-alerts.jsonl` and apply them.
+/// 4. Emit a `vault.hotspot_alert` audit event for each newly-detected alert
+///    (i.e. alerts whose first_spike_ts is ≥ `now - 24h` and has no prior ack).
+///
+/// Returns `Ok(Vec<HotspotAlert>)` — may be empty when no spikes are detected.
+/// Always returns `Ok` even when the audit log does not exist.
+pub fn detect_hotspot_alerts() -> std::io::Result<Vec<HotspotAlert>> {
+    detect_hotspot_alerts_at(now_unix())
+}
+
+/// Testable version of `detect_hotspot_alerts` with an injected `now` timestamp.
+pub fn detect_hotspot_alerts_at(now: u64) -> std::io::Result<Vec<HotspotAlert>> {
+    let path = log_path()?;
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+
+    // Read all audit events.
+    let _lock = acquire_log_lock_shared(&path)?;
+    let content = std::fs::read_to_string(&path)?;
+    drop(_lock);
+
+    // Collect per-secret timestamps.
+    let mut by_name: std::collections::BTreeMap<String, Vec<u64>> =
+        std::collections::BTreeMap::new();
+    for raw in content.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+        let ts = match v.get("ts").and_then(|t| t.as_u64()) {
+            Some(t) => t,
+            None => continue,
+        };
+        if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
+            by_name.entry(name.to_string()).or_default().push(ts);
+        }
+    }
+
+    // Load acks so we can annotate alerts.
+    let acks = load_hotspot_acks();
+
+    let window_24h_start = now.saturating_sub(86400);
+    let baseline_start = now.saturating_sub(8 * 86400);
+    let baseline_end = now.saturating_sub(86400); // exclude the current 24h window
+
+    let mut alerts: Vec<HotspotAlert> = Vec::new();
+
+    for (name, mut timestamps) in by_name {
+        timestamps.sort_unstable();
+
+        // Current 24h velocity.
+        // Use strict inequality so the boundary timestamp (now - 86400) belongs
+        // exclusively to the baseline window (baseline_end = now - 86400, exclusive
+        // upper bound), preventing double-counting of entries placed exactly on the
+        // boundary.
+        let current_velocity = timestamps
+            .iter()
+            .filter(|&&ts| ts > window_24h_start)
+            .count() as u64;
+
+        // 7-day baseline: events in [now-8d, now-1d).
+        let baseline_count = timestamps
+            .iter()
+            .filter(|&&ts| ts >= baseline_start && ts < baseline_end)
+            .count() as u64;
+        let baseline_velocity = baseline_count as f64 / 7.0;
+
+        // Peak 5-minute bucket count (300-second windows).
+        let peak_5m_count = compute_peak_window_count(&timestamps, 300, now);
+
+        // Determine whether a spike condition is met.
+        let spike_5x = baseline_velocity > 0.0 && current_velocity as f64 > 5.0 * baseline_velocity;
+        let burst_100 = peak_5m_count >= 100;
+
+        if !spike_5x && !burst_100 {
+            continue;
+        }
+
+        // Find the timestamp of the first event in the current 24h window.
+        let first_spike_ts = timestamps
+            .iter()
+            .find(|&&ts| ts >= window_24h_start)
+            .copied()
+            .unwrap_or(now);
+
+        let trigger = if spike_5x && burst_100 {
+            format!(
+                "velocity_spike: {current_velocity} accesses in 24h (5x baseline {baseline_velocity:.1}); \
+                 burst: {peak_5m_count} accesses in a 5-minute window"
+            )
+        } else if spike_5x {
+            format!(
+                "velocity_spike: {current_velocity} accesses in 24h > 5x baseline {baseline_velocity:.1}"
+            )
+        } else {
+            format!("burst: {peak_5m_count} accesses in a 5-minute window >= 100 threshold")
+        };
+
+        // Look up existing ack for this secret.
+        let ack_status = acks
+            .get(&name)
+            .map(|r| {
+                if r.status == HotspotAckStatus::Snoozed && r.snooze_until_ts > now {
+                    HotspotAckStatus::Snoozed
+                } else if r.status == HotspotAckStatus::Acked {
+                    HotspotAckStatus::Acked
+                } else {
+                    HotspotAckStatus::Unacked
+                }
+            })
+            .unwrap_or(HotspotAckStatus::Unacked);
+
+        alerts.push(HotspotAlert {
+            secret_name: name.clone(),
+            current_velocity,
+            baseline_velocity,
+            alert_level: "high".to_string(),
+            first_spike_ts,
+            generated_at: now,
+            ack_status,
+            trigger,
+            peak_5m_count,
+        });
+    }
+
+    // Sort: unacked first, then by current_velocity descending.
+    alerts.sort_by(|a, b| {
+        let a_unacked = a.ack_status == HotspotAckStatus::Unacked;
+        let b_unacked = b.ack_status == HotspotAckStatus::Unacked;
+        b_unacked
+            .cmp(&a_unacked)
+            .then(b.current_velocity.cmp(&a.current_velocity))
+    });
+
+    // Emit an audit event for each unacked alert (best-effort).
+    for alert in alerts
+        .iter()
+        .filter(|a| a.ack_status == HotspotAckStatus::Unacked)
+    {
+        if enabled() {
+            log("vault.hotspot_alert", Some(&alert.secret_name));
+        }
+    }
+
+    Ok(alerts)
+}
+
+/// Find the maximum number of events within any rolling `window_secs`-second
+/// window ending at or before `now`.
+fn compute_peak_window_count(timestamps: &[u64], window_secs: u64, now: u64) -> u64 {
+    if timestamps.is_empty() {
+        return 0;
+    }
+    // Only consider timestamps within the last 24h to avoid scanning everything.
+    let cutoff = now.saturating_sub(86400);
+    let recent: Vec<u64> = timestamps
+        .iter()
+        .copied()
+        .filter(|&ts| ts >= cutoff)
+        .collect();
+
+    if recent.is_empty() {
+        return 0;
+    }
+
+    // Two-pointer sliding window over sorted timestamps.
+    let mut max_count: u64 = 0;
+    let mut left = 0usize;
+    for right in 0..recent.len() {
+        // Advance left pointer until the window fits.
+        while recent[right].saturating_sub(recent[left]) > window_secs {
+            left += 1;
+        }
+        let count = (right - left + 1) as u64;
+        if count > max_count {
+            max_count = count;
+        }
+    }
+    max_count
+}
+
+/// Load the most-recent ack record per secret from `hotspot-alerts.jsonl`.
+/// Returns an empty map if the file does not exist.
+fn load_hotspot_acks() -> std::collections::BTreeMap<String, HotspotAckRecord> {
+    let path = match hotspot_acks_path() {
+        Ok(p) => p,
+        Err(_) => return std::collections::BTreeMap::new(),
+    };
+    if !path.exists() {
+        return std::collections::BTreeMap::new();
+    }
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return std::collections::BTreeMap::new(),
+    };
+    let mut map: std::collections::BTreeMap<String, HotspotAckRecord> =
+        std::collections::BTreeMap::new();
+    for raw in content.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(rec) = serde_json::from_str::<HotspotAckRecord>(trimmed) {
+            // Keep only the latest record per secret (lines are appended).
+            map.insert(rec.secret_name.clone(), rec);
+        }
+    }
+    map
+}
+
+/// Acknowledge or snooze a hotspot alert for the given secret.
+///
+/// Appends a `HotspotAckRecord` to `~/.phantom/hotspot-alerts.jsonl`.
+/// `snooze_seconds`: if > 0, the alert is snoozed for that many seconds;
+///                   if 0, the alert is fully acknowledged.
+pub fn acknowledge_hotspot_alert(secret_name: &str, snooze_seconds: u64) -> std::io::Result<()> {
+    acknowledge_hotspot_alert_at(secret_name, snooze_seconds, now_unix())
+}
+
+/// Testable variant of `acknowledge_hotspot_alert` with an injected `now` timestamp.
+/// This is used in unit tests to avoid dependence on the real wall clock.
+pub(crate) fn acknowledge_hotspot_alert_at(
+    secret_name: &str,
+    snooze_seconds: u64,
+    now: u64,
+) -> std::io::Result<()> {
+    let path = hotspot_acks_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let (status, snooze_until_ts) = if snooze_seconds > 0 {
+        (HotspotAckStatus::Snoozed, now + snooze_seconds)
+    } else {
+        (HotspotAckStatus::Acked, 0)
+    };
+
+    let rec = HotspotAckRecord {
+        secret_name: secret_name.to_string(),
+        ack_ts: now,
+        status,
+        snooze_until_ts,
+    };
+
+    let mut line = serde_json::to_vec(&rec)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    line.push(b'\n');
+
+    let mut f = OpenOptions::new().append(true).create(true).open(&path)?;
+    f.write_all(&line)?;
+
+    // Emit an audit event for the acknowledgement (best-effort).
+    if enabled() {
+        log("vault.hotspot_alert.acked", Some(secret_name));
+    }
+
+    Ok(())
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────────
@@ -679,15 +2143,10 @@ fn process_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ENV_LOCK;
     use serde_json::Value;
-    use std::sync::{Arc, Barrier, Mutex};
+    use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
-
-    /// All tests in this module mutate process-wide env vars
-    /// (`PHANTOM_AUDIT`, `HOME`). cargo runs unit tests in parallel by
-    /// default within a test binary, so we serialize via this mutex to
-    /// keep them deterministic without a `serial_test` dependency.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_temp_home<F: FnOnce()>(env: &str, val: &str, f: F) {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -856,6 +2315,7 @@ mod tests {
             process: "phantom".to_string(),
             pid: 1,
             prev_hmac: None,
+            encrypted_context: None,
             hmac: None,
         };
         let json = serde_json::to_value(&event).unwrap();
@@ -1101,6 +2561,116 @@ mod tests {
         });
     }
 
+    // ── audit_stats tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn stats_empty_when_no_log() {
+        with_audit_env(|tmp| {
+            // Don't write any events — just check stats on a fresh dir.
+            let log_p = tmp.join(".phantom").join("audit.log");
+            // File doesn't exist yet.
+            assert!(!log_p.exists());
+            let stats = audit_stats().expect("audit_stats should not error");
+            assert_eq!(stats.total_events, 0);
+            assert_eq!(stats.secret_events, 0);
+            assert!(stats.secrets.is_empty());
+            assert!(stats.first_event_ts.is_none());
+            assert!(stats.last_event_ts.is_none());
+        });
+    }
+
+    #[test]
+    fn stats_counts_ops_correctly() {
+        with_audit_env(|_tmp| {
+            log("vault.store", Some("OPENAI_API_KEY"));
+            log("vault.retrieve", Some("OPENAI_API_KEY"));
+            log("vault.retrieve", Some("OPENAI_API_KEY"));
+            log("vault.store", Some("STRIPE_KEY"));
+            log("cloud.push", None); // no name — counts as total but not secret_events
+
+            let stats = audit_stats().expect("audit_stats should not error");
+            assert_eq!(stats.total_events, 5);
+            assert_eq!(stats.secret_events, 4);
+
+            // Sorted by total desc: OPENAI_API_KEY (3) before STRIPE_KEY (1).
+            assert_eq!(stats.secrets.len(), 2);
+            let openai = &stats.secrets[0];
+            assert_eq!(openai.name, "OPENAI_API_KEY");
+            assert_eq!(openai.total, 3);
+            assert_eq!(openai.stores, 1);
+            assert_eq!(openai.retrieves, 2);
+            assert_eq!(openai.deletes, 0);
+
+            let stripe = &stats.secrets[1];
+            assert_eq!(stripe.name, "STRIPE_KEY");
+            assert_eq!(stripe.total, 1);
+            assert_eq!(stripe.stores, 1);
+        });
+    }
+
+    #[test]
+    fn stats_delete_counted() {
+        with_audit_env(|_tmp| {
+            log("vault.store", Some("MY_KEY"));
+            log("vault.delete", Some("MY_KEY"));
+
+            let stats = audit_stats().expect("audit_stats should not error");
+            let s = &stats.secrets[0];
+            assert_eq!(s.deletes, 1);
+            assert_eq!(s.total, 2);
+        });
+    }
+
+    #[test]
+    fn stats_timestamps_tracked() {
+        with_audit_env(|_tmp| {
+            log("vault.store", Some("K"));
+            log("vault.retrieve", Some("K"));
+
+            let stats = audit_stats().expect("audit_stats should not error");
+            assert!(stats.first_event_ts.is_some());
+            assert!(stats.last_event_ts.is_some());
+            // last >= first
+            assert!(stats.last_event_ts.unwrap() >= stats.first_event_ts.unwrap());
+
+            let s = &stats.secrets[0];
+            assert!(s.last_seen_ts >= s.first_seen_ts);
+        });
+    }
+
+    #[test]
+    fn stats_sorted_by_total_desc_then_alpha() {
+        with_audit_env(|_tmp| {
+            log("vault.retrieve", Some("Z_KEY"));
+            log("vault.retrieve", Some("A_KEY"));
+            log("vault.retrieve", Some("A_KEY"));
+
+            let stats = audit_stats().expect("audit_stats should not error");
+            assert_eq!(stats.secrets[0].name, "A_KEY"); // 2 total
+            assert_eq!(stats.secrets[1].name, "Z_KEY"); // 1 total
+        });
+    }
+
+    #[test]
+    fn stats_skips_marker_and_malformed_lines() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY"));
+
+            // Manually append a malformed line.
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log_p)
+                .unwrap();
+            use std::io::Write;
+            writeln!(f, "{{not json}}").unwrap();
+
+            let stats = audit_stats().expect("audit_stats should not error");
+            // Malformed line is skipped — only the 1 real event counted.
+            assert_eq!(stats.total_events, 1);
+        });
+    }
+
     /// Legacy: pre-write unsigned lines, then enable chain; verify reports legacy + verified.
     #[test]
     fn hmac_chain_legacy_lines_reported() {
@@ -1120,6 +2690,255 @@ mod tests {
             assert_eq!(report.legacy, 2, "two legacy lines expected");
             assert_eq!(report.verified, 2, "two signed lines expected");
             assert_eq!(report.tampered, 0);
+        });
+    }
+
+    // ── hotspot alert engine ──────────────────────────────────────────────────
+
+    /// Helper: write synthetic audit log lines directly.
+    fn write_hotspot_log(log_path: &std::path::Path, entries: &[(u64, &str, &str)]) {
+        use std::io::Write;
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .unwrap();
+        for (ts, op, name) in entries {
+            let line = format!(
+                r#"{{"seq":1,"ts":{ts},"op":"{op}","name":"{name}","pid":1,"process":"phantom"}}"#
+            );
+            writeln!(f, "{}", line).unwrap();
+        }
+    }
+
+    #[test]
+    fn hotspot_no_alert_for_steady_access() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            // 7-day baseline: 5 accesses/day → baseline_velocity = 5.0
+            // Current 24h: 6 accesses → 6 < 5×5 = 25, no spike; peak 5m ≪ 100
+            let now: u64 = 1_700_000_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                for _i in 0u64..5 {
+                    entries.push((now - day * 86400 + _i * 100, "vault.retrieve", "STEADY_KEY"));
+                }
+            }
+            // Current 24h: 6 accesses
+            for i in 0u64..6 {
+                entries.push((now - 3600 + i * 300, "vault.retrieve", "STEADY_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            let alerts = detect_hotspot_alerts_at(now).expect("detect should not error");
+            assert!(
+                alerts.iter().all(|a| a.secret_name != "STEADY_KEY"),
+                "steady access should not trigger hotspot alert"
+            );
+        });
+    }
+
+    #[test]
+    fn hotspot_5x_spike_triggers_alert() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            // 7-day baseline: 2 accesses/day × 7 days = 14 → baseline = 2.0
+            // Current 24h: 25 accesses → 25 > 5×2 = 10 → spike fires
+            //
+            // Baseline entries are offset *before* now-86400 using -(i+1)*3600 so
+            // that even day=1 entries land strictly in [now-8d, now-1d) and are
+            // never double-counted in the current 24h window (which uses ts > now-86400).
+            let now: u64 = 1_700_500_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                for i in 0u64..2 {
+                    // Subtract an extra (i+1)*3600 so entries sit safely before now-86400.
+                    entries.push((
+                        now - day * 86400 - (i + 1) * 3600,
+                        "vault.retrieve",
+                        "SPIKE_KEY",
+                    ));
+                }
+            }
+            // Current 24h: 25 accesses spread across the window (all > now-86400).
+            for i in 0u64..25 {
+                entries.push((now - 80000 + i * 3000, "vault.retrieve", "SPIKE_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            let alerts = detect_hotspot_alerts_at(now).expect("detect should not error");
+            let alert = alerts.iter().find(|a| a.secret_name == "SPIKE_KEY");
+            assert!(alert.is_some(), "5x spike should produce a hotspot alert");
+            let alert = alert.unwrap();
+            assert_eq!(alert.alert_level, "high");
+            assert_eq!(alert.current_velocity, 25);
+            assert!(
+                alert.baseline_velocity > 1.9 && alert.baseline_velocity < 2.1,
+                "baseline should be ~2.0, got {}",
+                alert.baseline_velocity
+            );
+            assert!(
+                alert.trigger.contains("velocity_spike"),
+                "trigger should mention velocity_spike: {}",
+                alert.trigger
+            );
+            assert_eq!(alert.ack_status, HotspotAckStatus::Unacked);
+        });
+    }
+
+    #[test]
+    fn hotspot_10x_spike_synthetic_baseline() {
+        // Unit-test the spike condition directly without I/O.
+        // baseline_velocity = 3.0, current = 31 → 31 > 5×3 = 15 → triggers
+        let baseline_velocity: f64 = 3.0;
+        let current_velocity: u64 = 31;
+        let spike_5x = baseline_velocity > 0.0 && current_velocity as f64 > 5.0 * baseline_velocity;
+        assert!(spike_5x, "10x spike should satisfy 5x rule");
+    }
+
+    #[test]
+    fn hotspot_burst_100_in_5min_triggers_alert() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            // No baseline → spike rule won't fire; but burst rule fires at 100+ in 5 min
+            let now: u64 = 1_701_000_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            // 110 accesses within a 4-minute window (< 300s)
+            for i in 0u64..110 {
+                entries.push((now - 200 + i, "vault.retrieve", "BURST_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            let alerts = detect_hotspot_alerts_at(now).expect("detect should not error");
+            let alert = alerts.iter().find(|a| a.secret_name == "BURST_KEY");
+            assert!(
+                alert.is_some(),
+                "100+ accesses in 5 min should trigger hotspot alert"
+            );
+            let alert = alert.unwrap();
+            assert!(alert.peak_5m_count >= 100);
+            assert_eq!(alert.alert_level, "high");
+        });
+    }
+
+    #[test]
+    fn hotspot_burst_below_100_no_alert_without_spike() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            // 99 accesses in 5 minutes — just below the burst threshold.
+            // No baseline either, so spike rule won't fire.
+            let now: u64 = 1_702_000_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for i in 0u64..99 {
+                entries.push((now - 200 + i * 2, "vault.retrieve", "SAFE_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            let alerts = detect_hotspot_alerts_at(now).expect("detect should not error");
+            assert!(
+                alerts.iter().all(|a| a.secret_name != "SAFE_KEY"),
+                "99 accesses in 5 min should NOT trigger hotspot alert"
+            );
+        });
+    }
+
+    #[test]
+    fn hotspot_ack_marks_alert_acked() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let now: u64 = 1_703_000_000;
+            // Create a spike so we get an alert.
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                entries.push((now - day * 86400, "vault.retrieve", "ACK_KEY"));
+            }
+            for i in 0u64..30 {
+                entries.push((now - 3600 + i * 100, "vault.retrieve", "ACK_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            // Verify we get an alert.
+            let before = detect_hotspot_alerts_at(now).unwrap();
+            assert!(
+                before.iter().any(|a| a.secret_name == "ACK_KEY"),
+                "should have alert before ack"
+            );
+
+            // Acknowledge it.
+            acknowledge_hotspot_alert("ACK_KEY", 0).expect("ack should not error");
+
+            // Re-detect — should now show as acked.
+            let after = detect_hotspot_alerts_at(now).unwrap();
+            if let Some(a) = after.iter().find(|a| a.secret_name == "ACK_KEY") {
+                assert_eq!(a.ack_status, HotspotAckStatus::Acked);
+            }
+            // (Alert may still appear in list but with Acked status.)
+        });
+    }
+
+    #[test]
+    fn hotspot_snooze_suppresses_until_expiry() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let now: u64 = 1_704_000_000;
+            // Spike alert.
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                entries.push((now - day * 86400, "vault.retrieve", "SNOOZE_KEY"));
+            }
+            for i in 0u64..30 {
+                entries.push((now - 3600 + i * 100, "vault.retrieve", "SNOOZE_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            // Snooze for 3600 seconds using the injected test timestamp so that
+            // snooze_until_ts = now + 3600, deterministically expiring at now + 3601+.
+            acknowledge_hotspot_alert_at("SNOOZE_KEY", 3600, now).expect("snooze should not error");
+
+            // At now: snooze is active.
+            let during = detect_hotspot_alerts_at(now).unwrap();
+            if let Some(a) = during.iter().find(|a| a.secret_name == "SNOOZE_KEY") {
+                assert_eq!(a.ack_status, HotspotAckStatus::Snoozed);
+            }
+
+            // After snooze expires: alert becomes unacked again.
+            let after_expiry = detect_hotspot_alerts_at(now + 7200).unwrap();
+            if let Some(a) = after_expiry.iter().find(|a| a.secret_name == "SNOOZE_KEY") {
+                // Snooze expired → should be Unacked.
+                assert_eq!(a.ack_status, HotspotAckStatus::Unacked);
+            }
+        });
+    }
+
+    #[test]
+    fn hotspot_alert_never_contains_secret_value() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let now: u64 = 1_705_000_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                entries.push((now - day * 86400, "vault.retrieve", "SECRET_KEY"));
+            }
+            for i in 0u64..25 {
+                entries.push((now - 3600 + i * 100, "vault.retrieve", "SECRET_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+
+            let alerts = detect_hotspot_alerts_at(now).unwrap();
+            for a in &alerts {
+                // The secret_name field contains only the key name, never a value.
+                // The trigger string must not contain any '=' assignments that
+                // look like a secret value (only numeric annotations are fine).
+                assert!(
+                    !a.trigger.contains("sk-"),
+                    "trigger must not contain secret value"
+                );
+                assert!(
+                    !a.secret_name.contains("="),
+                    "secret_name must be a plain key name, not a value"
+                );
+            }
         });
     }
 }

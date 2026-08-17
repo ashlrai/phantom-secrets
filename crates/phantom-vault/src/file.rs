@@ -1,7 +1,9 @@
 use crate::crypto;
+use crate::metadata::SecretMetadata;
 use crate::traits::VaultBackend;
 use fs2::FileExt;
 use phantom_core::error::{PhantomError, Result};
+use phantom_core::validator::ValidationMetadata;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,6 +18,14 @@ pub struct FileVault {
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct VaultData {
     secrets: BTreeMap<String, String>,
+    /// Per-secret TTL/expiry metadata. Keys match the keys in `secrets`.
+    /// Absent entries mean "no metadata" — graceful on older vault files.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    metadata: BTreeMap<String, SecretMetadata>,
+    /// Per-secret validation metadata (last check timestamp, is_valid, failure_reason).
+    /// Stored alongside TTL metadata. Absent entries mean "never validated".
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    validation_metadata: BTreeMap<String, ValidationMetadata>,
 }
 
 impl FileVault {
@@ -138,6 +148,12 @@ impl VaultBackend for FileVault {
     fn store(&self, name: &str, value: &str) -> Result<()> {
         let _lock = self.lock_file()?;
         let mut data = self.load()?;
+        // Preserve existing metadata on overwrite; seed created_at for new entries.
+        if !data.secrets.contains_key(name) {
+            data.metadata
+                .entry(name.to_string())
+                .or_insert_with(crate::metadata::SecretMetadata::new_now);
+        }
         data.secrets.insert(name.to_string(), value.to_string());
         self.save(&data)?;
         phantom_core::audit::log("vault.store", Some(name));
@@ -161,6 +177,9 @@ impl VaultBackend for FileVault {
         if data.secrets.remove(name).is_none() {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
+        // Remove associated metadata so the vault stays consistent.
+        data.metadata.remove(name);
+        data.validation_metadata.remove(name);
         self.save(&data)?;
         phantom_core::audit::log("vault.delete", Some(name));
         Ok(())
@@ -173,6 +192,49 @@ impl VaultBackend for FileVault {
 
     fn backend_name(&self) -> &str {
         "encrypted-file"
+    }
+
+    fn get_metadata(&self, name: &str) -> phantom_core::error::Result<Option<SecretMetadata>> {
+        let data = self.load()?;
+        Ok(data.metadata.get(name).cloned())
+    }
+
+    fn set_metadata(&self, name: &str, meta: SecretMetadata) -> phantom_core::error::Result<()> {
+        let _lock = self.lock_file()?;
+        let mut data = self.load()?;
+        // Only set metadata for secrets that actually exist in the vault.
+        if !data.secrets.contains_key(name) {
+            return Err(PhantomError::SecretNotFound(name.to_string()));
+        }
+        data.metadata.insert(name.to_string(), meta);
+        self.save(&data)
+    }
+
+    fn get_validation_metadata(
+        &self,
+        name: &str,
+    ) -> phantom_core::error::Result<ValidationMetadata> {
+        let data = self.load()?;
+        Ok(data
+            .validation_metadata
+            .get(name)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn set_validation_metadata(
+        &self,
+        name: &str,
+        meta: ValidationMetadata,
+    ) -> phantom_core::error::Result<()> {
+        let _lock = self.lock_file()?;
+        let mut data = self.load()?;
+        // Only persist if the secret exists.
+        if !data.secrets.contains_key(name) {
+            return Err(PhantomError::SecretNotFound(name.to_string()));
+        }
+        data.validation_metadata.insert(name.to_string(), meta);
+        self.save(&data)
     }
 }
 
@@ -303,6 +365,107 @@ mod tests {
 
         // New encrypted file should exist
         assert!(vault_dir.join("test-project.vault").exists());
+    }
+
+    // ── Metadata / TTL tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_store_seeds_created_at() {
+        let (vault, _dir) = test_vault();
+        vault.store("MY_KEY", "value").unwrap();
+        let meta = vault.get_metadata("MY_KEY").unwrap();
+        assert!(meta.is_some(), "metadata should be seeded on first store");
+        let meta = meta.unwrap();
+        assert!(meta.created_at.is_some(), "created_at must be set");
+    }
+
+    #[test]
+    fn test_store_preserves_existing_metadata() {
+        let (vault, _dir) = test_vault();
+        vault.store("MY_KEY", "v1").unwrap();
+        // Set TTL metadata
+        vault.set_rotation_policy("MY_KEY", 30).unwrap();
+        let meta_before = vault.get_metadata("MY_KEY").unwrap().unwrap();
+        // Overwrite value — metadata must be preserved
+        vault.store("MY_KEY", "v2").unwrap();
+        let meta_after = vault.get_metadata("MY_KEY").unwrap().unwrap();
+        assert_eq!(
+            meta_before.created_at, meta_after.created_at,
+            "created_at must survive overwrite"
+        );
+        assert!(
+            meta_after.rotation_policy.is_some(),
+            "rotation_policy must survive overwrite"
+        );
+    }
+
+    #[test]
+    fn test_delete_removes_metadata() {
+        let (vault, _dir) = test_vault();
+        vault.store("MY_KEY", "value").unwrap();
+        vault.set_rotation_policy("MY_KEY", 7).unwrap();
+        assert!(vault.get_metadata("MY_KEY").unwrap().is_some());
+        vault.delete("MY_KEY").unwrap();
+        // After delete the key is gone; get_metadata on a missing key returns Ok(None)
+        let data_after = vault.load().unwrap();
+        assert!(!data_after.metadata.contains_key("MY_KEY"));
+    }
+
+    #[test]
+    fn test_store_with_expiry() {
+        let (vault, _dir) = test_vault();
+        vault.store_with_expiry("EXP_KEY", "secret", 7).unwrap();
+        let meta = vault.get_metadata("EXP_KEY").unwrap().unwrap();
+        assert!(meta.expires_at.is_some());
+        assert!(!meta.is_expired(), "7-day TTL should not be expired yet");
+        let days = meta.days_remaining().unwrap();
+        assert!((6..=7).contains(&days), "days_remaining={days}");
+    }
+
+    #[test]
+    fn test_set_rotation_policy() {
+        let (vault, _dir) = test_vault();
+        vault.store("KEY", "val").unwrap();
+        vault.set_rotation_policy("KEY", 14).unwrap();
+        let meta = vault.get_metadata("KEY").unwrap().unwrap();
+        assert!(meta.expires_at.is_some());
+        let policy = meta.rotation_policy.unwrap();
+        assert_eq!(policy.days_ttl, 14);
+    }
+
+    #[test]
+    fn test_set_metadata_rejects_nonexistent_key() {
+        let (vault, _dir) = test_vault();
+        let result = vault.set_metadata("GHOST", crate::metadata::SecretMetadata::new_now());
+        assert!(result.is_err(), "set_metadata on missing secret must fail");
+    }
+
+    #[test]
+    fn test_list_with_metadata() {
+        let (vault, _dir) = test_vault();
+        vault.store_with_expiry("A", "v1", 7).unwrap();
+        vault.store("B", "v2").unwrap();
+        let entries = vault.list_with_metadata().unwrap();
+        assert_eq!(entries.len(), 2);
+        let a_entry = entries.iter().find(|(n, _)| n == "A").unwrap();
+        assert!(a_entry.1.is_some(), "A should have metadata");
+        let a_meta = a_entry.1.as_ref().unwrap();
+        assert!(a_meta.expires_at.is_some());
+    }
+
+    #[test]
+    fn test_ttl_serialization_survives_vault_round_trip() {
+        let (vault, _dir) = test_vault();
+        vault.store_with_expiry("TOKEN", "sk-test", 7).unwrap();
+        // Force a full serialize/deserialize by reading back from disk
+        let meta = vault.get_metadata("TOKEN").unwrap().unwrap();
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: crate::metadata::SecretMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(meta.expires_at, back.expires_at);
+        assert_eq!(
+            meta.rotation_policy.unwrap().days_ttl,
+            back.rotation_policy.unwrap().days_ttl
+        );
     }
 
     /// Stress test: 10 threads each writing a unique key concurrently.

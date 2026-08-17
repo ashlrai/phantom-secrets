@@ -3,6 +3,18 @@ use clap::ValueEnum;
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 
+/// Audit mode to configure via `phantom setup --audit-mode`.
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum AuditMode {
+    /// Disable audit encryption (default).
+    None,
+    /// Encrypt context with local file-vault key (AES-256-GCM).
+    Local,
+    /// Sign events with ED25519 + upload to phm.dev asynchronously.
+    #[value(name = "cloud-signed")]
+    CloudSigned,
+}
+
 /// AI client whose MCP config we know how to write.
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum Client {
@@ -45,7 +57,12 @@ impl McpCommand {
     }
 }
 
-pub fn run(client: Option<Client>, print: bool) -> Result<()> {
+pub fn run(client: Option<Client>, print: bool, audit_mode: Option<AuditMode>) -> Result<()> {
+    // Handle --audit-mode independently of client setup.
+    if let Some(mode) = audit_mode {
+        return run_audit_mode_setup(mode);
+    }
+
     let client = client.unwrap_or(Client::ClaudeCode);
     let mcp = mcp_command_spec();
 
@@ -462,6 +479,88 @@ fn find_mcp_binary() -> Option<String> {
     }
 
     None
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Audit mode setup
+// ──────────────────────────────────────────────────────────────────────────────
+
+fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
+    match mode {
+        AuditMode::None => {
+            println!(
+                "{} Audit encryption {} (set PHANTOM_AUDIT_ENCRYPTION=none or unset it).",
+                "->".blue().bold(),
+                "disabled".yellow()
+            );
+            println!("   Remove PHANTOM_AUDIT_ENCRYPTION from your shell profile to revert.");
+        }
+        AuditMode::Local => {
+            println!(
+                "{} Audit encryption set to {} (AES-256-GCM, keyed from local HMAC key).",
+                "->".blue().bold(),
+                "local".cyan().bold()
+            );
+            println!(
+                "   Add to your shell profile: {}",
+                "export PHANTOM_AUDIT_ENCRYPTION=local".cyan()
+            );
+            println!("   Use `phantom audit verify --with-context` to decrypt event metadata.");
+        }
+        AuditMode::CloudSigned => {
+            println!(
+                "{} Setting up {} audit mode...",
+                "->".blue().bold(),
+                "cloud-signed".cyan().bold()
+            );
+
+            match phantom_core::audit::setup_ed25519_keypair() {
+                Ok((_, pubkey_hash)) => {
+                    println!("   {} ED25519 keypair generated.", "+".green().bold());
+                    println!(
+                        "   {} Private key stored in OS keychain.",
+                        "+".green().bold()
+                    );
+                    println!(
+                        "   {} Public key written to ~/.phantom/audit-ed25519.pub",
+                        "+".green().bold()
+                    );
+                    println!();
+                    println!(
+                        "   {} Public key hash (SHA-256): {}",
+                        "->".blue().bold(),
+                        pubkey_hash.cyan().bold()
+                    );
+                    println!(
+                        "   Register this hash with your compliance auditor at {}",
+                        "https://phm.dev/compliance".dimmed()
+                    );
+                    println!();
+                    println!(
+                        "   Add to your shell profile: {}",
+                        "export PHANTOM_AUDIT_ENCRYPTION=cloud-signed".cyan()
+                    );
+                    println!(
+                        "   Audit events will be signed and uploaded to phm.dev asynchronously."
+                    );
+                    println!(
+                        "\n{} Cloud-signed audit mode configured!",
+                        "ok".green().bold()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to generate ED25519 keypair: {}",
+                        "error".red().bold(),
+                        e
+                    );
+                    eprintln!("   Ensure your OS keychain is accessible and try again.");
+                    return Err(anyhow::anyhow!("ED25519 keypair setup failed: {e}"));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn home_path(rel: &str) -> Result<PathBuf> {

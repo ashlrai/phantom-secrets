@@ -32,6 +32,15 @@ tokio-stream = "0.1"
 rand = { workspace = true }
 hex = { workspace = true }
 subtle = "2.6"
+regex = "1"
+lazy_static = "1"
+
+[features]
+# Expose MockServer for integration tests in this crate and downstream.
+test-utils = []
 
 [dev-dependencies]
 tokio = { workspace = true }
+phantom-secrets-proxy = { path = ".", features = ["test-utils"] }
+tempfile = "3"
+serde_json = { workspace = true }

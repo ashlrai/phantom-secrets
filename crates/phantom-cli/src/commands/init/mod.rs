@@ -1,6 +1,6 @@
 mod config;
 mod docs;
-mod env;
+pub(crate) mod env;
 mod hooks;
 pub mod multi;
 mod prompts;
@@ -10,6 +10,45 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::dotenv::{DotenvFile, SecretClassification};
 use std::path::Path;
+
+/// `phantom init --empty`
+///
+/// Creates a valid `.phantom.toml` and an empty vault in the current directory
+/// without requiring a `.env` file. Use this to bootstrap a brand-new project
+/// before any secrets exist — then add secrets one at a time with `phantom add`.
+pub fn run_empty() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let config_path = cwd.join(".phantom.toml");
+
+    if config_path.exists() {
+        println!(
+            "{} .phantom.toml already exists — nothing to do.",
+            "!".yellow().bold()
+        );
+        return Ok(());
+    }
+
+    let project_id = phantom_core::config::PhantomConfig::project_id_from_path(&cwd);
+    let phantom_config = phantom_core::config::PhantomConfig::new_with_defaults(project_id.clone());
+
+    // Touch the vault so it exists (create_vault is idempotent / lazy, but calling
+    // list() forces any on-disk initialisation that the backend needs).
+    let vault = phantom_vault::create_vault(&project_id);
+    let _ = vault.list(); // ignore empty-vault errors
+
+    phantom_config.save(&config_path)?;
+    println!("{} Created .phantom.toml", "ok".green().bold());
+
+    env::ensure_gitignore(&cwd)?;
+
+    println!(
+        "\n{} Empty vault initialised. Add secrets with:\n     {}",
+        "done".green().bold(),
+        "phantom add <NAME>".cyan().bold()
+    );
+
+    Ok(())
+}
 
 pub fn run(env_path_arg: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;

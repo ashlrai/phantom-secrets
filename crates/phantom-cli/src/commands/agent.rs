@@ -133,7 +133,11 @@ fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> 
     ensure_env_example(project_dir)?;
 
     println!("{} Wiring Claude Code MCP defaults", "->".blue().bold());
-    crate::commands::setup::run(Some(crate::commands::setup::Client::ClaudeCode), false)?;
+    crate::commands::setup::run(
+        Some(crate::commands::setup::Client::ClaudeCode),
+        false,
+        None,
+    )?;
 
     if project_dir.join("package.json").exists() {
         println!(

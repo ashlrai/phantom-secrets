@@ -1,6 +1,13 @@
 mod commands;
 mod util;
 
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Mutex;
+
+    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+}
+
 use clap::{Parser, Subcommand};
 use commands::audit::AuditAction;
 use tracing_subscriber::EnvFilter;
@@ -56,6 +63,10 @@ enum Commands {
         /// Defaults to PHANTOM_INIT_JOBS env var, then 4.
         #[arg(long, short = 'j', value_name = "N")]
         jobs: Option<usize>,
+        /// Create a valid .phantom.toml and empty vault without requiring a .env file.
+        /// Use this to bootstrap a brand-new project before any secrets exist.
+        #[arg(long, conflicts_with_all = ["all", "dry_run"])]
+        empty: bool,
     },
 
     /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex)
@@ -67,6 +78,9 @@ enum Commands {
         /// Print the config snippet to stdout instead of writing files
         #[arg(long)]
         print: bool,
+        /// Configure audit event encryption mode: none, local, or cloud-signed
+        #[arg(long, value_enum, value_name = "MODE")]
+        audit_mode: Option<commands::setup::AuditMode>,
     },
 
     /// Agent readiness report, doctor, and setup workflows
@@ -82,6 +96,10 @@ enum Commands {
         /// Auto-fix safe issues (install hooks, generate .env.example, etc.)
         #[arg(long)]
         fix: bool,
+        /// Also check secret TTL/expiry status and warn about expired or
+        /// soon-to-expire secrets
+        #[arg(long)]
+        expiry: bool,
     },
 
     /// Print a shell-completion script to stdout.
@@ -103,6 +121,20 @@ enum Commands {
     Mcp {
         #[command(subcommand)]
         action: McpAction,
+    },
+
+    /// Approve a pending MCP nonce for a mutating vault operation.
+    ///
+    /// Run this in a trusted terminal after the MCP server prints a nonce to
+    /// stderr. The returned approval_token must be passed as `approval_token`
+    /// in the subsequent MCP tool call.
+    ///
+    /// Example:
+    ///   phantom mcp-approve d3a9f2...
+    #[command(name = "mcp-approve", next_help_heading = "Setup")]
+    McpApprove {
+        /// The nonce printed by the MCP server to stderr
+        nonce: String,
     },
 
     // ─────────────────────────── Daily use ───────────────────────────
@@ -151,6 +183,13 @@ enum Commands {
         /// Emit JSON instead of the human-readable table
         #[arg(long)]
         json: bool,
+        /// Show TTL/expiry countdown for each secret
+        #[arg(long)]
+        show_expiry: bool,
+        /// Only show secrets whose anomaly score is >= this value (0=all, 1=caution+, 2=alert only).
+        /// Reads per-secret rate-limit stats from the audit log.
+        #[arg(long, value_name = "SCORE")]
+        min_anomaly_score: Option<u8>,
     },
 
     /// Add a secret to the vault
@@ -359,6 +398,11 @@ enum Commands {
         /// Auto-protect new secrets without prompting
         #[arg(long)]
         auto: bool,
+        /// Enable background rotation checks every 30 seconds. Rotates secrets
+        /// when their configured schedule boundary has passed and rewrites .env.
+        /// Requires a rotation_policy to be set (via `phantom rotate --schedule-strategy`).
+        #[arg(long)]
+        auto_rotate: bool,
     },
 
     /// Regenerate phantom tokens (invalidates old ones)
@@ -367,6 +411,80 @@ enum Commands {
         /// Also sync secrets to all configured deployment platforms after rotation
         #[arg(long)]
         sync: bool,
+        /// Set a TTL (in days) on every secret after rotation. Sets expires_at and
+        /// rotation_policy on each vault entry. Use `phantom list --show-expiry`
+        /// and `phantom doctor --expiry` to monitor status.
+        #[arg(long, value_name = "DAYS")]
+        with_expiry: Option<u64>,
+        /// Shadow mode: generate a candidate credential alongside the current
+        /// primary for staged validation before promotion. The current primary
+        /// remains active until `phantom validate <NAME> --promote` succeeds.
+        /// Requires a secret NAME when used with --shadow.
+        #[arg(long)]
+        shadow: bool,
+        /// Secret name to rotate. With --shadow: shadow-rotate this secret.
+        /// With --provider (or alone, when the secret has a rotation_provider
+        /// block in .phantom.toml): rotate the real credential at the vendor.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        /// Persist a rotation schedule in .phantom.toml under [phantom.rotation_policy].
+        /// Accepted values: never | daily | weekly | monthly.
+        /// Use `phantom watch --auto-rotate` to enforce the schedule automatically.
+        #[arg(long, value_name = "STRATEGY", conflicts_with = "name")]
+        schedule_strategy: Option<String>,
+        /// Use a vendor-specific rotation provider to re-issue the credential at
+        /// the vendor side. Accepted values: stripe | github | aws | google | vercel.
+        /// (sentry and supabase are recognized but report manual-rotation-required
+        /// with a dashboard link — those vendors expose no token-minting API.)
+        /// Requires --name <KEY> and the secret's rotation_provider config in
+        /// .phantom.toml under [phantom.secrets.<KEY>.rotation_provider].
+        /// May be omitted when that config block names the provider:
+        /// `phantom rotate --name <KEY>` resolves it from .phantom.toml.
+        /// The bootstrap credential named by api_key_env is read from the
+        /// environment first, then from the vault under the same name.
+        /// The new value is stored in the vault and never printed; pass the
+        /// global --json flag for a metadata-only JSON result.
+        /// Example: phantom rotate --provider stripe --name STRIPE_SECRET_KEY
+        #[arg(long, value_name = "PROVIDER", conflicts_with_all = ["shadow", "schedule_strategy", "with_expiry", "batch"])]
+        provider: Option<String>,
+
+        /// Scan vault for all secrets expiring within the rotation window and
+        /// rotate them in a single batched run.  Respects per-provider rate
+        /// limits (e.g. Stripe's 10-second post-rotation pause).
+        /// Emits a composite audit event with a shared batch_id.
+        /// Rotation window defaults to 30 days; override with --rotation-window-days.
+        #[arg(long, conflicts_with_all = ["shadow", "schedule_strategy", "provider"])]
+        batch: bool,
+
+        /// With --batch: consider secrets expiring within this many days as due
+        /// for rotation (default: 30).
+        #[arg(long, value_name = "DAYS", default_value_t = 30, requires = "batch")]
+        rotation_window_days: u64,
+    },
+
+    /// Validate stored secrets against their target APIs (drift detection).
+    ///
+    /// Sub-commands: `schedule`, `history`
+    #[command(next_help_heading = "Maintenance")]
+    Validate {
+        #[command(subcommand)]
+        action: Option<ValidateAction>,
+        /// Validate all secrets in the vault (top-level shortcut)
+        #[arg(long)]
+        check_all: bool,
+        /// Number of concurrent validation jobs (default: 4)
+        #[arg(long, short = 'j', value_name = "N")]
+        jobs: Option<usize>,
+        /// Validate the shadow candidate for NAME and atomically promote it to
+        /// primary if validation succeeds.
+        #[arg(long, value_name = "NAME", conflicts_with = "check_all")]
+        promote: Option<String>,
+        /// Run as a background daemon, polling per-secret schedules and writing
+        /// results to ~/.phantom/validation-report.json for MCP tools to consume.
+        /// Respects per-secret [phantom.secrets.{name}.validation] config from
+        /// .phantom.toml (schedule: daily|weekly|never, timeout_secs).
+        #[arg(long, conflicts_with_all = ["check_all", "promote"])]
+        watch: bool,
     },
 
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
@@ -386,6 +504,35 @@ enum Commands {
         target: String,
     },
 
+    /// List secrets that are expired or expiring soon, with optional auto-rotate
+    #[command(next_help_heading = "Maintenance")]
+    SecretsExpiringSoon {
+        /// Warn about secrets expiring within this many days (default: 7)
+        #[arg(long, default_value_t = 7)]
+        days: u64,
+        /// Automatically rotate expiring secrets (extend TTL + refresh phantom token)
+        #[arg(long)]
+        auto_rotate: bool,
+        /// After auto-rotate, sync to all configured deployment platforms
+        #[arg(long, requires = "auto_rotate")]
+        sync: bool,
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// TTL-based secret expiry management: set expiry, enforce in CI, rotate to reset timer
+    ///
+    /// Subcommands:
+    ///   phantom expiry set <KEY> <DAYS>      — mark a secret expiring in N days
+    ///   phantom expiry enforce [--fail-closed] — exit 1 if any secret has expired
+    ///   phantom expiry rotate <KEY>          — generate fresh token + reset expiry timer
+    #[command(next_help_heading = "Maintenance")]
+    Expiry {
+        #[command(subcommand)]
+        action: ExpiryAction,
+    },
+
     /// Internal: clear the system clipboard after N seconds. Spawned by
     /// `phantom reveal --copy` so the parent CLI can exit immediately while a
     /// detached child waits, then clears. Hidden from `--help`.
@@ -394,6 +541,65 @@ enum Commands {
         /// Seconds to wait before clearing
         #[arg(long, default_value_t = 30)]
         secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExpiryAction {
+    /// Mark a secret as expiring in N days from now.
+    /// Stores `expires_at` Unix timestamp and `rotation_window` in .phantom.toml.
+    Set {
+        /// Secret name (e.g., STRIPE_KEY)
+        key: String,
+        /// Number of days until the secret expires
+        days: u64,
+    },
+    /// Exit 1 if any secret has an expired TTL (for CI / pre-commit hooks).
+    ///
+    /// With --fail-closed, also exit 1 if any secret has no expiry policy set.
+    Enforce {
+        /// Also fail if any secret has no expiry policy (treat missing TTL as expired)
+        #[arg(long)]
+        fail_closed: bool,
+        /// Emit JSON output instead of human-readable messages
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate a fresh phantom token and reset the expiry timer for a secret.
+    /// Uses the `rotation_window` days stored in .phantom.toml (default 30).
+    Rotate {
+        /// Secret name to rotate
+        key: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ValidateAction {
+    /// Configure or show the background validation schedule.
+    ///
+    /// Examples:
+    ///   phantom validate schedule hourly
+    ///   phantom validate schedule 6h
+    ///   phantom validate schedule daily@2am
+    ///   phantom validate schedule weekly
+    ///   phantom validate schedule --disable
+    ///   phantom validate schedule --status
+    Schedule {
+        /// Schedule interval: hourly, 6h, daily, daily@2am, weekly, disabled
+        #[arg(value_name = "INTERVAL")]
+        interval: Option<String>,
+        /// Show current schedule and staleness without changing anything
+        #[arg(long, conflicts_with = "interval")]
+        status: bool,
+        /// Disable the scheduler
+        #[arg(long, conflicts_with = "interval")]
+        disable: bool,
+    },
+    /// Show past validation run history.
+    History {
+        /// Number of most-recent runs to show (default: 20)
+        #[arg(long, short = 'n', value_name = "N")]
+        last: Option<usize>,
     },
 }
 
@@ -465,6 +671,29 @@ enum TeamAction {
         /// Team ID
         team_id: String,
     },
+    /// Revoke a member from the team vault and rotate the encryption key.
+    ///
+    /// The vault is re-encrypted with a fresh key and re-wrapped for all
+    /// remaining members. The revoked member cannot decrypt any future
+    /// vault versions. Emits tamper-proof audit events.
+    Revoke {
+        /// Team ID
+        team_id: String,
+        /// GitHub username to revoke
+        github_login: String,
+        /// Skip the interactive confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Proactively rotate the team vault's encryption key without removing any member.
+    ///
+    /// Re-encrypts the vault with a fresh symmetric key and re-wraps it for
+    /// all members that have a registered public key. Use this for scheduled
+    /// key rotation or after a suspected credential exposure.
+    RotateVault {
+        /// Team ID
+        team_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -481,7 +710,31 @@ enum CloudAction {
     Status,
 }
 
+/// Stack size for the real main thread.
+///
+/// Windows gives the process main thread a 1 MiB stack (unix platforms give
+/// 8 MiB). Debug builds of this CLI need more than 1 MiB — the clap-derive
+/// parser for our large `Commands` enum alone overflows 1 MiB before any
+/// subcommand output (STATUS_STACK_OVERFLOW / 0xC00000FD on windows-latest
+/// CI, reproducible on unix with `ulimit -s 1024`). Run the real main on a
+/// spawned thread with an explicit, platform-independent stack size instead
+/// of relying on the OS default.
+const MAIN_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 fn main() -> anyhow::Result<()> {
+    let handle = std::thread::Builder::new()
+        .name("phantom-main".into())
+        .stack_size(MAIN_STACK_SIZE)
+        .spawn(run)?;
+    match handle.join() {
+        Ok(result) => result,
+        // Propagate a panic on the worker thread as if it happened here so
+        // the process still dies with the standard panic exit status.
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let global_json = cli.json;
 
@@ -504,16 +757,27 @@ fn main() -> anyhow::Result<()> {
             all,
             dry_run,
             jobs,
-        } => match all {
-            Some(root) => {
-                let j = jobs
-                    .or_else(commands::init::multi::jobs_from_env)
-                    .unwrap_or(commands::init::multi::DEFAULT_JOBS);
-                commands::init::multi::run(root, dry_run, j)
+            empty,
+        } => {
+            if empty {
+                commands::init::run_empty()
+            } else {
+                match all {
+                    Some(root) => {
+                        let j = jobs
+                            .or_else(commands::init::multi::jobs_from_env)
+                            .unwrap_or(commands::init::multi::DEFAULT_JOBS);
+                        commands::init::multi::run(root, dry_run, j)
+                    }
+                    None => commands::init::run(&from),
+                }
             }
-            None => commands::init::run(&from),
-        },
-        Commands::List { json } => commands::list::run(json),
+        }
+        Commands::List {
+            json,
+            show_expiry,
+            min_anomaly_score,
+        } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
         Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
@@ -522,8 +786,68 @@ fn main() -> anyhow::Result<()> {
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status { oneline } => commands::status::run(oneline),
-        Commands::Rotate { sync } => commands::rotate::run(sync),
-        Commands::Doctor { fix } => commands::doctor::run(fix),
+        Commands::Rotate {
+            sync,
+            with_expiry,
+            shadow,
+            name,
+            schedule_strategy,
+            provider,
+            batch,
+            rotation_window_days,
+        } => {
+            if batch {
+                commands::rotate::run_batch(rotation_window_days, sync, cli.json)
+            } else if shadow {
+                let secret_name =
+                    name.ok_or_else(|| anyhow::anyhow!("--shadow requires --name <NAME>"))?;
+                commands::rotate::run_shadow(&secret_name).map(|_| ())
+            } else if provider.is_some() || name.is_some() {
+                let secret_name =
+                    name.ok_or_else(|| anyhow::anyhow!("--provider requires --name <NAME>"))?;
+                commands::rotate::run_with_provider(
+                    provider.as_deref(),
+                    &secret_name,
+                    sync,
+                    cli.json,
+                )
+            } else if let Some(ref strategy_str) = schedule_strategy {
+                commands::rotate::run_with_schedule_strategy(strategy_str, sync, with_expiry)
+            } else {
+                commands::rotate::run_with_expiry(sync, with_expiry)
+            }
+        }
+        Commands::Validate {
+            action,
+            check_all,
+            jobs,
+            promote,
+            watch,
+        } => match action {
+            Some(ValidateAction::Schedule {
+                interval,
+                status,
+                disable,
+            }) => commands::validation_scheduler::run_schedule(
+                interval.as_deref(),
+                status,
+                disable,
+                cli.json,
+            ),
+            Some(ValidateAction::History { last }) => {
+                commands::validation_scheduler::run_history(last, cli.json)
+            }
+            None => {
+                if watch {
+                    commands::validate::run_watch(jobs, cli.json)
+                } else if let Some(secret_name) = promote {
+                    commands::rotate::run_validate_promote(&secret_name, true)
+                } else {
+                    commands::validate::run(check_all, jobs, cli.json)
+                }
+            }
+        },
+        Commands::Doctor { fix, expiry } => commands::doctor::run_doctor(fix, expiry),
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
             AgentAction::Doctor => commands::agent::doctor(),
@@ -540,7 +864,11 @@ fn main() -> anyhow::Result<()> {
             service,
             force,
         } => commands::pull::run(&from, &project, environment, service, force),
-        Commands::Setup { client, print } => commands::setup::run(client, print),
+        Commands::Setup {
+            client,
+            print,
+            audit_mode,
+        } => commands::setup::run(client, print, audit_mode),
         Commands::Sync {
             platform,
             project,
@@ -585,7 +913,9 @@ fn main() -> anyhow::Result<()> {
             CloudAction::Pull { force } => commands::cloud::run_pull(force),
             CloudAction::Status => commands::cloud::run_status(),
         },
-        Commands::Watch { auto } => commands::watch::run(auto),
+        Commands::Watch { auto, auto_rotate } => {
+            commands::watch::run_with_rotate(auto, auto_rotate)
+        }
         Commands::Why { key } => commands::why::run(&key),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
         Commands::Unwrap => commands::unwrap::run(),
@@ -596,18 +926,110 @@ fn main() -> anyhow::Result<()> {
                 op,
                 name,
                 json,
-            } => commands::audit::run_show(last, op.as_deref(), name.as_deref(), json),
+                leaked_secrets,
+            } => commands::audit::run_show(
+                last,
+                op.as_deref(),
+                name.as_deref(),
+                json,
+                leaked_secrets,
+            ),
             AuditAction::Tail { op, name } => {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
             }
             AuditAction::Path => commands::audit::run_path(),
-            AuditAction::Verify => commands::audit::run_verify(),
+            AuditAction::Verify { with_context } => commands::audit::run_verify(with_context),
+            AuditAction::Stats {
+                json,
+                top,
+                analytics,
+                min_anomaly_score,
+            } => commands::audit::run_stats(json, top, analytics, min_anomaly_score),
+            AuditAction::Export {
+                format,
+                period,
+                min_anomaly_score,
+            } => commands::audit::run_export(&format, &period, min_anomaly_score),
+            AuditAction::Analytics {
+                window,
+                min_anomaly_score,
+                format,
+                export,
+                auto_alert_on_anomaly,
+            } => commands::audit::run_analytics(
+                window,
+                min_anomaly_score,
+                &format,
+                export.as_deref(),
+                auto_alert_on_anomaly,
+            ),
+            AuditAction::Anomalies {
+                realtime,
+                threshold,
+                name,
+                max_accesses_per_hour,
+                max_quiet_days,
+                json,
+            } => commands::audit::run_anomalies(
+                realtime,
+                threshold,
+                name.as_deref(),
+                max_accesses_per_hour,
+                max_quiet_days,
+                json,
+            ),
+            AuditAction::Incidents {
+                min_confidence,
+                json,
+                auto_rotate_on_high,
+            } => commands::audit::run_incidents(min_confidence, json, auto_rotate_on_high),
+            AuditAction::Alerts {
+                last,
+                backfill,
+                json,
+            } => commands::audit::run_alerts(last, backfill, json),
+            AuditAction::ExportRange {
+                format,
+                from,
+                to,
+                name,
+                op,
+                pid,
+            } => commands::audit::run_export_range(
+                &format,
+                &from,
+                &to,
+                name.as_deref(),
+                op.as_deref(),
+                pid,
+            ),
+            AuditAction::Report {
+                r#type,
+                from,
+                to,
+                save,
+                compact,
+            } => commands::audit::run_report(&r#type, &from, &to, save, compact),
         },
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
         Commands::Completion { shell } => commands::completion::run(shell),
         Commands::Mcp { action } => match action {
             McpAction::Serve => commands::mcp::run_serve(),
+        },
+        Commands::McpApprove { nonce } => commands::mcp_approve::run(&nonce),
+        Commands::SecretsExpiringSoon {
+            days,
+            auto_rotate,
+            sync,
+            json,
+        } => commands::expiry::run(days, auto_rotate, sync, json),
+        Commands::Expiry { action } => match action {
+            ExpiryAction::Set { key, days } => commands::expiry::run_set(&key, days),
+            ExpiryAction::Enforce { fail_closed, json } => {
+                commands::expiry::run_enforce(fail_closed, json)
+            }
+            ExpiryAction::Rotate { key } => commands::expiry::run_rotate(&key),
         },
         Commands::ClearClipboardAfter { secs } => commands::reveal::run_clear_after(secs),
         Commands::Team { action } => match action {
@@ -622,6 +1044,12 @@ fn main() -> anyhow::Result<()> {
             TeamAction::KeyPublish { team_id } => commands::team::run_key_publish(&team_id),
             TeamAction::VaultPush { team_id } => commands::team::run_vault_push(&team_id),
             TeamAction::VaultPull { team_id } => commands::team::run_vault_pull(&team_id),
+            TeamAction::Revoke {
+                team_id,
+                github_login,
+                yes,
+            } => commands::team::run_revoke(&team_id, &github_login, yes),
+            TeamAction::RotateVault { team_id } => commands::team::run_rotate_vault(&team_id),
         },
     }
 }

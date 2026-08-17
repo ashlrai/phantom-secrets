@@ -1,5 +1,8 @@
-mod server;
-mod tools;
+pub mod server;
+pub(crate) mod tools;
+
+// Re-export param structs needed by integration tests.
+pub use tools::params::LeakIncidentsRealtimeParams;
 
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;

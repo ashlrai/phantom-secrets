@@ -121,3 +121,228 @@ fn init_no_env_file_fails_gracefully() {
         .assert()
         .failure();
 }
+
+/// `phantom init --empty` creates .phantom.toml in a fresh dir without a .env,
+/// and `phantom add FOO --stdin` then succeeds (auto-init path also covered).
+#[test]
+fn init_empty_creates_config_and_add_works() {
+    let dir = TempDir::new().unwrap();
+
+    // Step 1: phantom init --empty — must succeed and produce .phantom.toml
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["init", "--empty"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .assert()
+        .success();
+
+    assert!(
+        dir.path().join(".phantom.toml").exists(),
+        ".phantom.toml should exist after init --empty"
+    );
+
+    // Step 2: phantom add FOO --stdin — must succeed in the bootstrapped dir
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["add", "FOO", "--stdin"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .write_stdin("supersecretvalue\n")
+        .assert()
+        .success();
+}
+
+/// `phantom add BAR --stdin` in a brand-new directory (no .phantom.toml at all)
+/// must auto-create .phantom.toml and succeed — the auto-init-on-first-add path.
+#[test]
+fn add_auto_inits_when_no_config() {
+    let dir = TempDir::new().unwrap();
+
+    // No init step — go straight to add
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["add", "BAR", "--stdin"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .write_stdin("anothersecret\n")
+        .assert()
+        .success();
+
+    assert!(
+        dir.path().join(".phantom.toml").exists(),
+        ".phantom.toml should be auto-created by phantom add"
+    );
+}
+
+/// `phantom init` must leave NEXT_PUBLIC_*, VITE_*, REACT_APP_*, EXPO_PUBLIC_*,
+/// NUXT_PUBLIC_*, and GATSBY_* keys unchanged in the .env file — they are
+/// browser-safe public keys and must never be wrapped in phantom tokens.
+#[test]
+fn init_skips_public_framework_keys() {
+    let dir = TempDir::new().unwrap();
+    let env_path = dir.path().join(".env");
+    fs::write(
+        &env_path,
+        concat!(
+            "OPENAI_API_KEY=sk-real-secret\n",
+            "NEXT_PUBLIC_SUPABASE_URL=https://example.supabase.co\n",
+            "VITE_API_URL=https://api.example.com\n",
+            "REACT_APP_BACKEND_URL=https://backend.example.com\n",
+            "EXPO_PUBLIC_POSTHOG_KEY=phk_public_key_value\n",
+            "NUXT_PUBLIC_API_BASE=https://api.example.com/v2\n",
+            "GATSBY_API_URL=https://gatsby.example.com\n",
+            "NODE_ENV=development\n",
+        ),
+    )
+    .expect("write .env");
+
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .arg("init")
+        .arg("--from")
+        .arg(".env")
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .assert()
+        .success();
+
+    let env_content = fs::read_to_string(dir.path().join(".env")).expect("read .env");
+
+    // The real secret must be phantomized.
+    assert!(
+        env_content.contains("OPENAI_API_KEY=phm_"),
+        "OPENAI_API_KEY should be a phantom token, got: {env_content}"
+    );
+
+    // All framework public keys must remain as plain values — no phantom wrapping.
+    assert!(
+        env_content.contains("NEXT_PUBLIC_SUPABASE_URL=https://example.supabase.co"),
+        "NEXT_PUBLIC_ key must not be wrapped, got: {env_content}"
+    );
+    assert!(
+        env_content.contains("VITE_API_URL=https://api.example.com"),
+        "VITE_ key must not be wrapped, got: {env_content}"
+    );
+    assert!(
+        env_content.contains("REACT_APP_BACKEND_URL=https://backend.example.com"),
+        "REACT_APP_ key must not be wrapped, got: {env_content}"
+    );
+    assert!(
+        env_content.contains("EXPO_PUBLIC_POSTHOG_KEY=phk_public_key_value"),
+        "EXPO_PUBLIC_ key must not be wrapped, got: {env_content}"
+    );
+    assert!(
+        env_content.contains("NUXT_PUBLIC_API_BASE=https://api.example.com/v2"),
+        "NUXT_PUBLIC_ key must not be wrapped, got: {env_content}"
+    );
+    assert!(
+        env_content.contains("GATSBY_API_URL=https://gatsby.example.com"),
+        "GATSBY_ key must not be wrapped, got: {env_content}"
+    );
+}
+
+/// Public key keys detected during `phantom init` must be persisted in the
+/// `[phantom.public_keys]` array in `.phantom.toml` so that subsequent tooling
+/// (e.g., `phantom check`, `phantom add --force`) can respect the skip decision.
+#[test]
+fn init_persists_public_keys_in_toml() {
+    let dir = TempDir::new().unwrap();
+    let env_path = dir.path().join(".env");
+    fs::write(
+        &env_path,
+        concat!(
+            "STRIPE_SECRET_KEY=sk_test_realvalue\n",
+            "NEXT_PUBLIC_SUPABASE_URL=https://proj.supabase.co\n",
+            "VITE_ANALYTICS_ID=G-XXXXXXXXXX\n",
+        ),
+    )
+    .expect("write .env");
+
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .arg("init")
+        .arg("--from")
+        .arg(".env")
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .assert()
+        .success();
+
+    let toml_content =
+        fs::read_to_string(dir.path().join(".phantom.toml")).expect("read .phantom.toml");
+
+    // Both public keys must appear in the persisted TOML under public_keys.
+    assert!(
+        toml_content.contains("NEXT_PUBLIC_SUPABASE_URL"),
+        ".phantom.toml must record NEXT_PUBLIC_ key, got: {toml_content}"
+    );
+    assert!(
+        toml_content.contains("VITE_ANALYTICS_ID"),
+        ".phantom.toml must record VITE_ key, got: {toml_content}"
+    );
+
+    // The real secret must NOT appear in the public_keys array.
+    // Extract only the array value: everything between `public_keys = [` and the
+    // closing `]`, then assert STRIPE_SECRET_KEY is absent from that slice.
+    let array_content = toml_content
+        .split("public_keys = [")
+        .nth(1)
+        .and_then(|s| s.split(']').next())
+        .unwrap_or("");
+    assert!(
+        !array_content.contains("STRIPE_SECRET_KEY"),
+        "STRIPE_SECRET_KEY must not appear in public_keys array, got: {array_content}"
+    );
+}
+
+/// When a .env contains ONLY public keys and no real secrets, `phantom init`
+/// must exit successfully and report that there is nothing to protect — it must
+/// not fail or attempt to create an empty vault with phantom tokens.
+#[test]
+fn init_handles_all_public_keys_no_secrets() {
+    let dir = TempDir::new().unwrap();
+    let env_path = dir.path().join(".env");
+    fs::write(
+        &env_path,
+        concat!(
+            "NEXT_PUBLIC_API_URL=https://api.example.com\n",
+            "VITE_FEATURE_FLAG=true\n",
+            "REACT_APP_VERSION=1.0.0\n",
+            "NODE_ENV=production\n",
+        ),
+    )
+    .expect("write .env");
+
+    // init must succeed (exit 0) even when there are no secrets to protect.
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .arg("init")
+        .arg("--from")
+        .arg(".env")
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .assert()
+        .success();
+
+    // The .env file must be completely unchanged — no phantom tokens inserted.
+    let env_content = fs::read_to_string(&env_path).expect("read .env");
+    assert!(
+        !env_content.contains("phm_"),
+        ".env must have no phantom tokens when all vars are public/config, got: {env_content}"
+    );
+    assert!(
+        env_content.contains("NEXT_PUBLIC_API_URL=https://api.example.com"),
+        "NEXT_PUBLIC_ value must be preserved"
+    );
+    assert!(
+        env_content.contains("VITE_FEATURE_FLAG=true"),
+        "VITE_ value must be preserved"
+    );
+}

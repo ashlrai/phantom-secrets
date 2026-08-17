@@ -1,4 +1,6 @@
 use crate::error::{PhantomError, Result};
+use crate::leak_correlation::AlertingConfig;
+use crate::rotation_strategy::{RotationSchedule, RotationStrategy};
 use crate::sync::SyncTarget;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -26,6 +28,15 @@ pub struct PhantomConfig {
     /// Keys explicitly classified as public (skipped during init)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub public_keys: Vec<String>,
+    /// Leak incident alerting configuration (`[alerting]` section).
+    /// Controls webhook, Slack, and PagerDuty notifications for high-confidence
+    /// proxy response leak incidents detected by the correlation engine.
+    #[serde(default, skip_serializing_if = "alerting_is_default")]
+    pub alerting: AlertingConfig,
+}
+
+fn alerting_is_default(cfg: &AlertingConfig) -> bool {
+    !cfg.enabled && cfg.backends.is_empty()
 }
 
 /// Cloud vault sync configuration.
@@ -43,6 +54,220 @@ pub struct PhantomMeta {
     pub version: String,
     /// Project identifier (hash of project path, for vault namespacing)
     pub project_id: String,
+    /// Global rotation schedule — applies to all secrets unless overridden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_policy: Option<RotationSchedule>,
+    /// Per-secret configuration overrides (keyed by secret name).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, SecretOverride>,
+}
+
+/// Validation schedule for a single secret, stored under
+/// `[phantom.secrets.{name}.validation]` in `.phantom.toml`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ValidationScheduleConfig {
+    /// Whether automatic validation is enabled for this secret (default: true).
+    #[serde(default = "default_validation_enabled")]
+    pub enabled: bool,
+    /// How often to re-validate: `"daily"`, `"weekly"`, or `"never"`.
+    /// Defaults to `"daily"`.
+    #[serde(default = "default_validation_schedule")]
+    pub schedule: String,
+    /// Per-request HTTP timeout in seconds (default: 30).
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Hint to the validator which provider to use for this secret.
+    /// Accepted values: `"github"`, `"stripe"`, `"aws"`, `"openai"`,
+    /// `"anthropic"`, or any custom validator name registered in the
+    /// validation pipeline.  When absent the pipeline auto-selects the first
+    /// validator whose `matches()` predicate returns true for the secret name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// When `true`, emit an audit event with op `"vault.validate.invalid"` and
+    /// log a warning whenever a validation run transitions the secret from
+    /// valid → invalid.  Defaults to `true`.
+    #[serde(default = "default_alert_on_invalid")]
+    pub alert_on_invalid: bool,
+}
+
+impl Default for ValidationScheduleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            schedule: "daily".to_string(),
+            timeout_secs: 30,
+            provider: None,
+            alert_on_invalid: true,
+        }
+    }
+}
+
+fn default_validation_enabled() -> bool {
+    true
+}
+
+fn default_validation_schedule() -> String {
+    "daily".to_string()
+}
+
+fn default_timeout_secs() -> u64 {
+    30
+}
+
+fn default_alert_on_invalid() -> bool {
+    true
+}
+
+impl ValidationScheduleConfig {
+    /// Return the minimum number of seconds between re-validations based on
+    /// the `schedule` field.  Returns `None` when schedule is `"never"`.
+    pub fn interval_secs(&self) -> Option<u64> {
+        match self.schedule.to_lowercase().trim() {
+            "daily" => Some(86_400),
+            "weekly" => Some(7 * 86_400),
+            "never" => None,
+            _ => Some(86_400), // unknown → default to daily
+        }
+    }
+
+    /// Return `true` if the secret should be re-validated now, given the
+    /// timestamp of the last check (`last_check_ts`, 0 = never checked).
+    pub fn is_due(&self, last_check_ts: u64) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let Some(interval) = self.interval_secs() else {
+            return false; // schedule == "never"
+        };
+        if last_check_ts == 0 {
+            return true; // never checked
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now.saturating_sub(last_check_ts) >= interval
+    }
+}
+
+/// Per-secret configuration override stored under `[phantom.secrets.{name}]`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SecretOverride {
+    /// Override the global rotation schedule for this specific secret.
+    /// Accepts a duration string like `"30d"`, `"7d"`, `"90d"` (days only for
+    /// now) which is converted to a `Daily`/`Weekly`/`Monthly` approximation,
+    /// or the caller can set a full `RotationSchedule` by using the structured
+    /// `rotation_schedule` field instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotate_every: Option<String>,
+    /// Full structured rotation schedule override (takes precedence over `rotate_every`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_schedule: Option<RotationSchedule>,
+    /// Audit-log anomaly thresholds for this secret.
+    /// Stored under `[phantom.secrets.{name}.audit]` in `.phantom.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<crate::analytics::AuditThresholdConfig>,
+    /// Unix timestamp (seconds since epoch) after which this secret is expired.
+    /// Set by `phantom expiry set <KEY> <DAYS>`. Used by `phantom expiry enforce`
+    /// and the `phantom_expiry_enforce` MCP tool to block deployments and CI pipelines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    /// Number of days between rotations for this secret. Used by
+    /// `phantom expiry rotate <KEY>` to reset the expiry timer.
+    /// Stored as `rotation_window = <DAYS>` in `.phantom.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_window: Option<u64>,
+    /// Per-secret validation schedule configuration.
+    /// Stored under `[phantom.secrets.{name}.validation]` in `.phantom.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<ValidationScheduleConfig>,
+    /// When `true`, `phantom exec` will hard-block if this secret's
+    /// `rotation_schedule` period has elapsed since `last_rotated`.
+    /// The user must run `phantom rotate <NAME>` to unblock, or pass
+    /// `--skip-rotation-check` (which writes an audit-log warning).
+    /// Default: `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub enforce_rotation_on_access: bool,
+    /// Grace period (in seconds) before a secret's TTL expiry at which
+    /// `phantom doctor` promotes the status from info → warning and a
+    /// daily background check is emitted.
+    /// Default: `604800` (7 days).
+    #[serde(
+        default = "default_expiry_grace_period_secs",
+        skip_serializing_if = "is_default_grace"
+    )]
+    pub expiry_grace_period_secs: u64,
+    /// Vendor-specific rotation provider configuration.
+    ///
+    /// When set, `phantom rotate --auto-sync` delegates rotation to the
+    /// named vendor API instead of requiring a manually supplied value.
+    ///
+    /// Example `.phantom.toml` block:
+    /// ```toml
+    /// [phantom.secrets.STRIPE_SECRET_KEY.rotation_provider]
+    /// provider = "stripe"
+    /// api_key_env = "STRIPE_ROTATION_API_KEY"
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_provider: Option<crate::rotation_provider::RotationProviderConfig>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
+}
+fn default_expiry_grace_period_secs() -> u64 {
+    604_800
+}
+fn is_default_grace(v: &u64) -> bool {
+    *v == 604_800
+}
+
+impl Default for SecretOverride {
+    fn default() -> Self {
+        Self {
+            rotate_every: None,
+            rotation_schedule: None,
+            audit: None,
+            expires_at: None,
+            rotation_window: None,
+            validation: None,
+            enforce_rotation_on_access: false,
+            expiry_grace_period_secs: 604_800,
+            rotation_provider: None,
+        }
+    }
+}
+
+impl SecretOverride {
+    /// Resolve this override to a `RotationSchedule`, if any.
+    pub fn resolve_schedule(&self) -> Option<RotationSchedule> {
+        if let Some(ref sched) = self.rotation_schedule {
+            return Some(sched.clone());
+        }
+        if let Some(ref s) = self.rotate_every {
+            return parse_rotate_every(s);
+        }
+        None
+    }
+}
+
+/// Parse a `rotate_every` string like `"30d"`, `"7d"`, `"90d"` into a
+/// `RotationSchedule`.  Only day-based durations are supported.
+pub fn parse_rotate_every(s: &str) -> Option<RotationSchedule> {
+    let s = s.trim().to_ascii_lowercase();
+    let days: u64 = s.strip_suffix('d')?.parse().ok()?;
+
+    let strategy = if days <= 1 {
+        RotationStrategy::Daily
+    } else if days <= 7 {
+        RotationStrategy::Weekly
+    } else {
+        RotationStrategy::Monthly
+    };
+
+    Some(RotationSchedule::from_strategy(strategy))
 }
 
 /// Configuration for how a secret maps to an API service.
@@ -242,12 +467,31 @@ impl PhantomConfig {
             phantom: PhantomMeta {
                 version: "1".to_string(),
                 project_id,
+                rotation_policy: None,
+                secrets: BTreeMap::new(),
             },
             services,
             sync: Vec::new(),
             cloud: None,
             public_keys: Vec::new(),
+            alerting: AlertingConfig::default(),
         }
+    }
+
+    /// Return the effective `RotationSchedule` for `secret_name`.
+    ///
+    /// Resolution order:
+    ///   1. Per-secret `rotation_schedule` in `[phantom.secrets.{name}]`
+    ///   2. Per-secret `rotate_every` in `[phantom.secrets.{name}]`
+    ///   3. Global `[phantom.rotation_policy]`
+    ///   4. `None` — no schedule configured.
+    pub fn get_rotation_schedule(&self, secret_name: &str) -> Option<RotationSchedule> {
+        if let Some(ov) = self.phantom.secrets.get(secret_name) {
+            if let Some(sched) = ov.resolve_schedule() {
+                return Some(sched);
+            }
+        }
+        self.phantom.rotation_policy.clone()
     }
 
     /// Generate a stable project ID from a directory path.
@@ -600,5 +844,294 @@ header = "Authorization"
             .service_risks()
             .iter()
             .all(|risk| risk.service != "gateway"));
+    }
+
+    // ── Rotation policy config tests ──────────────────────────────────────────
+
+    #[test]
+    fn rotation_policy_roundtrip_in_toml() {
+        use crate::rotation_strategy::{RotationSchedule, RotationStrategy, Weekday};
+        let mut config = PhantomConfig::new_with_defaults("rp_test".to_string());
+        config.phantom.rotation_policy = Some(RotationSchedule {
+            strategy: RotationStrategy::Daily,
+            hour: 2,
+            minute: 0,
+            weekday: Weekday::Monday,
+            day_of_month: 1,
+            last_rotated: None,
+        });
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        assert!(
+            toml_str.contains("rotation_policy"),
+            "TOML should contain rotation_policy"
+        );
+        let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
+        let rp = parsed.phantom.rotation_policy.unwrap();
+        assert_eq!(rp.strategy, RotationStrategy::Daily);
+        assert_eq!(rp.hour, 2);
+    }
+
+    #[test]
+    fn get_rotation_schedule_falls_back_to_global() {
+        use crate::rotation_strategy::{RotationSchedule, RotationStrategy, Weekday};
+        let mut config = PhantomConfig::new_with_defaults("gs_test".to_string());
+        config.phantom.rotation_policy = Some(RotationSchedule {
+            strategy: RotationStrategy::Weekly,
+            hour: 3,
+            minute: 0,
+            weekday: Weekday::Monday,
+            day_of_month: 1,
+            last_rotated: None,
+        });
+        // No per-secret override — should return global.
+        let sched = config.get_rotation_schedule("OPENAI_API_KEY").unwrap();
+        assert_eq!(sched.strategy, RotationStrategy::Weekly);
+    }
+
+    #[test]
+    fn get_rotation_schedule_per_secret_overrides_global() {
+        use crate::rotation_strategy::{RotationSchedule, RotationStrategy, Weekday};
+        let mut config = PhantomConfig::new_with_defaults("ps_test".to_string());
+        config.phantom.rotation_policy = Some(RotationSchedule {
+            strategy: RotationStrategy::Monthly,
+            hour: 0,
+            minute: 0,
+            weekday: Weekday::Monday,
+            day_of_month: 1,
+            last_rotated: None,
+        });
+        config.phantom.secrets.insert(
+            "STRIPE_KEY".to_string(),
+            SecretOverride {
+                rotate_every: Some("7d".to_string()),
+                rotation_schedule: None,
+                audit: None,
+                ..Default::default()
+            },
+        );
+        let sched = config.get_rotation_schedule("STRIPE_KEY").unwrap();
+        assert_eq!(sched.strategy, RotationStrategy::Weekly);
+        // Other secrets still use global.
+        let global = config.get_rotation_schedule("OTHER_KEY").unwrap();
+        assert_eq!(global.strategy, RotationStrategy::Monthly);
+    }
+
+    #[test]
+    fn parse_rotate_every_days() {
+        assert!(parse_rotate_every("1d").is_some());
+        assert!(parse_rotate_every("7d").is_some());
+        assert!(parse_rotate_every("30d").is_some());
+        assert!(parse_rotate_every("90d").is_some());
+        assert!(parse_rotate_every("bad").is_none());
+        assert!(parse_rotate_every("30").is_none());
+    }
+
+    #[test]
+    fn per_secret_rotation_schedule_roundtrip() {
+        use crate::rotation_strategy::{RotationSchedule, RotationStrategy, Weekday};
+        let mut config = PhantomConfig::new_with_defaults("per_s".to_string());
+        config.phantom.secrets.insert(
+            "MY_KEY".to_string(),
+            SecretOverride {
+                rotate_every: None,
+                rotation_schedule: Some(RotationSchedule {
+                    strategy: RotationStrategy::Daily,
+                    hour: 4,
+                    minute: 30,
+                    weekday: Weekday::Friday,
+                    day_of_month: 15,
+                    last_rotated: Some(1_000_000),
+                }),
+                audit: None,
+                ..Default::default()
+            },
+        );
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
+        let ov = parsed.phantom.secrets.get("MY_KEY").unwrap();
+        let sched = ov.resolve_schedule().unwrap();
+        assert_eq!(sched.strategy, RotationStrategy::Daily);
+        assert_eq!(sched.hour, 4);
+        assert_eq!(sched.minute, 30);
+        assert_eq!(sched.last_rotated, Some(1_000_000));
+    }
+
+    #[test]
+    fn get_rotation_schedule_returns_none_when_unconfigured() {
+        let config = PhantomConfig::new_with_defaults("none_test".to_string());
+        assert!(config.get_rotation_schedule("OPENAI_API_KEY").is_none());
+    }
+
+    // ── ValidationScheduleConfig tests ───────────────────────────────────────
+
+    #[test]
+    fn validation_schedule_config_defaults() {
+        let cfg = ValidationScheduleConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.schedule, "daily");
+        assert_eq!(cfg.timeout_secs, 30);
+    }
+
+    #[test]
+    fn validation_schedule_interval_daily() {
+        let cfg = ValidationScheduleConfig {
+            schedule: "daily".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.interval_secs(), Some(86_400));
+    }
+
+    #[test]
+    fn validation_schedule_interval_weekly() {
+        let cfg = ValidationScheduleConfig {
+            schedule: "weekly".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.interval_secs(), Some(7 * 86_400));
+    }
+
+    #[test]
+    fn validation_schedule_interval_never() {
+        let cfg = ValidationScheduleConfig {
+            schedule: "never".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.interval_secs(), None);
+    }
+
+    #[test]
+    fn validation_schedule_disabled_not_due() {
+        let cfg = ValidationScheduleConfig {
+            enabled: false,
+            schedule: "daily".to_string(),
+            timeout_secs: 30,
+            provider: None,
+            alert_on_invalid: true,
+        };
+        // Disabled — never due, even if never checked.
+        assert!(!cfg.is_due(0));
+    }
+
+    #[test]
+    fn validation_schedule_never_checked_is_due() {
+        let cfg = ValidationScheduleConfig::default();
+        assert!(cfg.is_due(0));
+    }
+
+    #[test]
+    fn validation_schedule_fresh_check_not_due() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let cfg = ValidationScheduleConfig::default(); // daily
+                                                       // Checked just now — not due.
+        assert!(!cfg.is_due(now));
+    }
+
+    #[test]
+    fn validation_schedule_old_check_is_due() {
+        // last_check_ts = epoch+1 — more than a day ago.
+        let cfg = ValidationScheduleConfig::default(); // daily
+        assert!(cfg.is_due(1));
+    }
+
+    #[test]
+    fn validation_schedule_never_never_due() {
+        let cfg = ValidationScheduleConfig {
+            enabled: true,
+            schedule: "never".to_string(),
+            timeout_secs: 30,
+            provider: None,
+            alert_on_invalid: true,
+        };
+        assert!(!cfg.is_due(0));
+        assert!(!cfg.is_due(1));
+    }
+
+    #[test]
+    fn validation_schedule_config_provider_and_alert_fields() {
+        let cfg = ValidationScheduleConfig {
+            enabled: true,
+            schedule: "daily".to_string(),
+            timeout_secs: 30,
+            provider: Some("github".to_string()),
+            alert_on_invalid: false,
+        };
+        assert_eq!(cfg.provider.as_deref(), Some("github"));
+        assert!(!cfg.alert_on_invalid);
+
+        // Round-trip through JSON.
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: ValidationScheduleConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.provider.as_deref(), Some("github"));
+        assert!(!back.alert_on_invalid);
+    }
+
+    #[test]
+    fn validation_schedule_config_defaults_alert_on_invalid_true() {
+        let cfg = ValidationScheduleConfig::default();
+        assert!(
+            cfg.alert_on_invalid,
+            "alert_on_invalid should default to true"
+        );
+        assert!(cfg.provider.is_none(), "provider should default to None");
+    }
+
+    #[test]
+    fn validation_schedule_config_provider_none_omitted_from_toml() {
+        let cfg = ValidationScheduleConfig::default();
+        let toml_str = toml::to_string(&cfg).unwrap();
+        // provider = None → skip_serializing_if → not present in TOML
+        assert!(
+            !toml_str.contains("provider"),
+            "provider=None should be omitted: {toml_str}"
+        );
+    }
+
+    #[test]
+    fn secret_override_validation_field_roundtrip_toml() {
+        let mut config = PhantomConfig::new_with_defaults("val_toml_test".to_string());
+        config.phantom.secrets.insert(
+            "STRIPE_KEY".to_string(),
+            SecretOverride {
+                validation: Some(ValidationScheduleConfig {
+                    enabled: true,
+                    schedule: "weekly".to_string(),
+                    timeout_secs: 60,
+                    provider: Some("stripe".to_string()),
+                    alert_on_invalid: true,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        assert!(toml_str.contains("weekly"), "TOML should contain 'weekly'");
+
+        let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
+        let ov = parsed.phantom.secrets.get("STRIPE_KEY").unwrap();
+        let val = ov.validation.as_ref().unwrap();
+        assert_eq!(val.schedule, "weekly");
+        assert_eq!(val.timeout_secs, 60);
+        assert!(val.enabled);
+        assert_eq!(val.provider.as_deref(), Some("stripe"));
+        assert!(val.alert_on_invalid);
+    }
+
+    #[test]
+    fn secret_override_no_validation_field_is_none_default() {
+        let toml_str = r#"
+[phantom]
+version = "1"
+project_id = "abc"
+
+[phantom.secrets.MY_KEY]
+rotate_every = "30d"
+"#;
+        let parsed: PhantomConfig = toml::from_str(toml_str).unwrap();
+        let ov = parsed.phantom.secrets.get("MY_KEY").unwrap();
+        // validation should be absent (None) when not specified
+        assert!(ov.validation.is_none());
     }
 }

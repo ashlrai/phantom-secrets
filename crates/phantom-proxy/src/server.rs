@@ -1,5 +1,6 @@
 use crate::body_scope;
 use crate::interceptor::Interceptor;
+use crate::rate_limiter::{RateLimitConfig, RateLimiter};
 use crate::services::ServiceRegistry;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, StreamBody};
@@ -34,6 +35,8 @@ pub struct ProxyConfig {
     /// `phantom_token` query-param auth are accepted. Disabled by default so
     /// proxy session tokens do not end up in URLs.
     pub allow_query_token_auth: bool,
+    /// Rate-limit configuration. Defaults to env-var-driven values.
+    pub rate_limit: RateLimitConfig,
 }
 
 impl Default for ProxyConfig {
@@ -45,6 +48,7 @@ impl Default for ProxyConfig {
             upstream_timeout_secs: 30,
             connect_timeout_secs: 5,
             allow_query_token_auth: false,
+            rate_limit: RateLimitConfig::from_env(),
         }
     }
 }
@@ -75,6 +79,7 @@ impl ProxyServer {
         let state = Arc::new(ProxyState {
             registry,
             interceptor,
+            rate_limiter: RateLimiter::new(config.rate_limit),
             proxy_token: config.proxy_token,
             allow_query_token_auth: config.allow_query_token_auth,
             max_body_size: config.max_body_size,
@@ -123,6 +128,7 @@ impl ProxyServer {
 struct ProxyState {
     registry: ServiceRegistry,
     interceptor: Interceptor,
+    rate_limiter: RateLimiter,
     proxy_token: String,
     allow_query_token_auth: bool,
     max_body_size: usize,
@@ -272,6 +278,80 @@ async fn handle_request(
 
     let target_url = format!("{}{}{}", route.target_base, remainder, query);
     debug!("Proxying to: {}", target_url);
+
+    // ── Rate-limit / anomaly detection ──────────────────────────────────────
+    // Record the access against the matched route's secret key and classify.
+    // Alert-class requests are rejected with 429; caution/normal pass through.
+    {
+        use crate::rate_limiter::AnomalyClass;
+        let decision = state.rate_limiter.record(&route.secret_key);
+        match decision.class {
+            AnomalyClass::Alert => {
+                warn!(
+                    "Rate limit exceeded for secret '{}': {}/10s per-secret, {}/10s total (score {})",
+                    route.secret_key,
+                    decision.per_secret_10s,
+                    decision.total_10s,
+                    decision.anomaly_score,
+                );
+                let mut resp = error_response(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!(
+                        r#"{{"error":"rate limit exceeded","secret_key":"{}","anomaly_class":"alert","per_secret_10s":{},"total_10s":{},"anomaly_score":{}}}"#,
+                        route.secret_key,
+                        decision.per_secret_10s,
+                        decision.total_10s,
+                        decision.anomaly_score,
+                    ),
+                );
+                resp.headers_mut().insert(
+                    "x-phantom-anomaly-class",
+                    hyper::header::HeaderValue::from_static("alert"),
+                );
+                resp.headers_mut().insert(
+                    "x-phantom-anomaly-score",
+                    hyper::header::HeaderValue::from_str(&decision.anomaly_score.to_string())
+                        .unwrap_or(hyper::header::HeaderValue::from_static("100")),
+                );
+                resp.headers_mut()
+                    .insert("retry-after", hyper::header::HeaderValue::from_static("10"));
+                return Ok(resp);
+            }
+            AnomalyClass::Caution => {
+                warn!(
+                    "Elevated access rate for secret '{}': {}/10s per-secret (score {})",
+                    route.secret_key, decision.per_secret_10s, decision.anomaly_score,
+                );
+            }
+            AnomalyClass::Normal => {
+                debug!(
+                    "Rate check ok for '{}': {}/10s (score {})",
+                    route.secret_key, decision.per_secret_10s, decision.anomaly_score,
+                );
+            }
+        }
+        // Emit audit event for caution/alert (best-effort, non-blocking).
+        if decision.class != AnomalyClass::Normal {
+            let event = phantom_core::audit::RateLimitEvent {
+                secret_key: route.secret_key.clone(),
+                per_secret_10s: decision.per_secret_10s,
+                total_10s: decision.total_10s,
+                per_secret_60s: decision.per_secret_60s,
+                anomaly_score: decision.anomaly_score,
+                anomaly_class: match decision.class {
+                    AnomalyClass::Caution => phantom_core::audit::AnomalyClass::Caution,
+                    AnomalyClass::Alert => phantom_core::audit::AnomalyClass::Alert,
+                    AnomalyClass::Normal => phantom_core::audit::AnomalyClass::Normal,
+                },
+                ts: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            };
+            event.emit();
+        }
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     // Capture the request content-type before consuming `req` for its body —
     // we need it to drive content-type-aware body substitution (F9).
@@ -478,6 +558,14 @@ async fn handle_request(
     let status = response.status();
     let mut builder = Response::builder().status(status);
 
+    // Capture response content-type before consuming the response for its body.
+    // Used by ResponseScrubber to apply SSE line-level parsing vs. generic scan.
+    let response_content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     // Copy response headers (skip hop-by-hop and content-length since we stream)
     let is_streaming = response
         .headers()
@@ -485,10 +573,8 @@ async fn handle_request(
         .and_then(|v| v.to_str().ok())
         .map(|v| v.contains("chunked"))
         .unwrap_or(false)
-        || response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
+        || response_content_type
+            .as_deref()
             .map(|v| v.contains("text/event-stream"))
             .unwrap_or(false);
 
@@ -506,25 +592,48 @@ async fn handle_request(
     }
 
     if is_streaming {
-        // Stream the response body chunk-by-chunk (critical for SSE/streaming APIs)
-        // Scrub secrets from each chunk using an overlap window to catch secrets
-        // split across chunk boundaries.
+        // Stream the response body chunk-by-chunk (critical for SSE/streaming APIs).
+        // Two-layer scrubbing:
+        //   1. ResponseScrubber — content-type-aware (SSE line parsing), audit log,
+        //      stderr warning, format-pattern detection.
+        //   2. Interceptor::scrub_response_bytes — fast token→phantom replacement
+        //      (kept as defence-in-depth; already handles the carry window).
         debug!("Streaming response: {}", status);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(32);
 
         let interceptor = state.interceptor.clone();
+        let resp_scrubber = state.interceptor.to_response_scrubber();
+        let resp_ct = response_content_type.clone();
         let byte_stream = response.bytes_stream();
         tokio::spawn(async move {
             tokio::pin!(byte_stream);
+            // Audit carry for ResponseScrubber (detection + logging only).
+            let mut audit_carry: Vec<u8> = Vec::new();
+            // Replace carry for Interceptor overlap-window replacement.
             let overlap_len = interceptor.max_secret_len().saturating_sub(1);
-            let mut carry: Vec<u8> = Vec::new();
+            let mut replace_carry: Vec<u8> = Vec::new();
 
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
-                        // Build combined buffer: carry from previous chunk + current chunk
-                        let mut combined = Vec::with_capacity(carry.len() + chunk.len());
-                        combined.extend_from_slice(&carry);
+                        // Layer 1 (audit only): detect leaks, emit audit events and
+                        // stderr warnings via ResponseScrubber.  Body output is
+                        // intentionally discarded — the scrubber replaces with
+                        // [REDACTED:*] which would conflict with the token→phantom
+                        // substitution performed by layer 2.
+                        let (_, scrub_event) =
+                            resp_scrubber.scrub_chunk(resp_ct.as_deref(), &mut audit_carry, &chunk);
+                        if scrub_event.scrubbed {
+                            debug!(
+                                "ResponseScrubber intercepted leak(s) in streaming chunk \
+                                 ({} events)",
+                                scrub_event.leak_events.len()
+                            );
+                        }
+
+                        // Layer 2 (body scrub): overlap-window token→phantom replacement.
+                        let mut combined = Vec::with_capacity(replace_carry.len() + chunk.len());
+                        combined.extend_from_slice(&replace_carry);
                         combined.extend_from_slice(&chunk);
 
                         let (scrubbed, did_scrub) = interceptor.scrub_response_bytes(&combined);
@@ -533,10 +642,9 @@ async fn handle_request(
                         }
 
                         if overlap_len > 0 && scrubbed.len() > overlap_len {
-                            // Hold back the last overlap_len bytes for the next iteration
                             let emit_end = scrubbed.len() - overlap_len;
                             let to_emit = &scrubbed[..emit_end];
-                            carry = scrubbed[emit_end..].to_vec();
+                            replace_carry = scrubbed[emit_end..].to_vec();
                             if tx
                                 .send(Ok(Frame::data(Bytes::copy_from_slice(to_emit))))
                                 .await
@@ -545,11 +653,9 @@ async fn handle_request(
                                 break;
                             }
                         } else if overlap_len > 0 {
-                            // Entire scrubbed output fits within the overlap window; carry it all
-                            carry = scrubbed;
+                            replace_carry = scrubbed;
                         } else {
-                            // No secrets registered — no overlap needed
-                            carry.clear();
+                            replace_carry.clear();
                             if tx
                                 .send(Ok(Frame::data(Bytes::from(scrubbed))))
                                 .await
@@ -566,9 +672,12 @@ async fn handle_request(
                 }
             }
 
-            // Flush any remaining carry bytes
-            if !carry.is_empty() {
-                let (scrubbed, _) = interceptor.scrub_response_bytes(&carry);
+            // Flush audit carry (discard body — audit only).
+            let _ = resp_scrubber.flush_carry(resp_ct.as_deref(), audit_carry);
+
+            // Flush replacement carry.
+            if !replace_carry.is_empty() {
+                let (scrubbed, _) = interceptor.scrub_response_bytes(&replace_carry);
                 let _ = tx.send(Ok(Frame::data(Bytes::from(scrubbed)))).await;
             }
         });
@@ -577,7 +686,8 @@ async fn handle_request(
         let body = BoxBody::Right(StreamBody::new(stream));
         Ok(builder.body(body).unwrap())
     } else {
-        // Non-streaming: buffer, scrub secrets, and forward
+        // Non-streaming: buffer, scrub secrets, and forward.
+        // Two-layer scrubbing (same rationale as streaming path above).
         let response_body = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -589,7 +699,20 @@ async fn handle_request(
             }
         };
 
-        // Scrub real secrets from response body to prevent leakage to AI agents
+        // Layer 1 (audit only): ResponseScrubber — detect leaks, emit audit events
+        // and stderr warnings.  Body output is discarded; the scrubber replaces with
+        // [REDACTED:*] which conflicts with the token→phantom replacement in layer 2.
+        let resp_scrubber = state.interceptor.to_response_scrubber();
+        let (_, scrub_event) =
+            resp_scrubber.scrub_buffered(response_content_type.as_deref(), &response_body);
+        if scrub_event.scrubbed {
+            debug!(
+                "ResponseScrubber intercepted leak(s) in buffered response ({} events)",
+                scrub_event.leak_events.len()
+            );
+        }
+
+        // Layer 2 (body scrub): Interceptor replaces real secrets with phantom tokens.
         let (scrubbed_body, did_scrub) = state.interceptor.scrub_response_bytes(&response_body);
         if did_scrub {
             debug!(
@@ -598,7 +721,7 @@ async fn handle_request(
             );
         }
 
-        // Always set content-length from the final body (may differ after scrubbing)
+        // Always set content-length from the final body (may differ after scrubbing).
         let final_body = if did_scrub {
             Bytes::from(scrubbed_body)
         } else {

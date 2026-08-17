@@ -193,7 +193,7 @@ Team memberships and member lists are visible in the read-only dashboard at [phm
 | `phantom remove <KEY>` | Remove a secret from the vault |
 | `phantom reveal <KEY>` | Print a secret value (or `--clipboard` to copy) |
 | `phantom status` | Show proxy state, vault info, and mapped services |
-| `phantom rotate` | Regenerate all phantom tokens (old ones become invalid) |
+| `phantom rotate` | Regenerate all phantom tokens (old ones become invalid). With `--name <KEY>` (and optional `--provider <VENDOR>`): rotate the real credential at the vendor — see [Rotating real provider credentials](#rotating-real-provider-credentials) |
 | `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair). Reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client |
 | `phantom agent report` | Emit a read-only AI-agent readiness report (`--json` for automation). Reports `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready` |
 | `phantom agent doctor` | Human-readable agent readiness view backed by the same policy engine |
@@ -225,6 +225,52 @@ Team memberships and member lists are visible in the read-only dashboard at [phm
 | `phantom open [page]` | Open phm.dev pages in browser (dashboard, billing, team, docs, github, …) |
 | `phantom upgrade` | Self-replace this binary with the latest GitHub release (`--check-only` to inspect first) |
 | `phantom completion <shell>` | Print a shell-completion script (bash, zsh, fish, powershell, elvish) |
+
+## Rotating real provider credentials
+
+`phantom rotate --name <KEY>` re-issues the actual credential at the vendor —
+not just the phantom token. The new value goes straight into the encrypted
+vault (the same write path as `phantom add`), the `phm_` token in `.env` is
+refreshed, an audit event is recorded, and the value is **never printed**.
+
+```bash
+# 1. Tell Phantom how to rotate the secret (once, in .phantom.toml):
+#    [phantom.secrets.STRIPE_SECRET_KEY.rotation_provider]
+#    provider = "stripe"
+#    api_key_env = "STRIPE_ROTATION_ADMIN_KEY"   # env var OR vault secret of this name
+
+# 2. Rotate. Provider comes from the config block; --provider overrides.
+phantom rotate --name STRIPE_SECRET_KEY
+phantom rotate --name STRIPE_SECRET_KEY --provider stripe --sync
+
+# Metadata-only JSON for scripting (no value, ever):
+phantom rotate --name STRIPE_SECRET_KEY --json
+```
+
+The bootstrap credential named by `api_key_env` (the key used to *call* the
+vendor's rotation API) is resolved from the process environment first, then
+from the vault under the same name — so it never has to live in your shell
+profile. It is zeroized after the call and never echoed.
+
+The same flow is exposed to AI agents via the `phantom_rotate_provider` MCP
+tool (gated behind `confirm: true` plus an out-of-band
+`phantom mcp-approve` token; the response contains status metadata only).
+
+### Provider support matrix
+
+| Provider | Support | Notes |
+|----------|---------|-------|
+| `vercel` | Automated | Mints a new user/team API token and verifies it (2xx-only); the old token is best-effort revoked only AFTER the new value is stored in the vault (authenticating as the old token itself), with audit events when revocation is skipped or fails |
+| `google` | Automated | Adds a new Secret Manager version with a freshly generated value (rotates a GSM-stored secret, not an external Google credential); refuses Google-issued credential names (`*APPLICATION_CREDENTIALS*`, `*SERVICE_ACCOUNT*`); disabling old versions is still manual |
+| `github` | Automated for GitHub App installation tokens | Requires `account_id` = App installation ID and a freshly minted App JWT as the bootstrap credential (App JWTs expire ~10 min). Minted tokens expire in 1 h — phantom stamps that expiry on the stored secret. Classic and fine-grained PATs have no rotation API — rotate those at github.com/settings/tokens |
+| `stripe` | Manual | Stripe exposes no public key-mint/roll API; the CLI errors with the dashboard link (mock path remains for tests) |
+| `aws` | Manual (for now) | Real IAM rotation needs SigV4 signing + access-key-pair handling, not yet implemented; the CLI errors with the AWS CLI/console steps (mock path remains for tests) |
+| `sentry` | Manual | Token creation is web-session-only at the vendor; the CLI errors with the exact dashboard page to use |
+| `supabase` | Manual | Personal access tokens are minted only at supabase.com/dashboard/account/tokens |
+
+`phantom rotate --batch` extends this to every secret whose TTL falls inside
+the rotation window, with per-provider rate limits and a shared audit
+`batch_id`.
 
 ## Features
 
