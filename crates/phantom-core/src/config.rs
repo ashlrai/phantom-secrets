@@ -257,11 +257,7 @@ impl SecretOverride {
 /// `RotationSchedule`.  Only day-based durations are supported.
 pub fn parse_rotate_every(s: &str) -> Option<RotationSchedule> {
     let s = s.trim().to_ascii_lowercase();
-    let days: u64 = if let Some(rest) = s.strip_suffix('d') {
-        rest.parse().ok()?
-    } else {
-        return None;
-    };
+    let days: u64 = s.strip_suffix('d')?.parse().ok()?;
 
     let strategy = if days <= 1 {
         RotationStrategy::Daily

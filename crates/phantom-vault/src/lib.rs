@@ -19,23 +19,43 @@ const PASSPHRASE_SERVICE: &str = "phantom-secrets-vault";
 /// keychain secrets live behind the OS's per-user unlock. We surface that
 /// demotion loudly (audit F14) and let the caller opt into a hard-fail via
 /// `PHANTOM_REQUIRE_KEYCHAIN=1` instead of silently downgrading.
+///
+/// Setting `PHANTOM_VAULT_PASSPHRASE` (CI/Docker/test mode) selects the
+/// encrypted-file vault directly, skipping the OS keychain entirely. This is
+/// an explicit opt-in with a caller-supplied key, not a silent demotion.
+/// Without it, Linux CI runners would route every test's secrets through the
+/// kernel keyring (keyutils), whose small per-user quota (~200 keys/20 KB)
+/// is exhausted partway through a large test run (`QuotaExceeded`).
+/// `PHANTOM_REQUIRE_KEYCHAIN=1` wins over the passphrase: it is the
+/// security-strict flag and keeps its hard-fail contract.
 pub fn create_vault(project_id: &str) -> Box<dyn VaultBackend> {
+    let require_keychain = std::env::var("PHANTOM_REQUIRE_KEYCHAIN")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if !require_keychain {
+        if let Ok(passphrase) = std::env::var("PHANTOM_VAULT_PASSPHRASE") {
+            if !passphrase.is_empty() {
+                let vault_dir = file_vault_dir();
+                return Box::new(
+                    file::FileVault::new(&vault_dir, project_id, passphrase)
+                        .expect("Failed to create file vault"),
+                );
+            }
+        }
+    }
+
     match keychain::KeychainVault::new(project_id) {
         Ok(vault) => Box::new(vault),
         Err(keychain_err) => {
-            if std::env::var("PHANTOM_REQUIRE_KEYCHAIN")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
-            {
+            if require_keychain {
                 eprintln!(
                     "phantom: ERROR — OS keychain unavailable and PHANTOM_REQUIRE_KEYCHAIN is set.\n  {keychain_err}\n  Unset PHANTOM_REQUIRE_KEYCHAIN to allow the encrypted-file fallback."
                 );
                 std::process::exit(1);
             }
 
-            let vault_dir = directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
-                .map(|dirs| dirs.data_dir().to_path_buf())
-                .unwrap_or_else(dirs_fallback);
+            let vault_dir = file_vault_dir();
 
             eprintln!(
                 "phantom: WARNING — OS keychain unavailable; using encrypted file vault at {} instead.\n  Reason: {keychain_err}\n  To hard-fail instead of falling back, set PHANTOM_REQUIRE_KEYCHAIN=1.",
@@ -51,6 +71,13 @@ pub fn create_vault(project_id: &str) -> Box<dyn VaultBackend> {
             )
         }
     }
+}
+
+/// Directory holding encrypted file vaults.
+fn file_vault_dir() -> std::path::PathBuf {
+    directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
+        .map(|dirs| dirs.data_dir().to_path_buf())
+        .unwrap_or_else(dirs_fallback)
 }
 
 /// Get passphrase for file vault encryption.
