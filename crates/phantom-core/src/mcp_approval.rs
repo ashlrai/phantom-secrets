@@ -52,20 +52,39 @@ pub const APPROVAL_TTL_SECS: u64 = 300;
 
 // ── Paths ──────────────────────────────────────────────────────────────────────
 
+/// Resolve the home directory from `HOME` / `USERPROFILE`.
+///
+/// Same idiom as `leak_correlation::home_dir` / `audit::dirs_home_dir`:
+/// `dirs::home_dir()` ignores the `HOME` env var on Windows (it goes through
+/// the Known Folder API), which breaks the tests' `with_temp_home` isolation
+/// there — parallel tests would all share the real `~/.phantom` and bleed
+/// records into each other. Honoring the env vars keeps test isolation
+/// cross-platform while matching production behavior on every login shell.
+fn home_dir() -> std::io::Result<PathBuf> {
+    if let Ok(h) = std::env::var("HOME") {
+        if !h.is_empty() {
+            return Ok(PathBuf::from(h));
+        }
+    }
+    if let Ok(h) = std::env::var("USERPROFILE") {
+        if !h.is_empty() {
+            return Ok(PathBuf::from(h));
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "HOME directory not found",
+    ))
+}
+
 /// Returns `~/.phantom/mcp-approvals.jsonl`.
 pub fn approvals_path() -> std::io::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "HOME directory not found")
-    })?;
-    Ok(home.join(".phantom").join("mcp-approvals.jsonl"))
+    Ok(home_dir()?.join(".phantom").join("mcp-approvals.jsonl"))
 }
 
 /// Returns `~/.phantom/mcp-approval-key`.
 pub fn approval_key_path() -> std::io::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "HOME directory not found")
-    })?;
-    Ok(home.join(".phantom").join("mcp-approval-key"))
+    Ok(home_dir()?.join(".phantom").join("mcp-approval-key"))
 }
 
 // ── Data types ─────────────────────────────────────────────────────────────────
