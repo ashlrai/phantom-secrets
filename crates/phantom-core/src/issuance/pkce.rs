@@ -297,6 +297,18 @@ mod tests {
     use crate::issuance::browser::BrowserOpener;
     use crate::issuance::endpoints::Endpoints;
     use crate::issuance::loopback::{MockLoopbackListener, MockStateMode};
+
+    /// A test that drives `Engine::issue` reaches `guard_mock_issuance`, which
+    /// emits a `grant.issuance.mock` event to the *ambient* audit log. If an
+    /// audit test has concurrently repointed `HOME`/`PHANTOM_AUDIT`, that event
+    /// lands in the audit test's log and corrupts its event count. Hold the
+    /// crate-wide `ENV_LOCK` for the duration so these never overlap — the same
+    /// serialization idiom used by the audit/rotation/validator tests.
+    fn issue_audit_guard() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
     use std::sync::Mutex;
 
     /// Capturing browser: records the authorize URL for assertions.
@@ -363,6 +375,7 @@ mod tests {
 
     #[test]
     fn happy_path_yields_refresh_token_and_never_prints_it() {
+        let _env_guard = issue_audit_guard();
         let (base, seen) = spawn_stub(
             200,
             r#"{"access_token":"gho_access","refresh_token":"test_refresh_MOCK","refresh_token_expires_in":15897600}"#,
@@ -451,6 +464,7 @@ mod tests {
     /// — otherwise reqwest would replay the secret-bearing body to it.
     #[test]
     fn token_endpoint_307_is_not_followed_and_body_is_not_replayed() {
+        let _env_guard = issue_audit_guard();
         // The would-be exfil target: if the client follows the redirect it will
         // land here (and would hand back a "token"). It must stay untouched.
         let (leak_base, leak_hit) = spawn_stub(
@@ -493,6 +507,7 @@ mod tests {
 
     #[test]
     fn state_mismatch_is_csrf_denied_without_exchange() {
+        let _env_guard = issue_audit_guard();
         // No stub needed: the exchange must not run.
         let http = reqwest::blocking::Client::new();
         let ep = endpoints("http://127.0.0.1:0/token".to_string());
@@ -513,6 +528,7 @@ mod tests {
 
     #[test]
     fn missing_client_id_is_not_supported() {
+        let _env_guard = issue_audit_guard();
         let http = reqwest::blocking::Client::new();
         let ep = endpoints("https://example.com/token".to_string());
         let browser = super::super::browser::NoBrowser;

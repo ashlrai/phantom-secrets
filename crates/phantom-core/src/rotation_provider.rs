@@ -2300,6 +2300,9 @@ typo_field = "oops"
 
     #[test]
     fn stripe_mock_rotation_full_flow() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let provider = StripeRotationProvider;
         let config = RotationProviderConfig {
             provider: "stripe".to_string(),
@@ -2338,6 +2341,9 @@ typo_field = "oops"
 
     #[test]
     fn github_mock_rotation_full_flow() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let provider = GitHubRotationProvider;
         let config = RotationProviderConfig {
             provider: "github".to_string(),
@@ -2372,6 +2378,9 @@ typo_field = "oops"
 
     #[test]
     fn aws_mock_rotation_full_flow() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let provider = AwsRotationProvider;
         let config = RotationProviderConfig {
             provider: "aws".to_string(),
@@ -2455,6 +2464,9 @@ typo_field = "oops"
 
     #[test]
     fn google_mock_rotation_full_flow() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let provider = GoogleRotationProvider;
         let config = RotationProviderConfig {
             provider: "google".to_string(),
@@ -2491,6 +2503,9 @@ typo_field = "oops"
 
     #[test]
     fn google_mock_rotation_version_increment() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Simulates a second rotation: calling initiate+finalize twice must
         // return the same deterministic mock value (idempotent mock).
         let provider = GoogleRotationProvider;
@@ -2554,6 +2569,9 @@ typo_field = "oops"
 
     #[test]
     fn google_rotation_unset_env_var_returns_not_configured() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let provider = GoogleRotationProvider;
         let config = RotationProviderConfig {
             provider: "google".to_string(),
@@ -2603,6 +2621,9 @@ typo_field = "oops"
 
     #[test]
     fn auto_sync_rotation_google_mock_returns_value() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = RotationProviderConfig {
             provider: "google".to_string(),
             api_key_env: Some("PHANTOM_AUTO_SYNC_GCP_KEY".to_string()),
@@ -2632,6 +2653,9 @@ typo_field = "oops"
 
     #[test]
     fn execute_batch_rotation_google_mock_succeeds() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("BATCH_TEST_GCP_KEY", "gcp_mock_batch_token");
             std::env::remove_var("PHANTOM_AUDIT");
@@ -2775,6 +2799,9 @@ typo_field = "oops"
 
     #[test]
     fn dispatch_uses_config_provider_not_secret_name_heuristics() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Regression: a secret whose NAME contains no vendor substring must
         // still be dispatched to the provider named in the config...
         let config = RotationProviderConfig {
@@ -2797,6 +2824,9 @@ typo_field = "oops"
 
     #[test]
     fn dispatch_misleading_name_goes_to_configured_provider() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // ...and a name that LOOKS like an earlier-listed vendor (STRIPE is
         // registered before GITHUB) must never hijack the dispatch: the
         // GitHub bootstrap credential may not be sent to Stripe.
@@ -2825,6 +2855,9 @@ typo_field = "oops"
 
     #[test]
     fn auto_sync_rotation_stripe_mock_returns_value() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = RotationProviderConfig {
             provider: "stripe".to_string(),
             api_key_env: Some("PHANTOM_AUTO_SYNC_STRIPE_KEY".to_string()),
@@ -2863,6 +2896,9 @@ typo_field = "oops"
 
     #[test]
     fn attempt_vendor_rotation_returns_vendor_rotated_for_stripe_mock() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = RotationProviderConfig {
             provider: "stripe".to_string(),
             api_key_env: Some("PHANTOM_AV_STRIPE_KEY".to_string()),
@@ -3005,6 +3041,9 @@ typo_field = "oops"
 
     #[test]
     fn stripe_real_path_is_not_supported() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let provider = StripeRotationProvider;
         let config = RotationProviderConfig {
             provider: "stripe".to_string(),
@@ -3052,6 +3091,9 @@ typo_field = "oops"
 
     #[test]
     fn google_missing_account_id_is_not_configured_before_any_network() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let provider = GoogleRotationProvider;
         let config = RotationProviderConfig {
             provider: "google".to_string(),
@@ -3075,6 +3117,9 @@ typo_field = "oops"
 
     #[test]
     fn google_refuses_google_issued_credential_names() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let provider = GoogleRotationProvider;
         let config = RotationProviderConfig {
             provider: "google".to_string(),
@@ -3101,6 +3146,9 @@ typo_field = "oops"
 
     #[test]
     fn vercel_post_store_cleanup_skips_without_old_value() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // No old value → revoke is skipped (audited), never an error, and no
         // network I/O is attempted.
         let provider = VercelRotationProvider;
@@ -3354,6 +3402,9 @@ typo_field = "oops"
 
     #[test]
     fn execute_batch_rotation_stripe_mock_succeeds() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Set up a mock Stripe key in the environment.
         unsafe { std::env::set_var("BATCH_TEST_STRIPE_KEY", "sk_test_mock_batch_key") };
         unsafe { std::env::remove_var("PHANTOM_AUDIT") };
@@ -3401,6 +3452,9 @@ typo_field = "oops"
 
     #[test]
     fn execute_batch_rotation_manual_item_has_no_new_value() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("PHANTOM_AUDIT") };
 
         let now = 1_700_000_000u64;
@@ -3433,6 +3487,9 @@ typo_field = "oops"
 
     #[test]
     fn execute_batch_rotation_mixed_providers_three_secrets() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Set up mock env vars for Stripe and GitHub
         unsafe {
             std::env::set_var("BATCH_MIX_STRIPE_KEY", "sk_test_mock_mix_stripe");
@@ -3521,6 +3578,9 @@ typo_field = "oops"
 
     #[test]
     fn execute_batch_rotation_batch_id_is_unique_per_run() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("PHANTOM_AUDIT") };
         let now = 1_700_000_000u64;
         let providers = default_rotation_providers();
@@ -3531,6 +3591,9 @@ typo_field = "oops"
 
     #[test]
     fn execute_batch_rotation_failed_provider_sets_error() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // No env var set → provider will fail with NotConfigured
         unsafe { std::env::remove_var("PHANTOM_AUDIT") };
         unsafe { std::env::remove_var("BATCH_FAIL_KEY") };
@@ -3571,6 +3634,9 @@ typo_field = "oops"
 
     #[test]
     fn batch_audit_log_functions_are_no_ops_when_audit_disabled() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Make sure audit is disabled.
         unsafe { std::env::remove_var("PHANTOM_AUDIT") };
 
@@ -3605,6 +3671,9 @@ typo_field = "oops"
 
     #[test]
     fn vercel_mock_rotation_full_flow() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let provider = VercelRotationProvider;
         let config = RotationProviderConfig {
             provider: "vercel".to_string(),
@@ -3671,6 +3740,9 @@ typo_field = "oops"
 
     #[test]
     fn auto_sync_rotation_vercel_mock_returns_value() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = RotationProviderConfig {
             provider: "vercel".to_string(),
             api_key_env: Some("PHANTOM_AUTO_SYNC_VERCEL_KEY".to_string()),
@@ -3751,6 +3823,9 @@ typo_field = "oops"
 
     #[test]
     fn auto_sync_rotation_sentry_returns_not_supported() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("PHANTOM_AUDIT") };
         let config = RotationProviderConfig {
             provider: "sentry".to_string(),
@@ -3851,6 +3926,9 @@ typo_field = "oops"
 
     #[test]
     fn github_missing_installation_id_explains_pat_limitation() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let provider = GitHubRotationProvider;
         let config = RotationProviderConfig {
             provider: "github".to_string(),
@@ -3888,6 +3966,9 @@ typo_field = "oops"
 
     #[test]
     fn bootstrap_fallback_is_used_when_env_var_unset() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = RotationProviderConfig {
             provider: "stripe".to_string(),
             api_key_env: Some("PHANTOM_TEST_BOOTSTRAP_UNSET_VAR_A".to_string()),
@@ -3919,6 +4000,9 @@ typo_field = "oops"
 
     #[test]
     fn bootstrap_fallback_env_var_takes_precedence() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = RotationProviderConfig {
             provider: "stripe".to_string(),
             api_key_env: Some("PHANTOM_TEST_BOOTSTRAP_PRECEDENCE_VAR".to_string()),
@@ -3953,6 +4037,9 @@ typo_field = "oops"
 
     #[test]
     fn bootstrap_override_is_cleared_after_the_call() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = RotationProviderConfig {
             provider: "stripe".to_string(),
             api_key_env: Some("PHANTOM_TEST_BOOTSTRAP_CLEARED_VAR".to_string()),
@@ -3986,6 +4073,9 @@ typo_field = "oops"
 
     #[test]
     fn bootstrap_none_keeps_env_only_behaviour() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = RotationProviderConfig {
             provider: "stripe".to_string(),
             api_key_env: Some("PHANTOM_TEST_BOOTSTRAP_NONE_VAR".to_string()),

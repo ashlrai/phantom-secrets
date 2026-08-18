@@ -206,7 +206,9 @@ mod tests {
 
     #[test]
     fn override_rejected_before_use() {
-        let _g = crate::test_support::ENV_LOCK.lock().unwrap();
+        let _g = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var(ENV_GITHUB_API_BASE, "http://evil.example.com");
         let err = Endpoints::for_provider("github-app").unwrap_err();
         std::env::remove_var(ENV_GITHUB_API_BASE);
