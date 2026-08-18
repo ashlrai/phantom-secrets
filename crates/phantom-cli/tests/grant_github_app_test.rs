@@ -112,6 +112,9 @@ async fn manifest_engine_vaults_pem_and_discovers_installations() {
             scopes: vec![],
             flow: None,
             app_manifest: Some(GithubManifestSpec::least_privilege("phantom-app", None)),
+            team_id: None,
+            account: None,
+            org: None,
         };
         let out = GithubAppManifestFlow.issue(&req, &deps).unwrap();
         std::env::remove_var("PHANTOM_ALLOW_MOCK_ISSUANCE");

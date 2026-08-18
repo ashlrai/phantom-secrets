@@ -244,7 +244,7 @@ pub trait RotationProvider: Send + Sync {
 /// forge a "successful" rotation that overwrites the real vaulted secret.
 /// Allowed only under `cfg(test)` or with the explicit
 /// `PHANTOM_ALLOW_MOCK_ROTATION=1` opt-in (test environments only).
-fn mock_rotation_allowed() -> bool {
+pub(crate) fn mock_rotation_allowed() -> bool {
     cfg!(test)
         || std::env::var("PHANTOM_ALLOW_MOCK_ROTATION")
             .map(|v| v == "1")
@@ -254,7 +254,7 @@ fn mock_rotation_allowed() -> bool {
 /// Guard shared by every provider's mock fast-path: permits the mock branch
 /// (tagging the audit log with a distinct `vault.rotation.mock` event) or
 /// fails closed when mock rotation is not explicitly enabled.
-fn guard_mock_rotation(secret_name: &str) -> Result<(), RotationProviderError> {
+pub(crate) fn guard_mock_rotation(secret_name: &str) -> Result<(), RotationProviderError> {
     if mock_rotation_allowed() {
         // Distinct audit marker so a mock rotation can never masquerade as a
         // real vendor rotation in the audit trail.
@@ -572,24 +572,42 @@ pub fn auto_sync_rotation_with_bootstrap(
 
 // ── Stripe provider ───────────────────────────────────────────────────────────
 
-/// Stripe rotation provider — **manual rotation required** for real keys.
+/// Stripe rotation provider — an **oauth-refresh roll** for Stripe App grants,
+/// **manual rotation** for raw keys.
 ///
-/// Stripe exposes no public, documented API endpoint for creating or rolling
-/// API keys (`POST /v1/restricted_keys` is not part of the public API surface,
-/// and key rolling is dashboard-only). The non-mock path therefore returns
-/// [`RotationProviderError::NotSupported`] with a dashboard link instead of
-/// sending the bootstrap credential to an endpoint that cannot work.
+/// Two paths, selected by identity (never a name heuristic):
 ///
-/// In test/mock mode (when the configured key starts with `"sk_test_mock_"`
-/// and mock rotation is enabled), the provider returns a deterministic mock
-/// value.
+/// 1. **OAuth-refresh** (additive): when the config's `api_key_env` is a
+///    `*_REFRESH_TOKEN` (written by [`crate::issuance::stripe::StripeAppOAuthFlow`]),
+///    the bootstrap credential is a Stripe App refresh token. The provider POSTs
+///    `grant_type=refresh_token` to `POST /v1/oauth/token` — HTTP Basic-authed
+///    with Phantom's own developer secret key from `$STRIPE_APP_SECRET_KEY` —
+///    and returns the **new rolled refresh token** (Stripe invalidates the old
+///    one on every exchange, so the successor MUST be re-vaulted; the caller's
+///    store-then-cleanup ordering handles that). Rolling within the 1-year
+///    window keeps the chain immortal.
+/// 2. **Raw keys**: Stripe exposes no public API to create or roll `rk_`/`sk_`
+///    keys — dashboard-only. This path returns [`RotationProviderError::NotSupported`]
+///    with a dashboard link instead of POSTing the bootstrap at an endpoint that
+///    cannot work.
+///
+/// In test/mock mode the raw-key path is keyed on a `"sk_test_mock_"` bootstrap
+/// and the oauth-refresh path on a `"stripe_mock_refresh_"` bootstrap (both
+/// require mock rotation to be enabled).
 pub struct StripeRotationProvider;
 
-/// Operator-facing explanation used by [`StripeRotationProvider`].
+/// Operator-facing explanation for the raw-key (dashboard-only) path.
 const STRIPE_NOT_SUPPORTED_REASON: &str =
     "Stripe has no public API for creating or rolling API keys — key rotation \
      is dashboard-only. Roll the key at https://dashboard.stripe.com/apikeys \
-     then store the replacement with `phantom add`.";
+     then store the replacement with `phantom add`. For a self-refreshing \
+     credential, use the OAuth app grant: `phantom grant add stripe`.";
+
+/// Env var holding Phantom's own Stripe App **developer secret key**, used as
+/// HTTP Basic auth to roll the app's OAuth refresh token. Never on disk (env /
+/// vault only); never logged. This is the confidential-client secret Stripe
+/// requires on the token endpoint — the app developer's key, not each user's.
+pub const STRIPE_APP_SECRET_KEY_ENV: &str = "STRIPE_APP_SECRET_KEY";
 
 impl RotationProvider for StripeRotationProvider {
     fn name(&self) -> &str {
@@ -607,20 +625,32 @@ impl RotationProvider for StripeRotationProvider {
         secret_name: &str,
         config: &RotationProviderConfig,
     ) -> Result<String, RotationProviderError> {
-        // Resolve the admin API key from the environment variable named in config.
+        // Resolve the bootstrap credential from the env var named in config
+        // (env-then-vault). For the oauth-refresh path this is the refresh token;
+        // for the raw-key path it is the (unusable) admin key.
         let api_key = resolve_api_key(config)?;
 
-        // Mock path for testing: if the resolved key starts with "sk_test_mock_",
-        // return a deterministic mock challenge ID (test builds / explicit
-        // opt-in only — fail closed otherwise).
+        // Mock path (raw-key): deterministic challenge, test/opt-in only.
         if api_key.starts_with("sk_test_mock_") {
             guard_mock_rotation(secret_name)?;
             return Ok(format!("mock_challenge_stripe_{secret_name}"));
         }
 
-        // Real path: there is no public Stripe endpoint that can mint a
-        // replacement API key, so refuse honestly rather than POSTing the
-        // bootstrap credential at an endpoint that cannot succeed.
+        // Mock path (oauth-refresh): deterministic rolled refresh token, no
+        // network. Test/opt-in only.
+        if api_key.starts_with("stripe_mock_refresh_") {
+            guard_mock_rotation(secret_name)?;
+            return Ok(encode_challenge_payload("stripe_mock_refresh_rolled"));
+        }
+
+        // OAuth-refresh path: the config points at a refresh token. Roll it.
+        if stripe_is_oauth_refresh(config) {
+            return self.roll_refresh_token(config, &api_key);
+        }
+
+        // Raw-key path: no public endpoint can mint a replacement, so refuse
+        // honestly rather than POSTing the bootstrap at an endpoint that cannot
+        // succeed.
         Err(RotationProviderError::NotSupported {
             reason: STRIPE_NOT_SUPPORTED_REASON.to_string(),
         })
@@ -631,7 +661,7 @@ impl RotationProvider for StripeRotationProvider {
         challenge_id: &str,
         _config: &RotationProviderConfig,
     ) -> Result<zeroize::Zeroizing<String>, RotationProviderError> {
-        // Mock path.
+        // Mock path (raw-key).
         if challenge_id.starts_with("mock_challenge_stripe_") {
             if !mock_rotation_allowed() {
                 return Err(RotationProviderError::ChallengeExpired {
@@ -643,6 +673,12 @@ impl RotationProvider for StripeRotationProvider {
             ));
         }
 
+        // OAuth-refresh path: the rolled refresh token was stashed (base64) in
+        // the challenge by `initiate_rotation`; decode it as the new secret.
+        if challenge_id.starts_with("payload_") {
+            return decode_challenge_payload(challenge_id);
+        }
+
         Err(RotationProviderError::NotSupported {
             reason: STRIPE_NOT_SUPPORTED_REASON.to_string(),
         })
@@ -651,6 +687,141 @@ impl RotationProvider for StripeRotationProvider {
     fn rotation_source(&self) -> RotationSource {
         RotationSource::Stripe
     }
+}
+
+impl StripeRotationProvider {
+    /// Roll the Stripe App refresh token: `POST /v1/oauth/token` with
+    /// `grant_type=refresh_token`, HTTP Basic-authed with the developer secret
+    /// key. Returns the **new** refresh token (base64-encoded in the challenge)
+    /// — Stripe invalidates the old one on exchange, so the successor MUST be
+    /// vaulted. The freshly issued 1-hour access token in the same response is
+    /// ephemeral and intentionally discarded (minted on demand elsewhere).
+    fn roll_refresh_token(
+        &self,
+        config: &RotationProviderConfig,
+        current_refresh: &zeroize::Zeroizing<String>,
+    ) -> Result<String, RotationProviderError> {
+        // The confidential-client secret is Phantom's own developer key, read
+        // from the environment only. Never on disk, never logged.
+        let developer_secret = std::env::var(STRIPE_APP_SECRET_KEY_ENV)
+            .map(zeroize::Zeroizing::new)
+            .map_err(|_| RotationProviderError::NotSupported {
+                reason: format!(
+                    "Stripe OAuth-refresh rotation needs the app developer secret key in \
+                     ${STRIPE_APP_SECRET_KEY_ENV} (HTTP Basic auth for POST /v1/oauth/token). \
+                     Set it, then retry `phantom rotate`."
+                ),
+            })?;
+
+        // RFC 9700: the token endpoint MUST NOT follow redirects — the request
+        // carries the developer secret (HTTP Basic) and the refresh token in the
+        // body, which reqwest would replay to a 307/308 target. A dedicated
+        // redirect-none client makes any 3xx surface as a non-2xx error instead.
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .user_agent("phantom-secrets-rotation/0.1")
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| RotationProviderError::NetworkError {
+                reason: format!("failed to build HTTP client: {e}"),
+            })?;
+        let url = stripe_oauth_token_url()?;
+
+        let response = client
+            .post(&url)
+            .basic_auth(developer_secret.as_str(), Some(""))
+            .header("Accept", "application/json")
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", current_refresh.as_str()),
+            ])
+            .send()
+            .map_err(|e| RotationProviderError::NetworkError {
+                reason: e.to_string(),
+            })?;
+
+        let status = response.status().as_u16();
+        if status == 401 || status == 403 {
+            return Err(RotationProviderError::AuthFailed {
+                reason: format!("Stripe returned HTTP {status}"),
+            });
+        }
+        if !(200..300).contains(&status) {
+            let body = response.text().unwrap_or_default();
+            return Err(RotationProviderError::ApiError {
+                status,
+                reason: summarize_error_body(&body),
+            });
+        }
+
+        let body: serde_json::Value =
+            response
+                .json()
+                .map_err(|e| RotationProviderError::UnexpectedResponse {
+                    reason: e.to_string(),
+                })?;
+
+        // Stripe reports OAuth failures as a top-level `error` string even on 200.
+        if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+            return Err(RotationProviderError::ApiError {
+                status,
+                reason: format!("error={}", err.chars().take(64).collect::<String>()),
+            });
+        }
+
+        let new_refresh = body
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RotationProviderError::UnexpectedResponse {
+                reason: "Stripe refresh response had no refresh_token".to_string(),
+            })?;
+        Ok(encode_challenge_payload(new_refresh))
+    }
+}
+
+/// The config's `api_key_env` names a `*_REFRESH_TOKEN` → oauth-refresh grant.
+fn stripe_is_oauth_refresh(config: &RotationProviderConfig) -> bool {
+    config
+        .api_key_env
+        .as_deref()
+        .map(|n| n.to_uppercase().ends_with("REFRESH_TOKEN"))
+        .unwrap_or(false)
+}
+
+/// Resolve the Stripe OAuth token endpoint. Production is
+/// `https://api.stripe.com/v1/oauth/token`; a `$PHANTOM_STRIPE_API_BASE`
+/// override is honored **only** when mock rotation is enabled (tests), and only
+/// for https / localhost — so a prompt-injected agent can never redirect the
+/// refresh exchange to an attacker-controlled host in a shipped binary.
+fn stripe_oauth_token_url() -> Result<String, RotationProviderError> {
+    const DEFAULT: &str = "https://api.stripe.com/v1/oauth/token";
+    if mock_rotation_allowed() {
+        if let Ok(base) = std::env::var("PHANTOM_STRIPE_API_BASE") {
+            if !base.is_empty() {
+                if !is_https_or_localhost(&base) {
+                    return Err(RotationProviderError::NotSupported {
+                        reason: "PHANTOM_STRIPE_API_BASE must be https:// or http://localhost / \
+                                 http://127.0.0.1"
+                            .to_string(),
+                    });
+                }
+                return Ok(format!("{}/v1/oauth/token", base.trim_end_matches('/')));
+            }
+        }
+    }
+    Ok(DEFAULT.to_string())
+}
+
+/// Accept only `https://…`, `http://localhost…`, or `http://127.0.0.1…`
+/// (mirrors the issuance endpoint guard's host-confusion boundaries).
+fn is_https_or_localhost(url: &str) -> bool {
+    url.starts_with("https://")
+        || url == "http://localhost"
+        || url.starts_with("http://localhost/")
+        || url.starts_with("http://localhost:")
+        || url == "http://127.0.0.1"
+        || url.starts_with("http://127.0.0.1/")
+        || url.starts_with("http://127.0.0.1:")
 }
 
 // ── GitHub provider ───────────────────────────────────────────────────────────
@@ -1341,34 +1512,51 @@ impl RotationProvider for VercelRotationProvider {
 
 // ── Sentry provider ───────────────────────────────────────────────────────────
 
-/// Sentry rotation provider — **manual rotation required**.
+/// Sentry rotation provider — mints fresh **8-hour org tokens** on demand from a
+/// vaulted **app identity**, mirroring the GitHub installation-token model.
 ///
-/// Researched 2026-08-16: Sentry has no token-authenticated API for minting
-/// auth tokens, so headless rotation is impossible today:
+/// The durable root is the published integration's app identity
+/// (`client_id` + `client_secret`), packed into the JWT-bearer *seed* that
+/// [`crate::issuance::sentry::SentryInstallFlow`] vaults. Each rotation signs a
+/// short-lived HS256 JWT from that seed
+/// ([`crate::issuance::sentry::mint_install_jwt`]) and exchanges it at
+/// `POST /api/0/sentry-app-installations/{uuid}/authorizations/` with
+/// `grant_type=urn:sentry:params:oauth:grant-type:jwt-bearer` — a **stateless**
+/// renewal with no stored refresh token to lose. Issuance and renewal are the
+/// same operation, so a target that does not exist yet is legal (the mint
+/// creates it).
 ///
-/// - Organization auth tokens (`sntrys_…`): the endpoint
-///   `POST /api/0/organizations/{org}/org-auth-tokens/` exists but is declared
-///   with `SessionNoAuthTokenAuthentication` + `DisallowImpersonatedTokenCreation`
-///   (see `src/sentry/api/endpoints/organization_auth_tokens.py` in
-///   getsentry/sentry) — it only accepts an interactive web session, never a
-///   bearer token, and it is absent from Sentry's public OpenAPI schema.
-/// - Internal integration tokens: `POST /api/0/sentry-apps/{app}/api-tokens/`
-///   carries the same session-only authentication classes.
+/// Config (written by the install flow):
 ///
-/// This provider therefore always returns
-/// [`RotationProviderError::NotSupported`] with a message pointing the
-/// operator at the dashboard. It never reads `api_key_env` and performs no
-/// network I/O.
+/// ```toml
+/// [phantom.secrets.SENTRY_ORG_TOKEN.rotation_provider]
+/// provider    = "sentry"
+/// api_key_env = "SENTRY_APP_JWT_SEED"        # packed client_id\0client_secret
+/// account_id  = "<installation-uuid>"        # the org installation
+/// ```
+///
+/// # Legacy static tokens
+///
+/// Org auth tokens (`sntrys_…`), internal-integration tokens, and personal
+/// tokens are all session-gated (token-cannot-mint-token) and remain
+/// dashboard-only; store any of those as a `manual` grant. This provider mints
+/// only installation org tokens from the app identity.
+///
+/// # Mock path
+///
+/// When the seed resolves to a value starting with `"sentry_mock_"` (and mock
+/// rotation is enabled), the provider returns deterministic values without any
+/// network or signing I/O — keeping tests hermetic.
 pub struct SentryRotationProvider;
 
-/// Operator-facing explanation used by [`SentryRotationProvider`].
-const SENTRY_NOT_SUPPORTED_REASON: &str =
-    "Sentry only allows creating auth tokens from an interactive web session \
-     (the org-auth-tokens and sentry-apps api-tokens endpoints reject \
-     token-based authentication). Create a replacement organization token at \
-     https://sentry.io/orgredirect/organizations/:orgslug/settings/auth-tokens/ \
-     (Settings > Developer Settings > Organization Tokens), then store it with \
-     `phantom add`.";
+/// Operator-facing explanation when the seed is missing/malformed.
+const SENTRY_SEED_MISSING_REASON: &str =
+    "Sentry rotation needs the app-identity JWT-bearer seed (client_id + \
+     client_secret) that `phantom grant add sentry` vaults under \
+     SENTRY_APP_JWT_SEED, plus account_id set to the installation uuid. Run \
+     `phantom grant add sentry --client-id <ID> --client-secret-env <ENV>` to \
+     establish the grant; legacy static Sentry tokens are dashboard-only and \
+     cannot be minted headlessly.";
 
 impl RotationProvider for SentryRotationProvider {
     fn name(&self) -> &str {
@@ -1383,22 +1571,105 @@ impl RotationProvider for SentryRotationProvider {
 
     fn initiate_rotation(
         &self,
-        _secret_name: &str,
-        _config: &RotationProviderConfig,
+        secret_name: &str,
+        config: &RotationProviderConfig,
     ) -> Result<String, RotationProviderError> {
-        Err(RotationProviderError::NotSupported {
-            reason: SENTRY_NOT_SUPPORTED_REASON.to_string(),
-        })
+        let seed = resolve_api_key(config)?;
+
+        // Mock path: deterministic, no signing or network.
+        if seed.starts_with("sentry_mock_") {
+            guard_mock_rotation(secret_name)?;
+            return Ok(format!("mock_challenge_sentry_{secret_name}"));
+        }
+
+        // Real path. Validate the installation uuid (cheap) before parsing the
+        // app identity, then sign a JWT and exchange it.
+        let installation_id =
+            config
+                .account_id
+                .as_deref()
+                .ok_or_else(|| RotationProviderError::ApiError {
+                    status: 0,
+                    reason: "account_id must be set to the Sentry installation uuid — the \
+                             install flow records it; re-run `phantom grant add sentry`."
+                        .to_string(),
+                })?;
+        let (client_id, client_secret) = crate::issuance::sentry::unpack_seed(seed.as_str())
+            .ok_or_else(|| RotationProviderError::NotSupported {
+                reason: SENTRY_SEED_MISSING_REASON.to_string(),
+            })?;
+
+        let jwt =
+            crate::issuance::sentry::mint_install_jwt(client_id, client_secret).map_err(|e| {
+                RotationProviderError::UnexpectedResponse {
+                    reason: e.to_string(),
+                }
+            })?;
+
+        let client = build_http_client(config.timeout_secs)?;
+        let url = crate::issuance::sentry::authorizations_url("https://sentry.io", installation_id);
+        let response = client
+            .post(&url)
+            .header("Accept", "application/json")
+            .header("User-Agent", "phantom-secrets/0.1")
+            .json(&serde_json::json!({
+                "grant_type": "urn:sentry:params:oauth:grant-type:jwt-bearer",
+                "jwt": jwt.as_str(),
+            }))
+            .send()
+            .map_err(|e| RotationProviderError::NetworkError {
+                reason: e.to_string(),
+            })?;
+
+        let status = response.status().as_u16();
+        if status == 401 || status == 403 {
+            return Err(RotationProviderError::AuthFailed {
+                reason: format!(
+                    "Sentry returned HTTP {status} for the JWT-bearer grant — the app identity \
+                     may be revoked or the installation uninstalled"
+                ),
+            });
+        }
+        if !(200..300).contains(&status) {
+            let body = response.text().unwrap_or_default();
+            return Err(RotationProviderError::ApiError {
+                status,
+                reason: summarize_error_body(&body),
+            });
+        }
+
+        let body: serde_json::Value =
+            response
+                .json()
+                .map_err(|e| RotationProviderError::UnexpectedResponse {
+                    reason: e.to_string(),
+                })?;
+        let token = body.get("token").and_then(|v| v.as_str()).ok_or_else(|| {
+            RotationProviderError::UnexpectedResponse {
+                reason: "missing 'token' field in Sentry authorization response".to_string(),
+            }
+        })?;
+
+        Ok(encode_challenge_payload(token))
     }
 
     fn finalize_rotation(
         &self,
-        _challenge_id: &str,
+        challenge_id: &str,
         _config: &RotationProviderConfig,
     ) -> Result<zeroize::Zeroizing<String>, RotationProviderError> {
-        Err(RotationProviderError::NotSupported {
-            reason: SENTRY_NOT_SUPPORTED_REASON.to_string(),
-        })
+        if challenge_id.starts_with("mock_challenge_sentry_") {
+            if !mock_rotation_allowed() {
+                return Err(RotationProviderError::ChallengeExpired {
+                    challenge_id: redact_challenge_id(challenge_id),
+                });
+            }
+            return Ok(zeroize::Zeroizing::new(
+                "sntrys_rotated_mock_token_sentry".to_string(),
+            ));
+        }
+
+        decode_challenge_payload(challenge_id)
     }
 
     fn rotation_source(&self) -> RotationSource {
@@ -1574,6 +1845,11 @@ pub fn default_rotation_providers() -> Vec<Box<dyn RotationProvider>> {
         Box::new(VercelRotationProvider),
         Box::new(SentryRotationProvider),
         Box::new(SupabaseRotationProvider),
+        // Self-rotating issuer built on the Supabase OAuth grant: refreshes the
+        // management token (atomic refresh-token rotation) and mints/rotates
+        // project API keys via the Management API. Distinct identity
+        // ("supabase-management") from the manual-only PAT provider above.
+        Box::new(crate::issuance::supabase::SupabaseManagementProvider),
     ]
 }
 
@@ -1586,7 +1862,7 @@ pub fn default_rotation_providers() -> Vec<Box<dyn RotationProvider>> {
 /// 2. the thread-local vault-sourced fallback installed by
 ///    [`auto_sync_rotation_with_bootstrap`] (the caller retrieves the vault
 ///    secret of the same name and passes it in — core never reads the vault).
-fn resolve_api_key(
+pub(crate) fn resolve_api_key(
     config: &RotationProviderConfig,
 ) -> Result<zeroize::Zeroizing<String>, RotationProviderError> {
     let env_var = config
@@ -1606,7 +1882,7 @@ fn resolve_api_key(
 }
 
 /// Build a blocking HTTP client with the configured timeout.
-fn build_http_client(
+pub(crate) fn build_http_client(
     timeout_secs: u64,
 ) -> Result<reqwest::blocking::Client, RotationProviderError> {
     reqwest::blocking::Client::builder()
@@ -1621,7 +1897,7 @@ fn build_http_client(
 /// Encode a secret value into a challenge_id using base64 (URL-safe, no padding).
 ///
 /// The challenge_id prefix distinguishes encoded payloads from plain IDs.
-fn encode_challenge_payload(value: &str) -> String {
+pub(crate) fn encode_challenge_payload(value: &str) -> String {
     use base64::Engine;
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.as_bytes());
     format!("payload_{encoded}")
@@ -1631,7 +1907,7 @@ fn encode_challenge_payload(value: &str) -> String {
 ///
 /// Returned inside `Zeroizing` — the decoded payload IS the freshly minted
 /// secret, and intermediate copies must be scrubbed from memory.
-fn decode_challenge_payload(
+pub(crate) fn decode_challenge_payload(
     challenge_id: &str,
 ) -> Result<zeroize::Zeroizing<String>, RotationProviderError> {
     use base64::Engine;
@@ -1664,7 +1940,7 @@ fn decode_challenge_payload(
 ///
 /// `payload_`-prefixed ids encode the minted secret in trivially decodable
 /// base64 and are fully redacted; other (mock/opaque) ids are truncated.
-fn redact_challenge_id(challenge_id: &str) -> String {
+pub(crate) fn redact_challenge_id(challenge_id: &str) -> String {
     if challenge_id.starts_with("payload_") {
         "payload_[redacted]".to_string()
     } else {
@@ -1837,8 +2113,13 @@ impl ProviderRateLimit {
                 post_rotation_pause_ms: 0,
                 max_per_batch: 0,
             },
-            // "sentry" / "supabase" never reach the network (NotSupported
-            // providers) — the default no-delay arm below covers them.
+            "sentry" => Self {
+                inter_call_delay_ms: 500, // JWT-bearer mint: stay under Sentry's org rate limits
+                post_rotation_pause_ms: 0,
+                max_per_batch: 0,
+            },
+            // "supabase" never reaches the network (NotSupported provider) — the
+            // default no-delay arm below covers it.
             _ => Self {
                 inter_call_delay_ms: 0,
                 post_rotation_pause_ms: 0,
@@ -3064,6 +3345,138 @@ typo_field = "oops"
         unsafe { std::env::remove_var("PHANTOM_TEST_STRIPE_REAL_KEY") };
     }
 
+    // ── Stripe OAuth-refresh roll (additive path) ─────────────────────────────
+
+    #[test]
+    fn stripe_oauth_refresh_mock_rolls_refresh_token() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("PHANTOM_AUDIT");
+        let provider = StripeRotationProvider;
+        let config = RotationProviderConfig {
+            provider: "stripe".to_string(),
+            api_key_env: Some("PHANTOM_TEST_STRIPE_REFRESH_TOKEN".to_string()),
+            ..Default::default()
+        };
+        unsafe {
+            std::env::set_var(
+                "PHANTOM_TEST_STRIPE_REFRESH_TOKEN",
+                "stripe_mock_refresh_seed",
+            )
+        };
+
+        let challenge = provider
+            .initiate_rotation("STRIPE_REFRESH_TOKEN", &config)
+            .expect("mock oauth-refresh roll must initiate");
+        // The challenge carries the rolled token (base64), never a plain mock id.
+        assert!(challenge.starts_with("payload_"));
+        assert!(!challenge.contains("stripe_mock_refresh_rolled"));
+
+        let rolled = provider
+            .finalize_rotation(&challenge, &config)
+            .expect("finalize must decode the rolled refresh token");
+        assert_eq!(rolled.as_str(), "stripe_mock_refresh_rolled");
+
+        unsafe { std::env::remove_var("PHANTOM_TEST_STRIPE_REFRESH_TOKEN") };
+    }
+
+    #[test]
+    fn stripe_oauth_refresh_real_rolls_via_stub_and_never_leaks() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("PHANTOM_AUDIT");
+
+        // Single-response stub that records the raw request (headers + body).
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let seen_c = seen.clone();
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                *seen_c.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let body = r#"{"access_token":"sk_test_access_MOCK","refresh_token":"rt_test_rolled_MOCK","stripe_user_id":"acct_MOCK","token_type":"bearer"}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let provider = StripeRotationProvider;
+        let config = RotationProviderConfig {
+            provider: "stripe".to_string(),
+            api_key_env: Some("PHANTOM_TEST_STRIPE_REFRESH_TOKEN".to_string()),
+            ..Default::default()
+        };
+        unsafe {
+            std::env::set_var("PHANTOM_TEST_STRIPE_REFRESH_TOKEN", "rt_test_current_MOCK");
+            std::env::set_var("STRIPE_APP_SECRET_KEY", "sk_test_developer_MOCK");
+            // cfg(test) already enables mock rotation; the base override is honored.
+            std::env::set_var("PHANTOM_STRIPE_API_BASE", &base);
+        }
+
+        let challenge = provider
+            .initiate_rotation("STRIPE_REFRESH_TOKEN", &config)
+            .expect("real oauth-refresh roll must succeed against the stub");
+        let rolled = provider
+            .finalize_rotation(&challenge, &config)
+            .expect("finalize must decode the rolled refresh token");
+
+        handle.join().ok();
+        let request = seen.lock().unwrap().clone();
+
+        unsafe {
+            std::env::remove_var("PHANTOM_TEST_STRIPE_REFRESH_TOKEN");
+            std::env::remove_var("STRIPE_APP_SECRET_KEY");
+            std::env::remove_var("PHANTOM_STRIPE_API_BASE");
+        }
+
+        // The rolled refresh token is returned (the successor to re-vault).
+        assert_eq!(rolled.as_str(), "rt_test_rolled_MOCK");
+        // The exchange used grant_type=refresh_token with the current token, and
+        // the developer secret travelled as HTTP Basic (never in the clear).
+        assert!(request.contains("grant_type=refresh_token"));
+        assert!(request.contains("refresh_token=rt_test_current_MOCK"));
+        assert!(request.to_lowercase().contains("authorization: basic "));
+        assert!(!request.contains("sk_test_developer_MOCK"));
+        // The challenge never renders the rolled token in the clear.
+        assert!(!challenge.contains("rt_test_rolled_MOCK"));
+    }
+
+    #[test]
+    fn stripe_oauth_refresh_missing_developer_secret_is_not_supported() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let provider = StripeRotationProvider;
+        let config = RotationProviderConfig {
+            provider: "stripe".to_string(),
+            api_key_env: Some("PHANTOM_TEST_STRIPE_REFRESH_TOKEN".to_string()),
+            ..Default::default()
+        };
+        unsafe {
+            std::env::set_var("PHANTOM_TEST_STRIPE_REFRESH_TOKEN", "rt_test_current_MOCK");
+            std::env::remove_var("STRIPE_APP_SECRET_KEY");
+        }
+
+        let err = provider
+            .initiate_rotation("STRIPE_REFRESH_TOKEN", &config)
+            .expect_err("no developer secret → NotSupported before any network");
+        assert!(matches!(err, RotationProviderError::NotSupported { .. }));
+        assert!(err.to_string().contains("STRIPE_APP_SECRET_KEY"));
+
+        unsafe { std::env::remove_var("PHANTOM_TEST_STRIPE_REFRESH_TOKEN") };
+    }
+
     #[test]
     fn aws_real_path_is_not_supported_until_sigv4() {
         let provider = AwsRotationProvider;
@@ -3790,53 +4203,85 @@ typo_field = "oops"
     }
 
     #[test]
-    fn sentry_rotation_is_not_supported_with_dashboard_link() {
-        let provider = SentryRotationProvider;
-        let config = RotationProviderConfig {
-            provider: "sentry".to_string(),
-            ..Default::default()
-        };
-
-        let err = provider
-            .initiate_rotation("SENTRY_AUTH_TOKEN", &config)
-            .expect_err("Sentry rotation must be NotSupported");
-        assert!(
-            matches!(err, RotationProviderError::NotSupported { .. }),
-            "expected NotSupported, got: {err}"
-        );
-        let msg = err.to_string();
-        assert!(
-            msg.contains("sentry.io"),
-            "operator message must link the Sentry dashboard"
-        );
-        assert!(
-            msg.contains("phantom add"),
-            "operator message must explain how to store the replacement"
-        );
-
-        // finalize must be equally unsupported.
-        let err2 = provider
-            .finalize_rotation("anything", &config)
-            .expect_err("finalize must also be NotSupported");
-        assert!(matches!(err2, RotationProviderError::NotSupported { .. }));
-    }
-
-    #[test]
-    fn auto_sync_rotation_sentry_returns_not_supported() {
+    fn sentry_mock_rotation_full_flow() {
         let _env_guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::remove_var("PHANTOM_AUDIT") };
+        let provider = SentryRotationProvider;
         let config = RotationProviderConfig {
             provider: "sentry".to_string(),
-            enabled: true,
+            api_key_env: Some("PHANTOM_TEST_SENTRY_MOCK_SEED".to_string()),
+            account_id: Some("install-uuid-abc".to_string()),
             ..Default::default()
         };
 
-        let providers = default_rotation_providers();
-        let result = auto_sync_rotation("SENTRY_AUTH_TOKEN", Some(&config), &providers);
-        let err = result.expect_err("Sentry auto-sync must surface NotSupported");
+        unsafe { std::env::set_var("PHANTOM_TEST_SENTRY_MOCK_SEED", "sentry_mock_seed_value") };
+
+        let challenge = provider
+            .initiate_rotation("SENTRY_ORG_TOKEN", &config)
+            .expect("initiate_rotation should succeed for a mock seed");
+        assert!(
+            challenge.starts_with("mock_challenge_sentry_"),
+            "mock challenge_id must start with 'mock_challenge_sentry_': {challenge}"
+        );
+
+        let new_value = provider
+            .finalize_rotation(&challenge, &config)
+            .expect("finalize_rotation should succeed");
+        assert_eq!(
+            new_value.as_str(),
+            "sntrys_rotated_mock_token_sentry",
+            "Sentry mock value must be deterministic"
+        );
+
+        unsafe { std::env::remove_var("PHANTOM_TEST_SENTRY_MOCK_SEED") };
+    }
+
+    #[test]
+    fn sentry_real_path_requires_account_id() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let provider = SentryRotationProvider;
+        // A non-mock seed but no account_id → configuration error, surfaced
+        // before the seed is even parsed and before any network I/O. (The seed
+        // value is arbitrary here; account_id is validated first.)
+        let config = RotationProviderConfig {
+            provider: "sentry".to_string(),
+            api_key_env: Some("PHANTOM_TEST_SENTRY_REAL_SEED".to_string()),
+            account_id: None,
+            ..Default::default()
+        };
+        unsafe { std::env::set_var("PHANTOM_TEST_SENTRY_REAL_SEED", "real_seed_value") };
+        let err = provider
+            .initiate_rotation("SENTRY_ORG_TOKEN", &config)
+            .expect_err("missing account_id must fail before any network call");
+        assert!(matches!(
+            err,
+            RotationProviderError::ApiError { status: 0, .. }
+        ));
+        unsafe { std::env::remove_var("PHANTOM_TEST_SENTRY_REAL_SEED") };
+    }
+
+    #[test]
+    fn sentry_malformed_seed_is_not_supported() {
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let provider = SentryRotationProvider;
+        // A non-mock seed lacking the NUL separator cannot yield an app identity.
+        let config = RotationProviderConfig {
+            provider: "sentry".to_string(),
+            api_key_env: Some("PHANTOM_TEST_SENTRY_BAD_SEED".to_string()),
+            account_id: Some("uuid".to_string()),
+            ..Default::default()
+        };
+        unsafe { std::env::set_var("PHANTOM_TEST_SENTRY_BAD_SEED", "no-separator-here") };
+        let err = provider
+            .initiate_rotation("SENTRY_ORG_TOKEN", &config)
+            .expect_err("a malformed seed must be NotSupported");
         assert!(matches!(err, RotationProviderError::NotSupported { .. }));
+        unsafe { std::env::remove_var("PHANTOM_TEST_SENTRY_BAD_SEED") };
     }
 
     // ── Supabase provider (manual rotation required) ──────────────────────────

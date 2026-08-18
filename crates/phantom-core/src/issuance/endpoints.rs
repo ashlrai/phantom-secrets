@@ -97,6 +97,30 @@ fn defaults_for(provider: &str) -> (String, String, String, String, String) {
             "https://sentry.io/oauth/token/".to_string(),
             "https://sentry.io/oauth/device/code/".to_string(),
         ),
+        // Connectable-account Integration ("Phantom for Vercel"): `authorize`
+        // is the hosted install page the human clicks "Add Integration" on;
+        // `token` is the one-time code-exchange endpoint. Deliberately NO device
+        // grant — Vercel's device_code grant is closed to third-party clients
+        // (DCR strips it), so it stays empty and the engine never offers it.
+        "vercel" | "vercel-integration" => (
+            github_web,
+            github_api,
+            "https://vercel.com/integrations/phantom/new".to_string(),
+            "https://api.vercel.com/v2/oauth/access_token".to_string(),
+            String::new(),
+        ),
+        // Stripe App OAuth (`stripe_api_access_type=oauth`): `authorize` is the
+        // Stripe marketplace install page the human clicks "accept permissions"
+        // on; `token` is the code / refresh exchange, authenticated with the
+        // app developer's own Stripe secret key (HTTP Basic). No device grant —
+        // Stripe exposes none (verified 2026-08).
+        "stripe" => (
+            github_web,
+            github_api,
+            "https://marketplace.stripe.com/oauth/v2/authorize".to_string(),
+            "https://api.stripe.com/v1/oauth/token".to_string(),
+            String::new(),
+        ),
         _ => (
             github_web,
             github_api,
@@ -174,6 +198,14 @@ mod tests {
 
     #[test]
     fn defaults_are_production_github() {
+        // Hold the crate-wide env lock: this test mutates process-wide endpoint
+        // override vars that `override_rejected_before_use` (and any other
+        // `for_provider` caller) also touches — without the lock they race and
+        // one clobbers the other's override mid-flight. Poison-tolerant so a
+        // panicking sibling test never cascades.
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // No overrides in this test's environment for these vars.
         for v in [
             ENV_GITHUB_API_BASE,
