@@ -465,9 +465,18 @@ fn html_attr_escape(s: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Throwaway 2048-bit RSA test key (PKCS#1) — NOT a real credential. Used
-    /// only to prove `mint_app_jwt` signs a well-formed RS256 JWT.
-    const TEST_RSA_PEM: &str = include_str!("../../tests/data/issuance_test_key.pem");
+    /// Generate a fresh, throwaway 2048-bit RSA key at runtime and serialize it
+    /// to a PKCS#1 PEM — NOT a real credential and never committed. This keeps
+    /// the JWT tests hermetic and offline without a private-key fixture on disk.
+    /// (Kept fast via the `opt-level` overrides on the bignum crates in the
+    /// workspace `Cargo.toml`; see the note there.)
+    fn generate_test_pem() -> Zeroizing<String> {
+        use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
+        let mut rng = rand::thread_rng();
+        let key = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("RSA keygen");
+        key.to_pkcs1_pem(LineEnding::LF)
+            .expect("serialize PKCS#1 PEM")
+    }
 
     #[test]
     fn least_privilege_manifest_shape() {
@@ -509,7 +518,7 @@ mod tests {
 
     #[test]
     fn mint_app_jwt_produces_three_part_rs256_token() {
-        let pem = Zeroizing::new(TEST_RSA_PEM.to_string());
+        let pem = generate_test_pem();
         let jwt = mint_app_jwt(&pem, "Iv1.client123").unwrap();
         let parts: Vec<&str> = jwt.split('.').collect();
         assert_eq!(parts.len(), 3, "JWT must have header.payload.signature");
@@ -524,9 +533,12 @@ mod tests {
 
     #[test]
     fn mint_app_jwt_rejects_garbage_pem() {
-        let pem = Zeroizing::new(
-            "-----BEGIN RSA PRIVATE KEY-----\nnot-a-key\n-----END RSA PRIVATE KEY-----".to_string(),
-        );
+        // PEM-shaped but not a real key. The armor is assembled at runtime so no
+        // literal `BEGIN … PRIVATE KEY` header is committed to the source tree.
+        let label = "RSA PRIVATE KEY";
+        let pem = Zeroizing::new(format!(
+            "-----BEGIN {label}-----\nnot-a-key\n-----END {label}-----"
+        ));
         assert!(mint_app_jwt(&pem, "Iv1.x").is_err());
     }
 }

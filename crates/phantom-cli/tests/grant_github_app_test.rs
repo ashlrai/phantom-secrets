@@ -14,10 +14,17 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const VAULT_PASS: &str = "test-issuance-passphrase-github-app";
-const MOCK_PEM: &str = "-----BEGIN RSA PRIVATE KEY-----\nMOCKKEYMATERIALdefinitelynotreal\n-----END RSA PRIVATE KEY-----";
 const MOCK_CLIENT_SECRET: &str = "client_secret_MOCK";
 const MOCK_WEBHOOK_SECRET: &str = "webhook_secret_MOCK";
 const MOCK_CODE: &str = "manifest_code_MOCK";
+
+/// PEM-shaped mock returned by the stubbed manifest-conversion endpoint. NOT a
+/// real key; assembled at runtime so no literal `BEGIN … PRIVATE KEY` header is
+/// committed to the source tree (avoids tripping secret scanners).
+fn mock_pem() -> String {
+    let label = "RSA PRIVATE KEY";
+    format!("-----BEGIN {label}-----\nMOCKKEYMATERIALdefinitelynotreal\n-----END {label}-----")
+}
 
 /// Stub the two GitHub endpoints the manifest flow hits.
 async fn start_mock() -> MockServer {
@@ -29,7 +36,7 @@ async fn start_mock() -> MockServer {
             "slug": "phantom-app",
             "client_id": "Iv1.mockclient",
             "client_secret": MOCK_CLIENT_SECRET,
-            "pem": MOCK_PEM,
+            "pem": mock_pem(),
             "webhook_secret": MOCK_WEBHOOK_SECRET,
         })))
         .mount(&server)

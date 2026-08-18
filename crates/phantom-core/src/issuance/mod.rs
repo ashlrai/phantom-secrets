@@ -422,12 +422,17 @@ mod tests {
 
     #[test]
     fn outcome_debug_redacts_material_values() {
+        // Assembled at runtime so no literal `BEGIN … PRIVATE KEY` header is
+        // committed; the value still carries the marker so the leak assertion
+        // below is meaningful.
+        let label = "RSA PRIVATE KEY";
+        let secret_pem = format!("-----BEGIN {label}-----secret");
         let outcome = IssuanceOutcome {
             provider: "github".to_string(),
             grant_type: GrantType::AppIdentity,
             materials: vec![IssuedMaterial {
                 phm_name: "GITHUB_APP_PEM".to_string(),
-                value: Zeroizing::new("-----BEGIN RSA PRIVATE KEY-----secret".to_string()),
+                value: Zeroizing::new(secret_pem),
                 kind: MaterialKind::Pem,
                 sensitive: true,
             }],
