@@ -11,6 +11,7 @@ pub mod env_scope;
 pub mod exec;
 pub mod expiry;
 pub mod export_cmd;
+pub mod grant;
 pub mod import_cmd;
 pub mod init;
 pub mod list;

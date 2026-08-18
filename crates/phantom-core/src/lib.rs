@@ -10,6 +10,7 @@ pub mod env_scope;
 pub mod error;
 pub mod fs;
 pub mod importers;
+pub mod issuance;
 pub mod leak_correlation;
 pub mod mcp_approval;
 pub mod rotation_provider;

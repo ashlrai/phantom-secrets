@@ -46,3 +46,6 @@ lazy_static = "1"
 aes-gcm = "0.10"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 libc = "0.2"
+# RS256 signing of the in-process GitHub App JWT minted from the vaulted PEM
+# (issuance → rotation bootstrap). No key generation here — signing only.
+jsonwebtoken = "9"

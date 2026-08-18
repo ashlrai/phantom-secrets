@@ -1679,7 +1679,10 @@ fn redact_challenge_id(challenge_id: &str) -> String {
 /// would otherwise flow into MCP responses, CLI stderr, `--json` output, and
 /// the audit log. Only structural fields (error type / code / status) are
 /// kept; everything else is replaced by a fixed message plus byte length.
-fn summarize_error_body(body: &str) -> String {
+///
+/// Exposed `pub(crate)` so the `issuance` module reuses the identical hygiene
+/// when summarizing vendor bodies from the manifest/token/device endpoints.
+pub(crate) fn summarize_error_body(body: &str) -> String {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
         let mut parts: Vec<String> = Vec::new();
         let scopes = [v.get("error"), Some(&v)];

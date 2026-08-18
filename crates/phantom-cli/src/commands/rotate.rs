@@ -440,19 +440,27 @@ pub fn run_with_provider(
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
-    if !vault
-        .exists(name)
-        .with_context(|| format!("Failed to check if '{name}' exists in vault"))?
-    {
-        anyhow::bail!("Secret '{}' not found in vault.", name);
-    }
-
     // Resolve provider config from .phantom.toml.
     let provider_config = config
         .phantom
         .secrets
         .get(name)
         .and_then(|ov| ov.rotation_provider.as_ref());
+
+    // GitHub App installation tokens are minted fresh from the App PEM, so a
+    // github-provider target that does not exist yet is legal — the mint
+    // creates it. Every other provider still requires an existing value to
+    // rotate.
+    let is_github_grant = provider_config
+        .map(|cfg| cfg.provider.eq_ignore_ascii_case("github"))
+        .unwrap_or(false);
+    if !vault
+        .exists(name)
+        .with_context(|| format!("Failed to check if '{name}' exists in vault"))?
+        && !is_github_grant
+    {
+        anyhow::bail!("Secret '{}' not found in vault.", name);
+    }
 
     // Determine the effective provider: explicit --provider flag, else the
     // provider named in the secret's rotation_provider config block.
@@ -498,10 +506,29 @@ pub fn run_with_provider(
     // Source the bootstrap credential: environment variable first, then the
     // vault under the same name. The value is zeroized after the call and is
     // never printed.
-    let bootstrap = provider_config
+    let mut bootstrap = provider_config
         .and_then(|cfg| cfg.api_key_env.as_deref())
         .filter(|env_name| std::env::var(env_name).is_err())
         .and_then(|env_name| vault.retrieve(env_name).ok());
+
+    // GitHub App grants vault the PEM (never a ready JWT) under api_key_env.
+    // Mint the short-lived RS256 App JWT in-process from that PEM immediately
+    // before rotation: it is never an env var, never on disk, and is zeroized
+    // on drop; the PEM's only destination is GitHub. A non-PEM value (a mock
+    // prefix, or a pre-minted JWT) passes through untouched.
+    if effective_provider.eq_ignore_ascii_case("github") {
+        if let Some(pem) = bootstrap.as_ref() {
+            if pem.as_str().trim_start().starts_with("-----BEGIN") {
+                let client_id = vault
+                    .retrieve(phantom_core::issuance::github_app::GITHUB_APP_CLIENT_ID_NAME)
+                    .map(|z| z.as_str().to_string())
+                    .unwrap_or_default();
+                if let Ok(jwt) = phantom_core::issuance::mint_app_jwt(pem, &client_id) {
+                    bootstrap = Some(jwt);
+                }
+            }
+        }
+    }
 
     if !json_output {
         println!(
