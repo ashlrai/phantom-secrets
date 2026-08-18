@@ -45,3 +45,17 @@ phantom-core = { path = "crates/phantom-core", version = "0.6.0", package = "pha
 phantom-vault = { path = "crates/phantom-vault", version = "0.6.0", package = "phantom-secrets-vault" }
 phantom-proxy = { path = "crates/phantom-proxy", version = "0.6.0", package = "phantom-secrets-proxy" }
 phantom-mcp = { path = "crates/phantom-mcp", version = "0.6.0", package = "phantom-secrets-mcp" }
+
+# The issuance/JWT tests generate a throwaway RSA keypair at runtime (via the
+# `rsa` dev-dependency) instead of committing a fixture key — no private key
+# material lives in the repo. Pure-Rust RSA keygen is punishingly slow when its
+# bignum backend is built at opt-level 0 (several seconds per 2048-bit key), so
+# force these two math-heavy crates to compile optimized even in the dev/test
+# profile. This keeps `cargo test` keygen at ~100-300ms. Overrides for packages
+# outside the current build graph are ignored, so this is inert for non-test
+# builds where `rsa` is not linked.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
+[profile.dev.package.rsa]
+opt-level = 3

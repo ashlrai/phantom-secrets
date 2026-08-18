@@ -462,6 +462,16 @@ enum Commands {
         rotation_window_days: u64,
     },
 
+    /// Bootstrap a durable credential via one human consent, then let Phantom
+    /// renew it forever (GitHub App manifest, OAuth PKCE/device grants).
+    ///
+    /// Subcommands: `add`, `list`, `status`, `revoke`.
+    #[command(next_help_heading = "Maintenance")]
+    Grant {
+        #[command(subcommand)]
+        action: GrantAction,
+    },
+
     /// Validate stored secrets against their target APIs (drift detection).
     ///
     /// Sub-commands: `schedule`, `history`
@@ -607,6 +617,75 @@ enum ValidateAction {
 enum McpAction {
     /// Run the MCP stdio server in-process (used by AI clients like Claude Code)
     Serve,
+}
+
+#[derive(Subcommand)]
+enum GrantAction {
+    /// Run the ONE human consent for a provider and vault the durable root.
+    ///
+    /// Examples:
+    ///   phantom grant add github-app --org ashlrai
+    ///   phantom grant add supabase --flow pkce --client-id <ID> --client-secret-env SUPA_SECRET
+    ///   phantom grant add github --flow device --client-id <ID>
+    Add {
+        /// Provider: `github-app` (manifest bootstrap) or an OAuth provider
+        /// (`supabase`, `sentry`, `github`, …) driven by `--flow`.
+        provider: String,
+        /// GitHub App only: create the App under this org instead of your account.
+        #[arg(long)]
+        org: Option<String>,
+        /// GitHub App only: the App name (must be globally unique on GitHub).
+        #[arg(long)]
+        name: Option<String>,
+        /// The vault secret the minted credential lands under and that the
+        /// rotation_provider block is written for (default: GITHUB_TOKEN for
+        /// github-app; the refresh-token name otherwise).
+        #[arg(long)]
+        rotate_secret: Option<String>,
+        /// Consent flow for a generic OAuth provider: pkce (loopback) or device.
+        #[arg(long, value_name = "FLOW")]
+        flow: Option<String>,
+        /// The OAuth app's client id (required for --flow pkce|device).
+        #[arg(long)]
+        client_id: Option<String>,
+        /// Name of an env var holding the OAuth client secret (never read from
+        /// disk; used only if the provider requires a confidential client).
+        #[arg(long, value_name = "ENV")]
+        client_secret_env: Option<String>,
+        /// Comma-separated OAuth scopes to request.
+        #[arg(long)]
+        scope: Option<String>,
+        /// Do not open a browser; forces the device flow for OAuth providers and
+        /// prints the launch URL to paste for github-app.
+        #[arg(long)]
+        no_browser: bool,
+        /// Emit metadata-only JSON (vaulted names, never values).
+        #[arg(long)]
+        json: bool,
+    },
+    /// List configured grants: provider, state, next renewal. Never values.
+    List {
+        /// Emit JSON instead of the table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show grant chain health (metadata only; MCP-safe).
+    Status {
+        /// Limit to one provider.
+        provider: Option<String>,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Revoke a grant: best-effort vendor revoke, delete vaulted material, drop
+    /// the rotation_provider block.
+    Revoke {
+        /// Provider identity to revoke (e.g. `github-app`, `supabase`).
+        provider: String,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1050,6 +1129,38 @@ fn run() -> anyhow::Result<()> {
                 yes,
             } => commands::team::run_revoke(&team_id, &github_login, yes),
             TeamAction::RotateVault { team_id } => commands::team::run_rotate_vault(&team_id),
+        },
+        Commands::Grant { action } => match action {
+            GrantAction::Add {
+                provider,
+                org,
+                name,
+                rotate_secret,
+                flow,
+                client_id,
+                client_secret_env,
+                scope,
+                no_browser,
+                json,
+            } => commands::grant::add::run_add(
+                &provider,
+                org,
+                name,
+                rotate_secret,
+                no_browser,
+                flow.as_deref(),
+                client_id,
+                client_secret_env,
+                scope,
+                json || global_json,
+            ),
+            GrantAction::List { json } => commands::grant::list::run_list(json || global_json),
+            GrantAction::Status { provider, json } => {
+                commands::grant::status::run_status(provider.as_deref(), json || global_json)
+            }
+            GrantAction::Revoke { provider, json } => {
+                commands::grant::revoke::run_revoke(&provider, json || global_json)
+            }
         },
     }
 }

@@ -49,31 +49,39 @@ The credential can mint its own successor.
   process environment first, then from the vault under the same name — after
   the first rotation the chain is fully vault-resident.
 
-### 2. App Identity — provider core shipped (GitHub); grant UX open
+### 2. App Identity — shipped (GitHub App manifest bootstrap)
 
 The consent creates an *identity*, not a token. Tokens are derived,
 short-lived, and disposable.
 
-- One consent: create a GitHub App, install it on the org/repos, download the
-  private key PEM.
-- Forever after: `GitHubRotationProvider` mints installation access tokens
-  via `POST /app/installations/{id}/access_tokens` (1-hour expiry, stamped on
-  the stored secret). Already on `main`.
-- The missing UX this spec commits to — today the operator must hand-mint the
-  App JWT (which expires in ~10 minutes) as the bootstrap credential, which
-  no human can sustain and no agent should be handed:
+- One consent (**"FOUR clicks, ever"**): `phantom grant add github-app` opens a
+  loopback-served, self-submitting launch page that POSTs a least-privilege
+  manifest (`contents:write`, `pull_requests:write`, `issues:write`,
+  `metadata:read`; `public:false`) to `github.com/settings/apps/new`. The human
+  clicks **"Create GitHub App"** once; GitHub redirects the code back to the
+  loopback listener; Phantom exchanges it at
+  `POST /app-manifests/{code}/conversions` and receives the full credential set
+  (App id, PEM, client id/secret, webhook secret) in one response. Then one
+  **"Install"** click per account/org.
 
 ```bash
-phantom grant add github --app-id 12345 --installation-id 987 --key-file app.private-key.pem
+phantom grant add github-app [--org <ORG>] [--name <APP_NAME>] [--rotate-secret <KEY>] [--no-browser] [--json]
 ```
 
-  - The PEM is stored in the vault (keychain-backed, never in `.phantom.toml`,
-    never in git); the file copy can be deleted.
-  - On every rotation Phantom mints the RS256 App JWT **in-process** from the
-    vaulted PEM — the JWT never exists outside the rotation call, is never an
-    env var, and is zeroized after use.
-  - The grant writes the corresponding `rotation_provider` block so
-    `phantom rotate` and `phantom watch --auto-rotate` work unchanged.
+  - The PEM, client secret and webhook secret are vaulted (keychain-backed,
+    never in `.phantom.toml`, never in git, never printed, never in `--json`).
+    The client id is vaulted non-sensitive (needed as the JWT `iss`).
+  - Installations are discovered via `GET /app/installations`, authenticated
+    with an in-process App JWT minted from the just-issued PEM.
+  - Forever after: `GitHubRotationProvider` mints installation access tokens
+    via `POST /app/installations/{id}/access_tokens` (1-hour expiry, stamped on
+    the stored secret). On every rotation Phantom mints the RS256 App JWT
+    **in-process** from the vaulted PEM (`GithubAppJwtProvider::mint_app_jwt`,
+    `iss = client_id`, `exp < 10 min`) — the JWT never exists outside the
+    rotation call, is never an env var, and is zeroized after use.
+  - `grant add` writes the corresponding `rotation_provider` block (under
+    `GITHUB_TOKEN` by default, or `--rotate-secret`) so `phantom rotate --name
+    <KEY>` and `phantom watch --auto-rotate` work unchanged.
 
 ### 3. OAuth Refresh — future (Supabase, Sentry)
 
@@ -179,8 +187,8 @@ the vault, never new exposure paths.
 - [x] Dispatch by provider identity; guarded, audit-tagged mock paths
 - [x] `phantom rotate --batch` with per-provider rate limits and shared audit `batch_id`
 - [x] `rotation_policy` schedules + `phantom watch --auto-rotate` + doctor warnings
-- [ ] `phantom grant add github --app-id --installation-id --key-file` (PEM in vault, in-process JWT minting)
-- [ ] `phantom grant list` / `status` / `revoke` + grant state model (`active | expiring | broken | manual`)
+- [x] `phantom grant add github-app` (manifest bootstrap → PEM/client-id/secret/webhook vaulted, installations discovered, in-process RS256 App-JWT minting wired into `phantom rotate`)
+- [x] `phantom grant list` / `status` / `revoke` + grant state model (`active | expiring | broken | manual`)
 - [ ] Grant-aware MCP surface (`phantom_grant_status`, metadata-only)
 - [ ] OAuth refresh grants: PKCE loopback-callback flow (Supabase first, then Sentry)
 - [ ] Refresh-token rotation with store-then-invalidate ordering

@@ -46,3 +46,13 @@ lazy_static = "1"
 aes-gcm = "0.10"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 libc = "0.2"
+# RS256 signing of the in-process GitHub App JWT minted from the vaulted PEM
+# (issuance → rotation bootstrap). No key generation here — signing only.
+jsonwebtoken = "9"
+
+[dev-dependencies]
+# Generate a throwaway RSA keypair at test runtime so the issuance/JWT tests
+# stay hermetic and offline WITHOUT committing any private-key material. See the
+# `[profile.dev.package.*]` opt-level overrides in the workspace Cargo.toml that
+# keep keygen fast in the debug/test profile.
+rsa = "0.9"
