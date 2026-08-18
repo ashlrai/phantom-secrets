@@ -414,6 +414,83 @@ mod tests {
         assert!(!format!("{outcome:?}").contains("test_refresh_MOCK"));
     }
 
+    /// Single-response stub that answers with `status` and a `Location` header.
+    /// Records whether it was ever contacted so a test can prove a redirect was
+    /// (not) followed.
+    fn spawn_redirect_stub(
+        status: u16,
+        location: &str,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hit_c = hit.clone();
+        let location = location.to_string();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                hit_c.store(true, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\nLocation: {location}\r\n\
+                     Content-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (base, hit)
+    }
+
+    /// RFC 9700: the token endpoint must not follow redirects, because the POST
+    /// body carries the authorization `code` + PKCE `code_verifier` (and, for
+    /// confidential clients, the `client_secret`). A 307 from the token endpoint
+    /// must surface as an error, and the redirect target must never be contacted
+    /// — otherwise reqwest would replay the secret-bearing body to it.
+    #[test]
+    fn token_endpoint_307_is_not_followed_and_body_is_not_replayed() {
+        // The would-be exfil target: if the client follows the redirect it will
+        // land here (and would hand back a "token"). It must stay untouched.
+        let (leak_base, leak_hit) = spawn_stub(
+            200,
+            r#"{"refresh_token":"test_leaked_MOCK","refresh_token_expires_in":15897600}"#,
+        );
+        let (redirect_base, redirect_hit) = spawn_redirect_stub(307, &format!("{leak_base}/token"));
+
+        // Build the *production* client under test — the one with the redirect
+        // policy that this regression guards.
+        let http = crate::issuance::build_http_client().unwrap();
+        let ep = endpoints(format!("{redirect_base}/token"));
+        let browser = CapturingBrowser {
+            urls: Mutex::new(Vec::new()),
+        };
+        let loopback = MockLoopbackListener::new("auth_code_123", MockStateMode::Echo);
+        let deps = IssuanceDeps {
+            browser: &browser,
+            loopback: &loopback,
+            http: &http,
+            endpoints: &ep,
+        };
+        let req = request("github", Some("Iv1.client"), vec!["repo".to_string()]);
+
+        let err = LoopbackPkceEngine.issue(&req, &deps).unwrap_err();
+
+        // The 3xx surfaces through the existing non-2xx error path…
+        assert!(
+            matches!(err, IssuanceError::Exchange { .. }),
+            "expected Exchange error from a 307, got {err:?}"
+        );
+        // …the token endpoint itself was contacted…
+        assert!(redirect_hit.load(std::sync::atomic::Ordering::SeqCst));
+        // …but the redirect target was NEVER contacted (no body replay, no token).
+        assert!(
+            leak_hit.lock().unwrap().is_empty(),
+            "redirect target must not receive the replayed exchange body"
+        );
+    }
+
     #[test]
     fn state_mismatch_is_csrf_denied_without_exchange() {
         // No stub needed: the exchange must not run.

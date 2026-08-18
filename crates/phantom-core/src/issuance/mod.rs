@@ -379,6 +379,14 @@ pub fn build_http_client() -> Result<reqwest::blocking::Client, IssuanceError> {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("phantom-secrets-issuance/0.1")
+        // RFC 9700 (OAuth 2.0 Security BCP): the token/exchange endpoint MUST NOT
+        // follow redirects. reqwest strips sensitive *headers* on cross-host
+        // redirects but re-sends the POST *body* on 307/308 — which here carries
+        // the authorization `code` + PKCE `code_verifier`, `client_secret`, or
+        // `device_code`. Disabling redirects means any 3xx from the token
+        // endpoint surfaces as a non-2xx response through the existing error
+        // path instead of replaying those secrets to the redirect target.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| IssuanceError::Network {
             reason: format!("failed to build HTTP client: {e}"),
