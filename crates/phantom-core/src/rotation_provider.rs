@@ -1882,12 +1882,22 @@ pub(crate) fn resolve_api_key(
 }
 
 /// Build a blocking HTTP client with the configured timeout.
+///
+/// RFC 9700: rotation requests carry secret-bearing bodies — the Supabase
+/// durable refresh token (`grant_type=refresh_token` form body), the Sentry
+/// JWT-bearer assertion (JSON body), GitHub App JWTs, etc. reqwest strips the
+/// `Authorization` header on a cross-host redirect but RE-SENDS the POST body on
+/// 307/308, so a 3xx from (or spoofed as) a token endpoint would replay those
+/// secrets verbatim to the redirect target. `Policy::none()` makes any 3xx
+/// surface as a non-2xx error instead of replaying the body — mirroring
+/// `issuance::build_http_client` and the dedicated Stripe roll client.
 pub(crate) fn build_http_client(
     timeout_secs: u64,
 ) -> Result<reqwest::blocking::Client, RotationProviderError> {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .user_agent("phantom-secrets-rotation/0.1")
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| RotationProviderError::NetworkError {
             reason: format!("failed to build HTTP client: {e}"),
@@ -2432,6 +2442,41 @@ mod tests {
             .label(),
             "acme"
         );
+    }
+
+    /// RFC 9700 regression: the shared rotation client must NOT follow
+    /// redirects. reqwest re-sends the POST body on 307/308, so a 3xx from a
+    /// token endpoint would replay the Supabase refresh token / Sentry
+    /// JWT-bearer assertion to the redirect target. `Policy::none()` must make
+    /// the 3xx surface verbatim instead of being followed.
+    #[test]
+    fn shared_rotation_client_does_not_follow_redirects() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            // 308 with a Location that, if followed, would change the outcome.
+            let resp = "HTTP/1.1 308 Permanent Redirect\r\n\
+                        Location: https://attacker.example/replay\r\n\
+                        Content-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        });
+
+        let client = build_http_client(5).unwrap();
+        let resp = client
+            .post(format!("http://{addr}/v1/oauth/token"))
+            .body("grant_type=refresh_token&refresh_token=SECRET")
+            .send()
+            .unwrap();
+        // Not followed: the 3xx is returned as-is (no request to the attacker).
+        assert_eq!(resp.status().as_u16(), 308);
+        handle.join().unwrap();
     }
 
     #[test]

@@ -21,10 +21,17 @@
 //!    dispatched by whether `account_id` names a project ref:
 //!    - **management-token self-rotation** (`account_id` = `None`): calls the
 //!      Supabase refresh grant (`grant_type=refresh_token`, Basic client auth)
-//!      and returns the **new** refresh token. Supabase rotates the refresh
-//!      token on every use, so this is *atomic self-rotation* — the caller
-//!      persists the returned successor before the predecessor is spent, exactly
-//!      the Vercel store-then-invalidate ordering.
+//!      and returns the **new** refresh token. Supabase invalidates the old
+//!      refresh token the moment it issues the new one, so this is
+//!      **spend-then-store**, NOT the store-then-invalidate ordering Vercel
+//!      uses: the predecessor is already dead at the vendor by the time
+//!      `initiate_rotation` returns, and the successor exists only in the
+//!      in-memory challenge payload until the caller vaults it. A crash between
+//!      the vendor call and the vault write bricks the grant (old token dead,
+//!      new token unpersisted) and requires a fresh human consent — the same
+//!      hazard as the Stripe `roll_refresh_token` path. (Mode B minting below,
+//!      like GitHub-App JWTs, is retry-safe because it issues a new credential
+//!      without invalidating the old.)
 //!    - **project-API-key minting** (`account_id` = a project ref): mints a
 //!      fresh `sb_secret_` key via `POST /v1/projects/{ref}/api-keys`, returns
 //!      it, and best-effort DELETEs the rotated-out key in
@@ -39,9 +46,11 @@
 //!   end to end; none is ever logged, printed, or surfaced in an error/JSON.
 //! - Vendor error bodies pass through
 //!   [`crate::rotation_provider::summarize_error_body`] (type/code/status only).
-//! - The HTTP client is the issuance client with `redirect(Policy::none())`;
-//!   the rotation client is the shared rotation client. A `401` on refresh is
-//!   surfaced as "the user revoked the app" — never a silent demotion.
+//! - Both HTTP clients disable redirects (`redirect(Policy::none())`): the
+//!   consent exchange uses the issuance client, the refresh grant uses the
+//!   shared rotation client — neither will replay the secret-bearing body to a
+//!   3xx target. A `401` on refresh is surfaced as "the user revoked the app"
+//!   — never a silent demotion.
 //! - The Management-API base can be pointed at a wiremock server ONLY when mock
 //!   rotation is enabled (`cfg(test)` or `PHANTOM_ALLOW_MOCK_ROTATION=1`) and
 //!   only over https/localhost, so a prompt-injected agent can never redirect a
@@ -271,8 +280,10 @@ fn build_supabase_outcome(
         scopes: scopes.to_vec(),
         expires_at,
         notes: vec![
-            "`phantom rotate --name SUPABASE_REFRESH_TOKEN` refreshes the management token \
-             (atomic — the successor is vaulted before the old one is spent)."
+            "`phantom rotate --name SUPABASE_REFRESH_TOKEN` refreshes the management token. \
+             Supabase invalidates the old refresh token when it issues the new one \
+             (spend-then-store): an ill-timed crash before the successor is vaulted bricks \
+             the grant and needs a fresh `phantom grant add supabase`."
                 .to_string(),
         ],
         ..Default::default()
@@ -834,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn mode_a_refreshes_and_returns_new_refresh_token_atomically() {
+    fn mode_a_refreshes_and_returns_rolled_refresh_token() {
         let _g = env_guard();
         let (base, seen) = spawn_stub(
             200,
