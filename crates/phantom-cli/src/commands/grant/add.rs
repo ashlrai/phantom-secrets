@@ -39,6 +39,8 @@ pub fn run_add(
     client_id: Option<String>,
     client_secret_env: Option<String>,
     scope: Option<String>,
+    team: Option<String>,
+    account: Option<String>,
     json_output: bool,
 ) -> Result<()> {
     let project_dir = std::env::current_dir()?;
@@ -65,6 +67,8 @@ pub fn run_add(
         client_id,
         client_secret_env.as_deref(),
         scope,
+        team,
+        account,
     )?;
     let engines = default_consent_engines();
     let engine = engines
@@ -179,6 +183,11 @@ fn rotation_target(
     if provider == "github-app" {
         return DEFAULT_GITHUB_TOKEN_SECRET.to_string();
     }
+    if provider == "sentry" {
+        // The minted 8-hour org token is the rotation target (not the JWT seed
+        // that `api_key_env` points at).
+        return phantom_core::issuance::SENTRY_ORG_TOKEN_NAME.to_string();
+    }
     // OAuth-refresh: the refresh-token material name is the rotating secret.
     outcome
         .rotation_config
@@ -203,6 +212,8 @@ fn build_request(
     client_id: Option<String>,
     client_secret_env: Option<&str>,
     scope: Option<String>,
+    team: Option<String>,
+    account: Option<String>,
 ) -> Result<(&'static str, IssuanceRequest)> {
     let scopes: Vec<String> = scope
         .map(|s| {
@@ -223,8 +234,183 @@ fn build_request(
             scopes,
             flow: None,
             app_manifest: Some(manifest),
+            team_id: None,
+            account: None,
+            org: None,
         };
         return Ok(("github-app-manifest", request));
+    }
+
+    // Vercel connectable-account Integration (app-identity, non-expiring
+    // team-scoped token). Confidential client: both credential halves come from
+    // the Integration's Credentials section — the secret via --client-secret-env,
+    // never read from disk.
+    if provider == "vercel-integration" {
+        let client_id = client_id.ok_or_else(|| {
+            anyhow!(
+                "--client-id is required for vercel-integration (the Integration's Client ID \
+                 from the Vercel Integrations Console)"
+            )
+        })?;
+        let env_name = client_secret_env.ok_or_else(|| {
+            anyhow!(
+                "--client-secret-env is required for vercel-integration (the Integration's \
+                 Client Secret; never read from disk)"
+            )
+        })?;
+        let secret = std::env::var(env_name).map_err(|_| {
+            anyhow!("--client-secret-env '{env_name}' is not set in the environment")
+        })?;
+        let request = IssuanceRequest {
+            provider: provider.to_string(),
+            client_id: Some(client_id),
+            client_secret: Some(Zeroizing::new(secret)),
+            scopes,
+            flow: None,
+            app_manifest: None,
+            team_id: team,
+            account: None,
+            org: None,
+        };
+        return Ok(("vercel-integration", request));
+    }
+
+    // Stripe App OAuth (oauth-refresh): one "accept permissions" click yields a
+    // 1-year rolling refresh token; 1-hour access tokens are minted on demand.
+    // Confidential client — the exchange is HTTP Basic-authed with Phantom's own
+    // developer secret key, resolved from an env var (default STRIPE_APP_SECRET_KEY),
+    // never read from disk. `--flow rak` selects the honest dashboard-only
+    // restricted-key path for a raw `rk_`/`sk_` key (e.g. STRIPE_KOALA_TEST).
+    if provider == "stripe" {
+        let flow_sel = flow.unwrap_or("oauth");
+        if flow_sel == "rak" || flow_sel == "restricted-key" {
+            // No client-id/secret needed: the engine refuses with a dashboard
+            // link and recommends the OAuth route.
+            let request = IssuanceRequest {
+                provider: provider.to_string(),
+                client_id: None,
+                client_secret: None,
+                scopes,
+                flow: None,
+                app_manifest: None,
+                team_id: None,
+                account,
+                org: None,
+            };
+            return Ok(("stripe-restricted-key", request));
+        }
+        if flow_sel != "oauth" {
+            bail!("unknown --flow '{flow_sel}' for stripe (expected oauth|rak)");
+        }
+        let client_id = client_id.ok_or_else(|| {
+            anyhow!("--client-id is required for stripe (the Stripe App's OAuth client id, ca_…)")
+        })?;
+        // The developer secret key: default to STRIPE_APP_SECRET_KEY, override
+        // with --client-secret-env. Resolved from the env var, never from disk.
+        let env_name = client_secret_env.unwrap_or("STRIPE_APP_SECRET_KEY");
+        let secret = std::env::var(env_name).map_err(|_| {
+            anyhow!(
+                "the Stripe developer secret key env '{env_name}' is not set — it authenticates \
+                 the token exchange (HTTP Basic). Set it or pass --client-secret-env NAME."
+            )
+        })?;
+        let request = IssuanceRequest {
+            provider: provider.to_string(),
+            client_id: Some(client_id),
+            client_secret: Some(Zeroizing::new(secret)),
+            scopes,
+            flow: None,
+            app_manifest: None,
+            team_id: None,
+            account,
+            org: None,
+        };
+        return Ok(("stripe-app-oauth", request));
+    }
+
+    // Supabase OAuth (oauth-refresh): S256 PKCE + loopback redirect, HTTP Basic
+    // client auth, optional `--org <slug>` organization_slug pre-select. The
+    // refresh token is the vaulted root; `phantom rotate --name
+    // SUPABASE_REFRESH_TOKEN` refreshes the management token atomically (each
+    // refresh returns a new one) and the same provider mints downstream project
+    // API keys. Confidential client: the secret comes from --client-secret-env,
+    // never from disk.
+    if provider == "supabase" {
+        let client_id = client_id.ok_or_else(|| {
+            anyhow!(
+                "--client-id is required for supabase (the OAuth app's client id from \
+                 Organization Settings → OAuth Apps)"
+            )
+        })?;
+        let env_name = client_secret_env.ok_or_else(|| {
+            anyhow!(
+                "--client-secret-env is required for supabase (the OAuth app client secret; \
+                 never read from disk)"
+            )
+        })?;
+        let secret = std::env::var(env_name).map_err(|_| {
+            anyhow!("--client-secret-env '{env_name}' is not set in the environment")
+        })?;
+        // Default to the least scopes needed to issue project credentials; a
+        // Supabase OAuth app's scopes are fixed at creation, so request them up
+        // front (changing them later forces re-consent).
+        let scopes = if scopes.is_empty() {
+            vec![
+                "projects:read".to_string(),
+                "secrets:read".to_string(),
+                "secrets:write".to_string(),
+            ]
+        } else {
+            scopes
+        };
+        let request = IssuanceRequest {
+            provider: provider.to_string(),
+            client_id: Some(client_id),
+            client_secret: Some(Zeroizing::new(secret)),
+            scopes,
+            flow: None,
+            app_manifest: None,
+            team_id: None,
+            account: None,
+            org,
+        };
+        return Ok(("supabase-oauth", request));
+    }
+
+    // Sentry published-integration install (app-identity): one "Accept &
+    // Install" click exchanges the grant code for the first 8-hour org token;
+    // renewal is stateless via the client_secret-signed JWT-bearer grant. The
+    // app identity (client_id + client_secret) is the durable root — the secret
+    // comes from --client-secret-env, never from disk. `--org <slug>` names the
+    // published integration slug for the external-install URL.
+    if provider == "sentry" {
+        let client_id = client_id.ok_or_else(|| {
+            anyhow!(
+                "--client-id is required for sentry (the integration's Client ID from \
+                 Sentry → Settings → Developer Settings)"
+            )
+        })?;
+        let env_name = client_secret_env.ok_or_else(|| {
+            anyhow!(
+                "--client-secret-env is required for sentry (the integration's Client Secret; \
+                 never read from disk)"
+            )
+        })?;
+        let secret = std::env::var(env_name).map_err(|_| {
+            anyhow!("--client-secret-env '{env_name}' is not set in the environment")
+        })?;
+        let request = IssuanceRequest {
+            provider: provider.to_string(),
+            client_id: Some(client_id),
+            client_secret: Some(Zeroizing::new(secret)),
+            scopes,
+            flow: None,
+            app_manifest: None,
+            team_id: None,
+            account: None,
+            org,
+        };
+        return Ok(("sentry-install", request));
     }
 
     // Generic OAuth-refresh provider: pick pkce or device.
@@ -267,6 +453,9 @@ fn build_request(
         scopes,
         flow: Some(flow_kind),
         app_manifest: None,
+        team_id: None,
+        account: None,
+        org: None,
     };
     Ok((engine_name, request))
 }

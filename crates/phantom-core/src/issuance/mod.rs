@@ -31,6 +31,10 @@ pub mod endpoints;
 pub mod github_app;
 pub mod loopback;
 pub mod pkce;
+pub mod sentry;
+pub mod stripe;
+pub mod supabase;
+pub mod vercel;
 
 pub use browser::{BrowserOpener, NoBrowser};
 pub use device::DeviceFlowEngine;
@@ -40,6 +44,13 @@ pub use loopback::{
     CapturedCode, LoopbackBinding, LoopbackListener, MockLoopbackListener, StdLoopbackListener,
 };
 pub use pkce::LoopbackPkceEngine;
+pub use sentry::{
+    mint_install_jwt, SentryInstallFlow, SENTRY_APP_JWT_SEED_NAME, SENTRY_CLIENT_ID_NAME,
+    SENTRY_ORG_TOKEN_NAME, SENTRY_ORG_TOKEN_TTL_SECS,
+};
+pub use stripe::{StripeAppOAuthFlow, StripeRestrictedKeyFlow, STRIPE_REFRESH_TOKEN_NAME};
+pub use supabase::{SupabaseManagementProvider, SupabaseOAuthFlow, SUPABASE_REFRESH_TOKEN_NAME};
+pub use vercel::{VercelIntegrationFlow, VERCEL_INTEGRATION_TOKEN_NAME};
 
 use crate::rotation_provider::RotationProviderConfig;
 use serde::{Deserialize, Serialize};
@@ -95,6 +106,9 @@ pub enum MaterialKind {
     RefreshToken,
     /// GitHub App webhook signing secret.
     WebhookSecret,
+    /// A non-expiring access token that is itself the durable root — e.g. the
+    /// team-scoped Vercel Integration token (app-identity grant, no refresh).
+    AccessToken,
 }
 
 impl MaterialKind {
@@ -105,6 +119,7 @@ impl MaterialKind {
             Self::ClientSecret => "client-secret",
             Self::RefreshToken => "refresh-token",
             Self::WebhookSecret => "webhook-secret",
+            Self::AccessToken => "access-token",
         }
     }
 }
@@ -304,6 +319,19 @@ pub struct IssuanceRequest {
     pub flow: Option<FlowKind>,
     /// GitHub App manifest spec (github-app only).
     pub app_manifest: Option<GithubManifestSpec>,
+    /// Vercel team id to scope the grant to (`vercel-integration` only). When
+    /// `None`, the team is taken from the token-exchange response (`null` =
+    /// personal account). Plumbed onto every subsequent team-scoped REST call.
+    pub team_id: Option<String>,
+    /// Stripe only: the target Stripe account id hint (`acct_…`) for
+    /// `phantom grant add stripe --account`. Advisory — the authoritative
+    /// account comes back as `stripe_user_id` in the token exchange.
+    pub account: Option<String>,
+    /// Supabase only: the `organization_slug` to pre-select on the OAuth
+    /// consent page (`phantom grant add supabase --org <slug>`). Purely a UX
+    /// hint — the user can still switch orgs in the browser — and it carries no
+    /// secret. `None` shows the org picker.
+    pub org: Option<String>,
 }
 
 /// Injected side-effects → makes core hermetically testable and cleanly handles
@@ -345,6 +373,11 @@ pub fn default_consent_engines() -> Vec<Box<dyn ConsentEngine>> {
         Box::new(GithubAppManifestFlow),
         Box::new(LoopbackPkceEngine),
         Box::new(DeviceFlowEngine),
+        Box::new(VercelIntegrationFlow),
+        Box::new(StripeAppOAuthFlow),
+        Box::new(StripeRestrictedKeyFlow),
+        Box::new(SupabaseOAuthFlow),
+        Box::new(SentryInstallFlow),
     ]
 }
 

@@ -619,6 +619,10 @@ enum McpAction {
     Serve,
 }
 
+// The `Add` variant carries many optional per-provider flags (client id/secret
+// env, scopes, team, account, org, …); boxing a clap-derived variant complicates
+// the derive for no runtime benefit here, so the size skew is accepted.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum GrantAction {
     /// Run the ONE human consent for a provider and vault the durable root.
@@ -627,11 +631,15 @@ enum GrantAction {
     ///   phantom grant add github-app --org ashlrai
     ///   phantom grant add supabase --flow pkce --client-id <ID> --client-secret-env SUPA_SECRET
     ///   phantom grant add github --flow device --client-id <ID>
+    ///   phantom grant add vercel-integration --client-id <ID> --client-secret-env VERCEL_SECRET --team <TEAM>
     Add {
-        /// Provider: `github-app` (manifest bootstrap) or an OAuth provider
-        /// (`supabase`, `sentry`, `github`, …) driven by `--flow`.
+        /// Provider: `github-app` (manifest bootstrap), `vercel-integration`
+        /// (connectable-account Integration), or an OAuth provider (`supabase`,
+        /// `sentry`, `github`, …) driven by `--flow`.
         provider: String,
-        /// GitHub App only: create the App under this org instead of your account.
+        /// Org selector: for github-app, create the App under this org instead
+        /// of your account; for supabase, pre-select this `organization_slug` on
+        /// the OAuth consent page.
         #[arg(long)]
         org: Option<String>,
         /// GitHub App only: the App name (must be globally unique on GitHub).
@@ -655,6 +663,15 @@ enum GrantAction {
         /// Comma-separated OAuth scopes to request.
         #[arg(long)]
         scope: Option<String>,
+        /// Vercel Integration only: scope the grant to this team id (the
+        /// `teamId` applied to every subsequent REST call). Omit for a
+        /// personal-account install.
+        #[arg(long)]
+        team: Option<String>,
+        /// Stripe only: target Stripe account id hint (`acct_…`). Advisory — the
+        /// authoritative account comes back in the token exchange.
+        #[arg(long)]
+        account: Option<String>,
         /// Do not open a browser; forces the device flow for OAuth providers and
         /// prints the launch URL to paste for github-app.
         #[arg(long)]
@@ -1140,6 +1157,8 @@ fn run() -> anyhow::Result<()> {
                 client_id,
                 client_secret_env,
                 scope,
+                team,
+                account,
                 no_browser,
                 json,
             } => commands::grant::add::run_add(
@@ -1152,6 +1171,8 @@ fn run() -> anyhow::Result<()> {
                 client_id,
                 client_secret_env,
                 scope,
+                team,
+                account,
                 json || global_json,
             ),
             GrantAction::List { json } => commands::grant::list::run_list(json || global_json),

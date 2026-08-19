@@ -250,7 +250,10 @@ pub(crate) fn now_unix() -> u64 {
 
 /// 32 random bytes, base64url-nopad (43 chars — within RFC 7636's 43–128).
 /// Held in `Zeroizing`; the raw bytes are scrubbed after encoding.
-fn generate_code_verifier() -> Zeroizing<String> {
+///
+/// `pub(crate)` so provider-specific engines (e.g. `super::supabase`) run the
+/// identical S256 PKCE mechanic instead of re-implementing it.
+pub(crate) fn generate_code_verifier() -> Zeroizing<String> {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -260,14 +263,20 @@ fn generate_code_verifier() -> Zeroizing<String> {
 }
 
 /// `BASE64URL_NOPAD(SHA256(code_verifier))` — the S256 challenge.
-fn code_challenge_s256(code_verifier: &str) -> String {
+///
+/// `pub(crate)` so provider-specific engines (e.g. `super::supabase`) reuse the
+/// exact S256 derivation.
+pub(crate) fn code_challenge_s256(code_verifier: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(code_verifier.as_bytes());
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
 /// Build `base?k=v&…`, percent-encoding each value and skipping empty ones.
-fn build_authorize_url(base: &str, params: &[(&str, &str)]) -> String {
+///
+/// `pub(crate)` so provider engines that need extra authorize params (e.g.
+/// Supabase's `organization_slug`) build the URL identically.
+pub(crate) fn build_authorize_url(base: &str, params: &[(&str, &str)]) -> String {
     let sep = if base.contains('?') { '&' } else { '?' };
     let query: Vec<String> = params
         .iter()
@@ -370,6 +379,9 @@ mod tests {
             scopes,
             flow: None,
             app_manifest: None,
+            team_id: None,
+            account: None,
+            org: None,
         }
     }
 

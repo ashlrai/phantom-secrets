@@ -11,6 +11,7 @@
 //! returning a canned code + echoed state deterministically.
 
 use super::IssuanceError;
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::sync::Mutex;
@@ -33,6 +34,9 @@ pub struct CapturedCode {
     pub code: Zeroizing<String>,
     /// The `state` the browser echoed back (the engine verifies it == its own).
     pub state: String,
+    /// Extra (non-secret) redirect query params keyed by name, e.g. Sentry's
+    /// `installationId`. `code`/`state` are surfaced above and excluded here.
+    pub extra: BTreeMap<String, String>,
 }
 
 /// Binds the loopback listener and blocks for the redirect. Injected so core is
@@ -166,6 +170,17 @@ fn handle_connection(
             let code = query_param(query, "code");
             let state = query_param(query, "state").unwrap_or_default();
             if let Some(code) = code {
+                // Collect any other (non-secret) params the provider appended,
+                // e.g. Sentry's `installationId`. `code`/`state` are surfaced on
+                // their own fields, so exclude them from `extra`.
+                let mut extra = BTreeMap::new();
+                for pair in query.split('&') {
+                    if let Some((k, v)) = pair.split_once('=') {
+                        if k != "code" && k != "state" {
+                            extra.insert(k.to_string(), percent_decode(v));
+                        }
+                    }
+                }
                 let _ = write_response(
                     &mut stream,
                     "200 OK",
@@ -175,6 +190,7 @@ fn handle_connection(
                 return Some(CapturedCode {
                     code: Zeroizing::new(code),
                     state,
+                    extra,
                 });
             }
         }
@@ -263,6 +279,7 @@ pub enum MockStateMode {
 pub struct MockLoopbackListener {
     code: String,
     state_mode: MockStateMode,
+    extra: BTreeMap<String, String>,
 }
 
 impl MockLoopbackListener {
@@ -271,15 +288,31 @@ impl MockLoopbackListener {
         Self {
             code: code.into(),
             state_mode,
+            extra: BTreeMap::new(),
         }
     }
 
+    /// Add an extra (non-secret) redirect param the mock will surface in
+    /// [`CapturedCode::extra`], e.g. Sentry's `installationId`.
+    pub fn with_extra_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra.insert(key.into(), value.into());
+        self
+    }
+
     /// Build from the test harness env: `PHANTOM_ISSUANCE_MOCK_CODE`
-    /// (default `"mock_code"`), always echoing state.
+    /// (default `"mock_code"`), always echoing state. When
+    /// `PHANTOM_ISSUANCE_MOCK_INSTALLATION_ID` is set it is surfaced as the
+    /// `installationId` extra param (the Sentry install landing).
     pub fn from_env() -> Self {
         let code =
             std::env::var("PHANTOM_ISSUANCE_MOCK_CODE").unwrap_or_else(|_| "mock_code".to_string());
-        Self::new(code, MockStateMode::Echo)
+        let mut listener = Self::new(code, MockStateMode::Echo);
+        if let Ok(uuid) = std::env::var("PHANTOM_ISSUANCE_MOCK_INSTALLATION_ID") {
+            if !uuid.is_empty() {
+                listener = listener.with_extra_param("installationId", uuid);
+            }
+        }
+        listener
     }
 }
 
@@ -304,6 +337,7 @@ impl LoopbackListener for MockLoopbackListener {
         Ok(CapturedCode {
             code: Zeroizing::new(self.code.clone()),
             state,
+            extra: self.extra.clone(),
         })
     }
 }
