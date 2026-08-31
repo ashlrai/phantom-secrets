@@ -167,16 +167,21 @@ export async function requireBrowserAuth(
 }
 
 /**
- * Helper: require Pro plan, return 402 if free tier.
+ * Helper: require an approved pilot account.
+ *
+ * `pro` is a legacy database label, not proof that the cloud service has been
+ * commissioned. Deny every request until pilot admission is backed by an
+ * explicit, independently verifiable entitlement.
  */
-export function requirePro(user: AuthUser): Response | null {
-  if (user.plan === "pro") return null;
+export function requirePro(_user: AuthUser): Response | null {
   return Response.json(
     {
-      error: "pro_required",
-      message: "This feature requires Phantom Pro ($8/month)",
-      checkout_url: "https://phm.dev/pricing",
+      error: "feature_unavailable",
+      message:
+        "This cloud capability is not commissioned. Contact Phantom to register pilot interest.",
+      interest_url:
+        "mailto:mason@ashlr.ai?subject=Phantom%20Cloud%20pilot%20interest",
     },
-    { status: 402 }
+    { status: 503 }
   );
 }

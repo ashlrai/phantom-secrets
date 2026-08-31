@@ -12,7 +12,6 @@ type VaultRow = {
 type UserRow = {
   github_login: string;
   email: string | null;
-  plan: string;
 };
 
 function bytesToKb(s: string) {
@@ -35,7 +34,7 @@ function relTime(iso: string) {
 
 export default function DashboardOverview() {
   const { data: user, error: userError } = useSupabaseQuery<UserRow>((sb) =>
-    sb.from("users").select("github_login, email, plan").single()
+    sb.from("users").select("github_login, email").single()
   );
   const { data: vaults, error: vaultsError } = useSupabaseQuery<VaultRow[]>((sb) =>
     sb
@@ -60,8 +59,16 @@ export default function DashboardOverview() {
   return (
     <div className="grid gap-6">
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <StatCard label="Plan" value={user.plan === "pro" ? "Pro" : "Free"} hint={user.plan === "pro" ? "$8/mo" : "0/mo"} />
-        <StatCard label="Cloud vaults" value={String(vaults.length)} hint={user.plan === "pro" ? "unlimited" : `${vaults.length}/1 free tier`} />
+        <StatCard
+          label="Access"
+          value="Local"
+          hint="cloud pilot not commissioned"
+        />
+        <StatCard
+          label="Cloud vaults"
+          value={String(vaults.length)}
+          hint="encrypted pilot backups"
+        />
         <StatCard
           label="Total ciphertext"
           value={`${vaults.reduce((s, v) => s + bytesToKb(v.encrypted_blob), 0).toFixed(1)} kB`}
