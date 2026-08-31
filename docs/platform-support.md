@@ -12,7 +12,7 @@ wrapper mapping, and native acceptance. One does not prove the next.
 | Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 `ubuntu-latest`; no ARM execution | Archive + SBOM configured | Mapped | Mapped | Not recorded for the exact candidate archive |
 | Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 `ubuntu-latest`, no archive execution | Archive + SBOM configured | Mapped | Mapped | Not recorded for the exact candidate archive |
 | Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest`, no archive execution | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | Not recorded for the exact candidate archive |
-| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-arm`, no archive execution | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | Not recorded for the exact candidate archive |
+| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm`, no archive execution | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | Not recorded for the exact candidate archive |
 
 The current workflow defines six target archives, each containing `phantom`
 and `phantom-mcp`: four Unix `.tar.gz` files and two Windows `.zip` files. Both
@@ -21,9 +21,10 @@ A mapping or workflow definition is not evidence that a corresponding release
 artifact exists, is signed, or passed native acceptance.
 
 GitHub's current [hosted-runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
-maps `ubuntu-latest` and `windows-latest` to x64, `macos-latest` to arm64, and
-`windows-11-arm` to arm64. Those aliases can change as GitHub updates runner
-images, so the run log is the source of truth for a particular release. A
+maps `ubuntu-latest` and `windows-latest` to x64 and `macos-latest` to arm64.
+The workflow's Windows ARM64 jobs use the literal `windows-11-vs2026-arm`
+label. Runner labels and images can change, so the run log and image metadata
+are the source of truth for a particular release. A
 native-architecture compilation host is still not native acceptance because the
 workflow packages but does not execute the exact resulting archive.
 
