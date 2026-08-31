@@ -9,8 +9,8 @@ wrapper mapping, and native acceptance. One does not prove the next.
 |---|---:|---:|---:|---:|---:|
 | macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build, no archive execution | Archive + SBOM configured | Mapped | Mapped | Not recorded for the exact candidate archive |
 | macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host; no Intel execution | Archive + SBOM configured | Mapped | Mapped | Not recorded for the exact candidate archive |
-| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 `ubuntu-latest`; no ARM execution | Archive + SBOM configured | Mapped | Mapped | Not recorded for the exact candidate archive |
-| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 `ubuntu-latest`, no archive execution | Archive + SBOM configured | Mapped | Mapped | Not recorded for the exact candidate archive |
+| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04; no ARM execution | Archive + SBOM configured; GLIBC symbol ceiling enforced | Mapped | Mapped | Not recorded for the exact candidate archive |
+| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04, no archive execution | Archive + SBOM configured; GLIBC symbol ceiling enforced | Mapped | Mapped | Not recorded for the exact candidate archive |
 | Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest`, no archive execution | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | Not recorded for the exact candidate archive |
 | Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm`, no archive execution | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | Not recorded for the exact candidate archive |
 
@@ -21,12 +21,28 @@ A mapping or workflow definition is not evidence that a corresponding release
 artifact exists, is signed, or passed native acceptance.
 
 GitHub's current [hosted-runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
-maps `ubuntu-latest` and `windows-latest` to x64 and `macos-latest` to arm64.
-The workflow's Windows ARM64 jobs use the literal `windows-11-vs2026-arm`
-label. Runner labels and images can change, so the run log and image metadata
-are the source of truth for a particular release. A
+maps `windows-latest` to x64 and `macos-latest` to arm64. GNU/Linux release
+builds use the explicit `ubuntu-22.04` x64 image rather than a moving
+`ubuntu-latest` label. The workflow's Windows ARM64 jobs use the literal
+`windows-11-vs2026-arm` label. Runner labels and images can change, so the run
+log and image metadata are the source of truth for a particular release. A
 native-architecture compilation host is still not native acceptance because the
 workflow packages but does not execute the exact resulting archive.
+
+## GNU/Linux compatibility baseline
+
+The oldest GNU/Linux userspace targeted by the release workflow is Ubuntu 22.04,
+whose baseline GNU C Library is GLIBC 2.35. After building each x64 and ARM64 GNU
+target, the workflow reads the ELF version requirements of both `phantom` and
+`phantom-mcp` and fails if the highest numeric requirement exceeds
+`GLIBC_2.35`. It also fails closed when it cannot read numeric GLIBC evidence or
+encounters an unknown GLIBC requirement.
+
+This is a deterministic symbol-version ceiling, not a claim that every Linux
+distribution with GLIBC 2.35 is compatible. It does not test the packaged
+archive, ARM64 execution, the kernel, loader, native credential store, proxy, or
+MCP behavior and does not constitute native runtime acceptance. Those remain
+part of the exact-archive acceptance process below.
 
 ## Feature-specific boundaries
 

@@ -234,6 +234,6 @@ jobs:
         with:
           node-version: 22
       - name: Test fail-closed publication and release receipts
-        run: node --test scripts/publish-crates.test.js scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs
+        run: node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs
       - name: Package every crates.io crate in dependency order
         run: ./scripts/publish-crates.sh --verify-only

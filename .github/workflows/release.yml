@@ -68,7 +68,7 @@ jobs:
           node scripts/release/extract-release-notes.mjs "$GITHUB_REF_NAME" > /tmp/phantom-release-notes.md
 
       - name: Test fail-closed publication and release receipts
-        run: node --test scripts/publish-crates.test.js scripts/release/compare-release-artifacts.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs scripts/release/verify-github-tag-binding.test.mjs
+        run: node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/compare-release-artifacts.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs scripts/release/verify-github-tag-binding.test.mjs
 
       - name: Install verified cargo-deny
         env:
@@ -170,7 +170,7 @@ jobs:
             syft_archive: syft_1.42.3_darwin_arm64.tar.gz
             syft_sha256: d71ee7db2be0fe2e96f679fd9d69ef04274cc86c8604707797080a21070b3f32
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
             artifact: phantom-x86_64-unknown-linux-gnu
             archive: phantom-x86_64-unknown-linux-gnu.tar.gz
             runner_os: Linux
@@ -178,7 +178,7 @@ jobs:
             syft_archive: syft_1.42.3_linux_amd64.tar.gz
             syft_sha256: 0d6be741479eddd2c8644a288990c04f3df0d609bbc1599a005532a9dff63509
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
             artifact: phantom-aarch64-unknown-linux-gnu
             archive: phantom-aarch64-unknown-linux-gnu.tar.gz
             runner_os: Linux
@@ -222,6 +222,13 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Enforce GNU/Linux GLIBC 2.35 ceiling
+        if: runner.os == 'Linux'
+        run: |
+          node scripts/release/check-glibc-baseline.mjs --baseline 2.35 \
+            target/${{ matrix.target }}/release/phantom \
+            target/${{ matrix.target }}/release/phantom-mcp
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
