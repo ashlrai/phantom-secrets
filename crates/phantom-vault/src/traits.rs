@@ -63,16 +63,16 @@ pub trait VaultBackend: Send + Sync {
         Ok(())
     }
 
-    /// Set the rotation policy (TTL) on an existing secret without changing
-    /// its value. Updates `rotated_at` and recomputes `expires_at`.
+    /// Set a local expiry-enforcement policy without changing the credential.
+    /// This deliberately leaves `rotated_at` unchanged: policy configuration is
+    /// not evidence that a provider issued a successor credential.
     fn set_rotation_policy(&self, name: &str, days_ttl: u64) -> Result<()> {
         let mut meta = self.get_metadata(name)?.unwrap_or_default();
-        meta.record_rotation();
         meta.rotation_policy = Some(crate::metadata::RotationPolicy {
             days_ttl,
             auto_rotate: false,
         });
-        // Recompute expires_at based on updated rotation time
+        // Starts a local enforcement deadline; this is not a provider TTL.
         let now = crate::metadata::now_secs();
         meta.expires_at = Some(now + days_ttl * 86_400);
         self.set_metadata(name, meta)

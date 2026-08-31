@@ -486,6 +486,10 @@ mod tests {
         vault.set_rotation_policy("KEY", 14).unwrap();
         let meta = vault.get_metadata("KEY").unwrap().unwrap();
         assert!(meta.expires_at.is_some());
+        assert_eq!(
+            meta.rotated_at, None,
+            "configuring local expiry policy is not a provider rotation"
+        );
         let policy = meta.rotation_policy.unwrap();
         assert_eq!(policy.days_ttl, 14);
     }

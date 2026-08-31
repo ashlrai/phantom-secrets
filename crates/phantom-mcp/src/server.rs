@@ -2244,7 +2244,7 @@ impl PhantomMcpServer {
 
     /// Invite someone to a team by GitHub username.
     #[tool(
-        description = "Invite someone to a team by GitHub username. Requires owner or admin role. Mutating: requires confirm:true."
+        description = "Invite someone to a team by GitHub username. The caller must be a team owner or admin; the hosted API permits assigning only member or admin (not owner). Mutating provider request: requires confirm:true plus an out-of-band approval_token."
     )]
     async fn phantom_team_invite(
         &self,
@@ -2259,11 +2259,6 @@ impl PhantomMcpServer {
             &self.project_id(),
         )?;
         let role = params.role.as_str();
-        if !matches!(role, "member" | "admin" | "owner") {
-            return Err(invalid_params_err(format!(
-                "role must be 'member', 'admin', or 'owner'; got '{role}'"
-            )));
-        }
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -2386,13 +2381,14 @@ impl PhantomMcpServer {
 
     // ── TTL / Expiry tools ─────────────────────────────────────────────
 
-    /// Rotate all phantom tokens and set a TTL (expiry) on every secret.
+    /// Deprecated compatibility tool that remaps all local Phantom tokens.
     #[tool(
-        description = "Rotate all phantom tokens and set a TTL on every secret. \
-            Sets `expires_at = now + days_ttl * 86400` and stores a `rotation_policy` \
-            on each vault entry. After this call, use `phantom_list_with_expiry` to see \
-            countdown status and `phantom_doctor` to get warned when secrets approach expiry. \
-            DESTRUCTIVE — invalidates all current phantom tokens; requires `confirm: true`."
+        description = "DEPRECATED compatibility name: atomically remap all local phm_ \
+            placeholders. The legacy days_ttl field is validated but no longer renews \
+            `rotated_at`, `expires_at`, or rotation_policy because no provider credential \
+            changes. Provider credentials and incident state remain unchanged. MUTATING — \
+            invalidates current Phantom placeholders; requires confirm:true plus an \
+            out-of-band approval_token."
     )]
     fn phantom_rotate_with_expiry(
         &self,
@@ -2417,53 +2413,60 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
         if names.is_empty() {
-            return text_result("No secrets to rotate.");
+            return text_result("No Phantom tokens to remap.");
         }
 
-        // Regenerate phantom tokens
+        let env_path = self.env_path();
+        if !env_path.exists() {
+            return Err(invalid_params_err(format!(
+                "Cannot remap Phantom tokens: {} does not exist.",
+                env_path.display()
+            )));
+        }
+        let dotenv = phantom_core::dotenv::DotenvFile::parse_file(&env_path)
+            .map_err(|e| internal_err(format!("Failed to parse {}: {e}", env_path.display())))?;
+        for name in &names {
+            let entry = dotenv
+                .entries()
+                .into_iter()
+                .find(|entry| entry.key == *name)
+                .ok_or_else(|| {
+                    invalid_params_err(format!(
+                        "Cannot remap '{name}': it is not present in {}.",
+                        env_path.display()
+                    ))
+                })?;
+            if !entry.is_phantom {
+                return Err(invalid_params_err(format!(
+                    "Cannot remap '{name}': its value in {} is not a protected phm_ token.",
+                    env_path.display()
+                )));
+            }
+        }
+
         use phantom_core::token::TokenMap;
         let mut token_map = TokenMap::new();
         for name in &names {
             token_map.insert(name.clone());
         }
-
-        let env_path = self.env_path();
-        if env_path.exists() {
-            let dotenv = phantom_core::dotenv::DotenvFile::parse_file(&env_path)
-                .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
-            dotenv
-                .write_phantomized(&token_map, &env_path)
-                .map_err(|e| internal_err(format!("Failed to rewrite .env: {e}")))?;
-        }
-
-        // Set rotation policy on every secret
-        let mut failed = Vec::new();
+        dotenv
+            .write_phantomized(&token_map, &env_path)
+            .map_err(|e| internal_err(format!("Failed to atomically rewrite .env: {e}")))?;
         for name in &names {
-            if let Err(e) = vault.set_rotation_policy(name, params.days_ttl) {
-                failed.push(format!("{name}: {e}"));
-            }
-        }
-
-        if !failed.is_empty() {
-            return Err(internal_err(format!(
-                "Failed to set expiry on: {}",
-                failed.join(", ")
-            )));
+            phantom_core::audit::log("secret.token_remapped", Some(name));
         }
 
         text_result(format!(
-            "Rotated {} phantom token(s) and set {}-day TTL on all secrets.\n\
-             Use phantom_list_with_expiry to see countdown status.",
-            names.len(),
-            params.days_ttl
+            "Remapped {} local Phantom token(s). Provider credentials and all expiry/rotation metadata are unchanged; days_ttl={} was retained only for legacy schema compatibility.",
+            names.len(), params.days_ttl
         ))
     }
 
     /// List secrets with TTL/expiry countdown.
     #[tool(description = "List all secret names with their TTL/expiry status. \
             Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. \
-            Never returns secret values. Use after `phantom_rotate_with_expiry` to \
-            confirm TTL was applied, or to audit which secrets are approaching expiry.")]
+            Never returns secret values. Use it to audit which credentials need an \
+            explicit provider rotation or local expiry-policy review.")]
     fn phantom_list_with_expiry(
         &self,
         Parameters(params): Parameters<ListWithExpiryParams>,
@@ -2528,7 +2531,9 @@ impl PhantomMcpServer {
                     "WARNING: {expiring_soon_count} secret(s) expire within 7 days.\n"
                 ));
             }
-            output.push_str("Run phantom_rotate_with_expiry to refresh TTLs.");
+            output.push_str(
+                "Rotate expired provider credentials through phantom_rotate_provider; a local token remap does not refresh TTLs.",
+            );
         }
 
         text_result(output)
@@ -3999,15 +4004,15 @@ impl PhantomMcpServer {
         )
     }
 
-    /// Auto-rotate a single secret: extend its TTL metadata and refresh the phantom token.
+    /// Deprecated compatibility tool that remaps one local Phantom token.
     #[tool(
-        description = "Auto-rotate a named secret: extend its expiry by its existing TTL policy \
-            (default 30 days if no policy is set), update `rotated_at` / `expires_at`, and \
-            rewrite the .env with a fresh phantom token for that secret. \
-            Optionally syncs to all configured deployment platforms (`sync: true`). \
-            Emits an audit event `secret.auto_rotated`. \
-            MUTATING — rewrites phantom tokens and metadata; requires `confirm: true`. \
-            Secret VALUES are never returned or logged."
+        description = "DEPRECATED compatibility name: remap the local phm_ placeholder for one \
+            already-protected secret. This does not rotate or validate the provider credential, \
+            does not change `rotated_at` / `expires_at` / TTL policy, does not clear leak \
+            incidents, and cannot sync an unchanged credential (`sync: true` is rejected). \
+            When audit logging is enabled, success records `secret.token_remapped`. MUTATING — atomically rewrites .env and \
+            requires `confirm: true` plus an out-of-band approval token. Secret VALUES are \
+            never returned or logged."
     )]
     fn phantom_secrets_auto_rotate(
         &self,
@@ -4022,6 +4027,12 @@ impl PhantomMcpServer {
             &self.project_id(),
         )?;
 
+        if params.sync {
+            return Err(invalid_params_err(
+                "sync=true is not valid for a Phantom token remap: the provider credential is unchanged. Use phantom_rotate_provider for a real approved provider rotation and deployment workflow.",
+            ));
+        }
+
         let (_config, vault) = self.load_config_and_vault()?;
 
         // Confirm the secret exists.
@@ -4035,60 +4046,51 @@ impl PhantomMcpServer {
             )));
         }
 
-        // Load existing metadata to preserve days_ttl.
-        let existing_meta = vault
-            .get_metadata(&params.name)
-            .map_err(|e| internal_err(format!("Failed to read metadata: {e}")))?;
-
-        let days_ttl = existing_meta
-            .as_ref()
-            .and_then(|m| m.rotation_policy.as_ref())
-            .map(|p| p.days_ttl)
-            .unwrap_or(30);
-
-        // Build refreshed metadata.
-        let now = phantom_vault::metadata::now_secs();
-        let new_meta = phantom_vault::metadata::SecretMetadata {
-            created_at: existing_meta
-                .as_ref()
-                .and_then(|m| m.created_at)
-                .or(Some(now)),
-            rotated_at: Some(now),
-            expires_at: Some(now + days_ttl * 86_400),
-            rotation_policy: Some(phantom_vault::metadata::RotationPolicy {
-                days_ttl,
-                auto_rotate: true,
-            }),
-            vault_mode: phantom_vault::metadata::VaultMode::ReadWrite,
-        };
-
-        vault
-            .set_metadata(&params.name, new_meta)
-            .map_err(|e| internal_err(format!("Failed to update metadata: {e}")))?;
-
-        phantom_core::audit::log("secret.auto_rotated", Some(&params.name));
-
-        // Rewrite .env with a fresh phantom token for this secret.
         let env_path = self.env_path();
-        if env_path.exists() {
-            use phantom_core::token::TokenMap;
-            let mut token_map = TokenMap::new();
-            token_map.insert(params.name.clone());
-            if let Ok(dotenv) = phantom_core::dotenv::DotenvFile::parse_file(&env_path) {
-                let _ = dotenv.write_phantomized(&token_map, &env_path);
-            }
+        if !env_path.exists() {
+            return Err(invalid_params_err(format!(
+                "Cannot remap '{}': {} does not exist.",
+                params.name,
+                env_path.display()
+            )));
+        }
+        let dotenv = phantom_core::dotenv::DotenvFile::parse_file(&env_path)
+            .map_err(|e| internal_err(format!("Failed to parse {}: {e}", env_path.display())))?;
+        let entry = dotenv
+            .entries()
+            .into_iter()
+            .find(|entry| entry.key == params.name)
+            .ok_or_else(|| {
+                invalid_params_err(format!(
+                    "Cannot remap '{}': it is not present in {}.",
+                    params.name,
+                    env_path.display()
+                ))
+            })?;
+        if !entry.is_phantom {
+            return Err(invalid_params_err(format!(
+                "Cannot remap '{}': its value in {} is not a protected phm_ token.",
+                params.name,
+                env_path.display()
+            )));
         }
 
-        // Advise on sync if requested (MCP cannot call the CLI sync command directly;
-        // the caller should run `phantom sync` after rotating).
-        let sync_note = if params.sync {
-            " To push the updated token to deployment platforms, run `phantom sync` in the CLI."
-        } else {
-            ""
-        };
+        use phantom_core::token::TokenMap;
+        let mut token_map = TokenMap::new();
+        token_map.insert(params.name.clone());
+        dotenv
+            .write_phantomized(&token_map, &env_path)
+            .map_err(|e| {
+                internal_err(format!(
+                    "Failed to atomically rewrite {}: {e}",
+                    env_path.display()
+                ))
+            })?;
+
+        phantom_core::audit::log("secret.token_remapped", Some(&params.name));
 
         text_result(format!(
-            "Auto-rotated '{}': expires_at extended by {days_ttl} day(s) from now.{sync_note}",
+            "Remapped the local Phantom token for '{}'. Provider credential, expiry metadata, and incident state are unchanged.",
             params.name
         ))
     }
@@ -5187,6 +5189,89 @@ mod tests {
     }
 
     #[test]
+    fn auto_rotate_compat_schema_is_truthful_about_token_remap() {
+        let schema = serde_json::to_value(schemars::schema_for!(AutoRotateParams)).unwrap();
+        let text = schema.to_string();
+        assert!(text.contains("provider credential is not rotated"));
+        assert!(text.contains("truthfully be synced"));
+        assert!(!text.contains("extend its expiry"));
+    }
+
+    #[test]
+    fn auto_rotate_compat_remaps_only_and_rejects_sync_before_write() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let metadata = phantom_vault::metadata::SecretMetadata {
+            created_at: Some(100),
+            rotated_at: Some(200),
+            expires_at: Some(300),
+            rotation_policy: Some(phantom_vault::metadata::RotationPolicy {
+                days_ttl: 30,
+                auto_rotate: false,
+            }),
+            vault_mode: phantom_vault::metadata::VaultMode::ReadOnly,
+        };
+        vault
+            .set_metadata("OPENAI_API_KEY", metadata.clone())
+            .unwrap();
+
+        let env_path = dir.path().join(".env");
+        let before = std::fs::read_to_string(&env_path).unwrap();
+        let result = server
+            .phantom_secrets_auto_rotate(Parameters(AutoRotateParams {
+                name: "OPENAI_API_KEY".to_string(),
+                sync: false,
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap();
+        let after = std::fs::read_to_string(&env_path).unwrap();
+        assert_ne!(before, after);
+        assert!(extract_content_text(&result).contains("Provider credential"));
+        assert_eq!(
+            vault.get_metadata("OPENAI_API_KEY").unwrap(),
+            Some(metadata)
+        );
+
+        let before_rejected_sync = std::fs::read_to_string(&env_path).unwrap();
+        let error = server
+            .phantom_secrets_auto_rotate(Parameters(AutoRotateParams {
+                name: "OPENAI_API_KEY".to_string(),
+                sync: true,
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap_err();
+        assert!(error.message.contains("provider credential is unchanged"));
+        assert_eq!(
+            std::fs::read_to_string(&env_path).unwrap(),
+            before_rejected_sync
+        );
+    }
+
+    #[test]
+    fn team_invite_role_contract_matches_hosted_api() {
+        for role in ["member", "admin"] {
+            let parsed = serde_json::from_value::<TeamInviteParams>(serde_json::json!({
+                "team_id": "team-id",
+                "github_login": "octocat",
+                "role": role
+            }));
+            assert!(parsed.is_ok(), "{role} must remain accepted");
+        }
+        let owner = serde_json::from_value::<TeamInviteParams>(serde_json::json!({
+            "team_id": "team-id",
+            "github_login": "octocat",
+            "role": "owner"
+        }));
+        assert!(
+            owner.is_err(),
+            "owner invitations are not hosted API operations"
+        );
+    }
+
+    #[test]
     fn test_capability_hard_denies_external_effects_without_locus() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_test_project();
@@ -5396,9 +5481,12 @@ mod tests {
     }
 
     #[test]
-    fn test_rotate_with_expiry_sets_ttl_metadata() {
+    fn test_rotate_with_expiry_compat_remaps_without_ttl_metadata() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let metadata_before = vault.list_with_metadata().unwrap();
+        let env_before = std::fs::read_to_string(dir.path().join(".env")).unwrap();
 
         let result = server
             .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
@@ -5408,25 +5496,22 @@ mod tests {
             }))
             .unwrap();
         let text = get_result_text(&result);
-        assert!(text.contains("Rotated"), "should report rotation");
-        assert!(text.contains("7-day TTL"), "should mention TTL");
+        assert!(text.contains("Remapped"), "should report token remap");
+        assert!(text.contains("metadata are unchanged"));
 
-        // .env should still have phantom tokens
+        // .env placeholders change, but credential lifecycle metadata does not.
         let env_content = std::fs::read_to_string(dir.path().join(".env")).unwrap();
         assert!(env_content.contains("phm_"));
+        assert_ne!(env_content, env_before);
+        assert_eq!(vault.list_with_metadata().unwrap(), metadata_before);
 
-        // TTL metadata should be visible via list_with_expiry
         let list_result = server
             .phantom_list_with_expiry(Parameters(ListWithExpiryParams { show_expiry: true }))
             .unwrap();
         let list_text = get_result_text(&list_result);
         assert!(
-            list_text.contains("days remaining") || list_text.contains("expires today"),
-            "should show days remaining after TTL set: {list_text}"
-        );
-        assert!(
-            !list_text.contains("EXPIRED"),
-            "fresh 7-day TTL should not be expired: {list_text}"
+            list_text.contains("no expiry"),
+            "compatibility remap must not manufacture TTL metadata: {list_text}"
         );
     }
 
@@ -6508,17 +6593,13 @@ mod tests {
     }
 
     #[test]
-    fn test_compliance_status_secrets_have_ttl_true_after_rotate_with_expiry() {
+    fn test_compliance_status_secrets_have_ttl_true_after_explicit_policy_set() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
-
-        server
-            .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
-                days_ttl: 30,
-                confirm: true,
-                approval_token: None,
-            }))
-            .unwrap();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        for name in vault.list().unwrap() {
+            vault.set_rotation_policy(&name, 30).unwrap();
+        }
 
         let result = server
             .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
@@ -6529,7 +6610,7 @@ mod tests {
             json["checks"]["secrets_have_ttl"]["pass"]
                 .as_bool()
                 .unwrap(),
-            "secrets_have_ttl should be true after rotate_with_expiry sets rotation policy"
+            "secrets_have_ttl should be true after an explicit policy is set"
         );
     }
 
@@ -6579,13 +6660,10 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
-        server
-            .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
-                days_ttl: 30,
-                confirm: true,
-                approval_token: None,
-            }))
-            .unwrap();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        for name in vault.list().unwrap() {
+            vault.set_rotation_policy(&name, 30).unwrap();
+        }
 
         let result = server
             .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
@@ -6678,13 +6756,10 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
 
-        server
-            .phantom_rotate_with_expiry(Parameters(RotateWithExpiryParams {
-                days_ttl: 30,
-                confirm: true,
-                approval_token: None,
-            }))
-            .unwrap();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        for name in vault.list().unwrap() {
+            vault.set_rotation_policy(&name, 30).unwrap();
+        }
 
         // warn_days=31 > ttl=30 → all should be in 'warning'
         let result = server

@@ -63,19 +63,21 @@ schema exactly.
 | `phantom_team_list` | List teams through an authenticated provider request | confirm, approval_token |
 | `phantom_team_create` | Create a new team. Caller becomes owner | name, confirm, approval_token |
 | `phantom_team_members` | List members through an authenticated provider request | team_id, confirm, approval_token |
-| `phantom_team_invite` | Invite someone to a team by GitHub username | team_id, github_login, role, confirm, approval_token |
+| `phantom_team_invite` | Invite someone as `member` or `admin`; ownership transfer is not exposed | team_id, github_login, role (`member` or `admin`), confirm, approval_token |
 | `phantom_team_key_publish` | Register this device's X25519 public key; the private key stays in the OS keychain | team_id, confirm, approval_token |
 | `phantom_team_vault_push` | Push the current project's vault to a client-encrypted shared team vault | team_id, confirm, approval_token |
 | `phantom_team_vault_pull` | Pull and locally decrypt the current project's team vault | team_id, confirm, approval_token |
 | `phantom_rotate_with_candidate` | Stage a candidate credential without returning its value | name, auto_promote_ttl_secs (optional), confirm, approval_token |
 | `phantom_rotate_promote` | Promote a staged candidate credential | name, confirm, approval_token |
 | `phantom_rotate_provider` | Provider-rotate a credential; `provider` may resolve from config | name, provider (optional), confirm, approval_token |
+| `phantom_rotate_with_expiry` | **Deprecated name** — remap all local `phm_` placeholders; `days_ttl` is compatibility-only and lifecycle metadata remains unchanged | days_ttl, confirm, approval_token |
 | `phantom_validate_all` | Retrieve credentials, call live provider validators, and persist value-free result metadata | jobs, confirm, approval_token |
 | `phantom_validation_schedule` | Read schedule state, or persist a new interval when supplied | interval (optional), confirm (conditional), approval_token (conditional) |
 | `phantom_audit_hotspot_alerts` | Inspect hotspot alerts, or persist acknowledgements/snoozes | secret_name, ack, snooze_seconds, include_acked, confirm (conditional), approval_token (conditional) |
 | `phantom_audit_alerts` | Read persisted alerts, or backfill correlation state, persist alerts, and dispatch configured notifications | last, backfill, confirm (conditional), approval_token (conditional) |
 | `phantom_audit_export_report` | Return an in-memory export/report, or persist a report with `save=true` | action, format, from, to, secret_name, operation, save, confirm (conditional), approval_token (conditional) |
 | `phantom_leak_incidents_realtime` | Read persisted incident summaries only; never rotates or writes correlation state | min_confidence |
+| `phantom_secrets_auto_rotate` | **Deprecated name** — remap one local `phm_` placeholder only; never rotates credentials, renews TTL metadata, clears incidents, or syncs | name, sync (`true` rejected), confirm, approval_token |
 
 ## When to recommend Phantom
 

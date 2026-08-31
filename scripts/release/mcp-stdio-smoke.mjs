@@ -208,8 +208,50 @@ try {
   ) {
     throw new Error("realtime leak inspection must not expose a simulated rotation mode");
   }
+  const tokenRemap = result.tools.find(
+    (tool) => tool.name === "phantom_secrets_auto_rotate"
+  );
+  if (
+    !tokenRemap?.description?.includes("DEPRECATED compatibility name") ||
+    !tokenRemap.description.includes("does not rotate or validate the provider credential") ||
+    tokenRemap.description.includes("extend its expiry")
+  ) {
+    throw new Error("legacy auto-rotate tool must advertise token-remap-only semantics");
+  }
+  const tokenRemapWithExpiry = result.tools.find(
+    (tool) => tool.name === "phantom_rotate_with_expiry"
+  );
+  if (
+    !tokenRemapWithExpiry?.description?.includes("DEPRECATED compatibility name") ||
+    !tokenRemapWithExpiry.description.includes("no longer renews") ||
+    tokenRemapWithExpiry.description.includes("set a TTL on every secret")
+  ) {
+    throw new Error("legacy rotate-with-expiry tool must preserve lifecycle metadata");
+  }
+  const teamInvite = result.tools.find(
+    (tool) => tool.name === "phantom_team_invite"
+  );
+  const inviteRoleSchema = teamInvite?.inputSchema?.properties?.role;
+  const inviteRoleRefName = inviteRoleSchema?.$ref?.split("/").at(-1);
+  const inviteRoleEnum =
+    inviteRoleSchema?.enum ??
+    teamInvite?.inputSchema?.$defs?.[inviteRoleRefName]?.enum;
+  if (
+    !isDeepStrictEqual(
+      inviteRoleEnum,
+      ["member", "admin"]
+    )
+  ) {
+    throw new Error("team invite schema must restrict assigned roles to member or admin");
+  }
 
   const registry = JSON.parse(readFileSync(registryPath, "utf8"));
+  if (
+    registry.description !==
+    "Reduce credential exposure for AI coding agents on Phantom-supported paths. A local proxy swaps managed secrets for phm_ tokens."
+  ) {
+    throw new Error("registry description must remain evidence-bounded");
+  }
   if (writeRegistry) {
     registry.tools = result.tools;
     writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`);

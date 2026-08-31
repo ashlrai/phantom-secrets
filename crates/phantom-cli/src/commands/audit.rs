@@ -134,7 +134,7 @@ pub enum AuditAction {
     /// Examples:
     ///   phantom audit incidents
     ///   phantom audit incidents --min-confidence 0.5
-    ///   phantom audit incidents --auto-rotate-on-high
+    ///   phantom audit incidents
     Incidents {
         /// Only show incidents with confidence ≥ this value (default: 0.5)
         #[arg(long, default_value_t = 0.5, value_name = "SCORE")]
@@ -142,9 +142,10 @@ pub enum AuditAction {
         /// Emit raw JSON lines instead of human-readable output
         #[arg(long)]
         json: bool,
-        /// Automatically call `phantom rotate <secret>` for any incident with
-        /// confidence >= 0.9, and log the action to the audit log.
-        #[arg(long)]
+        /// Deprecated and disabled. Incident detection cannot prove or perform
+        /// provider credential rotation; use an explicitly reviewed
+        /// `phantom rotate --name <NAME> [--provider <PROVIDER>]` transaction.
+        #[arg(long, hide = true)]
         auto_rotate_on_high: bool,
     },
 
@@ -1111,6 +1112,12 @@ pub fn run_anomalies(
 pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool) -> Result<()> {
     use phantom_core::leak_correlation::LeakCorrelationEngine;
 
+    if auto_rotate_on_high {
+        anyhow::bail!(
+            "--auto-rotate-on-high is deprecated and disabled: remapping a local phm_ token does not rotate the leaked provider credential and must not clear an incident. Review the incident, then use `phantom rotate --name <NAME> [--provider <PROVIDER>]` with the correct provider configuration."
+        );
+    }
+
     let engine = LeakCorrelationEngine::new()
         .map_err(|e| anyhow::anyhow!("Cannot initialise leak correlation engine: {e}"))?;
 
@@ -1137,45 +1144,10 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
         return Ok(());
     }
 
-    // ── Auto-rotate high-confidence incidents ─────────────────────────────────
-    let mut rotated: Vec<String> = Vec::new();
-    if auto_rotate_on_high {
-        for inc in &incidents {
-            if inc.confidence < 0.9 {
-                continue;
-            }
-            // Call `phantom rotate` for this specific secret by re-using the
-            // rotate command's internal logic, then log the action.
-            match crate::commands::rotate::run_rotate_single(&inc.secret_name) {
-                Ok(()) => {
-                    phantom_core::audit::log("vault.auto_rotated_on_leak", Some(&inc.secret_name));
-                    rotated.push(inc.secret_name.clone());
-                    if !json {
-                        println!(
-                            "{}  auto-rotated {} (confidence={:.2})",
-                            "->".green().bold(),
-                            inc.secret_name.bold(),
-                            inc.confidence,
-                        );
-                    }
-                }
-                Err(e) => {
-                    if !json {
-                        eprintln!(
-                            "{}  failed to auto-rotate {}: {e}",
-                            "!!".red().bold(),
-                            inc.secret_name.bold(),
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     if json {
         let out = serde_json::json!({
             "incidents": incidents,
-            "rotated_secrets": rotated,
+            "provider_credentials_rotated": [],
         });
         let s = serde_json::to_string_pretty(&out)
             .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
@@ -1209,9 +1181,7 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
             format!("{:.2}", inc.confidence).yellow().to_string()
         };
 
-        let status = if rotated.contains(&inc.secret_name) {
-            "rotated".green().bold().to_string()
-        } else if inc.confidence >= 0.9 {
+        let status = if inc.confidence >= 0.9 {
             "CRITICAL".red().bold().to_string()
         } else {
             "active".yellow().to_string()
@@ -1228,25 +1198,15 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
     }
     println!();
 
-    // Remediation advice for unrotated high-confidence incidents.
+    // A provider credential must be replaced before the incident is resolved.
     for inc in &incidents {
-        if inc.confidence >= 0.9 && !rotated.contains(&inc.secret_name) {
+        if inc.confidence >= 0.9 {
             println!(
                 "  {}  {}",
                 "remediation:".yellow().bold(),
                 inc.remediation.dimmed(),
             );
         }
-    }
-
-    if !rotated.is_empty() {
-        println!();
-        println!(
-            "{}  Auto-rotated {} secret(s): {}",
-            "->".green().bold(),
-            rotated.len(),
-            rotated.join(", ").bold(),
-        );
     }
 
     Ok(())
@@ -1713,6 +1673,15 @@ mod tests {
     const LINE_STRIPE: &str =
         r#"{"ts":1700000180,"op":"vault.store","name":"STRIPE_KEY","process":"phantom","pid":4}"#;
     const LINE_MALFORMED: &str = r#"{"ts":not-valid-json"#;
+
+    #[test]
+    fn incident_auto_rotation_flag_fails_before_correlation_or_mutation() {
+        let error = run_incidents(0.9, true, true).unwrap_err();
+        assert!(error.to_string().contains("deprecated and disabled"));
+        assert!(error
+            .to_string()
+            .contains("does not rotate the leaked provider credential"));
+    }
 
     #[test]
     fn filter_by_op() {

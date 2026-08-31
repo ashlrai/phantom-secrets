@@ -178,7 +178,7 @@ extrapolating this selected catalog.
 - `phantom_team_members` — Dual-gated authenticated provider request listing members. Params: team_id, confirm, approval_token.
 - `phantom_team_key_publish` — Register this device's X25519 public key with the team. Params: team_id, confirm, approval_token. Pubkey only — the private key stays in the OS keychain.
 - `phantom_team_create` — Create a new team. The authenticated user becomes the owner. Params: name, confirm, approval_token.
-- `phantom_team_invite` — Invite someone to a team by GitHub username. Requires owner or admin role. Params: team_id, github_login, role, confirm, approval_token.
+- `phantom_team_invite` — Invite someone to a team by GitHub username. The caller must be owner/admin; the assigned role is `member` or `admin` only. Ownership transfer is not exposed. Params: team_id, github_login, role, confirm, approval_token.
 - `phantom_team_vault_push` — Push this project's secrets to the shared team vault, encrypted client-side for each member with a registered key. Params: team_id, confirm, approval_token.
 - `phantom_team_vault_pull` — Download and decrypt the team vault for this project into the local vault. Params: team_id, confirm, approval_token. This overwrites local secrets; use it instead of phantom_cloud_pull for team-shared secrets.
 

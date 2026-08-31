@@ -188,6 +188,13 @@ values.
 - **Teams** — `phantom_team_list`, `phantom_team_create`, `phantom_team_members`, `phantom_team_invite`, `phantom_team_key_publish`, `phantom_team_vault_push`, `phantom_team_vault_pull`
 - **Advanced audit, rotation, expiry, and compliance** — `phantom_audit_recent`, `phantom_audit_stats`, `phantom_audit_analytics`, `phantom_audit_anomalies`, `phantom_audit_anomalies_realtime`, `phantom_audit_hotspot_alerts`, `phantom_audit_incidents`, `phantom_leak_incidents_realtime`, `phantom_audit_alerts`, `phantom_audit_export_report`, `phantom_compliance_status`, `phantom_rotate_with_candidate`, `phantom_rotate_promote`, `phantom_rotate_provider`, `phantom_rotate_with_expiry`, `phantom_list_with_expiry`, `phantom_secret_rotation_due`, `phantom_validation_schedule`, `phantom_validation_history`, `phantom_secrets_expiry_check`, `phantom_secrets_auto_rotate`, `phantom_expiry_enforce`, `phantom_rotation_schedule_next`, `phantom_apply_expiry_policy`
 
+`phantom_secrets_auto_rotate` and `phantom_rotate_with_expiry` are deprecated
+compatibility names for approved local `phm_` token remaps. They do not rotate
+a provider credential, renew TTL/`rotated_at` metadata, clear leak incidents,
+or sync credentials. Use `phantom_rotate_provider` for a real provider-side
+rotation. Team invites may assign only `member` or `admin`; ownership transfer
+is not an invite role.
+
 Tools that write state, retrieve or use credentials, or make provider/network
 requests require both `confirm: true` and the one-use `approval_token` returned
 by the out-of-band `phantom mcp-approve` challenge. Conditional tools keep

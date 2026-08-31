@@ -176,14 +176,12 @@ pub struct RotateParams {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateWithExpiryParams {
-    /// Number of days until secrets expire. Each secret gets `expires_at` set to
-    /// `now + days_ttl * 86400` and a `rotation_policy` recording the TTL. After
-    /// this call, `phantom list --show-expiry` and `phantom doctor --expiry` will
-    /// report countdown status and warn when secrets approach expiry.
+    /// Deprecated compatibility field. Must be greater than zero, but a local
+    /// Phantom token remap does not renew credential TTL or lifecycle metadata.
     pub days_ttl: u64,
     /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. This rotates all phantom tokens (invalidating
-    /// any cached ones) and sets persistent expiry metadata in the vault.
+    /// before remapping all local Phantom tokens (invalidating cached
+    /// placeholders). Provider credentials and expiry metadata remain unchanged.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
@@ -364,9 +362,10 @@ pub struct TeamInviteParams {
     pub team_id: String,
     /// GitHub username of the user to invite (no @ prefix)
     pub github_login: String,
-    /// Role to assign — "member", "admin", or "owner". Defaults to "member".
-    #[serde(default = "default_member_role")]
-    pub role: String,
+    /// Role to assign. Hosted invitations accept only `member` or `admin`;
+    /// ownership transfer is a separate lifecycle operation and is not exposed.
+    #[serde(default)]
+    pub role: TeamInviteRole,
     /// Required. Must be true — confirms the user wants to add this person
     /// to the team. Defends against prompt-injected instructions silently
     /// expanding team membership.
@@ -377,8 +376,23 @@ pub struct TeamInviteParams {
     pub approval_token: Option<String>,
 }
 
-fn default_member_role() -> String {
-    "member".to_string()
+#[derive(
+    Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum TeamInviteRole {
+    #[default]
+    Member,
+    Admin,
+}
+
+impl TeamInviteRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Member => "member",
+            Self::Admin => "admin",
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -795,15 +809,17 @@ fn default_true_flag() -> bool {
 /// Parameters for `phantom_secrets_auto_rotate`.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AutoRotateParams {
-    /// Name of the secret to auto-rotate.
+    /// Name of the already-protected secret whose local `phm_` placeholder
+    /// should be remapped. The provider credential is not rotated.
     pub name: String,
-    /// If true, sync to all configured deployment platforms after rotation.
+    /// Deprecated compatibility field. `true` is rejected because token
+    /// remapping does not create a credential that can truthfully be synced.
     #[serde(default)]
     pub sync: bool,
     /// Required. Must be true — the calling agent must confirm with the user
-    /// before rotating credentials. Auto-rotation updates metadata and
-    /// rewrites phantom tokens; an attacker-injected call could disrupt
-    /// running services that cached the old token.
+    /// before remapping the local Phantom token. This rewrites `.env` and can
+    /// disrupt running services that cached the old placeholder, but it does
+    /// not alter provider credentials or lifecycle metadata.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.

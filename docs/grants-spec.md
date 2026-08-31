@@ -88,7 +88,9 @@ phantom grant add github-app [--org <ORG>] [--name <APP_NAME>] [--rotate-secret 
     rotation call, is never an env var, and is zeroized after use.
   - `grant add` writes the corresponding `rotation_provider` block (under
     `GITHUB_TOKEN` by default, or `--rotate-secret`) so `phantom rotate --name
-    <KEY>` and `phantom watch --auto-rotate` work unchanged.
+    <KEY>` uses the provider-backed path. The legacy `phantom watch
+    --auto-rotate` flag is disabled because it only remapped local placeholders
+    and could not mint a successor credential.
 
 #### 2b. App Identity — Vercel Integration (shipped)
 
@@ -286,9 +288,9 @@ Grants sit *above* the shipped rotation machinery, never beside it:
 - `phantom rotate --name KEY` and `phantom rotate --batch` consume grant
   material exactly as they consume any bootstrap credential today
   (env-then-vault).
-- `phantom watch --auto-rotate` closes the loop: schedules from
-  `rotation_policy` fire, rotation draws on the grant, successors are
-  vaulted, expiries restamped — the perpetual half of the promise, unattended.
+- Unattended provider-backed scheduling is not shipped. The legacy `phantom
+  watch --auto-rotate` and `phantom rotate --schedule-strategy` paths are
+  disabled rather than treating local `phm_` remaps as provider rotations.
 - Agents get the same flow through `phantom_rotate_provider` MCP, still gated
   behind `confirm: true` plus an out-of-band `phantom mcp-approve` token,
   still returning status metadata only.
@@ -332,7 +334,8 @@ the vault, never new exposure paths.
 - [x] Env-then-vault bootstrap resolution; `Zeroizing` value handling
 - [x] Dispatch by provider identity; guarded, audit-tagged mock paths
 - [x] `phantom rotate --batch` with per-provider rate limits and shared audit `batch_id`
-- [x] `rotation_policy` schedules + `phantom watch --auto-rotate` + doctor warnings
+- [ ] Provider-backed scheduler with provider receipts and fail-closed state
+  transitions; legacy local-placeholder auto-rotation is disabled
 - [x] `phantom grant add github-app` (manifest bootstrap → PEM/client-id/secret/webhook vaulted, installations discovered, in-process RS256 App-JWT minting wired into `phantom rotate`)
 - [x] `phantom grant add vercel-integration` (connectable-account Integration → non-expiring team-scoped token vaulted, teamId plumbed into the rotation block)
 - [x] `phantom grant list` / `status` / `revoke` + grant state model (`active | expiring | broken | manual`)

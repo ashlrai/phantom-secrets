@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.ashlrai/phantom-secrets-mcp",
   "title": "Phantom Secrets",
-  "description": "Stop AI coding agents from leaking API keys. Local proxy swaps real secrets for phm_ tokens.",
+  "description": "Reduce credential exposure for AI coding agents on Phantom-supported paths. A local proxy swaps managed secrets for phm_ tokens.",
   "websiteUrl": "https://github.com/ashlrai/phantom-secrets",
   "repository": {
     "url": "https://github.com/ashlrai/phantom-secrets",
@@ -901,7 +901,7 @@
     },
     {
       "name": "phantom_list_with_expiry",
-      "description": "List all secret names with their TTL/expiry status. Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. Never returns secret values. Use after `phantom_rotate_with_expiry` to confirm TTL was applied, or to audit which secrets are approaching expiry.",
+      "description": "List all secret names with their TTL/expiry status. Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. Never returns secret values. Use it to audit which credentials need an explicit provider rotation or local expiry-policy review.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1086,7 +1086,7 @@
     },
     {
       "name": "phantom_rotate_with_expiry",
-      "description": "Rotate all phantom tokens and set a TTL on every secret. Sets `expires_at = now + days_ttl * 86400` and stores a `rotation_policy` on each vault entry. After this call, use `phantom_list_with_expiry` to see countdown status and `phantom_doctor` to get warned when secrets approach expiry. DESTRUCTIVE — invalidates all current phantom tokens; requires `confirm: true`.",
+      "description": "DEPRECATED compatibility name: atomically remap all local phm_ placeholders. The legacy days_ttl field is validated but no longer renews `rotated_at`, `expires_at`, or rotation_policy because no provider credential changes. Provider credentials and incident state remain unchanged. MUTATING — invalidates current Phantom placeholders; requires confirm:true plus an out-of-band approval_token.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1100,11 +1100,11 @@
           },
           "confirm": {
             "default": false,
-            "description": "Required. Must be true — the calling agent must confirm with the user\nbefore invoking this tool. This rotates all phantom tokens (invalidating\nany cached ones) and sets persistent expiry metadata in the vault.",
+            "description": "Required. Must be true — the calling agent must confirm with the user\nbefore remapping all local Phantom tokens (invalidating cached\nplaceholders). Provider credentials and expiry metadata remain unchanged.",
             "type": "boolean"
           },
           "days_ttl": {
-            "description": "Number of days until secrets expire. Each secret gets `expires_at` set to\n`now + days_ttl * 86400` and a `rotation_policy` recording the TTL. After\nthis call, `phantom list --show-expiry` and `phantom doctor --expiry` will\nreport countdown status and warn when secrets approach expiry.",
+            "description": "Deprecated compatibility field. Must be greater than zero, but a local\nPhantom token remap does not renew credential TTL or lifecycle metadata.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
@@ -1156,7 +1156,7 @@
     },
     {
       "name": "phantom_secrets_auto_rotate",
-      "description": "Auto-rotate a named secret: extend its expiry by its existing TTL policy (default 30 days if no policy is set), update `rotated_at` / `expires_at`, and rewrite the .env with a fresh phantom token for that secret. Optionally syncs to all configured deployment platforms (`sync: true`). Emits an audit event `secret.auto_rotated`. MUTATING — rewrites phantom tokens and metadata; requires `confirm: true`. Secret VALUES are never returned or logged.",
+      "description": "DEPRECATED compatibility name: remap the local phm_ placeholder for one already-protected secret. This does not rotate or validate the provider credential, does not change `rotated_at` / `expires_at` / TTL policy, does not clear leak incidents, and cannot sync an unchanged credential (`sync: true` is rejected). When audit logging is enabled, success records `secret.token_remapped`. MUTATING — atomically rewrites .env and requires `confirm: true` plus an out-of-band approval token. Secret VALUES are never returned or logged.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "Parameters for `phantom_secrets_auto_rotate`.",
@@ -1171,16 +1171,16 @@
           },
           "confirm": {
             "default": false,
-            "description": "Required. Must be true — the calling agent must confirm with the user\nbefore rotating credentials. Auto-rotation updates metadata and\nrewrites phantom tokens; an attacker-injected call could disrupt\nrunning services that cached the old token.",
+            "description": "Required. Must be true — the calling agent must confirm with the user\nbefore remapping the local Phantom token. This rewrites `.env` and can\ndisrupt running services that cached the old placeholder, but it does\nnot alter provider credentials or lifecycle metadata.",
             "type": "boolean"
           },
           "name": {
-            "description": "Name of the secret to auto-rotate.",
+            "description": "Name of the already-protected secret whose local `phm_` placeholder\nshould be remapped. The provider credential is not rotated.",
             "type": "string"
           },
           "sync": {
             "default": false,
-            "description": "If true, sync to all configured deployment platforms after rotation.",
+            "description": "Deprecated compatibility field. `true` is rejected because token\nremapping does not create a credential that can truthfully be synced.",
             "type": "boolean"
           }
         },
@@ -1353,8 +1353,17 @@
     },
     {
       "name": "phantom_team_invite",
-      "description": "Invite someone to a team by GitHub username. Requires owner or admin role. Mutating: requires confirm:true.",
+      "description": "Invite someone to a team by GitHub username. The caller must be a team owner or admin; the hosted API permits assigning only member or admin (not owner). Mutating provider request: requires confirm:true plus an out-of-band approval_token.",
       "inputSchema": {
+        "$defs": {
+          "TeamInviteRole": {
+            "enum": [
+              "member",
+              "admin"
+            ],
+            "type": "string"
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "approval_token": {
@@ -1375,9 +1384,9 @@
             "type": "string"
           },
           "role": {
+            "$ref": "#/$defs/TeamInviteRole",
             "default": "member",
-            "description": "Role to assign — \"member\", \"admin\", or \"owner\". Defaults to \"member\".",
-            "type": "string"
+            "description": "Role to assign. Hosted invitations accept only `member` or `admin`;\nownership transfer is a separate lifecycle operation and is not exposed."
           },
           "team_id": {
             "description": "Team identifier (UUID)",

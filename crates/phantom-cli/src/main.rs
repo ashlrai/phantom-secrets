@@ -412,23 +412,22 @@ enum Commands {
         /// Auto-protect new secrets without prompting
         #[arg(long)]
         auto: bool,
-        /// Enable background rotation checks every 30 seconds. Rotates secrets
-        /// when their configured schedule boundary has passed and rewrites .env.
-        /// Requires a rotation_policy to be set (via `phantom rotate --schedule-strategy`).
-        #[arg(long)]
+        /// Deprecated and disabled: the legacy watcher remapped local phm_
+        /// placeholders but did not rotate provider credentials.
+        #[arg(long, hide = true)]
         auto_rotate: bool,
     },
 
     /// Regenerate phantom tokens (invalidates old ones)
     #[command(next_help_heading = "Maintenance")]
     Rotate {
-        /// Also sync secrets to all configured deployment platforms after rotation
+        /// Sync a newly provider-rotated credential. Rejected for a local-only
+        /// Phantom token remap because the provider credential is unchanged.
         #[arg(long)]
         sync: bool,
-        /// Set a TTL (in days) on every secret after rotation. Sets expires_at and
-        /// rotation_policy on each vault entry. Use `phantom list --show-expiry`
-        /// and `phantom doctor --expiry` to monitor status.
-        #[arg(long, value_name = "DAYS")]
+        /// Deprecated and disabled for local token remaps: remapping a phm_
+        /// placeholder cannot renew a provider credential's TTL.
+        #[arg(long, value_name = "DAYS", hide = true)]
         with_expiry: Option<u64>,
         /// Shadow mode: generate a candidate credential alongside the current
         /// primary for staged validation before promotion. The current primary
@@ -441,10 +440,9 @@ enum Commands {
         /// block in .phantom.toml): rotate the real credential at the vendor.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
-        /// Persist a rotation schedule in .phantom.toml under [phantom.rotation_policy].
-        /// Accepted values: never | daily | weekly | monthly.
-        /// Use `phantom watch --auto-rotate` to enforce the schedule automatically.
-        #[arg(long, value_name = "STRATEGY", conflicts_with = "name")]
+        /// Deprecated and disabled: the legacy schedule only remapped local
+        /// Phantom placeholders and did not rotate provider credentials.
+        #[arg(long, value_name = "STRATEGY", conflicts_with = "name", hide = true)]
         schedule_strategy: Option<String>,
         /// Use a vendor-specific rotation provider to re-issue the credential at
         /// the vendor side. Accepted values: stripe | github | aws | google | vercel.
@@ -528,16 +526,17 @@ enum Commands {
         target: String,
     },
 
-    /// List secrets that are expired or expiring soon, with optional auto-rotate
+    /// List expired/expiring secrets; optionally remap their local Phantom tokens
     #[command(next_help_heading = "Maintenance")]
     SecretsExpiringSoon {
         /// Warn about secrets expiring within this many days (default: 7)
         #[arg(long, default_value_t = 7)]
         days: u64,
-        /// Automatically rotate expiring secrets (extend TTL + refresh phantom token)
+        /// Deprecated name: remap local phm_ placeholders only. Provider
+        /// credentials and expiry metadata remain unchanged.
         #[arg(long)]
         auto_rotate: bool,
-        /// After auto-rotate, sync to all configured deployment platforms
+        /// Deprecated and rejected: token remapping creates no credential to sync
         #[arg(long, requires = "auto_rotate")]
         sync: bool,
         /// Emit JSON instead of human-readable output
@@ -545,12 +544,12 @@ enum Commands {
         json: bool,
     },
 
-    /// TTL-based secret expiry management: set expiry, enforce in CI, rotate to reset timer
+    /// TTL-based expiry management: set/enforce TTLs and remap local tokens
     ///
     /// Subcommands:
     ///   phantom expiry set <KEY> <DAYS>      — mark a secret expiring in N days
     ///   phantom expiry enforce [--fail-closed] — exit 1 if any secret has expired
-    ///   phantom expiry rotate <KEY>          — generate fresh token + reset expiry timer
+    ///   phantom expiry rotate <KEY>          — deprecated local phm_ token remap only
     #[command(next_help_heading = "Maintenance")]
     Expiry {
         #[command(subcommand)]
@@ -589,8 +588,8 @@ enum ExpiryAction {
         #[arg(long)]
         json: bool,
     },
-    /// Generate a fresh phantom token and reset the expiry timer for a secret.
-    /// Uses the `rotation_window` days stored in .phantom.toml (default 30).
+    /// Deprecated compatibility command: remap the local phm_ token only.
+    /// Provider credentials and expiry metadata remain unchanged.
     Rotate {
         /// Secret name to rotate
         key: String,

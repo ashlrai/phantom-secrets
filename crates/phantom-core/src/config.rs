@@ -208,9 +208,9 @@ pub struct SecretOverride {
     /// and the `phantom_expiry_enforce` MCP tool to block deployments and CI pipelines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
-    /// Number of days between rotations for this secret. Used by
-    /// `phantom expiry rotate <KEY>` to reset the expiry timer.
-    /// Stored as `rotation_window = <DAYS>` in `.phantom.toml`.
+    /// Legacy requested rotation window in days. Retained for configuration
+    /// compatibility; a local Phantom token remap never renews provider TTL.
+    /// True provider rotation paths may use provider-issued expiry metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation_window: Option<u64>,
     /// Per-secret validation schedule configuration.

@@ -7,6 +7,12 @@ MCP stdio. Stored credential values are excluded from MCP responses. This is a
 response-contract boundary, not a claim about unrelated files, processes,
 tools, terminal output, provider traffic, or values pasted into a conversation.
 
+The legacy `phantom_secrets_auto_rotate` and `phantom_rotate_with_expiry` tool
+names now mean only approved local `phm_` token remaps. They never claim
+provider rotation, renew credential TTL metadata, clear incidents, or sync an
+unchanged credential. Team invites accept only the hosted API's `member` and
+`admin` assignment roles.
+
 ## Publication status
 
 This directory is publication source, not a publication receipt. As last

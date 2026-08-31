@@ -4,11 +4,23 @@ use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::TokenMap;
 
-/// Rotate all phantom tokens and optionally set a TTL (expiry) on every secret.
+/// Remap all local phantom tokens without changing provider credentials.
 ///
-/// When `expiry_days` is `Some(n)` each secret gets a rotation policy of
-/// `n` days and its `expires_at` is set to `now + n * 86400`.
+/// The legacy `--with-expiry` and `--sync` combinations are rejected because a
+/// placeholder remap is not evidence of credential rotation and must not renew
+/// provider lifecycle metadata or deploy an unchanged credential.
 pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()> {
+    if expiry_days.is_some() {
+        anyhow::bail!(
+            "--with-expiry is not valid for a Phantom token remap: the provider credential is unchanged, so its TTL cannot be renewed. Use `phantom rotate --name <NAME> [--provider <PROVIDER>]` for a real provider rotation."
+        );
+    }
+    if sync_after {
+        anyhow::bail!(
+            "--sync is not valid for a Phantom token remap: there is no new provider credential to deploy. Use `phantom rotate --name <NAME> [--provider <PROVIDER>] --sync` for a real provider rotation."
+        );
+    }
+
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let env_path = project_dir.join(".env");
@@ -25,143 +37,77 @@ pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()>
     let names = vault.list().context("Failed to list secrets")?;
 
     if names.is_empty() {
-        println!("{} No secrets to rotate.", "!".yellow().bold());
+        println!("{} No Phantom tokens to remap.", "!".yellow().bold());
         return Ok(());
     }
 
-    // Generate new phantom tokens for all secrets
-    let mut token_map = TokenMap::new();
+    remap_phantom_tokens(&env_path, &names)?;
     for name in &names {
-        token_map.insert(name.clone());
+        phantom_core::audit::log("secret.token_remapped", Some(name));
     }
-
-    // Rewrite .env if it exists
-    if env_path.exists() {
-        let dotenv = DotenvFile::parse_file(&env_path)?;
-        dotenv.write_phantomized(&token_map, &env_path)?;
-        println!(
-            "{} Rotated {} phantom token(s) in .env",
-            "ok".green().bold(),
-            names.len()
-        );
-    } else {
-        println!(
-            "{} No .env file found — tokens rotated in memory only",
-            "!".yellow().bold()
-        );
-    }
-
-    for name in &names {
-        if let Some(days) = expiry_days {
-            vault
-                .set_rotation_policy(name, days)
-                .with_context(|| format!("Failed to set rotation policy for {name}"))?;
-            println!(
-                "   {} {} -> new token, expires in {} day(s)",
-                "+".green(),
-                name.bold(),
-                days
-            );
-        } else {
-            println!("   {} {} -> new token", "+".green(), name.bold());
-        }
-    }
-
-    if expiry_days.is_some() {
-        println!(
-            "\n{} TTL metadata updated. Use {} to see expiry status.",
-            "ok".green().bold(),
-            "phantom list --show-expiry".cyan()
-        );
-    }
-
-    // Sync to all deployment platforms if --sync flag is set
-    if sync_after {
-        println!(
-            "\n{} Syncing to deployment platforms...",
-            "->".blue().bold()
-        );
-        crate::commands::sync::run(None, None, vec![], false, false)?;
-    }
+    println!(
+        "{} Remapped {} Phantom token(s) in .env. Provider credentials and expiry metadata are unchanged.",
+        "ok".green().bold(),
+        names.len()
+    );
 
     Ok(())
 }
 
-/// Persist a rotation schedule in `.phantom.toml` and perform an immediate
-/// rotation so `last_rotated` is stamped.
+/// Reject the legacy local auto-rotation schedule.
 ///
 /// Called by `phantom rotate --schedule-strategy <STRATEGY>`.
 pub fn run_with_schedule_strategy(
-    strategy_str: &str,
-    sync_after: bool,
-    expiry_days: Option<u64>,
+    _strategy_str: &str,
+    _sync_after: bool,
+    _expiry_days: Option<u64>,
 ) -> Result<()> {
-    use phantom_core::rotation_strategy::{RotationSchedule, RotationStrategy};
+    anyhow::bail!(
+        "--schedule-strategy is deprecated and disabled: the legacy watcher only remapped local phm_ placeholders and did not rotate provider credentials. Configure a rotation_provider and use an explicitly reviewed provider rotation workflow."
+    )
+}
 
-    let strategy = RotationStrategy::from_str(strategy_str).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Unknown schedule strategy '{}'. Valid values: never, daily, weekly, monthly.",
-            strategy_str
-        )
-    })?;
-
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
+/// Atomically replace the local `phm_` placeholders for `names`.
+///
+/// This deliberately has no access to vault metadata or deployment sync. Every
+/// requested name must already be represented by a Phantom token, otherwise no
+/// file is written.
+pub(crate) fn remap_phantom_tokens(env_path: &std::path::Path, names: &[String]) -> Result<()> {
+    if !env_path.exists() {
         anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
+            "Cannot remap Phantom tokens: {} does not exist.",
+            env_path.display()
         );
     }
 
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let schedule = RotationSchedule {
-        last_rotated: Some(now_secs),
-        ..RotationSchedule::from_strategy(strategy.clone())
-    };
-
-    // Persist the schedule into .phantom.toml.
-    {
-        let mut config =
-            PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-        config.phantom.rotation_policy = Some(schedule.clone());
-        config
-            .save(&config_path)
-            .context("Failed to save .phantom.toml")?;
+    let dotenv = DotenvFile::parse_file(env_path)
+        .with_context(|| format!("Failed to parse {}", env_path.display()))?;
+    for name in names {
+        let entry = dotenv
+            .entries()
+            .into_iter()
+            .find(|entry| entry.key == *name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cannot remap '{name}': it is not present in {}.",
+                    env_path.display()
+                )
+            })?;
+        if !entry.is_phantom {
+            anyhow::bail!(
+                "Cannot remap '{name}': its value in {} is not a protected phm_ token.",
+                env_path.display()
+            );
+        }
     }
 
-    println!(
-        "{} Rotation policy set: {}",
-        "ok".green().bold(),
-        schedule.describe().cyan()
-    );
-    println!(
-        "   {} last_rotated stamped to now ({})",
-        "->".blue().bold(),
-        chrono_iso(now_secs)
-    );
-
-    if strategy != RotationStrategy::Never {
-        println!("\n{} Running initial rotation…", "->".blue().bold());
-        run_with_expiry(sync_after, expiry_days)?;
-    } else {
-        println!(
-            "{} Strategy is 'never' — no immediate rotation performed.",
-            "!".yellow().bold()
-        );
+    let mut token_map = TokenMap::new();
+    for name in names {
+        token_map.insert(name.clone());
     }
-
-    println!(
-        "\n{} Use {} to enforce this schedule.",
-        "->".blue().bold(),
-        "phantom watch --auto-rotate".cyan()
-    );
-
+    dotenv
+        .write_phantomized(&token_map, env_path)
+        .with_context(|| format!("Failed to atomically rewrite {}", env_path.display()))?;
     Ok(())
 }
 
@@ -901,52 +847,58 @@ pub fn run_batch(
     Ok(())
 }
 
-/// Rotate the phantom token for a **single named secret** without touching
-/// any other secrets in the vault.
-///
-/// This is called automatically by `phantom audit incidents --auto-rotate-on-high`
-/// for each incident whose confidence >= 0.9.  It regenerates only the phantom
-/// token in `.env` for `name` and records a `vault.store` audit event so that
-/// `LeakCorrelationEngine::active_incidents` will clear the incident on the next
-/// call (rotation clears incidents whose `last_seen_ts` predates the rotate).
-///
-/// Returns `Ok(())` if the secret was rotated successfully, or an error if the
-/// secret does not exist in the vault or `.phantom.toml` is missing.
-pub fn run_rotate_single(name: &str) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-    let env_path = project_dir.join(".env");
+#[cfg(test)]
+mod token_remap_tests {
+    use super::*;
+    use tempfile::tempdir;
 
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+    #[test]
+    fn remap_changes_only_requested_protected_placeholder() {
+        let dir = tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+        let old = format!("phm_{}", "a".repeat(64));
+        let untouched = format!("phm_{}", "b".repeat(64));
+        std::fs::write(
+            &env_path,
+            format!("TARGET={old}\nOTHER={untouched}\nPUBLIC=yes\n"),
+        )
+        .unwrap();
+
+        remap_phantom_tokens(&env_path, &["TARGET".to_string()]).unwrap();
+
+        let rewritten = std::fs::read_to_string(&env_path).unwrap();
+        assert!(!rewritten.contains(&format!("TARGET={old}")));
+        assert!(rewritten.contains("TARGET=phm_"));
+        assert!(rewritten.contains(&format!("OTHER={untouched}")));
+        assert!(rewritten.contains("PUBLIC=yes"));
     }
 
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    #[test]
+    fn remap_fails_closed_for_plaintext_and_preserves_file() {
+        let dir = tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+        let before = "TARGET=real-provider-value\n";
+        std::fs::write(&env_path, before).unwrap();
 
-    if !vault
-        .exists(name)
-        .with_context(|| format!("Failed to check if '{name}' exists in vault"))?
-    {
-        anyhow::bail!("Secret '{}' not found in vault.", name);
+        let error = remap_phantom_tokens(&env_path, &["TARGET".to_string()]).unwrap_err();
+
+        assert!(error.to_string().contains("not a protected phm_ token"));
+        assert_eq!(std::fs::read_to_string(&env_path).unwrap(), before);
     }
 
-    // Generate a new phantom token for this secret only.
-    let mut token_map = TokenMap::new();
-    token_map.insert(name.to_string());
-
-    // Rewrite .env with the new token for this single secret (other tokens unchanged).
-    if env_path.exists() {
-        let dotenv = DotenvFile::parse_file(&env_path)?;
-        dotenv.write_phantomized(&token_map, &env_path)?;
+    #[test]
+    fn local_remap_rejects_ttl_sync_and_schedule_claims_before_mutation() {
+        assert!(run_with_expiry(true, None)
+            .unwrap_err()
+            .to_string()
+            .contains("no new provider credential"));
+        assert!(run_with_expiry(false, Some(30))
+            .unwrap_err()
+            .to_string()
+            .contains("TTL cannot be renewed"));
+        assert!(run_with_schedule_strategy("daily", false, None)
+            .unwrap_err()
+            .to_string()
+            .contains("deprecated and disabled"));
     }
-
-    // Record a vault.store audit event so the leak-correlation engine will
-    // treat this secret as rotated and clear its active incidents.
-    phantom_core::audit::log("vault.store", Some(name));
-
-    Ok(())
 }
