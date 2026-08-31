@@ -7,6 +7,8 @@ This is the canonical map for Phantom's repository documentation. Start with the
 | Goal | Guide |
 |------|-------|
 | Protect a project for the first time | [Getting started](getting-started.md) |
+| Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
+| Plan a team or enterprise pilot | [Enterprise adoption](enterprise-adoption.md) |
 | Diagnose an install, vault, proxy, or cloud problem | [Troubleshooting](troubleshooting.md) |
 | Obtain and inspect provider credentials after human consent | [Provider grants](grants-spec.md) |
 | Understand components, trust boundaries, and activation status | [Architecture](architecture.md) |
@@ -20,10 +22,12 @@ This is the canonical map for Phantom's repository documentation. Start with the
 
 These guides cover installation, MCP setup, the value-blind tool model, and daily workflows:
 
+- [Safe delegation quickstart](delegation-quickstart.md) for the common cross-client workflow
 - [Claude Code](claude-code.md)
 - [Codex](codex.md)
 - [Cursor](cursor.md)
 - [Windsurf](windsurf.md)
+- [Copyable agent policy, task brief, and pilot templates](../examples/agent-delegation/README.md)
 
 The small conversation facade and the advanced MCP compatibility catalog are separate contracts. `phantom_do` is proposal-only and does not execute an action. `phantom_setup_workspace` can propose, create a bearerless request, or report status; applying that request requires a separate attached trusted terminal. Advanced tools retain their own explicit confirmation and out-of-band approval gates.
 
@@ -38,6 +42,7 @@ and retains historical design-status language.
 
 ## Operations
 
+- [Enterprise adoption and evidence](enterprise-adoption.md)
 - [Cloud login](login.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
