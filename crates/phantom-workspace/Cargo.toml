@@ -1,0 +1,33 @@
+[package]
+name = "phantom-secrets-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "Value-blind workspace discovery and deterministic setup planning for Phantom Secrets"
+keywords = ["secrets", "agents", "workspace", "security"]
+categories = ["development-tools"]
+
+[lib]
+name = "phantom_workspace"
+path = "src/lib.rs"
+
+[dependencies]
+phantom-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+sha2 = "0.10"
+fs2 = "0.4"
+toml = { workspace = true }
+zeroize = { workspace = true }
+chacha20poly1305 = "0.10"
+rand = { workspace = true }
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -124,9 +124,8 @@ impl ConsentEngine for GithubAppManifestFlow {
         deps: &IssuanceDeps,
     ) -> Result<IssuanceOutcome, IssuanceError> {
         // Fail closed the moment endpoints are overridden to a non-production
-        // host: that is only ever the test harness, and requires the explicit
-        // PHANTOM_ALLOW_MOCK_ISSUANCE=1 opt-in.
-        let mock = deps.endpoints.overridden;
+        // host: that is only ever the crate's unit-test harness.
+        let mock = deps.endpoints.is_overridden();
         if mock {
             guard_mock_issuance()?;
         }

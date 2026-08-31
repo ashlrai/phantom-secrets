@@ -30,6 +30,14 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
             "atomic_write: path has no parent directory",
         )
     })?;
+    // `Path::new(".env").parent()` is the empty path, which means the current
+    // directory to path resolution but is not accepted by `open(2)` or
+    // `NamedTempFile::new_in`. Preserve relative-target semantics explicitly.
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
 
     // Using NamedTempFile::new_in keeps the temp on the same filesystem as the
     // target, which is required for rename() to be atomic on POSIX.
@@ -40,6 +48,22 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
     // persist consumes the NamedTempFile and renames into place; on error we
     // return the underlying io::Error (the unpersisted temp is cleaned up).
     tmp.persist(path).map_err(|e| e.error)?;
+    sync_parent_dir(dir)?;
+    Ok(())
+}
+
+/// Persist a directory entry update on platforms that support syncing an open
+/// directory. This closes the common POSIX crash window where the file bytes
+/// are durable but the final rename is not. Windows does not expose the same
+/// directory-handle contract through `std`, so callers must not infer a
+/// cross-platform durability guarantee from this helper.
+#[cfg(unix)]
+pub fn sync_parent_dir(dir: &Path) -> io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+pub fn sync_parent_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -70,6 +94,21 @@ mod tests {
         std::fs::write(&target, b"OLD").unwrap();
         atomic_write(&target, b"NEW").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"NEW");
+    }
+
+    #[test]
+    fn test_atomic_write_supports_relative_target_in_current_directory() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let target = std::path::PathBuf::from(format!(
+            ".phantom-atomic-write-test-{}-{unique}",
+            std::process::id()
+        ));
+        atomic_write(&target, b"KEY=value\n").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"KEY=value\n");
+        std::fs::remove_file(target).unwrap();
     }
 
     #[test]

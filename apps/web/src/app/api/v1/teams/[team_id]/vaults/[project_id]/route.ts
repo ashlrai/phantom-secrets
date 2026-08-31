@@ -1,27 +1,47 @@
 import { requireAuth, requirePro } from "@/lib/auth";
+import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
 
-type KeyShare = {
+const MAX_TEAM_VAULT_PUSH_BODY_BYTES = 2_000_000;
+
+type LegacyKeyShare = {
   ephemeral_pk: string;
   nonce: string;
   ciphertext: string;
 };
 
+type StoredWrappedKey = string | LegacyKeyShare;
+
 type PushBody = {
   encrypted_blob?: string;
   expected_version?: number;
-  key_shares?: Record<string, KeyShare>;
+  wrappedKeys?: Record<string, StoredWrappedKey>;
+  key_shares?: Record<string, StoredWrappedKey>;
 };
+
+function isLegacyKeyShare(value: unknown): value is LegacyKeyShare {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<LegacyKeyShare>;
+  return (
+    typeof candidate.ephemeral_pk === "string" &&
+    typeof candidate.nonce === "string" &&
+    typeof candidate.ciphertext === "string"
+  );
+}
+
+function isStoredWrappedKey(value: unknown): value is StoredWrappedKey {
+  return typeof value === "string" || isLegacyKeyShare(value);
+}
 
 /**
  * GET /api/v1/teams/:team_id/vaults/:project_id — Pull team vault.
  *
  * Returns the encrypted blob, version, and the caller's per-recipient
- * key share (if present). The plaintext is decrypted client-side; the
+ * wrapped key (if present). The plaintext is decrypted client-side; the
  * server never sees the symmetric key.
  *
  * Response shape:
- *   { encrypted_blob, version, my_share?, missing_key?: true }
+ *   { encrypted_blob, version, wrappedKey?, my_share?, missing_key?: true }
  *   - missing_key=true means the caller has not yet uploaded a public
  *     key to this team — see POST /api/v1/teams/:team_id/key first.
  */
@@ -70,9 +90,9 @@ export async function GET(
     return Response.json({ error: "vault not found" }, { status: 404 });
   }
 
-  const shares = (vault.key_shares ?? {}) as Record<string, KeyShare>;
-  const my_share = shares[authResult.userId];
-  if (!my_share) {
+  const wrappedKeys = (vault.key_shares ?? {}) as Record<string, StoredWrappedKey>;
+  const wrappedKey = wrappedKeys[authResult.userId];
+  if (!wrappedKey) {
     // Vault exists but no share for this member — they were added after
     // last push. The next pusher must include them.
     return Response.json(
@@ -88,7 +108,9 @@ export async function GET(
   return Response.json({
     encrypted_blob: vault.encrypted_blob,
     version: vault.version,
-    my_share,
+    wrappedKey,
+    // Backward compatibility for current CLI/MCP releases.
+    my_share: wrappedKey,
   });
 }
 
@@ -98,10 +120,10 @@ export async function GET(
  * Body: {
  *   encrypted_blob,
  *   expected_version,            // for optimistic concurrency
- *   key_shares: { user_id: KeyShare, ... }
+ *   wrappedKeys: { user_id: ciphertext, ... }
  * }
  *
- * Server validates that key_shares covers every team member that has
+ * Server validates that wrappedKeys covers every team member that has
  * a public_key registered. Members without a registered key are
  * implicitly excluded (they'll get 412 missing_key on pull until they
  * register and the next push includes them).
@@ -120,15 +142,22 @@ export async function POST(
 
   let body: PushBody;
   try {
-    body = (await req.json()) as PushBody;
-  } catch {
-    return Response.json({ error: "invalid_json" }, { status: 400 });
+    body = await readBoundedJsonObject(req, MAX_TEAM_VAULT_PUSH_BODY_BYTES);
+  } catch (error) {
+    return requestBodyErrorResponse(error);
   }
-  const { encrypted_blob, expected_version, key_shares } = body;
+  const { encrypted_blob, expected_version } = body;
+  const wrappedKeys = body.wrappedKeys ?? body.key_shares;
 
-  if (!encrypted_blob || !key_shares) {
+  if (
+    typeof encrypted_blob !== "string" ||
+    !encrypted_blob ||
+    !wrappedKeys ||
+    typeof wrappedKeys !== "object" ||
+    Array.isArray(wrappedKeys)
+  ) {
     return Response.json(
-      { error: "encrypted_blob and key_shares required" },
+      { error: "encrypted_blob and wrappedKeys required" },
       { status: 400 }
     );
   }
@@ -145,6 +174,12 @@ export async function POST(
   ) {
     return Response.json(
       { error: "expected_version must be a non-negative integer" },
+      { status: 400 }
+    );
+  }
+  if (!Object.values(wrappedKeys).every(isStoredWrappedKey)) {
+    return Response.json(
+      { error: "wrappedKeys values must be ciphertext strings" },
       { status: 400 }
     );
   }
@@ -170,7 +205,7 @@ export async function POST(
     );
   }
 
-  // Validate that key_shares covers every member with a registered public_key.
+  // Validate that wrappedKeys covers every member with a registered public_key.
   const { data: members } = await supabase
     .from("team_members")
     .select("user_id, public_key")
@@ -180,7 +215,7 @@ export async function POST(
   const required = (members ?? [])
     .filter((m) => m.public_key)
     .map((m) => m.user_id);
-  const provided = Object.keys(key_shares);
+  const provided = Object.keys(wrappedKeys);
   const missing = required.filter((u) => !provided.includes(u));
   const extra = provided.filter((u) => !required.includes(u));
 
@@ -191,7 +226,7 @@ export async function POST(
         missing,
         extra,
         message:
-          "key_shares must cover exactly the team members that have registered public keys.",
+          "wrappedKeys must cover exactly the team members that have registered public keys.",
       },
       { status: 400 }
     );
@@ -223,7 +258,7 @@ export async function POST(
       .update({
         encrypted_blob,
         version: next_version,
-        key_shares,
+        key_shares: wrappedKeys,
       })
       .eq("team_id", team_id)
       .eq("project_id", project_id)
@@ -263,7 +298,7 @@ export async function POST(
       project_id,
       encrypted_blob,
       version: 1,
-      key_shares,
+      key_shares: wrappedKeys,
     })
     .select("version")
     .single();

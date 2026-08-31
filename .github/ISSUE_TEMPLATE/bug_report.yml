@@ -6,15 +6,16 @@ body:
     attributes:
       value: |
         Thanks for taking the time to file a bug. Before submitting, please run
-        `phantom doctor` and paste the output below — it captures most of what
-        we'd otherwise need to ask for.
+        `phantom doctor` and paste the redacted output below — it captures most
+        of what we'd otherwise need to ask for. For a suspected vulnerability,
+        stop here and follow the private email instructions in `SECURITY.md`.
 
   - type: input
     id: version
     attributes:
       label: Phantom version
       description: Output of `phantom --version`
-      placeholder: "phantom 0.6.0"
+      placeholder: "phantom 0.7.0"
     validations:
       required: true
 
@@ -28,6 +29,7 @@ body:
         - Linux (x86_64)
         - Linux (aarch64)
         - Windows (x86_64)
+        - Windows (aarch64)
         - WSL2
         - Other (please describe in repro)
     validations:
@@ -47,6 +49,23 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - CLI
+        - Provider issuance or grant lifecycle
+        - MCP server or editor integration
+        - Local proxy
+        - Vault or OS keychain
+        - npm wrapper or release artifact
+        - Phantom Cloud or team vault
+        - Documentation
+        - Unsure
+    validations:
+      required: true
+
   - type: textarea
     id: doctor
     attributes:
@@ -61,7 +80,7 @@ body:
       label: Steps to reproduce
       placeholder: |
         1. Run `phantom init` in an empty directory
-        2. Add a secret with `phantom add OPENAI_API_KEY sk-...`
+        2. Run `phantom add DEMO_API_KEY` and enter an obviously fake value at the terminal prompt
         3. Observe ...
     validations:
       required: true
@@ -89,4 +108,6 @@ body:
         - label: I have searched [existing issues](https://github.com/ashlrai/phantom-secrets/issues?q=is%3Aissue) for this bug
           required: true
         - label: This report contains no real secret values (only `phm_` tokens or redacted strings)
+          required: true
+        - label: This is not a vulnerability report; security issues must be emailed privately to [security@ashlr.ai](mailto:security@ashlr.ai)
           required: true

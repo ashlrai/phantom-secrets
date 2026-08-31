@@ -9,7 +9,7 @@
     "source": "github",
     "subfolder": "crates/phantom-mcp"
   },
-  "version": "0.6.0",
+  "version": "0.7.0",
   "tools": [
     {
       "name": "phantom_list_secrets",
@@ -449,7 +449,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "phantom-secrets-mcp",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "transport": {
         "type": "stdio"
       }

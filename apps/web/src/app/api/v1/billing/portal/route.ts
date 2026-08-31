@@ -1,9 +1,9 @@
-import { requireAuth } from "@/lib/auth";
+import { requireBrowserAuth } from "@/lib/auth";
 import { getStripe } from "@/lib/stripe";
 import { createServiceClient } from "@/lib/supabase-server";
 
 export async function POST(req: Request) {
-  const authResult = await requireAuth(req);
+  const authResult = await requireBrowserAuth(req);
   if (authResult instanceof Response) return authResult;
 
   const supabase = createServiceClient();

@@ -4,7 +4,10 @@
 
 ## MCP Server — Let AI manage secrets directly
 
-Phantom includes an MCP server with 25 tools. Works with Claude Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
+Phantom includes an MCP server with core secret-management tools plus advanced
+audit, validation, rotation, team-vault, expiry, and compliance workflows. The
+release schema smoke currently enforces 54 unique tools. It works with Claude
+Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
 
 ### Setup by IDE
 
@@ -22,7 +25,10 @@ If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets
 
 **GitHub Copilot:** MCP via VS Code settings. Project instructions in `.github/copilot-instructions.md`. Use `phantom setup --client claude --print` to copy a snippet.
 
-### Available MCP Tools (25 total)
+### Selected MCP tools
+
+The runtime `tools/list` response and `mcp-registry/server.json` are the
+canonical catalog. The table below highlights the core and team-vault surface.
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
@@ -104,7 +110,7 @@ phantom init --all ~/code               # Apply
 
 ```bash
 ~/.cargo/bin/cargo build        # Build all crates
-~/.cargo/bin/cargo test         # Run the workspace test suite (~187 tests + a few --ignored ones)
+~/.cargo/bin/cargo test --workspace --all-targets --locked --no-fail-fast
 ~/.cargo/bin/cargo clippy --all-targets -- -D warnings  # Lint
 ~/.cargo/bin/cargo fmt --all    # Format
 ```
@@ -113,11 +119,13 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 
 ## Project structure
 
-- `crates/phantom-cli/` — CLI binary (34 commands including audit show/tail/path/verify, import --from, export --json)
+- `crates/phantom-cli/` — CLI binary for local protection, proxy, audit, import/export, sync, teams, provider grants, and trusted-terminal workspace setup; use `phantom --help` for the current command inventory
 - `crates/phantom-core/` — Config, .env parsing, token generation, sync, auth, cloud API client, importers (doppler/infisical/dotenvx/1password/env)
 - `crates/phantom-vault/` — Encrypted vault (OS keychain + file backends) + shared crypto module
 - `crates/phantom-proxy/` — HTTP reverse proxy with streaming token replacement and SSE/streaming support
-- `crates/phantom-mcp/` — MCP server (25 tools, works with Claude Code, Cursor, Windsurf, Codex)
+- `crates/phantom-mcp/` — MCP server for Claude Code, Cursor, Windsurf, Codex, and other MCP clients
+- `crates/phantom-workspace/` — value-blind, recoverable trusted-terminal workspace setup
+- `crates/phantom-authority/`, `phantom-broker/`, `phantom-runtime/`, `phantom-session/`, `phantom-evidence/` — fail-closed governed-execution foundations; production activation remains unavailable
 - `apps/web/` — Next.js backend + landing page at phm.dev (Supabase + Stripe)
 
 ## Key files
@@ -128,5 +136,5 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 - `crates/phantom-core/src/cloud.rs` — Cloud push/pull HTTP client
 - `crates/phantom-proxy/src/server.rs` — Proxy server with streaming support
 - `crates/phantom-vault/src/crypto.rs` — Shared ChaCha20-Poly1305 encryption
-- `crates/phantom-mcp/src/server.rs` — MCP server with 25 tools
+- `crates/phantom-mcp/src/server.rs` — MCP server declarations and handlers
 - `apps/web/src/app/api/v1/` — Backend API routes (auth, vault, billing)

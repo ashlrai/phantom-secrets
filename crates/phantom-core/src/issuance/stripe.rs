@@ -94,7 +94,7 @@ impl ConsentEngine for StripeAppOAuthFlow {
         // when mock issuance is explicitly enabled. This stops a prompt-injected
         // agent from redirecting the exchange — and the refresh token it yields —
         // to an attacker-controlled host.
-        if deps.endpoints.overridden {
+        if deps.endpoints.is_overridden() {
             guard_mock_issuance()?;
         }
 

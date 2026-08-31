@@ -12,6 +12,25 @@ pub(crate) enum InstallSource {
     Unknown,
 }
 
+fn release_archive_name(target: &str) -> String {
+    let extension = if target.contains("windows") {
+        "zip"
+    } else {
+        "tar.gz"
+    };
+    format!("phantom-{target}.{extension}")
+}
+
+fn select_release_asset(
+    assets: &[self_update::ReleaseAsset],
+    expected_name: &str,
+) -> Option<self_update::ReleaseAsset> {
+    assets
+        .iter()
+        .find(|asset| asset.name() == expected_name)
+        .cloned()
+}
+
 pub(crate) fn detect_install_source() -> InstallSource {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -55,20 +74,31 @@ pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let target = self_update::get_target();
+    let expected_archive = release_archive_name(target);
+    let matcher_archive = expected_archive.clone();
     let update = self_update::backends::github::Update::configure()
         .repo_owner("ashlrai")
         .repo_name("phantom-secrets")
         .bin_name("phantom")
         .current_version(current)
-        .target(self_update::get_target())
+        .target(target)
+        .asset_matcher(move |assets| select_release_asset(assets, &matcher_archive))
+        // Refuse to install unless the exact selected archive is listed in the
+        // release's aggregate digest file. The checksums feature also verifies
+        // a provider-supplied release digest when GitHub exposes one.
+        .checksum_from_asset("SHA256SUMS")
         .show_download_progress(true)
         .no_confirm(force)
         .build()?;
 
     if check_only {
-        let latest = update.get_latest_release()?;
-        let latest_ver = latest.version.trim_start_matches('v');
-        if self_update::version::bump_is_greater(current, latest_ver)? {
+        let releases = update.get_latest_release()?;
+        let latest = releases
+            .latest()
+            .ok_or_else(|| anyhow::anyhow!("GitHub returned no Phantom releases"))?;
+        let latest_ver = latest.version().trim_start_matches('v');
+        if releases.is_update_available()? {
             println!(
                 "{} phantom {} is available (you have {}). Run `phantom upgrade` to install.",
                 "->".blue().bold(),
@@ -87,20 +117,21 @@ pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
 
     match update.update() {
         Ok(status) => match status {
-            self_update::Status::UpToDate(v) => {
+            self_update::VersionStatus::UpToDate(v) => {
                 println!(
                     "{} phantom {} is already at the latest version.",
                     "ok".green().bold(),
                     v
                 );
             }
-            self_update::Status::Updated(v) => {
+            self_update::VersionStatus::Updated(v) => {
                 println!(
                     "{} phantom updated to {}.",
                     "ok".green().bold(),
                     v.green().bold()
                 );
             }
+            _ => anyhow::bail!("self-update returned an unsupported status"),
         },
         Err(self_update::errors::Error::Io(e))
             if e.kind() == std::io::ErrorKind::PermissionDenied =>
@@ -135,5 +166,31 @@ mod tests {
         let a = detect_install_source();
         let b = detect_install_source();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn release_asset_selection_is_exact_and_order_independent() {
+        let target = "x86_64-unknown-linux-gnu";
+        let expected = release_archive_name(target);
+        let assets = vec![
+            self_update::ReleaseAsset::new(format!("{expected}.spdx.json"), "https://example/sbom"),
+            self_update::ReleaseAsset::new(format!("{expected}.sha256"), "https://example/sum"),
+            self_update::ReleaseAsset::new(&expected, "https://example/archive"),
+        ];
+        let selected = select_release_asset(&assets, &expected).unwrap();
+        assert_eq!(selected.name(), expected);
+        assert_eq!(selected.download_url(), "https://example/archive");
+    }
+
+    #[test]
+    fn release_archive_name_uses_platform_format() {
+        assert_eq!(
+            release_archive_name("aarch64-pc-windows-msvc"),
+            "phantom-aarch64-pc-windows-msvc.zip"
+        );
+        assert_eq!(
+            release_archive_name("aarch64-apple-darwin"),
+            "phantom-aarch64-apple-darwin.tar.gz"
+        );
     }
 }

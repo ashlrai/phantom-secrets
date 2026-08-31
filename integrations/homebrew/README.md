@@ -15,7 +15,9 @@ The tap repo is live. End users install with:
    ```
 
 Every release should bump `version` + the four `sha256` lines in
-`Formula/phantom.rb` of the tap. The simplest workflow is:
+`Formula/phantom.rb` of the tap after the exact archives and checksums are
+verified. This is a separately authorized, manual distribution step; the
+current release workflow does not mutate the tap. The simplest workflow is:
 
 ```bash
 # After tagging and the binaries are uploaded:
@@ -26,8 +28,8 @@ git -C ~/code/homebrew-phantom push
 ```
 
 A future enhancement would add a step to `.github/workflows/release.yml`
-in this repo that opens a PR against `homebrew-phantom` automatically
-on every tag push.
+in this repo to propose a reviewed PR against `homebrew-phantom` after artifact
+verification. That automation is not present today.
 
 ## Verifying the formula locally
 
@@ -37,5 +39,6 @@ copy:
 ```bash
 brew install --formula ./integrations/homebrew/Formula/phantom.rb
 phantom --version  # → "phantom 0.6.0"
+phantom-mcp --version  # → "phantom-mcp 0.6.0"
 brew uninstall phantom
 ```

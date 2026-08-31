@@ -51,10 +51,8 @@
 //!   shared rotation client — neither will replay the secret-bearing body to a
 //!   3xx target. A `401` on refresh is surfaced as "the user revoked the app"
 //!   — never a silent demotion.
-//! - The Management-API base can be pointed at a wiremock server ONLY when mock
-//!   rotation is enabled (`cfg(test)` or `PHANTOM_ALLOW_MOCK_ROTATION=1`) and
-//!   only over https/localhost, so a prompt-injected agent can never redirect a
-//!   real rotation at an attacker host.
+//! - The Management-API base is fixed in shipped builds. Only `cfg(test)` unit
+//!   tests compile the loopback override used by the hermetic HTTP stubs.
 
 use serde_json::Value;
 use zeroize::Zeroizing;
@@ -90,9 +88,8 @@ pub const ENV_SUPABASE_CLIENT_ID: &str = "SUPABASE_OAUTH_CLIENT_ID";
 /// auth. Never read from disk; resolved from the process env only.
 pub const ENV_SUPABASE_CLIENT_SECRET: &str = "SUPABASE_OAUTH_CLIENT_SECRET";
 
-/// Gated override of the Management-API base (`https://api.supabase.com`) for
-/// hermetic tests. Honoured only when mock rotation is enabled AND the value is
-/// https-or-localhost.
+/// Unit-test-only override of the Management-API base.
+#[cfg(test)]
 pub const ENV_SUPABASE_API_BASE: &str = "PHANTOM_SUPABASE_API_BASE";
 
 /// Production Management-API / OAuth base.
@@ -129,7 +126,7 @@ impl ConsentEngine for SupabaseOAuthFlow {
         // Fail closed on overridden (non-production) endpoints unless mock
         // issuance is explicitly enabled — stops a prompt-injected agent from
         // redirecting the exchange (and the refresh token) to an attacker host.
-        if deps.endpoints.overridden {
+        if deps.endpoints.is_overridden() {
             guard_mock_issuance()?;
         }
 
@@ -152,9 +149,7 @@ impl ConsentEngine for SupabaseOAuthFlow {
                 })?;
         if deps.endpoints.authorize.is_empty() || deps.endpoints.token.is_empty() {
             return Err(IssuanceError::NotSupported {
-                reason: "no authorize/token endpoint known for supabase; set the PHANTOM_OAUTH_* \
-                         overrides"
-                    .to_string(),
+                reason: "no authorize/token endpoint known for supabase".to_string(),
             });
         }
 
@@ -624,9 +619,16 @@ fn delete_matching_project_key(
     Ok(())
 }
 
-/// Resolve the Management-API base: production by default; a gated override for
-/// hermetic tests (honoured only when mock rotation is enabled AND the value is
-/// https-or-localhost, so a real rotation can never be redirected).
+/// Resolve the fixed production Management-API base. The shipped implementation
+/// contains no environment-variable override.
+#[cfg(not(test))]
+fn supabase_api_base() -> String {
+    DEFAULT_API_BASE.to_string()
+}
+
+/// Unit tests may inject a loopback stub. This branch is absent from shipped
+/// libraries, including debug builds.
+#[cfg(test)]
 fn supabase_api_base() -> String {
     if let Ok(value) = std::env::var(ENV_SUPABASE_API_BASE) {
         if !value.is_empty() && is_https_or_localhost(&value) && mock_rotation_allowed() {
@@ -636,8 +638,8 @@ fn supabase_api_base() -> String {
     DEFAULT_API_BASE.to_string()
 }
 
-/// Accept only `https://…`, `http://localhost…`, or `http://127.0.0.1…`
-/// (mirrors the issuance endpoint validator, including the host-confusion guard).
+/// Test helper for validating injected stub bases.
+#[cfg(test)]
 fn is_https_or_localhost(url: &str) -> bool {
     url.starts_with("https://")
         || url == "http://localhost"

@@ -17,7 +17,7 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::issuance::{
     default_consent_engines, Endpoints, FlowKind, GithubManifestSpec, IssuanceDeps,
-    IssuanceRequest, LoopbackListener, MockLoopbackListener, NoBrowser, StdLoopbackListener,
+    IssuanceRequest, LoopbackListener, NoBrowser, StdLoopbackListener,
 };
 use zeroize::Zeroizing;
 
@@ -54,7 +54,8 @@ pub fn run_add(
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
-    // Resolve endpoints — fails CLOSED before any I/O on a bad override.
+    // Resolve the compile-time production endpoint allowlist. Shipped builds
+    // intentionally have no environment-variable endpoint override.
     let endpoints = Endpoints::for_provider(provider).map_err(|e| anyhow!("{e}"))?;
 
     // Build the request + choose the engine (by identity, never a heuristic).
@@ -76,26 +77,19 @@ pub fn run_add(
         .find(|e| e.name() == engine_name)
         .ok_or_else(|| anyhow!("no consent engine named '{engine_name}'"))?;
 
-    // Side-effect deps. When endpoints are overridden (the test harness), swap
-    // in the deterministic mock loopback + a no-op browser so no real tab or
-    // socket is involved; the engine's mock guard then fails closed unless
-    // PHANTOM_ALLOW_MOCK_ISSUANCE=1.
+    // Side-effect deps. The CLI always uses the real loopback implementation;
+    // deterministic substitutes are confined to phantom-core unit tests.
     let http = phantom_core::issuance::build_http_client().map_err(|e| anyhow!("{e}"))?;
     let headless = no_browser || is_headless();
     let real_browser = OpenCrateBrowser;
     let no_browser_sentinel = NoBrowser;
-    let browser: &dyn phantom_core::issuance::BrowserOpener = if headless || endpoints.overridden {
+    let browser: &dyn phantom_core::issuance::BrowserOpener = if headless {
         &no_browser_sentinel
     } else {
         &real_browser
     };
     let std_loopback = StdLoopbackListener::new();
-    let mock_loopback = MockLoopbackListener::from_env();
-    let loopback: &dyn LoopbackListener = if endpoints.overridden {
-        &mock_loopback
-    } else {
-        &std_loopback
-    };
+    let loopback: &dyn LoopbackListener = &std_loopback;
 
     let deps = IssuanceDeps {
         browser,

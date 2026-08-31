@@ -6,7 +6,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=social)](https://github.com/ashlrai/phantom-secrets/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ashlrai/phantom-secrets/blob/main/LICENSE)
 
-AI coding agents read your `.env` files, putting API keys into LLM context windows where they can leak via prompt injection, session logs, malicious MCP servers, or training data.
+AI coding agents with dotenv filesystem access can put API keys into LLM context windows, where they may leak through prompt injection, session logs, malicious MCP servers, or generated artifacts.
 
 Phantom replaces real secrets with inert `phm_` tokens. A local reverse proxy swaps them back at the network layer. **The AI never sees a real key.**
 
@@ -42,7 +42,7 @@ $ phantom exec -- claude
 3. API calls hit the proxy, which replaces phantom tokens with real secrets and forwards over TLS
 4. When the session ends, the proxy shuts down. Phantom tokens are worthless outside the proxy.
 
-## 27 Commands
+## CLI commands
 
 | Command | Description |
 |---------|-------------|
@@ -50,7 +50,7 @@ $ phantom exec -- claude
 | `phantom exec -- <cmd>` | Start proxy and run a command with secret injection |
 | `phantom start` / `stop` | Manage proxy lifecycle (standalone/daemon mode) |
 | `phantom list` | Show secret names stored in vault (never values) |
-| `phantom add <KEY> <VAL>` | Add a secret to the vault |
+| `phantom add <KEY>` | Add a secret through a hidden prompt (`--stdin` for piped input) |
 | `phantom remove <KEY>` | Remove a secret from the vault |
 | `phantom reveal <KEY>` | Print a secret value (or `--clipboard` to copy) |
 | `phantom status` | Show proxy state, vault info, and mapped services |
@@ -75,7 +75,9 @@ $ phantom exec -- claude
 
 ## MCP Server
 
-Phantom ships a companion MCP server package so AI coding tools can manage secrets directly -- without ever seeing real values. 25 tools available.
+Phantom ships a companion MCP server package so AI coding tools can manage
+secrets directly without seeing real values. The release schema smoke currently
+enforces 54 unique tools; the runtime `tools/list` response is canonical.
 
 ```bash
 # Claude Code
@@ -90,7 +92,7 @@ See [`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) o
 
 ## Key Features
 
-- **OS keychain storage** -- macOS Keychain / Secure Enclave, Linux Secret Service, encrypted file fallback for CI
+- **OS credential storage** -- macOS Keychain, Linux Secret Service, Windows Credential Manager, with an encrypted-file fallback for CI; Phantom does not claim Secure Enclave binding
 - **256-bit CSPRNG tokens** -- `phm_` prefix, rotatable on demand
 - **Streaming proxy** -- Full SSE/streaming support for OpenAI, Anthropic, and other APIs
 - **Response scrubbing** -- Prevents secrets from leaking in API responses back to the AI
@@ -115,7 +117,7 @@ See [`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) o
 
 ## Security
 
-- Secrets never on disk in your project directory
+- Real values are removed from dotenv files during initialization; Phantom does not create plaintext project-local backups
 - Proxy binds to 127.0.0.1 only -- never exposed to the network
 - Secrets zeroized from memory after injection
 - Zero-knowledge cloud -- server stores only ciphertext

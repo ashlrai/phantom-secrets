@@ -33,8 +33,8 @@ const FEATURES: Feature[] = [
       </>
     ),
     code: `$ claude mcp add phantom-secrets-mcp \\
-    -- npx phantom-secrets-mcp
-ok  registered 25 tools`,
+    -- npx -y phantom-secrets-mcp
+ok  registered live MCP catalog`,
     logos: [ClaudeLogo, CursorLogo, WindsurfLogo, OpenAILogo],
   },
   {

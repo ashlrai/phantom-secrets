@@ -40,7 +40,8 @@ fn add_then_list_shows_key() {
 
     // Add a new secret
     phantom(&dir)
-        .args(["add", "MY_KEY", "my-value"])
+        .args(["add", "MY_KEY", "--stdin"])
+        .write_stdin("my-value\n")
         .assert()
         .success();
 
@@ -60,7 +61,8 @@ fn remove_makes_key_disappear_from_list() {
 
     // Add the key first
     phantom(&dir)
-        .args(["add", "MY_KEY", "my-value"])
+        .args(["add", "MY_KEY", "--stdin"])
+        .write_stdin("my-value\n")
         .assert()
         .success();
 
@@ -81,7 +83,8 @@ fn add_without_init_auto_inits() {
     // No init — phantom add should auto-create .phantom.toml and succeed.
     let dir = TempDir::new().unwrap();
     phantom(&dir)
-        .args(["add", "SOME_KEY", "some-value"])
+        .args(["add", "SOME_KEY", "--stdin"])
+        .write_stdin("some-value\n")
         .assert()
         .success();
     assert!(
@@ -109,7 +112,8 @@ fn add_updates_env_file_with_phantom_token() {
     init_project(&dir);
 
     phantom(&dir)
-        .args(["add", "MY_NEW_KEY", "my-real-value"])
+        .args(["add", "MY_NEW_KEY", "--stdin"])
+        .write_stdin("my-real-value\n")
         .assert()
         .success();
 

@@ -27,7 +27,7 @@ The actual API keys, tokens, passwords, and database URLs that Phantom is asked 
 
 **Storage locations:**
 
-- **OS keychain** (primary): macOS Keychain, Linux Secret Service, or Windows Credential Manager, depending on platform. The OS keychain gates access by the user's session credentials and, on macOS, by Secure Enclave on supported hardware.
+- **OS keychain** (primary): macOS Keychain, Linux Secret Service, or Windows Credential Manager, depending on platform. Access control is supplied by the native credential store and the user's operating-system session. Phantom uses password/secret entries and does not claim Secure Enclave hardware binding.
 - **Encrypted file vault** (fallback when no OS keychain is available): `~/.phantom/vaults/<project_id>.vault`. The file is encrypted with ChaCha20-Poly1305 keyed via Argon2id. Permissions are set to `0600` on Unix. See [§4](#4-cryptography-summary).
 - **Phantom Cloud** (optional): Server stores only ciphertext. Encryption key is derived from a key in the OS keychain and never leaves the device.
 
@@ -62,6 +62,19 @@ Stored at `~/.phantom/audit.log` when `PHANTOM_AUDIT=1`. Contains JSONL records 
 A GitHub OAuth token scoped to the user's GitHub identity, used to authenticate against the Phantom Cloud API. Stored in the OS keychain under the `phantom-secrets` service prefix.
 
 **Sensitivity:** Moderate. Compromise allows an attacker to push a malicious encrypted vault blob to the cloud (overwriting legitimate data) or to pull the encrypted blob (though they cannot decrypt it without the vault encryption key, which is separate). It does not directly expose plaintext secrets.
+
+### 1.7 Provider issuance credentials and metadata
+
+`phantom grant add` can receive credential roots from a provider after a human
+consent flow. Roots are transient secret values returned to the CLI in
+zeroizing containers and written directly to the vault. `.phantom.toml` stores
+provider, expiry, and renewal configuration, not the issued value. Provider
+client secrets are resolved through a named environment variable and are not
+accepted as command-line values.
+
+**Sensitivity:** Issued roots and provider client secrets are highest
+sensitivity. Provider-grant names, provider types, expiry, and state are
+value-free metadata but remain integrity-sensitive.
 
 ---
 
@@ -126,23 +139,27 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 | Asset | Threat | Mitigation | Status | Code reference |
 |-------|--------|-----------|--------|---------------|
 | Real secret values | LLM reads `.env` | `.env` contains only phantom tokens (`phm_` + 64 hex chars); real values never written to `.env` | Covered | `crates/phantom-core/src/dotenv.rs` — token substitution on `phantom init` / `phantom sync` |
-| Real secret values | LLM calls `phantom_add_secret` with plaintext value | MCP tool unconditionally refuses any call that includes a value; returns error directing caller to `phantom_add_secret_interactive` | Covered | `crates/phantom-mcp/src/server.rs:227–240` |
+| Real secret values | LLM calls `phantom_add_secret` with plaintext value | MCP tool unconditionally refuses any call that includes a value; returns error directing caller to `phantom_add_secret_interactive` | Covered | `crates/phantom-mcp/src/server.rs`, add-secret schema and refusal tests |
 | Real secret values | LLM calls destructive MCP tools without user consent | All mutating MCP tools require `confirm: true` parameter; tool description instructs the agent to ask the user first | Covered | `crates/phantom-mcp/src/server.rs` — `require_confirm()` called at every mutating entry point |
-| Real secret values | Local process reads vault file | File vault encrypted with ChaCha20-Poly1305 + Argon2id (m=64 MiB); file permissions `0600`; attacker needs passphrase | Covered | `crates/phantom-vault/src/crypto.rs`, `crates/phantom-vault/src/file.rs:130` |
-| Real secret values | Local process reads OS keychain entries | OS keychain access is gated by the session login. Secret names are stored as SHA-256 hashes (first 8 bytes, hex-encoded) so enumeration does not reveal which secrets are stored | Covered | `crates/phantom-vault/src/keychain.rs:12–18` (hashing); OS keychain access control is enforced by the platform |
+| Real secret values | Local process reads vault file | File vault encrypted with ChaCha20-Poly1305 + Argon2id (m=64 MiB); file permissions `0600`; attacker needs passphrase | Covered | `crates/phantom-vault/src/crypto.rs`, `crates/phantom-vault/src/file.rs` |
+| Real secret values | Local process reads OS keychain entries | Secret names are stored as SHA-256-derived identifiers (first 8 bytes, hex-encoded), reducing metadata disclosure during enumeration. Value access is governed by the native credential store and its session/application policy; a hostile same-user process may share that authority on some platforms | Partial — native policy, not a Phantom sandbox | `crates/phantom-vault/src/keychain.rs` (name hashing and native `keyring` entries) |
 | Real secret values | Proxy used without a session token to extract secrets | Proxy validates the session token on every request using constant-time comparison; unauthenticated requests receive HTTP 401. CLI-generated URLs use a local `/_phantom/<token>/` path segment for SDK compatibility unless `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` is set. | Covered | `crates/phantom-proxy/src/server.rs`, proxy auth regression tests |
-| Real secret values | Proxy token brute-forced via timing side-channel | Comparison uses `subtle::ConstantTimeEq`; length mismatch returns early (token length is not secret) | Covered | `crates/phantom-proxy/src/server.rs:620–623` |
-| Real secret values | Secret injected into non-auth fields (prompt injection via body) | F9 scoping: for JSON bodies, token substitution is restricted to a whitelist of known-secret fields; tokens in `prompt`, `messages`, `content` fields are left as phantom tokens and not substituted | Covered | `crates/phantom-proxy/src/server.rs:444–456` and `body_scope.rs` |
-| Real secret values | Secret injected into non-auth headers (e.g. User-Agent) | F9 scoping: header substitution restricted to auth-bearing headers and the per-route configured header | Covered | `crates/phantom-proxy/src/server.rs:282–319` |
-| Real secret values | Secret leaked in upstream API response back to LLM | Response body (buffered and streaming) is scanned and secrets scrubbed before returning to the caller | Covered | `crates/phantom-proxy/src/server.rs:533–610` |
+| Real secret values | Proxy token brute-forced via timing side-channel | Comparison uses `subtle::ConstantTimeEq`; length mismatch returns early (token length is not secret) | Covered | `crates/phantom-proxy/src/server.rs`, proxy authentication tests |
+| Real secret values | Secret injected into non-auth fields (prompt injection via body) | F9 scoping: for JSON bodies, token substitution is restricted to a whitelist of known-secret fields; tokens in `prompt`, `messages`, `content` fields are left as phantom tokens and not substituted | Covered | `crates/phantom-proxy/src/server.rs`, `body_scope.rs`, field-scope tests |
+| Real secret values | Secret injected into non-auth headers (e.g. User-Agent) | F9 scoping: header substitution restricted to auth-bearing headers and the per-route configured header | Covered | `crates/phantom-proxy/src/server.rs`, header-scope tests |
+| Real secret values | Secret leaked in upstream API response back to LLM | Response headers plus buffered and streaming bodies are scanned; configured values and recognized credential formats are redacted before forwarding | Covered for supported proxy paths | `crates/phantom-proxy/src/server.rs`, response leak/scrubber tests |
 | Real secret values | Memory exposure after use | All secret values wrapped in `zeroize::Zeroizing<T>` which overwrites the heap buffer on drop | Covered | `crates/phantom-vault/src/file.rs:88,114`, `crates/phantom-vault/src/keychain.rs:155` |
-| Real secret values | Body too large for safe buffering | Buffered path capped at 10 MB (`max_body_size`); exceeding returns HTTP 413 | Covered | `crates/phantom-proxy/src/server.rs:418–441` |
-| Real secret values | Cloud server compromised — server reads plaintext | Vault is encrypted client-side before upload; server stores only ciphertext; encryption key never transmitted | Covered | `crates/phantom-mcp/src/server.rs:356–363` (cloud push encryption) |
+| Real secret values | Body too large for safe buffering | JSON and other buffered paths are byte/time bounded; supported text and form bodies use bounded incremental replacement without collecting the full body | Covered for supported paths | `crates/phantom-proxy/src/server.rs`, body-limit and streaming tests |
+| Real secret values | Cloud server compromised — server reads plaintext | Vault is encrypted client-side before upload; server stores only ciphertext; encryption key never transmitted | Covered | `crates/phantom-core/src/cloud.rs`, `crates/phantom-vault/src/crypto.rs` |
 | Real secret values | Supply-chain attack injects `.env` real secrets | `phantom check` (including `--staged`) scans for real secret patterns and warns before commit; `pre-commit` hook integration | Covered | `crates/phantom-cli/src/commands/check.rs` (invoked by `phantom check --staged`) |
+| Provider issuance roots | Agent attempts to invoke consent or receive a root through MCP | Provider issuance is exposed through the trusted-terminal `phantom grant` CLI, not an MCP tool; output is metadata-only | Covered for the repository interface | `crates/phantom-cli/src/commands/grant/add.rs`, `crates/phantom-mcp/src/server.rs` |
+| Provider issuance roots | CLI leaks an issued root in output | The issuance engine returns zeroizing roots to the CLI, which writes them to the vault; successful human and JSON output contain lifecycle metadata and `value_printed: false` rather than values | Covered | `crates/phantom-core/src/issuance/mod.rs`, `crates/phantom-cli/src/commands/grant/add.rs` |
+| Provider consent | Attacker redirects OAuth/device flow to an arbitrary endpoint | Production provider endpoints are selected from a closed compile-time allowlist rather than accepted from CLI input | Covered for endpoint selection | `crates/phantom-core/src/issuance/endpoints.rs` |
+| Provider-grant lifecycle | User assumes local deletion remotely revokes a provider credential | `phantom grant revoke` fails closed before local mutation because remote revocation is not wired | Partial — credential must be revoked at the provider | `crates/phantom-cli/src/commands/grant/revoke.rs` |
 | Proxy session token | Sniffed on localhost | Token is only ever transmitted over the loopback interface (127.0.0.1), which is not network-accessible | Covered | `crates/phantom-proxy/src/server.rs:66` — bind to `[127, 0, 0, 1]` only |
 | Proxy session token | Leaked via process environment to child | The proxy token is set in the environment of the `phantom exec` child process as `PHANTOM_PROXY_TOKEN`; any subprocess spawned by that child can read it. This is intentional — the child needs it — but a compromised child process can use it | Partial — by design; mitigated by proxy's localhost-only binding and ephemeral token lifetime |
 | Proxy session token | Token persists after session ends | Token is generated fresh on each `phantom exec` invocation and exists only in the running process's memory | Covered | `crates/phantom-proxy/src/server.rs:104–109` |
-| Team X25519 private key | Exfiltration from OS keychain | Private key stored in OS keychain; access requires user session authentication same as all keychain secrets | Covered — same as real secret values in keychain |
+| Team X25519 private key | Exfiltration from OS keychain | Private key is stored in the native credential store, whose protection depends on platform and session/application policy | Partial — same native-policy limit as real secret values in the credential store |
 | Team X25519 private key | Insider reads another member's private key | Each member's private key never leaves their machine; the team vault push protocol encrypts to public keys only | Covered | `crates/phantom-core/src/team_crypto.rs:109–138` — `seal_sym_key` uses recipient public key only |
 | Team X25519 private key | Key revocation after member leaves team | No automated key-revocation or re-encryption flow exists. Removing a member from the team prevents future pushes encrypting to their key, but does not invalidate past pushes that included them | Not covered — see [§7](#7-known-gaps-and-non-mitigations) |
 | `.phantom.toml` integrity | LLM or PR tampers with service mappings to redirect proxy | No cryptographic integrity protection on `.phantom.toml`. The file is checked into the repository and subject to standard code review. Tampering would require either direct file access or a merged malicious PR | Not covered — relies on code review and filesystem permissions |
@@ -155,7 +172,7 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 
 ## 4. Cryptography Summary
 
-All primitives below are from audited Rust crates (`chacha20poly1305`, `argon2`, `crypto_box`, `subtle`).
+The implementations below use Rust crates including `chacha20poly1305`, `argon2`, `crypto_box`, and `subtle`. Dependency use is not itself evidence of an independent audit of Phantom's composition.
 
 ### 4.1 File vault encryption
 
@@ -226,9 +243,10 @@ Secret names stored in the OS keychain use a SHA-256 derived identifier (first 8
 
 | Component | Why trusted |
 |-----------|-------------|
-| OS keychain | Access is gated by the user's login session. On macOS with Secure Enclave hardware, private keys are hardware-bound. Phantom inherits whatever guarantee the OS provides. |
-| OS process model | UNIX process isolation: a process running as user A cannot read another user's memory or file descriptors without root. Phantom relies on this for vault file and proxy socket isolation. |
+| OS keychain | Access control is supplied by macOS Keychain, Linux Secret Service, or Windows Credential Manager and depends on platform and session policy. Phantom does not configure or claim hardware-bound storage. |
+| OS process model | The platform's user and process isolation restricts cross-user access to files, process memory, handles, and descriptors. Same-user processes remain in the threat model, and root/administrator compromise is out of scope. |
 | The user's terminal for confirmation prompts | `phantom_add_secret_interactive` initiates a terminal prompt outside any AI agent context. The terminal is trusted; the MCP channel is not. |
+| The user's terminal and provider consent page for issuance | Provider grants require a human to complete a provider flow. This boundary does not make the resulting credential an execution authority grant. |
 | `rustls` system CA roots | Outbound TLS from the proxy uses `rustls` with system CA roots; no custom CA certificates are accepted, making a local CA injection attack ineffective. |
 
 ### What Phantom verifies
@@ -240,6 +258,7 @@ Secret names stored in the OS keychain use a SHA-256 derived identifier (first 8
 | Proxy requests are authenticated | Session token checked via constant-time compare before any request is processed; CLI-generated URLs use `/_phantom/<token>/` for SDK compatibility, while `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` requires `x-phantom-proxy-token` — `crates/phantom-proxy/src/server.rs` |
 | Vault ciphertext integrity | ChaCha20-Poly1305 AEAD — decryption fails with an error if ciphertext has been tampered with |
 | Team vault key registration before send | `seal_sym_key` requires the recipient's public key to be present before encrypting their share — `crates/phantom-core/src/team_crypto.rs:111` |
+| Provider endpoint identity | Issuance selects an endpoint set from the closed production provider map rather than accepting an arbitrary authorization or token URL — `crates/phantom-core/src/issuance/endpoints.rs` |
 
 ### What Phantom does NOT trust
 
@@ -258,8 +277,8 @@ The following are explicitly not addressed by Phantom's design. Documenting them
 **Local attacker with root / admin access.**
 A process or user with root privileges can read the OS keychain, inspect process memory, attach a debugger, or replace the `phantom` binary. No local secret manager can defend against this. If your threat model includes malicious insiders with admin access to developer machines, a hardware security key or remote secrets service (Vault, AWS Secrets Manager) is more appropriate.
 
-**Side-channel attacks on the OS keychain itself.**
-Cache-timing, power analysis, or EM side-channels against the Secure Enclave or TPM are out of scope.
+**Side-channel attacks on the native credential store itself.**
+Cache-timing, power analysis, or EM side-channels against operating-system credential-store implementations or underlying hardware are out of scope.
 
 **Quantum-capable attackers.**
 X25519 is not post-quantum safe. A cryptographically relevant quantum computer could break the team vault key encapsulation scheme. This is a future upgrade path; classical X25519 is appropriate for current threat landscapes.
@@ -286,29 +305,61 @@ These are security properties that are not yet implemented. They are documented 
 
 The audit log at `~/.phantom/audit.log` is append-only by file-open semantics (`O_APPEND`) and signed entries use an HMAC chain with monotonic sequence numbers. `phantom audit verify` detects malformed JSON, modified entries, inserted entries, prefix deletion, and sequence gaps in the remaining signed log. It still cannot prove that the latest N entries were removed, or that the whole log was deleted, without an external checkpoint or backup of the expected head.
 
-### 7.2 No proxy-layer rate limiting or anomaly detection
+### 7.2 Proxy limits are not identity- or secret-aware anomaly controls
 
-The proxy does not rate-limit requests or detect unusual access patterns (e.g., a process making thousands of requests per second, or requests for secrets outside the project's configured mappings). A rogue local process that obtains the session token could drain secrets at high speed. Mitigation would require per-secret access counts and configurable rate limits.
+The proxy enforces aggregate rate, concurrency, byte, idle, and total-time limits,
+but those controls are not a per-identity or per-secret behavioral policy. A rogue
+local process that obtains the session token can use any configured mapping within
+the session limits. Stronger mitigation requires identity-bound authority grants and
+per-secret/use accounting at the authority boundary.
 
 ### 7.3 `.phantom.toml` has no integrity protection
 
 There is no signature or hash commitment on `.phantom.toml`. A malicious PR that adds a service mapping redirecting `openai` → `http://attacker.example.com` would take effect silently on the next `phantom exec`. Mitigations include: code review (current), and a future signed-config mechanism.
 
-### 7.4 Team key revocation requires manual re-encryption
+### 7.4 Atomic team offboarding is unavailable
 
-Removing a team member from the team UI prevents future vault pushes from including their `KeyShare`. However, any team vault push that was made while they were a member remains decryptable by them if they retained their private key. There is no automated key-rotation flow that re-encrypts historical pushes excluding the removed member. Teams with strict offboarding requirements should rotate all secrets after removing a member.
+The current server has no atomic membership-removal and vault-key-rotation route.
+The CLI `team revoke` operation therefore fails closed. Existing versions already
+received by a member remain decryptable if the member retained their private key.
+Strict offboarding requires an external administrative workflow and rotation of
+the underlying provider credentials until the server transaction is implemented
+and accepted end to end.
 
 ### 7.5 Proxy session token exposed to child process environment
 
 `phantom exec` injects `PHANTOM_PROXY_TOKEN` into the child process environment. Any subprocess spawned by the child process inherits this variable. A compromised child process can use the token to make proxy requests for the lifetime of the session. This is a known, unavoidable trade-off for the current architecture (the child needs the token to authenticate). The impact is bounded by the token's ephemeral lifetime and the proxy's localhost-only binding.
 
-### 7.6 Streaming body path enforces size limit via drop, not 413
+### 7.6 Request-body handling is path-specific and bounded
 
-For streaming content types (`text/*`, `application/x-www-form-urlencoded`), if the body exceeds `max_body_size` the streaming task is dropped (channel closed), which surfaces to the upstream as a broken connection rather than a clean HTTP 413. A clean 413 for the streaming path is a planned improvement.
+JSON and other buffered proxy paths collect input under byte and time limits
+before scoped substitution; oversized input receives a bounded failure. Supported
+`text/*` and form bodies use incremental token replacement with a bounded carry
+window so uploads are not fully buffered. Both paths remain content-type scoped
+and belong in performance and capacity planning.
 
-### 7.7 Audit log disabled by default
+### 7.7 Plaintext reveal needs OS-backed user presence
+
+Plaintext JSON export is disabled and reveal has no noninteractive bypass. Reveal
+requires attached terminals plus an exact typed phrase, but a hostile same-user
+process may be able to emulate a terminal. Phantom does not yet bind reveal to an
+OS-backed biometric/user-presence or separate operator authorization primitive.
+
+### 7.8 Audit log disabled by default
 
 The audit log requires `PHANTOM_AUDIT=1` to be set. Teams that want audit trails must set this variable in their development environment. There is no mechanism to enforce this policy across a team. A future `phantom.toml` option to require audit logging is planned.
+
+### 7.9 Provider issuance requires external acceptance and revocation
+
+Provider-grant source and mock tests do not prove that a live provider
+application is configured, a consent screen is correct, a remote credential was
+accepted, renewal works, or a customer workflow passed. Those require separate,
+authorized acceptance with throwaway accounts. Remote revocation is not wired;
+`phantom grant revoke` fails closed before changing local state.
+
+In this document, a **provider grant** is vaulted credential and renewal state.
+It is not an **authority grant** from the inactive execution kernel and cannot
+be used as a Locus credential, broker lease, or execution permit.
 
 ---
 

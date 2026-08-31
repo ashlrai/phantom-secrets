@@ -1,13 +1,14 @@
 {
   "name": "phantom-secrets-mcp",
-  "version": "0.6.0",
-  "description": "MCP server for Phantom Secrets — lets AI coding tools manage API keys safely without ever seeing real values. 25 tools for Claude Code, Cursor, Windsurf, and Codex.",
+  "version": "0.7.0",
+  "description": "Value-blind MCP tools and gated secret-lifecycle requests for Phantom Secrets.",
   "bin": {
     "phantom-secrets-mcp": "bin/cli.js",
     "phantom-mcp": "bin/cli.js"
   },
   "scripts": {
-    "postinstall": "node install.js"
+    "postinstall": "node install.js",
+    "test": "node test/platform-matrix.test.js && node test/version-cache.test.js && node test/valid-cache.test.js && node test/hardening.test.js && node test/schema-contract.test.js && node test/release-artifacts.test.js"
   },
   "repository": {
     "type": "git",

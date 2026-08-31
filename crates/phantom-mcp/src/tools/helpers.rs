@@ -40,8 +40,10 @@ pub fn require_approval_token(
 ) -> Result<(), McpError> {
     use phantom_core::mcp_approval;
 
-    // Allow tests and CI to skip approval by setting PHANTOM_MCP_SKIP_APPROVAL=1.
-    // Never set this in production.
+    // Unit tests can bypass the external terminal ceremony. This branch is
+    // compiled out of production builds, so an agent cannot weaken approval
+    // by setting an environment variable at runtime.
+    #[cfg(test)]
     if std::env::var("PHANTOM_MCP_SKIP_APPROVAL").as_deref() == Ok("1") {
         return Ok(());
     }

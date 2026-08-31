@@ -34,11 +34,31 @@ body:
       multiple: true
       options:
         - CLI command
+        - Provider issuance or grant lifecycle
         - MCP tool
         - Local proxy behavior
+        - Vault or OS keychain
+        - Workspace setup or execution-kernel foundation
         - Cloud sync (phm.dev)
         - Editor integration (Claude Code / Cursor / Windsurf / Codex)
         - Deployment-platform sync (Vercel / Railway / GitHub Actions)
+        - Installation, packaging, or release trust
         - Documentation
     validations:
       required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Security and authority impact
+      description: Could this expose a value, mutate state, execute code, use a provider credential, broaden agent authority, or change confirmation/recovery behavior? If not, say why not.
+    validations:
+      required: true
+
+  - type: textarea
+    id: platforms
+    attributes:
+      label: Platform considerations
+      description: Note expected macOS, Linux, Windows, shell, architecture, keychain, or packaging differences.
+    validations:
+      required: false

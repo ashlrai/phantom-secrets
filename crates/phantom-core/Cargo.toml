@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+publish.workspace = true
 readme = "../../README.md"
 description = "Core library for Phantom Secrets — config, .env parsing, token generation"
 keywords = ["secrets", "env", "dotenv", "config", "ai-safety"]

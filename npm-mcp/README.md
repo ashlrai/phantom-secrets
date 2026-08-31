@@ -1,25 +1,30 @@
 # Phantom Secrets MCP Server
 
-**MCP server for AI-safe secrets management.** Lets Claude Code, Cursor, Windsurf, and Codex manage API keys without ever seeing real values.
+**Value-blind secrets management over MCP.** Lets Claude Code, Cursor,
+Windsurf, and Codex inspect metadata and request gated lifecycle operations
+without MCP responses returning real values.
 
 [![npm](https://img.shields.io/npm/v/phantom-secrets-mcp)](https://www.npmjs.com/package/phantom-secrets-mcp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ashlrai/phantom-secrets/blob/main/LICENSE)
 
-Part of [Phantom Secrets](https://www.npmjs.com/package/phantom-secrets) -- the CLI that replaces real secrets with inert `phm_` tokens so AI agents never see your API keys.
+Part of [Phantom Secrets](https://www.npmjs.com/package/phantom-secrets) -- the
+CLI that replaces project secrets with scoped `phm_` tokens and gives agents
+value-blind secret-management tools.
 
 ## Install
 
 ### Claude Code
 
 ```bash
-claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
+claude mcp add phantom-secrets-mcp -- npx -y phantom-secrets-mcp
 ```
 
 ### Cursor
 
 Add to Cursor Settings > Features > MCP Servers:
 - Name: `phantom`
-- Command: `npx phantom-secrets-mcp`
+- Command: `npx`
+- Args: `-y phantom-secrets-mcp`
 
 ### Windsurf
 
@@ -27,34 +32,57 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 
 ```json
 {
-  "phantom": {
-    "command": "npx",
-    "args": ["phantom-secrets-mcp"]
+  "mcpServers": {
+    "phantom": {
+      "command": "npx",
+      "args": ["-y", "phantom-secrets-mcp"]
+    }
   }
 }
 ```
 
-### Codex / Other MCP Clients
+### Codex
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.phantom]
+command = "npx"
+args = ["-y", "phantom-secrets-mcp"]
+```
+
+### Other MCP Clients
 
 Add to your MCP configuration:
 
 ```json
 {
-  "phantom": {
-    "command": "npx",
-    "args": ["phantom-secrets-mcp"]
+  "mcpServers": {
+    "phantom": {
+      "command": "npx",
+      "args": ["-y", "phantom-secrets-mcp"]
+    }
   }
 }
 ```
 
 Works with any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io).
 
-## 25 MCP Tools
+## MCP Tools
 
-Read-only tools (safe to call anytime):
+The MCP server exposes core secret-management tools plus advanced audit, validation, rotation, expiry, team-vault, and compliance workflows. The registry metadata is generated from the server's live tool declarations; this README summarizes the main groups.
+
+Conversation, status, and validation tools:
+
+Responses do not contain secret values. `phantom_setup_workspace` proposal may
+provision or harden machine-local Phantom state, and `phantom_validate_all`
+performs provider network calls and persists safe validation metadata.
 
 | Tool | Description |
 |------|-------------|
+| `phantom_capability` | Report the conversation facade's authority and hard denials; advanced compatibility tools are separately gated |
+| `phantom_do` | Propose one closed Cargo action and return its digest/effect/blockers without execution |
+| `phantom_setup_workspace` | Propose value-blind setup, create a bearerless trusted-terminal request, or read authenticated status; proposal checks/hardens machine-local state and reports key provisioning |
 | `phantom_list_secrets` | List secret names in the vault (never exposes values) |
 | `phantom_status` | Check project configuration, vault health, and proxy state |
 | `phantom_doctor` | Diagnose configuration and vault health |
@@ -62,6 +90,8 @@ Read-only tools (safe to call anytime):
 | `phantom_check` | Scan for unprotected secrets (pre-commit-style) |
 | `phantom_sync` | Preview deployment-platform sync (Vercel, Railway) |
 | `phantom_cloud_status` | Check cloud authentication and sync status |
+| `phantom_validate_secret` | Show last-known credential validation status for one secret |
+| `phantom_validate_all` | Run live health checks for stored credentials and persist safe metadata |
 
 Mutating tools (modify vault or `.env`):
 
@@ -78,6 +108,11 @@ Mutating tools (modify vault or `.env`):
 | `phantom_unwrap` | Restore original `package.json` scripts from `:raw` variants |
 | `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted) |
 | `phantom_cloud_pull` | Pull and decrypt vault from Phantom Cloud |
+| `phantom_rotate_with_candidate` | Create a staged candidate credential without exposing values |
+| `phantom_rotate_promote` | Promote a validated staged candidate to primary |
+| `phantom_rotate_provider` | Rotate through a configured provider such as Stripe, GitHub, or AWS |
+| `phantom_rotate_with_expiry` | Rotate tokens and set TTL metadata on vault entries |
+| `phantom_secrets_auto_rotate` | Refresh one secret's token and expiry metadata |
 
 Team vault tools (Pro plan; multi-developer shared vaults):
 
@@ -91,21 +126,42 @@ Team vault tools (Pro plan; multi-developer shared vaults):
 | `phantom_team_vault_push` | Push the current project's vault to a team (envelope-encrypted to every registered member) |
 | `phantom_team_vault_pull` | Pull the team vault into the local vault |
 
-All tools are read-safe: they never return actual secret values, and real secret values are never accepted as MCP tool arguments. The AI can manage your secrets lifecycle (add, remove, rotate, sync, share with teams) without key exposure in agent context. Mutating tools require `confirm: true`.
+Audit, compliance, and expiry tools:
+
+| Tool | Description |
+|------|-------------|
+| `phantom_audit_recent` | Read recent audit events without values |
+| `phantom_audit_stats` | Aggregate audit access counts and anomaly scores |
+| `phantom_audit_anomalies` / `phantom_audit_anomalies_realtime` | Find suspicious access patterns |
+| `phantom_audit_hotspot_alerts` | Inspect and optionally acknowledge access-velocity alerts |
+| `phantom_audit_analytics` | Export audit analytics for dashboards |
+| `phantom_audit_incidents` / `phantom_leak_incidents_realtime` | Summarize leak incidents without exposing values |
+| `phantom_audit_alerts` / `phantom_audit_export_report` | Read alert records or generate compliance reports |
+| `phantom_compliance_status` | Report compliance readiness for the current project |
+| `phantom_secret_rotation_due` / `phantom_list_with_expiry` | Show rotation and expiry status |
+| `phantom_secrets_expiry_check` / `phantom_expiry_enforce` | Check expired secrets and policy violations |
+| `phantom_rotation_schedule_next` / `phantom_apply_expiry_policy` | Inspect rotation schedules and apply expiry demotion policy |
+| `phantom_validation_schedule` / `phantom_validation_history` | Manage validation cadence and read validation history |
+
+MCP responses do not return actual secret values, and the deprecated plaintext
+add tool rejects values passed through MCP. Agents can manage value-blind
+metadata and request gated lifecycle operations (add, remove, rotate, sync,
+share with teams, audit, validate, and enforce expiry). Mutating tools require
+`confirm: true`; higher-risk tools also use the separate MCP approval gate.
 
 ## How It Works
 
 1. The MCP server runs as a stdio transport process alongside your AI coding tool
 2. When the AI needs to manage secrets, it calls Phantom MCP tools
-3. Phantom stores real secrets in the OS keychain (macOS Keychain, Linux Secret Service) or encrypted file vault
-4. The AI only ever sees `phm_` phantom tokens -- never real API keys
+3. Phantom stores real secrets in the native credential store (macOS Keychain, Linux Secret Service, or Windows Credential Manager) or a ChaCha20-Poly1305 encrypted-file vault
+4. Agents use value-blind MCP metadata; application processes load tokens for authenticated proxy sessions
 5. A local reverse proxy swaps tokens back at the network layer when making API calls
 
 ## Requirements
 
 - [Phantom Secrets CLI](https://www.npmjs.com/package/phantom-secrets) must be initialized in your project (`npx phantom-secrets init`)
 - Node.js >= 16
-- macOS (arm64/x64), Linux (x64/arm64), or Windows (x64)
+- A published macOS (arm64/x64), glibc Linux (x64/arm64), or Windows (x64/arm64) release target. See the [platform support matrix](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md) for native-integration and acceptance limits.
 
 ## Cloud Sync
 

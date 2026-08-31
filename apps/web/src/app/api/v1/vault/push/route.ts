@@ -1,19 +1,33 @@
 import { requireAuth, requirePro } from "@/lib/auth";
+import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
+
+const MAX_VAULT_PUSH_BODY_BYTES = 1_100_000;
+
+type VaultPushBody = {
+  project_id?: string;
+  encrypted_blob?: string;
+  expected_version?: number;
+};
 
 export async function PUT(req: Request) {
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
 
-  let body;
+  let body: VaultPushBody;
   try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "invalid_json" }, { status: 400 });
+    body = await readBoundedJsonObject(req, MAX_VAULT_PUSH_BODY_BYTES);
+  } catch (error) {
+    return requestBodyErrorResponse(error);
   }
   const { project_id, encrypted_blob, expected_version } = body;
 
-  if (!project_id || !encrypted_blob) {
+  if (
+    typeof project_id !== "string" ||
+    !project_id ||
+    typeof encrypted_blob !== "string" ||
+    !encrypted_blob
+  ) {
     return Response.json(
       { error: "project_id and encrypted_blob required" },
       { status: 400 }
@@ -27,7 +41,11 @@ export async function PUT(req: Request) {
       { status: 413 }
     );
   }
-  if (!Number.isInteger(expected_version) || expected_version < 0) {
+  if (
+    typeof expected_version !== "number" ||
+    !Number.isInteger(expected_version) ||
+    expected_version < 0
+  ) {
     return Response.json(
       { error: "expected_version must be a non-negative integer" },
       { status: 400 }

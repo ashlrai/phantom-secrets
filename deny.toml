@@ -1,0 +1,103 @@
+# cargo-deny 0.20.2 policy. CI verifies the cargo-deny release archive before
+# running every check against the committed Cargo.lock.
+
+[advisories]
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+unused-ignored-advisory = "deny"
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "rsa is a dev-only test dependency; Phantom does not perform network-observable RSA private-key operations, and RustSec lists no fixed release" },
+]
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+exceptions = []
+
+[licenses.private]
+ignore = false
+registries = []
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+allow-workspace = true
+deny = [
+    { crate = "native-tls", reason = "Phantom uses rustls to avoid a platform TLS backend and native OpenSSL linkage" },
+    { crate = "openssl", reason = "Phantom uses rustls to avoid a platform TLS backend and native OpenSSL linkage" },
+    { crate = "openssl-sys", reason = "Phantom uses rustls to avoid a platform TLS backend and native OpenSSL linkage" },
+]
+skip = [
+    { crate = "bitflags@1.3.2", reason = "Existing notify platform backends require bitflags 1 while the rest of the graph uses bitflags 2" },
+    { crate = "block-buffer@0.12.1", reason = "self_update 1.2 checksum enforcement uses the current sha2 0.11 digest stack while core cryptography remains on the sha2 0.10 stack" },
+    { crate = "const-oid@0.10.2", reason = "self_update 1.2 checksum enforcement uses the current sha2 0.11 digest stack while RSA test dependencies retain const-oid 0.9" },
+    { crate = "core-foundation@0.9.4", reason = "Existing keyring and HTTP dependencies span two macOS Core Foundation bindings generations" },
+    { crate = "cpufeatures@0.3.1", reason = "self_update 1.2 checksum enforcement uses sha2 0.11 while existing cryptography retains cpufeatures 0.2" },
+    { crate = "crypto-common@0.2.2", reason = "self_update 1.2 checksum enforcement uses sha2 0.11 while existing cryptography retains crypto-common 0.1" },
+    { crate = "digest@0.11.3", reason = "self_update 1.2 checksum enforcement uses sha2 0.11 while existing cryptography retains digest 0.10" },
+    { crate = "getrandom@0.2.17", reason = "Existing cryptography dependencies use getrandom 0.2 while tempfile uses getrandom 0.4" },
+    { crate = "linux-raw-sys@0.4.15", reason = "Existing which/rustix 0.38 path has not converged on the rustix 1 dependency family" },
+    { crate = "redox_syscall@0.5.18", reason = "Existing parking_lot path has not converged on the libredox dependency family" },
+    { crate = "reqwest@0.12.28", reason = "Existing workspace HTTP clients use reqwest 0.12 while self_update uses reqwest 0.13" },
+    { crate = "rustix@0.38.44", reason = "Existing which dependency has not converged on the rustix 1 dependency family" },
+    { crate = "security-framework@2.11.1", reason = "Existing keyring and HTTP dependencies span two macOS Security Framework bindings generations" },
+    { crate = "sha2@0.11.0", reason = "self_update 1.2 requires sha2 0.11 to verify release SHA256SUMS; workspace cryptography currently uses sha2 0.10" },
+    { crate = "thiserror@1.0.69", reason = "Existing transitive dependencies still span the thiserror 1 and 2 APIs" },
+    { crate = "thiserror-impl@1.0.69", reason = "Existing transitive dependencies still span the thiserror 1 and 2 APIs" },
+    { crate = "windows-sys@0.48.0", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows-sys@0.52.0", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows-sys@0.59.0", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows-sys@0.60.2", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows-targets@0.48.5", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows-targets@0.52.6", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_aarch64_gnullvm@0.48.5", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_aarch64_gnullvm@0.52.6", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_aarch64_msvc@0.48.5", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_aarch64_msvc@0.52.6", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_i686_gnu@0.48.5", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_i686_gnu@0.52.6", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_i686_gnullvm@0.52.6", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_i686_msvc@0.48.5", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_i686_msvc@0.52.6", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_x86_64_gnu@0.48.5", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_x86_64_gnu@0.52.6", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_x86_64_gnullvm@0.48.5", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_x86_64_gnullvm@0.52.6", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_x86_64_msvc@0.48.5", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+    { crate = "windows_x86_64_msvc@0.52.6", reason = "Existing cross-platform dependencies span multiple Windows bindings generations" },
+]
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+required-git-spec = "rev"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+unused-allowed-source = "deny"
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

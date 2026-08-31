@@ -6,7 +6,10 @@ OpenAI Codex runs in a sandboxed environment and executes tasks autonomously. It
 
 After `phantom init`, your `.env` contains only phantom tokens (`phm_...`). Codex reads the tokens, not the real values. When code under test makes API calls, the local Phantom proxy replaces tokens with real credentials before requests leave your machine — Codex never needs the real values to write, test, or integrate code that uses them.
 
-The MCP integration registers 25 Phantom tools in Codex's tool list. The CLI includes an agent-readiness workflow, proxy lifecycle commands, audit, import/export, cloud sync, team vaults, and safe MCP setup for Codex.
+The MCP integration registers Phantom's release-schema-verified catalog in
+Codex. The current release contract enforces 54 unique tools; runtime
+`tools/list` is canonical. The CLI includes agent readiness, proxy lifecycle,
+audit, import/export, cloud sync, team vaults, and safe MCP setup for Codex.
 
 ---
 
@@ -72,9 +75,12 @@ phantom stop
 
 ---
 
-## The 25 MCP tools Codex gets
+## MCP tools Codex can use
 
-Once `phantom-secrets-mcp` is registered, Codex can call all 25 Phantom tools during task execution. See the complete table in [claude-code.md](./claude-code.md#the-25-mcp-tools-claude-gets) — the tool set is identical across all AI clients.
+Once `phantom-secrets-mcp` is registered, Codex can call the same runtime
+catalog as other MCP clients. See the [core tool examples in the Claude Code
+guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
+for the canonical catalog.
 
 Tools most relevant to Codex task execution:
 

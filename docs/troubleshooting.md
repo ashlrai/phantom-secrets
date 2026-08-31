@@ -31,7 +31,9 @@ If your API calls fail with authentication errors after setting up Phantom:
 
 1. **Check the proxy is running**: `phantom status`
 2. **Verify the secret is in the vault**: `phantom list`
-3. **Verify the real value is correct**: `phantom reveal <KEY> --yes`
+3. **Verify the real value only in a trusted attached terminal**: run
+   `phantom reveal <KEY>` and complete the exact typed confirmation, or use
+   `--clipboard` to avoid printing it on screen
 4. **Check BASE_URL is set**: The proxy only works when `OPENAI_BASE_URL` (or equivalent) points to the local proxy. Use `phantom exec -- <cmd>` which sets these automatically.
 
 ### Proxy hangs or times out
@@ -50,14 +52,14 @@ If you are sending large streaming bodies through the proxy and seeing broken-pi
 
 ### Claude Code can't read my .env file
 
-Many Claude Code setups block reading `.env` files by default (it's in the deny rules). After running `phantom init`, your `.env` only contains worthless phantom tokens (`phm_...`) — it's **safe for AI to read**.
+Many Claude Code setups block reading `.env` files by default. Keep that boundary: although Phantom-managed entries become worthless `phm_` tokens, sibling dotenv files or backups from other tools can still contain plaintext.
 
 Fix it automatically:
 ```bash
 phantom setup --client claude
 ```
 
-This wires the MCP server AND adds `.env` to Claude Code's allow rules in `.claude/settings.local.json`. For other AI tools, swap in `--client cursor|windsurf|codex`. If you have `.env` in your deny rules, you can safely remove it after running `phantom init`.
+This wires the MCP server, removes legacy Phantom-managed dotenv allow grants, and preserves deny rules in `.claude/settings.local.json`. For other AI tools, swap in `--client cursor|windsurf|codex`. Agents can use Phantom's value-blind MCP inventory without dotenv read access.
 
 You can verify with:
 ```bash
@@ -68,7 +70,9 @@ phantom doctor
 
 This is a security feature. `phantom reveal` blocks in non-interactive contexts (pipes, scripts, AI agents) to prevent secrets from leaking into AI context windows.
 
-To override: `phantom reveal <KEY> --yes`
+There is no non-interactive bypass. Move to a trusted attached terminal and run
+`phantom reveal <KEY>`, then complete the exact typed confirmation. Phantom
+refuses this operation in scripts, pipes, CI, or agent tool calls.
 
 ### Keychain access denied
 
@@ -184,18 +188,43 @@ That's exactly what it's built for. The AI agent only sees phantom tokens (`phm_
 Phantom stores your real secret values in one of two locations:
 
 - **OS keychain (primary):** macOS Keychain or Linux Secret Service. This is the default on desktop systems. Secrets are tied to your user account and persist across reboots.
-- **Encrypted file vault (fallback):** `~/.phantom/vaults/`. Used automatically in environments without an OS keychain (Docker, CI runners), or when `PHANTOM_VAULT_PASSPHRASE` is explicitly set. The vault files are AES-256-GCM encrypted.
+- **Encrypted file vault (fallback):** `~/.phantom/vaults/`. Used automatically in environments without an OS keychain (Docker, CI runners), or when `PHANTOM_VAULT_PASSPHRASE` is explicitly set. Vault payloads use ChaCha20-Poly1305 with an Argon2id-derived key.
 
 ### How to back up your secrets
 
-Phantom does not have a dedicated backup command. To manually back up your secrets, reveal each one and store the values in a secure location (e.g., a password manager):
+Use Phantom's encrypted export rather than printing every value. Supply a
+dedicated high-entropy passphrase and protect both the archive and passphrase
+as separate recovery material:
 
 ```bash
-phantom list                        # see all secret names
-phantom reveal <KEY> --yes          # print the real value for each key
+# Interactive: hidden prompt + confirmation on an attached terminal
+phantom export --output phantom-backup.enc
+
+# Automation: bounded private file, never argv
+chmod 600 /secure/path/phantom-backup.pass
+phantom export --output phantom-backup.enc \
+  --passphrase-file /secure/path/phantom-backup.pass
 ```
 
-Repeat `phantom reveal` for each secret and save the values somewhere safe. Do not store the backup in plain text on disk or in your git repository.
+Recover into an initialized Phantom project with the symmetric input method:
+
+```bash
+phantom import phantom-backup.enc
+phantom import phantom-backup.enc \
+  --passphrase-file /secure/path/phantom-backup.pass
+```
+
+Passphrase files must be regular files, not symlinks, and are limited to 4096
+bytes. On Unix they must be mode `0600` or stricter. Export refuses existing
+targets and symlinks; it creates a `0600` staging file on Unix (or uses the
+containing directory's inherited ACL on Windows), flushes it, and publishes it
+without overwriting. Store neither the encrypted backup nor its passphrase in
+the repository. Plaintext JSON export and the legacy argv `--passphrase` flow
+are disabled.
+
+If the command reports that audit logging failed after publication, the backup
+already exists at the reported path. Do not retry with the same output path;
+preserve that file and repair audit logging before the next export.
 
 ### Recovery options
 

@@ -4,9 +4,9 @@
 # It is mirrored here in the main repo so changes can be reviewed
 # alongside the code that produces the binaries it downloads.
 #
-# To update for a new release, the release.yml workflow opens a PR
-# against ashlrai/homebrew-phantom that bumps `version` and the
-# four sha256 lines.
+# Updates are reviewed and applied manually after the exact release archives
+# and checksums are published. The current release workflow does not open a tap
+# pull request automatically.
 
 class Phantom < Formula
   desc "Stop AI coding agents from leaking your API keys"
@@ -43,5 +43,6 @@ class Phantom < Formula
 
   test do
     assert_match "phantom #{version}", shell_output("#{bin}/phantom --version")
+    assert_match "phantom-mcp #{version}", shell_output("#{bin}/phantom-mcp --version")
   end
 end

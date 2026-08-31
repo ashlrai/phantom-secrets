@@ -131,7 +131,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         for entry in &public_entries {
             println!("   {} {}", "·".dimmed(), entry.key);
         }
-        println!("   Override with: {}", "phantom add --force <KEY>".dimmed());
+        println!("   Override with: {}", "phantom add <KEY>".dimmed());
     }
 
     // Load or create config, then auto-detect services

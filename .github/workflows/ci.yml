@@ -27,12 +27,31 @@ jobs:
       # inject steps into our CI. Keep the trailing `# v…` comment so
       # dependabot knows what version is in effect.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --workspace --all-targets --locked --verbose
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --workspace --all-targets --locked --no-fail-fast --verbose
+      - name: Verify platform, installer, and release mappings
+        run: |
+          node scripts/check-platform-installers.mjs
+          node npm-mcp/test/platform-matrix.test.js
+      - name: Run direct installer offline tests
+        if: runner.os == 'Linux'
+        run: node --test scripts/installers.test.js
+      - name: Parse PowerShell installer and verify mirror
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content -LiteralPath scripts/install.ps1 -Raw))
+          if ((Get-FileHash scripts/install.ps1).Hash -ne (Get-FileHash apps/web/public/install.ps1).Hash) {
+            throw 'served PowerShell installer differs from scripts/install.ps1'
+          }
 
   test-ignored:
     name: Ignored Tests (${{ matrix.os }})
@@ -43,21 +62,177 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Run ignored tests (real OS keychain)
-        run: cargo test --workspace -- --ignored
+        run: cargo test --locked -p phantom-secrets-vault os_keychain_roundtrip -- --ignored
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
         with:
+          toolchain: 1.95.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  dependency-policy:
+    name: Rust dependency policy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+      - name: Install verified cargo-deny
+        env:
+          CARGO_DENY_VERSION: 0.20.2
+          CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          set -euo pipefail
+          archive="/tmp/cargo-deny-${CARGO_DENY_VERSION}.tar.gz"
+          install_dir="/tmp/phantom-cargo-deny-bin"
+          mkdir -p "$install_dir"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            --output "$archive" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${CARGO_DENY_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" -C "$install_dir" --strip-components=1 cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny
+          "$install_dir/cargo-deny" --version
+      - name: Check advisories, licenses, bans, duplicates, and sources
+        run: /tmp/phantom-cargo-deny-bin/cargo-deny --all-features --locked check --deny warnings advisories licenses bans sources
+
+  windows-arm-source-check:
+    name: Windows ARM64 source check
+    runs-on: windows-11-vs2026-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+      - name: Verify native host and check the workspace
+        shell: pwsh
+        run: |
+          $rustcDetails = rustc -vV | Out-String
+          if ($rustcDetails -notmatch '(?m)^host: aarch64-pc-windows-msvc\r?$') {
+            throw "expected native Windows ARM64 Rust host; got:`n$rustcDetails"
+          }
+          cargo check --workspace --all-targets --all-features --locked
+
+  npm-wrappers:
+    name: npm wrapper tests and package inspection
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Test and inspect primary CLI wrapper
+        working-directory: npm
+        run: |
+          npm test
+          npm pack --dry-run
+      - name: Test and inspect MCP wrapper
+        working-directory: npm-mcp
+        run: |
+          npm test
+          npm pack --dry-run
+
+  web:
+    name: Web security, tests, and build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install from the lockfile
+        run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+      - name: Run web security and auth tests
+        run: npm test
+      - name: Build the production application
+        run: npm run build
+
+  secret-scan:
+    name: Source secret scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install pinned Gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.0
+          GITLEAKS_SHA256: 79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e
+        run: |
+          set -euo pipefail
+          archive="/tmp/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          install_dir="/tmp/phantom-gitleaks-bin"
+          mkdir -p "$install_dir"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            --output "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" -C "$install_dir" gitleaks
+          "$install_dir/gitleaks" version
+      - name: Scan current source with the reviewed fixture policy
+        run: /tmp/phantom-gitleaks-bin/gitleaks dir . --config .gitleaks.toml --redact --no-banner --max-target-megabytes 5 --timeout 60
+
+  crate-publication-contract:
+    name: Crate publication contract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Test fail-closed publication and release receipts
+        run: node --test scripts/publish-crates.test.js scripts/release/release-receipts.test.mjs
+      - name: Package every crates.io crate in dependency order
+        run: ./scripts/publish-crates.sh --verify-only

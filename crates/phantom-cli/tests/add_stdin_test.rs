@@ -117,3 +117,22 @@ fn add_no_value_no_stdin_on_non_tty_fails() {
         .assert()
         .failure();
 }
+
+#[test]
+fn positional_secret_value_is_rejected_before_project_mutation() {
+    let dir = TempDir::new().unwrap();
+    let output = phantom(&dir)
+        .args(["add", "UNSAFE_KEY", "secret-in-argv"])
+        .assert()
+        .failure();
+    assert!(String::from_utf8_lossy(&output.get_output().stderr)
+        .contains("Positional secret values are disabled"));
+    let entries = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert!(
+        entries.is_empty(),
+        "argv rejection mutated project: {entries:?}"
+    );
+}

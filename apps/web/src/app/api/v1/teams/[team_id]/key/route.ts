@@ -1,5 +1,8 @@
 import { requireAuth } from "@/lib/auth";
+import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
+
+const MAX_PUBLIC_KEY_BODY_BYTES = 4_096;
 
 /**
  * GET /api/v1/teams/:team_id/key — List every team member's user_id
@@ -7,7 +10,7 @@ import { createServiceClient } from "@/lib/supabase-server";
  * to know who to encrypt the per-vault symmetric key to.
  *
  * Members without a registered public_key are returned with public_key
- * null — they will be silently skipped from key_shares and will get a
+ * null — they will be silently skipped from wrappedKeys and will get a
  * 412 missing_key when they try to pull until they register.
  */
 export async function GET(
@@ -61,7 +64,12 @@ export async function POST(
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
 
-  const body = (await req.json()) as { public_key?: string };
+  let body: { public_key?: string };
+  try {
+    body = await readBoundedJsonObject(req, MAX_PUBLIC_KEY_BODY_BYTES);
+  } catch (error) {
+    return requestBodyErrorResponse(error);
+  }
   const pk = body.public_key;
   if (!pk || typeof pk !== "string") {
     return Response.json(

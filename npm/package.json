@@ -1,13 +1,14 @@
 {
   "name": "phantom-secrets",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Prevent AI coding agents from leaking your API keys. Replaces real secrets with phantom tokens; a local proxy swaps them back at the network layer.",
   "bin": {
     "phantom-secrets": "bin/cli.js",
     "phantom": "bin/cli.js"
   },
   "scripts": {
-    "postinstall": "node install.js"
+    "postinstall": "node install.js",
+    "test": "node test/platform-matrix.test.js && node test/version-cache.test.js && node test/valid-cache.test.js && node test/hardening.test.js"
   },
   "repository": {
     "type": "git",

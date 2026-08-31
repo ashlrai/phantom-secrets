@@ -1,20 +1,20 @@
-import { requireAuth } from "@/lib/auth";
+const INTEGRATION_DISABLED = {
+  error: "integration_disabled",
+  message:
+    "Vercel OAuth installation is unavailable until Phantom can bind one-time state to an authenticated user and encrypt the resulting platform token at rest.",
+};
 
-export async function GET(req: Request) {
-  // Redirect to Vercel OAuth with our client ID
-  const clientId = process.env.VERCEL_INTEGRATION_CLIENT_ID;
-  if (!clientId) {
-    return Response.json({ error: "Vercel integration not configured" }, { status: 500 });
-  }
-
-  const { searchParams } = new URL(req.url);
-  const next = searchParams.get("next") || "/";
-
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: "https://phm.dev/api/v1/integrations/vercel/callback",
-    state: next,
+/**
+ * This route is intentionally fail-closed.
+ *
+ * The previous draft accepted an unauthenticated request and forwarded a
+ * caller-controlled value as OAuth state. Re-enable only with a one-time,
+ * expiring, user-bound state record and a callback that consumes it exactly
+ * once before any token exchange.
+ */
+export async function GET() {
+  return Response.json(INTEGRATION_DISABLED, {
+    status: 503,
+    headers: { "Cache-Control": "no-store" },
   });
-
-  return Response.redirect(`https://vercel.com/integrations/${process.env.VERCEL_INTEGRATION_SLUG}/new?${params}`);
 }

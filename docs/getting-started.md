@@ -14,7 +14,7 @@ That's it. Your AI tool never sees a real key again.
 
 ## What Phantom actually does
 
-Phantom replaces real API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in your OS keychain. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`, service SDKs are redirected through `*_BASE_URL` environment variables, and the proxy session is authenticated with a fresh `PHANTOM_PROXY_TOKEN`. CLI-generated SDK URLs include the token as a local `/_phantom/<token>/` path segment so unmodified SDKs work; header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token` instead. The proxy removes its local auth token before forwarding, swaps phantom tokens for real credentials in request headers and body, then forwards over TLS to the actual API endpoint. The AI agent reads `.env`, gets only worthless tokens, and its logs and context windows contain nothing sensitive.
+Phantom replaces real API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in your OS keychain. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`, service SDKs are redirected through `*_BASE_URL` environment variables, and the proxy session is authenticated with a fresh `PHANTOM_PROXY_TOKEN`. CLI-generated SDK URLs include the token as a local `/_phantom/<token>/` path segment so unmodified SDKs work; header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token` instead. The proxy removes its local auth token before forwarding, swaps phantom tokens for real credentials in request headers and body, then forwards over TLS to the actual API endpoint. Application and test processes load the placeholders; agents use value-blind MCP metadata and do not need dotenv read access.
 
 For `text/*` and `application/x-www-form-urlencoded` request bodies the proxy replaces tokens frame-by-frame without buffering the full payload (streaming token replacement). JSON bodies use a buffered path with field-level scoping to avoid substituting tokens that appear in non-secret fields such as `prompt` or `messages`. Full SSE/streaming responses (OpenAI, Anthropic) are preserved end-to-end.
 
@@ -54,12 +54,12 @@ Download from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/relea
 
 ```bash
 phantom --version
-# phantom 0.6.0
+# phantom 0.7.0
 ```
 
 ---
 
-## First run: exact terminal output
+## First run: representative terminal output
 
 ```
 $ cd my-project
@@ -80,9 +80,9 @@ Your `.env` now contains:
 
 ```env
 # Managed by Phantom -- do not edit phantom tokens manually
-OPENAI_API_KEY=phm_a7f3b9e2c4d1f8a3b6e9d2c5f8a1b4e7
-ANTHROPIC_API_KEY=phm_d4e7a0b3c6f9e2d5a8c1b4f7e0d3a6c9
-DATABASE_URL=phm_b1c4d7e0a3f6b9c2d5e8a1b4c7d0e3f6
+OPENAI_API_KEY=phm_a7f3b9e2c4d1f8a3b6e9d2c5f8a1b4e7a7f3b9e2c4d1f8a3b6e9d2c5f8a1b4e7
+ANTHROPIC_API_KEY=phm_d4e7a0b3c6f9e2d5a8c1b4f7e0d3a6c9d4e7a0b3c6f9e2d5a8c1b4f7e0d3a6c9
+DATABASE_URL=phm_b1c4d7e0a3f6b9c2d5e8a1b4c7d0e3f6b1c4d7e0a3f6b9c2d5e8a1b4c7d0e3f6
 NODE_ENV=development
 PORT=3000
 ```
@@ -119,9 +119,6 @@ phantom init --all ~/code --jobs 8     # run up to 8 repos concurrently (default
 ### `phantom add` / `phantom remove`
 
 ```bash
-# Positional value (backward-compatible, but ends up in shell history):
-phantom add STRIPE_SECRET_KEY sk_live_abc123...
-
 # Interactive prompt — value is read silently from the terminal (no echo):
 phantom add STRIPE_SECRET_KEY
 
@@ -132,7 +129,7 @@ op read "op://Prod/Stripe/key" | phantom add STRIPE_SECRET_KEY --stdin
 phantom remove STRIPE_SECRET_KEY
 ```
 
-`add` stores the value and writes a phantom token to `.env`. When no positional value is given, phantom prompts silently on the terminal so the secret never enters your shell history. Use `--stdin` for non-interactive / CI use. `remove` deletes from the vault (`.env` token line is left; remove manually if desired).
+`add` stores the value and writes a phantom token to `.env`. It prompts silently so the secret never enters shell history or the process list. Positional secret values are rejected; use `--stdin` for non-interactive or CI input. `remove` deletes from the vault (`.env` token line is left; remove manually if desired).
 
 ### `phantom rotate`
 
@@ -242,8 +239,7 @@ Print a real secret value to stdout. Blocked in non-interactive contexts by defa
 
 ```bash
 phantom reveal OPENAI_API_KEY
-phantom reveal OPENAI_API_KEY --clipboard   # copies and auto-clears after 30s
-phantom reveal OPENAI_API_KEY --yes         # bypass interactive check (scripts/CI)
+phantom reveal OPENAI_API_KEY --clipboard   # trusted terminal + exact typed confirmation
 ```
 
 ---
@@ -260,7 +256,7 @@ phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine. For Claude Code specifically, `phantom setup --client claude` *also* allow-lists `.env` so Claude can read the (now-tokenized) file. See [claude-code.md](./claude-code.md) for the full workflow — the AI gains 25 Phantom MCP tools.
+If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine. For Claude Code, setup removes legacy Phantom-managed dotenv read grants and preserves deny rules; agents use value-blind MCP inventory instead. See [claude-code.md](./claude-code.md) for the full workflow. Runtime MCP `tools/list` is the canonical catalog.
 
 Restart the AI tool after running `phantom setup` so it picks up the new config.
 
@@ -299,6 +295,38 @@ phantom audit verify
 ```
 
 Each log entry is chained with HMAC-SHA256 and a signed head checkpoint. `phantom audit verify` detects malformed lines, modified or inserted entries, sequence gaps, prefix deletion, and log tail/head mismatches. It cannot prove the whole log and checkpoint were both deleted without an external backup or checkpoint.
+
+---
+
+## Encrypted backup and recovery
+
+From an attached terminal, Phantom reads the backup passphrase without echoing
+it or placing it in command-line arguments. Export asks for confirmation;
+import reads the same passphrase once:
+
+```bash
+phantom export --output phantom-backup.enc
+phantom import phantom-backup.enc
+```
+
+For automation, provide a dedicated passphrase through a bounded private file.
+On Unix, the file must be mode `0600` or stricter; symlinks and non-regular
+files are rejected.
+
+```bash
+chmod 600 /secure/path/phantom-backup.pass
+phantom export --output phantom-backup.enc \
+  --passphrase-file /secure/path/phantom-backup.pass
+phantom import phantom-backup.enc \
+  --passphrase-file /secure/path/phantom-backup.pass
+```
+
+The output path must be new. Phantom never overwrites an existing file or
+symlink and creates the encrypted archive atomically, with mode `0600` on Unix
+and the containing directory's inherited ACL on Windows. Store the archive and
+its passphrase separately. The former `--passphrase` argv option is retained
+only to return a migration error because process inspection and shell history
+can expose command-line arguments.
 
 ---
 
@@ -380,9 +408,9 @@ cargo install phantom-secrets
 
 Or download the binary directly from [github.com/ashlrai/phantom-secrets/releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-### Claude Code reads `.env` and sees phantom tokens — is this broken?
+### Claude Code cannot read `.env` after setup — is this broken?
 
-No. Phantom tokens are safe for AI to read. They're random strings that are meaningless without the proxy. After `phantom init`, you can explicitly allow `.env` in Claude Code's settings — `phantom setup --client claude` does this automatically (or use `--client cursor|windsurf|codex` for other AI tools).
+No. Phantom tokens are meaningless without the authenticated proxy, but keeping dotenv reads denied also protects unmanaged sibling files and backups created by other tools. `phantom setup --client claude` wires MCP while removing legacy Phantom-managed dotenv read grants; agents use value-blind metadata instead.
 
 ---
 

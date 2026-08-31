@@ -22,6 +22,7 @@ pub mod teams_vault;
 pub mod token;
 pub mod validation_scheduler;
 pub mod validator;
+pub mod workspace_request;
 
 /// Crate-wide test helpers: a single `ENV_LOCK` shared by all modules whose
 /// tests mutate process-wide env vars (`HOME`, `PHANTOM_AUDIT`, etc.).

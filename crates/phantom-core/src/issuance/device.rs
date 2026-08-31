@@ -36,14 +36,14 @@ impl ConsentEngine for DeviceFlowEngine {
         req: &IssuanceRequest,
         deps: &IssuanceDeps,
     ) -> Result<IssuanceOutcome, IssuanceError> {
-        if deps.endpoints.overridden {
+        if deps.endpoints.is_overridden() {
             guard_mock_issuance()?;
         }
         if deps.endpoints.device_code.is_empty() || deps.endpoints.token.is_empty() {
             return Err(IssuanceError::NotSupported {
                 reason: format!(
                     "no device-code/token endpoints known for provider '{}'; set \
-                     PHANTOM_OAUTH_DEVICE_BASE / PHANTOM_OAUTH_TOKEN_BASE",
+                     this provider",
                     req.provider
                 ),
             });
@@ -55,7 +55,7 @@ impl ConsentEngine for DeviceFlowEngine {
                 reason: "the device flow requires --client-id (the OAuth app's client id)"
                     .to_string(),
             })?;
-        let mock = deps.endpoints.overridden;
+        let mock = deps.endpoints.is_overridden();
 
         // 1. Request a device code.
         let scope = req.scopes.join(" ");

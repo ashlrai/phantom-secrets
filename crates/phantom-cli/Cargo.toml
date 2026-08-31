@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+publish.workspace = true
 readme = "../../README.md"
 description = "Open-source CLI that prevents AI coding agents from leaking your API keys"
 keywords = ["secrets", "api-keys", "ai-safety", "claude-code", "mcp"]
@@ -20,6 +21,7 @@ phantom-core = { workspace = true }
 phantom-vault = { workspace = true }
 phantom-proxy = { workspace = true }
 phantom-mcp = { workspace = true }
+phantom-workspace = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 tokio = { workspace = true }
@@ -34,11 +36,11 @@ open = "5"
 which = "6"
 dirs = "5"
 arboard = { version = "3", default-features = false }
-indicatif = "0.17"
+indicatif = "0.18"
 base64 = { workspace = true }
-notify = "7"
+notify = "8.2"
 rpassword = "7"
-self_update = { version = "0.42", default-features = false, features = ["rustls", "compression-flate2", "compression-zip-deflate", "archive-tar", "archive-zip"] }
+self_update = { version = "1.2", default-features = false, features = ["reqwest", "rustls", "github", "progress-bar", "checksums", "compression-tar-gz", "compression-zip-deflate", "archive-tar", "archive-zip"] }
 toml = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }

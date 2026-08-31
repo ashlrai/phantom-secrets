@@ -6,9 +6,8 @@
 //! sent back to. One request, then it closes — matching the proxy's
 //! "127.0.0.1 only" rule.
 //!
-//! A [`MockLoopbackListener`] stands in for the socket in tests (and in the
-//! `assert_cmd` e2e harness, where there is no human to click "Authorize"),
-//! returning a canned code + echoed state deterministically.
+//! A test-only [`MockLoopbackListener`] stands in for the socket in unit tests,
+//! returning a canned code and echoed state deterministically.
 
 use super::IssuanceError;
 use std::collections::BTreeMap;
@@ -263,9 +262,10 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-// ── Mock listener (tests + e2e harness) ─────────────────────────────────────
+// ── Mock listener (unit tests only) ─────────────────────────────────────────
 
 /// How the mock listener produces the `state` it returns.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MockStateMode {
     /// Echo the engine's `expected_state` — the happy path (CSRF passes).
@@ -276,12 +276,14 @@ pub enum MockStateMode {
 
 /// Deterministic stand-in for the loopback socket: returns a canned code and a
 /// state chosen by [`MockStateMode`], with no real port or browser involved.
+#[cfg(test)]
 pub struct MockLoopbackListener {
     code: String,
     state_mode: MockStateMode,
     extra: BTreeMap<String, String>,
 }
 
+#[cfg(test)]
 impl MockLoopbackListener {
     /// Construct with an explicit code and state behaviour.
     pub fn new(code: impl Into<String>, state_mode: MockStateMode) -> Self {
@@ -298,24 +300,9 @@ impl MockLoopbackListener {
         self.extra.insert(key.into(), value.into());
         self
     }
-
-    /// Build from the test harness env: `PHANTOM_ISSUANCE_MOCK_CODE`
-    /// (default `"mock_code"`), always echoing state. When
-    /// `PHANTOM_ISSUANCE_MOCK_INSTALLATION_ID` is set it is surfaced as the
-    /// `installationId` extra param (the Sentry install landing).
-    pub fn from_env() -> Self {
-        let code =
-            std::env::var("PHANTOM_ISSUANCE_MOCK_CODE").unwrap_or_else(|_| "mock_code".to_string());
-        let mut listener = Self::new(code, MockStateMode::Echo);
-        if let Ok(uuid) = std::env::var("PHANTOM_ISSUANCE_MOCK_INSTALLATION_ID") {
-            if !uuid.is_empty() {
-                listener = listener.with_extra_param("installationId", uuid);
-            }
-        }
-        listener
-    }
 }
 
+#[cfg(test)]
 impl LoopbackListener for MockLoopbackListener {
     fn bind(&self) -> Result<LoopbackBinding, IssuanceError> {
         Ok(LoopbackBinding {

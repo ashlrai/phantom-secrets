@@ -7,6 +7,7 @@ import { SiteFooter } from "@/components/landing/SiteFooter";
 import { Check } from "@/components/landing/Icons";
 import { FAQ } from "@/components/landing/FAQ";
 import { Comparison } from "@/components/landing/Comparison";
+import { getBrowserClient } from "@/lib/supabase-browser";
 
 type Tier = {
   name: string;
@@ -31,7 +32,7 @@ const TIERS: Tier[] = [
       "Local vault (OS keychain or encrypted file)",
       "Proxy with full streaming support",
       "MCP server for every editor",
-      "Agent readiness CLI · 25 MCP tools",
+      "Agent readiness CLI · MCP tool catalog",
       "Unlimited local secrets",
       "1 cloud vault",
       "Vercel & Railway sync with local platform tokens",
@@ -52,6 +53,7 @@ const TIERS: Tier[] = [
       "Everything in Free",
       "Unlimited cloud vaults",
       "Multi-device sync (E2E encrypted)",
+      "Team vaults & shared secrets",
       "Vault backup & restore",
       "Pre-commit secret scanning",
       "Priority support",
@@ -66,7 +68,6 @@ const TIERS: Tier[] = [
     featured: false,
     features: [
       "Everything in Pro",
-      "Team vaults & shared secrets",
       "Audit log",
       "SSO/SAML (planned)",
       "On-prem deployment option (planned)",
@@ -76,32 +77,74 @@ const TIERS: Tier[] = [
   },
 ];
 
+const CHECKOUT_INTENT_KEY = "phantom_checkout_intent";
+
+function setCheckoutIntent() {
+  try {
+    localStorage.setItem(CHECKOUT_INTENT_KEY, "pro");
+  } catch {
+    // The OAuth redirect includes checkout=pro; storage is only a fallback.
+  }
+}
+
+function clearCheckoutIntent() {
+  try {
+    localStorage.removeItem(CHECKOUT_INTENT_KEY);
+  } catch {
+    // Ignore restricted browser storage.
+  }
+}
+
+function hasCheckoutIntent() {
+  try {
+    return localStorage.getItem(CHECKOUT_INTENT_KEY) === "pro";
+  } catch {
+    return false;
+  }
+}
+
 export default function PricingPage() {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    // Stripe redirects back with ?success=true; clean the URL after read.
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("success") === "true") {
-      setSuccess(true);
-      window.history.replaceState({}, "", "/pricing");
-    }
-  }, []);
+  const signInForCheckout = async () => {
+    setCheckoutIntent();
+    const { error: authError } = await getBrowserClient().auth.signInWithOAuth({
+      provider: "github",
+      options: {
+        redirectTo: `${window.location.origin}/pricing?checkout=pro`,
+      },
+    });
 
-  const handleSubscribe = async () => {
-    setLoading(true);
-    setError(null);
-    posthog.capture("subscribe_clicked", { plan: "pro" });
+    if (authError) {
+      clearCheckoutIntent();
+      setError(authError.message);
+      setLoading(false);
+    }
+  };
+
+  const startCheckout = async (accessToken: string) => {
     try {
-      const resp = await fetch("/api/v1/billing/checkout", { method: "POST" });
-      // 401 = not authenticated → device-flow auth, then back to checkout.
-      // Reset loading first in case the navigation is blocked or delayed.
+      const resp = await fetch("/api/v1/billing/checkout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
       if (resp.status === 401) {
+        setError("Please sign in with GitHub before starting checkout.");
         setLoading(false);
-        window.location.href = "/device";
         return;
+      }
+      if (resp.status === 409) {
+        const conflict = (await resp.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        if (conflict.error === "subscription_exists") {
+          clearCheckoutIntent();
+          setLoading(false);
+          window.location.href = "/dashboard/billing";
+          return;
+        }
       }
       if (!resp.ok) {
         setError("Could not start checkout. Please try again or email mason@ashlr.ai.");
@@ -120,6 +163,56 @@ export default function PricingPage() {
       setError("Network error reaching checkout. Please try again.");
       setLoading(false);
     }
+  };
+
+  useEffect(() => {
+    // Stripe redirects back with ?success=true; clean the URL after read.
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("success") === "true") {
+      clearCheckoutIntent();
+      setSuccess(true);
+      window.history.replaceState({}, "", "/pricing");
+      return;
+    }
+
+    const shouldResumeCheckout =
+      params.get("checkout") === "pro" || hasCheckoutIntent();
+    if (shouldResumeCheckout) {
+      clearCheckoutIntent();
+      setLoading(true);
+      getBrowserClient()
+        .auth.getSession()
+        .then(({ data: { session } }) => {
+          window.history.replaceState({}, "", "/pricing");
+          if (session) {
+            void startCheckout(session.access_token);
+            return;
+          }
+          setLoading(false);
+        })
+        .catch(() => {
+          window.history.replaceState({}, "", "/pricing");
+          setError("Could not restore your sign-in session. Please try again.");
+          setLoading(false);
+        });
+    }
+  }, []);
+
+  const handleSubscribe = async () => {
+    setLoading(true);
+    setError(null);
+    posthog.capture("subscribe_clicked", { plan: "pro" });
+
+    const {
+      data: { session },
+    } = await getBrowserClient().auth.getSession();
+
+    if (!session) {
+      await signInForCheckout();
+      return;
+    }
+
+    await startCheckout(session.access_token);
   };
 
   return (

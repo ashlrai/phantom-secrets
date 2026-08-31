@@ -9,36 +9,199 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  verify-source:
+    name: Verify source and release contract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      # Run before dependency/cache restoration so this scans the checked-out
+      # source tree rather than generated target, node_modules, or .next files.
+      - name: Install verified Gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.0
+          GITLEAKS_SHA256: 79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e
+        run: |
+          set -euo pipefail
+          archive="/tmp/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          install_dir="/tmp/phantom-gitleaks-bin"
+          mkdir -p "$install_dir"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --silent --show-error \
+            --max-redirs 3 --connect-timeout 10 --max-time 120 --max-filesize 134217728 \
+            --output "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" -C "$install_dir" gitleaks
+          "$install_dir/gitleaks" version
+
+      - name: Scan current source with the reviewed fixture policy
+        run: /tmp/phantom-gitleaks-bin/gitleaks dir . --config .gitleaks.toml --redact --no-banner --max-target-megabytes 5 --timeout 60
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Verify release version parity
+        run: node scripts/release/check-version-parity.mjs "$GITHUB_REF_NAME"
+
+      - name: Test fail-closed publication and release receipts
+        run: node --test scripts/publish-crates.test.js scripts/release/release-receipts.test.mjs
+
+      - name: Install verified cargo-deny
+        env:
+          CARGO_DENY_VERSION: 0.20.2
+          CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          set -euo pipefail
+          archive="/tmp/cargo-deny-${CARGO_DENY_VERSION}.tar.gz"
+          install_dir="/tmp/phantom-cargo-deny-bin"
+          mkdir -p "$install_dir"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --silent --show-error \
+            --max-redirs 3 --connect-timeout 10 --max-time 120 --max-filesize 134217728 \
+            --output "$archive" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${CARGO_DENY_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" -C "$install_dir" --strip-components=1 cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny
+          "$install_dir/cargo-deny" --version
+
+      - name: Enforce Rust dependency policy
+        run: /tmp/phantom-cargo-deny-bin/cargo-deny --all-features --locked check --deny warnings advisories licenses bans sources
+
+      - name: Test workspace (locked)
+        run: cargo test --workspace --all-targets --locked --no-fail-fast
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (locked)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Verify platform and direct installer contracts
+        run: |
+          node scripts/check-platform-installers.mjs
+          node --test scripts/installers.test.js
+
+      - name: Test and inspect primary npm wrapper
+        working-directory: npm
+        run: |
+          npm test
+          npm pack --dry-run
+
+      - name: Test and inspect npm MCP wrapper
+        working-directory: npm-mcp
+        run: |
+          npm test
+          npm pack --dry-run
+
+      - name: Install web dependencies from the lockfile
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Audit production web dependencies
+        working-directory: apps/web
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Run web security and auth tests
+        working-directory: apps/web
+        run: npm test
+
+      - name: Build the production web application
+        working-directory: apps/web
+        run: npm run build
+
+      - name: Build MCP release smoke binary (locked)
+        run: cargo build --release --locked -p phantom-secrets-mcp --bin phantom-mcp
+
+      - name: Deep MCP stdio schema smoke
+        run: node scripts/release/mcp-stdio-smoke.mjs ./target/release/phantom-mcp 54
+
+      - name: Package every crates.io crate in dependency order
+        run: ./scripts/publish-crates.sh --verify-only --version "${GITHUB_REF_NAME#v}"
+
   build:
     name: Build (${{ matrix.target }})
+    needs: verify-source
     runs-on: ${{ matrix.os }}
     # Build doesn't push anywhere — read-only token.
     permissions:
       contents: read
     strategy:
       matrix:
+        # Host archives and literal digests come from the immutable Syft 1.42.3
+        # release's syft_1.42.3_checksums.txt. Do not fetch a mutable installer.
         include:
           - target: x86_64-apple-darwin
             os: macos-latest
             artifact: phantom-x86_64-apple-darwin
+            archive: phantom-x86_64-apple-darwin.tar.gz
+            runner_os: macOS
+            runner_arch: ARM64
+            syft_archive: syft_1.42.3_darwin_arm64.tar.gz
+            syft_sha256: d71ee7db2be0fe2e96f679fd9d69ef04274cc86c8604707797080a21070b3f32
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: phantom-aarch64-apple-darwin
+            archive: phantom-aarch64-apple-darwin.tar.gz
+            runner_os: macOS
+            runner_arch: ARM64
+            syft_archive: syft_1.42.3_darwin_arm64.tar.gz
+            syft_sha256: d71ee7db2be0fe2e96f679fd9d69ef04274cc86c8604707797080a21070b3f32
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: phantom-x86_64-unknown-linux-gnu
+            archive: phantom-x86_64-unknown-linux-gnu.tar.gz
+            runner_os: Linux
+            runner_arch: X64
+            syft_archive: syft_1.42.3_linux_amd64.tar.gz
+            syft_sha256: 0d6be741479eddd2c8644a288990c04f3df0d609bbc1599a005532a9dff63509
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: phantom-aarch64-unknown-linux-gnu
+            archive: phantom-aarch64-unknown-linux-gnu.tar.gz
+            runner_os: Linux
+            runner_arch: X64
+            syft_archive: syft_1.42.3_linux_amd64.tar.gz
+            syft_sha256: 0d6be741479eddd2c8644a288990c04f3df0d609bbc1599a005532a9dff63509
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact: phantom-x86_64-pc-windows-msvc
+            archive: phantom-x86_64-pc-windows-msvc.zip
+            runner_os: Windows
+            runner_arch: X64
+            syft_archive: syft_1.42.3_windows_amd64.zip
+            syft_sha256: e1b9f4945aa64c2b34970bec617623d7f803d0661b48a50b966768b363322e2d
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-vs2026-arm
+            artifact: phantom-aarch64-pc-windows-msvc
+            archive: phantom-aarch64-pc-windows-msvc.zip
+            runner_os: Windows
+            runner_arch: ARM64
+            syft_archive: syft_1.42.3_windows_arm64.zip
+            syft_sha256: 76db35f9ec13628e8465685e9773e7de4f57efe1f05bb99959fdde59bdef5f6a
     steps:
       # Third-party actions pinned to commit SHAs — see ci.yml for rationale.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
         with:
+          toolchain: 1.95.0
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
@@ -49,7 +212,7 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
@@ -68,21 +231,73 @@ jobs:
           cd ../../..
         shell: bash
 
+      - name: Install checksum-verified Syft 1.42.3
+        shell: bash
+        env:
+          EXPECTED_RUNNER_OS: ${{ matrix.runner_os }}
+          EXPECTED_RUNNER_ARCH: ${{ matrix.runner_arch }}
+          SYFT_ARCHIVE: ${{ matrix.syft_archive }}
+          SYFT_SHA256: ${{ matrix.syft_sha256 }}
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" != "$EXPECTED_RUNNER_OS" ] || [ "$RUNNER_ARCH" != "$EXPECTED_RUNNER_ARCH" ]; then
+            echo "refusing Syft install on unexpected runner ${RUNNER_OS}/${RUNNER_ARCH}; expected ${EXPECTED_RUNNER_OS}/${EXPECTED_RUNNER_ARCH}" >&2
+            exit 1
+          fi
+          install_dir="$PWD/.release-tools/syft"
+          archive="$install_dir/$SYFT_ARCHIVE"
+          mkdir -p "$install_dir"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --silent --show-error \
+            --max-redirs 3 --connect-timeout 10 --max-time 120 --max-filesize 134217728 \
+            --output "$archive" \
+            "https://github.com/anchore/syft/releases/download/v1.42.3/${SYFT_ARCHIVE}"
+          actual=$(node -e 'const {createHash}=require("node:crypto");const {readFileSync}=require("node:fs");process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"))' "$archive")
+          if [ "$actual" != "$SYFT_SHA256" ]; then
+            echo "Syft archive checksum mismatch: expected ${SYFT_SHA256}, got ${actual}" >&2
+            exit 1
+          fi
+          case "$SYFT_ARCHIVE" in
+            *.tar.gz)
+              tar -xzf "$archive" -C "$install_dir" syft
+              syft_bin="$install_dir/syft"
+              ;;
+            *.zip)
+              7z x "$archive" "-o${install_dir}" -y syft.exe >/dev/null
+              syft_bin="$install_dir/syft.exe"
+              ;;
+            *)
+              echo "unsupported Syft archive: ${SYFT_ARCHIVE}" >&2
+              exit 1
+              ;;
+          esac
+          "$syft_bin" version
+          echo "SYFT_BIN=$syft_bin" >> "$GITHUB_ENV"
+
+      - name: Generate SPDX 2.3 SBOM for the exact archive
+        shell: bash
+        run: '"$SYFT_BIN" "${{ matrix.archive }}" -o "spdx-json=${{ matrix.archive }}.spdx.json"'
+
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.*
+          path: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.spdx.json
+          if-no-files-found: error
 
-  release:
-    name: Create Release
+  attest:
+    name: Verify and request artifact attestations
     needs: build
     runs-on: ubuntu-latest
-    # Release job needs write to publish the Release and upload assets.
     permissions:
-      contents: write
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
@@ -98,15 +313,132 @@ jobs:
             (cd "$dir" && sha256sum "$base") | tee "$f.sha256" >> ../SHA256SUMS
           done < <(find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 | sort -z)
           mv ../SHA256SUMS ./SHA256SUMS
-          echo "--- SHA256SUMS ---"
-          cat SHA256SUMS
+
+      - name: Verify exact release artifact and SBOM set
+        run: node scripts/release/verify-release-artifacts.mjs artifacts
+
+      - name: Request build provenance for the six exact archives
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: artifacts/SHA256SUMS
+
+      - name: Request SBOM attestation for macOS arm64 archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: artifacts/phantom-aarch64-apple-darwin/phantom-aarch64-apple-darwin.tar.gz
+          sbom-path: artifacts/phantom-aarch64-apple-darwin/phantom-aarch64-apple-darwin.tar.gz.spdx.json
+
+      - name: Request SBOM attestation for macOS x64 archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: artifacts/phantom-x86_64-apple-darwin/phantom-x86_64-apple-darwin.tar.gz
+          sbom-path: artifacts/phantom-x86_64-apple-darwin/phantom-x86_64-apple-darwin.tar.gz.spdx.json
+
+      - name: Request SBOM attestation for Linux arm64 archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: artifacts/phantom-aarch64-unknown-linux-gnu/phantom-aarch64-unknown-linux-gnu.tar.gz
+          sbom-path: artifacts/phantom-aarch64-unknown-linux-gnu/phantom-aarch64-unknown-linux-gnu.tar.gz.spdx.json
+
+      - name: Request SBOM attestation for Linux x64 archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: artifacts/phantom-x86_64-unknown-linux-gnu/phantom-x86_64-unknown-linux-gnu.tar.gz
+          sbom-path: artifacts/phantom-x86_64-unknown-linux-gnu/phantom-x86_64-unknown-linux-gnu.tar.gz.spdx.json
+
+      - name: Request SBOM attestation for Windows arm64 archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: artifacts/phantom-aarch64-pc-windows-msvc/phantom-aarch64-pc-windows-msvc.zip
+          sbom-path: artifacts/phantom-aarch64-pc-windows-msvc/phantom-aarch64-pc-windows-msvc.zip.spdx.json
+
+      - name: Request SBOM attestation for Windows x64 archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: artifacts/phantom-x86_64-pc-windows-msvc/phantom-x86_64-pc-windows-msvc.zip
+          sbom-path: artifacts/phantom-x86_64-pc-windows-msvc/phantom-x86_64-pc-windows-msvc.zip.spdx.json
+
+      - name: Preserve the verified release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-release-bundle
+          path: artifacts
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: attest
+    runs-on: ubuntu-latest
+    # Release job needs write to publish the Release and upload assets.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Refuse to overwrite an existing GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          status=$(curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --output /tmp/phantom-release-preflight.json \
+            --write-out '%{http_code}' \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" || true)
+          case "$status" in
+            404) ;;
+            200) echo "release ${GITHUB_REF_NAME} already exists; publish a new fix-forward tag" >&2; exit 1 ;;
+            *) echo "could not prove release absence (HTTP ${status:-none})" >&2; exit 1 ;;
+          esac
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-release-bundle
+          path: artifacts
+
+      - name: Verify exact release artifact set
+        run: node scripts/release/verify-release-artifacts.mjs artifacts
+
+      - name: Extract reviewed release notes
+        run: node scripts/release/extract-release-notes.mjs "$GITHUB_REF_NAME" > release-notes.md
 
       - name: Create release
+        id: create-draft-release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          body_path: release-notes.md
+          draft: true
           generate_release_notes: true
+          overwrite_files: false
+          fail_on_unmatched_files: true
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
             artifacts/**/*.sha256
+            artifacts/**/*.spdx.json
             artifacts/SHA256SUMS
+
+      - name: Verify the complete draft release receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" \
+            --json tagName,isDraft,isPrerelease,assets,url > release-receipt.json
+          node scripts/release/verify-github-release-receipt.mjs \
+            release-receipt.json "$GITHUB_REF_NAME" draft
+
+      - name: Publish the immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      - name: Verify the published immutable release receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" \
+            --json tagName,isDraft,isPrerelease,assets,url > release-receipt.json
+          node scripts/release/verify-github-release-receipt.mjs \
+            release-receipt.json "$GITHUB_REF_NAME" published

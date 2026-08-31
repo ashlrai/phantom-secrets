@@ -13,10 +13,10 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "Does Phantom slow down my AI requests?",
     a: (
       <>
-        About 0.5 ms of proxy overhead per request — not measurable in
-        practice. The proxy is a Rust HTTP server bound to{" "}
-        <Tok>127.0.0.1</Tok> and uses zero-copy streaming for response
-        bodies, so SSE and large downloads pass through at native speed.
+        Phantom adds a local Rust HTTP proxy bound to <Tok>127.0.0.1</Tok>.
+        Request bodies are collected under byte and time limits; response
+        streams remain bounded and incremental. Measure overhead in your own
+        workload before adopting it on a latency-critical path.
       </>
     ),
   },
@@ -27,9 +27,9 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
         Your <Tok>.env</Tok> file contains <Tok>phm_xxxxxxxx</Tok> tokens
         instead of real values. Every AI tool (Claude Code, Cursor,
         Windsurf, Codex, anything else that reads .env) reads those tokens
-        and only those tokens. The local proxy swaps them for real keys
-        just before the outbound TLS connection — the AI never touches a
-        real secret.
+        and only those tokens in the managed workflow. The local proxy swaps
+        them just before the outbound TLS connection. Human plaintext reveal
+        is a separate trusted-terminal action with no noninteractive bypass.
       </>
     ),
   },
@@ -61,11 +61,11 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "Can the proxy be tricked into revealing the real key?",
     a: (
       <>
-        Not through the AI tool. The real key only ever materialises in
-        the outbound TLS connection to the upstream API — never in HTTP
-        responses (those go back to the AI verbatim) and never in proxy
-        logs (proxy logs the phm_ token, not the real value). Auth tokens
-        on the proxy itself use constant-time comparison.
+        Supported proxy paths replace configured values and redact recognized
+        credential formats in response headers and bodies before returning
+        them. This reduces accidental exposure; it is not a substitute for
+        provider scoping, rotation, or OS user-presence controls. Proxy session
+        tokens use constant-time comparison.
       </>
     ),
   },
@@ -73,10 +73,10 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "What about secrets in HTTP request bodies, not just headers?",
     a: (
       <>
-        Yes — the proxy scans request headers, URL parameters, and JSON
-        body fields for <Tok>phm_</Tok> tokens and replaces all of them.
-        Streaming bodies (SSE, large uploads) are scanned chunk-by-chunk
-        without buffering.
+        The proxy scans supported request headers and body fields for
+        <Tok>phm_</Tok> tokens. Bodies are collected under explicit byte/time
+        limits before replacement. General upstream query-parameter
+        substitution is not supported.
       </>
     ),
   },

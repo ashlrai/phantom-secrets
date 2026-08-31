@@ -1,11 +1,17 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use std::io::{IsTerminal, Write};
 use zeroize::Zeroizing;
 
-/// Reveal a single secret value from the vault.
-/// Requires --yes flag or interactive TTY to prevent AI agents from extracting secrets.
+/// Reveal a single secret value from the vault after a trusted-terminal ceremony.
 pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
+    if yes {
+        anyhow::bail!(
+            "--yes is no longer supported for secret reveal; plaintext access requires a trusted interactive terminal"
+        );
+    }
+
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -16,22 +22,21 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
         );
     }
 
-    // Safety gate: refuse to reveal in non-interactive contexts unless --yes is passed.
-    // This prevents AI agents from calling `phantom reveal` to extract real secrets.
-    if !yes {
-        use std::io::IsTerminal;
-        if !std::io::stdout().is_terminal() {
-            anyhow::bail!(
-                "Refusing to reveal secret in non-interactive context.\n\
-                 Pass --yes to override. This prevents AI agents from extracting secrets."
-            );
-        }
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        anyhow::bail!("Refusing to reveal a secret without attached stdin and stderr terminals");
+    }
 
-        eprintln!(
-            "{} About to reveal the real value of {}",
-            "!".yellow().bold(),
-            name.bold()
-        );
+    eprintln!(
+        "{} Plaintext access can expose {} to the current terminal session.",
+        "!".yellow().bold(),
+        name.bold()
+    );
+    eprint!("Type `reveal {name}` to continue: ");
+    std::io::stderr().flush()?;
+    let mut confirmation = String::new();
+    std::io::stdin().read_line(&mut confirmation)?;
+    if confirmation.trim() != format!("reveal {name}") {
+        anyhow::bail!("Secret reveal cancelled: typed confirmation did not match");
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
@@ -45,20 +50,13 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
         .context(format!("Secret '{}' not found in vault", name))?;
 
     if clipboard {
-        if copy_to_clipboard(&value) {
-            println!(
-                "{} Copied {} to clipboard (clears in 30 seconds)",
-                "ok".green().bold(),
-                name.bold()
-            );
-            schedule_clipboard_clear(std::time::Duration::from_secs(30));
-        } else {
-            eprintln!(
-                "{} Clipboard not available. Printing to stdout instead.",
-                "warn".yellow()
-            );
-            println!("{}", value.as_str());
-        }
+        require_clipboard_copy(copy_to_clipboard(&value))?;
+        println!(
+            "{} Copied {} to clipboard (clears in 30 seconds)",
+            "ok".green().bold(),
+            name.bold()
+        );
+        schedule_clipboard_clear(std::time::Duration::from_secs(30));
     } else {
         println!("{}", value.as_str());
     }
@@ -66,6 +64,14 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     // Zeroizing<String> scrubs memory on drop automatically.
 
     Ok(())
+}
+
+fn require_clipboard_copy(copied: bool) -> Result<()> {
+    if copied {
+        Ok(())
+    } else {
+        anyhow::bail!("Clipboard access failed; refusing to fall back to plaintext stdout")
+    }
 }
 
 fn copy_to_clipboard(text: &str) -> bool {
@@ -108,4 +114,19 @@ pub fn run_clear_after(secs: u64) -> Result<()> {
         let _ = cb.set_text(String::new());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn legacy_noninteractive_bypass_is_always_rejected() {
+        let error = super::run("TEST_SECRET", false, true).unwrap_err();
+        assert!(error.to_string().contains("--yes is no longer supported"));
+    }
+
+    #[test]
+    fn clipboard_failure_never_falls_back_to_stdout() {
+        let error = super::require_clipboard_copy(false).unwrap_err();
+        assert!(error.to_string().contains("refusing to fall back"));
+    }
 }

@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const semverSource =
+  "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)" +
+  "(?:-((?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?" +
+  "(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?";
+const semverPattern = new RegExp(`^${semverSource}$`);
+const tagPattern = new RegExp(`^v${semverSource}$`);
+
+function read(relativePath) {
+  return readFileSync(join(repoRoot, relativePath), "utf8");
+}
+
+function json(relativePath) {
+  return JSON.parse(read(relativePath));
+}
+
+function requireMatch(value, pattern, label) {
+  const match = value.match(pattern);
+  if (!match) {
+    throw new Error(`could not read ${label}`);
+  }
+  return match[1];
+}
+
+const cargoToml = read("Cargo.toml");
+const workspaceVersion = requireMatch(
+  cargoToml,
+  /\[workspace\.package\][\s\S]*?^version\s*=\s*"([^"]+)"/m,
+  "Cargo workspace version"
+);
+if (!semverPattern.test(workspaceVersion)) {
+  throw new Error(`Cargo workspace version is not valid SemVer: ${workspaceVersion}`);
+}
+const npmCliVersion = json("npm/package.json").version;
+const npmMcpVersion = json("npm-mcp/package.json").version;
+const registry = json("mcp-registry/server.json");
+const registryPackage = registry.packages.find(
+  (entry) => entry.identifier === "phantom-secrets-mcp"
+);
+if (!registryPackage) {
+  throw new Error("MCP registry package phantom-secrets-mcp is missing");
+}
+
+const wrapperVersion = requireMatch(
+  read("npm-mcp/bin/cli.js"),
+  /^const VERSION\s*=\s*"([^"]+)";/m,
+  "npm MCP wrapper version"
+);
+const cliWrapperVersion = requireMatch(
+  read("npm/bin/cli.js"),
+  /^const VERSION\s*=\s*"([^"]+)";/m,
+  "npm CLI wrapper version"
+);
+const versions = new Map([
+  ["Cargo workspace", workspaceVersion],
+  ["npm CLI package", npmCliVersion],
+  ["npm MCP package", npmMcpVersion],
+  ["npm CLI wrapper", cliWrapperVersion],
+  ["npm MCP wrapper", wrapperVersion],
+  ["MCP registry server", registry.version],
+  ["MCP registry npm package", registryPackage.version],
+]);
+
+const expectedTag = process.argv[2];
+if (process.argv.length > 3 || (expectedTag && !tagPattern.test(expectedTag))) {
+  throw new Error("usage: check-version-parity.mjs [v<semver>]");
+}
+if (expectedTag) {
+  versions.set("release tag", expectedTag.slice(1));
+}
+
+const mismatches = [...versions].filter(([, version]) => version !== workspaceVersion);
+if (mismatches.length > 0) {
+  const details = [...versions]
+    .map(([label, version]) => `${label}: ${version}`)
+    .join("\n");
+  throw new Error(`release version mismatch\n${details}`);
+}
+
+const crateDirs = readdirSync(join(repoRoot, "crates"), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort();
+for (const crateDir of crateDirs) {
+  const manifest = read(`crates/${crateDir}/Cargo.toml`);
+  if (!/^version\.workspace\s*=\s*true\s*$/m.test(manifest)) {
+    throw new Error(`${crateDir} does not inherit the workspace version`);
+  }
+}
+
+console.log(
+  `release version parity passed: ${workspaceVersion} across ${versions.size} surfaces and ${crateDirs.length} crates`
+);

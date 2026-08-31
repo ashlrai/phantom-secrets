@@ -13,7 +13,7 @@ const TIERS = [
       "Local vault (OS keychain or encrypted file)",
       "Proxy with full streaming support",
       "MCP server for every editor",
-      "1 cloud vault, up to 10 secrets",
+      "Unlimited local secrets · 1 cloud vault",
     ],
     cta: { label: "Install free", href: "#install", primary: false },
   },
@@ -27,6 +27,7 @@ const TIERS = [
       "Everything in Free",
       "Unlimited cloud vaults",
       "Multi-device sync (E2E encrypted)",
+      "Team vaults & shared secrets",
       "Vault backup & restore",
     ],
     cta: { label: "Start with Pro", href: "/pricing", primary: true },
@@ -38,8 +39,8 @@ const TIERS = [
     pitch: "Teams, audit, SSO, dedicated support.",
     features: [
       "Everything in Pro",
-      "Team vaults & sharing",
-      "Audit log + SSO/SAML",
+      "Audit log",
+      "SSO/SAML (planned)",
       "Dedicated support",
     ],
     cta: { label: "Talk to us", href: "mailto:mason@ashlr.ai", primary: false },
@@ -139,4 +140,3 @@ export function Pricing() {
     </section>
   );
 }
-

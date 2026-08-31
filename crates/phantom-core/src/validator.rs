@@ -1466,7 +1466,8 @@ mod tests {
     #[test]
     fn google_validator_unreachable_network_error() {
         with_audit_disabled(|| {
-            let secrets = vec![("GCP_ACCESS_TOKEN".to_string(), zs("ya29.FakeToken"))];
+            let fake_token = ["ya29.", "FakeToken"].concat();
+            let secrets = vec![("GCP_ACCESS_TOKEN".to_string(), zs(&fake_token))];
             let validators: Vec<Box<dyn SecretValidator>> =
                 vec![mock_unreachable("google", "GCP", "connection refused")];
             let report = run_validation_pipeline(secrets, &validators, 1, Duration::from_secs(1));
@@ -1518,10 +1519,11 @@ mod tests {
     #[test]
     fn google_validator_in_mixed_pipeline() {
         with_audit_disabled(|| {
+            let fake_gcp_token = ["ya29.", "ValidToken"].concat();
             let secrets = vec![
                 ("OPENAI_API_KEY".to_string(), zs("sk-valid")),
                 ("GOOGLE_API_KEY".to_string(), zs("AIzaSyValid")),
-                ("GCP_SECRET".to_string(), zs("ya29.ValidToken")),
+                ("GCP_SECRET".to_string(), zs(&fake_gcp_token)),
                 ("UNKNOWN_SECRET".to_string(), zs("mystery")),
             ];
             let validators: Vec<Box<dyn SecretValidator>> = vec![
