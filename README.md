@@ -14,6 +14,7 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
 
 [**Quick start**](#quick-start) ·
+[**Delegate safely**](docs/delegation-quickstart.md) ·
 [**Why Phantom?**](#why-phantom) ·
 [**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex) ·
 [**Docs**](docs/README.md) ·
@@ -71,6 +72,12 @@ $ phantom exec -- claude
 # Authenticated proxy running on an ephemeral 127.0.0.1 port
 # App/test processes use phantom tokens; agents use value-blind metadata
 ```
+
+For a task contract you can hand to Claude Code, Codex, Cursor, Windsurf, or
+Copilot, use the [safe delegation quickstart](docs/delegation-quickstart.md) and
+the [copyable policy and task templates](examples/agent-delegation/README.md).
+Teams evaluating a controlled rollout can start with the
+[enterprise adoption guide](docs/enterprise-adoption.md).
 
 ### Windows
 
@@ -437,6 +444,9 @@ See [SECURITY.md](SECURITY.md) for the responsible disclosure policy and [THREAT
 - [phm.dev](https://phm.dev) -- Cloud dashboard and account management
 - [Documentation map](docs/README.md)
 - [Getting Started Guide](docs/getting-started.md)
+- [Safe delegation quickstart](docs/delegation-quickstart.md)
+- [Enterprise adoption guide](docs/enterprise-adoption.md)
+- [Agent delegation templates](examples/agent-delegation/README.md)
 - [Security Model](SECURITY.md)
 - [Threat Model](THREAT_MODEL.md)
 - [Troubleshooting](docs/troubleshooting.md)
