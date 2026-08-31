@@ -122,6 +122,93 @@ try {
   }
   validatePhantomDoSchema(phantomDo.inputSchema);
 
+  // Closed authority catalog: every live tool must be classified. Tools in
+  // dualApprovalTools either always have an external/persistent effect or
+  // expose a conditional effectful mode. Their runtime schema must make both
+  // gates representable; handlers remain responsible for enforcing the gates
+  // before the effect.
+  const dualApprovalTools = new Set([
+    "phantom_add_secret",
+    "phantom_add_secret_interactive",
+    "phantom_apply_expiry_policy",
+    "phantom_audit_alerts",
+    "phantom_audit_export_report",
+    "phantom_audit_hotspot_alerts",
+    "phantom_cloud_pull",
+    "phantom_cloud_push",
+    "phantom_cloud_status",
+    "phantom_copy_secret",
+    "phantom_doctor",
+    "phantom_env",
+    "phantom_init",
+    "phantom_remove_secret",
+    "phantom_rotate",
+    "phantom_rotate_promote",
+    "phantom_rotate_provider",
+    "phantom_rotate_with_candidate",
+    "phantom_rotate_with_expiry",
+    "phantom_secrets_auto_rotate",
+    "phantom_setup_workspace",
+    "phantom_team_create",
+    "phantom_team_invite",
+    "phantom_team_key_publish",
+    "phantom_team_list",
+    "phantom_team_members",
+    "phantom_team_vault_pull",
+    "phantom_team_vault_push",
+    "phantom_unwrap",
+    "phantom_validate_all",
+    "phantom_validation_schedule",
+    "phantom_wrap",
+  ]);
+  const readOnlyOrDeniedTools = new Set([
+    "phantom_audit_analytics",
+    "phantom_audit_anomalies",
+    "phantom_audit_anomalies_realtime",
+    "phantom_audit_incidents",
+    "phantom_audit_recent",
+    "phantom_audit_stats",
+    "phantom_capability",
+    "phantom_check",
+    "phantom_compliance_status",
+    "phantom_do",
+    "phantom_expiry_enforce",
+    "phantom_leak_incidents_realtime",
+    "phantom_list_secrets",
+    "phantom_list_with_expiry",
+    "phantom_rotation_schedule_next",
+    "phantom_secret_rotation_due",
+    "phantom_secrets_expiry_check",
+    "phantom_status",
+    "phantom_sync",
+    "phantom_validate_secret",
+    "phantom_validation_history",
+    "phantom_why",
+  ]);
+  const classifiedNames = [...dualApprovalTools, ...readOnlyOrDeniedTools].sort();
+  if (
+    classifiedNames.length !== new Set(classifiedNames).size ||
+    !isDeepStrictEqual(classifiedNames, [...names].sort())
+  ) {
+    throw new Error("MCP effect catalog does not classify every live tool exactly once");
+  }
+  for (const tool of result.tools) {
+    if (!dualApprovalTools.has(tool.name)) continue;
+    const properties = tool.inputSchema?.properties ?? {};
+    if (!("confirm" in properties) || !("approval_token" in properties)) {
+      throw new Error(`${tool.name} is effectful but lacks the dual approval schema`);
+    }
+  }
+  const realtimeLeak = result.tools.find(
+    (tool) => tool.name === "phantom_leak_incidents_realtime"
+  );
+  if (
+    "auto_rotate_on_high" in (realtimeLeak?.inputSchema?.properties ?? {}) ||
+    "confirm" in (realtimeLeak?.inputSchema?.properties ?? {})
+  ) {
+    throw new Error("realtime leak inspection must not expose a simulated rotation mode");
+  }
+
   const registry = JSON.parse(readFileSync(registryPath, "utf8"));
   if (writeRegistry) {
     registry.tools = result.tools;
