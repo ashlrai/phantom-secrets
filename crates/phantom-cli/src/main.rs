@@ -331,7 +331,7 @@ enum Commands {
         /// Deprecated and rejected: argv can expose the passphrase
         #[arg(short, long, hide = true)]
         passphrase: Option<String>,
-        /// Read the passphrase from a private regular file (maximum 4096 bytes)
+        /// Read from a private regular file on non-Windows platforms (maximum 4096 bytes)
         #[arg(long, value_name = "FILE")]
         passphrase_file: Option<String>,
         /// Legacy plaintext mode; retained only to fail closed
@@ -346,7 +346,7 @@ enum Commands {
     ///
     /// Phantom encrypted backup:
     ///   phantom import <FILE>
-    ///   phantom import <FILE> --passphrase-file <PRIVATE_FILE>
+    ///   phantom import <FILE> --passphrase-file <PRIVATE_FILE>  # non-Windows only
     ///
     /// Competitor migration (--from):
     ///   phantom import --from doppler    --file dump.json
@@ -365,7 +365,7 @@ enum Commands {
         /// Deprecated and rejected: argv can expose the passphrase
         #[arg(short, long, hide = true)]
         passphrase: Option<String>,
-        /// Read the backup passphrase from a private regular file (maximum 4096 bytes)
+        /// Read from a private regular file on non-Windows platforms (maximum 4096 bytes)
         #[arg(long, value_name = "FILE")]
         passphrase_file: Option<String>,
         /// Import source: doppler | infisical | dotenvx | 1password | env

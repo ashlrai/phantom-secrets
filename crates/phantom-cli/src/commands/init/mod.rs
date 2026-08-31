@@ -9,8 +9,24 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::dotenv::{DotenvFile, SecretClassification};
 use phantom_core::token::TokenMap;
-use phantom_vault::{InitFile, InitSecret};
+use phantom_vault::{InitFile, InitReceipt, InitSecret, VaultBackend};
 use std::path::Path;
+
+fn commit_after_vault_provisioning(
+    vault: phantom_core::error::Result<Box<dyn VaultBackend>>,
+    secrets: Vec<InitSecret>,
+    files: Vec<InitFile>,
+    commit_error: &'static str,
+) -> Result<(InitReceipt, String)> {
+    let vault = vault.context(
+        "Vault provisioning failed before any project files were changed. Set \
+         PHANTOM_VAULT_PASSPHRASE to a durable secret value and retry",
+    )?;
+    let backend_name = vault.backend_name().to_string();
+    let receipt =
+        phantom_vault::commit_init(vault.as_ref(), secrets, files).with_context(|| commit_error)?;
+    Ok((receipt, backend_name))
+}
 
 /// `phantom init --empty`
 ///
@@ -32,8 +48,6 @@ pub fn run_empty() -> Result<()> {
     let project_id = phantom_core::config::PhantomConfig::project_id_from_path(&cwd);
     let phantom_config = phantom_core::config::PhantomConfig::new_with_defaults(project_id.clone());
 
-    let vault = phantom_vault::create_vault(&project_id);
-    vault.list().context("Could not initialize the vault")?;
     let mut files = vec![InitFile::replace(
         &config_path,
         toml::to_string_pretty(&phantom_config)?.into_bytes(),
@@ -41,8 +55,12 @@ pub fn run_empty() -> Result<()> {
     if let Some(file) = env::prepare_gitignore(&cwd)? {
         files.push(file);
     }
-    phantom_vault::commit_init(vault.as_ref(), Vec::new(), files)
-        .context("Empty initialization failed; prior project state was preserved")?;
+    commit_after_vault_provisioning(
+        phantom_vault::try_create_vault(&project_id),
+        Vec::new(),
+        files,
+        "Empty initialization failed; prior project state was preserved",
+    )?;
     println!("{} Created .phantom.toml", "ok".green().bold());
 
     println!(
@@ -71,6 +89,14 @@ pub fn run(env_path_arg: &str) -> Result<()> {
                 "phantom init --from .env.local".cyan().bold()
             )
         })?
+    };
+    // Transactions require stable, process-independent targets. Keep the
+    // original dotenv path absolute instead of staging a relative `.env`
+    // whose empty parent cannot be safely preflighted.
+    let env_path = if env_path.is_absolute() {
+        env_path
+    } else {
+        cwd.join(env_path)
     };
 
     // Config and project dir are based on where the .env file lives (not cwd)
@@ -146,13 +172,16 @@ pub fn run(env_path_arg: &str) -> Result<()> {
             files.extend(guidance.take_files());
             let vault = if config_path.exists() {
                 let config = phantom_core::config::PhantomConfig::load(&config_path)?;
-                phantom_vault::create_vault(config.local_project_id())
+                phantom_vault::try_create_vault(config.local_project_id())
             } else {
                 let project_id =
                     phantom_core::config::PhantomConfig::project_id_from_path(&project_dir);
-                phantom_vault::create_vault(&project_id)
+                phantom_vault::try_create_vault(&project_id)
             };
-            phantom_vault::commit_init(vault.as_ref(), Vec::new(), files).context(
+            commit_after_vault_provisioning(
+                vault,
+                Vec::new(),
+                files,
                 "Existing Phantom state was preserved, but local integration refresh is incomplete",
             )?;
             prepared_hook.finish();
@@ -247,14 +276,17 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     let mut guidance = docs::prepare_guidance(&project_dir, &cwd)?;
     files.extend(guidance.take_files());
 
-    let vault = phantom_vault::create_vault(phantom_config.local_project_id());
+    let (receipt, backend_name) = commit_after_vault_provisioning(
+        phantom_vault::try_create_vault(phantom_config.local_project_id()),
+        secrets,
+        files,
+        "Initialization failed; inspect the reported rollback status before retrying",
+    )?;
     println!(
         "{} Using {} vault backend",
         "->".blue().bold(),
-        vault.backend_name().cyan()
+        backend_name.cyan()
     );
-    let receipt = phantom_vault::commit_init(vault.as_ref(), secrets, files)
-        .context("Initialization failed; inspect the reported rollback status before retrying")?;
     for name in &receipt.secret_names {
         let token = token_map
             .get_token(name)
@@ -352,4 +384,37 @@ fn print_next_steps(config_path: &Path) {
     );
 
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phantom_core::error::PhantomError;
+    use tempfile::tempdir;
+
+    #[test]
+    fn vault_provisioning_failure_cannot_commit_tokenized_dotenv() {
+        let directory = tempdir().unwrap();
+        let env_path = directory.path().join(".env");
+        let original = b"API_KEY=real-provider-value\n";
+        std::fs::write(&env_path, original).unwrap();
+        let staged_files =
+            vec![InitFile::replace(&env_path, b"API_KEY=phm_staged\n".to_vec()).commit_last()];
+        let provisioning_failure = Err(PhantomError::VaultError(
+            "secure passphrase persistence failed".to_string(),
+        ));
+
+        let error = commit_after_vault_provisioning(
+            provisioning_failure,
+            vec![InitSecret::new("API_KEY", "real-provider-value")],
+            staged_files,
+            "transaction must not start",
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("before any project files were changed"));
+        assert_eq!(std::fs::read(&env_path).unwrap(), original);
+    }
 }

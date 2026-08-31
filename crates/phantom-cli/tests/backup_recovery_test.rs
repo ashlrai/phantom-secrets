@@ -70,6 +70,7 @@ fn backup_commands_hide_and_reject_legacy_argv_passphrases() {
         assert!(help.status.success());
         let stdout = String::from_utf8_lossy(&help.stdout);
         assert!(stdout.contains("--passphrase-file"));
+        assert!(stdout.contains("non-Windows"));
         assert!(!stdout.contains("--passphrase "));
     }
 
@@ -105,6 +106,28 @@ fn backup_commands_fail_closed_without_an_attached_terminal() {
     assert!(!import.status.success());
     assert!(combined_output(&import).contains("attached stdin and stderr terminals"));
     assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_passphrase_file_fails_closed_without_reading_the_path() {
+    let dir = TempDir::new().unwrap();
+    let passphrase_file = dir.path().join("passphrase.txt");
+    let missing_file = dir.path().join("missing.txt");
+    fs::write(&passphrase_file, BACKUP_PASS).unwrap();
+
+    for path in [&passphrase_file, &missing_file] {
+        let output = command(&dir)
+            .args(["export", "--passphrase-file"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let message = combined_output(&output);
+        assert!(message.contains("--passphrase-file is disabled on Windows"));
+        assert!(message.contains("hidden terminal prompt"));
+        assert!(!message.contains(BACKUP_PASS));
+    }
 }
 
 #[cfg(unix)]

@@ -145,6 +145,14 @@ impl FileVault {
     }
 }
 
+pub(crate) fn encrypted_vault_exists(base_dir: &Path, project_id: &str) -> Result<bool> {
+    validate_project_id(project_id)?;
+    Ok(base_dir
+        .join("vaults")
+        .join(format!("{project_id}.vault"))
+        .exists())
+}
+
 /// Validate the identifier before it is ever interpolated into a filesystem
 /// path. Generated Phantom IDs are hexadecimal, while legacy/test IDs may also
 /// contain `-` or `_`; path separators, dot segments, whitespace, and Unicode

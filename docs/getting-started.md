@@ -374,9 +374,11 @@ phantom export --output phantom-backup.enc
 phantom import phantom-backup.enc
 ```
 
-For automation, provide a dedicated passphrase through a bounded private file.
-On Unix, the file must be mode `0600` or stricter; symlinks and non-regular
-files are rejected.
+For automation on non-Windows platforms, provide a dedicated passphrase through
+a bounded private file. On Unix, the file must be mode `0600` or stricter;
+symlinks and non-regular files are rejected. `--passphrase-file` fails closed on
+Windows pending no-reparse handle and effective private-ACL verification; use
+the attached hidden terminal prompt there.
 
 ```bash
 chmod 600 /secure/path/phantom-backup.pass

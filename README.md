@@ -330,8 +330,8 @@ Team memberships and member lists are visible in the read-only dashboard at [phm
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
 | `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, or `codex`. Add `--print` to emit the config snippet to stdout |
 | `phantom env` | Generate `.env.example` for team onboarding |
-| `phantom export` | Export to a new encrypted backup with a hidden terminal prompt, or `--passphrase-file <PRIVATE_FILE>` for bounded automation; plaintext export and argv passphrases are disabled |
-| `phantom import` | Restore an encrypted backup with a hidden prompt or `--passphrase-file <PRIVATE_FILE>`, or migrate from `--from doppler\|infisical\|dotenvx\|1password\|env --file <path>`. Add `--force` to overwrite existing secrets |
+| `phantom export` | Export to a new encrypted backup with a hidden terminal prompt, or on non-Windows platforms use `--passphrase-file <PRIVATE_FILE>` for bounded automation; Windows passphrase files fail closed; plaintext export and argv passphrases are disabled |
+| `phantom import` | Restore an encrypted backup with a hidden prompt or, on non-Windows platforms, `--passphrase-file <PRIVATE_FILE>`; Windows passphrase files fail closed. Migrate with `--from doppler\|infisical\|dotenvx\|1password\|env --file <path>`; add `--force` to overwrite existing secrets |
 | `phantom audit show` | Print recent audit events (`--last N`, `--op OP`, `--name NAME`, `--json`). Requires `PHANTOM_AUDIT=1` |
 | `phantom audit tail` | Follow the audit log live (`--op`, `--name` filters) |
 | `phantom audit path` | Print the absolute path to the audit log file |
@@ -411,7 +411,7 @@ the rotation window, with per-provider rate limits and a shared audit
 - **Pre-commit hook** -- Runs `phantom check --staged` when Git invokes the hook; it checks staged dotenv content plus a bounded set of hardcoded-key prefixes. Hooks can be bypassed or skipped, so CI and a broader secret scanner remain necessary.
 - **MCP server** -- core vault, diagnostics, cloud, team, audit, rotation, validation, expiry, and compliance tools for Claude Code, Cursor, Windsurf, and Codex to manage secrets without seeing values
 - **Cloud backup** -- client-encrypted same-keychain-machine backup and restore; key transfer and recovery are not shipped, and deployed-service and account configuration remain separate operational gates
-- **Export/import** -- Encrypted backup and restore through a hidden terminal prompt or private bounded passphrase file; plaintext export and argv passphrases are disabled; import from Doppler, Infisical, dotenvx, 1Password, or plain `.env` via `--from`
+- **Export/import** -- Encrypted backup and restore through a hidden terminal prompt or a private bounded passphrase file on non-Windows platforms; Windows passphrase files fail closed pending no-reparse handle and effective-ACL verification; plaintext export and argv passphrases are disabled; import from Doppler, Infisical, dotenvx, 1Password, or plain `.env` via `--from`
 - **Tamper-evident audit log** -- `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log`. Each entry is chained with HMAC-SHA256; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for log access.
 - **Response scrubbing** -- Scrubs configured secret values from supported API response paths before returning data to the caller
 - **Script wrapping** -- `phantom wrap` wraps selected runtime/build scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) and deliberately leaves test, lint, type, and format scripts alone

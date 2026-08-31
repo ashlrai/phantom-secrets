@@ -4,9 +4,96 @@ use phantom_core::error::{PhantomError, Result};
 use phantom_core::validator::ValidationMetadata;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 const SERVICE_PREFIX: &str = "phantom-secrets";
+const PROCESS_LOCK_SHARDS: usize = 64;
+
+/// Process-local lock shards complement the filesystem lock. Some OS locking
+/// APIs treat locks from one process as mutually compatible even when they use
+/// different file descriptors; the shard keeps threads honest while fs2
+/// provides the cross-process boundary.
+fn process_lock_for(project_id: &str) -> MutexGuard<'static, ()> {
+    static LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
+    let locks = LOCKS.get_or_init(|| (0..PROCESS_LOCK_SHARDS).map(|_| Mutex::new(())).collect());
+    let mut hasher = DefaultHasher::new();
+    project_id.hash(&mut hasher);
+    let index = hasher.finish() as usize % locks.len();
+    locks[index]
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+pub(crate) struct ProjectLock {
+    _process: MutexGuard<'static, ()>,
+    _file: std::fs::File,
+}
+
+fn safe_project_component(project_id: &str) -> String {
+    project_id
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn project_lock_path(project_id: &str) -> PathBuf {
+    metadata_dir()
+        .join("locks")
+        .join(format!("{}.lock", safe_project_component(project_id)))
+}
+
+fn acquire_project_lock_at(project_id: &str, path: &Path) -> Result<ProjectLock> {
+    let process = process_lock_for(project_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).read(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path).map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Cannot open per-project keychain lock {}: {error}",
+            path.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    fs2::FileExt::lock_exclusive(&file).map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Cannot acquire per-project keychain lock {}: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(ProjectLock {
+        _process: process,
+        _file: file,
+    })
+}
+
+pub(crate) fn acquire_project_lock(project_id: &str) -> Result<ProjectLock> {
+    acquire_project_lock_at(project_id, &project_lock_path(project_id))
+}
 
 /// 16-hex-char (64-bit) SHA-256 digest of `{project_id}:{name}`. Used as the
 /// keychain entry's service and account metadata so the plaintext secret
@@ -50,45 +137,51 @@ fn metadata_dir() -> PathBuf {
 }
 
 fn metadata_path(project_id: &str) -> PathBuf {
-    // Sanitise project_id so it is safe as a filename component.
-    let safe: String = project_id
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
+    let safe = safe_project_component(project_id);
     metadata_dir().join(format!("{safe}.meta.json"))
 }
 
-/// Load the full per-project metadata map from the sidecar file.
-fn load_meta_map(project_id: &str) -> BTreeMap<String, SecretMetadata> {
-    let path = metadata_path(project_id);
+fn load_sidecar_map<T>(path: &Path, label: &str) -> Result<BTreeMap<String, T>>
+where
+    T: serde::de::DeserializeOwned,
+{
     if !path.exists() {
-        return BTreeMap::new();
+        return Ok(BTreeMap::new());
     }
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let contents = std::fs::read_to_string(path)?;
+    serde_json::from_str(&contents).map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Corrupt keychain {label} sidecar {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn save_sidecar_map<T>(path: &Path, label: &str, map: &BTreeMap<String, T>) -> Result<()>
+where
+    T: serde::Serialize,
+{
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(map).map_err(|error| {
+        PhantomError::VaultError(format!("Keychain {label} serialize error: {error}"))
+    })?;
+    // `atomic_write` uses a unique temporary file in the target directory,
+    // then persists it with an atomic rename. Concurrent writers therefore
+    // cannot collide on a shared `.tmp` path.
+    phantom_core::fs::atomic_write(path, json.as_bytes())?;
+    Ok(())
+}
+
+/// Load the full per-project metadata map from the sidecar file.
+fn load_meta_map(project_id: &str) -> Result<BTreeMap<String, SecretMetadata>> {
+    load_sidecar_map(&metadata_path(project_id), "metadata")
 }
 
 /// Persist the full per-project metadata map to the sidecar file.
 fn save_meta_map(project_id: &str, map: &BTreeMap<String, SecretMetadata>) -> Result<()> {
-    let path = metadata_path(project_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(map)
-        .map_err(|e| PhantomError::VaultError(format!("Metadata serialize error: {e}")))?;
-    // Atomic write via temp file.
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &json)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    save_sidecar_map(&metadata_path(project_id), "metadata", map)
 }
 
 // ── Validation metadata sidecar ──────────────────────────────────────────────
@@ -98,45 +191,19 @@ fn save_meta_map(project_id: &str, map: &BTreeMap<String, SecretMetadata>) -> Re
 // values are ever written here.
 
 fn validation_meta_path(project_id: &str) -> std::path::PathBuf {
-    let safe: String = project_id
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
+    let safe = safe_project_component(project_id);
     metadata_dir().join(format!("{safe}.validation.json"))
 }
 
-fn load_validation_meta_map(project_id: &str) -> BTreeMap<String, ValidationMetadata> {
-    let path = validation_meta_path(project_id);
-    if !path.exists() {
-        return BTreeMap::new();
-    }
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+fn load_validation_meta_map(project_id: &str) -> Result<BTreeMap<String, ValidationMetadata>> {
+    load_sidecar_map(&validation_meta_path(project_id), "validation")
 }
 
 fn save_validation_meta_map(
     project_id: &str,
     map: &BTreeMap<String, ValidationMetadata>,
 ) -> Result<()> {
-    let path = validation_meta_path(project_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(map).map_err(|e| {
-        PhantomError::VaultError(format!("Validation metadata serialize error: {e}"))
-    })?;
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &json)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    save_sidecar_map(&validation_meta_path(project_id), "validation", map)
 }
 
 impl KeychainVault {
@@ -241,26 +308,31 @@ impl KeychainVault {
             .map_err(|e| PhantomError::VaultError(format!("Failed to save index: {e}")))?;
         Ok(())
     }
-}
 
-impl VaultBackend for KeychainVault {
-    fn store(&self, name: &str, value: &str) -> Result<()> {
+    /// Store a credential and update its index while the caller holds the
+    /// per-project exclusive lock.
+    fn store_locked(&self, name: &str, value: &str) -> Result<()> {
         let entry = self.entry_for(name)?;
         entry
             .set_password(value)
             .map_err(|e| PhantomError::VaultError(format!("Failed to store secret: {e}")))?;
 
-        // F13 migration: once the hashed entry is written, best-effort delete
-        // any pre-F13 plaintext entry left over from an older phantom version.
         self.delete_legacy(name);
 
-        // Update index
         let mut index = self.load_index()?;
-        if !index.contains(&name.to_string()) {
+        if !index.iter().any(|indexed| indexed == name) {
             index.push(name.to_string());
             index.sort();
             self.save_index(&index)?;
         }
+        Ok(())
+    }
+}
+
+impl VaultBackend for KeychainVault {
+    fn store(&self, name: &str, value: &str) -> Result<()> {
+        let _lock = acquire_project_lock(&self.project_id)?;
+        self.store_locked(name, value)?;
         phantom_core::audit::log("vault.store", Some(name));
         Ok(())
     }
@@ -273,6 +345,21 @@ impl VaultBackend for KeychainVault {
                 Ok(zeroize::Zeroizing::new(value))
             }
             Err(keyring::Error::NoEntry) => {
+                let _lock = acquire_project_lock(&self.project_id)?;
+                // Another process may have completed migration while this one
+                // waited for the lock. Recheck the authoritative entry first.
+                match entry.get_password() {
+                    Ok(value) => {
+                        phantom_core::audit::log("vault.retrieve", Some(name));
+                        return Ok(zeroize::Zeroizing::new(value));
+                    }
+                    Err(keyring::Error::NoEntry) => {}
+                    Err(error) => {
+                        return Err(PhantomError::VaultError(format!(
+                            "Failed to recheck secret while holding the project lock: {error}"
+                        )));
+                    }
+                }
                 // F13 migration: older phantom versions stored entries under
                 // the plaintext name. If we find one, return its value and
                 // silently re-store at the hashed location so future reads
@@ -280,10 +367,23 @@ impl VaultBackend for KeychainVault {
                 if let Some(legacy) = self.legacy_entry_for(name) {
                     match legacy.get_password() {
                         Ok(value) => {
-                            if let Ok(new_entry) = self.entry_for(name) {
-                                let _ = new_entry.set_password(&value);
+                            let new_entry = self.entry_for(name)?;
+                            new_entry.set_password(&value).map_err(|error| {
+                                PhantomError::VaultError(format!(
+                                    "Failed to migrate legacy secret: {error}"
+                                ))
+                            })?;
+                            let mut index = self.load_index()?;
+                            if !index.iter().any(|indexed| indexed == name) {
+                                index.push(name.to_string());
+                                index.sort();
+                                self.save_index(&index)?;
                             }
-                            let _ = legacy.delete_credential();
+                            legacy.delete_credential().map_err(|error| {
+                                PhantomError::VaultError(format!(
+                                    "Migrated secret but could not delete legacy entry: {error}"
+                                ))
+                            })?;
                             phantom_core::audit::log("vault.retrieve", Some(name));
                             Ok(zeroize::Zeroizing::new(value))
                         }
@@ -305,6 +405,7 @@ impl VaultBackend for KeychainVault {
     }
 
     fn delete(&self, name: &str) -> Result<()> {
+        let _lock = acquire_project_lock(&self.project_id)?;
         let entry = self.entry_for(name)?;
         let new_result = entry.delete_credential();
 
@@ -339,13 +440,13 @@ impl VaultBackend for KeychainVault {
         if was_in_index {
             self.save_index(&index)?;
             // Best-effort cleanup of sidecar metadata.
-            let mut map = load_meta_map(&self.project_id);
+            let mut map = load_meta_map(&self.project_id)?;
             if map.remove(name).is_some() {
-                let _ = save_meta_map(&self.project_id, &map);
+                save_meta_map(&self.project_id, &map)?;
             }
-            let mut vmap = load_validation_meta_map(&self.project_id);
+            let mut vmap = load_validation_meta_map(&self.project_id)?;
             if vmap.remove(name).is_some() {
-                let _ = save_validation_meta_map(&self.project_id, &vmap);
+                save_validation_meta_map(&self.project_id, &vmap)?;
             }
             phantom_core::audit::log("vault.delete", Some(name));
             Ok(())
@@ -354,13 +455,13 @@ impl VaultBackend for KeychainVault {
         } else {
             self.save_index(&index)?;
             // Best-effort cleanup of sidecar metadata.
-            let mut map = load_meta_map(&self.project_id);
+            let mut map = load_meta_map(&self.project_id)?;
             if map.remove(name).is_some() {
-                let _ = save_meta_map(&self.project_id, &map);
+                save_meta_map(&self.project_id, &map)?;
             }
-            let mut vmap = load_validation_meta_map(&self.project_id);
+            let mut vmap = load_validation_meta_map(&self.project_id)?;
             if vmap.remove(name).is_some() {
-                let _ = save_validation_meta_map(&self.project_id, &vmap);
+                save_validation_meta_map(&self.project_id, &vmap)?;
             }
             phantom_core::audit::log("vault.delete", Some(name));
             Ok(())
@@ -368,6 +469,7 @@ impl VaultBackend for KeychainVault {
     }
 
     fn list(&self) -> Result<Vec<String>> {
+        let _lock = acquire_project_lock(&self.project_id)?;
         self.load_index()
     }
 
@@ -376,32 +478,101 @@ impl VaultBackend for KeychainVault {
     }
 
     fn get_metadata(&self, name: &str) -> Result<Option<SecretMetadata>> {
-        let map = load_meta_map(&self.project_id);
+        let _lock = acquire_project_lock(&self.project_id)?;
+        let map = load_meta_map(&self.project_id)?;
         Ok(map.get(name).cloned())
     }
 
     fn set_metadata(&self, name: &str, meta: SecretMetadata) -> Result<()> {
+        let _lock = acquire_project_lock(&self.project_id)?;
         // Only allow metadata on keys that actually exist in the vault index.
         let index = self.load_index()?;
         if !index.contains(&name.to_string()) {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
-        let mut map = load_meta_map(&self.project_id);
+        let mut map = load_meta_map(&self.project_id)?;
         map.insert(name.to_string(), meta);
         save_meta_map(&self.project_id, &map)
     }
 
+    fn list_with_metadata(&self) -> Result<Vec<(String, Option<SecretMetadata>)>> {
+        let _lock = acquire_project_lock(&self.project_id)?;
+        let names = self.load_index()?;
+        let metadata = load_meta_map(&self.project_id)?;
+        Ok(names
+            .into_iter()
+            .map(|name| {
+                let meta = metadata.get(&name).cloned();
+                (name, meta)
+            })
+            .collect())
+    }
+
+    fn store_with_expiry(&self, name: &str, value: &str, days_ttl: u64) -> Result<()> {
+        let _lock = acquire_project_lock(&self.project_id)?;
+        self.store_locked(name, value)?;
+        let mut map = load_meta_map(&self.project_id)?;
+        map.insert(name.to_string(), SecretMetadata::with_expiry(days_ttl));
+        save_meta_map(&self.project_id, &map)?;
+        phantom_core::audit::log("vault.store", Some(name));
+        Ok(())
+    }
+
+    fn set_rotation_policy(&self, name: &str, days_ttl: u64) -> Result<()> {
+        let _lock = acquire_project_lock(&self.project_id)?;
+        let index = self.load_index()?;
+        if !index.iter().any(|indexed| indexed == name) {
+            return Err(PhantomError::SecretNotFound(name.to_string()));
+        }
+        let mut map = load_meta_map(&self.project_id)?;
+        let meta = map.entry(name.to_string()).or_default();
+        meta.rotation_policy = Some(crate::metadata::RotationPolicy {
+            days_ttl,
+            auto_rotate: false,
+        });
+        meta.expires_at = Some(crate::metadata::now_secs() + days_ttl * 86_400);
+        save_meta_map(&self.project_id, &map)
+    }
+
+    fn record_provider_rotation(
+        &self,
+        name: &str,
+        expires_override: Option<u64>,
+    ) -> Result<Option<u64>> {
+        const DEFAULT_ROTATION_TTL_DAYS: u64 = 30;
+        let _lock = acquire_project_lock(&self.project_id)?;
+        let index = self.load_index()?;
+        if !index.iter().any(|indexed| indexed == name) {
+            return Err(PhantomError::SecretNotFound(name.to_string()));
+        }
+        let mut map = load_meta_map(&self.project_id)?;
+        let meta = map.entry(name.to_string()).or_default();
+        let had_expiry = meta.expires_at.is_some();
+        meta.record_rotation();
+        if let Some(expires_at) = expires_override {
+            meta.expires_at = Some(expires_at);
+        } else if meta.rotation_policy.is_none() && had_expiry {
+            meta.expires_at =
+                Some(crate::metadata::now_secs() + DEFAULT_ROTATION_TTL_DAYS * 86_400);
+        }
+        let expires_at = meta.expires_at;
+        save_meta_map(&self.project_id, &map)?;
+        Ok(expires_at)
+    }
+
     fn get_validation_metadata(&self, name: &str) -> Result<ValidationMetadata> {
-        let map = load_validation_meta_map(&self.project_id);
+        let _lock = acquire_project_lock(&self.project_id)?;
+        let map = load_validation_meta_map(&self.project_id)?;
         Ok(map.get(name).cloned().unwrap_or_default())
     }
 
     fn set_validation_metadata(&self, name: &str, meta: ValidationMetadata) -> Result<()> {
+        let _lock = acquire_project_lock(&self.project_id)?;
         let index = self.load_index()?;
         if !index.contains(&name.to_string()) {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
-        let mut map = load_validation_meta_map(&self.project_id);
+        let mut map = load_validation_meta_map(&self.project_id)?;
         map.insert(name.to_string(), meta);
         save_validation_meta_map(&self.project_id, &map)
     }
@@ -410,6 +581,8 @@ impl VaultBackend for KeychainVault {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+    use tempfile::tempdir;
 
     #[test]
     fn hash_secret_name_is_deterministic() {
@@ -452,6 +625,80 @@ mod tests {
             h.chars().all(|c| c.is_ascii_hexdigit()),
             "expected lowercase hex: {h}"
         );
+    }
+
+    #[test]
+    fn project_lock_serializes_sidecar_read_modify_write_without_lost_names() {
+        const WRITERS: usize = 24;
+        let directory = tempdir().unwrap();
+        let lock_path = directory.path().join("project.lock");
+        let sidecar_path = directory.path().join("project.meta.json");
+        let barrier = Arc::new(Barrier::new(WRITERS));
+        let mut workers = Vec::new();
+
+        for writer in 0..WRITERS {
+            let barrier = Arc::clone(&barrier);
+            let lock_path = lock_path.clone();
+            let sidecar_path = sidecar_path.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                let _lock = acquire_project_lock_at("concurrent-project", &lock_path).unwrap();
+                let mut map: BTreeMap<String, usize> =
+                    load_sidecar_map(&sidecar_path, "test metadata").unwrap();
+                // Enlarge the unprotected race window. With the production
+                // lock held, every process-equivalent writer still observes
+                // and preserves every prior name.
+                std::thread::yield_now();
+                map.insert(format!("KEY_{writer:02}"), writer);
+                save_sidecar_map(&sidecar_path, "test metadata", &map).unwrap();
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let map: BTreeMap<String, usize> =
+            load_sidecar_map(&sidecar_path, "test metadata").unwrap();
+        assert_eq!(map.len(), WRITERS);
+        for writer in 0..WRITERS {
+            assert_eq!(map.get(&format!("KEY_{writer:02}")), Some(&writer));
+        }
+
+        let artifacts = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            artifacts.len(),
+            2,
+            "atomic writes must not leave temp files"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_lock_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("owner-only.lock");
+        let _lock = acquire_project_lock_at("owner-only", &path).unwrap();
+        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn corrupt_sidecar_is_not_silently_replaced() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("corrupt.meta.json");
+        std::fs::write(&path, b"not-json").unwrap();
+
+        let error = load_sidecar_map::<usize>(&path, "metadata").unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Corrupt keychain metadata sidecar"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"not-json");
     }
 
     /// End-to-end round-trip against the real OS keychain. Ignored by

@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{IsTerminal, Read, Write};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+
+#[cfg(not(windows))]
+use std::io::Read;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -13,6 +16,8 @@ const MAX_PASSPHRASE_BYTES: u64 = 4 * 1024;
 const MIN_PASSPHRASE_BYTES: usize = 12;
 pub(crate) const MAX_ENCRYPTED_BACKUP_BYTES: u64 = 64 * 1024 * 1024;
 const TEMP_CREATE_ATTEMPTS: usize = 32;
+#[cfg(any(windows, test))]
+const WINDOWS_PASSPHRASE_FILE_ERROR: &str = "--passphrase-file is disabled on Windows because Phantom cannot yet verify a no-reparse opened handle and its effective private ACL safely. Omit --passphrase-file and enter the passphrase at the hidden terminal prompt.";
 
 #[derive(Clone, Copy)]
 pub(crate) enum PassphrasePurpose {
@@ -55,7 +60,7 @@ pub(crate) fn reject_legacy_passphrase(legacy_passphrase: Option<String>) -> Res
     if let Some(mut passphrase) = legacy_passphrase {
         passphrase.zeroize();
         anyhow::bail!(
-            "--passphrase is no longer supported because command-line arguments can be exposed by process inspection. Omit it for a hidden terminal prompt, or use --passphrase-file with a private regular file."
+            "--passphrase is no longer supported because command-line arguments can be exposed by process inspection. Omit it for a hidden terminal prompt. On non-Windows platforms, bounded automation may use --passphrase-file with a private regular file."
         );
     }
     Ok(())
@@ -70,6 +75,11 @@ pub(crate) fn acquire_passphrase(
     }
 
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        #[cfg(windows)]
+        anyhow::bail!(
+            "A hidden passphrase prompt requires attached stdin and stderr terminals. --passphrase-file is disabled on Windows; rerun from an attached terminal."
+        );
+        #[cfg(not(windows))]
         anyhow::bail!(
             "A hidden passphrase prompt requires attached stdin and stderr terminals. For bounded automation, use --passphrase-file with a private regular file (mode 0600 on Unix)."
         );
@@ -94,6 +104,18 @@ pub(crate) fn acquire_passphrase(
     Ok(passphrase)
 }
 
+#[cfg(windows)]
+fn read_passphrase_file(_path: &Path) -> Result<Zeroizing<String>> {
+    // CreateFileW's FILE_FLAG_OPEN_REPARSE_POINT covers only the final path
+    // component, while raw DACL enumeration cannot reliably establish
+    // effective read access for every conditional, callback, and object ACE.
+    // Until Phantom has a handle-relative no-reparse open plus a complete
+    // effective-access check, accepting secret-bearing files here would make
+    // a platform security promise that the implementation cannot uphold.
+    anyhow::bail!(WINDOWS_PASSPHRASE_FILE_ERROR)
+}
+
+#[cfg(not(windows))]
 fn read_passphrase_file(path: &Path) -> Result<Zeroizing<String>> {
     if path.as_os_str() == "-" {
         anyhow::bail!(
@@ -179,7 +201,7 @@ fn ensure_private_permissions(path: &Path, metadata: &std::fs::Metadata) -> Resu
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 fn ensure_private_permissions(_path: &Path, _metadata: &std::fs::Metadata) -> Result<()> {
     Ok(())
 }
@@ -193,31 +215,6 @@ fn ensure_opened_same_file(
     use std::os::unix::fs::MetadataExt;
 
     if before.dev() != opened.dev() || before.ino() != opened.ino() || !opened.is_file() {
-        anyhow::bail!(
-            "Passphrase file changed while it was being opened: {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn ensure_opened_same_file(
-    path: &Path,
-    before: &std::fs::Metadata,
-    opened: &std::fs::Metadata,
-) -> Result<()> {
-    use std::os::windows::fs::MetadataExt;
-
-    // Rust 1.95 still keeps Windows volume_serial_number/file_index behind the
-    // unstable `windows_by_handle` feature. Compare several stable on-disk
-    // fingerprint field instead; a regular-file check alone would miss swaps.
-    if !opened.is_file()
-        || before.file_attributes() != opened.file_attributes()
-        || before.creation_time() != opened.creation_time()
-        || before.last_write_time() != opened.last_write_time()
-        || before.file_size() != opened.file_size()
-    {
         anyhow::bail!(
             "Passphrase file changed while it was being opened: {}",
             path.display()
@@ -463,6 +460,23 @@ mod tests {
     fn weak_backup_passphrase_is_rejected() {
         let err = validate_passphrase("short").unwrap_err();
         assert!(err.to_string().contains("at least 12 bytes"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_passphrase_file_contract_is_fail_closed_and_actionable() {
+        assert!(WINDOWS_PASSPHRASE_FILE_ERROR.contains("disabled on Windows"));
+        assert!(WINDOWS_PASSPHRASE_FILE_ERROR.contains("no-reparse opened handle"));
+        assert!(WINDOWS_PASSPHRASE_FILE_ERROR.contains("effective private ACL"));
+        assert!(WINDOWS_PASSPHRASE_FILE_ERROR.contains("hidden terminal prompt"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_passphrase_file_fails_before_path_traversal() {
+        let err =
+            read_passphrase_file(Path::new(r"C:\\definitely-missing\\passphrase.txt")).unwrap_err();
+        assert_eq!(err.to_string(), WINDOWS_PASSPHRASE_FILE_ERROR);
     }
 
     #[test]
