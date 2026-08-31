@@ -4,7 +4,6 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::precommit_hook::{self, HookChange};
-use std::path::Path;
 
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
@@ -229,12 +228,13 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     }
 
     // Check 8: Pre-commit hook
-    let git_hook = project_dir.join(".git/hooks/pre-commit");
-    if git_hook.exists() {
-        let content = std::fs::read_to_string(&git_hook)?;
-        if precommit_hook::is_current(&content) {
+    match precommit_hook::inspect(&project_dir)? {
+        precommit_hook::HookState::Present { content, .. }
+            if precommit_hook::is_current(&content) =>
+        {
             check_pass("Git pre-commit hook runs the local Phantom check first");
-        } else {
+        }
+        precommit_hook::HookState::Present { content, .. } => {
             if precommit_hook::has_phantom_block(&content) {
                 check_warn("Git pre-commit hook uses a stale Phantom check");
                 check_fix("Run: phantom doctor --fix (uses the installed local binary)");
@@ -243,7 +243,8 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 check_fix("Run: phantom init (will add a local Phantom check to the hook)");
             }
             if fix {
-                let change = ensure_git_hook(&git_hook, &content)?;
+                let change = precommit_hook::install(&project_dir)?
+                    .expect("Git hook state already established a repository");
                 let message = match change {
                     HookChange::Installed => {
                         "Installed local Phantom check before existing hook commands"
@@ -257,20 +258,20 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 issues += 1;
             }
         }
-    } else if project_dir.join(".git").exists() {
-        check_warn("No pre-commit hook installed");
-        check_fix("Run: phantom init (will install a local Phantom check)");
-        if fix {
-            let hooks_dir = project_dir.join(".git/hooks");
-            let _ = std::fs::create_dir_all(&hooks_dir);
-            ensure_git_hook(&git_hook, "")?;
-            check_fixed("Installed pre-commit hook");
-            fixed += 1;
-        } else {
-            issues += 1;
+        precommit_hook::HookState::Missing { .. } => {
+            check_warn("No pre-commit hook installed");
+            check_fix("Run: phantom init (will install a local Phantom check)");
+            if fix {
+                precommit_hook::install(&project_dir)?;
+                check_fixed("Installed pre-commit hook");
+                fixed += 1;
+            } else {
+                issues += 1;
+            }
         }
-    } else {
-        check_info("Not a git repo — pre-commit hook not applicable");
+        precommit_hook::HookState::NotRepository => {
+            check_info("Not a git repo — pre-commit hook not applicable");
+        }
     }
 
     // Check 9: README mentions Phantom
@@ -606,24 +607,9 @@ fn check_fixed(msg: &str) {
     println!("       {} {}", "Fixed:".green(), msg);
 }
 
-fn ensure_git_hook(path: &Path, existing: &str) -> Result<HookChange> {
-    let update = precommit_hook::ensure(existing);
-    if update.change != HookChange::Unchanged {
-        std::fs::write(path, update.content)?;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
-    }
-    Ok(update.change)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::commands::upgrade::{detect_install_source, InstallSource};
-    use tempfile::TempDir;
 
     /// Smoke test — detect_install_source() must be stable across two calls.
     #[test]
@@ -680,19 +666,5 @@ mod tests {
             InstallSource::Unknown
         };
         assert_eq!(detected, InstallSource::Cargo);
-    }
-
-    #[test]
-    fn doctor_fix_repairs_stale_hook_without_network_execution() {
-        let project = TempDir::new().unwrap();
-        let hook = project.path().join("pre-commit");
-        let existing = "#!/bin/sh\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\nexit $?\n";
-
-        let change = ensure_git_hook(&hook, existing).unwrap();
-
-        let repaired = std::fs::read_to_string(hook).unwrap();
-        assert_eq!(change, HookChange::Repaired);
-        assert!(precommit_hook::is_current(&repaired));
-        assert!(!repaired.contains("npx phantom-secrets"));
     }
 }

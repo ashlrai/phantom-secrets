@@ -156,6 +156,17 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
         files.push(rel(project_dir, &package_json));
     }
 
+    let (has_precommit, precommit_error) = match crate::precommit_hook::inspect(project_dir) {
+        Ok(crate::precommit_hook::HookState::Present { content, .. }) => {
+            (crate::precommit_hook::is_current(&content), None)
+        }
+        Ok(
+            crate::precommit_hook::HookState::Missing { .. }
+            | crate::precommit_hook::HookState::NotRepository,
+        ) => (false, None),
+        Err(error) => (false, Some(error.to_string())),
+    };
+
     let signals = Signals {
         has_config: config_exists,
         config_has_sync: config.as_ref().is_some_and(|c| !c.sync.is_empty()),
@@ -167,8 +178,22 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
         has_mcp_wiring: has_any_mcp_wiring(project_dir),
         has_package_scripts: package_json.exists() && package_has_scripts(&package_json),
         has_wrapped_scripts: package_has_wrapped_scripts(&package_json),
-        has_precommit: has_precommit(project_dir),
+        has_precommit,
     };
+
+    if let Some(error) = precommit_error {
+        push_finding(
+            &mut findings,
+            &mut fixes,
+            &mut commands,
+            FindingSpec::new(
+                "precommit-inspection-failed",
+                FindingSeverity::Critical,
+                format!("Could not verify Git's effective pre-commit hook: {error}"),
+                "phantom doctor",
+            ),
+        );
+    }
 
     if !signals.has_config {
         push_finding(
@@ -509,12 +534,6 @@ fn gitignore_has_env(path: &Path) -> bool {
         .is_some_and(|content| content.lines().any(|line| line.trim() == ".env"))
 }
 
-fn has_precommit(project_dir: &Path) -> bool {
-    std::fs::read_to_string(project_dir.join(".git/hooks/pre-commit"))
-        .ok()
-        .is_some_and(|content| crate::precommit_hook::is_current(&content))
-}
-
 fn has_any_mcp_wiring(project_dir: &Path) -> bool {
     let mut candidates = vec![project_dir.join(".claude/settings.local.json")];
     if let Some(home) = dirs::home_dir() {
@@ -648,6 +667,25 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn init_git_with_custom_hooks(dir: &Path) -> PathBuf {
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "core.hooksPath", "effective-hooks"],
+        ] {
+            let output = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        dir.join("effective-hooks/pre-commit")
+    }
+
     fn no_vault() -> AgentReadinessOptions {
         AgentReadinessOptions {
             vault: Some(VaultProbe {
@@ -680,6 +718,7 @@ mod tests {
     #[test]
     fn reports_verified_when_local_controls_are_present() {
         let dir = TempDir::new().unwrap();
+        let hook = init_git_with_custom_hooks(dir.path());
         let config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
             &std::fs::canonicalize(dir.path()).unwrap(),
         ));
@@ -691,12 +730,8 @@ mod tests {
         std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=phm_test\n").unwrap();
         std::fs::write(dir.path().join(".env.example"), "OPENAI_API_KEY=<secret>\n").unwrap();
         std::fs::write(dir.path().join(".gitignore"), ".env\n").unwrap();
-        std::fs::create_dir_all(dir.path().join(".git/hooks")).unwrap();
-        std::fs::write(
-            dir.path().join(".git/hooks/pre-commit"),
-            crate::precommit_hook::ensure("").content,
-        )
-        .unwrap();
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(hook, crate::precommit_hook::ensure("").content).unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         let current_exe = std::env::current_exe().unwrap();
         std::fs::write(
@@ -732,6 +767,7 @@ mod tests {
     #[test]
     fn legacy_network_capable_setup_cannot_report_verified() {
         let dir = TempDir::new().unwrap();
+        let hook = init_git_with_custom_hooks(dir.path());
         let config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
             &std::fs::canonicalize(dir.path()).unwrap(),
         ));
@@ -743,12 +779,8 @@ mod tests {
         std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=phm_test\n").unwrap();
         std::fs::write(dir.path().join(".env.example"), "OPENAI_API_KEY=<secret>\n").unwrap();
         std::fs::write(dir.path().join(".gitignore"), ".env\n").unwrap();
-        std::fs::create_dir_all(dir.path().join(".git/hooks")).unwrap();
-        std::fs::write(
-            dir.path().join(".git/hooks/pre-commit"),
-            "#!/bin/sh\nnpx phantom-secrets check --staged\n",
-        )
-        .unwrap();
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(hook, "#!/bin/sh\nnpx phantom-secrets check --staged\n").unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         std::fs::write(
             dir.path().join(".claude/settings.local.json"),

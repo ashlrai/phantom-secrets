@@ -126,7 +126,9 @@ pub fn run(env_path_arg: &str) -> Result<()> {
             if config_path.exists() {
                 env::ensure_gitignore(&project_dir)?;
             }
-            hooks::install_precommit_hook(&project_dir);
+            hooks::install_precommit_hook(&project_dir).context(
+                "Existing Phantom state was preserved, but local integration refresh is incomplete",
+            )?;
             if let Some(prepared) = claude_setup {
                 prompts::apply_auto_setup_claude_code(prepared)?;
             }
@@ -200,7 +202,9 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     );
 
     // Install pre-commit hook if in a git repo
-    hooks::install_precommit_hook(&project_dir);
+    hooks::install_precommit_hook(&project_dir).context(
+        "Secrets were protected, but initialization is incomplete because the Git hook was not installed",
+    )?;
 
     println!(
         "\n{} {} secret(s) are now protected!",

@@ -2,80 +2,24 @@ use colored::Colorize;
 use phantom_core::precommit_hook::{self, HookChange};
 use std::path::Path;
 
-/// Make a file executable on Unix platforms.
-#[cfg(unix)]
-fn make_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
-}
-
-#[cfg(not(unix))]
-fn make_executable(_path: &Path) {}
-
 /// Install a pre-commit hook that scans for unprotected secrets.
-pub fn install_precommit_hook(project_dir: &Path) {
-    // Find .git directory (check project_dir, then walk up to find repo root)
-    let git_dir = if project_dir.join(".git").exists() {
-        project_dir.join(".git")
-    } else {
-        // Walk up to find .git
-        let mut dir = project_dir.to_path_buf();
-        loop {
-            if dir.join(".git").exists() {
-                break dir.join(".git");
-            }
-            if !dir.pop() {
-                return; // Not a git repo
-            }
-        }
+pub fn install_precommit_hook(project_dir: &Path) -> anyhow::Result<Option<HookChange>> {
+    let change = precommit_hook::install(project_dir)
+        .map_err(|error| anyhow::anyhow!("Pre-commit hook setup failed: {error}"))?;
+    let Some(change) = change else {
+        return Ok(None);
     };
-
-    let hooks_dir = git_dir.join("hooks");
-    let hook_path = hooks_dir.join("pre-commit");
-
-    // Create hooks directory if needed
-    let _ = std::fs::create_dir_all(&hooks_dir);
-
-    let existing = if hook_path.exists() {
-        match std::fs::read_to_string(&hook_path) {
-            Ok(content) => content,
-            Err(e) => {
-                println!(
-                    "{} Could not inspect pre-commit hook: {}",
-                    "warn".yellow().bold(),
-                    e
-                );
-                return;
-            }
+    let message = match change {
+        HookChange::Installed => Some("Installed pre-commit hook (scans for leaked secrets)"),
+        HookChange::Repaired => {
+            Some("Repaired pre-commit hook to use the installed local phantom binary")
         }
-    } else {
-        String::new()
+        HookChange::Unchanged => None,
     };
-    let update = precommit_hook::ensure(&existing);
-    if update.change == HookChange::Unchanged {
-        return;
+    if let Some(message) = message {
+        println!("{} {}", "ok".green().bold(), message);
     }
-
-    match std::fs::write(&hook_path, update.content) {
-        Ok(_) => {
-            make_executable(&hook_path);
-            let message = match update.change {
-                HookChange::Installed => "Installed pre-commit hook (scans for leaked secrets)",
-                HookChange::Repaired => {
-                    "Repaired pre-commit hook to use the installed local phantom binary"
-                }
-                HookChange::Unchanged => unreachable!(),
-            };
-            println!("{} {}", "ok".green().bold(), message);
-        }
-        Err(e) => {
-            println!(
-                "{} Could not install pre-commit hook: {}",
-                "warn".yellow().bold(),
-                e
-            );
-        }
-    }
+    Ok(Some(change))
 }
 
 #[cfg(test)]
@@ -83,11 +27,26 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn init_git(project: &Path) {
+        let output = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(project)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let output = std::process::Command::new("git")
+            .args(["config", "core.hooksPath", ".git/hooks"])
+            .current_dir(project)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+
     #[test]
     fn install_repairs_legacy_npx_hook_without_losing_existing_commands() {
         let project = TempDir::new().unwrap();
+        init_git(project.path());
         let hooks = project.path().join(".git/hooks");
-        std::fs::create_dir_all(&hooks).unwrap();
         let hook = hooks.join("pre-commit");
         std::fs::write(
             &hook,
@@ -95,7 +54,7 @@ mod tests {
         )
         .unwrap();
 
-        install_precommit_hook(project.path());
+        install_precommit_hook(project.path()).unwrap();
 
         let installed = std::fs::read_to_string(hook).unwrap();
         assert!(precommit_hook::is_current(&installed));
@@ -107,12 +66,12 @@ mod tests {
     #[test]
     fn install_is_idempotent() {
         let project = TempDir::new().unwrap();
-        std::fs::create_dir_all(project.path().join(".git")).unwrap();
-        install_precommit_hook(project.path());
+        init_git(project.path());
+        install_precommit_hook(project.path()).unwrap();
         let hook = project.path().join(".git/hooks/pre-commit");
         let first = std::fs::read_to_string(&hook).unwrap();
 
-        install_precommit_hook(project.path());
+        install_precommit_hook(project.path()).unwrap();
 
         assert_eq!(std::fs::read_to_string(hook).unwrap(), first);
     }

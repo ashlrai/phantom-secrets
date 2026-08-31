@@ -93,7 +93,12 @@ fn doctor_rejects_legacy_npx_mcp_entry() {
 #[test]
 fn doctor_fix_refuses_to_overwrite_non_utf8_hook() {
     let dir = TempDir::new().unwrap();
-    fs::create_dir_all(dir.path().join(".git/hooks")).unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap()
+        .success());
     fs::write(dir.path().join(".gitignore"), ".env\n").unwrap();
     let hook = dir.path().join(".git/hooks/pre-commit");
     let original = b"#!/bin/sh\necho user-hook\n\xff\n";

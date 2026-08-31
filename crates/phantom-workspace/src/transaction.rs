@@ -1039,11 +1039,10 @@ fn build_filesystem_mutations(
                 root.join(&action.target),
             )?),
             SetupActionKind::GenerateEnvExample => Some(value_free_example(inspection)),
-            SetupActionKind::InstallPreCommitCheck if root.join(".git").is_dir() => {
-                Some(ensure_pre_commit_hook(
-                    secure_read_target(root, root_directory, &action.target)?.unwrap_or_default(),
-                )?)
-            }
+            SetupActionKind::InstallPreCommitCheck => Some(ensure_pre_commit_hook(
+                secure_read_target(root, root_directory, &action.target)?.unwrap_or_default(),
+                &action.target,
+            )?),
             _ => None,
         };
         let Some(content) = desired else {
@@ -1124,9 +1123,9 @@ fn value_free_example(inspection: &WorkspaceInspection) -> Vec<u8> {
     content.into_bytes()
 }
 
-fn ensure_pre_commit_hook(existing: Vec<u8>) -> Result<Vec<u8>> {
+fn ensure_pre_commit_hook(existing: Vec<u8>, target: &str) -> Result<Vec<u8>> {
     let content = String::from_utf8(existing).map_err(|error| WorkspaceError::Io {
-        path: PathBuf::from(".git/hooks/pre-commit"),
+        path: PathBuf::from(target),
         source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
     })?;
     Ok(precommit_hook::ensure(&content).content.into_bytes())
@@ -1720,9 +1719,7 @@ fn build_receipt(
             } else if matches!(
                 action.kind,
                 SetupActionKind::ProtectEnvFile | SetupActionKind::ReviewPlaceBinding
-            ) || (action.kind == SetupActionKind::InstallPreCommitCheck
-                && !Path::new(&plan.workspace_root).join(".git").is_dir())
-            {
+            ) {
                 ActionOutcomeState::Deferred
             } else {
                 ActionOutcomeState::AlreadySatisfied
@@ -2100,7 +2097,9 @@ mod hook_tests {
     fn workspace_generator_repairs_legacy_hook_with_canonical_local_command() {
         let legacy = b"#!/bin/sh\necho before\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\nexit $?\necho after\n".to_vec();
 
-        let generated = String::from_utf8(ensure_pre_commit_hook(legacy).unwrap()).unwrap();
+        let generated =
+            String::from_utf8(ensure_pre_commit_hook(legacy, ".git/hooks/pre-commit").unwrap())
+                .unwrap();
 
         assert!(precommit_hook::is_current(&generated));
         assert!(generated.contains("echo before"));
@@ -2110,7 +2109,7 @@ mod hook_tests {
 
     #[test]
     fn workspace_generator_rejects_non_utf8_hook_instead_of_overwriting_it() {
-        let error = ensure_pre_commit_hook(vec![0xff]).unwrap_err();
+        let error = ensure_pre_commit_hook(vec![0xff], ".git/hooks/pre-commit").unwrap_err();
         assert!(matches!(error, WorkspaceError::Io { .. }));
     }
 }

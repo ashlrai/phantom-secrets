@@ -16,6 +16,32 @@ fn write(path: impl AsRef<Path>, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
+fn git(workspace: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init_git(workspace: &Path) {
+    git(workspace, &["init", "--quiet"]);
+    git(workspace, &["config", "core.hooksPath", ".git/hooks"]);
+    git(
+        workspace,
+        &[
+            "config",
+            "remote.origin.url",
+            "git@github.com:acme/project.git",
+        ],
+    );
+}
+
 #[test]
 fn discovers_multiple_env_files_without_crossing_nested_repositories() {
     let workspace = TempDir::new().unwrap();
@@ -333,16 +359,40 @@ fn sealed_plan_rejects_existing_config_namespace_drift() {
 
 #[cfg(unix)]
 #[test]
+fn workspace_transaction_targets_effective_in_workspace_hooks_path() {
+    let workspace = TempDir::new().unwrap();
+    init_git(workspace.path());
+    git(
+        workspace.path(),
+        &["config", "core.hooksPath", ".phantom-hooks"],
+    );
+
+    let key = seal_key();
+    let sealed = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+    let hook_action = sealed
+        .plan
+        .actions
+        .iter()
+        .find(|action| action.kind == SetupActionKind::InstallPreCommitCheck)
+        .unwrap();
+    assert_eq!(hook_action.target, ".phantom-hooks/pre-commit");
+
+    let applied = apply_setup_plan(&sealed, &key, &mut NoopSetupParticipant).unwrap();
+    let hook = workspace.path().join(".phantom-hooks/pre-commit");
+    assert!(is_current(&std::fs::read_to_string(&hook).unwrap()));
+    rollback_workspace(applied.snapshot).unwrap();
+    assert!(!hook.exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn filesystem_apply_is_atomic_idempotent_and_recoverable() {
     let workspace = TempDir::new().unwrap();
+    init_git(workspace.path());
     let secret = "sk-transaction-secret-sentinel";
     write(
         workspace.path().join(".env"),
         &format!("OPENAI_API_KEY={secret}\nPORT=3000\n"),
-    );
-    write(
-        workspace.path().join(".git/config"),
-        "[remote \"origin\"]\nurl = git@github.com:acme/project.git\n",
     );
     let original_ignore = "# keep this deny policy\n.env.production\n";
     let original_hook_body = "echo existing-check\nexit 0\n";
