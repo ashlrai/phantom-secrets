@@ -84,7 +84,7 @@ Recently-added flags worth knowing:
 - `phantom list --json` emits a JSON array of `{name, detected_service}` for scripting; values are never included.
 - `phantom sync --only PATTERN` (repeatable; OR-ed) limits which keys get pushed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`.
 - `phantom check --staged` reads from the git index (including staged `.env` files) and is suitable for pre-commit hooks.
-- `phantom export --json --allow-plaintext` emits all vault secrets as a plaintext JSON object to stdout. The `--allow-plaintext` flag is required and acknowledges the risk.
+- `phantom export` creates a new encrypted backup using a hidden prompt; `--passphrase-file` supports bounded private-file automation. Plaintext export and argv passphrases are disabled.
 - `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>` imports secrets from a competitor export file. Use `--force` to overwrite existing entries.
 - `phantom audit show [--last N] [--op OP] [--name NAME] [--json]` — print recent audit events.
 - `phantom audit tail [--op OP] [--name NAME]` — follow the audit log live.
@@ -107,13 +107,14 @@ Phantom auto-classifies env vars by name + value heuristics. Detected: `OPENAI_A
 
 ## Architecture
 
-5-crate Rust workspace:
+12-crate Rust workspace:
 
 - `phantom-core` — config (`.phantom.toml`), `.env` parsing, token generation (256-bit CSPRNG, `phm_` prefix)
 - `phantom-vault` — `VaultBackend` trait. macOS Keychain / Linux Secret Service / Windows Credential Manager / encrypted file fallback. ChaCha20-Poly1305 + Argon2id (hardened to OWASP balanced m=64 MiB / t=3 / p=1, with legacy-default fallback for older vaults).
 - `phantom-proxy` — HTTP reverse proxy on 127.0.0.1. Streaming token replacement for `text/*`/form bodies; buffered+scoped for JSON. SSE/streaming preserved.
 - `phantom-cli` — `clap` binary with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows.
-- `phantom-mcp` — `rmcp` 1.3 stdio server, 25 tools.
+- `phantom-mcp` — `rmcp` stdio server, 54 tools enforced by the release schema smoke test.
+- Authority, Locus-contract, broker, runtime, evidence, session, and workspace crates are fail-closed foundations; they do not activate production execution.
 
 ## Pricing
 

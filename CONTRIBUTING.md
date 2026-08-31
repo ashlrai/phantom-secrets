@@ -1,63 +1,162 @@
 # Contributing to Phantom
 
-Thanks for your interest in contributing to Phantom! Here's how to get started.
+Thanks for helping make safe agentic development practical. Phantom accepts focused bug fixes, tests, platform hardening, service integrations, documentation, and carefully scoped feature work.
 
-## Development Setup
+Please read the [Code of Conduct](CODE_OF_CONDUCT.md), [security policy](SECURITY.md), and [threat model](THREAT_MODEL.md) before changing a trust boundary. Report vulnerabilities privately; do not open a public issue for them.
+
+## Before you start
+
+- Search [existing issues](https://github.com/ashlrai/phantom-secrets/issues) and [discussions](https://github.com/ashlrai/phantom-secrets/discussions).
+- Open an issue or discussion before a large architectural change, new network/provider integration, new secret-reveal path, compatibility break, or change to the authority model.
+- Keep pull requests reviewable. Separate mechanical refactors from behavioral or security changes.
+- Never use production credentials in development, tests, fixtures, screenshots, logs, or issue reports. Use obviously fake values and throwaway accounts.
+
+## Development setup
+
+Prerequisites:
+
+- Git
+- Rust stable with `rustfmt` and `clippy`
+- Node.js and npm when changing npm wrappers or `apps/web`
+- A platform keychain only for explicitly ignored/manual keychain tests
 
 ```bash
-# Clone the repo
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
 
-# Build
-cargo build --workspace
-
-# Run tests
-cargo test --workspace
-
-# Lint (must pass with zero warnings)
-cargo clippy --all-targets -- -D warnings
-
-# Format
-cargo fmt --all
+cargo build --workspace --locked
+cargo test --workspace --all-targets --locked --no-fail-fast
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-## Project Structure
+On a machine where `cargo` is not on `PATH`, invoke the same commands through your rustup installation (for example, `~/.cargo/bin/cargo` on many Unix systems).
 
+## Repository map
+
+| Area | Purpose |
+|------|---------|
+| `crates/phantom-cli` | Operator CLI and command integration tests. |
+| `crates/phantom-core` | Configuration, dotenv handling, cloud/auth clients, audit, validation, shared policy, and the provider-issuance engine. |
+| `crates/phantom-cli/src/commands/grant` | Trusted-terminal provider consent, direct-to-vault root storage, and value-free grant lifecycle commands. |
+| `crates/phantom-vault` | OS-keychain and encrypted-file vault backends. |
+| `crates/phantom-proxy` | Authenticated loopback proxy, scoped replacement, response scrubbing, and streaming. |
+| `crates/phantom-mcp` | MCP server, closed parameter schemas, the governed conversation facade, and separately gated compatibility tools. |
+| `crates/phantom-workspace` | Value-blind workspace planning and trusted-terminal setup transactions. |
+| `crates/phantom-authority` | Closed authority contracts; production verification remains deny-all. |
+| `crates/phantom-locus-contract` | Inactive compatibility requirements for a future Locus integration. |
+| `crates/phantom-broker` | Inactive broker protocol and durable replay/accounting foundations. |
+| `crates/phantom-runtime` | Closed engineering actions and deny-all production execution boundary. |
+| `crates/phantom-session` | Inactive crash-explicit session coordination foundation. |
+| `crates/phantom-evidence` | Inactive value-free evidence and receipt foundation. |
+| `npm`, `npm-mcp` | Native-binary download and launch wrappers. |
+| `apps/web` | Next.js application and Phantom Cloud API. |
+| `docs` | User guides, integration guides, static site assets, and the [documentation map](docs/README.md). |
+
+Do not infer production activation from a crate's presence. The execution-kernel
+foundations must stay fail closed until the activation boundaries in
+[`docs/architecture.md`](docs/architecture.md) and
+[`THREAT_MODEL.md`](THREAT_MODEL.md) are resolved and accepted.
+
+The word **grant** has two distinct meanings. A provider grant is credential
+and renewal state created by `phantom grant`; an authority grant is an inactive
+value-free execution-kernel type. A provider grant must never be accepted as a
+Locus credential, broker lease, or execution permit. Current provider behavior
+is specified in [`docs/grants-spec.md`](docs/grants-spec.md); the root
+[`ISSUANCE_CONTRACT.md`](ISSUANCE_CONTRACT.md) is the original design contract.
+
+## Making a change
+
+1. Create a branch from the current `main`.
+2. Find and reuse the existing parsing, filesystem, confirmation, error, and test patterns for the affected surface.
+3. Add tests that demonstrate both the intended behavior and important failure modes.
+4. Update user, agent, registry, and security documentation when a public contract changes.
+5. Run the proportional checks below and record exact commands and results in the pull request.
+
+Security-sensitive code must fail closed. Unexpected input, missing state, unsupported platforms, failed authentication, ambiguous crash recovery, and stale authority should not silently downgrade to permissive behavior.
+
+## Verification
+
+Every Rust change should pass these source gates. The tag release workflow
+enforces the same locked all-target test, format, and strict Clippy contract;
+contributors should run it before opening a pull request:
+
+```bash
+cargo test --workspace --all-targets --locked --no-fail-fast
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
-crates/
-  phantom-cli/     CLI binary (30 commands)
-  phantom-core/    Config, .env parsing, tokens, auth, cloud client
-  phantom-vault/   Encrypted vault (keychain + file backends)
-  phantom-proxy/   HTTP reverse proxy with streaming
-  phantom-mcp/     MCP server for Claude Code (25 tools)
-apps/
-  web/             Next.js backend + landing page (phm.dev)
+
+Run additional checks for the surface you changed:
+
+```bash
+# MCP release binary
+cargo build --release --locked -p phantom-secrets-mcp --bin phantom-mcp
+
+# Provider-grant CLI integration tests
+cargo test --locked -p phantom-secrets --test grant_github_app_test
+cargo test --locked -p phantom-secrets --test grant_vercel_integration_test
+cargo test --locked -p phantom-secrets --test grant_sentry_test
+cargo test --locked -p phantom-secrets --test grant_supabase_test
+cargo test --locked -p phantom-secrets --test grant_stripe_test
+cargo test --locked -p phantom-secrets --test grant_revoke_test
+
+# npm wrappers
+npm --prefix npm test
+for test in npm-mcp/test/*.test.js; do node "$test"; done
+(cd npm-mcp && npm pack --dry-run)
+
+# Web application
+(cd apps/web && npm ci && npm audit --omit=dev --audit-level=moderate && npm test && npm run build)
 ```
 
-## Making Changes
+When an MCP catalog intentionally changes, update the server declarations,
+closed parameter schemas, generated/mirrored registry surfaces, and packaged
+stdio smoke together. Do not hard-code a catalog count in prose unless release
+automation enforces it.
 
-1. Fork the repo and create a branch from `main`
-2. Make your changes
-3. Ensure `cargo test`, `cargo clippy`, and `cargo fmt --check` all pass
-4. Open a pull request
+Ignored keychain tests touch the host OS keychain. Run them only on a disposable test identity after reviewing the test:
 
-## What to Contribute
+```bash
+cargo test --workspace -- --ignored
+```
 
-- Bug fixes (check [Issues](https://github.com/ashlrai/phantom-secrets/issues))
-- New service auto-detection patterns (in `crates/phantom-core/src/config.rs`)
-- Documentation improvements
-- Test coverage
-- Platform support (Windows improvements, new Linux distros)
+CI runs the normal Rust suite on macOS, Linux, and Windows. A successful cross-compile or CI matrix does not prove native installer trust, keychain UX, code signing/notarization, shell integration, or end-to-end acceptance on every device; describe exactly what you tested.
 
-## Code Guidelines
+## Coding and security guidelines
 
-- All code must pass `cargo clippy -- -D warnings`
-- Tests go in `#[cfg(test)] mod tests` within source files
-- Use `thiserror` for library crates, `anyhow` for CLI
-- Secrets must be zeroized from memory after use
-- Proxy binds to 127.0.0.1 only
+- Use `thiserror` for reusable library errors and `anyhow` for CLI orchestration where appropriate.
+- Keep secret values out of `Debug`, `Display`, serialization, logs, URLs, argv, receipts, MCP responses, telemetry, and error messages.
+- Wrap secret-bearing memory in the repository's zeroization patterns and test error/early-return paths.
+- Use the hardened filesystem helpers for secret or authority state; defend against symlinks, unsafe permissions, partial writes, and crash recovery.
+- Keep proxy listeners loopback-only and authenticate every request before substitution.
+- MCP tools must use closed input schemas. A mutation requires the surface's explicit confirmation and out-of-band approval contract; a request ID or digest is not authority.
+- `phantom_do` remains proposal-only. Do not connect its reserved `execute` phase to a shell or production executor.
+- Do not add a plaintext secret argument to MCP. New values must be collected out of band in a trusted terminal.
+- Keep provider consent in the trusted-terminal CLI. Select production provider
+  endpoints from the closed map, keep client secrets out of argv, zeroize
+  issued roots, vault them before reporting success, and return metadata only.
+- Keep provider-grant lifecycle separate from authority-grant verification.
+  Remote revoke must fail before local mutation until provider revocation is
+  implemented and accepted end to end.
+- Put focused unit tests near the implementation and end-to-end/integration tests under the crate or application test directory.
+- Comment non-obvious invariants and the reason for a safety check, not a narration of the code.
 
-## Questions?
+## Documentation guidelines
 
-Open a [Discussion](https://github.com/ashlrai/phantom-secrets/discussions) or file an [Issue](https://github.com/ashlrai/phantom-secrets/issues).
+- Treat code, schemas, tests, and release automation as the source of truth.
+- Label active behavior, experimental/fail-closed foundations, and roadmap proposals explicitly.
+- Avoid volatile counts or version claims unless a test or release script enforces them.
+- Include macOS, Linux, and Windows differences when they affect commands, storage, permissions, shells, packaging, or support.
+- Keep links relative inside the repository so they work in forks and release source archives.
+- Update the [documentation map](docs/README.md) when adding, moving, or retiring a guide.
+
+## Pull requests
+
+Use the pull request template. A strong description explains the user problem, trust-boundary impact, exact verification evidence, platform coverage, and remaining limitations. Screenshots are helpful for UI changes but are not substitutes for behavioral tests.
+
+By contributing, you agree that your contribution is licensed under the repository's [MIT License](LICENSE).
+
+## Questions
+
+Use [GitHub Discussions](https://github.com/ashlrai/phantom-secrets/discussions) for design and usage questions, and [GitHub Issues](https://github.com/ashlrai/phantom-secrets/issues) for reproducible defects and accepted work.

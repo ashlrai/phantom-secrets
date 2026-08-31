@@ -18,7 +18,7 @@ type Row = { label: string } & Record<CompetitorKey, Cell>;
 
 const ROWS: Row[] = [
   {
-    label: "AI tools never see real keys",
+    label: "Value-blind managed agent path",
     phantom: "yes",
     rawEnv: "no",
     doppler: "no",

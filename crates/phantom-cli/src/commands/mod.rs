@@ -37,4 +37,5 @@ pub mod validate;
 pub mod validation_scheduler;
 pub mod watch;
 pub mod why;
+pub mod workspace;
 pub mod wrap;

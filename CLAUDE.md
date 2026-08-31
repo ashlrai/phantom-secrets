@@ -23,13 +23,15 @@ Note: `~/.cargo/bin/` prefix is needed because cargo is not in PATH on this mach
 
 ## Architecture
 
-5-crate Rust workspace:
+Modular Rust workspace with a shipped secret-protection product and separate
+fail-closed governed-execution foundations:
 
 - **phantom-core** — Config (.phantom.toml), .env parsing/rewriting, phantom token generation (256-bit CSPRNG, `phm_` prefix), error types
 - **phantom-vault** — `VaultBackend` trait with OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager) and encrypted file fallback. Argon2id parameters hardened to OWASP balanced (m=64 MiB, t=3, p=1) with legacy-default fallback for older vaults
 - **phantom-proxy** — HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, replaces phantom tokens in headers/body with real secrets, forwards over TLS. Uses `hyper` for server, `reqwest` for outbound HTTPS. Streaming token replacement for `text/*` and `application/x-www-form-urlencoded` request bodies (frame-by-frame, 67-byte carry buffer for cross-chunk tokens); buffered path for JSON with field-level F9 scoping.
-- **phantom-cli** — `clap`-based CLI binary. 33 commands: init (--from <file>, --all <DIR>, --dry-run, --jobs/-j N), exec, start, stop, list (--json), add (--stdin), remove, reveal, rotate (--name KEY [--provider VENDOR] for real vendor rotation with vault-sourced bootstrap; --batch; --shadow; --json), status, agent (report [--json], doctor, setup [--dry-run|--apply]), doctor (--fix), check (--staged, --runtime), sync (--only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), team (list/create/members/invite/key-publish/vault-push/vault-pull), export (--json --allow-plaintext), import (--from doppler|infisical|dotenvx|1password|env --file <path>, or legacy <FILE> --passphrase), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail [--op] [--name] / path / verify), wrap, unwrap, watch, why, copy, open, upgrade, completion. `--help` is grouped: Setup · Daily use · Sync & teams · Maintenance
+- **phantom-cli** — `clap`-based CLI for init, proxy execution, diagnostics, sync, teams, audit, validation, provider issuance, and trusted-terminal workspace setup. Use `phantom --help` as the canonical command inventory. Plaintext JSON export is disabled; reveal requires an attached terminal and exact typed confirmation.
 - **phantom-mcp** — MCP server for Claude Code, Cursor, Windsurf, Codex. Uses `rmcp` 1.3 SDK and stdio transport. Exposes core vault/diagnostic/cloud/team tools plus advanced audit, validation, rotation, expiry, leak-incident, and compliance workflows. The exact catalog is declared in `crates/phantom-mcp/src/server.rs`.
+- **governed-execution foundations** — `phantom-workspace` provides the active value-blind Unix setup transaction. `phantom-authority`, `phantom-locus-contract`, `phantom-broker`, `phantom-runtime`, `phantom-session`, and `phantom-evidence` remain fail closed for production execution.
 
 ### How the proxy works
 

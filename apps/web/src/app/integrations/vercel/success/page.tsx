@@ -7,9 +7,11 @@ export default function VercelSuccessPage() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         </div>
-        <h1 className="text-2xl font-bold mb-2">Vercel Integration Connected</h1>
+        <h1 className="text-2xl font-bold mb-2">Vercel OAuth is unavailable</h1>
         <p className="text-[#a1a1b5] mb-6">
-          Phantom can now sync selected secrets to Vercel when you run <code className="bg-[#0a0a12] px-2 py-0.5 rounded text-sm">phantom sync --platform vercel</code>.
+          The hosted OAuth integration is disabled while Phantom completes
+          user-bound state validation and encrypted token storage. The CLI sync
+          workflow remains separately configured and governed.
         </p>
         <a href="/" className="text-blue-400 hover:text-blue-300">Back to Phantom</a>
       </div>

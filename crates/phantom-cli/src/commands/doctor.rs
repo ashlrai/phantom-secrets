@@ -184,22 +184,28 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
             check_fix("Run: phantom setup");
         }
 
-        if content.contains("Read(./.env)") {
-            check_pass("Claude Code allowed to read .env (phantom tokens only)");
-        } else {
-            check_warn(".env not in Claude Code allow rules");
-            check_fix("Run: phantom setup");
-            issues += 1;
-        }
-
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+            let has_legacy_allow = parsed["permissions"]["allow"]
+                .as_array()
+                .is_some_and(|rules| {
+                    rules.iter().any(|value| {
+                        matches!(value.as_str(), Some("Read(./.env)" | "Read(./.env.*)"))
+                    })
+                });
+            if has_legacy_allow {
+                check_warn("Legacy dotenv read allow grants are configured");
+                check_fix("Run: phantom setup");
+                issues += 1;
+            } else {
+                check_pass("Claude Code dotenv read grants remain closed");
+            }
+
             if let Some(deny_arr) = parsed["permissions"]["deny"].as_array() {
                 let has_env_deny = deny_arr
                     .iter()
                     .any(|v| v.as_str().is_some_and(|s| s.contains(".env")));
                 if has_env_deny {
-                    check_warn(".env is in deny rules — after phantom init, .env is safe to read");
-                    issues += 1;
+                    check_pass("Claude Code dotenv deny rules preserved");
                 }
             }
         }

@@ -1,9 +1,39 @@
 import { createServiceClient } from "./supabase-server";
+import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
 
 export interface AuthUser {
   userId: string;
   plan: string;
+}
+
+type BrowserAuthUser = {
+  id: string;
+  email?: string | null;
+  user_metadata?: Record<string, unknown>;
+};
+
+function effectivePlan(user: { plan: string; plan_expires_at?: string | null }) {
+  if (
+    user.plan === "pro" &&
+    user.plan_expires_at &&
+    new Date(user.plan_expires_at) < new Date()
+  ) {
+    return "free";
+  }
+  return user.plan;
+}
+
+function githubLoginForUser(user: BrowserAuthUser): string {
+  const userName = user.user_metadata?.user_name;
+  if (typeof userName === "string" && userName.trim()) return userName.trim();
+
+  const preferredUsername = user.user_metadata?.preferred_username;
+  if (typeof preferredUsername === "string" && preferredUsername.trim()) {
+    return preferredUsername.trim();
+  }
+
+  return user.email?.split("@")[0] || "unknown";
 }
 
 /**
@@ -42,17 +72,64 @@ export async function authenticateRequest(
 
   if (!user) return null;
 
-  // Check if plan is still active (grace period for failed payments)
-  let effectivePlan = user.plan;
-  if (
-    user.plan === "pro" &&
-    user.plan_expires_at &&
-    new Date(user.plan_expires_at) < new Date()
-  ) {
-    effectivePlan = "free";
-  }
+  return { userId: data.user_id, plan: effectivePlan(user) };
+}
 
-  return { userId: data.user_id, plan: effectivePlan };
+/**
+ * Validate a Supabase browser session from the Authorization header.
+ *
+ * This is intentionally separate from authenticateRequest/requireAuth so CLI
+ * API routes continue to require Phantom device tokens. Browser-only routes
+ * such as Stripe checkout and the billing portal can opt in explicitly.
+ */
+export async function authenticateBrowserRequest(
+  req: Request
+): Promise<AuthUser | null> {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader?.startsWith("Bearer ")) return null;
+
+  const token = authHeader.slice(7);
+  if (!token) return null;
+
+  const supabaseUser = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      auth: { persistSession: false },
+      global: { headers: { Authorization: `Bearer ${token}` } },
+    }
+  );
+
+  const {
+    data: { user },
+    error,
+  } = await supabaseUser.auth.getUser();
+
+  if (error || !user) return null;
+
+  const supabase = createServiceClient();
+  const browserUser = user as BrowserAuthUser;
+
+  const { error: upsertError } = await supabase.from("users").upsert(
+    {
+      id: browserUser.id,
+      github_login: githubLoginForUser(browserUser),
+      email: browserUser.email ?? null,
+    },
+    { onConflict: "id" }
+  );
+
+  if (upsertError) return null;
+
+  const { data: dbUser } = await supabase
+    .from("users")
+    .select("plan, plan_expires_at")
+    .eq("id", browserUser.id)
+    .single();
+
+  if (!dbUser) return null;
+
+  return { userId: browserUser.id, plan: effectivePlan(dbUser) };
 }
 
 /**
@@ -62,6 +139,19 @@ export async function requireAuth(
   req: Request
 ): Promise<AuthUser | Response> {
   const user = await authenticateRequest(req);
+  if (!user) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  return user;
+}
+
+/**
+ * Helper: require Supabase browser auth without widening CLI API auth.
+ */
+export async function requireBrowserAuth(
+  req: Request
+): Promise<AuthUser | Response> {
+  const user = await authenticateBrowserRequest(req);
   if (!user) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }

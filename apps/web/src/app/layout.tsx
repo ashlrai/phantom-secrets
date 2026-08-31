@@ -139,7 +139,7 @@ export default function RootLayout({
                 "https://www.npmjs.com/package/phantom-secrets",
               ],
               license: "https://opensource.org/licenses/MIT",
-              softwareVersion: "0.6.0",
+              softwareVersion: "0.7.0",
               description: DESCRIPTION,
               offers: {
                 "@type": "Offer",
@@ -194,7 +194,7 @@ export default function RootLayout({
                 {
                   "@type": "HowToStep",
                   name: "Register the MCP server with your editor",
-                  text: "Run `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp` for Claude Code, or paste the JSON into Cursor / Windsurf MCP settings.",
+                  text: "Run `claude mcp add phantom-secrets-mcp -- npx -y phantom-secrets-mcp` for Claude Code, or paste the mcpServers JSON into Cursor / Windsurf MCP settings.",
                 },
                 {
                   "@type": "HowToStep",

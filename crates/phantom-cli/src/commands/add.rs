@@ -2,20 +2,27 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use std::io::IsTerminal;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Returns true when stdin is connected to a terminal (not a pipe or redirect).
 fn stdin_is_tty() -> bool {
     std::io::stdin().is_terminal()
 }
 
-/// `phantom add KEY [VALUE]`
+/// `phantom add KEY`
 ///
 /// When VALUE is omitted:
 ///   - If stdin is a tty, prompt silently on stderr via rpassword.
 ///   - If `--stdin` is passed, read one line from stdin (piped use).
 ///   - If stdin is not a tty and `--stdin` was not passed, bail with a
 ///     clear error so CI jobs don't hang silently.
-pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> {
+pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()> {
+    if let Some(mut value) = value_arg {
+        value.zeroize();
+        anyhow::bail!(
+            "Positional secret values are disabled because command-line arguments can be exposed by process inspection. Omit the value for a hidden terminal prompt, or use --stdin."
+        );
+    }
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -37,32 +44,29 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
     }
 
     // ── Resolve the secret value ─────────────────────────────────────
-    let value: String = if let Some(v) = value_arg {
-        // Positional value provided — backward-compatible path.
-        v.to_string()
-    } else if from_stdin {
+    let value = if from_stdin {
         // --stdin: read one line from a pipe (e.g. `echo "$VAL" | phantom add KEY --stdin`).
-        // Trim the trailing newline only — preserve any internal whitespace.
-        let mut buf = String::new();
+        // Keep the input buffer zeroizing from its first allocation and remove
+        // only line-ending bytes in place. This avoids leaving an extra
+        // plaintext String copy behind after parsing.
+        let mut secret = Zeroizing::new(String::new());
         std::io::stdin()
-            .read_line(&mut buf)
+            .read_line(&mut secret)
             .context("Failed to read value from stdin")?;
-        let trimmed = buf
-            .trim_end_matches('\n')
-            .trim_end_matches('\r')
-            .to_string();
-        if trimmed.is_empty() {
+        while secret.ends_with(['\n', '\r']) {
+            secret.pop();
+        }
+        if secret.is_empty() {
             anyhow::bail!("Received empty value on stdin — aborting.");
         }
-        trimmed
+        secret
     } else {
         // Interactive: prompt on stderr so that stdout can still be captured,
         // and read silently from the controlling tty via rpassword.
         if !stdin_is_tty() {
             anyhow::bail!(
                 "stdin is not a terminal. \
-                 Pass the value as a positional argument or use {} \
-                 to read it from a pipe.",
+                 Omit the value for a hidden prompt, or use {} to read it from a pipe.",
                 "--stdin".cyan().bold()
             );
         }
@@ -74,7 +78,7 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
         if secret.is_empty() {
             anyhow::bail!("Empty value — aborting.");
         }
-        secret
+        Zeroizing::new(secret)
     };
 
     // ── Store in vault ───────────────────────────────────────────────
@@ -82,7 +86,10 @@ pub fn run(name: &str, value_arg: Option<&str>, from_stdin: bool) -> Result<()> 
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
 
     // Warn if secret already exists
-    if vault.exists(name).unwrap_or(false) {
+    if vault
+        .exists(name)
+        .with_context(|| format!("Failed to inspect existing secret: {name}"))?
+    {
         eprintln!(
             "{} Secret {} already exists — overwriting with new value",
             "warn".yellow(),

@@ -6,6 +6,7 @@
     <title>Phantom — AI agents leak your API keys. Phantom stops them.</title>
     <meta name="description" content="Let AI agents use your API keys without the security risk. Phantom replaces real secrets with worthless tokens and injects credentials at the network layer. Open-source CLI for Claude Code, Cursor, and Copilot.">
     <meta name="theme-color" content="#38bdf8">
+    <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -- canonical metadata does not load a subresource -->
     <link rel="canonical" href="https://phm.dev/">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -936,14 +937,14 @@
 <section class="sec-border danger" id="problem">
     <div class="sec-header sr">
         <h2>You know this is dangerous</h2>
-        <p>Every time you paste an API key into .env, any AI agent in your IDE can read it. And they do.</p>
+        <p>Every API key in .env is exposed to any AI agent whose workspace permissions include that file.</p>
     </div>
 
     <div class="danger-grid">
         <div class="danger-card sr">
             <span class="danger-icon">&#9888;&#65039;</span>
-            <h3>AI reads your .env</h3>
-            <p>Claude Code, Cursor, Copilot &mdash; they all read .env to "help." Your <code>sk-proj-...</code> key is now in the context window, in logs, in telemetry.</p>
+            <h3>Dotenv access crosses the context boundary</h3>
+            <p>When an agent can read .env, your <code>sk-proj-...</code> key can enter its context window, transcripts, tool logs, or generated files.</p>
         </div>
         <div class="danger-card sr sr-d1">
             <span class="danger-icon">&#128274;</span>
@@ -992,7 +993,7 @@
         <div class="step sr sr-d1">
             <div class="step-num">2</div>
             <h3>Code with AI normally</h3>
-            <p>Run <code>phantom exec -- claude</code>. A local proxy starts on 127.0.0.1. AI reads your .env, sees only phantom tokens. Your workflow doesn't change.</p>
+            <p>Run <code>phantom exec -- claude</code>. A local authenticated proxy starts on 127.0.0.1. Your app loads phantom tokens while the agent uses value-blind MCP metadata.</p>
         </div>
         <div class="step sr sr-d2">
             <div class="step-num">3</div>
@@ -1024,7 +1025,7 @@
 <section id="features">
     <div class="sec-header sr">
         <h2>Everything you need</h2>
-        <p>Agent readiness checks. 25 MCP tools. One goal: let AI do real work without leaking your keys.</p>
+        <p>Agent readiness checks. 54 release-checked MCP tools. One goal: let AI do real work without leaking your keys.</p>
     </div>
 
     <div class="feat-grid">
@@ -1071,7 +1072,7 @@
         <div class="feat sr sr-d2">
             <span class="feat-icon">&#128736;</span>
             <h3>Built in Rust</h3>
-            <p>Fast, safe, zero-dependency binary. MIT licensed. Auditable source code. Works on macOS and Linux. Free forever.</p>
+            <p>Fast, safe, zero-dependency binary. MIT licensed. Auditable source code. Works on macOS, Linux, and Windows. Free forever.</p>
         </div>
     </div>
 </section>
@@ -1112,8 +1113,8 @@
         <span class="oss-badge"><span class="dot rust"></span> <strong>Rust</strong></span>
         <span class="oss-badge"><span class="dot mit"></span> <strong>MIT License</strong></span>
         <span class="oss-badge"><strong>Agent</strong>&nbsp;readiness</span>
-        <span class="oss-badge"><strong>25</strong>&nbsp;MCP tools</span>
-        <span class="oss-badge"><strong>5</strong>&nbsp;crates</span>
+        <span class="oss-badge"><strong>54</strong>&nbsp;MCP tools</span>
+        <span class="oss-badge"><strong>12</strong>&nbsp;crates</span>
     </div>
 
     <div class="oss-code sr">
@@ -1121,7 +1122,7 @@
         <div><span class="num">phantom-vault</span> &mdash; OS keychain + encrypted file</div>
         <div><span class="num">phantom-proxy</span> &mdash; HTTP reverse proxy (hyper)</div>
         <div><span class="num">phantom-cli</span> &mdash; clap CLI with agent readiness, proxy, sync, audit, and teams</div>
-        <div><span class="num">phantom-mcp</span> &mdash; MCP server, 25 tools</div>
+        <div><span class="num">phantom-mcp</span> &mdash; MCP server, 54 release-checked tools</div>
     </div>
 
     <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-primary" style="margin-bottom: 8px;">

@@ -1,6 +1,20 @@
 import type Stripe from "stripe";
+import { readBoundedText, requestBodyErrorResponse } from "@/lib/http-body";
 import { getStripe, getStripeWebhookSecret } from "@/lib/stripe";
 import { createServiceClient } from "@/lib/supabase-server";
+
+const MAX_STRIPE_WEBHOOK_BYTES = 1_000_000;
+
+type BillingEventInput = {
+  p_event_id: string;
+  p_event_type: string;
+  p_event_created: number;
+  p_claim_token: string;
+  p_user_id: string | null;
+  p_subscription_id: string | null;
+  p_plan: "free" | "pro" | null;
+  p_plan_expires_at: string | null;
+};
 
 // API 2025-04-30.basil moved current_period_end from Subscription to its items.
 function getSubscriptionPeriodEnd(sub: Stripe.Subscription): number | null {
@@ -31,148 +45,126 @@ function getInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
   return null;
 }
 
-export async function POST(req: Request) {
-  const body = await req.text();
-  const sig = req.headers.get("stripe-signature");
+function getExpandableId(
+  value: string | { id: string } | null | undefined,
+): string | null {
+  if (typeof value === "string") return value;
+  return value?.id ?? null;
+}
 
-  if (!sig) {
+function billingEventInput(event: Stripe.Event): BillingEventInput | null {
+  const common = {
+    p_event_id: event.id,
+    p_event_type: event.type,
+    p_event_created: event.created,
+    p_claim_token: crypto.randomUUID(),
+    p_user_id: null,
+    p_subscription_id: null,
+    p_plan: null,
+    p_plan_expires_at: null,
+  } satisfies BillingEventInput;
+
+  switch (event.type) {
+    case "checkout.session.completed": {
+      const session = event.data.object;
+      return {
+        ...common,
+        p_user_id: session.metadata?.user_id ?? null,
+        p_subscription_id: getExpandableId(session.subscription),
+        p_plan: "pro",
+      };
+    }
+
+    case "customer.subscription.updated": {
+      const subscription = event.data.object;
+      const periodEnd = getSubscriptionPeriodEnd(subscription);
+      return {
+        ...common,
+        p_subscription_id: subscription.id,
+        p_plan:
+          subscription.status === "active" ||
+          subscription.status === "trialing"
+            ? "pro"
+            : "free",
+        p_plan_expires_at: periodEnd
+          ? new Date(periodEnd * 1000).toISOString()
+          : null,
+      };
+    }
+
+    case "customer.subscription.deleted":
+      return {
+        ...common,
+        p_subscription_id: event.data.object.id,
+        p_plan: "free",
+      };
+
+    case "invoice.payment_failed": {
+      const subscriptionId = getInvoiceSubscriptionId(event.data.object);
+      return {
+        ...common,
+        p_subscription_id: subscriptionId,
+        // Derive the deadline from the signed event time so a delayed retry
+        // cannot extend the grace window indefinitely.
+        p_plan_expires_at: new Date(
+          (event.created + 3 * 24 * 60 * 60) * 1000,
+        ).toISOString(),
+      };
+    }
+
+    default:
+      return null;
+  }
+}
+
+export async function POST(req: Request) {
+  let body: string;
+  try {
+    body = await readBoundedText(req, MAX_STRIPE_WEBHOOK_BYTES);
+  } catch (error) {
+    return requestBodyErrorResponse(error);
+  }
+
+  const signature = req.headers.get("stripe-signature");
+  if (!signature) {
     return new Response("Missing signature", { status: 400 });
   }
 
-  let event;
+  let event: Stripe.Event;
   try {
     event = getStripe().webhooks.constructEvent(
       body,
-      sig,
+      signature,
       getStripeWebhookSecret(),
     );
   } catch {
     return new Response("Invalid signature", { status: 400 });
   }
 
-  const supabase = createServiceClient();
+  const input = billingEventInput(event);
+  if (!input) return new Response("ok");
 
-  // Idempotency: short-circuit if we've already processed this event id.
-  // Stripe delivers at-least-once and retries on 5xx; without this check a
-  // retried event would re-apply the same plan/subscription update.
-  const { error: insertErr } = await supabase
-    .from("stripe_processed_events")
-    .insert({ event_id: event.id, event_type: event.type });
-  if (insertErr) {
-    // 23505 = unique_violation → already processed, ack and return.
-    if (insertErr.code === "23505") {
-      return new Response("ok");
-    }
-    console.error(
-      `[stripe-webhook] failed to record event ${event.id}:`,
-      insertErr,
-    );
-    // Fall through and process anyway — better to double-apply than drop.
+  // Claim, target resolution, ordering, billing mutation, and completion are a
+  // single database transaction. A process crash or RPC error rolls all of it
+  // back, so no worker can acknowledge an event whose effect did not commit.
+  const { data: outcome, error } = await createServiceClient().rpc(
+    "process_stripe_billing_event",
+    input,
+  );
+
+  if (error) {
+    return new Response("webhook processing failed", { status: 500 });
   }
-
-  switch (event.type) {
-    case "checkout.session.completed": {
-      try {
-        const session = event.data.object;
-        const userId = session.metadata?.user_id;
-        if (!userId) break;
-
-        await supabase
-          .from("users")
-          .update({
-            plan: "pro",
-            subscription_id: session.subscription as string,
-          })
-          .eq("id", userId);
-      } catch (err) {
-        console.error(
-          `[stripe-webhook] ${event.type} (${event.id}) failed:`,
-          err,
-        );
-      }
-      break;
-    }
-
-    case "customer.subscription.updated": {
-      try {
-        const sub = event.data.object;
-        const isActive =
-          sub.status === "active" || sub.status === "trialing";
-
-        const { data: user, error } = await supabase
-          .from("users")
-          .select("id")
-          .eq("subscription_id", sub.id)
-          .single();
-
-        if (error || !user) {
-          console.warn(
-            `[stripe-webhook] ${event.type} (${event.id}): no user for subscription_id=${sub.id}`,
-            error,
-          );
-          break;
-        }
-
-        const periodEnd = getSubscriptionPeriodEnd(sub);
-        const planExpiresAt = periodEnd
-          ? new Date(periodEnd * 1000).toISOString()
-          : null;
-
-        await supabase
-          .from("users")
-          .update({
-            plan: isActive ? "pro" : "free",
-            plan_expires_at: planExpiresAt,
-          })
-          .eq("id", user.id);
-      } catch (err) {
-        console.error(
-          `[stripe-webhook] ${event.type} (${event.id}) failed:`,
-          err,
-        );
-      }
-      break;
-    }
-
-    case "customer.subscription.deleted": {
-      try {
-        const sub = event.data.object;
-        await supabase
-          .from("users")
-          .update({
-            plan: "free",
-            subscription_id: null,
-            plan_expires_at: null,
-          })
-          .eq("subscription_id", sub.id);
-      } catch (err) {
-        console.error(
-          `[stripe-webhook] ${event.type} (${event.id}) failed:`,
-          err,
-        );
-      }
-      break;
-    }
-
-    case "invoice.payment_failed": {
-      try {
-        const invoice = event.data.object;
-        const subId = getInvoiceSubscriptionId(invoice);
-        if (subId) {
-          const grace = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
-          await supabase
-            .from("users")
-            .update({ plan_expires_at: grace.toISOString() })
-            .eq("subscription_id", subId);
-        }
-      } catch (err) {
-        console.error(
-          `[stripe-webhook] ${event.type} (${event.id}) failed:`,
-          err,
-        );
-      }
-      break;
-    }
+  if (outcome === "busy") {
+    return new Response("event already processing", { status: 409 });
+  }
+  if (
+    outcome !== "applied" &&
+    outcome !== "duplicate" &&
+    outcome !== "stale" &&
+    outcome !== "superseded"
+  ) {
+    return new Response("webhook processing failed", { status: 500 });
   }
 
   return new Response("ok");

@@ -82,10 +82,7 @@ pub fn run(key: &str) -> Result<()> {
                             "   Reason: Keys with {} prefix are browser-safe (shipped in client bundles)",
                             prefix.cyan()
                         );
-                        println!(
-                            "   Override: {}",
-                            format!("phantom add --force {key}").dimmed()
-                        );
+                        println!("   Override: {}", format!("phantom add {key}").dimmed());
                     }
                     SecretClassification::Secret => {
                         println!(
@@ -105,10 +102,7 @@ pub fn run(key: &str) -> Result<()> {
                             "NOT PROTECTED".dimmed()
                         );
                         println!("   Reason: Does not match secret key patterns or value patterns");
-                        println!(
-                            "   Override: {}",
-                            format!("phantom add {key} <value>").dimmed()
-                        );
+                        println!("   Override: {}", format!("phantom add {key}").dimmed());
                     }
                 }
             }

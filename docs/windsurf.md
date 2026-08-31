@@ -6,7 +6,9 @@ Windsurf's Cascade AI reads files in your workspace to understand context. A `.e
 
 After `phantom init`, your `.env` holds only phantom tokens (`phm_...`). Cascade reads the tokens, not the real values. When your code makes an outbound API call during development, the local Phantom proxy replaces the token with the real value before the request leaves your machine.
 
-The MCP integration registers 25 tools in Windsurf, accessible from Cascade chat.
+The MCP integration exposes the release-schema-verified catalog in Windsurf's
+Cascade chat. The current release contract enforces 54 unique tools; runtime
+`tools/list` is canonical.
 
 ---
 
@@ -67,9 +69,12 @@ phantom stop
 
 ---
 
-## The 25 MCP tools Windsurf gets
+## MCP tools Windsurf can use
 
-Once `phantom-secrets-mcp` is registered, Cascade can call all 25 Phantom tools. See the full table in [claude-code.md](./claude-code.md#the-25-mcp-tools-claude-gets) — the tool set is identical across all supported AI clients.
+Once `phantom-secrets-mcp` is registered, Cascade can call the same runtime
+catalog as other MCP clients. See the [core tool examples in the Claude Code
+guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
+for the canonical catalog.
 
 Frequently used tools in Windsurf sessions:
 

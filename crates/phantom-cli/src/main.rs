@@ -137,6 +137,13 @@ enum Commands {
         nonce: String,
     },
 
+    /// Plan, approve, apply, and inspect exact workspace setup transactions
+    #[command(next_help_heading = "Setup")]
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceCliAction,
+    },
+
     // ─────────────────────────── Daily use ───────────────────────────
     /// Start the proxy and run a command
     #[command(next_help_heading = "Daily use")]
@@ -197,8 +204,8 @@ enum Commands {
     Add {
         /// Secret name (e.g., OPENAI_API_KEY)
         name: String,
-        /// Secret value. If omitted, phantom prompts silently on the terminal.
-        /// Use --stdin to read from a pipe instead.
+        /// Legacy positional secret value; rejected because argv is observable
+        #[arg(hide = true)]
         value: Option<String>,
         /// Read the secret value from stdin (for piped use: echo "$VAL" | phantom add KEY --stdin)
         #[arg(long)]
@@ -220,8 +227,8 @@ enum Commands {
         /// Copy to clipboard instead of printing (auto-clears after 30s)
         #[arg(short, long)]
         clipboard: bool,
-        /// Skip confirmation (required for non-interactive use)
-        #[arg(short, long)]
+        /// Legacy flag; secret reveal now always requires a trusted terminal
+        #[arg(short, long, hide = true)]
         yes: bool,
     },
 
@@ -315,27 +322,31 @@ enum Commands {
         force: bool,
     },
 
-    /// Export secrets to an encrypted backup file or as plaintext JSON to stdout
+    /// Export secrets to an encrypted backup file
     #[command(next_help_heading = "Sync & teams")]
     Export {
-        /// Output file path (encrypted mode)
+        /// New encrypted backup path (must not already exist)
         #[arg(short, long)]
         output: Option<String>,
-        /// Encryption passphrase (encrypted mode)
-        #[arg(short, long)]
+        /// Deprecated and rejected: argv can expose the passphrase
+        #[arg(short, long, hide = true)]
         passphrase: Option<String>,
-        /// Emit secrets as a plaintext JSON object to stdout instead of an encrypted file
-        #[arg(long)]
+        /// Read the passphrase from a private regular file (maximum 4096 bytes)
+        #[arg(long, value_name = "FILE")]
+        passphrase_file: Option<String>,
+        /// Legacy plaintext mode; retained only to fail closed
+        #[arg(long, hide = true)]
         json: bool,
-        /// Required with --json: acknowledge that secrets will be emitted in plaintext
-        #[arg(long)]
+        /// Legacy acknowledgement flag; retained only to fail closed
+        #[arg(long, hide = true)]
         allow_plaintext: bool,
     },
 
     /// Import secrets from an encrypted backup or a competitor export
     ///
-    /// Legacy (phantom encrypted backup):
-    ///   phantom import <FILE> --passphrase <PASS>
+    /// Phantom encrypted backup:
+    ///   phantom import <FILE>
+    ///   phantom import <FILE> --passphrase-file <PRIVATE_FILE>
     ///
     /// Competitor migration (--from):
     ///   phantom import --from doppler    --file dump.json
@@ -348,17 +359,20 @@ enum Commands {
     ///   `dotenvx decrypt --stdout > .env` first, then import the plain .env.
     #[command(next_help_heading = "Sync & teams")]
     Import {
-        /// Path to the encrypted backup file (legacy mode)
+        /// Path to the encrypted Phantom backup
         #[arg(required_unless_present = "from")]
         file: Option<String>,
-        /// Decryption passphrase (legacy mode, required without --from)
-        #[arg(short, long, required_unless_present = "from")]
+        /// Deprecated and rejected: argv can expose the passphrase
+        #[arg(short, long, hide = true)]
         passphrase: Option<String>,
+        /// Read the backup passphrase from a private regular file (maximum 4096 bytes)
+        #[arg(long, value_name = "FILE")]
+        passphrase_file: Option<String>,
         /// Import source: doppler | infisical | dotenvx | 1password | env
         #[arg(long, value_name = "SOURCE")]
         from: Option<String>,
         /// Path to the export file (required with --from)
-        #[arg(long, value_name = "FILE", required_if_eq_all([("from", "doppler"), ("from", "infisical"), ("from", "dotenvx"), ("from", "1password"), ("from", "env")]))]
+        #[arg(long = "file", alias = "file-path", value_name = "FILE", required_if_eq_all([("from", "doppler"), ("from", "infisical"), ("from", "dotenvx"), ("from", "1password"), ("from", "env")]))]
         file_path: Option<String>,
         /// Overwrite existing secrets without prompting
         #[arg(long)]
@@ -619,6 +633,31 @@ enum McpAction {
     Serve,
 }
 
+#[derive(Subcommand)]
+enum WorkspaceCliAction {
+    /// Create a value-free exact setup plan and pending request
+    Plan {
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Claim and apply an exact pending request from a trusted terminal
+    Apply {
+        /// Pending workspace request identifier
+        #[arg(long, value_name = "ID")]
+        request: String,
+    },
+    /// Show authenticated, value-free request status
+    Status {
+        /// Workspace request identifier
+        #[arg(long, value_name = "ID")]
+        request: String,
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 // The `Add` variant carries many optional per-provider flags (client id/secret
 // env, scopes, team, account, org, …); boxing a clap-derived variant complicates
 // the derive for no runtime benefit here, so the size skew is accepted.
@@ -694,8 +733,8 @@ enum GrantAction {
         #[arg(long)]
         json: bool,
     },
-    /// Revoke a grant: best-effort vendor revoke, delete vaulted material, drop
-    /// the rotation_provider block.
+    /// Revoke a grant remotely, then remove local material; currently fails
+    /// closed before local mutation because remote revocation is not wired.
     Revoke {
         /// Provider identity to revoke (e.g. `github-app`, `supabase`).
         provider: String,
@@ -767,18 +806,15 @@ enum TeamAction {
         /// Team ID
         team_id: String,
     },
-    /// Revoke a member from the team vault and rotate the encryption key.
-    ///
-    /// The vault is re-encrypted with a fresh key and re-wrapped for all
-    /// remaining members. The revoked member cannot decrypt any future
-    /// vault versions. Emits tamper-proof audit events.
+    /// Reserved team offboarding command; currently fails closed.
+    #[command(hide = true)]
     Revoke {
         /// Team ID
         team_id: String,
         /// GitHub username to revoke
         github_login: String,
-        /// Skip the interactive confirmation prompt
-        #[arg(long, short = 'y')]
+        /// Legacy flag; retained only for command compatibility
+        #[arg(long, short = 'y', hide = true)]
         yes: bool,
     },
     /// Proactively rotate the team vault's encryption key without removing any member.
@@ -874,7 +910,7 @@ fn run() -> anyhow::Result<()> {
             show_expiry,
             min_anomaly_score,
         } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
-        Commands::Add { name, value, stdin } => commands::add::run(&name, value.as_deref(), stdin),
+        Commands::Add { name, value, stdin } => commands::add::run(&name, value, stdin),
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
             name,
@@ -975,29 +1011,36 @@ fn run() -> anyhow::Result<()> {
         Commands::Export {
             output,
             passphrase,
+            passphrase_file,
             json,
             allow_plaintext,
         } => commands::export_cmd::run(
             output.as_deref(),
-            passphrase.as_deref(),
+            passphrase,
+            passphrase_file.as_deref(),
             json,
             allow_plaintext,
         ),
         Commands::Import {
             file,
             passphrase,
+            passphrase_file,
             from,
             file_path,
             force,
         } => {
             if let Some(source) = from {
+                commands::export_cmd::reject_legacy_passphrase(passphrase)?;
+                if passphrase_file.is_some() {
+                    anyhow::bail!("--passphrase-file is only valid for encrypted Phantom backups");
+                }
                 let fp = file_path.as_deref().unwrap_or("");
                 commands::import_cmd::run_from(&source, fp, force)
             } else {
-                // Legacy encrypted-backup path
                 commands::import_cmd::run(
                     file.as_deref().unwrap_or(""),
-                    passphrase.as_deref().unwrap_or(""),
+                    passphrase,
+                    passphrase_file.as_deref(),
                     force,
                 )
             }
@@ -1114,6 +1157,13 @@ fn run() -> anyhow::Result<()> {
             McpAction::Serve => commands::mcp::run_serve(),
         },
         Commands::McpApprove { nonce } => commands::mcp_approve::run(&nonce),
+        Commands::Workspace { action } => match action {
+            WorkspaceCliAction::Plan { json } => commands::workspace::run_plan(json),
+            WorkspaceCliAction::Apply { request } => commands::workspace::run_apply(&request),
+            WorkspaceCliAction::Status { request, json } => {
+                commands::workspace::run_status(&request, json)
+            }
+        },
         Commands::SecretsExpiringSoon {
             days,
             auto_rotate,

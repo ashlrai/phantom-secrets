@@ -21,7 +21,7 @@ Closes #
 ## Checklist
 
 - [ ] `~/.cargo/bin/cargo build` passes
-- [ ] `~/.cargo/bin/cargo test` passes (103 tests + any new ones)
+- [ ] `~/.cargo/bin/cargo test --workspace --all-targets --locked` passes
 - [ ] `~/.cargo/bin/cargo clippy --all-targets -- -D warnings` is clean
 - [ ] `~/.cargo/bin/cargo fmt --all` applied
 - [ ] Docs updated if behavior changed (README, CLAUDE.md, llms.txt)

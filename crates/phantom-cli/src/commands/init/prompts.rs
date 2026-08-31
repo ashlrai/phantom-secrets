@@ -47,27 +47,15 @@ pub fn auto_setup_claude_code(project_dir: &Path, cwd: &Path) {
         }
     }
 
-    // Add .env read permissions
+    // Remove legacy Phantom-managed dotenv read grants. Tokens are worthless,
+    // but dotenv siblings can contain plaintext backups or tool-generated data.
     let permissions = obj
         .entry("permissions")
         .or_insert_with(|| serde_json::json!({}));
     if let Some(perms) = permissions.as_object_mut() {
-        let allow = perms
-            .entry("allow")
-            .or_insert_with(|| serde_json::json!([]));
-        if let Some(allow_arr) = allow.as_array_mut() {
-            for rule in &["Read(./.env)", "Read(./.env.*)"] {
-                if !allow_arr.iter().any(|v| v.as_str() == Some(rule)) {
-                    allow_arr.push(serde_json::json!(rule));
-                    changed = true;
-                }
-            }
-            if changed {
-                println!(
-                    "{} Allowed Claude Code to read .env (phantom tokens only)",
-                    "ok".green().bold()
-                );
-            }
+        if crate::commands::setup::remove_legacy_dotenv_read_grants(perms) {
+            changed = true;
+            println!("{} Removed legacy dotenv read grants", "ok".green().bold());
         }
     }
 

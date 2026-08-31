@@ -4,7 +4,7 @@ use phantom_core::dotenv::EnvEntry;
 use phantom_core::token::TokenMap;
 use std::path::Path;
 
-/// Set up vault, generate tokens, store secrets, backup and rewrite the .env file.
+/// Set up vault, generate tokens, store secrets, and atomically rewrite the .env file.
 /// Returns the token map (phantom token -> real value mappings).
 pub fn setup_and_store(
     real_entries: &[&EnvEntry],
@@ -34,16 +34,9 @@ pub fn setup_and_store(
         );
     }
 
-    // Backup .env before rewriting (safety net against data loss)
-    let backup_path = env_path.with_file_name(".env.backup");
-    std::fs::copy(env_path, &backup_path).context("Failed to create .env backup")?;
-    println!(
-        "   {} Backed up original .env to {}",
-        "+".green().bold(),
-        backup_path.display()
-    );
-
-    // Rewrite .env with phantom tokens
+    // Never leave a plaintext project-local backup: AI permission patterns,
+    // editor indexing, and accidental archive tooling can all cross .gitignore.
+    // The core writer stages privately, fsyncs, and atomically replaces .env.
     dotenv
         .write_phantomized(&token_map, env_path)
         .context("Failed to rewrite .env file")?;

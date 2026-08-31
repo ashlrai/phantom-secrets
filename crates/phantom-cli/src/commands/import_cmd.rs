@@ -1,12 +1,24 @@
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use zeroize::{Zeroize, Zeroizing};
 
-/// Legacy import: read phantom's own encrypted backup format (`phantom-export.enc`).
-pub fn run(file: &str, passphrase: &str, force: bool) -> Result<()> {
+use super::export_cmd::{self, PassphrasePurpose, MAX_ENCRYPTED_BACKUP_BYTES};
+
+/// Import Phantom's encrypted backup format (`phantom-export.enc`).
+pub fn run(
+    file: &str,
+    legacy_passphrase: Option<String>,
+    passphrase_file: Option<&str>,
+    force: bool,
+) -> Result<()> {
+    export_cmd::reject_legacy_passphrase(legacy_passphrase)?;
+    let passphrase = export_cmd::acquire_passphrase(passphrase_file, PassphrasePurpose::Import)?;
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -17,23 +29,20 @@ pub fn run(file: &str, passphrase: &str, force: bool) -> Result<()> {
         );
     }
 
-    // Read encrypted file
-    let file_path = std::path::Path::new(file);
-    if !file_path.exists() {
-        anyhow::bail!("Import file not found: {}", file);
-    }
+    let file_path = Path::new(file);
+    let encrypted = read_encrypted_backup(file_path)?;
 
-    let encrypted = std::fs::read(file_path).context(format!("Failed to read file: {file}"))?;
+    let decrypted = Zeroizing::new(
+        phantom_vault::crypto::decrypt(&encrypted, passphrase.as_str())
+            .context("Failed to decrypt import file — wrong passphrase or corrupt data")?,
+    );
 
-    // Decrypt
-    let decrypted = phantom_vault::crypto::decrypt(&encrypted, passphrase)
-        .context("Failed to decrypt import file — wrong passphrase or corrupt data")?;
+    let secrets = ImportedSecrets(
+        serde_json::from_slice(&decrypted)
+            .context("Failed to parse import data — file may be corrupt")?,
+    );
 
-    // Deserialize JSON
-    let secrets: BTreeMap<String, String> = serde_json::from_slice(&decrypted)
-        .context("Failed to parse import data — file may be corrupt")?;
-
-    if secrets.is_empty() {
+    if secrets.0.is_empty() {
         println!("{} No secrets found in import file.", "!".yellow().bold());
         return Ok(());
     }
@@ -45,10 +54,19 @@ pub fn run(file: &str, passphrase: &str, force: bool) -> Result<()> {
     let mut skipped = 0usize;
     let mut failed = Vec::new();
 
-    for (name, value) in &secrets {
-        if vault.exists(name).unwrap_or(false) && !force {
-            skipped += 1;
-            continue;
+    for (name, value) in &secrets.0 {
+        if !force {
+            match vault.exists(name) {
+                Ok(true) => {
+                    skipped += 1;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    failed.push(format!("{name}: failed to inspect destination: {error}"));
+                    continue;
+                }
+            }
         }
 
         match vault.store(name, value) {
@@ -77,6 +95,116 @@ pub fn run(file: &str, passphrase: &str, force: bool) -> Result<()> {
         failed.len()
     );
 
+    if !failed.is_empty() {
+        anyhow::bail!(
+            "Encrypted restore was only partially applied: {} imported, {} skipped, {} failed. Fix the reported destination errors and retry with --force only if overwriting successfully restored entries is intended.",
+            imported,
+            skipped,
+            failed.len()
+        );
+    }
+
+    Ok(())
+}
+
+struct ImportedSecrets(BTreeMap<String, String>);
+
+impl Drop for ImportedSecrets {
+    fn drop(&mut self) {
+        for value in self.0.values_mut() {
+            value.zeroize();
+        }
+    }
+}
+
+fn read_encrypted_backup(path: &Path) -> Result<Vec<u8>> {
+    let before = std::fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to inspect encrypted backup: {}", path.display()))?;
+    if before.file_type().is_symlink() || !before.is_file() {
+        anyhow::bail!(
+            "Encrypted backup must be a regular file and must not be a symlink: {}",
+            path.display()
+        );
+    }
+    if before.len() > MAX_ENCRYPTED_BACKUP_BYTES {
+        anyhow::bail!(
+            "Encrypted backup exceeds the {}-byte safety limit",
+            MAX_ENCRYPTED_BACKUP_BYTES
+        );
+    }
+
+    let mut file = File::open(path)
+        .with_context(|| format!("Failed to open encrypted backup: {}", path.display()))?;
+    ensure_opened_same_backup(path, &before, &file.metadata()?)?;
+
+    let mut encrypted = Vec::with_capacity(before.len() as usize);
+    file.by_ref()
+        .take(MAX_ENCRYPTED_BACKUP_BYTES + 1)
+        .read_to_end(&mut encrypted)
+        .with_context(|| format!("Failed to read encrypted backup: {}", path.display()))?;
+    if encrypted.len() as u64 > MAX_ENCRYPTED_BACKUP_BYTES {
+        anyhow::bail!(
+            "Encrypted backup exceeds the {}-byte safety limit",
+            MAX_ENCRYPTED_BACKUP_BYTES
+        );
+    }
+    Ok(encrypted)
+}
+
+#[cfg(unix)]
+fn ensure_opened_same_backup(
+    path: &Path,
+    before: &std::fs::Metadata,
+    opened: &std::fs::Metadata,
+) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if before.dev() != opened.dev() || before.ino() != opened.ino() || !opened.is_file() {
+        anyhow::bail!(
+            "Encrypted backup changed while it was being opened: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_opened_same_backup(
+    path: &Path,
+    before: &std::fs::Metadata,
+    opened: &std::fs::Metadata,
+) -> Result<()> {
+    use std::os::windows::fs::MetadataExt;
+
+    // Rust 1.95 still keeps Windows volume_serial_number/file_index behind the
+    // unstable `windows_by_handle` feature. Compare several stable on-disk
+    // fingerprint field instead; a regular-file check alone would miss swaps.
+    if !opened.is_file()
+        || before.file_attributes() != opened.file_attributes()
+        || before.creation_time() != opened.creation_time()
+        || before.last_write_time() != opened.last_write_time()
+        || before.file_size() != opened.file_size()
+    {
+        anyhow::bail!(
+            "Encrypted backup changed while it was being opened: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn ensure_opened_same_backup(
+    path: &Path,
+    _before: &std::fs::Metadata,
+    opened: &std::fs::Metadata,
+) -> Result<()> {
+    if !opened.is_file() {
+        anyhow::bail!(
+            "Encrypted backup changed while it was being opened: {}",
+            path.display()
+        );
+    }
     Ok(())
 }
 

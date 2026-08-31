@@ -1,13 +1,16 @@
 import { createServiceClient } from "@/lib/supabase-server";
 import { isValidDeviceUserCode, normalizeDeviceUserCode } from "@/lib/device-code";
+import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createClient } from "@supabase/supabase-js";
+
+const MAX_DEVICE_AUTH_BODY_BYTES = 4_096;
 
 export async function POST(req: Request) {
   let body: { user_code?: string };
   try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+    body = await readBoundedJsonObject(req, MAX_DEVICE_AUTH_BODY_BYTES);
+  } catch (error) {
+    return requestBodyErrorResponse(error);
   }
   const { user_code } = body;
 

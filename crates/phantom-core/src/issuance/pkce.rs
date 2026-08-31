@@ -47,7 +47,7 @@ impl ConsentEngine for LoopbackPkceEngine {
         // hit when mock issuance is explicitly enabled. This stops a
         // prompt-injected agent from redirecting the exchange — and the
         // refresh token it yields — to an attacker-controlled host.
-        if deps.endpoints.overridden {
+        if deps.endpoints.is_overridden() {
             guard_mock_issuance()?;
         }
 
@@ -62,7 +62,7 @@ impl ConsentEngine for LoopbackPkceEngine {
             return Err(IssuanceError::NotSupported {
                 reason: format!(
                     "no authorize/token endpoint is known for provider '{}'; use a known \
-                     provider or set the PHANTOM_OAUTH_* endpoint overrides",
+                     provider",
                     req.provider
                 ),
             });

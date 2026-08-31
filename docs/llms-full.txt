@@ -11,7 +11,7 @@ MCP: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
 ## The Problem
 
-AI coding tools read your .env file. Your API keys enter the LLM context window. They can leak via:
+AI coding tools with dotenv filesystem access can put API keys into the LLM context window. They can leak via:
 - Session logs and transcripts
 - Prompt injection attacks
 - Malicious MCP servers
@@ -39,17 +39,17 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 - `phantom cloud push` — Push encrypted vault to Phantom Cloud (end-to-end encrypted).
 - `phantom cloud pull` — Pull vault from Phantom Cloud to local machine.
 - `phantom cloud status` — Check cloud auth and sync status.
-- `phantom export --output <file> --passphrase <pass>` — Export vault to encrypted backup file. Or `--json --allow-plaintext` to emit plaintext JSON to stdout (explicit flag required).
-- `phantom import <file> --passphrase <pass>` — Import secrets from encrypted backup. Or `--from doppler|infisical|dotenvx|1password|env --file <path>` to import from a competitor export. Add `--force` to overwrite existing entries.
+- `phantom export --output <file>` — Export the vault to a new encrypted backup using a hidden terminal prompt. For bounded automation, use `--passphrase-file <private-file>`; plaintext export and argv passphrases are disabled.
+- `phantom import <file>` — Restore an encrypted backup using a hidden terminal prompt, or use `--passphrase-file <private-file>`. `--from doppler|infisical|dotenvx|1password|env --file <path>` imports from another format; add `--force` to overwrite existing entries.
 - `phantom audit show [--last N] [--op OP] [--name NAME] [--json]` — Print recent audit events. Requires `PHANTOM_AUDIT=1`.
 - `phantom audit tail` — Follow the audit log live.
 - `phantom audit path` — Print the absolute path to the audit log file.
 - `phantom audit verify` — Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected.
 - `phantom start` / `phantom stop` — Standalone proxy lifecycle. `--daemon` mode available.
 - `phantom list` — Show secret names stored in vault (never shows values). Add `--json` to emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded.
-- `phantom add <KEY> [VALUE]` — Add a secret to the vault. With no positional VALUE, prompts silently on the controlling terminal via `rpassword` (the value never enters shell history or `ps aux`). For piped/CI use, pass `--stdin` and provide one line on stdin: `echo "$VAL" | phantom add KEY --stdin`.
+- `phantom add <KEY>` — Add a secret through a hidden terminal prompt. Positional values are rejected; for piped/CI use, pass `--stdin` and provide one line on stdin: `echo "$VAL" | phantom add KEY --stdin`.
 - `phantom remove <KEY>` — Remove a secret from the vault.
-- `phantom reveal <KEY>` — View a secret value. Requires `--yes` in non-interactive contexts.
+- `phantom reveal <KEY>` — View a secret value only from attached terminals after exact typed confirmation; there is no non-interactive bypass.
 - `phantom rotate` — Regenerate all phantom tokens in .env. Supports `--sync` to push updated tokens to deployment platforms.
 - `phantom status` — Show project ID, vault backend, secret count, service mappings.
 - `phantom doctor` — Health check: config, vault, .env, .gitignore, Claude Code MCP, cloud auth.
@@ -95,7 +95,7 @@ cargo install phantom-secrets
 
 ## MCP Server — Multi-IDE Support
 
-Phantom includes a native MCP server (`phantom-secrets-mcp`) with 25 tools. Works with every major AI coding tool.
+Phantom includes a native MCP server (`phantom-secrets-mcp`) with 54 tools enforced by the release schema smoke test.
 
 ### Setup by IDE
 
@@ -212,12 +212,13 @@ Phantom automatically identifies secrets vs config values using heuristics:
 
 ## Architecture
 
-5-crate Rust workspace + Next.js backend:
+12-crate Rust workspace + Next.js backend:
 - phantom-core: Config, .env parsing, token generation, sync, auth, cloud API client
 - phantom-vault: VaultBackend trait, OS keychain + encrypted file backends, shared crypto module
 - phantom-proxy: HTTP reverse proxy with streaming token replacement (text/*/form bodies) and SSE/streaming support, request interceptor
 - phantom-cli: clap CLI with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows
-- phantom-mcp: MCP server via rmcp SDK (stdio transport, 25 tools)
+- phantom-mcp: MCP server via rmcp SDK (stdio transport, 54 release-checked tools)
+- phantom-authority, phantom-locus-contract, phantom-broker, phantom-runtime, phantom-evidence, phantom-session, phantom-workspace: fail-closed authority, compatibility, lease, execution-denial, evidence, session, and setup foundations
 - apps/web: Next.js backend on Vercel (Supabase + Stripe, device auth, vault API, billing)
 
 MIT licensed. CI runs the Rust test suite and clippy across the workspace before release.
@@ -229,7 +230,7 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 3. **Multi-device sync**: `phantom login` then `phantom cloud push` on one machine, `phantom cloud pull` on another
 4. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
 5. **New machine onboarding**: `phantom pull --from vercel --project prj_xxx`
-6. **Vault backup**: `phantom export --output backup.enc --passphrase mypass` then `phantom import backup.enc --passphrase mypass`
+6. **Vault backup**: `phantom export --output backup.enc` then `phantom import backup.enc`; both use hidden terminal prompts. Automation may use the same private `--passphrase-file` for both commands.
 6b. **Migrate from Doppler/Infisical/dotenvx/1Password**: `phantom import --from doppler --file dump.json`
 6c. **Audit trail**: `PHANTOM_AUDIT=1` + `phantom audit show/tail/verify` for compliance and forensics
 7. **Team onboarding**: `phantom env` generates .env.example with placeholders

@@ -30,7 +30,7 @@ Once a secret enters the context window, every downstream system becomes an atta
 
 The standard advice — "just don't put secrets in `.env`" — ignores reality. Developers need secrets in their environment to build software. The question isn't whether AI will read your `.env`. It's what it finds when it does.
 
-## Phantom tokens: let the AI read your .env, but make it harmless
+## Phantom tokens: keep real credentials out of the AI boundary
 
 I built [Phantom](https://phm.dev) to solve this at the architecture level. The core idea: instead of hiding your `.env` from AI (which defeats the purpose of having an AI agent), replace every real secret with a **phantom token** — a cryptographically random string that looks like an API key but is worthless.
 
@@ -61,9 +61,9 @@ Your real secrets are stored in the OS keychain (macOS Keychain, Linux Secret Se
 When you run `phantom exec -- claude`, Phantom starts a local HTTP reverse proxy on `127.0.0.1` and rewrites the base URLs in your environment:
 
 ```bash
-OPENAI_BASE_URL=http://127.0.0.1:54321/openai
-ANTHROPIC_BASE_URL=http://127.0.0.1:54321/anthropic
-STRIPE_API_BASE=http://127.0.0.1:54321/stripe
+OPENAI_BASE_URL=http://127.0.0.1:PORT/openai
+ANTHROPIC_BASE_URL=http://127.0.0.1:PORT/anthropic
+STRIPE_API_BASE=http://127.0.0.1:PORT/stripe
 ```
 
 Here's the full request lifecycle:
@@ -71,7 +71,7 @@ Here's the full request lifecycle:
 ```
 Your code / AI agent
      |
-     |  POST http://127.0.0.1:54321/openai/v1/chat/completions
+     |  POST http://127.0.0.1:PORT/openai/v1/chat/completions
      |  Authorization: Bearer phm_a7f3b9e2...
      v
 Phantom Proxy (localhost)
@@ -114,11 +114,11 @@ ok Project initialized. Run `phantom exec -- <cmd>` to start coding.
 
 # 2. Work with AI — proxy handles everything transparently
 $ phantom exec -- claude
--> Proxy listening on 127.0.0.1:54321
+-> Proxy listening on an ephemeral 127.0.0.1 port
 -> Injecting: OPENAI_API_KEY, STRIPE_SECRET_KEY, DATABASE_URL
 -> Starting: claude
 
-# Claude reads .env, sees phm_ tokens, writes code that calls OpenAI.
+# The app loads phm_ tokens; Claude uses value-blind MCP metadata.
 # The SDK hits localhost, proxy swaps tokens, forwards to real API.
 # Everything works. Claude never touched a real key.
 
@@ -135,16 +135,21 @@ Phantom also ships an MCP server so Claude Code, Cursor, Windsurf, and Codex can
 $ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 ```
 
-Twenty-five tools cover vault status, init, safe interactive secret entry, checks, diagnostics, cloud sync, package script wrapping, and team vaults. The deprecated plaintext add tool refuses secret values through MCP, so real credentials stay out of the agent context.
+The release-schema-verified catalog currently contains 54 unique tools covering
+vault status, init, safe interactive secret entry, checks, diagnostics, cloud
+sync, audit, validation, rotation, expiry, compliance, and team vaults. The
+deprecated plaintext add tool refuses secret values through MCP, so real
+credentials stay out of the agent context. Runtime `tools/list` is canonical.
 
-## Architecture: 5-crate Rust workspace
+## Architecture: modular Rust workspace
 
 ```
 phantom-core     Config, .env parsing, token generation (256-bit CSPRNG, phm_ prefix)
 phantom-vault    VaultBackend trait: OS keychain + encrypted file fallback
 phantom-proxy    HTTP reverse proxy (hyper), token replacement, TLS forwarding (reqwest)
 phantom-cli      clap-based CLI with agent readiness, proxy, sync, audit, teams
-phantom-mcp      MCP server (rmcp SDK), stdio transport, 25 tools
+phantom-mcp      MCP server (rmcp SDK), stdio transport, schema-verified catalog
+workspace/kernel Value-blind setup plus fail-closed governed-execution foundations
 ```
 
 The vault uses ChaCha20-Poly1305 for encryption with Argon2id key derivation (for the encrypted file fallback). The `zeroize` crate scrubs secrets from memory after every proxy injection. CI runs the Rust test suite and clippy before release.

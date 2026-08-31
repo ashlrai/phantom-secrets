@@ -19,11 +19,9 @@
 //!   (values render as `[redacted]`), mirroring `AutoSyncOutcome`.
 //! - Vendor error bodies only ever surface through
 //!   [`crate::rotation_provider::summarize_error_body`] (type/code/status only).
-//! - The mock fast-path is fail-closed: issuance against a non-production
-//!   endpoint (the test wiremock server, reached via the `endpoints` override
-//!   seam) requires the explicit `PHANTOM_ALLOW_MOCK_ISSUANCE=1` opt-in and is
-//!   audit-tagged `grant.issuance.mock`, so a prompt-injected agent can never
-//!   redirect a real issuance at an attacker-controlled host.
+//! - Production endpoints are compile-time constants. Endpoint injection and
+//!   mock issuance are available only to this crate's unit tests, so an
+//!   agent-controlled environment cannot redirect an exchange.
 
 pub mod browser;
 pub mod device;
@@ -40,9 +38,9 @@ pub use browser::{BrowserOpener, NoBrowser};
 pub use device::DeviceFlowEngine;
 pub use endpoints::Endpoints;
 pub use github_app::{mint_app_jwt, GithubAppManifestFlow, GithubManifestSpec};
-pub use loopback::{
-    CapturedCode, LoopbackBinding, LoopbackListener, MockLoopbackListener, StdLoopbackListener,
-};
+#[cfg(test)]
+pub use loopback::MockLoopbackListener;
+pub use loopback::{CapturedCode, LoopbackBinding, LoopbackListener, StdLoopbackListener};
 pub use pkce::LoopbackPkceEngine;
 pub use sentry::{
     mint_install_jwt, SentryInstallFlow, SENTRY_APP_JWT_SEED_NAME, SENTRY_CLIENT_ID_NAME,
@@ -241,10 +239,7 @@ pub enum IssuanceError {
     UnexpectedResponse { reason: String },
     /// This provider has no automatable consent engine.
     NotSupported { reason: String },
-    /// An endpoint override was not https-or-localhost (fail closed before I/O).
-    InvalidEndpoint { var: String, value: String },
-    /// Mock issuance attempted without the `PHANTOM_ALLOW_MOCK_ISSUANCE=1`
-    /// opt-in (or `cfg(test)`). Fail closed.
+    /// Mock issuance attempted outside this crate's unit-test build.
     MockDisabled,
 }
 
@@ -277,16 +272,10 @@ impl fmt::Display for IssuanceError {
                 write!(f, "unexpected response during issuance: {reason}")
             }
             Self::NotSupported { reason } => write!(f, "issuance not supported: {reason}"),
-            Self::InvalidEndpoint { var, value } => write!(
-                f,
-                "{var} must use https:// (or http://localhost / http://127.0.0.1 for local \
-                 testing). Got: {value}"
-            ),
             Self::MockDisabled => write!(
                 f,
-                "issuance endpoints are overridden to a non-production host, but mock issuance \
-                 is disabled in this build. Mock issuance is for tests only; set \
-                 PHANTOM_ALLOW_MOCK_ISSUANCE=1 to enable it in a test environment."
+                "issuance endpoints are overridden, but endpoint injection and mock issuance \
+                 are compiled only for Phantom's unit tests"
             ),
         }
     }
@@ -387,22 +376,10 @@ pub fn default_consent_engines() -> Vec<Box<dyn ConsentEngine>> {
 /// i.e. a test wiremock server reached via the `endpoints` override seam) is
 /// permitted.
 ///
-/// Fail closed: mock issuance is allowed only under `cfg(test)` or with the
-/// explicit `PHANTOM_ALLOW_MOCK_ISSUANCE=1` opt-in — never in a shipped binary
-/// with a default environment. This is what stops a prompt-injected agent from
-/// pointing issuance at an attacker-controlled host to capture a "root" it
-/// planted.
+/// Fail closed: mock issuance is allowed only under `cfg(test)`. Shipped
+/// libraries contain no environment-variable escape hatch.
 pub fn issuance_mock_allowed() -> bool {
     cfg!(test)
-        || std::env::var("PHANTOM_ALLOW_MOCK_ISSUANCE")
-            .map(|v| v == "1")
-            .unwrap_or(false)
-}
-
-/// Public alias for callers outside the crate (the CLI decides whether to
-/// swap in the test harness listener). Same fail-closed semantics.
-pub fn mock_issuance_enabled() -> bool {
-    issuance_mock_allowed()
 }
 
 /// Build the blocking HTTP client used by the issuance engines. Lives in core
@@ -426,7 +403,7 @@ pub fn build_http_client() -> Result<reqwest::blocking::Client, IssuanceError> {
         })
 }
 
-/// Guard invoked by every engine when `deps.endpoints.overridden` is set:
+/// Guard invoked by every engine when unit tests inject overridden endpoints:
 /// permits the mock branch (tagging the audit log with a distinct
 /// `grant.issuance.mock` event) or fails closed.
 pub(crate) fn guard_mock_issuance() -> Result<(), IssuanceError> {

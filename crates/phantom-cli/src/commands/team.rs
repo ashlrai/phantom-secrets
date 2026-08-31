@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::{auth, config::PhantomConfig, teams, teams_vault};
 use std::collections::BTreeMap;
-use std::io::{self, Write};
 use zeroize::Zeroizing;
 
 pub fn run_list() -> Result<()> {
@@ -199,83 +198,10 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn confirm_destructive(prompt: &str) -> Result<()> {
-    print!("{prompt} [type 'yes' to confirm]: ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    if input.trim().eq_ignore_ascii_case("yes") {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("Aborted."))
-    }
-}
-
-pub fn run_revoke(team_id: &str, github_login: &str, yes: bool) -> Result<()> {
-    let token = auth::require_token()?;
-    let api_base = auth::api_base_url()?;
-    let kp = auth::get_or_create_team_keypair()?;
-
-    let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
-        .context("No .phantom.toml found. Run `phantom init` first.")?;
-    let project_id = config.phantom.project_id.clone();
-
-    println!(
-        "{}  This will revoke @{} from team {} and rotate the vault key.",
-        "warn".yellow().bold(),
-        github_login,
-        team_id
-    );
-    println!(
-        "{}  All remaining members will be re-wrapped with a new key.",
-        "    ".dimmed()
-    );
-    println!(
-        "{}  @{} will no longer be able to decrypt any future vault versions.",
-        "    ".dimmed(),
-        github_login
-    );
-
-    if !yes {
-        confirm_destructive(&format!("Revoke @{github_login} from team {team_id}?"))?;
-    }
-
-    println!(
-        "{}  Revoking @{} and rotating vault key...",
-        "->".blue().bold(),
-        github_login
-    );
-
-    let rt = tokio::runtime::Runtime::new()?;
-    let outcome = rt.block_on(teams_vault::revoke_member(
-        &api_base,
-        &token,
-        team_id,
-        &project_id,
-        github_login,
-        &kp,
-    ))?;
-
-    println!(
-        "{}  @{} revoked from team {}. Vault rotated to v{} ({} secret(s), \
-         re-encrypted for {} member(s){}).",
-        "ok".green().bold(),
-        github_login,
-        team_id,
-        outcome.new_version,
-        outcome.secret_count,
-        outcome.recipients,
-        if outcome.skipped > 0 {
-            format!(", {} skipped — no key registered", outcome.skipped)
-        } else {
-            String::new()
-        }
-    );
-    println!(
-        "{}  Audit events recorded: team.member.revoked + team.vault.key_rotated",
-        "   ".dimmed()
-    );
-    Ok(())
+pub fn run_revoke(team_id: &str, github_login: &str, _yes: bool) -> Result<()> {
+    anyhow::bail!(
+        "Team member revocation is unavailable: Phantom Cloud does not yet expose the required atomic membership-removal and vault-key-rotation transaction (team {team_id}, member @{github_login})"
+    )
 }
 
 pub fn run_rotate_vault(team_id: &str) -> Result<()> {
@@ -379,4 +305,13 @@ pub fn run_invite(team_id: &str, github_login: &str, role: &str) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn team_revoke_fails_before_auth_or_network_access() {
+        let error = super::run_revoke("team-test", "member-test", true).unwrap_err();
+        assert!(error.to_string().contains("atomic membership-removal"));
+    }
 }

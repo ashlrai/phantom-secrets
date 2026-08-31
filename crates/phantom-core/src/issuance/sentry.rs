@@ -93,7 +93,7 @@ impl ConsentEngine for SentryInstallFlow {
         // when mock issuance is explicitly enabled. Stops a prompt-injected
         // agent from redirecting the exchange — and the token it yields — to an
         // attacker-controlled host.
-        if deps.endpoints.overridden {
+        if deps.endpoints.is_overridden() {
             guard_mock_issuance()?;
         }
 
@@ -117,9 +117,8 @@ impl ConsentEngine for SentryInstallFlow {
                         .to_string(),
                 })?;
 
-        // The Sentry API origin (scheme://host[:port]) is derived from the OAuth
-        // token endpoint, so the existing PHANTOM_OAUTH_TOKEN_BASE override seam
-        // points the whole flow at a test server without a new env var.
+        // Derive the Sentry API origin from the fixed token endpoint. Unit tests
+        // inject a loopback token URL through their cfg(test)-only endpoint seam.
         let origin = sentry_origin(&deps.endpoints.token);
 
         // `--org <slug>` names the published integration slug used to build the
@@ -352,9 +351,7 @@ pub fn authorizations_url(origin: &str, installation_id: &str) -> String {
     format!("{origin}/api/0/sentry-app-installations/{installation_id}/authorizations/")
 }
 
-/// Reduce a full URL to its `scheme://host[:port]` origin. Used to derive the
-/// Sentry API/web base from the OAuth token endpoint so the existing
-/// `PHANTOM_OAUTH_TOKEN_BASE` override seam repoints the whole flow.
+/// Reduce a full URL to its `scheme://host[:port]` origin.
 fn sentry_origin(token_url: &str) -> String {
     if token_url.is_empty() {
         return "https://sentry.io".to_string();

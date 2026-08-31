@@ -197,6 +197,14 @@ impl ResponseScrubber {
 
     // ── Streaming scrub ───────────────────────────────────────────────────────
 
+    /// Scrub one response header value before it is forwarded downstream.
+    pub fn scrub_header(&self, name: &str, value: &str) -> (String, ScrubEvent) {
+        let (scrubbed, events) = self.analyzer.analyze_header(name, value);
+        let event = ScrubEvent::from_events(events.clone());
+        emit_leak_warnings(&events, None);
+        (scrubbed, event)
+    }
+
     /// Process one chunk from a streaming response.
     ///
     /// `carry` is the overlap buffer from the previous call; it is prepended

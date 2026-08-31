@@ -72,6 +72,7 @@ struct MockRoute {
     status: u16,
     content_type: String,
     body: Vec<u8>,
+    response_headers: Vec<(String, String)>,
 }
 
 impl ConfigurableMock {
@@ -189,11 +190,16 @@ async fn serve_configurable(
         )
     };
 
-    Ok(Response::builder()
+    let mut builder = Response::builder()
         .status(status)
-        .header("content-type", ct)
-        .body(Full::new(Bytes::from(body)))
-        .unwrap())
+        .header("content-type", ct);
+    if let Some(route) = matched {
+        for (name, value) in &route.response_headers {
+            builder = builder.header(name, value);
+        }
+    }
+
+    Ok(builder.body(Full::new(Bytes::from(body))).unwrap())
 }
 
 fn make_client() -> reqwest::Client {
@@ -237,12 +243,14 @@ async fn test_multi_secret_routing_no_cross_contamination() {
             status: 200,
             content_type: "application/json".to_string(),
             body: openai_echo.as_bytes().to_vec(),
+            response_headers: Vec::new(),
         },
         MockRoute {
             path_prefix: "/v1/messages".to_string(),
             status: 200,
             content_type: "application/json".to_string(),
             body: anthropic_echo.as_bytes().to_vec(),
+            response_headers: Vec::new(),
         },
     ])
     .await;
@@ -469,6 +477,7 @@ async fn test_concurrent_sse_and_json_streaming_secrets_scrubbed() {
         status: 401,
         content_type: "application/json".to_string(),
         body: json_body.as_bytes().to_vec(),
+        response_headers: Vec::new(),
     }])
     .await;
 
@@ -564,6 +573,182 @@ async fn test_concurrent_sse_and_json_streaming_secrets_scrubbed() {
     proxy.shutdown().await;
     json_mock.shutdown().await;
     let _ = sse_tx.send(true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Response encoding boundary — identity only
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_proxy_forces_identity_and_rejects_encoded_upstream_responses() {
+    let secret = "sk-encoded-response-secret-0123456789";
+    let phantom = "phm_eeee5555ffff6666aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666";
+    let rejected = [
+        ("/gzip", "gzip", "application/json"),
+        ("/br", "br", "application/json"),
+        ("/deflate", "deflate", "application/json"),
+        ("/zstd", "zstd", "application/json"),
+        ("/unknown", "future-coding", "application/json"),
+        ("/empty", "", "application/json"),
+        ("/list", "gzip, br", "application/json"),
+        ("/identity-list", "identity, identity", "application/json"),
+        ("/mixed-list", "identity, gzip", "application/json"),
+        ("/encoded-sse", "gzip", "text/event-stream"),
+    ];
+
+    let mut routes = rejected
+        .iter()
+        .map(|(path, encoding, content_type)| MockRoute {
+            path_prefix: (*path).to_string(),
+            status: 200,
+            content_type: (*content_type).to_string(),
+            body: if *content_type == "text/event-stream" {
+                format!("data: {{\"secret\":\"{secret}\"}}\n\n").into_bytes()
+            } else {
+                format!(r#"{{"secret":"{secret}"}}"#).into_bytes()
+            },
+            response_headers: vec![("content-encoding".to_string(), (*encoding).to_string())],
+        })
+        .collect::<Vec<_>>();
+    routes.extend([
+        MockRoute {
+            path_prefix: "/duplicate-identity".to_string(),
+            status: 200,
+            content_type: "application/json".to_string(),
+            body: format!(r#"{{"secret":"{secret}"}}"#).into_bytes(),
+            response_headers: vec![
+                ("content-encoding".to_string(), "identity".to_string()),
+                ("content-encoding".to_string(), "identity".to_string()),
+            ],
+        },
+        MockRoute {
+            path_prefix: "/identity".to_string(),
+            status: 200,
+            content_type: "application/json".to_string(),
+            body: format!(r#"{{"secret":"{secret}"}}"#).into_bytes(),
+            response_headers: vec![("content-encoding".to_string(), "Identity".to_string())],
+        },
+        MockRoute {
+            path_prefix: "/absent".to_string(),
+            status: 200,
+            content_type: "application/json".to_string(),
+            body: format!(r#"{{"secret":"{secret}"}}"#).into_bytes(),
+            response_headers: Vec::new(),
+        },
+    ]);
+
+    let mock = ConfigurableMock::start(routes).await;
+    let mut token_map = HashMap::new();
+    token_map.insert(phantom.to_string(), secret.to_string());
+
+    let mut registry = ServiceRegistry::new();
+    registry.add_route(ServiceRoute {
+        name: "encoding".to_string(),
+        target_base: format!("http://127.0.0.1:{}", mock.port),
+        secret_key: "ENCODING_KEY".to_string(),
+        header: "Authorization".to_string(),
+        header_format: "Bearer {secret}".to_string(),
+    });
+
+    let proxy = ProxyServer::start(
+        ProxyConfig {
+            port: 0,
+            proxy_token: String::new(),
+            rate_limit: RateLimitConfig {
+                per_secret_rps: 100,
+                burst_total_10s: 1_000,
+            },
+            ..ProxyConfig::default()
+        },
+        registry,
+        Interceptor::new(token_map),
+    )
+    .await
+    .unwrap();
+
+    let client = make_client();
+    let mut rejected_paths = rejected
+        .iter()
+        .map(|(path, _, _)| *path)
+        .collect::<Vec<_>>();
+    rejected_paths.push("/duplicate-identity");
+
+    for path in &rejected_paths {
+        let response = client
+            .get(format!("http://127.0.0.1:{}/encoding{path}", proxy.port()))
+            .header("accept-encoding", "gzip, br")
+            .header("te", "trailers")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status().as_u16(), 502, "path {path}");
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store"),
+            "path {path}"
+        );
+        assert!(
+            response.headers().get("content-encoding").is_none(),
+            "encoded header reached downstream for {path}"
+        );
+        let body = response.text().await.unwrap();
+        assert_eq!(
+            body, r#"{"error":"unsupported_upstream_content_encoding"}"#,
+            "path {path}"
+        );
+        assert!(
+            !body.contains(secret),
+            "secret reached downstream for {path}"
+        );
+    }
+
+    for path in ["/identity", "/absent"] {
+        let response = client
+            .get(format!("http://127.0.0.1:{}/encoding{path}", proxy.port()))
+            .header("accept-encoding", "gzip, br")
+            .header("te", "trailers")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status().as_u16(), 200, "path {path}");
+        assert!(
+            response.headers().get("content-encoding").is_none(),
+            "identity header should not be forwarded for {path}"
+        );
+        let body = response.text().await.unwrap();
+        assert!(
+            !body.contains(secret),
+            "secret reached downstream for {path}"
+        );
+        assert!(
+            body.contains("[REDACTED:sk-*]"),
+            "scrubbing did not run for {path}"
+        );
+    }
+
+    let requests = mock.recorded();
+    assert_eq!(requests.len(), rejected_paths.len() + 2);
+    for request in &requests {
+        assert_eq!(
+            request.headers.get("accept-encoding").map(String::as_str),
+            Some("identity"),
+            "client encoding preference reached upstream for {}",
+            request.path
+        );
+        assert!(
+            !request.headers.contains_key("te"),
+            "hop-by-hop TE header reached upstream for {}",
+            request.path
+        );
+    }
+
+    proxy.shutdown().await;
+    mock.shutdown().await;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

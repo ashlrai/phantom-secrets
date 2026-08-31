@@ -11,6 +11,75 @@
 // the server validates and consumes the nonce before executing the operation.
 // Format: "<nonce_hex>:<approval_token_hex>"  (both produced by mcp-approve).
 
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineeringDoPhase {
+    /// Canonicalize and report one exact closed action without executing it.
+    #[default]
+    Propose,
+    /// Reserved for the future sealed runtime. Currently always denied.
+    Execute,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EngineeringDoParams {
+    /// `propose` (default) or `execute` (currently hard denied).
+    #[serde(default)]
+    pub phase: EngineeringDoPhase,
+    /// One closed Cargo engineering action. Arbitrary shell commands are not representable.
+    pub action: phantom_runtime::EngineeringAction,
+}
+
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupWorkspacePhase {
+    /// Inspect and return the current value-blind sealed plan.
+    #[default]
+    Propose,
+    /// Create a bearerless request for trusted-terminal application.
+    RequestApply,
+    /// Read authenticated, value-free request status.
+    Status,
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetupWorkspaceParams {
+    /// `propose` (default), `request_apply`, or `status`.
+    #[serde(default)]
+    pub phase: SetupWorkspacePhase,
+    /// Exact plan digest returned by the latest propose phase.
+    #[serde(default)]
+    pub plan_id: Option<String>,
+    /// Exact keyed pre-state digest returned by the latest propose phase.
+    #[serde(default)]
+    pub pre_state_id: Option<String>,
+    /// Bearerless request identifier returned by request_apply.
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct InitParams {
     /// Path to the .env file (defaults to .env in current directory)
@@ -528,6 +597,29 @@ fn default_export_action() -> String {
 
 fn default_export_format_for_report() -> String {
     "json".to_string()
+}
+
+// ── Hotspot alert tool ────────────────────────────────────────────────────────
+
+/// Parameters for `phantom_audit_hotspot_alerts` — inspect and acknowledge
+/// per-secret access-velocity spike alerts.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditHotspotAlertsParams {
+    /// If set, only return alerts for this specific secret name.
+    #[serde(default)]
+    pub secret_name: Option<String>,
+    /// If true, acknowledge (clear) all returned unacked alerts.
+    /// Default: false (read-only inspection).
+    #[serde(default)]
+    pub ack: bool,
+    /// If > 0 and `ack` is true, snooze the alert for this many seconds instead
+    /// of fully acknowledging it. Default: 0 (full ack when `ack` is true).
+    #[serde(default)]
+    pub snooze_seconds: u64,
+    /// Include already-acknowledged or snoozed alerts in the response.
+    /// Default: false (only unacked alerts).
+    #[serde(default)]
+    pub include_acked: bool,
 }
 
 // ── Validation scheduler ──────────────────────────────────────────────

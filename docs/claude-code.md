@@ -2,11 +2,13 @@
 
 ## Why this combination exists
 
-Claude Code reads your project directory aggressively. It scans `.env` files, includes them in context, and the real values enter Claude's context window — where they can appear in session transcripts, tool call logs, generated code, and potentially training data.
+Claude Code can inspect files that its workspace permissions allow. If those permissions include a dotenv file with real values, the credentials can enter agent context, transcripts, tool logs, or generated code.
 
-Phantom solves this at the source: after `phantom init`, your `.env` contains only worthless phantom tokens (`phm_...`). Claude reads the file, sees the tokens, and cannot leak anything. When your code makes an API call at runtime, the local Phantom proxy swaps the token for the real credential before the request leaves your machine — over TLS, never touching Claude's context.
+Phantom removes real values from managed dotenv files, keeps dotenv read permissions closed, and exposes value-blind MCP metadata instead. Application and test processes load the `phm_` placeholders; when they make an API call, the local Phantom proxy swaps the placeholder for the real credential before the request leaves your machine.
 
-The MCP integration goes further: Claude gains 25 tools to manage secrets directly, so you can ask Claude to add a key, check vault status, or push to cloud sync without leaving the conversation — and without any real secret value ever appearing in the chat.
+The MCP integration goes further: Claude gains the release-schema-verified tool
+catalog for value-free secret workflows. The current release contract enforces
+54 unique tools; runtime `tools/list` is canonical.
 
 ---
 
@@ -27,8 +29,8 @@ phantom setup --client claude
 ```
 
 This writes `.claude/settings.local.json` with two things at once:
-- The `phantom` MCP server entry (so Claude can call the 25 phantom tools)
-- A permission rule that allows reading `.env` (safe — after `phantom init`, the file contains only phantom tokens)
+- The `phantom` MCP server entry (so Claude can call the Phantom tool catalog)
+- Removal of legacy Phantom-managed `.env` read grants; dotenv denies remain a defense-in-depth boundary while MCP exposes value-blind inventory
 
 If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp`. To register the server **globally** instead of per-project, use Claude's CLI:
 
@@ -62,9 +64,11 @@ Use this before giving Claude broad autonomy. It checks the repo's `.env` files,
 
 ---
 
-## The 25 MCP tools Claude gets
+## Core MCP tools Claude can use
 
-Once `phantom-secrets-mcp` is registered, Claude can call these tools.
+Once `phantom-secrets-mcp` is registered, Claude can call the full runtime
+catalog. The following table highlights the core workflows; use MCP
+`tools/list` for the canonical catalog.
 
 ### Read-only (safe to call any time)
 

@@ -13,15 +13,16 @@ use crate::tools::helpers::{
 use crate::tools::params::{
     AddSecretInteractiveParams, AddSecretParams, ApplyExpiryPolicyParams, AuditAlertsParams,
     AuditAnalyticsParams, AuditAnomaliesParams, AuditAnomaliesRealtimeParams,
-    AuditExportReportParams, AuditIncidentsParams, AuditRecentParams, AuditStatsParams,
-    AutoRotateParams, CheckParams, CloudPullParams, CloudPushParams, ComplianceStatusParams,
-    CopySecretParams, DoctorParams, EnvParams, ExpiryCheckParams, InitParams,
-    LeakIncidentsRealtimeParams, ListWithExpiryParams, PhantomExpiryEnforceParams,
-    RemoveSecretParams, RotateParams, RotatePromoteParams, RotateProviderParams,
-    RotateWithCandidateParams, RotateWithExpiryParams, RotationDueParams,
-    RotationScheduleNextParams, SyncParams, TeamCreateParams, TeamIdParams, TeamInviteParams,
-    TeamVaultParams, UnwrapParams, ValidateAllParams, ValidateSecretParams,
-    ValidationHistoryParams, ValidationScheduleParams, WhyParams, WrapParams,
+    AuditExportReportParams, AuditHotspotAlertsParams, AuditIncidentsParams, AuditRecentParams,
+    AuditStatsParams, AutoRotateParams, CheckParams, CloudPullParams, CloudPushParams,
+    ComplianceStatusParams, CopySecretParams, DoctorParams, EngineeringDoParams,
+    EngineeringDoPhase, EnvParams, ExpiryCheckParams, InitParams, LeakIncidentsRealtimeParams,
+    ListWithExpiryParams, PhantomExpiryEnforceParams, RemoveSecretParams, RotateParams,
+    RotatePromoteParams, RotateProviderParams, RotateWithCandidateParams, RotateWithExpiryParams,
+    RotationDueParams, RotationScheduleNextParams, SetupWorkspaceParams, SetupWorkspacePhase,
+    SyncParams, TeamCreateParams, TeamIdParams, TeamInviteParams, TeamVaultParams, UnwrapParams,
+    ValidateAllParams, ValidateSecretParams, ValidationHistoryParams, ValidationScheduleParams,
+    WhyParams, WrapParams,
 };
 use crate::tools::pkg_json::{read_package_scripts, write_package_json};
 
@@ -93,6 +94,261 @@ impl PhantomMcpServer {
 
 #[tool_router]
 impl PhantomMcpServer {
+    /// Canonicalize one exact closed engineering action or report the execution denial.
+    #[tool(
+        description = "Conversation-native engineering action planning. phase=propose (default) accepts only Phantom's closed Cargo action schema and returns a value-free canonical digest, effect classification, local workspace fingerprint, and exact activation blockers without executing anything. phase=execute is reserved and always hard denied until verified Locus authority, rollback-resistant replay, trusted handles, OS confinement, and correlated evidence are active. There are no bearer or secret-value fields; bounded action selectors are never treated as authority and are never echoed."
+    )]
+    fn phantom_do(
+        &self,
+        Parameters(params): Parameters<EngineeringDoParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_runtime::EngineeringAction;
+
+        let inspection = phantom_workspace::inspect_workspace(&self.project_dir)
+            .map_err(|e| internal_err(format!("Workspace inspection failed: {e}")))?;
+        let action_digest = params
+            .action
+            .canonical_digest()
+            .map_err(|e| internal_err(format!("Action canonicalization failed: {e}")))?;
+        let (action_kind, scope, filtered) = match &params.action {
+            EngineeringAction::CargoCheck { package, .. } => (
+                "cargo_check",
+                if package.is_some() {
+                    "package"
+                } else {
+                    "workspace"
+                },
+                false,
+            ),
+            EngineeringAction::CargoTest {
+                package, filter, ..
+            } => (
+                "cargo_test",
+                if package.is_some() {
+                    "package"
+                } else {
+                    "workspace"
+                },
+                filter.is_some(),
+            ),
+            EngineeringAction::CargoClippy { package, .. } => (
+                "cargo_clippy",
+                if package.is_some() {
+                    "package"
+                } else {
+                    "workspace"
+                },
+                false,
+            ),
+            EngineeringAction::CargoFmtCheck { .. } => ("cargo_fmt_check", "workspace", false),
+        };
+        let blockers = [
+            "verified_locus_grant_unavailable",
+            "peer_authenticated_native_transport_unavailable",
+            "monotonic_replay_anchor_unavailable",
+            "production_workspace_handle_unavailable",
+            "production_toolchain_handle_unavailable",
+            "os_confinement_unavailable",
+            "externally_trusted_evidence_unavailable",
+        ];
+        let execute_requested = params.phase == EngineeringDoPhase::Execute;
+        let output = serde_json::json!({
+            "schema_version": 1,
+            "phase": if execute_requested { "execute" } else { "propose" },
+            "proposal_valid": true,
+            "execution_accepted": false,
+            "executed": false,
+            "action": {
+                "kind": action_kind,
+                "scope": scope,
+                "filtered": filtered,
+                "canonical_args_sha256": action_digest,
+                "required_operation": "run_engineering_check",
+                "effect_class": "local_write"
+            },
+            "workspace_fingerprint": inspection.workspace_fingerprint,
+            "authority_state": "no_locus_seal",
+            "execution_state": "production_unavailable",
+            "blockers": blockers,
+            "next_step": if execute_requested {
+                "Execution is hard denied. Review the blockers; no approval request or legacy mutating tool was created."
+            } else {
+                "Review this exact value-free action proposal. Execution remains unavailable and no approval request was created."
+            }
+        });
+        text_result(
+            serde_json::to_string_pretty(&output)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
+    /// Propose setup, request trusted-terminal application, or read request status.
+    #[tool(
+        description = "Conversation-native, value-blind workspace setup. With no arguments or phase=propose, returns an exact sealed setup plan without workspace or vault mutation; it checks or hardens machine-local Phantom state and reports whether the plan-seal key was provisioned. phase=request_apply requires the exact plan_id and pre_state_id from propose, recomputes them without provisioning a key, rejects drift, and creates a bearerless trusted-terminal request; it never applies changes through MCP. phase=status returns authenticated value-free request status. Claim and apply are intentionally unavailable over MCP."
+    )]
+    fn phantom_setup_workspace(
+        &self,
+        Parameters(params): Parameters<SetupWorkspaceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = match params.phase {
+            SetupWorkspacePhase::Propose => {
+                if params.plan_id.is_some()
+                    || params.pre_state_id.is_some()
+                    || params.request_id.is_some()
+                {
+                    return Err(invalid_params_err(
+                        "propose does not accept plan_id, pre_state_id, or request_id",
+                    ));
+                }
+                let inspection = phantom_workspace::inspect_workspace(&self.project_dir)
+                    .map_err(|e| internal_err(format!("Workspace inspection failed: {e}")))?;
+                let (key, host_state_mutated) =
+                    phantom_core::workspace_request::load_or_create_workspace_plan_key_with_status(
+                    )
+                    .map_err(|e| internal_err(format!("Plan seal key unavailable: {e}")))?;
+                let seal_key = phantom_workspace::PlanSealKey::from_bytes(*key);
+                let sealed_plan =
+                    phantom_workspace::build_sealed_setup_plan(&self.project_dir, &seal_key)
+                        .map_err(|e| internal_err(format!("Workspace sealing failed: {e}")))?;
+                serde_json::json!({
+                    "phase": "propose",
+                    "applied": false,
+                    "workspace_mutated": false,
+                    "vault_mutated": false,
+                    "machine_local_state_checked_or_hardened": true,
+                    "plan_seal_key_provisioned": host_state_mutated,
+                    "apply_available": true,
+                    "apply_surface": "trusted_terminal_only",
+                    "note": "Review this exact sealed plan. MCP cannot claim or apply it; trusted-terminal application requires a separate bearerless request.",
+                    "inspection": inspection,
+                    "sealed_plan": sealed_plan,
+                })
+            }
+            SetupWorkspacePhase::RequestApply => {
+                if params.request_id.is_some() {
+                    return Err(invalid_params_err(
+                        "request_apply does not accept request_id",
+                    ));
+                }
+                let supplied_plan_id = params.plan_id.as_deref().ok_or_else(|| {
+                    invalid_params_err("request_apply requires plan_id from propose")
+                })?;
+                let supplied_pre_state_id = params.pre_state_id.as_deref().ok_or_else(|| {
+                    invalid_params_err("request_apply requires pre_state_id from propose")
+                })?;
+                let key = phantom_core::workspace_request::load_existing_workspace_plan_key()
+                    .map_err(|e| internal_err(format!("Plan seal key unavailable: {e}")))?;
+                let seal_key = phantom_workspace::PlanSealKey::from_bytes(*key);
+                let sealed_plan =
+                    phantom_workspace::build_sealed_setup_plan(&self.project_dir, &seal_key)
+                        .map_err(|e| internal_err(format!("Workspace sealing failed: {e}")))?;
+                let plan_matches = constant_time_eq(
+                    supplied_plan_id.as_bytes(),
+                    sealed_plan.plan.plan_id.as_bytes(),
+                );
+                let pre_state_matches = constant_time_eq(
+                    supplied_pre_state_id.as_bytes(),
+                    sealed_plan.pre_state_id.as_bytes(),
+                );
+                if !(plan_matches & pre_state_matches) {
+                    return Err(invalid_params_err(
+                        "sealed setup plan mismatch or workspace drift; run propose again",
+                    ));
+                }
+                let action_summary = phantom_core::workspace_request::SanitizedActionSummary::new(
+                    sealed_plan.plan.actions.iter().map(|action| {
+                        use phantom_core::workspace_request::WorkspaceActionKind as RequestKind;
+                        match action.kind {
+                            phantom_workspace::SetupActionKind::InitializeWorkspace => {
+                                RequestKind::InitializeWorkspace
+                            }
+                            phantom_workspace::SetupActionKind::ProtectEnvFile => {
+                                RequestKind::ProtectEnvironment
+                            }
+                            phantom_workspace::SetupActionKind::EnsureEnvIgnoreRules => {
+                                RequestKind::UpdateIgnoreRules
+                            }
+                            phantom_workspace::SetupActionKind::GenerateEnvExample => {
+                                RequestKind::GenerateEnvironmentExample
+                            }
+                            phantom_workspace::SetupActionKind::InstallPreCommitCheck => {
+                                RequestKind::InstallPreCommitCheck
+                            }
+                            phantom_workspace::SetupActionKind::ReviewPlaceBinding => {
+                                RequestKind::ReviewPlaceBinding
+                            }
+                        }
+                    }),
+                );
+                let request_id = phantom_core::workspace_request::create_request(
+                    &self.project_dir,
+                    &sealed_plan.plan.plan_id,
+                    &sealed_plan.pre_state_id,
+                    action_summary,
+                )
+                .map_err(|e| internal_err(format!("Setup request creation failed: {e}")))?;
+                serde_json::json!({
+                    "phase": "request_apply",
+                    "request_id": request_id,
+                    "state": "pending",
+                    "applied": false,
+                    "workspace_mutated": false,
+                    "vault_mutated": false,
+                    "apply_surface": "trusted_terminal_only",
+                    "trusted_terminal_command": format!("phantom workspace apply --request {request_id}"),
+                    "note": "The request is only a value-free locator, not a bearer. MCP cannot claim or apply it.",
+                })
+            }
+            SetupWorkspacePhase::Status => {
+                if params.plan_id.is_some() || params.pre_state_id.is_some() {
+                    return Err(invalid_params_err(
+                        "status accepts only phase and request_id",
+                    ));
+                }
+                let request_id = params
+                    .request_id
+                    .as_deref()
+                    .ok_or_else(|| invalid_params_err("status requires request_id"))?;
+                let status = phantom_core::workspace_request::get_status(request_id)
+                    .map_err(|e| invalid_params_err(format!("Setup request unavailable: {e}")))?;
+                let current_scope =
+                    phantom_core::workspace_request::workspace_scope_hash(&self.project_dir)
+                        .map_err(|e| internal_err(format!("Workspace scope failed: {e}")))?;
+                if !constant_time_eq(
+                    status.workspace_scope_hash.as_bytes(),
+                    current_scope.as_bytes(),
+                ) {
+                    return Err(invalid_params_err(
+                        "Setup request is not available in this workspace",
+                    ));
+                }
+                serde_json::json!({
+                    "phase": "status",
+                    "applied": status.state == phantom_core::workspace_request::WorkspaceRequestState::Applied,
+                    "status": status,
+                })
+            }
+        };
+        text_result(
+            serde_json::to_string_pretty(&output)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
+    /// Describe the exact authority available through the conversation facade.
+    #[tool(
+        description = "Return a value-free capability card for the small conversation-native facade: allowed local verbs, requestable verbs, place/seal state, expiry, and facade hard denials. This is not a policy oracle for the advanced compatibility catalog, whose mutating tools retain separate legacy confirm plus out-of-band local approval gates and are not Locus-sealed."
+    )]
+    fn phantom_capability(&self) -> Result<CallToolResult, McpError> {
+        let inspection = phantom_workspace::inspect_workspace(&self.project_dir)
+            .map_err(|e| internal_err(format!("Workspace inspection failed: {e}")))?;
+        let card = phantom_workspace::build_capability_card(&inspection);
+        text_result(
+            serde_json::to_string_pretty(&card)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
     /// List all secret names stored in the vault. Never returns secret values.
     #[tool(
         description = "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured."
@@ -2486,6 +2742,95 @@ impl PhantomMcpServer {
         )
     }
 
+    /// Hotspot alert inspection and acknowledgement tool.
+    #[tool(
+        description = "Inspect per-secret access-velocity spike alerts without manually parsing \
+            the audit log. Returns alerts for secrets whose access count in the rolling 24-hour \
+            window either (a) exceeds 5× the 7-day mean baseline, or (b) includes a burst of \
+            ≥100 accesses within any 5-minute window. Each alert record contains: secret_name, \
+            current_velocity (24h count), baseline_velocity (7-day daily mean), alert_level \
+            (always 'high'), first_spike_ts (ISO-8601), ack_status ('unacked'|'acked'|'snoozed'), \
+            peak_5m_count, and trigger (human-readable description). \
+            Secret VALUES are never returned. \
+            Set ack=true to acknowledge all returned alerts (removes them from the active list). \
+            Set snooze_seconds>0 with ack=true to snooze instead of fully acknowledging. \
+            Pass include_acked=true to also return already-acknowledged or snoozed alerts. \
+            Use secret_name to filter to a specific secret. Read-only when ack=false."
+    )]
+    fn phantom_audit_hotspot_alerts(
+        &self,
+        Parameters(params): Parameters<AuditHotspotAlertsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use phantom_core::audit::{
+            acknowledge_hotspot_alert, detect_hotspot_alerts, HotspotAckStatus,
+        };
+
+        // Detect current alerts.
+        let mut alerts = detect_hotspot_alerts()
+            .map_err(|e| internal_err(format!("Failed to detect hotspot alerts: {e}")))?;
+
+        // Filter by secret name if requested.
+        if let Some(ref name) = params.secret_name {
+            alerts.retain(|a| &a.secret_name == name);
+        }
+
+        // Acknowledge unacked alerts if requested.
+        if params.ack {
+            for alert in alerts
+                .iter()
+                .filter(|a| a.ack_status == HotspotAckStatus::Unacked)
+            {
+                // Best-effort: ignore individual ack errors.
+                let _ = acknowledge_hotspot_alert(&alert.secret_name, params.snooze_seconds);
+            }
+            // Re-detect so the returned list reflects the new ack states.
+            alerts = detect_hotspot_alerts()
+                .map_err(|e| internal_err(format!("Failed to re-detect hotspot alerts: {e}")))?;
+            if let Some(ref name) = params.secret_name {
+                alerts.retain(|a| &a.secret_name == name);
+            }
+        }
+
+        // Filter out acked/snoozed unless caller asked to include them.
+        if !params.include_acked {
+            alerts.retain(|a| a.ack_status == HotspotAckStatus::Unacked);
+        }
+
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let alert_records: Vec<serde_json::Value> = alerts
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "secret_name": a.secret_name,
+                    "current_velocity": a.current_velocity,
+                    "baseline_velocity": a.baseline_velocity,
+                    "alert_level": a.alert_level,
+                    "first_spike_ts": phantom_core::analytics::unix_to_iso8601(a.first_spike_ts),
+                    "ack_status": a.ack_status.as_str(),
+                    "peak_5m_count": a.peak_5m_count,
+                    "trigger": a.trigger,
+                })
+            })
+            .collect();
+
+        let out = serde_json::json!({
+            "generated_at": phantom_core::analytics::unix_to_iso8601(now_ts),
+            "total_alerts": alert_records.len(),
+            "ack_performed": params.ack,
+            "snooze_seconds": params.snooze_seconds,
+            "alerts": alert_records,
+        });
+
+        text_result(
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
+        )
+    }
+
     /// Full audit analytics export for external dashboards (Datadog, Grafana, CloudWatch).
     #[tool(
         description = "Export full audit analytics for compliance dashboards. \
@@ -3871,15 +4216,30 @@ fn iso8601(secs: u64) -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, hh, mm, ss)
 }
 
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0_u8;
+    for (left, right) in left.iter().zip(right.iter()) {
+        difference |= left ^ right;
+    }
+    difference == 0
+}
+
 #[tool_handler]
 impl ServerHandler for PhantomMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Phantom Secrets manager. Securely manages API keys and secrets. \
-                 Use phantom_list_secrets to see what's stored (never shows values). \
-                 Use phantom_status to check configuration. \
-                 Use phantom_init to protect secrets in .env files. \
-                 Use phantom_cloud_push/pull to sync vaults to Phantom Cloud (E2E encrypted)."
+            "Phantom is a safe execution substrate for AI coding agents. Start with \
+                 phantom_capability to learn the exact allowed verbs and hard denials. Use \
+                 phantom_do to canonicalize a closed engineering action without executing it, then \
+                 phantom_setup_workspace for a value-blind, deterministic setup inspection. \
+                 Setup proposals can create bearerless apply requests, but MCP can never claim or apply them; \
+                 application remains trusted-terminal-only and must not be described as applied until status proves it. \
+                 No Locus seal is active unless the capability card explicitly says so. \
+                 Advanced phantom_* tools remain available for compatible operator workflows; \
+                 secret values are never returned through MCP."
                 .to_string(),
         )
     }
@@ -3893,6 +4253,34 @@ mod tests {
 
     /// Shared lock so that tests mutating HOME do not race each other.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TestHome {
+        _dir: TempDir,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl TestHome {
+        fn new() -> Self {
+            let dir = TempDir::new().unwrap();
+            let previous = std::env::var_os("HOME");
+            unsafe { std::env::set_var("HOME", dir.path()) };
+            Self {
+                _dir: dir,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var("HOME", value),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
 
     fn setup_test_project() -> (PhantomMcpServer, TempDir) {
         // Force file-vault backend for test hermeticity. Without this, Windows CI
@@ -3934,7 +4322,7 @@ mod tests {
             approval_token: None,
         };
         let result = server.phantom_init(Parameters(params)).unwrap();
-        let text = get_result_text(&result);
+        let text = extract_content_text(&result);
         assert!(
             text.contains("protected"),
             "Init should report protected secrets"
@@ -3953,7 +4341,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_test_project();
         let result = server.phantom_status().unwrap();
-        let text = get_result_text(&result);
+        let text = extract_content_text(&result);
         assert!(text.contains("not initialized"));
     }
 
@@ -3986,6 +4374,94 @@ mod tests {
     }
 
     #[test]
+    fn test_init_requires_real_mcp_approval_and_rejects_replay() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+
+        let prev_home = std::env::var("HOME").ok();
+        let prev_passphrase = std::env::var("PHANTOM_VAULT_PASSPHRASE").ok();
+        let prev_skip = std::env::var("PHANTOM_MCP_SKIP_APPROVAL").ok();
+
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var(
+                "PHANTOM_VAULT_PASSPHRASE",
+                "test-passphrase-do-not-use-in-prod",
+            );
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+        }
+
+        std::fs::write(project.path().join(".env"), "OPENAI_API_KEY=sk-test-key\n").unwrap();
+
+        let server = PhantomMcpServer::with_dir(project.path().to_path_buf());
+        let params = || InitParams {
+            env_path: ".env".to_string(),
+            confirm: true,
+            approval_token: None,
+        };
+
+        let first_err = server.phantom_init(Parameters(params())).unwrap_err();
+        assert_eq!(first_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(first_err.message.contains("out-of-band approval"));
+
+        let pending = phantom_core::mcp_approval::list_pending_approvals().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].tool_name, "phantom_init");
+        let nonce = pending[0].nonce.clone();
+
+        let approved = phantom_core::mcp_approval::approve_nonce(&nonce).unwrap();
+        let approval_token = format!("{}:{}", nonce, approved.approval_token);
+
+        let changed_params_err = server
+            .phantom_init(Parameters(InitParams {
+                env_path: "other.env".to_string(),
+                confirm: true,
+                approval_token: Some(approval_token.clone()),
+            }))
+            .unwrap_err();
+        assert_eq!(
+            changed_params_err.code,
+            rmcp::model::ErrorCode::INVALID_PARAMS
+        );
+        assert!(changed_params_err.message.contains("parameter mismatch"));
+
+        let result = server
+            .phantom_init(Parameters(InitParams {
+                approval_token: Some(approval_token.clone()),
+                ..params()
+            }))
+            .unwrap();
+        assert!(get_result_text(&result).contains("protected"));
+
+        let replay_err = server
+            .phantom_init(Parameters(InitParams {
+                approval_token: Some(approval_token),
+                ..params()
+            }))
+            .unwrap_err();
+        assert_eq!(replay_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            replay_err.message.contains("consumed") || replay_err.message.contains("not found")
+        );
+
+        unsafe {
+            match prev_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_passphrase {
+                Some(value) => std::env::set_var("PHANTOM_VAULT_PASSPHRASE", value),
+                None => std::env::remove_var("PHANTOM_VAULT_PASSPHRASE"),
+            }
+            match prev_skip {
+                Some(value) => std::env::set_var("PHANTOM_MCP_SKIP_APPROVAL", value),
+                None => std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL"),
+            }
+        }
+    }
+
+    #[test]
     fn test_list_secrets_after_init() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, _dir) = setup_initialized_project();
@@ -3994,6 +4470,358 @@ mod tests {
         assert!(text.contains("OPENAI_API_KEY"));
         assert!(text.contains("DATABASE_URL"));
         // Should never show the actual value
+        assert!(!text.contains("sk-test-key"));
+    }
+
+    #[test]
+    fn test_phantom_do_proposes_closed_value_free_action_without_execution() {
+        let (server, _dir) = setup_test_project();
+        let result = server
+            .phantom_do(Parameters(EngineeringDoParams {
+                phase: EngineeringDoPhase::Propose,
+                action: phantom_runtime::EngineeringAction::CargoTest {
+                    package: Some(phantom_runtime::PackageName::parse("phantom-core").unwrap()),
+                    filter: Some(phantom_runtime::TestFilter::parse("audit::tests").unwrap()),
+                    cwd: phantom_runtime::RelativeCwd::workspace_root(),
+                },
+            }))
+            .unwrap();
+        let text = extract_content_text(&result);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(value["phase"], "propose");
+        assert_eq!(value["proposal_valid"], true);
+        assert_eq!(value["execution_accepted"], false);
+        assert_eq!(value["executed"], false);
+        assert_eq!(value["action"]["kind"], "cargo_test");
+        assert_eq!(value["action"]["scope"], "package");
+        assert_eq!(value["action"]["filtered"], true);
+        assert_eq!(
+            value["action"]["canonical_args_sha256"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        assert_eq!(value["action"]["effect_class"], "local_write");
+        assert_eq!(value["execution_state"], "production_unavailable");
+        assert_eq!(value["blockers"].as_array().unwrap().len(), 7);
+        assert!(!text.contains("phantom-core"));
+        assert!(!text.contains("audit::tests"));
+        assert!(!text.contains("sk-test-key"));
+        assert!(!text.contains("postgres://user:pass@localhost/db"));
+    }
+
+    #[test]
+    fn test_phantom_do_execute_is_hard_denied_and_non_mutating() {
+        let (server, dir) = setup_test_project();
+        let before = std::fs::read(dir.path().join(".env")).unwrap();
+        let result = server
+            .phantom_do(Parameters(EngineeringDoParams {
+                phase: EngineeringDoPhase::Execute,
+                action: phantom_runtime::EngineeringAction::CargoFmtCheck {
+                    cwd: phantom_runtime::RelativeCwd::workspace_root(),
+                },
+            }))
+            .unwrap();
+        let text = extract_content_text(&result);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(value["phase"], "execute");
+        assert_eq!(value["proposal_valid"], true);
+        assert_eq!(value["execution_accepted"], false);
+        assert_eq!(value["executed"], false);
+        assert_eq!(value["authority_state"], "no_locus_seal");
+        assert!(value["next_step"].as_str().unwrap().contains("hard denied"));
+        assert_eq!(std::fs::read(dir.path().join(".env")).unwrap(), before);
+        assert!(!dir.path().join(".phantom.toml").exists());
+    }
+
+    #[test]
+    fn test_phantom_do_schema_is_closed_and_rejects_arbitrary_shell() {
+        assert!(
+            serde_json::from_value::<EngineeringDoParams>(serde_json::json!({
+                "action": { "action": "shell", "command": "curl example.invalid" }
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<EngineeringDoParams>(serde_json::json!({
+                "action": { "action": "cargo_fmt_check", "cwd": "." },
+                "approval_token": "not-accepted"
+            }))
+            .is_err()
+        );
+
+        let schema = serde_json::to_value(schemars::schema_for!(EngineeringDoParams)).unwrap();
+        assert_eq!(schema["additionalProperties"], false);
+        let phases = schema["$defs"]["EngineeringDoPhase"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["const"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(phases, vec!["propose", "execute"]);
+    }
+
+    #[test]
+    fn test_setup_workspace_empty_args_proposes_value_blind_sealed_plan() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _home = TestHome::new();
+        let (server, _dir) = setup_test_project();
+
+        let params: SetupWorkspaceParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        let result = server.phantom_setup_workspace(Parameters(params)).unwrap();
+        let text = extract_content_text(&result);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(value["phase"], "propose");
+        assert_eq!(value["applied"], false);
+        assert_eq!(value["workspace_mutated"], false);
+        assert_eq!(value["vault_mutated"], false);
+        assert_eq!(value["machine_local_state_checked_or_hardened"], true);
+        assert_eq!(value["plan_seal_key_provisioned"], true);
+        assert_eq!(value["apply_available"], true);
+        assert_eq!(value["apply_surface"], "trusted_terminal_only");
+        assert!(value["sealed_plan"]["plan"]["plan_id"].as_str().is_some());
+        assert!(value["sealed_plan"]["pre_state_id"].as_str().is_some());
+        assert!(text.contains("OPENAI_API_KEY"));
+        assert!(!text.contains("sk-test-key"));
+        assert!(!text.contains("postgres://user:pass@localhost/db"));
+
+        let second = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams::default()))
+            .unwrap();
+        let second: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&second)).unwrap();
+        assert_eq!(second["machine_local_state_checked_or_hardened"], true);
+        assert_eq!(second["plan_seal_key_provisioned"], false);
+    }
+
+    #[test]
+    fn test_setup_workspace_request_apply_is_bearerless_and_non_mutating() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _home = TestHome::new();
+        let (server, dir) = setup_test_project();
+        let before_env = std::fs::read(dir.path().join(".env")).unwrap();
+        let before_entries = std::fs::read_dir(dir.path()).unwrap().count();
+
+        let proposed = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams::default()))
+            .unwrap();
+        let proposed: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&proposed)).unwrap();
+        let plan_id = proposed["sealed_plan"]["plan"]["plan_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let pre_state_id = proposed["sealed_plan"]["pre_state_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let requested = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::RequestApply,
+                plan_id: Some(plan_id),
+                pre_state_id: Some(pre_state_id),
+                request_id: None,
+            }))
+            .unwrap();
+        let text = extract_content_text(&requested);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let request_id = value["request_id"].as_str().unwrap();
+
+        assert_eq!(request_id.len(), 64);
+        assert_eq!(value["state"], "pending");
+        assert_eq!(value["applied"], false);
+        assert_eq!(value["workspace_mutated"], false);
+        assert_eq!(value["vault_mutated"], false);
+        assert!(value["trusted_terminal_command"]
+            .as_str()
+            .unwrap()
+            .ends_with(request_id));
+        assert!(!text.contains("approval_token"));
+        assert_eq!(std::fs::read(dir.path().join(".env")).unwrap(), before_env);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            before_entries
+        );
+        assert!(!dir.path().join(".phantom.toml").exists());
+    }
+
+    #[test]
+    fn test_setup_workspace_request_apply_does_not_provision_missing_host_key() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = TestHome::new();
+        let (server, _dir) = setup_test_project();
+
+        let error = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::RequestApply,
+                plan_id: Some("0".repeat(64)),
+                pre_state_id: Some("1".repeat(64)),
+                request_id: None,
+            }))
+            .unwrap_err();
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert!(!home._dir.path().join(".phantom").exists());
+    }
+
+    #[test]
+    fn test_setup_workspace_rejects_exact_mismatch_and_drift() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _home = TestHome::new();
+        let (server, dir) = setup_test_project();
+        let proposed = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams::default()))
+            .unwrap();
+        let proposed: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&proposed)).unwrap();
+        let plan_id = proposed["sealed_plan"]["plan"]["plan_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let pre_state_id = proposed["sealed_plan"]["pre_state_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let mismatch = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::RequestApply,
+                plan_id: Some("0".repeat(64)),
+                pre_state_id: Some(pre_state_id.clone()),
+                request_id: None,
+            }))
+            .unwrap_err();
+        assert_eq!(mismatch.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+
+        std::fs::write(
+            dir.path().join(".env"),
+            "OPENAI_API_KEY=sk-changed-after-propose\n",
+        )
+        .unwrap();
+        let drift = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::RequestApply,
+                plan_id: Some(plan_id),
+                pre_state_id: Some(pre_state_id),
+                request_id: None,
+            }))
+            .unwrap_err();
+        assert_eq!(drift.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(drift.message.contains("drift"));
+    }
+
+    #[test]
+    fn test_setup_workspace_status_is_authenticated_and_workspace_scoped() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = TestHome::new();
+        let (server, _dir) = setup_test_project();
+        let proposed = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams::default()))
+            .unwrap();
+        let proposed: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&proposed)).unwrap();
+        let requested = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::RequestApply,
+                plan_id: Some(
+                    proposed["sealed_plan"]["plan"]["plan_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                ),
+                pre_state_id: Some(
+                    proposed["sealed_plan"]["pre_state_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                ),
+                request_id: None,
+            }))
+            .unwrap();
+        let requested: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&requested)).unwrap();
+        let request_id = requested["request_id"].as_str().unwrap().to_string();
+
+        let status = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::Status,
+                request_id: Some(request_id.clone()),
+                ..SetupWorkspaceParams::default()
+            }))
+            .unwrap();
+        let status: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&status)).unwrap();
+        assert_eq!(status["status"]["state"], "pending");
+        assert_eq!(status["applied"], false);
+
+        let other = TempDir::new().unwrap();
+        let other_server = PhantomMcpServer::with_dir(other.path().to_path_buf());
+        assert!(other_server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::Status,
+                request_id: Some(request_id.clone()),
+                ..SetupWorkspaceParams::default()
+            }))
+            .is_err());
+
+        let record_path = home
+            ._dir
+            .path()
+            .join(".phantom/workspace-requests")
+            .join(format!("{request_id}.json"));
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+        record["state"] = serde_json::json!("applied");
+        phantom_core::fs::atomic_write(&record_path, &serde_json::to_vec(&record).unwrap())
+            .unwrap();
+        assert!(server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::Status,
+                request_id: Some(request_id),
+                ..SetupWorkspaceParams::default()
+            }))
+            .is_err());
+    }
+
+    #[test]
+    fn test_setup_workspace_params_deny_unknown_fields() {
+        assert!(
+            serde_json::from_value::<SetupWorkspaceParams>(serde_json::json!({
+                "phase": "propose",
+                "approval_token": "must-never-be-accepted"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_capability_hard_denies_external_effects_without_locus() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, _dir) = setup_test_project();
+
+        let result = server.phantom_capability().unwrap();
+        let text = extract_content_text(&result);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(value["authority"], "no_locus_seal");
+        assert!(value["place"].is_null());
+        assert!(value["seal_id"].is_null());
+        let hard_nos = value["hard_nos"].as_array().unwrap();
+        for verb in [
+            "external_mutation",
+            "production",
+            "delete",
+            "share",
+            "spend",
+            "secret_reveal",
+        ] {
+            assert!(hard_nos.iter().any(|entry| entry["verb"] == verb));
+        }
         assert!(!text.contains("sk-test-key"));
     }
 
@@ -4708,6 +5536,252 @@ mod tests {
 
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(err.message.contains("Invalid period"));
+    }
+
+    // ── phantom_audit_hotspot_alerts ─────────────────────────────────
+
+    #[test]
+    fn test_hotspot_alerts_returns_required_schema() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let result = server
+            .phantom_audit_hotspot_alerts(Parameters(AuditHotspotAlertsParams {
+                secret_name: None,
+                ack: false,
+                snooze_seconds: 0,
+                include_acked: false,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(
+            json.get("generated_at").is_some(),
+            "must have 'generated_at'"
+        );
+        assert!(
+            json.get("total_alerts").is_some(),
+            "must have 'total_alerts'"
+        );
+        assert!(json.get("alerts").is_some(), "must have 'alerts'");
+        assert!(
+            json.get("ack_performed").is_some(),
+            "must have 'ack_performed'"
+        );
+        // Empty log → no alerts.
+        assert_eq!(json["total_alerts"].as_u64().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_hotspot_alerts_detects_velocity_spike() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        // Build a spike: 2 accesses/day baseline × 7 days, then 30 in the last 24h.
+        // 30 > 5 × 2 = 10 → velocity spike fires.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
+        for day in 1u64..=7 {
+            for i in 0u64..2 {
+                entries.push((
+                    now - day * 86400 + i * 1800,
+                    "vault.retrieve",
+                    Some("HOTKEY"),
+                ));
+            }
+        }
+        for i in 0u64..30 {
+            entries.push((now - 80000 + i * 2500, "vault.retrieve", Some("HOTKEY")));
+        }
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let result = server
+            .phantom_audit_hotspot_alerts(Parameters(AuditHotspotAlertsParams {
+                secret_name: None,
+                ack: false,
+                snooze_seconds: 0,
+                include_acked: false,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let alerts = json["alerts"].as_array().unwrap();
+        assert!(
+            !alerts.is_empty(),
+            "velocity spike should produce a hotspot alert"
+        );
+        let alert = alerts
+            .iter()
+            .find(|a| a["secret_name"] == "HOTKEY")
+            .unwrap();
+        assert_eq!(alert["alert_level"], "high");
+        assert!(
+            alert.get("value").is_none(),
+            "alert must never contain secret value"
+        );
+        assert!(
+            alert.get("secret_name").is_some(),
+            "alert must have secret_name"
+        );
+        assert!(
+            alert.get("current_velocity").is_some(),
+            "alert must have current_velocity"
+        );
+        assert!(
+            alert.get("baseline_velocity").is_some(),
+            "alert must have baseline_velocity"
+        );
+        assert!(
+            alert.get("first_spike_ts").is_some(),
+            "alert must have first_spike_ts"
+        );
+        assert!(
+            alert.get("ack_status").is_some(),
+            "alert must have ack_status"
+        );
+        assert_eq!(alert["ack_status"], "unacked");
+    }
+
+    #[test]
+    fn test_hotspot_alerts_ack_clears_alert() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
+        for day in 1u64..=7 {
+            entries.push((now - day * 86400, "vault.retrieve", Some("ACKKEY")));
+        }
+        for i in 0u64..30 {
+            entries.push((now - 80000 + i * 2500, "vault.retrieve", Some("ACKKEY")));
+        }
+        write_synthetic_audit_log(home.path(), &entries);
+
+        // Acknowledge all alerts.
+        let result = server
+            .phantom_audit_hotspot_alerts(Parameters(AuditHotspotAlertsParams {
+                secret_name: None,
+                ack: true,
+                snooze_seconds: 0,
+                include_acked: false,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert!(json["ack_performed"].as_bool().unwrap());
+        // After ack with include_acked=false, active alerts list should be empty.
+        assert_eq!(
+            json["total_alerts"].as_u64().unwrap(),
+            0,
+            "after ack, no unacked alerts should remain"
+        );
+    }
+
+    #[test]
+    fn test_hotspot_alerts_secret_name_filter() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Two spiking keys.
+        let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
+        for day in 1u64..=7 {
+            entries.push((now - day * 86400, "vault.retrieve", Some("KEY_A")));
+            entries.push((now - day * 86400 + 100, "vault.retrieve", Some("KEY_B")));
+        }
+        for i in 0u64..30 {
+            entries.push((now - 80000 + i * 2500, "vault.retrieve", Some("KEY_A")));
+            entries.push((now - 80000 + i * 2500 + 50, "vault.retrieve", Some("KEY_B")));
+        }
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let result = server
+            .phantom_audit_hotspot_alerts(Parameters(AuditHotspotAlertsParams {
+                secret_name: Some("KEY_A".to_string()),
+                ack: false,
+                snooze_seconds: 0,
+                include_acked: false,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        let alerts = json["alerts"].as_array().unwrap();
+        assert!(
+            alerts.iter().all(|a| a["secret_name"] == "KEY_A"),
+            "filter by secret_name should only return KEY_A alerts"
+        );
+        assert!(
+            alerts.iter().all(|a| a["secret_name"] != "KEY_B"),
+            "KEY_B should not appear when filtered to KEY_A"
+        );
+    }
+
+    #[test]
+    fn test_hotspot_alerts_never_exposes_value_field() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, _dir) = setup_initialized_project();
+        let home = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
+        for day in 1u64..=7 {
+            entries.push((now - day * 86400, "vault.retrieve", Some("OPENAI_API_KEY")));
+        }
+        for i in 0u64..30 {
+            entries.push((
+                now - 80000 + i * 2500,
+                "vault.retrieve",
+                Some("OPENAI_API_KEY"),
+            ));
+        }
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let result = server
+            .phantom_audit_hotspot_alerts(Parameters(AuditHotspotAlertsParams {
+                secret_name: None,
+                ack: false,
+                snooze_seconds: 0,
+                include_acked: false,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        for alert in json["alerts"].as_array().unwrap() {
+            assert!(
+                alert.get("value").is_none(),
+                "alert must never expose a 'value' field"
+            );
+        }
+        // Also verify the raw text doesn't contain any secret-shaped value.
+        let text = extract_content_text(&result);
+        assert!(
+            !text.contains("sk-"),
+            "result text must not contain OpenAI key pattern"
+        );
     }
 
     // ── phantom_audit_analytics ──────────────────────────────────────

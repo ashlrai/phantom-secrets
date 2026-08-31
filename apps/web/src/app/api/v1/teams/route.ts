@@ -1,5 +1,8 @@
 import { requireAuth, requirePro } from "@/lib/auth";
+import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
+
+const MAX_TEAM_BODY_BYTES = 4_096;
 
 /**
  * GET /api/v1/teams — List teams the authenticated user belongs to.
@@ -62,9 +65,9 @@ export async function POST(req: Request) {
 
   let body: { name?: string };
   try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+    body = await readBoundedJsonObject(req, MAX_TEAM_BODY_BYTES);
+  } catch (error) {
+    return requestBodyErrorResponse(error);
   }
   const { name } = body;
 

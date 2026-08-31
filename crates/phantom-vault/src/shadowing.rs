@@ -602,7 +602,12 @@ pub fn shadow_dir(project_id: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // Environment mutation is process-global. Keep candidate-mode cases from
+    // racing under Rust's parallel test runner.
+    static CANDIDATE_MODE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn make_shadow() -> ShadowedSecret {
         ShadowedSecret::new("MY_KEY", "old_value", "new_value", None)
@@ -756,6 +761,7 @@ mod tests {
 
     #[test]
     fn test_active_value_returns_primary_by_default() {
+        let _guard = CANDIDATE_MODE_ENV_LOCK.lock().unwrap();
         // Ensure PHANTOM_CANDIDATE_MODE is not set
         unsafe { std::env::remove_var("PHANTOM_CANDIDATE_MODE") };
         let s = make_shadow();
@@ -764,6 +770,7 @@ mod tests {
 
     #[test]
     fn test_active_value_returns_candidate_when_mode_set() {
+        let _guard = CANDIDATE_MODE_ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("PHANTOM_CANDIDATE_MODE", "1") };
         let s = make_shadow();
         assert_eq!(s.active_value(), "new_value");
@@ -772,6 +779,7 @@ mod tests {
 
     #[test]
     fn test_active_value_returns_primary_when_candidate_empty() {
+        let _guard = CANDIDATE_MODE_ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("PHANTOM_CANDIDATE_MODE", "1") };
         let mut s = make_shadow();
         s.candidate = String::new();

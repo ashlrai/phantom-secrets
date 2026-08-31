@@ -1,0 +1,23 @@
+[package]
+name = "phantom-secrets-locus-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "Inactive, fail-closed Phantom and Locus authority compatibility contract"
+keywords = ["secrets", "agents", "identity", "authorization"]
+categories = ["development-tools"]
+
+[lib]
+name = "phantom_locus_contract"
+path = "src/lib.rs"
+
+[dependencies]
+phantom-authority = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }

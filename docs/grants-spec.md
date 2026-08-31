@@ -1,4 +1,11 @@
-# Phantom Grants: One Human Consent, Perpetual Agent-Safe Credential Lifecycle
+# Phantom Grants — Design-Era Lifecycle Specification
+
+> **Status: historical design document, not a statement of shipped behavior.**
+> The current CLI implements trusted-terminal issuance and value-blind grant
+> metadata, but remote revocation is not wired and therefore fails closed before
+> local mutation. Renewal/provider claims below describe the intended design and
+> require provider-specific acceptance. Use the root README, CLI `--help`, current
+> architecture guide, and threat model for the implemented contract.
 
 ## Primary Promise
 

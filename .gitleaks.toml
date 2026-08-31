@@ -1,0 +1,42 @@
+title = "Phantom source secret-scanning policy"
+minVersion = "8.21.0"
+
+[extend]
+useDefault = true
+
+# These exact files contain generated integrity data or SVG path data. Test and
+# documentation trees intentionally remain scanned; fixture exceptions below
+# require both an exact source file and an unmistakable placeholder value.
+[[allowlists]]
+description = "Generated integrity and visual source files"
+paths = [
+  '''(?:^|/)Cargo\.lock$''',
+  '''(?:^|/)apps/web/src/components/landing/BrandLogos\.tsx$''',
+]
+
+# Several security tests intentionally exercise credential-shaped strings from
+# inside otherwise production source files. Ignore only lines that contain an
+# unmistakable placeholder marker, and only in the exact files that own those
+# inline tests. Both conditions must match so real values elsewhere in these
+# files remain reportable.
+[[allowlists]]
+description = "Explicit inline-test placeholder values"
+condition = "and"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)crates/[^/]+/tests/[^/]+\.rs$''',
+  '''(?:^|/)crates/phantom-core/src/importers/(dotenvx|infisical|onepassword)\.rs$''',
+  '''(?:^|/)crates/phantom-core/src/(dotenv|rotation_provider|teams_vault)\.rs$''',
+  '''(?:^|/)crates/phantom-proxy/src/(interceptor|response_scrubber|server)\.rs$''',
+  '''(?:^|/)docs/(blog-devto|blog-launch|getting-started)\.md$''',
+  '''(?:^|/)mcp-registry/README\.md$''',
+]
+regexes = [
+  '''(?i)(sk[-_][a-z0-9_-]*(abc|fake|real|secret|placeholder|valid|xxx|yyy|xyz|shhh|must-not-leak))''',
+  '''phm_[0-9a-f]{16,}''',
+  '''phm_(xyz|nonexistent)''',
+  '''eyJhbGciOiJIUzI1NiJ9''',
+  '''hunter2''',
+  '''MIIEvQIBADANBgkqhkiG9w0BAQEF''',
+  '''-----BEGIN (RSA )?PRIVATE KEY-----''',
+]

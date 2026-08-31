@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+publish.workspace = true
 readme = "../../README.md"
 description = "MCP server for Phantom Secrets — lets AI tools manage secrets safely"
 keywords = ["mcp", "mcp-server", "secrets", "ai-safety", "claude"]
@@ -22,6 +23,8 @@ path = "src/main.rs"
 [dependencies]
 phantom-core = { workspace = true }
 phantom-vault = { workspace = true }
+phantom-workspace = { workspace = true }
+phantom-runtime = { workspace = true }
 rmcp = { version = "1", features = ["server", "transport-io"] }
 tokio = { workspace = true }
 serde = { workspace = true }

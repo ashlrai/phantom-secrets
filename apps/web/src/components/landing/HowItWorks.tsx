@@ -29,7 +29,8 @@ const STEPS = [
         AI calls APIs with the <code className="font-mono text-blue-b">phm_</code>{" "}
         token. The proxy on{" "}
         <code className="font-mono text-blue-b">127.0.0.1</code> swaps it for the
-        real key and forwards over TLS. AI never sees a real secret.
+        real key and forwards over TLS. Managed agent workflows receive only
+        placeholders and scrubbed responses.
       </>
     ),
   },
@@ -44,9 +45,8 @@ export function HowItWorks() {
             One CLI. Three layers.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            Real secrets never touch the AI context window. Phantom sits between
-            your code and the API, swapping decoys for real keys at the network
-            layer.
+            Phantom keeps real secrets out of supported, value-blind agent paths.
+            Human plaintext reveal remains a separate trusted-terminal workflow.
           </p>
         </div>
 

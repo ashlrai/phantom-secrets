@@ -6,7 +6,9 @@ Cursor indexes your project files to power its AI completions and chat context. 
 
 After `phantom init`, your `.env` contains only phantom tokens (`phm_...`). Cursor indexes the file, finds nothing sensitive, and cannot leak credentials. When your code makes an API call during a Cursor terminal session, the local Phantom proxy intercepts the request and injects the real value — over TLS, before the packet leaves your machine.
 
-The MCP integration adds 25 tools accessible from Cursor Chat, so you can manage secrets without leaving the editor.
+The MCP integration exposes the release-schema-verified catalog in Cursor Chat,
+so you can manage secrets without leaving the editor. The current release
+contract enforces 54 unique tools; runtime `tools/list` is canonical.
 
 ---
 
@@ -67,9 +69,12 @@ phantom stop
 
 ---
 
-## The 25 MCP tools Cursor gets
+## MCP tools Cursor can use
 
-Once `phantom-secrets-mcp` is registered, Cursor Chat can call all 25 Phantom tools. Rather than duplicating the full list here, see the tool reference in [claude-code.md](./claude-code.md#the-25-mcp-tools-claude-gets) — the tool set is identical regardless of which AI client is connected.
+Once `phantom-secrets-mcp` is registered, Cursor Chat can call the same runtime
+catalog as other MCP clients. See the [core tool examples in the Claude Code
+guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
+for the canonical catalog.
 
 Key tools for Cursor users:
 

@@ -189,6 +189,40 @@ fn error_response(status: StatusCode, body: impl Into<Bytes>) -> Response<BoxBod
         .unwrap()
 }
 
+/// Accept only an absent `Content-Encoding` header or exactly one `identity`
+/// header. Response scrubbing operates on the bytes returned by reqwest, so
+/// forwarding any encoded representation would let compressed content bypass
+/// the value scanner before a downstream client decodes it.
+fn upstream_response_is_identity_encoded(headers: &reqwest::header::HeaderMap) -> bool {
+    let mut encodings = headers.get_all(reqwest::header::CONTENT_ENCODING).iter();
+
+    let Some(encoding) = encodings.next() else {
+        return true;
+    };
+
+    encodings.next().is_none()
+        && encoding
+            .to_str()
+            .map(|value| value.trim().eq_ignore_ascii_case("identity"))
+            .unwrap_or(false)
+}
+
+fn unsupported_upstream_encoding_response() -> Response<BoxBody> {
+    let mut response = error_response(
+        StatusCode::BAD_GATEWAY,
+        r#"{"error":"unsupported_upstream_content_encoding"}"#,
+    );
+    response.headers_mut().insert(
+        hyper::header::CACHE_CONTROL,
+        hyper::header::HeaderValue::from_static("no-store"),
+    );
+    response.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
 async fn handle_request(
     req: Request<Incoming>,
     state: Arc<ProxyState>,
@@ -383,6 +417,8 @@ async fn handle_request(
             "host"
                 | "connection"
                 | "transfer-encoding"
+                | "te"
+                | "accept-encoding"
                 | "x-phantom-proxy-token"
                 | "content-length"
         ) {
@@ -423,6 +459,10 @@ async fn handle_request(
         );
         outgoing = outgoing.header(route.header.as_str(), header_value);
     }
+
+    // Response scrubbing is defined over identity bytes. Never forward the
+    // client's compression preferences to the upstream.
+    outgoing = outgoing.header(reqwest::header::ACCEPT_ENCODING, "identity");
 
     // Decide streaming vs. buffered based on request content-type.
     //
@@ -554,6 +594,17 @@ async fn handle_request(
         }
     };
 
+    // An upstream may ignore `Accept-Encoding: identity`. Reject encoded
+    // responses before copying headers or consuming/streaming any body bytes;
+    // stripping Content-Encoding alone would forward an unsafe representation.
+    if !upstream_response_is_identity_encoded(response.headers()) {
+        warn!(
+            "Rejected encoded upstream response for service {}",
+            route.name
+        );
+        return Ok(unsupported_upstream_encoding_response());
+    }
+
     // Build the response back to the client
     let status = response.status();
     let mut builder = Response::builder().status(status);
@@ -578,51 +629,50 @@ async fn handle_request(
             .map(|v| v.contains("text/event-stream"))
             .unwrap_or(false);
 
+    let resp_scrubber = state.interceptor.to_response_scrubber();
     for (name, value) in response.headers() {
         let name_str = name.as_str();
         // Drop content-length: streaming uses chunked transfer, non-streaming may need
         // recalculation after response scrubbing (phantom tokens differ in length)
         if matches!(
             name_str,
-            "transfer-encoding" | "connection" | "content-length"
+            "transfer-encoding" | "connection" | "content-length" | "content-encoding"
         ) {
             continue;
         }
-        builder = builder.header(name, value);
+        let Ok(value_text) = value.to_str() else {
+            warn!("Dropped non-text upstream response header {}", name_str);
+            continue;
+        };
+        let (scrubbed_value, scrub_event) = resp_scrubber.scrub_header(name_str, value_text);
+        if scrub_event.scrubbed {
+            debug!(
+                "Scrubbed credential material from response header {}",
+                name_str
+            );
+        }
+        builder = builder.header(name, scrubbed_value);
     }
 
     if is_streaming {
         // Stream the response body chunk-by-chunk (critical for SSE/streaming APIs).
-        // Two-layer scrubbing:
-        //   1. ResponseScrubber — content-type-aware (SSE line parsing), audit log,
-        //      stderr warning, format-pattern detection.
-        //   2. Interceptor::scrub_response_bytes — fast token→phantom replacement
-        //      (kept as defence-in-depth; already handles the carry window).
+        // ResponseScrubber performs content-aware, overlap-safe redaction for both
+        // exact vault values and recognized unmanaged credential formats.
         debug!("Streaming response: {}", status);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(32);
 
-        let interceptor = state.interceptor.clone();
         let resp_scrubber = state.interceptor.to_response_scrubber();
         let resp_ct = response_content_type.clone();
         let byte_stream = response.bytes_stream();
         tokio::spawn(async move {
             tokio::pin!(byte_stream);
-            // Audit carry for ResponseScrubber (detection + logging only).
-            let mut audit_carry: Vec<u8> = Vec::new();
-            // Replace carry for Interceptor overlap-window replacement.
-            let overlap_len = interceptor.max_secret_len().saturating_sub(1);
-            let mut replace_carry: Vec<u8> = Vec::new();
+            let mut scrub_carry: Vec<u8> = Vec::new();
 
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
-                        // Layer 1 (audit only): detect leaks, emit audit events and
-                        // stderr warnings via ResponseScrubber.  Body output is
-                        // intentionally discarded — the scrubber replaces with
-                        // [REDACTED:*] which would conflict with the token→phantom
-                        // substitution performed by layer 2.
-                        let (_, scrub_event) =
-                            resp_scrubber.scrub_chunk(resp_ct.as_deref(), &mut audit_carry, &chunk);
+                        let (scrubbed, scrub_event) =
+                            resp_scrubber.scrub_chunk(resp_ct.as_deref(), &mut scrub_carry, &chunk);
                         if scrub_event.scrubbed {
                             debug!(
                                 "ResponseScrubber intercepted leak(s) in streaming chunk \
@@ -631,38 +681,13 @@ async fn handle_request(
                             );
                         }
 
-                        // Layer 2 (body scrub): overlap-window token→phantom replacement.
-                        let mut combined = Vec::with_capacity(replace_carry.len() + chunk.len());
-                        combined.extend_from_slice(&replace_carry);
-                        combined.extend_from_slice(&chunk);
-
-                        let (scrubbed, did_scrub) = interceptor.scrub_response_bytes(&combined);
-                        if did_scrub {
-                            debug!("Scrubbed secret(s) from streaming response chunk");
-                        }
-
-                        if overlap_len > 0 && scrubbed.len() > overlap_len {
-                            let emit_end = scrubbed.len() - overlap_len;
-                            let to_emit = &scrubbed[..emit_end];
-                            replace_carry = scrubbed[emit_end..].to_vec();
-                            if tx
-                                .send(Ok(Frame::data(Bytes::copy_from_slice(to_emit))))
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        } else if overlap_len > 0 {
-                            replace_carry = scrubbed;
-                        } else {
-                            replace_carry.clear();
-                            if tx
+                        if !scrubbed.is_empty()
+                            && tx
                                 .send(Ok(Frame::data(Bytes::from(scrubbed))))
                                 .await
                                 .is_err()
-                            {
-                                break;
-                            }
+                        {
+                            break;
                         }
                     }
                     Err(e) => {
@@ -672,12 +697,8 @@ async fn handle_request(
                 }
             }
 
-            // Flush audit carry (discard body — audit only).
-            let _ = resp_scrubber.flush_carry(resp_ct.as_deref(), audit_carry);
-
-            // Flush replacement carry.
-            if !replace_carry.is_empty() {
-                let (scrubbed, _) = interceptor.scrub_response_bytes(&replace_carry);
+            let (scrubbed, _) = resp_scrubber.flush_carry(resp_ct.as_deref(), scrub_carry);
+            if !scrubbed.is_empty() {
                 let _ = tx.send(Ok(Frame::data(Bytes::from(scrubbed)))).await;
             }
         });
@@ -687,7 +708,6 @@ async fn handle_request(
         Ok(builder.body(body).unwrap())
     } else {
         // Non-streaming: buffer, scrub secrets, and forward.
-        // Two-layer scrubbing (same rationale as streaming path above).
         let response_body = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -699,11 +719,7 @@ async fn handle_request(
             }
         };
 
-        // Layer 1 (audit only): ResponseScrubber — detect leaks, emit audit events
-        // and stderr warnings.  Body output is discarded; the scrubber replaces with
-        // [REDACTED:*] which conflicts with the token→phantom replacement in layer 2.
-        let resp_scrubber = state.interceptor.to_response_scrubber();
-        let (_, scrub_event) =
+        let (final_body, scrub_event) =
             resp_scrubber.scrub_buffered(response_content_type.as_deref(), &response_body);
         if scrub_event.scrubbed {
             debug!(
@@ -712,21 +728,8 @@ async fn handle_request(
             );
         }
 
-        // Layer 2 (body scrub): Interceptor replaces real secrets with phantom tokens.
-        let (scrubbed_body, did_scrub) = state.interceptor.scrub_response_bytes(&response_body);
-        if did_scrub {
-            debug!(
-                "Scrubbed secret(s) from response body ({} bytes)",
-                scrubbed_body.len()
-            );
-        }
-
         // Always set content-length from the final body (may differ after scrubbing).
-        let final_body = if did_scrub {
-            Bytes::from(scrubbed_body)
-        } else {
-            response_body
-        };
+        let final_body = Bytes::from(final_body);
         debug!("Response: {} ({} bytes)", status, final_body.len());
         let builder = builder.header("content-length", final_body.len().to_string());
         Ok(builder.body(BoxBody::Left(Full::new(final_body))).unwrap())
@@ -1497,7 +1500,7 @@ mod tests {
     }
 
     /// SSE response (Content-Type: text/event-stream) containing a real secret
-    /// must be scrubbed back to the phantom token before reaching the client.
+    /// must be redacted before reaching the client.
     #[tokio::test]
     async fn test_sse_response_scrubs_real_secret() {
         let phantom_token = "phm_bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333";
@@ -1599,12 +1602,82 @@ mod tests {
             "real secret leaked through SSE response scrubber: {body_text}"
         );
         assert!(
-            body_text.contains(phantom_token),
-            "phantom token not present after SSE response scrub: {body_text}"
+            body_text.contains("[REDACTED:sk-*]"),
+            "redaction marker not present after SSE response scrub: {body_text}"
         );
 
         proxy.shutdown().await;
         let _ = sse_shutdown_tx.send(true);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_scrubs_response_headers_and_unmanaged_body_credentials() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let real_secret = "sk-response-header-secret";
+        let upstream_secret = real_secret.to_string();
+        tokio::spawn(async move {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (stream, _) = accepted.unwrap();
+                    let io = hyper_util::rt::TokioIo::new(stream);
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, hyper::service::service_fn(move |_req| {
+                            let header_secret = upstream_secret.clone();
+                            async move {
+                                Ok::<_, hyper::Error>(hyper::Response::builder()
+                                    .status(200)
+                                    .header("content-type", "application/json")
+                                    .header("x-debug-secret", header_secret)
+                                    .body(http_body_util::Full::new(bytes::Bytes::from(
+                                        r#"{"token":"ghp_abcdefghijklmnopqrstuvwxyz1234567890"}"#,
+                                    )))
+                                    .unwrap())
+                            }
+                        }))
+                        .await;
+                }
+                _ = shutdown_rx.changed() => {}
+            }
+        });
+
+        let phantom_token = "phm_dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333dddd4444eeee5555";
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "responseapi".to_string(),
+            target_base: format!("http://127.0.0.1:{upstream_port}"),
+            secret_key: "RESPONSE_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+        let mut mappings = HashMap::new();
+        mappings.insert(phantom_token.to_string(), real_secret.to_string());
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new(mappings),
+        )
+        .await
+        .unwrap();
+
+        let response = reqwest::get(format!(
+            "http://127.0.0.1:{}/responseapi/v1/test",
+            proxy.port()
+        ))
+        .await
+        .unwrap();
+        assert_eq!(response.headers()["x-debug-secret"], "[REDACTED:sk-*]");
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
+        assert!(body.contains("[REDACTED:ghp_*]"));
+
+        proxy.shutdown().await;
+        let _ = shutdown_tx.send(true);
     }
 
     /// Binary content-type (application/octet-stream) uses the buffered path

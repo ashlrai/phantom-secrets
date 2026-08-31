@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+publish.workspace = true
 readme = "../../README.md"
 description = "Secret vault backends for Phantom Secrets — OS keychain and encrypted file"
 keywords = ["secrets", "vault", "keychain", "encryption", "ai-safety"]

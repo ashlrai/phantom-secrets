@@ -46,6 +46,24 @@ struct McpCommand {
     args: Vec<String>,
 }
 
+/// Remove only the two dotenv read grants emitted by older Phantom releases.
+/// Other allow rules and every deny rule are user-owned and must survive setup.
+/// Returns whether the permission map changed.
+pub(crate) fn remove_legacy_dotenv_read_grants(
+    permissions: &mut serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let Some(allow) = permissions
+        .get_mut("allow")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return false;
+    };
+
+    let before = allow.len();
+    allow.retain(|value| !matches!(value.as_str(), Some("Read(./.env)" | "Read(./.env.*)")));
+    allow.len() != before
+}
+
 impl McpCommand {
     fn args_json(&self) -> serde_json::Value {
         serde_json::Value::Array(
@@ -171,37 +189,18 @@ fn setup_claude_code(mcp: &McpCommand) -> Result<()> {
         }
     }
 
-    // After phantom init, .env only contains worthless phantom tokens — safe for AI to read
+    // Remove legacy Phantom-managed dotenv read grants. Deny rules remain in
+    // force because `.env.*` can include plaintext backups from other tools.
     let permissions = obj
         .entry("permissions")
         .or_insert_with(|| serde_json::json!({}));
 
     if let Some(perms) = permissions.as_object_mut() {
-        let allow = perms
-            .entry("allow")
-            .or_insert_with(|| serde_json::json!([]));
-
-        if let Some(allow_arr) = allow.as_array_mut() {
-            let env_rules = ["Read(./.env)", "Read(./.env.*)"];
-            let mut added = false;
-            for rule in &env_rules {
-                if !allow_arr.iter().any(|v| v.as_str() == Some(rule)) {
-                    allow_arr.push(serde_json::json!(rule));
-                    added = true;
-                }
-            }
-            if added {
-                println!(
-                    "   {} .env read permission: {} (phantom tokens only — safe for AI)",
-                    "+".green().bold(),
-                    "allowed".green()
-                );
-            } else {
-                println!(
-                    "   {} .env read permission already configured",
-                    "-".dimmed()
-                );
-            }
+        if remove_legacy_dotenv_read_grants(perms) {
+            println!(
+                "   {} Removed legacy dotenv read permissions",
+                "+".green().bold()
+            );
         }
 
         if let Some(deny) = perms.get("deny") {
@@ -211,12 +210,8 @@ fn setup_claude_code(mcp: &McpCommand) -> Result<()> {
                     .any(|v| v.as_str().is_some_and(|s| s.contains(".env")));
                 if has_env_deny {
                     println!(
-                        "\n   {} .env is in your deny rules. After phantom init, .env only",
-                        "warn".yellow().bold()
-                    );
-                    println!(
-                        "   {} contains phantom tokens (phm_...) — it's safe to remove the deny rule.",
-                        "    ".yellow()
+                        "   {} Preserving dotenv deny rules as a defense-in-depth boundary",
+                        "ok".green().bold()
                     );
                 }
             }
@@ -656,5 +651,28 @@ mod tests {
         };
         assert_eq!(mcp.args_json().as_array().unwrap().len(), 2);
         assert_eq!(mcp.args_json()[0], "-y");
+    }
+
+    #[test]
+    fn legacy_dotenv_grant_removal_is_exact_and_preserves_denies() {
+        let mut permissions = serde_json::json!({
+            "allow": [
+                "Read(./.env)",
+                "Read(./.env.*)",
+                "Read(./.env.example)",
+                "Bash(cargo test:*)"
+            ],
+            "deny": ["Read(./.env)", "Read(./.env.*)", "Read(./secrets/**)"]
+        });
+        let expected_denies = permissions["deny"].clone();
+        let permissions = permissions.as_object_mut().unwrap();
+
+        assert!(remove_legacy_dotenv_read_grants(permissions));
+        assert_eq!(
+            permissions["allow"],
+            serde_json::json!(["Read(./.env.example)", "Bash(cargo test:*)"])
+        );
+        assert_eq!(permissions["deny"], expected_denies);
+        assert!(!remove_legacy_dotenv_read_grants(permissions));
     }
 }

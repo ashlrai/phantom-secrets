@@ -1,114 +1,270 @@
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::io::{IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
-use zeroize::Zeroize;
+use rand::RngCore;
+use zeroize::{Zeroize, Zeroizing};
 
-/// Dispatch to the appropriate export mode based on flags.
+const MAX_PASSPHRASE_BYTES: u64 = 4 * 1024;
+const MIN_PASSPHRASE_BYTES: usize = 12;
+pub(crate) const MAX_ENCRYPTED_BACKUP_BYTES: u64 = 64 * 1024 * 1024;
+const TEMP_CREATE_ATTEMPTS: usize = 32;
+
+#[derive(Clone, Copy)]
+pub(crate) enum PassphrasePurpose {
+    Export,
+    Import,
+}
+
+impl PassphrasePurpose {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Export => "encrypt",
+            Self::Import => "decrypt",
+        }
+    }
+}
+
+/// Export an encrypted backup. Passphrases come from a trusted terminal or a
+/// private bounded file; the legacy argv option is accepted only to fail closed.
 pub fn run(
     output: Option<&str>,
-    passphrase: Option<&str>,
+    legacy_passphrase: Option<String>,
+    passphrase_file: Option<&str>,
     json: bool,
     allow_plaintext: bool,
 ) -> Result<()> {
-    if json && passphrase.is_some() {
-        anyhow::bail!(
-            "{} --json and --passphrase are mutually exclusive.\n\
-             Use {} for an encrypted file backup, or {} {} for plaintext JSON to stdout.",
-            "!".yellow().bold(),
-            "--passphrase".bold(),
-            "--json".bold(),
-            "--allow-plaintext".bold(),
-        );
-    }
+    reject_legacy_passphrase(legacy_passphrase)?;
 
     if json {
-        run_json(allow_plaintext)
-    } else {
-        let out = output.unwrap_or("phantom-export.enc");
-        let pass = passphrase.context(
-            "Missing --passphrase. Provide a passphrase to encrypt the backup file, \
-             or use --json --allow-plaintext for plaintext JSON output.",
-        )?;
-        run_encrypted(out, pass)
+        return run_json(allow_plaintext);
     }
+
+    let output = output.unwrap_or("phantom-export.enc");
+    let passphrase = acquire_passphrase(passphrase_file, PassphrasePurpose::Export)?;
+    run_encrypted(output, passphrase.as_str())
 }
 
-/// Emit all secrets as a plaintext JSON object to stdout.
-/// Requires `allow_plaintext` to be true; otherwise refuses with an explanatory error.
-fn run_json(allow_plaintext: bool) -> Result<()> {
-    if !allow_plaintext {
+/// The argv form cannot be made confidential: even immediate zeroization cannot
+/// erase copies held by the shell or operating system process table.
+pub(crate) fn reject_legacy_passphrase(legacy_passphrase: Option<String>) -> Result<()> {
+    if let Some(mut passphrase) = legacy_passphrase {
+        passphrase.zeroize();
         anyhow::bail!(
-            "{} Refusing to emit plaintext secrets.\n\n\
-             {} exports ALL vault secrets as unencrypted JSON to stdout. \
-             Anyone who can read your terminal history, shell logs, or pipe destination \
-             will see the raw secret values.\n\n\
-             If you understand the risk and want to proceed, add the {} flag:\n\n  \
-             phantom export --json --allow-plaintext\n\n\
-             To write an encrypted backup instead, use:\n\n  \
-             phantom export --output FILE --passphrase PASS",
-            "!".red().bold(),
-            "phantom export --json".bold(),
-            "--allow-plaintext".bold(),
+            "--passphrase is no longer supported because command-line arguments can be exposed by process inspection. Omit it for a hidden terminal prompt, or use --passphrase-file with a private regular file."
         );
     }
-
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
-
-    phantom_core::audit::log_result("vault.export_plaintext", None)
-        .context("Failed to write audit event for plaintext vault export")?;
-
-    let names = vault.list().context("Failed to list secrets")?;
-
-    if names.is_empty() {
-        // Still valid JSON; emit an empty object so pipes/parsers don't break.
-        println!("{{}}");
-        return Ok(());
-    }
-
-    // Collect into a sorted map so output is deterministic (alphabetical by key).
-    let mut secrets: BTreeMap<String, String> = BTreeMap::new();
-    for name in &names {
-        let value = vault
-            .retrieve(name)
-            .context(format!("Failed to retrieve secret: {name}"))?;
-        secrets.insert(name.clone(), String::from(value.as_str()));
-    }
-
-    // Serialize to pretty JSON.  serde_json may internally copy values before we
-    // zeroize; this is best-effort -- the underlying String allocations are wiped
-    // below but any intermediate copies inside serde_json are beyond our control.
-    let mut json_out =
-        serde_json::to_string_pretty(&secrets).context("Failed to serialize secrets to JSON")?;
-
-    // Zeroize the secret values from the map before printing.
-    for v in secrets.values_mut() {
-        v.zeroize();
-    }
-
-    println!("{json_out}");
-
-    json_out.zeroize();
-
     Ok(())
 }
 
-/// Write an encrypted backup file (original behaviour).
+pub(crate) fn acquire_passphrase(
+    passphrase_file: Option<&str>,
+    purpose: PassphrasePurpose,
+) -> Result<Zeroizing<String>> {
+    if let Some(path) = passphrase_file {
+        return read_passphrase_file(Path::new(path));
+    }
+
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        anyhow::bail!(
+            "A hidden passphrase prompt requires attached stdin and stderr terminals. For bounded automation, use --passphrase-file with a private regular file (mode 0600 on Unix)."
+        );
+    }
+
+    let prompt = format!("Passphrase to {} backup: ", purpose.verb());
+    let passphrase = Zeroizing::new(
+        rpassword::prompt_password(prompt).context("Failed to read passphrase from terminal")?,
+    );
+    validate_passphrase(passphrase.as_str())?;
+
+    if matches!(purpose, PassphrasePurpose::Export) {
+        let confirmation = Zeroizing::new(
+            rpassword::prompt_password("Confirm backup passphrase: ")
+                .context("Failed to confirm passphrase from terminal")?,
+        );
+        if passphrase.as_str() != confirmation.as_str() {
+            anyhow::bail!("Backup passphrases did not match");
+        }
+    }
+
+    Ok(passphrase)
+}
+
+fn read_passphrase_file(path: &Path) -> Result<Zeroizing<String>> {
+    if path.as_os_str() == "-" {
+        anyhow::bail!(
+            "--passphrase-file does not accept stdin; use a private regular file so secret input remains separate from command streams"
+        );
+    }
+
+    let before = std::fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to inspect passphrase file: {}", path.display()))?;
+    if before.file_type().is_symlink() || !before.is_file() {
+        anyhow::bail!(
+            "Passphrase file must be a regular file and must not be a symlink: {}",
+            path.display()
+        );
+    }
+    if before.len() > MAX_PASSPHRASE_BYTES {
+        anyhow::bail!(
+            "Passphrase file exceeds the {}-byte limit",
+            MAX_PASSPHRASE_BYTES
+        );
+    }
+    ensure_private_permissions(path, &before)?;
+
+    let mut file = File::open(path)
+        .with_context(|| format!("Failed to open passphrase file: {}", path.display()))?;
+    ensure_opened_same_file(path, &before, &file.metadata()?)?;
+
+    let mut bytes = Zeroizing::new(Vec::with_capacity(before.len() as usize + 1));
+    Read::by_ref(&mut file)
+        .take(MAX_PASSPHRASE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("Failed to read passphrase file: {}", path.display()))?;
+    if bytes.len() as u64 > MAX_PASSPHRASE_BYTES {
+        anyhow::bail!(
+            "Passphrase file exceeds the {}-byte limit",
+            MAX_PASSPHRASE_BYTES
+        );
+    }
+
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    if bytes.contains(&b'\n') || bytes.contains(&b'\r') || bytes.contains(&0) {
+        anyhow::bail!("Passphrase file must contain exactly one text line without NUL bytes");
+    }
+
+    let text = std::str::from_utf8(&bytes).context("Passphrase file is not valid UTF-8")?;
+    validate_passphrase(text)?;
+    Ok(Zeroizing::new(text.to_owned()))
+}
+
+fn validate_passphrase(passphrase: &str) -> Result<()> {
+    if passphrase.len() < MIN_PASSPHRASE_BYTES {
+        anyhow::bail!(
+            "Backup passphrase must be at least {} bytes; use a dedicated high-entropy passphrase",
+            MIN_PASSPHRASE_BYTES
+        );
+    }
+    if passphrase.len() as u64 > MAX_PASSPHRASE_BYTES {
+        anyhow::bail!(
+            "Backup passphrase exceeds the {}-byte limit",
+            MAX_PASSPHRASE_BYTES
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_private_permissions(path: &Path, metadata: &std::fs::Metadata) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        anyhow::bail!(
+            "Passphrase file permissions are {:03o}; expected 0600 or stricter: {}",
+            mode,
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_private_permissions(_path: &Path, _metadata: &std::fs::Metadata) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_opened_same_file(
+    path: &Path,
+    before: &std::fs::Metadata,
+    opened: &std::fs::Metadata,
+) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if before.dev() != opened.dev() || before.ino() != opened.ino() || !opened.is_file() {
+        anyhow::bail!(
+            "Passphrase file changed while it was being opened: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_opened_same_file(
+    path: &Path,
+    before: &std::fs::Metadata,
+    opened: &std::fs::Metadata,
+) -> Result<()> {
+    use std::os::windows::fs::MetadataExt;
+
+    // Rust 1.95 still keeps Windows volume_serial_number/file_index behind the
+    // unstable `windows_by_handle` feature. Compare several stable on-disk
+    // fingerprint field instead; a regular-file check alone would miss swaps.
+    if !opened.is_file()
+        || before.file_attributes() != opened.file_attributes()
+        || before.creation_time() != opened.creation_time()
+        || before.last_write_time() != opened.last_write_time()
+        || before.file_size() != opened.file_size()
+    {
+        anyhow::bail!(
+            "Passphrase file changed while it was being opened: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn ensure_opened_same_file(
+    path: &Path,
+    _before: &std::fs::Metadata,
+    opened: &std::fs::Metadata,
+) -> Result<()> {
+    if !opened.is_file() {
+        anyhow::bail!(
+            "Passphrase file changed while it was being opened: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Legacy plaintext mode is retained only to return a stable fail-closed error.
+fn run_json(_allow_plaintext: bool) -> Result<()> {
+    anyhow::bail!(
+        "{} Plaintext JSON export is disabled. Use an encrypted backup instead.",
+        "!".red().bold(),
+    )
+}
+
+struct SecretMap(BTreeMap<String, String>);
+
+impl Drop for SecretMap {
+    fn drop(&mut self) {
+        for value in self.0.values_mut() {
+            value.zeroize();
+        }
+    }
+}
+
 fn run_encrypted(output: &str, passphrase: &str) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
+    let output_path = project_dir.join(output);
+
+    validate_new_destination(&output_path)?;
 
     if !config_path.exists() {
         anyhow::bail!(
@@ -119,10 +275,6 @@ fn run_encrypted(output: &str, passphrase: &str) -> Result<()> {
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::create_vault(&config.phantom.project_id);
-
-    phantom_core::audit::log_result("vault.export_encrypted", None)
-        .context("Failed to write audit event for encrypted vault export")?;
-
     let names = vault.list().context("Failed to list secrets")?;
 
     if names.is_empty() {
@@ -130,35 +282,35 @@ fn run_encrypted(output: &str, passphrase: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Collect all secrets into a sorted map
-    let mut secrets = BTreeMap::new();
+    let mut secrets = SecretMap(BTreeMap::new());
     for name in &names {
         let value = vault
             .retrieve(name)
-            .context(format!("Failed to retrieve secret: {name}"))?;
-        secrets.insert(name.clone(), String::from(value.as_str()));
+            .with_context(|| format!("Failed to retrieve secret: {name}"))?;
+        secrets.0.insert(name.clone(), String::from(value.as_str()));
     }
 
-    // Check if output file already exists
-    let output_path = project_dir.join(output);
-    if output_path.exists() {
+    let json = Zeroizing::new(
+        serde_json::to_vec(&secrets.0).context("Failed to serialize secrets for backup")?,
+    );
+    let encrypted = phantom_vault::crypto::encrypt(&json, passphrase)
+        .context("Failed to encrypt backup data")?;
+    if encrypted.len() as u64 > MAX_ENCRYPTED_BACKUP_BYTES {
         anyhow::bail!(
-            "Output file {} already exists. Delete it first or choose a different name.",
-            output.bold()
+            "Encrypted backup exceeds the supported {}-byte recovery limit",
+            MAX_ENCRYPTED_BACKUP_BYTES
         );
     }
 
-    // Serialize to JSON
-    let mut json = serde_json::to_string(&secrets).context("Failed to serialize secrets")?;
+    atomic_create_private(&output_path, &encrypted)
+        .with_context(|| format!("Failed to create backup file: {}", output_path.display()))?;
 
-    // Encrypt with passphrase
-    let encrypted = phantom_vault::crypto::encrypt(json.as_bytes(), passphrase)
-        .context("Failed to encrypt export data")?;
-    json.zeroize();
-
-    // Write to output file
-    std::fs::write(&output_path, &encrypted)
-        .context(format!("Failed to write export file: {output}"))?;
+    phantom_core::audit::log_result("vault.export_encrypted", None).with_context(|| {
+        format!(
+            "Backup exists at {}, but its encrypted export audit event could not be written",
+            output_path.display()
+        )
+    })?;
 
     println!(
         "{} Exported {} secret(s) to {}",
@@ -170,44 +322,216 @@ fn run_encrypted(output: &str, passphrase: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_new_destination(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent_meta = std::fs::metadata(parent).with_context(|| {
+        format!(
+            "Backup parent directory does not exist: {}",
+            parent.display()
+        )
+    })?;
+    if !parent_meta.is_dir() {
+        anyhow::bail!("Backup parent is not a directory: {}", parent.display());
+    }
+    if path.file_name().is_none() {
+        anyhow::bail!("Backup output must name a file");
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            anyhow::bail!("Refusing symlink backup target: {}", path.display())
+        }
+        Ok(_) => anyhow::bail!(
+            "Backup target already exists; refusing to overwrite it: {}",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("Failed to inspect {}", path.display())),
+    }
+}
+
+struct TempBackup {
+    path: PathBuf,
+}
+
+impl Drop for TempBackup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn atomic_create_private(path: &Path, contents: &[u8]) -> Result<()> {
+    validate_new_destination(path)?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+
+    let (mut file, temp) = create_private_temp(parent)?;
+    file.write_all(contents)
+        .context("Failed to write backup data")?;
+    file.sync_all().context("Failed to sync backup data")?;
+    drop(file);
+
+    std::fs::hard_link(&temp.path, path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            anyhow::anyhow!(
+                "Backup target appeared during creation; refusing to overwrite it: {}",
+                path.display()
+            )
+        } else {
+            anyhow::Error::new(error).context(format!(
+                "Failed to publish backup without overwriting {}",
+                path.display()
+            ))
+        }
+    })?;
+
+    std::fs::remove_file(&temp.path).context("Failed to remove backup staging link")?;
+    sync_directory(parent).context("Failed to sync backup directory")?;
+    Ok(())
+}
+
+fn create_private_temp(parent: &Path) -> Result<(File, TempBackup)> {
+    for _ in 0..TEMP_CREATE_ATTEMPTS {
+        let mut random = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut random);
+        let path = parent.join(format!(".phantom-backup-{}.tmp", hex::encode(random)));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((file, TempBackup { path })),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to create private backup staging file in {}",
+                        parent.display()
+                    )
+                })
+            }
+        }
+    }
+    anyhow::bail!("Unable to allocate a unique backup staging file")
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<()> {
+    // The file itself has already been flushed. Stable Rust does not expose a
+    // portable directory handle with which to durably flush the new link.
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
-    /// run() with --json but no --allow-plaintext must refuse with an error.
     #[test]
-    fn json_mode_refuses_without_allow_plaintext() {
-        let err = run(None, None, true, false).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("Refusing to emit plaintext secrets"),
-            "expected refusal message, got: {msg}"
-        );
-        assert!(
-            msg.contains("--allow-plaintext"),
-            "expected --allow-plaintext hint in message, got: {msg}"
-        );
+    fn legacy_argv_passphrase_is_rejected() {
+        let err = run(
+            Some("out.enc"),
+            Some("secret".to_string()),
+            None,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no longer supported"));
     }
 
-    /// --json and --passphrase together must be rejected regardless of --allow-plaintext.
     #[test]
-    fn json_and_passphrase_are_mutually_exclusive() {
-        let err = run(None, Some("secret"), true, true).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("mutually exclusive"),
-            "expected mutual-exclusion message, got: {msg}"
-        );
+    fn json_mode_always_refuses() {
+        assert!(run(None, None, None, true, false).is_err());
+        assert!(run(None, None, None, true, true).is_err());
     }
 
-    /// Encrypted mode without passphrase should fail with a helpful message.
     #[test]
-    fn encrypted_mode_requires_passphrase() {
-        let err = run(Some("out.enc"), None, false, false).unwrap_err();
-        let msg = err.to_string();
+    fn weak_backup_passphrase_is_rejected() {
+        let err = validate_passphrase("short").unwrap_err();
+        assert!(err.to_string().contains("at least 12 bytes"));
+    }
+
+    #[test]
+    fn atomic_writer_refuses_existing_target_and_cleans_staging() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("backup.enc");
+        std::fs::write(&target, b"existing").unwrap();
+
+        let err = atomic_create_private(&target, b"ciphertext").unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"existing");
+        assert_no_staging_files(dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_writer_refuses_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        let target = dir.path().join("backup.enc");
+        std::fs::write(&victim, b"do-not-touch").unwrap();
+        symlink(&victim, &target).unwrap();
+
+        let err = atomic_create_private(&target, b"ciphertext").unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+        assert_eq!(std::fs::read(&victim).unwrap(), b"do-not-touch");
+        assert_no_staging_files(dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_writer_creates_private_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("backup.enc");
+        atomic_create_private(&target, b"ciphertext").unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"ciphertext");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_no_staging_files(dir.path());
+    }
+
+    #[test]
+    fn staging_guard_cleans_abandoned_file() {
+        let dir = tempdir().unwrap();
+        let (file, staging) = create_private_temp(dir.path()).unwrap();
+        let path = staging.path.clone();
+        drop(file);
+        assert!(path.exists());
+        drop(staging);
+        assert!(!path.exists());
+    }
+
+    fn assert_no_staging_files(dir: &Path) {
+        let names = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
         assert!(
-            msg.contains("passphrase") || msg.contains("--passphrase"),
-            "expected passphrase hint, got: {msg}"
+            names
+                .iter()
+                .all(|name| !name.starts_with(".phantom-backup-")),
+            "staging files remained: {names:?}"
         );
     }
 }

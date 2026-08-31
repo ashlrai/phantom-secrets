@@ -1,5 +1,14 @@
 import { requireAuth, requirePro } from "@/lib/auth";
+import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
+
+const MAX_TEAM_MEMBER_BODY_BYTES = 8_192;
+
+type AddMemberBody = {
+  user_id?: string;
+  github_login?: string;
+  role?: "admin" | "member";
+};
 
 interface RouteContext {
   params: Promise<{ team_id: string }>;
@@ -99,7 +108,12 @@ export async function POST(req: Request, context: RouteContext) {
     return Response.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const body = await req.json();
+  let body: AddMemberBody;
+  try {
+    body = await readBoundedJsonObject(req, MAX_TEAM_MEMBER_BODY_BYTES);
+  } catch (error) {
+    return requestBodyErrorResponse(error);
+  }
   const { user_id, github_login, role } = body;
 
   const memberRole = role ?? "member";

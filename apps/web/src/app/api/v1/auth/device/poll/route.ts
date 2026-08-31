@@ -1,14 +1,16 @@
 import { createServiceClient } from "@/lib/supabase-server";
+import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createHash, randomBytes } from "crypto";
 
 const CLI_TOKEN_TTL_DAYS = 90;
+const MAX_DEVICE_AUTH_BODY_BYTES = 4_096;
 
 export async function POST(req: Request) {
   let body: { device_code?: string };
   try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+    body = await readBoundedJsonObject(req, MAX_DEVICE_AUTH_BODY_BYTES);
+  } catch (error) {
+    return requestBodyErrorResponse(error);
   }
   const { device_code } = body;
 

@@ -70,6 +70,7 @@ export default function BillingPage() {
   }
 
   const isPro = user.plan === "pro";
+  const hasBillingAccount = Boolean(user.stripe_customer_id);
 
   return (
     <div className="grid gap-6 max-w-[760px]">
@@ -99,14 +100,16 @@ export default function BillingPage() {
         )}
 
         <div className="mt-6">
-          {isPro ? (
+          {isPro || hasBillingAccount ? (
             <button
               type="button"
               onClick={openPortal}
               disabled={loadingPortal}
               className="inline-flex min-h-[44px] items-center rounded-lg border border-border-l bg-s2 px-4 py-2 text-[0.88rem] font-semibold text-t1 transition-colors hover:border-t3 disabled:opacity-60 disabled:cursor-wait"
             >
-              {loadingPortal ? "Opening Stripe…" : "Manage subscription in Stripe"}
+              {loadingPortal
+                ? "Opening Stripe…"
+                : "Manage billing in Stripe"}
             </button>
           ) : (
             <a

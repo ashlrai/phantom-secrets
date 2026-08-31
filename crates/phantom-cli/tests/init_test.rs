@@ -4,7 +4,7 @@
 /// test creates an isolated TempDir so that:
 ///   - The `.phantom.toml` project_id is unique per test (derived from the
 ///     canonicalised directory path), preventing keychain collisions.
-///   - Files written by `init` (`.env`, `.env.backup`, `.phantom.toml`,
+///   - Files written by `init` (`.env`, `.phantom.toml`,
 ///     `.env.example`) are cleaned up automatically when the TempDir drops.
 ///
 /// PHANTOM_VAULT_PASSPHRASE is set so that if the OS keychain is unavailable
@@ -91,19 +91,12 @@ fn init_leaves_non_secret_vars_untouched() {
 }
 
 #[test]
-fn init_creates_env_backup() {
+fn init_never_leaves_a_plaintext_env_backup() {
     let dir = TempDir::new().unwrap();
     run_init(&dir).success();
 
     let backup = dir.path().join(".env.backup");
-    assert!(backup.exists(), ".env.backup should exist after init");
-
-    let backup_content = fs::read_to_string(&backup).expect("read .env.backup");
-    // Backup must contain the original real values
-    assert!(
-        backup_content.contains("sk-real-test"),
-        "backup should contain original secret value"
-    );
+    assert!(!backup.exists(), ".env.backup must not exist after init");
 }
 
 #[test]
@@ -248,7 +241,7 @@ fn init_skips_public_framework_keys() {
 
 /// Public key keys detected during `phantom init` must be persisted in the
 /// `[phantom.public_keys]` array in `.phantom.toml` so that subsequent tooling
-/// (e.g., `phantom check`, `phantom add --force`) can respect the skip decision.
+/// (e.g., `phantom check`, `phantom add`) can respect the skip decision.
 #[test]
 fn init_persists_public_keys_in_toml() {
     let dir = TempDir::new().unwrap();
