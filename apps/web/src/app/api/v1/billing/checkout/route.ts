@@ -3,6 +3,8 @@ import { getStripe, getStripePriceId } from "@/lib/stripe";
 import { createServiceClient } from "@/lib/supabase-server";
 
 const BILLING_CHECKOUT_ENABLED_ENV = "PHANTOM_BILLING_CHECKOUT_ENABLED";
+const SUBSCRIPTION_PAGE_SIZE = 100;
+const MAX_SUBSCRIPTION_PAGES = 100;
 
 type BillingUser = {
   email: string | null;
@@ -19,6 +21,54 @@ function subscriptionExistsResponse() {
     },
     { status: 409 },
   );
+}
+
+function subscriptionStateUnavailableResponse() {
+  return Response.json(
+    { error: "unable_to_verify_subscription_state" },
+    { status: 503 },
+  );
+}
+
+async function hasBlockingSubscription(customerId: string): Promise<boolean> {
+  const stripe = getStripe();
+  let startingAfter: string | undefined;
+  const seenCursors = new Set<string>();
+
+  for (let pageNumber = 0; pageNumber < MAX_SUBSCRIPTION_PAGES; pageNumber += 1) {
+    const page = await stripe.subscriptions.list({
+      customer: customerId,
+      status: "all",
+      limit: SUBSCRIPTION_PAGE_SIZE,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+
+    // Stripe's SDK types guarantee this shape at compile time, but the route
+    // must still fail closed if a proxy or upstream response is malformed.
+    if (!page || !Array.isArray(page.data) || typeof page.has_more !== "boolean") {
+      throw new Error("malformed Stripe subscription page");
+    }
+
+    if (
+      page.data.some(
+        ({ status }) => status !== "canceled" && status !== "incomplete_expired",
+      )
+    ) {
+      return true;
+    }
+
+    if (!page.has_more) return false;
+
+    const nextCursor = page.data.at(-1)?.id;
+    if (!nextCursor || nextCursor === startingAfter || seenCursors.has(nextCursor)) {
+      throw new Error("Stripe subscription pagination did not advance");
+    }
+
+    seenCursors.add(nextCursor);
+    startingAfter = nextCursor;
+  }
+
+  throw new Error("Stripe subscription pagination exceeded safety limit");
 }
 
 async function persistCustomerMapping(
@@ -140,20 +190,17 @@ export async function POST(req: Request) {
     );
   }
 
-  const stripe = getStripe();
-  const subscriptions = await stripe.subscriptions.list({
-    customer: customerId,
-    status: "all",
-    limit: 10,
-  });
-  if (
-    subscriptions.data.some(
-      ({ status }) => status !== "canceled" && status !== "incomplete_expired",
-    )
-  ) {
+  let blockingSubscription: boolean;
+  try {
+    blockingSubscription = await hasBlockingSubscription(customerId);
+  } catch {
+    return subscriptionStateUnavailableResponse();
+  }
+  if (blockingSubscription) {
     return subscriptionExistsResponse();
   }
 
+  const stripe = getStripe();
   // Reuse the one outstanding session instead of creating parallel purchase
   // paths. Stripe's per-user idempotency key closes the concurrent-request
   // window before this session becomes visible to the list API.
