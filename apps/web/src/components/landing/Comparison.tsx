@@ -187,13 +187,6 @@ export function Comparison() {
             </table>
           </div>
         </div>
-
-        <p className="mt-6 text-[0.78rem] text-t3 max-w-[820px]">
-          Comparison reflects each tool&apos;s default tier and primary
-          use-case as of April 2026. Phantom is purpose-built for the
-          AI-coding-tool workflow; the others are general-purpose secrets
-          managers retrofitted to the same problem.
-        </p>
       </div>
     </section>
   );

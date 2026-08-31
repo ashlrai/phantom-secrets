@@ -51,6 +51,18 @@ const staticDocumentationClaims = Object.fromEntries(
   staticDocumentationPaths.map((relativePath) => [relativePath, readRepo(relativePath)]),
 );
 
+const repositoryGuidanceClaims = {
+  "AGENTS.md": readRepo("AGENTS.md"),
+  "README.md": readRepo("README.md"),
+  ...staticDocumentationClaims,
+  ...Object.fromEntries(
+    Object.entries(claims).map(([relativePath, source]) => [
+      `apps/web/${relativePath}`,
+      source,
+    ]),
+  ),
+};
+
 const machineReadablePaths = [
   ...filesUnder("public", [".json", ".txt"]),
   "src/app/layout.tsx",
@@ -123,6 +135,52 @@ test("active landing copy rejects universal agent, leak, timing, and competitor 
   assert.match(comparison, /managed path with giving an agent a plaintext dotenv value/i);
   assert.match(comparison, /not a vendor feature benchmark/i);
   assert.doesNotMatch(comparison, /Doppler|1Password CLI|Infisical|AWS Secrets Mgr/i);
+  assert.doesNotMatch(comparison, /default tier|as of April 2026|retrofitted/i);
+});
+
+test("repository guidance rejects stale token, traversal, streaming, pricing, and timing claims", () => {
+  const forbidden = [
+    // Persistent project mappings are not provider credentials, but they are
+    // still sensitive metadata resolvable by an active authorized proxy.
+    /\b(?:safe|worthless)\s+(?:persistent\s+)?(?:(?:phantom|phm_)\s*)?(?:tokens?|placeholders?)\b/i,
+    /\b(?:phantom|phm_)\s*(?:tokens?|placeholders?)[^\n]{0,24}\b(?:are|is)\s+(?:only\s+)?(?:safe|worthless)\b/i,
+    /\b(?:safe|worthless)[\s*`_-]{1,12}(?:phm_|phantom)[\s*`_-]{0,12}(?:tokens?|placeholders?|mappings?)\b/i,
+    /\b(?:phm_|phantom)[\s*`_-]{0,12}(?:tokens?|placeholders?|mappings?)[\s*`_-]{0,12}(?:are|is|remain)[\s*`_-]{1,12}(?:safe|worthless)\b/i,
+
+    // `init --all` is a bounded discovery operation, not an unqualified
+    // promise to process an entire workspace.
+    /\bprotect\s+every\s+git\s+repo\b/i,
+    /\bevery\s+(?:git\s+)?repo(?:sitory)?[^\n]{0,48}\bone[- ]shot\b/i,
+    /\bone[- ]shot[^\n]{0,48}\bevery\s+(?:git\s+)?repo(?:sitory)?\b/i,
+    /phantom init --all[^\n]{0,100}\b(?:every|all)\s+(?:git\s+)?repo(?:sitor(?:y|ies))?\b/i,
+    /\b(?:every|all)\s+(?:git\s+)?repo(?:sitor(?:y|ies))?[^\n]{0,100}phantom init --all\b/i,
+
+    // Phantom buffers bounded request bodies; only responses retain
+    // streaming/SSE semantics.
+    /\brequest(?:-|\s+)stream(?:ing|ed)?[^\n]{0,80}\breplac(?:e|es|ed|ement|ing)\b/i,
+    /\breplac(?:e|es|ed|ement|ing)[^\n]{0,80}\b(?:streaming\s+requests?|request(?:-|\s+)streams?)\b/i,
+
+    // Price, upgrade remedies, and user limits are not commissioned public
+    // entitlements until the hosted plan is live and evidenced.
+    /\bPro\b[^\n]{0,80}\$8(?:\.00)?(?:\s*\/\s*(?:mo(?:nth)?|user))?/i,
+    /\$8(?:\.00)?(?:\s*\/\s*(?:mo(?:nth)?|user))?[^\n]{0,80}\bPro\b/i,
+    /\$8(?:\.00)?\s*(?:<[^>]+>\s*)?\/\s*(?:user\s*\/\s*)?(?:mo(?:nth)?)\b/i,
+    /\bupgrade\s+to\s+Pro\b[^\n]{0,100}\b(?:fix|remed|unlock|increase|raise|unlimited)\w*\b/i,
+    /\bPro\b[^\n]{0,100}\bunlimited\s+(?:cloud\s+)?vaults?\b/i,
+    /\b(?:limit(?:ed)?\s+to|limit\s+of|up\s+to|maximum\s+of)\s+(?:ten|\d+)\s+(?:users?|members?)\b/i,
+
+    // Installation duration depends on host, network, and package manager.
+    /\binstall(?:ed|ation)?\s+in\s+(?:about\s+)?(?:ten|10|\d+)\s+seconds?\b/i,
+    /\binstall\s*[-:]?\s*10\s+seconds?\b/i,
+    /\binstall\s*\(\s*(?:ten|10|\d+)\s+seconds?\s*\)/i,
+    /\b(?:Instalation|Installtion|Intallation)\b/i,
+  ];
+
+  for (const [file, source] of Object.entries(repositoryGuidanceClaims)) {
+    for (const claim of forbidden) {
+      assert.doesNotMatch(source, claim, file);
+    }
+  }
 });
 
 test("active static documentation rejects audited submission and deployment absolutes", () => {
