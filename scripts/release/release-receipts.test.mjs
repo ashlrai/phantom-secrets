@@ -32,6 +32,7 @@ function receipt(state = "draft") {
   return {
     tagName: "v0.7.3",
     isDraft: state === "draft",
+    isImmutable: state === "published",
     isPrerelease: false,
     assets: assetNames().map((name) => ({
       name,
@@ -86,5 +87,25 @@ test("rejects missing, extra, empty, incomplete, or wrong-state assets", () => {
 
   for (const payload of cases) {
     assert.notEqual(verify(payload, "draft").status, 0);
+  }
+});
+
+test("rejects missing or state-inconsistent release immutability", () => {
+  const cases = [];
+
+  const missing = receipt();
+  delete missing.isImmutable;
+  cases.push([missing, "draft"]);
+
+  const immutableDraft = receipt();
+  immutableDraft.isImmutable = true;
+  cases.push([immutableDraft, "draft"]);
+
+  const mutablePublished = receipt("published");
+  mutablePublished.isImmutable = false;
+  cases.push([mutablePublished, "published"]);
+
+  for (const [payload, state] of cases) {
+    assert.notEqual(verify(payload, state).status, 0);
   }
 });

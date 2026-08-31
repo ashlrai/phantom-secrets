@@ -37,6 +37,9 @@ if (receipt.isPrerelease !== false) {
 if (receipt.isDraft !== (expectedState === "draft")) {
   throw new Error(`release is not in expected ${expectedState} state`);
 }
+if (receipt.isImmutable !== (expectedState === "published")) {
+  throw new Error(`release immutability is not valid for ${expectedState} state`);
+}
 if (!Array.isArray(receipt.assets)) {
   throw new Error("release assets are missing");
 }
