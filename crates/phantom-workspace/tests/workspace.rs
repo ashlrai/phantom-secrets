@@ -373,7 +373,15 @@ fn filesystem_apply_is_atomic_idempotent_and_recoverable() {
     assert!(ignore.starts_with(original_ignore));
     let hook = std::fs::read_to_string(workspace.path().join(".git/hooks/pre-commit")).unwrap();
     assert!(hook.starts_with(original_hook));
-    assert!(hook.contains("phantom-secrets check --staged"));
+    assert!(hook.contains("# Phantom Secrets pre-commit hook"));
+    assert!(hook.contains("command -v phantom"));
+    assert!(hook.contains("phantom check --staged || exit $?"));
+    assert!(hook.contains("exit 1"));
+    assert!(hook.contains("# End Phantom Secrets pre-commit hook"));
+    assert!(!hook.contains("npx"));
+    assert!(!hook.contains("npm"));
+    assert!(!hook.contains("curl"));
+    assert!(!hook.contains("wget"));
     assert_eq!(
         std::fs::read_to_string(workspace.path().join(".claude/settings.local.json")).unwrap(),
         client_config
@@ -401,7 +409,15 @@ fn filesystem_apply_is_atomic_idempotent_and_recoverable() {
     let hook_after =
         std::fs::read_to_string(workspace.path().join(".git/hooks/pre-commit")).unwrap();
     assert_eq!(
-        hook_after.matches("phantom-secrets check --staged").count(),
+        hook_after
+            .matches("phantom check --staged || exit $?")
+            .count(),
+        1
+    );
+    assert_eq!(
+        hook_after
+            .matches("# Phantom Secrets pre-commit hook")
+            .count(),
         1
     );
 
