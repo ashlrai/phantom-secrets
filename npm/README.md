@@ -42,8 +42,8 @@ for evidence and limits.
 ## Quick start
 
 ```bash
-# Inspect changes first.
-phantom init --dry-run
+# Inspect every matching project under the current directory without changing it.
+phantom init --all . --dry-run
 
 # Protect detected dotenv values after reviewing the plan.
 phantom init
@@ -109,7 +109,8 @@ runtime `tools/list` response from the installed binary is canonical.
 
 | Command | Effect |
 |---------|--------|
-| `phantom init [--dry-run]` | Plan or apply dotenv protection |
+| `phantom init` | Apply dotenv protection to one project |
+| `phantom init --all <DIR> --dry-run` | Preview bounded multi-project protection without modifying files or vaults |
 | `phantom exec -- <command>` | Run a child process through the local proxy |
 | `phantom list` | List stored names, not values |
 | `phantom add <NAME>` | Prompt for a value in the trusted terminal |

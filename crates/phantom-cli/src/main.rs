@@ -57,11 +57,11 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         all: Option<std::path::PathBuf>,
         /// With --all: scan and report what would change without modifying anything.
-        #[arg(long)]
+        #[arg(long, requires = "all")]
         dry_run: bool,
         /// With --all: number of repos to initialise concurrently.
         /// Defaults to PHANTOM_INIT_JOBS env var, then 4.
-        #[arg(long, short = 'j', value_name = "N")]
+        #[arg(long, short = 'j', value_name = "N", requires = "all")]
         jobs: Option<usize>,
         /// Create a valid .phantom.toml and empty vault without requiring a .env file.
         /// Use this to bootstrap a brand-new project before any secrets exist.

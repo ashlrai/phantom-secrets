@@ -39,6 +39,32 @@ fn run_init(dir: &TempDir) -> assert_cmd::assert::Assert {
 }
 
 #[test]
+fn init_rejects_single_project_dry_run_without_mutating() {
+    let dir = TempDir::new().unwrap();
+    let env_path = dir.path().join(".env");
+    let original = "OPENAI_API_KEY=sk-real-test\n";
+    fs::write(&env_path, original).expect("write .env");
+
+    let output = Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["init", "--dry-run"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .output()
+        .expect("run phantom init --dry-run");
+
+    assert!(!output.status.success(), "unsupported flag combination must fail");
+    assert_eq!(
+        fs::read_to_string(&env_path).expect("read .env"),
+        original,
+        "rejected preview must not rewrite .env"
+    );
+    assert!(!dir.path().join(".phantom.toml").exists());
+    assert!(!dir.path().join(".env.example").exists());
+}
+
+#[test]
 fn init_creates_phantom_toml() {
     let dir = TempDir::new().unwrap();
     run_init(&dir).success();
