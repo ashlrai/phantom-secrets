@@ -625,7 +625,11 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
     }
 }
 
-#[cfg(test)]
+// These exercise the CLI participant inside descriptor-relative workspace
+// transactions. The transaction engine intentionally fails closed before
+// participant preparation on platforms without the required Unix filesystem
+// primitives; that cross-platform contract is covered in phantom-workspace.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use phantom_core::error::{PhantomError, Result as PhantomResult};
