@@ -14,7 +14,13 @@
 npx phantom-secrets init
 ```
 
-Alt: `brew tap ashlrai/phantom && brew install phantom`
+Homebrew 6 (macOS, third-party tap):
+
+```
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
+```
 
 ## Editor MCP setup
 
@@ -54,7 +60,7 @@ Read-only (safe to call freely):
 
 Init / scaffolding:
 - `phantom_init` — protect a fresh `.env`; this mutates the local vault, dotenv file, and Phantom configuration.
-- `phantom_wrap` — wrap `package.json` scripts with `phantom exec` so secrets are injected via the proxy at runtime
+- `phantom_wrap` — wrap selected runtime/build `package.json` scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with `phantom exec`; it skips test, lint, type, format, and other scripts
 - `phantom_unwrap` — reverse `phantom_wrap`, restoring original scripts from `:raw` variants
 
 > Note: a legacy `phantom_add_secret` tool exists but is hard-deprecated — it refuses any plaintext value through MCP because tool arguments enter agent context. Use `phantom_add_secret_interactive` (below) instead.
@@ -64,14 +70,16 @@ Destructive (require `confirm: true`):
 - `phantom_cloud_push`, `phantom_cloud_pull`
 - `phantom_copy_secret`
 
-Teams (multi-developer shared vaults — Pro plan):
+Teams (multi-developer fixed-membership shared vaults — planned Pro pilot):
+- Current vault access is member-wide: every team member can read and write the shared vault; roles do not provide per-vault access control.
 - `phantom_team_list` — read-only, list teams the user belongs to
 - `phantom_team_members` — read-only, list members of a team
 - `phantom_team_key_publish` — register the user's X25519 pubkey on a team (idempotent; pubkey only — private key stays in OS keychain)
-- `phantom_team_create`, `phantom_team_invite` — require `confirm: true`
+- `phantom_team_create` — requires `confirm: true`; the authenticated creator becomes owner
+- `phantom_team_invite` — requires `confirm: true`; invitation management is owner/admin-gated
 - `phantom_team_vault_push`, `phantom_team_vault_pull` — require `confirm: true`. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305). Server only stores ciphertext.
 
-Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control.
+Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control. Pro is a planned hosted plan, not a generally purchasable or commissioned entitlement evidenced by this repository.
 
 ## CLI surface
 
@@ -79,7 +87,7 @@ Team member removal and automatic vault-key rotation are not shipped. Use fixed-
 
 Recently-added flags worth knowing:
 
-- `phantom init --all <DIR>` walks a workspace and runs init in every git repo with a `.env` (with `--dry-run` to preview, `--jobs N` / `-j N` to control parallelism; default 4, also reads `PHANTOM_INIT_JOBS`). A progress bar shows live status.
+- `phantom init --all <DIR>` processes eligible git repositories found within a five-level bounded scan and stops below the first matching repository. Use `--dry-run` to preview the exact set and `--jobs N` / `-j N` to control parallelism (default 4; also reads `PHANTOM_INIT_JOBS`). A progress bar shows live status.
 - `phantom agent doctor` shows a human-readable AI-agent readiness report. `phantom agent report --json` emits stable JSON with status, risk, findings, fixes, commands, files, approval requirements, and exit code.
 - `phantom agent setup --dry-run` previews safe setup changes for agent use; `phantom agent setup --apply` writes them.
 - `phantom sync --dry-run --json` previews deployment sync targets, selected key names, skipped key names, token-env presence, and warnings without decrypting values or calling platform APIs.
@@ -133,7 +141,7 @@ Detection and runtime injection are different capabilities. Database connection 
 ## Pricing
 
 - Free: local vault, proxy, MCP, 1 cloud vault (≤10 secrets), Vercel/Railway sync
-- Pro $8/mo: unlimited cloud vaults and multi-device encrypted sync
+- Pro (planned hosted plan): proposed $8/mo packaging for unlimited cloud vaults and multi-device encrypted sync; it is not generally purchasable or commissioned based on repository source alone
 - Enterprise evaluation: team-vault source and local audit tooling are present; SSO/SAML, centralized enterprise authorization, certification, and contractual SLA are not shipped by this repository. Service and support scope require a separate written agreement with Ashlr AI — `mason@ashlr.ai`.
 
 ## Documentation

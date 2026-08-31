@@ -6,7 +6,7 @@ Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Install: `npx phantom-secrets init` or `brew tap ashlrai/phantom && brew install phantom`
+Install: `npx phantom-secrets init`; Homebrew requires the exact tap, trust, and install commands below
 MCP: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
 
@@ -41,7 +41,8 @@ Downloads the correct platform binary automatically. No Rust toolchain needed.
 ### Homebrew (macOS)
 ```
 brew tap ashlrai/phantom
-brew install phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
 ```
 
 ### Direct binary download
@@ -64,7 +65,7 @@ phantom --version
 Read .env, store real secrets in vault, rewrite with phantom tokens, create .phantom.toml.
 Options: --from <path> (non-standard .env location)
 Safe to re-run: new secrets are added, existing tokens preserved.
-Multi-project: --all <DIR> walks a workspace and runs init in every git repo with a .env.
+Multi-project: phantom init --all <DIR> processes eligible git repositories found within a five-level bounded scan and stops below the first matching repository.
   --dry-run: preview which repos would be touched without modifying anything.
   --jobs N / -j N: number of repos to initialise concurrently (default: 4; also reads PHANTOM_INIT_JOBS env var).
   A progress bar shows live status during --all runs.
@@ -200,7 +201,7 @@ Each log entry contains: ts (Unix epoch), op, name (secret name — never value)
 Each entry is chained with HMAC-SHA256 over the previous entry's hash and checked against a signed head checkpoint. `phantom audit verify` detects malformed lines, modified or inserted entries, sequence gaps, prefix deletion, and log tail/head mismatches; full log and checkpoint deletion still requires external evidence.
 
 ### phantom wrap
-Wrap package.json scripts with `npx phantom-secrets exec --` so secrets are injected at runtime.
+Wrap selected runtime/build package.json scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with `npx phantom-secrets exec --` so secrets are injected at runtime. It skips test, lint, type, format, and other scripts.
 Saves originals as script:raw variants.
 Options: --only <scripts> (whitelist), --skip <scripts> (blacklist)
 
@@ -218,9 +219,9 @@ Copy a secret to another phantom-initialized project without exposing the value.
 Options: --rename <newname>
 
 ### phantom team list / create / members / invite / key-publish / vault-push / vault-pull
-Multi-developer shared-vault commands (Pro plan). `list` and `members` are read-only. `create` and `invite` are mutating (require explicit user confirmation when called via MCP). `key-publish` is one-time setup that registers this device's X25519 public key with the team — pubkey only, the private key stays in the OS keychain. `vault-push` wraps the project's secrets with a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305) and uploads ciphertext only; `vault-pull` is the corresponding download/decrypt.
+Multi-developer fixed-membership shared-vault commands for a planned Pro pilot. Current vault access is member-wide: every team member can read and write the shared vault, and roles do not provide per-vault access control. `list` and `members` are read-only. `create` and `invite` are mutating (require explicit user confirmation when called via MCP); the authenticated creator becomes owner, and invitation management is owner/admin-gated. `key-publish` is one-time setup that registers this device's X25519 public key with the team — pubkey only, the private key stays in the OS keychain. `vault-push` wraps the project's secrets with a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305) and uploads ciphertext only; `vault-pull` is the corresponding download/decrypt.
 
-Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control.
+Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control. Pro is a planned hosted plan, not a generally purchasable or commissioned entitlement evidenced by this repository.
 
 ### phantom open [target]
 Open a Phantom page in the browser. Aliases: `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, `site`. Any other word becomes `https://phm.dev/<word>`; full URLs pass through.
@@ -325,7 +326,7 @@ phantom_copy_secret
   Effect: writes into target vault. .. path traversal is rejected.
 
 phantom_wrap
-  Wrap package.json scripts with `npx phantom-secrets exec --`.
+  Wrap selected runtime/build package.json scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with `npx phantom-secrets exec --`; skip test, lint, type, format, and other scripts.
   Params: only (array), skip (array), confirm (bool, must be true)
   Effect: modifies package.json. Saves originals as script:raw variants.
 
@@ -334,7 +335,9 @@ phantom_unwrap
   Params: confirm (bool, must be true)
   Effect: restores and removes :raw entries.
 
-### Team tools (Pro plan, multi-developer shared vaults)
+### Team tools (planned Pro pilot, multi-developer fixed-membership shared vaults)
+
+Current vault access is member-wide: every team member can read and write the shared vault. Invitation management is owner/admin-gated; roles do not provide per-vault access control.
 
 phantom_team_list
   List teams the authenticated user belongs to. Returns team id, name, and the user's role for each.
@@ -350,7 +353,7 @@ phantom_team_key_publish
   Params: team_id
 
 phantom_team_create
-  Create a new team. The authenticated user becomes the owner. Pro plan required.
+  Create a new team. The authenticated user becomes the owner. Planned Pro entitlement required when the hosted service is commissioned.
   Params: name, confirm (bool, must be true)
 
 phantom_team_invite
@@ -431,11 +434,11 @@ Authority, Locus-contract, broker, runtime, session, evidence, and workspace cra
 
 Vault encryption: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key).
 
-Phantom tokens: 256-bit CSPRNG with phm_ prefix. Never collide with real API key formats (sk-*, ghp_*, AKIA*, etc.).
+Phantom tokens: 256-bit CSPRNG with phm_ prefix. The prefix distinguishes placeholders from supported real-key formats, and random collisions are cryptographically negligible rather than mathematically impossible.
 
-Proxy binds to 127.0.0.1 only — never exposed to network.
+Proxy binds to 127.0.0.1 only and is not bound to a non-loopback interface. Host compromise, same-user local-process access, and bearer theft remain in the threat model.
 
-Proxy token authentication prevents other local processes from using the proxy.
+Proxy token authentication rejects requests without the session bearer; it does not exclude same-user local-process or bearer-theft risk.
 
 Secrets zeroized from memory after use (zeroize crate).
 
@@ -445,7 +448,7 @@ The `phm_` placeholders written to managed `.env` files persist until an explici
 
 Cloud tokens stored hashed (SHA-256) in database — never plaintext.
 
-MCP destructive tools require explicit confirm=true — prompt injection cannot silently modify vaults.
+MCP destructive tools require explicit confirm=true as a guard against unintended mutation. Confirmation is not prompt-injection immunity; an agent or user can still authorize a harmful request.
 
 phantom_reveal blocked in non-interactive contexts by default to prevent AI agents from reading real values.
 
@@ -542,9 +545,11 @@ Optimistic concurrency: version numbers prevent conflicting pushes from multiple
 
 Auth: GitHub OAuth via device code flow (like GitHub CLI).
 
-Pricing:
+Packaging direction:
   Free tier: 1 cloud vault, unlimited local vaults
-  Pro ($8/mo): unlimited cloud vaults, multi-device sync
+  Pro (planned hosted plan): proposed $8/mo packaging for unlimited cloud vaults and multi-device sync
+
+The Pro plan is not generally purchasable or commissioned based on repository source alone. Verify the deployed service, account entitlement, and written plan terms before relying on it.
 
 
 ## CI/CD
