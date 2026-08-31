@@ -187,7 +187,7 @@ export default function RootLayout({
                 {
                   "@type": "HowToStep",
                   name: "Install Phantom and protect your .env",
-                  text: "Run `npx phantom-secrets init` in your project root. Phantom auto-detects API keys, moves them to your OS keychain, and rewrites the .env with phm_ tokens.",
+                  text: "Run `npx phantom-secrets init` in your project root. Phantom auto-detects API keys, stores them in an OS credential store when available or in its ChaCha20-Poly1305 encrypted-file fallback, and rewrites the .env with phm_ tokens.",
                 },
                 {
                   "@type": "HowToStep",

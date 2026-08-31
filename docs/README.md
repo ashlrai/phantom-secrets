@@ -72,8 +72,10 @@ or production acceptance.
 
 - [`llms.txt`](llms.txt) and [`llms-full.txt`](llms-full.txt) mirror public product guidance for language-model consumers.
 - [`index.html`](index.html) and related assets are legacy static-site sources. The
-  legacy `pricing.html` and `waitlist.html` pages are noindex redirects to the active
-  Next.js `/pricing` route and are not an independent product or entitlement contract.
+  standalone `pricing.html` and `waitlist.html` files are legacy snapshots, not
+  redirects or an independent product or entitlement contract. The active product
+  surface is the Next.js `/pricing` route; the legacy pages are excluded from the
+  static sitemap.
 - [`blog-launch.md`](blog-launch.md), [`blog-devto.md`](blog-devto.md), and [`hn-submission.md`](hn-submission.md) are launch/publishing drafts, not normative technical specifications.
 
 When behavior conflicts with prose, treat code, closed schemas, tests, and release automation as authoritative and open a documentation issue. Avoid copying capability counts or platform promises into new documents unless an automated check enforces them.

@@ -4,6 +4,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const webDir = path.resolve(__dirname, "..");
+const repoDir = path.resolve(webDir, "../..");
 
 function filesUnder(relativeDirectory, acceptedExtensions) {
   const absoluteDirectory = path.join(webDir, relativeDirectory);
@@ -27,10 +28,34 @@ function read(relativePath) {
   return fs.readFileSync(path.join(webDir, relativePath), "utf8");
 }
 
+function readRepo(relativePath) {
+  return fs.readFileSync(path.join(repoDir, relativePath), "utf8");
+}
+
 const claims = Object.fromEntries(
   claimPaths.map((relativePath) => [relativePath, read(relativePath)]),
 );
 const allClaims = Object.values(claims).join("\n");
+
+const machineReadablePaths = [
+  ...filesUnder("public", [".json", ".txt"]),
+  "src/app/layout.tsx",
+  "src/app/manifest.ts",
+  "src/app/sitemap.ts",
+];
+const machineReadableClaims = Object.fromEntries(
+  machineReadablePaths.map((relativePath) => [
+    `apps/web/${relativePath}`,
+    read(relativePath),
+  ]),
+);
+for (const relativePath of ["docs/llms.txt", "docs/llms-full.txt", "docs/sitemap.xml"]) {
+  machineReadableClaims[relativePath] = readRepo(relativePath);
+}
+
+const machineReadableGuides = Object.entries(machineReadableClaims).filter(
+  ([file]) => /llms(?:-full)?\.txt$/.test(file),
+);
 
 test("public surfaces reject previously audited absolute claims", () => {
   for (const forbidden of [
@@ -57,6 +82,93 @@ test("public surfaces reject previously audited absolute claims", () => {
     /postgres:\/\/[\s\S]*swaps the phm_/i,
   ]) {
     assert.doesNotMatch(allClaims, forbidden);
+  }
+});
+
+test("machine-readable guidance rejects absolute security guarantees", () => {
+  const forbidden = [
+    /real keys never leave your machine/i,
+    /no plaintext ever touches disk/i,
+    /without ever seeing the values/i,
+    /AI sees only the phantoms/i,
+    /zero (?:data sent|exposure)/i,
+    /(?:completely|100%) secure/i,
+    /unhackable/i,
+  ];
+
+  for (const [file, source] of Object.entries(machineReadableClaims)) {
+    for (const claim of forbidden) {
+      assert.doesNotMatch(source, claim, file);
+    }
+  }
+});
+
+test("machine-readable init --all guidance states its traversal bounds", () => {
+  for (const [file, source] of machineReadableGuides) {
+    assert.match(
+      source,
+      /phantom init --all <DIR>|Multi-project: --all <DIR>|`phantom init`[^\n]*`--all <DIR>`/i,
+      file,
+    );
+    assert.match(source, /five[- ]level|within five levels/i, file);
+    assert.match(source, /stops?(?: descending)? below the first matching repo(?:sitory)?/i, file);
+    assert.match(source, /--dry-run/i, file);
+  }
+});
+
+test("machine-readable Homebrew guidance uses the trusted fully qualified formula", () => {
+  const homebrewGuides = machineReadableGuides.filter(([, source]) =>
+    /brew (?:tap|install)/i.test(source),
+  );
+  assert.ok(homebrewGuides.length >= 2, "expected Homebrew guidance in public references");
+
+  for (const [file, source] of homebrewGuides) {
+    assert.match(
+      source,
+      /brew tap ashlrai\/phantom[\s\S]{0,240}brew trust --formula ashlrai\/phantom\/phantom[\s\S]{0,240}brew install ashlrai\/phantom\/phantom/i,
+      file,
+    );
+    assert.doesNotMatch(source, /brew install phantom(?:\s|`|$)/im, file);
+  }
+});
+
+test("machine-readable Pro copy is planned rather than active checkout evidence", () => {
+  const proGuides = machineReadableGuides.filter(([, source]) => /\bPro\b/.test(source));
+  assert.ok(proGuides.length >= 2, "expected planned Pro guidance in public references");
+
+  for (const [file, source] of proGuides) {
+    assert.match(
+      source,
+      /planned|commissioning required|verify the deployed entitlement/i,
+      file,
+    );
+    assert.doesNotMatch(source, /Pro \(\$8\/mo\): unlimited cloud vaults/i, file);
+    assert.doesNotMatch(source, /Pro \$8\/mo: unlimited cloud vaults/i, file);
+    assert.doesNotMatch(source, /subscription is active|active checkout/i, file);
+  }
+});
+
+test("machine-readable wrapping guidance remains selective", () => {
+  for (const [file, source] of machineReadableGuides) {
+    assert.match(source, /phantom[_ ]wrap/i, file);
+    assert.match(source, /selected|selective|heuristically picks/i, file);
+    assert.match(
+      source,
+      /(?:skip|left unchanged)[^\n]*(?:test[^\n]*lint|lint[^\n]*test)|(?:test[^\n]*lint|lint[^\n]*test)[^\n]*left unchanged/i,
+      file,
+    );
+  }
+});
+
+test("machine-readable team guidance states authorization and access boundaries", () => {
+  for (const [file, source] of machineReadableGuides) {
+    assert.match(
+      source,
+      /owner\/admin[^\n]*gate[^\n]*invitation|invitation[^\n]*owner\/admin-gated|owner and admin roles gate invitations|only an owner or admin may invite|phantom_team_invite[^\n]*owner or admin role/i,
+      file,
+    );
+    assert.match(source, /vault (?:read\/write )?access is member-wide|all members can read and write/i, file);
+    assert.match(source, /offboarding[^\n]*(?:not shipped|control)/i, file);
   }
 });
 
