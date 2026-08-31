@@ -670,7 +670,12 @@ mod direct {
         }
         Ok(())
     }
-    fn limit(resource: libc::c_int, value: u64) -> std::io::Result<()> {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    type RlimitResource = libc::__rlimit_resource_t;
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    type RlimitResource = libc::c_int;
+
+    fn limit(resource: RlimitResource, value: u64) -> std::io::Result<()> {
         let mut x = std::mem::MaybeUninit::<libc::rlimit>::uninit();
         if unsafe { libc::getrlimit(resource as _, x.as_mut_ptr()) } != 0 {
             return Err(std::io::Error::last_os_error());

@@ -466,201 +466,205 @@ fn apply_setup_plan_inner<P: SetupTransactionParticipant>(
     #[cfg(not(unix))]
     {
         let _ = (sealed_plan, seal_key, participant, journal_config);
-        return Err(WorkspaceError::SafeMutationUnsupported);
+        Err(WorkspaceError::SafeMutationUnsupported)
     }
 
-    let approved_plan = &sealed_plan.plan;
-    if !plan_has_valid_id(approved_plan)? {
-        return Err(WorkspaceError::InvalidPlan);
-    }
+    #[cfg(unix)]
+    {
+        let approved_plan = &sealed_plan.plan;
+        if !plan_has_valid_id(approved_plan)? {
+            return Err(WorkspaceError::InvalidPlan);
+        }
 
-    let requested_root = PathBuf::from(&approved_plan.workspace_root);
-    let canonical_root = requested_root
-        .canonicalize()
-        .map_err(|source| WorkspaceError::Io {
-            path: requested_root.clone(),
+        let requested_root = PathBuf::from(&approved_plan.workspace_root);
+        let canonical_root =
+            requested_root
+                .canonicalize()
+                .map_err(|source| WorkspaceError::Io {
+                    path: requested_root.clone(),
+                    source,
+                })?;
+        if canonical_root.to_string_lossy() != approved_plan.workspace_root {
+            return Err(WorkspaceError::InvalidPlan);
+        }
+
+        let _lock = acquire_workspace_lock(&canonical_root)?;
+        #[cfg(unix)]
+        let root_directory = open_root_directory(&canonical_root)?;
+        #[cfg(not(unix))]
+        let root_directory = File::open(&canonical_root).map_err(|source| WorkspaceError::Io {
+            path: canonical_root.clone(),
             source,
         })?;
-    if canonical_root.to_string_lossy() != approved_plan.workspace_root {
-        return Err(WorkspaceError::InvalidPlan);
-    }
-
-    let _lock = acquire_workspace_lock(&canonical_root)?;
-    #[cfg(unix)]
-    let root_directory = open_root_directory(&canonical_root)?;
-    #[cfg(not(unix))]
-    let root_directory = File::open(&canonical_root).map_err(|source| WorkspaceError::Io {
-        path: canonical_root.clone(),
-        source,
-    })?;
-    let inspection = inspect_workspace(&canonical_root)?;
-    let current_plan = build_setup_plan(&inspection)?;
-    validate_sealed_state(
-        sealed_plan,
-        &current_plan,
-        &inspection,
-        &canonical_root,
-        seal_key,
-    )?;
-
-    let external_actions = approved_plan
-        .actions
-        .iter()
-        .filter(|action| {
-            matches!(
-                action.kind,
-                SetupActionKind::ProtectEnvFile | SetupActionKind::ReviewPlaceBinding
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let preparation = match participant.prepare(approved_plan, &external_actions) {
-        Ok(preparation) => preparation,
-        Err(error) => {
-            return Err(abort_participant(
-                participant,
-                WorkspaceError::Participant {
-                    stage: "prepare",
-                    code: error.code,
-                },
-            ));
-        }
-    };
-    if let Err(error) = validate_preparation(&preparation, &external_actions) {
-        return Err(abort_participant(participant, error));
-    }
-
-    let ParticipantPreparation {
-        completed_action_ids,
-        file_mutations,
-    } = preparation;
-    let mutations_result = (|| -> Result<Vec<FileMutation>> {
-        let mut mutations = build_filesystem_mutations(
-            approved_plan,
-            &inspection,
-            &canonical_root,
-            &root_directory,
-        )?;
-        for mutation in file_mutations {
-            let action = external_actions
-                .iter()
-                .find(|action| {
-                    action.id == mutation_action_id(&mutation, &external_actions).as_str()
-                })
-                .ok_or(WorkspaceError::InvalidPlan)?;
-            mutations.push(FileMutation {
-                target: mutation.target,
-                content: mutation.content,
-                executable: mutation.executable,
-                action_id: action.id.clone(),
-            });
-        }
-        ensure_unique_targets(&mut mutations)?;
-        Ok(mutations)
-    })();
-    let mutations = match mutations_result {
-        Ok(mutations) => mutations,
-        Err(error) => return Err(abort_participant(participant, error)),
-    };
-
-    // `prepare` is staging-only. Recompute the keyed precondition immediately
-    // before snapshot/write so an adapter or non-cooperating process cannot
-    // silently alter a planned file during staging.
-    let post_prepare_validation = (|| -> Result<()> {
-        let post_prepare_inspection = inspect_workspace(&canonical_root)?;
-        let post_prepare_plan = build_setup_plan(&post_prepare_inspection)?;
+        let inspection = inspect_workspace(&canonical_root)?;
+        let current_plan = build_setup_plan(&inspection)?;
         validate_sealed_state(
             sealed_plan,
-            &post_prepare_plan,
-            &post_prepare_inspection,
+            &current_plan,
+            &inspection,
             &canonical_root,
             seal_key,
-        )
-    })();
-    if let Err(error) = post_prepare_validation {
-        return Err(abort_participant(participant, error));
-    }
-    #[cfg(unix)]
-    verify_root_identity(&canonical_root, &root_directory)?;
+        )?;
 
-    let mut snapshot = match capture_snapshot(&canonical_root, &root_directory, &mutations) {
-        Ok(snapshot) => snapshot,
-        Err(error) => return Err(abort_participant(participant, error)),
-    };
-    let mut journal = if let Some(config) = journal_config {
-        let payload = participant.recovery_payload().map_err(|error| {
-            abort_participant(
-                participant,
-                WorkspaceError::Participant {
-                    stage: "recovery_payload",
-                    code: error.code,
-                },
-            )
-        })?;
-        Some(DurableJournal::create(
-            config,
-            sealed_plan,
-            &snapshot,
-            &mutations,
-            payload,
-        )?)
-    } else {
-        None
-    };
-    let write_result = apply_mutations(&canonical_root, &mutations, &mut snapshot);
-    if let Err(error) = write_result {
-        let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
-        let participant_rolled_back = participant.rollback().is_ok();
-        if filesystem_rolled_back && participant_rolled_back {
-            if let Some(journal) = journal.as_mut() {
-                let _ = journal.set_phase(JournalPhase::RolledBack, None);
-            }
-        }
-        return if filesystem_rolled_back && participant_rolled_back {
-            Err(error)
-        } else {
-            Err(WorkspaceError::RollbackIncomplete)
-        };
-    }
-
-    if let Err(error) = finalize_snapshot(&mut snapshot) {
-        let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
-        let participant_rolled_back = participant.rollback().is_ok();
-        return if filesystem_rolled_back && participant_rolled_back {
-            Err(error)
-        } else {
-            Err(WorkspaceError::RollbackIncomplete)
-        };
-    }
-    if let Some(journal) = journal.as_mut() {
-        journal.set_phase(JournalPhase::FilesApplied, None)?;
-        journal.set_phase(JournalPhase::ParticipantCommitStarted, None)?;
-    }
-    if let Err(error) = participant.commit() {
-        let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
-        let participant_rolled_back = participant.rollback().is_ok();
-        return if filesystem_rolled_back && participant_rolled_back {
-            Err(WorkspaceError::Participant {
-                stage: "commit",
-                code: error.code,
+        let external_actions = approved_plan
+            .actions
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action.kind,
+                    SetupActionKind::ProtectEnvFile | SetupActionKind::ReviewPlaceBinding
+                )
             })
-        } else {
-            Err(WorkspaceError::RollbackIncomplete)
+            .cloned()
+            .collect::<Vec<_>>();
+        let preparation = match participant.prepare(approved_plan, &external_actions) {
+            Ok(preparation) => preparation,
+            Err(error) => {
+                return Err(abort_participant(
+                    participant,
+                    WorkspaceError::Participant {
+                        stage: "prepare",
+                        code: error.code,
+                    },
+                ));
+            }
         };
-    }
+        if let Err(error) = validate_preparation(&preparation, &external_actions) {
+            return Err(abort_participant(participant, error));
+        }
 
-    let receipt = build_receipt(
-        approved_plan,
-        false,
-        &mutations,
-        &snapshot,
-        &completed_action_ids,
-        seal_key,
-    );
-    if let Some(journal) = journal.as_mut() {
-        journal.set_phase(JournalPhase::Applied, Some(receipt.clone()))?;
+        let ParticipantPreparation {
+            completed_action_ids,
+            file_mutations,
+        } = preparation;
+        let mutations_result = (|| -> Result<Vec<FileMutation>> {
+            let mut mutations = build_filesystem_mutations(
+                approved_plan,
+                &inspection,
+                &canonical_root,
+                &root_directory,
+            )?;
+            for mutation in file_mutations {
+                let action = external_actions
+                    .iter()
+                    .find(|action| {
+                        action.id == mutation_action_id(&mutation, &external_actions).as_str()
+                    })
+                    .ok_or(WorkspaceError::InvalidPlan)?;
+                mutations.push(FileMutation {
+                    target: mutation.target,
+                    content: mutation.content,
+                    executable: mutation.executable,
+                    action_id: action.id.clone(),
+                });
+            }
+            ensure_unique_targets(&mut mutations)?;
+            Ok(mutations)
+        })();
+        let mutations = match mutations_result {
+            Ok(mutations) => mutations,
+            Err(error) => return Err(abort_participant(participant, error)),
+        };
+
+        // `prepare` is staging-only. Recompute the keyed precondition immediately
+        // before snapshot/write so an adapter or non-cooperating process cannot
+        // silently alter a planned file during staging.
+        let post_prepare_validation = (|| -> Result<()> {
+            let post_prepare_inspection = inspect_workspace(&canonical_root)?;
+            let post_prepare_plan = build_setup_plan(&post_prepare_inspection)?;
+            validate_sealed_state(
+                sealed_plan,
+                &post_prepare_plan,
+                &post_prepare_inspection,
+                &canonical_root,
+                seal_key,
+            )
+        })();
+        if let Err(error) = post_prepare_validation {
+            return Err(abort_participant(participant, error));
+        }
+        #[cfg(unix)]
+        verify_root_identity(&canonical_root, &root_directory)?;
+
+        let mut snapshot = match capture_snapshot(&canonical_root, &root_directory, &mutations) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Err(abort_participant(participant, error)),
+        };
+        let mut journal = if let Some(config) = journal_config {
+            let payload = participant.recovery_payload().map_err(|error| {
+                abort_participant(
+                    participant,
+                    WorkspaceError::Participant {
+                        stage: "recovery_payload",
+                        code: error.code,
+                    },
+                )
+            })?;
+            Some(DurableJournal::create(
+                config,
+                sealed_plan,
+                &snapshot,
+                &mutations,
+                payload,
+            )?)
+        } else {
+            None
+        };
+        let write_result = apply_mutations(&canonical_root, &mutations, &mut snapshot);
+        if let Err(error) = write_result {
+            let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
+            let participant_rolled_back = participant.rollback().is_ok();
+            if filesystem_rolled_back && participant_rolled_back {
+                if let Some(journal) = journal.as_mut() {
+                    let _ = journal.set_phase(JournalPhase::RolledBack, None);
+                }
+            }
+            return if filesystem_rolled_back && participant_rolled_back {
+                Err(error)
+            } else {
+                Err(WorkspaceError::RollbackIncomplete)
+            };
+        }
+
+        if let Err(error) = finalize_snapshot(&mut snapshot) {
+            let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
+            let participant_rolled_back = participant.rollback().is_ok();
+            return if filesystem_rolled_back && participant_rolled_back {
+                Err(error)
+            } else {
+                Err(WorkspaceError::RollbackIncomplete)
+            };
+        }
+        if let Some(journal) = journal.as_mut() {
+            journal.set_phase(JournalPhase::FilesApplied, None)?;
+            journal.set_phase(JournalPhase::ParticipantCommitStarted, None)?;
+        }
+        if let Err(error) = participant.commit() {
+            let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
+            let participant_rolled_back = participant.rollback().is_ok();
+            return if filesystem_rolled_back && participant_rolled_back {
+                Err(WorkspaceError::Participant {
+                    stage: "commit",
+                    code: error.code,
+                })
+            } else {
+                Err(WorkspaceError::RollbackIncomplete)
+            };
+        }
+
+        let receipt = build_receipt(
+            approved_plan,
+            false,
+            &mutations,
+            &snapshot,
+            &completed_action_ids,
+            seal_key,
+        );
+        if let Some(journal) = journal.as_mut() {
+            journal.set_phase(JournalPhase::Applied, Some(receipt.clone()))?;
+        }
+        Ok(SetupTransaction { receipt, snapshot })
     }
-    Ok(SetupTransaction { receipt, snapshot })
 }
 
 fn abort_participant<P: SetupTransactionParticipant>(
@@ -690,20 +694,16 @@ impl DurableJournal {
                     .iter()
                     .find(|mutation| mutation.target == file.target)
                     .ok_or(WorkspaceError::InvalidPlan)?;
-                let (before, before_mode) = match &file.before {
-                    FileState::Missing => (None, None),
-                    FileState::Present {
-                        content,
-                        permissions,
-                    } => {
-                        #[cfg(unix)]
-                        let mode = {
-                            use std::os::unix::fs::PermissionsExt;
-                            Some(permissions.mode())
-                        };
-                        #[cfg(not(unix))]
-                        let mode = None;
-                        (Some(content.clone()), mode)
+                let before = match &file.before {
+                    FileState::Missing => None,
+                    FileState::Present { content, .. } => Some(content.clone()),
+                };
+                #[cfg(unix)]
+                let before_mode = match &file.before {
+                    FileState::Missing => None,
+                    FileState::Present { permissions, .. } => {
+                        use std::os::unix::fs::PermissionsExt;
+                        Some(permissions.mode())
                     }
                 };
                 Ok(JournalFile {
@@ -857,67 +857,66 @@ pub fn recover_setup_plan_journal<P: SetupTransactionParticipant>(
         | JournalPhase::ParticipantCommitStarted => {}
     }
 
-    let root = workspace_root
-        .canonicalize()
-        .map_err(|source| WorkspaceError::Io {
-            path: workspace_root.to_path_buf(),
-            source,
-        })?;
-    let _lock = acquire_workspace_lock(&root)?;
-    #[cfg(unix)]
-    let root_directory = open_root_directory(&root)?;
     #[cfg(not(unix))]
-    let root_directory = File::open(&root).map_err(|source| WorkspaceError::Io {
-        path: root.clone(),
-        source,
-    })?;
-    #[cfg(not(unix))]
-    return Err(WorkspaceError::SafeMutationUnsupported);
+    {
+        let _ = (workspace_root, participant);
+        Err(WorkspaceError::SafeMutationUnsupported)
+    }
 
     #[cfg(unix)]
-    let mut parents = Vec::with_capacity(journal.record.files.len());
-    #[cfg(unix)]
-    for file in &journal.record.files {
-        let path = root.join(&file.target);
-        let mut no_created = Vec::new();
-        let parent = secure_parent(&root, &root_directory, &file.target, false, &mut no_created)?
-            .ok_or_else(|| WorkspaceError::RollbackDrift(path.clone()))?;
-        let current = read_at(&parent, &path)?.map(|(content, _)| content);
-        if current.as_ref() != file.before.as_ref() && current.as_ref() != Some(&file.after) {
-            return Err(WorkspaceError::RollbackDrift(path));
-        }
-        parents.push(parent);
-    }
-    participant
-        .restore_recovery_payload(&journal.record.participant_payload)
-        .map_err(|error| WorkspaceError::Participant {
-            stage: "restore_recovery_payload",
-            code: error.code,
-        })?;
-    let participant_ok = participant.rollback().is_ok();
-    let mut filesystem_ok = true;
-    #[cfg(unix)]
-    for (file, parent) in journal.record.files.iter().zip(parents.iter()).rev() {
-        let path = root.join(&file.target);
-        let restored = match &file.before {
-            Some(content) => {
-                let permissions = file.before_mode.map(|mode| {
-                    use std::os::unix::fs::PermissionsExt;
-                    Permissions::from_mode(mode)
-                });
-                write_at(parent, &path, content, permissions, false)
+    {
+        let root = workspace_root
+            .canonicalize()
+            .map_err(|source| WorkspaceError::Io {
+                path: workspace_root.to_path_buf(),
+                source,
+            })?;
+        let _lock = acquire_workspace_lock(&root)?;
+        let root_directory = open_root_directory(&root)?;
+
+        let mut parents = Vec::with_capacity(journal.record.files.len());
+        for file in &journal.record.files {
+            let path = root.join(&file.target);
+            let mut no_created = Vec::new();
+            let parent =
+                secure_parent(&root, &root_directory, &file.target, false, &mut no_created)?
+                    .ok_or_else(|| WorkspaceError::RollbackDrift(path.clone()))?;
+            let current = read_at(&parent, &path)?.map(|(content, _)| content);
+            if current.as_ref() != file.before.as_ref() && current.as_ref() != Some(&file.after) {
+                return Err(WorkspaceError::RollbackDrift(path));
             }
-            None => unlink_at(parent, &path, 0),
-        };
-        if restored.is_err() {
-            filesystem_ok = false;
+            parents.push(parent);
         }
+        participant
+            .restore_recovery_payload(&journal.record.participant_payload)
+            .map_err(|error| WorkspaceError::Participant {
+                stage: "restore_recovery_payload",
+                code: error.code,
+            })?;
+        let participant_ok = participant.rollback().is_ok();
+        let mut filesystem_ok = true;
+        for (file, parent) in journal.record.files.iter().zip(parents.iter()).rev() {
+            let path = root.join(&file.target);
+            let restored = match &file.before {
+                Some(content) => {
+                    let permissions = file.before_mode.map(|mode| {
+                        use std::os::unix::fs::PermissionsExt;
+                        Permissions::from_mode(mode)
+                    });
+                    write_at(parent, &path, content, permissions, false)
+                }
+                None => unlink_at(parent, &path, 0),
+            };
+            if restored.is_err() {
+                filesystem_ok = false;
+            }
+        }
+        if !participant_ok || !filesystem_ok {
+            return Err(WorkspaceError::RollbackIncomplete);
+        }
+        journal.set_phase(JournalPhase::RolledBack, None)?;
+        Ok(JournalRecovery::RolledBack)
     }
-    if !participant_ok || !filesystem_ok {
-        return Err(WorkspaceError::RollbackIncomplete);
-    }
-    journal.set_phase(JournalPhase::RolledBack, None)?;
-    Ok(JournalRecovery::RolledBack)
 }
 
 /// Delete an already-terminal encrypted journal after its value-free receipt
