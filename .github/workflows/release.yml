@@ -58,10 +58,12 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - name: Verify release version parity
-        run: node scripts/release/check-version-parity.mjs "$GITHUB_REF_NAME"
+        run: |
+          node scripts/release/check-version-parity.mjs "$GITHUB_REF_NAME"
+          node scripts/release/extract-release-notes.mjs "$GITHUB_REF_NAME" > /tmp/phantom-release-notes.md
 
       - name: Test fail-closed publication and release receipts
-        run: node --test scripts/publish-crates.test.js scripts/release/release-receipts.test.mjs
+        run: node --test scripts/publish-crates.test.js scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs
 
       - name: Install verified cargo-deny
         env:

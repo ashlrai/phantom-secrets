@@ -24,7 +24,7 @@ const https = require("https");
 const { homedir } = require("os");
 const { dirname, isAbsolute, join, resolve } = require("path");
 
-const VERSION = "0.7.1";
+const VERSION = "0.7.2";
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom";
 const INSTALL_FROM_SOURCE = "cargo install phantom-secrets";
