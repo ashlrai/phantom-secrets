@@ -10,7 +10,7 @@ pub fn run() -> Result<()> {
     match read_proxy_state(&pid_path) {
         ProxyState::Missing => {
             println!("{} No running proxy found.", "!".yellow().bold());
-            return Ok(());
+            Ok(())
         }
         ProxyState::Stale(pid) => {
             std::fs::remove_file(&pid_path)?;
@@ -19,12 +19,12 @@ pub fn run() -> Result<()> {
                 "ok".green().bold(),
                 pid.pid
             );
-            return Ok(());
+            Ok(())
         }
         ProxyState::Malformed(_) => {
             std::fs::remove_file(&pid_path)?;
             println!("{} Removed malformed proxy PID file.", "ok".green().bold());
-            return Ok(());
+            Ok(())
         }
         ProxyState::Unknown(pid) => {
             anyhow::bail!(
@@ -41,7 +41,7 @@ pub fn run() -> Result<()> {
                 "ok".green().bold(),
                 pid.pid
             );
-            return Ok(());
+            Ok(())
         }
     }
 }

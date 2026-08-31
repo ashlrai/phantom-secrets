@@ -71,32 +71,6 @@ fn shell_hint(syntax: ShellSyntax) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod shell_tests {
-    use super::*;
-
-    #[test]
-    fn fish_exports_use_native_syntax_and_escape_values() {
-        assert_eq!(
-            format_export(ShellSyntax::Fish, "PHANTOM_PROXY_TOKEN", "a'b\\c"),
-            "  set -gx PHANTOM_PROXY_TOKEN 'a\\'b\\\\c'"
-        );
-        assert!(shell_hint(ShellSyntax::Fish).contains("Detected fish"));
-    }
-
-    #[test]
-    fn posix_and_powershell_exports_quote_values() {
-        assert_eq!(
-            format_export(ShellSyntax::Bash, "X", "a'b"),
-            "  export X='a'\\''b'"
-        );
-        assert_eq!(
-            format_export(ShellSyntax::PowerShell, "X", "a'b"),
-            "  $env:X = 'a''b'"
-        );
-    }
-}
-
 fn header_auth_only() -> bool {
     matches!(
         std::env::var("PHANTOM_PROXY_HEADER_AUTH_ONLY")
@@ -247,6 +221,32 @@ fn run_daemon() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+
+    #[test]
+    fn fish_exports_use_native_syntax_and_escape_values() {
+        assert_eq!(
+            format_export(ShellSyntax::Fish, "PHANTOM_PROXY_TOKEN", "a'b\\c"),
+            "  set -gx PHANTOM_PROXY_TOKEN 'a\\'b\\\\c'"
+        );
+        assert!(shell_hint(ShellSyntax::Fish).contains("Detected fish"));
+    }
+
+    #[test]
+    fn posix_and_powershell_exports_quote_values() {
+        assert_eq!(
+            format_export(ShellSyntax::Bash, "X", "a'b"),
+            "  export X='a'\\''b'"
+        );
+        assert_eq!(
+            format_export(ShellSyntax::PowerShell, "X", "a'b"),
+            "  $env:X = 'a''b'"
+        );
+    }
 }
 
 async fn run_async() -> Result<()> {
