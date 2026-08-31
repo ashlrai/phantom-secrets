@@ -70,3 +70,36 @@ fn doctor_passes_service_routes_for_default_config() {
         "doctor should pass default service routes, got: {stdout}"
     );
 }
+
+#[test]
+fn doctor_rejects_legacy_npx_mcp_entry() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir_all(dir.path().join(".claude")).unwrap();
+    fs::write(
+        dir.path().join(".claude/settings.local.json"),
+        r#"{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}"#,
+    )
+    .unwrap();
+
+    let output = phantom(&dir).arg("doctor").assert().success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(
+        stdout.contains("stale or network-capable") && stdout.contains("issue(s) found"),
+        "doctor must not certify a registry-backed MCP entry: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_fix_refuses_to_overwrite_non_utf8_hook() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir_all(dir.path().join(".git/hooks")).unwrap();
+    fs::write(dir.path().join(".gitignore"), ".env\n").unwrap();
+    let hook = dir.path().join(".git/hooks/pre-commit");
+    let original = b"#!/bin/sh\necho user-hook\n\xff\n";
+    fs::write(&hook, original).unwrap();
+
+    phantom(&dir).args(["doctor", "--fix"]).assert().failure();
+
+    assert_eq!(fs::read(hook).unwrap(), original);
+}

@@ -94,6 +94,17 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         .map(|(e, _)| *e)
         .collect();
 
+    let existing_protected_setup =
+        config_path.exists() || dotenv.entries().iter().any(|e| e.is_phantom);
+    // Preflight migration of any project-local Claude settings before touching
+    // either a new secret or an already-protected project. This keeps reruns
+    // useful for removing legacy network-capable MCP entries.
+    let claude_setup = if !real_entries.is_empty() || existing_protected_setup {
+        prompts::prepare_auto_setup_claude_code(&project_dir, &cwd)?
+    } else {
+        None
+    };
+
     if real_entries.is_empty() {
         println!(
             "{} No real secrets found in {} (all values are already phantom tokens, public keys, or config)",
@@ -109,6 +120,26 @@ pub fn run(env_path_arg: &str) -> Result<()> {
             for entry in &public_entries {
                 println!("   {} {}", "·".dimmed(), entry.key);
             }
+        }
+
+        if existing_protected_setup {
+            if config_path.exists() {
+                env::ensure_gitignore(&project_dir)?;
+            }
+            hooks::install_precommit_hook(&project_dir);
+            if let Some(prepared) = claude_setup {
+                prompts::apply_auto_setup_claude_code(prepared)?;
+            }
+            docs::auto_add_claude_md(&project_dir, &cwd);
+            docs::auto_add_readme(&project_dir, &cwd);
+            prompts::detect_platforms(&project_dir, &cwd);
+            if config_path.exists() {
+                print_next_steps(&config_path);
+            }
+            println!(
+                "{} Existing Phantom setup checked and local integrations refreshed without rotating tokens.",
+                "ok".green().bold()
+            );
         }
         return Ok(());
     }
@@ -133,10 +164,6 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         }
         println!("   Override with: {}", "phantom add <KEY>".dimmed());
     }
-
-    // Resolve the local MCP runtime and fully validate any detected Claude
-    // settings before mutating the vault, .env, or project metadata.
-    let claude_setup = prompts::prepare_auto_setup_claude_code(&project_dir, &cwd)?;
 
     // Load or create config, then auto-detect services
     let mut phantom_config = config::load_or_create(&project_dir, &config_path)?;

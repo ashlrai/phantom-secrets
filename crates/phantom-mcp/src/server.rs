@@ -1372,14 +1372,47 @@ impl PhantomMcpServer {
             }
         }
 
-        // ── Check 6: Pre-commit hook ────────────────────────────────────
+        // ── Check 6: Project-local Claude MCP wiring ───────────────────
+        let claude_settings = self.project_dir.join(".claude/settings.local.json");
+        if claude_settings.exists() {
+            let content = std::fs::read_to_string(&claude_settings).map_err(|e| {
+                internal_err(format!(
+                    "Refusing to inspect or repair unreadable Claude settings {}: {e}",
+                    claude_settings.display()
+                ))
+            })?;
+            if phantom_core::agent::mcp_config_has_local_runtime(&claude_settings) {
+                lines.push(
+                    "pass: Claude Code MCP server uses a local Phantom executable".to_string(),
+                );
+            } else if content.contains("phantom") {
+                lines.push(
+                    "warn: Claude Code Phantom MCP entry is stale or network-capable".to_string(),
+                );
+                lines.push(
+                    "  Fix: Run `phantom setup --client claude` in a trusted terminal".to_string(),
+                );
+                issues += 1;
+            } else {
+                lines.push("info: Claude Code settings contain no Phantom MCP entry".to_string());
+            }
+        }
+
+        // ── Check 7: Pre-commit hook ────────────────────────────────────
         let git_dir = self.project_dir.join(".git");
         let git_hook = git_dir.join("hooks/pre-commit");
         if git_dir.exists() {
             if git_hook.exists() {
-                let content = std::fs::read_to_string(&git_hook).unwrap_or_default();
+                let content = std::fs::read_to_string(&git_hook).map_err(|e| {
+                    internal_err(format!(
+                        "Refusing to inspect or repair unreadable pre-commit hook {}: {e}",
+                        git_hook.display()
+                    ))
+                })?;
                 if precommit_hook::is_current(&content) {
-                    lines.push("pass: Git pre-commit hook includes phantom check".to_string());
+                    lines.push(
+                        "pass: Git pre-commit hook runs the local Phantom check first".to_string(),
+                    );
                 } else {
                     if precommit_hook::has_phantom_block(&content) {
                         lines.push(
@@ -1394,7 +1427,7 @@ impl PhantomMcpServer {
                         let change = ensure_mcp_git_hook(&git_hook, &content)?;
                         let message = match change {
                             HookChange::Installed => {
-                                "  Fixed: Appended local phantom check to pre-commit hook"
+                                "  Fixed: Installed local Phantom check before existing hook commands"
                             }
                             HookChange::Repaired => {
                                 "  Fixed: Repaired stale Phantom pre-commit hook"
@@ -4369,6 +4402,51 @@ mod tests {
         assert_eq!(change, HookChange::Repaired);
         assert!(precommit_hook::is_current(&repaired));
         assert!(!repaired.contains("npx phantom-secrets"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mcp_doctor_fix_refuses_to_overwrite_non_utf8_hook() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, dir) = setup_test_project();
+        let hook = dir.path().join(".git/hooks/pre-commit");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        let original = b"#!/bin/sh\necho user-hook\n\xff\n";
+        std::fs::write(&hook, original).unwrap();
+
+        let result = server.phantom_doctor(Parameters(DoctorParams {
+            fix: true,
+            confirm: true,
+            approval_token: None,
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(hook).unwrap(), original);
+    }
+
+    #[test]
+    fn mcp_doctor_rejects_legacy_npx_mcp_entry() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, dir) = setup_test_project();
+        let settings = dir.path().join(".claude/settings.local.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            settings,
+            r#"{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}"#,
+        )
+        .unwrap();
+
+        let result = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: false,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap();
+        let text = extract_content_text(&result);
+
+        assert!(text.contains("stale or network-capable"), "{text}");
+        assert!(text.contains("issue(s) found"), "{text}");
     }
 
     #[test]

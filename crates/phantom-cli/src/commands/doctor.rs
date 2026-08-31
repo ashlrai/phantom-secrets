@@ -177,12 +177,16 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     // Check 6: Claude Code MCP configuration
     let claude_settings = project_dir.join(".claude/settings.local.json");
     if claude_settings.exists() {
-        let content = std::fs::read_to_string(&claude_settings).unwrap_or_default();
-        if content.contains("phantom") {
-            check_pass("Claude Code MCP server configured");
+        let content = std::fs::read_to_string(&claude_settings)?;
+        if phantom_core::agent::mcp_config_has_local_runtime(&claude_settings) {
+            check_pass("Claude Code MCP server uses a local Phantom executable");
+        } else if content.contains("phantom") {
+            check_warn("Claude Code Phantom MCP entry is stale or network-capable");
+            check_fix("Run: phantom setup --client claude");
+            issues += 1;
         } else {
             check_info("Claude Code settings exist but no Phantom MCP");
-            check_fix("Run: phantom setup");
+            check_fix("Run: phantom setup --client claude");
         }
 
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -225,19 +229,11 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     }
 
     // Check 8: Pre-commit hook
-    let pre_commit_config = project_dir.join(".pre-commit-config.yaml");
     let git_hook = project_dir.join(".git/hooks/pre-commit");
-    if pre_commit_config.exists() {
-        let content = std::fs::read_to_string(&pre_commit_config).unwrap_or_default();
-        if content.contains("phantom") {
-            check_pass("Pre-commit hook configured");
-        } else {
-            check_info("pre-commit config exists but no phantom hook");
-        }
-    } else if git_hook.exists() {
-        let content = std::fs::read_to_string(&git_hook).unwrap_or_default();
+    if git_hook.exists() {
+        let content = std::fs::read_to_string(&git_hook)?;
         if precommit_hook::is_current(&content) {
-            check_pass("Git pre-commit hook includes phantom check");
+            check_pass("Git pre-commit hook runs the local Phantom check first");
         } else {
             if precommit_hook::has_phantom_block(&content) {
                 check_warn("Git pre-commit hook uses a stale Phantom check");
@@ -249,7 +245,9 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
             if fix {
                 let change = ensure_git_hook(&git_hook, &content)?;
                 let message = match change {
-                    HookChange::Installed => "Appended local phantom check to pre-commit hook",
+                    HookChange::Installed => {
+                        "Installed local Phantom check before existing hook commands"
+                    }
                     HookChange::Repaired => "Repaired stale Phantom pre-commit hook",
                     HookChange::Unchanged => "Phantom pre-commit hook already current",
                 };
@@ -466,19 +464,27 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
         // Claude Code — project-local .claude/settings.local.json
         let claude_path = project_dir.join(".claude/settings.local.json");
-        check_mcp_client("claude", &claude_path, false);
+        issues += usize::from(check_mcp_client("claude", &claude_path, false));
 
         if let Some(home) = dirs::home_dir() {
             // Cursor — ~/.cursor/mcp.json
-            check_mcp_client("cursor", &home.join(".cursor/mcp.json"), true);
+            issues += usize::from(check_mcp_client(
+                "cursor",
+                &home.join(".cursor/mcp.json"),
+                true,
+            ));
             // Windsurf — ~/.codeium/windsurf/mcp_config.json
-            check_mcp_client(
+            issues += usize::from(check_mcp_client(
                 "windsurf",
                 &home.join(".codeium/windsurf/mcp_config.json"),
                 true,
-            );
+            ));
             // Codex — ~/.codex/config.toml
-            check_mcp_client("codex", &home.join(".codex/config.toml"), true);
+            issues += usize::from(check_mcp_client(
+                "codex",
+                &home.join(".codex/config.toml"),
+                true,
+            ));
         }
     }
 
@@ -504,8 +510,9 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     Ok(())
 }
 
-/// Check whether a known MCP client config file exists and references "phantom".
-fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) {
+/// Check whether a known MCP client config has a canonical local executable.
+/// Returns true for a present-but-unsafe or unreadable Phantom configuration.
+fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
     let location = if global {
         if let Some(home) = dirs::home_dir() {
             if let Ok(suffix) = path.strip_prefix(&home) {
@@ -521,14 +528,40 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) {
     };
 
     if path.exists() {
-        let content = std::fs::read_to_string(path).unwrap_or_default();
-        if content.contains("phantom") {
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) => {
+                println!(
+                    "       {} {} config cannot be read safely: {} ({})",
+                    "FAIL".red().bold(),
+                    name,
+                    error,
+                    location.dimmed()
+                );
+                return true;
+            }
+        };
+        if phantom_core::agent::mcp_config_has_local_runtime(path) {
             println!(
-                "       {} {} wired up ({})",
+                "       {} {} uses a local Phantom executable ({})",
                 "ok".green(),
                 name,
                 location.dimmed()
             );
+            false
+        } else if content.contains("phantom") {
+            println!(
+                "       {} {} Phantom entry is stale or network-capable ({})",
+                "warn".yellow(),
+                name,
+                location.dimmed()
+            );
+            println!(
+                "          {} phantom setup --client {}",
+                "Fix:".dimmed(),
+                name
+            );
+            true
         } else {
             println!(
                 "       {} {} config exists but no phantom MCP ({})",
@@ -536,6 +569,7 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) {
                 name,
                 location.dimmed()
             );
+            false
         }
     } else {
         println!(
@@ -544,6 +578,7 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) {
             name,
             location.dimmed()
         );
+        false
     }
 }
 

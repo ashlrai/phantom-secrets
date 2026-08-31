@@ -510,17 +510,9 @@ fn gitignore_has_env(path: &Path) -> bool {
 }
 
 fn has_precommit(project_dir: &Path) -> bool {
-    let pre_commit_config = project_dir.join(".pre-commit-config.yaml");
-    if std::fs::read_to_string(pre_commit_config)
-        .ok()
-        .is_some_and(|content| content.contains("phantom"))
-    {
-        return true;
-    }
-
     std::fs::read_to_string(project_dir.join(".git/hooks/pre-commit"))
         .ok()
-        .is_some_and(|content| content.contains("phantom"))
+        .is_some_and(|content| crate::precommit_hook::is_current(&content))
 }
 
 fn has_any_mcp_wiring(project_dir: &Path) -> bool {
@@ -531,11 +523,92 @@ fn has_any_mcp_wiring(project_dir: &Path) -> bool {
         candidates.push(home.join(".codex/config.toml"));
     }
 
-    candidates.into_iter().any(|path| {
-        std::fs::read_to_string(path)
+    candidates
+        .into_iter()
+        .any(|path| mcp_config_has_local_runtime(&path))
+}
+
+/// Return true only when a client config's Phantom entry invokes an executable
+/// already present on this machine. Registry runners and shell downloaders are
+/// intentionally rejected even if their arguments mention Phantom.
+pub fn mcp_config_has_local_runtime(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let entry = if path.extension().is_some_and(|ext| ext == "toml") {
+        toml::from_str::<toml::Value>(&content)
             .ok()
-            .is_some_and(|content| content.contains("phantom"))
-    })
+            .and_then(|value| value.get("mcp_servers")?.get("phantom").cloned())
+            .and_then(toml_mcp_command)
+    } else {
+        serde_json::from_str::<serde_json::Value>(&content)
+            .ok()
+            .and_then(|value| value.get("mcpServers")?.get("phantom").cloned())
+            .and_then(json_mcp_command)
+    };
+    entry.is_some_and(|(command, args)| local_mcp_command_is_canonical(&command, &args))
+}
+
+fn json_mcp_command(entry: serde_json::Value) -> Option<(String, Vec<String>)> {
+    let command = entry.get("command")?.as_str()?.to_string();
+    let args = entry
+        .get("args")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .map(|value| value.as_str().map(ToString::to_string))
+        .collect::<Option<Vec<_>>>()?;
+    Some((command, args))
+}
+
+fn toml_mcp_command(entry: toml::Value) -> Option<(String, Vec<String>)> {
+    let command = entry.get("command")?.as_str()?.to_string();
+    let args = entry
+        .get("args")?
+        .as_array()?
+        .iter()
+        .map(|value| value.as_str().map(ToString::to_string))
+        .collect::<Option<Vec<_>>>()?;
+    Some((command, args))
+}
+
+fn local_mcp_command_is_canonical(command: &str, args: &[String]) -> bool {
+    let command_path = Path::new(command);
+    if !command_path.is_absolute() || !is_runnable_file(command_path) {
+        return false;
+    }
+
+    let command_canonical = std::fs::canonicalize(command_path).ok();
+    let current_canonical = std::env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::canonicalize(path).ok());
+    if command_canonical.is_some() && command_canonical == current_canonical {
+        return args == ["mcp", "serve"];
+    }
+
+    let expected_name = format!("phantom-mcp{}", std::env::consts::EXE_SUFFIX);
+    command_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == expected_name)
+        && args.is_empty()
+}
+
+fn is_runnable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn package_has_scripts(path: &Path) -> bool {
@@ -621,13 +694,20 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".git/hooks")).unwrap();
         std::fs::write(
             dir.path().join(".git/hooks/pre-commit"),
-            "phantom check --staged\n",
+            crate::precommit_hook::ensure("").content,
         )
         .unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        let current_exe = std::env::current_exe().unwrap();
         std::fs::write(
             dir.path().join(".claude/settings.local.json"),
-            r#"{"mcpServers":{"phantom":{"command":"phantom"}}}"#,
+            serde_json::to_vec(&serde_json::json!({
+                "mcpServers": {"phantom": {
+                    "command": current_exe,
+                    "args": ["mcp", "serve"]
+                }}
+            }))
+            .unwrap(),
         )
         .unwrap();
 
@@ -647,5 +727,54 @@ mod tests {
 
         assert_eq!(report.status, ReadinessStatus::Verified);
         assert_eq!(report.exit_code, 0);
+    }
+
+    #[test]
+    fn legacy_network_capable_setup_cannot_report_verified() {
+        let dir = TempDir::new().unwrap();
+        let config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
+            &std::fs::canonicalize(dir.path()).unwrap(),
+        ));
+        std::fs::write(
+            dir.path().join(".phantom.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=phm_test\n").unwrap();
+        std::fs::write(dir.path().join(".env.example"), "OPENAI_API_KEY=<secret>\n").unwrap();
+        std::fs::write(dir.path().join(".gitignore"), ".env\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".git/hooks")).unwrap();
+        std::fs::write(
+            dir.path().join(".git/hooks/pre-commit"),
+            "#!/bin/sh\nnpx phantom-secrets check --staged\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/settings.local.json"),
+            r#"{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}"#,
+        )
+        .unwrap();
+
+        let report = build_report(
+            dir.path(),
+            AgentReadinessOptions {
+                vault: Some(VaultProbe {
+                    accessible: true,
+                    backend: Some("file".to_string()),
+                    secret_count: Some(1),
+                    error: None,
+                }),
+                cloud_logged_in: false,
+                audit_enabled: false,
+            },
+        );
+
+        assert_eq!(report.status, ReadinessStatus::Protected);
+        assert!(report.findings.iter().any(|f| f.id == "mcp-not-wired"));
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.id == "missing-precommit-check"));
     }
 }

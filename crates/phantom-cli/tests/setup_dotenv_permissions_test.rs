@@ -131,6 +131,84 @@ fn init_migrates_npx_to_the_bundled_local_runtime() {
 }
 
 #[test]
+fn rerun_init_migrates_stale_setup_without_rotating_tokens() {
+    let dir = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .arg("init")
+        .arg("--quiet")
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+    let claude_dir = dir.path().join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let settings_path = claude_dir.join("settings.local.json");
+    fs::write(&settings_path, b"{}\n").unwrap();
+    let env_path = dir.path().join(".env");
+    fs::write(&env_path, "OPENAI_API_KEY=sk-test-only-value\n").unwrap();
+
+    let init = || {
+        Command::cargo_bin("phantom")
+            .unwrap()
+            .args(["init", "--from", ".env"])
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .env(
+                "PHANTOM_VAULT_PASSPHRASE",
+                "setup-rerun-migration-test-vault-passphrase",
+            )
+            .assert()
+            .success();
+    };
+    init();
+    let protected_env = fs::read(&env_path).unwrap();
+    let original_config = fs::read(dir.path().join(".phantom.toml")).unwrap();
+
+    fs::write(
+        &settings_path,
+        serde_json::to_vec_pretty(&json!({
+            "mcpServers": {
+                "phantom": {
+                    "command": "npx",
+                    "args": ["-y", "phantom-secrets-mcp"]
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let hook_path = dir.path().join(".git/hooks/pre-commit");
+    fs::write(
+        &hook_path,
+        "#!/bin/sh\necho existing\nexit 0\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\n",
+    )
+    .unwrap();
+
+    init();
+
+    assert_eq!(fs::read(&env_path).unwrap(), protected_env);
+    assert_eq!(
+        fs::read(dir.path().join(".phantom.toml")).unwrap(),
+        original_config
+    );
+    let settings: Value = serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    assert_ne!(settings["mcpServers"]["phantom"]["command"], "npx");
+    assert_eq!(
+        settings["mcpServers"]["phantom"]["args"],
+        json!(["mcp", "serve"])
+    );
+    let repaired_hook = fs::read_to_string(&hook_path).unwrap();
+    assert!(phantom_core::precommit_hook::is_current(&repaired_hook));
+    assert!(!repaired_hook.contains("npx"));
+    assert!(repaired_hook.find("phantom check").unwrap() < repaired_hook.find("exit 0").unwrap());
+
+    let stable_settings = fs::read(&settings_path).unwrap();
+    init();
+    assert_eq!(fs::read(&env_path).unwrap(), protected_env);
+    assert_eq!(fs::read(&settings_path).unwrap(), stable_settings);
+    assert_eq!(fs::read_to_string(&hook_path).unwrap(), repaired_hook);
+}
+
+#[test]
 fn init_invalid_claude_config_fails_before_project_mutation() {
     let dir = TempDir::new().unwrap();
     let claude_dir = dir.path().join(".claude");
