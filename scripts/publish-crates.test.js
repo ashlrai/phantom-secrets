@@ -8,7 +8,7 @@ import test from 'node:test';
 
 const repo = resolve(import.meta.dirname, '..');
 const script = join(repo, 'scripts', 'publish-crates.sh');
-const version = '0.7.2';
+const version = '0.7.3';
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 const crates = [
   'phantom-secrets-authority',
@@ -308,7 +308,7 @@ test('publish requires exact authorization and uploads every missing crate in or
   const tokenStates = readFileSync(harness.tokenLog, 'utf8').trim().split('\n');
   assert.equal(tokenStates.filter((line) => line === 'publish\tpresent').length, 12);
   assert.equal(tokenStates.filter((line) => line !== 'publish\tpresent' && line.endsWith('\tpresent')).length, 0);
-  assert.match(readFileSync(harness.ghLog, 'utf8'), /release view v0\.7\.2.*\tpresent/);
+  assert.match(readFileSync(harness.ghLog, 'utf8'), /release view v0\.7\.3.*\tpresent/);
 });
 
 test('publish requires remote tag parity and the exact completed GitHub release assets', () => {

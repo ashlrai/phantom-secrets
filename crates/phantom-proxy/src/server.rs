@@ -888,7 +888,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_accepts_path_token_and_strips_before_routing() {
-        let (registry, interceptor) = test_state();
+        let mock = crate::test_server::MockServer::start().await;
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "test".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+        let mut named = HashMap::new();
+        named.insert("TEST_API_KEY".to_string(), "real-secret-value".to_string());
+        let interceptor = Interceptor::new_with_named(HashMap::new(), named);
         let token = ProxyServer::generate_proxy_token();
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -914,7 +925,17 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), 200);
 
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/headers");
+        assert_eq!(
+            requests[0].headers.get("authorization").unwrap(),
+            "Bearer real-secret-value"
+        );
+        assert!(!requests[0].headers.contains_key("x-phantom-proxy-token"));
+
         proxy.shutdown().await;
+        mock.shutdown().await;
     }
 
     #[test]

@@ -15,12 +15,12 @@ Phantom is still pre-1.0, so security support is focused on the current release 
 
 ### Urgent 0.7.0 upgrade notice
 
-`0.7.0` is superseded by the `0.7.2` security fix-forward. Upgrade before using
+`0.7.0` is superseded by the `0.7.3` security fix-forward. Upgrade before using
 Phantom Cloud, team-vault, local proxy, protected connection-string,
 provider-rotation, or agent execution workflows. The immutable `0.7.0` release
 remains available as historical evidence and will not be edited in place.
 
-The local vault namespace changes in `0.7.2`. For an offline-only `0.7.0`
+The local vault namespace changes in `0.7.3`. For an offline-only `0.7.0`
 checkout, create an encrypted `phantom export --output FILE` backup from a
 trusted terminal before upgrading, then restore it with `phantom import FILE`.
 Cloud/team users may instead restore through an encrypted pull. Phantom does
