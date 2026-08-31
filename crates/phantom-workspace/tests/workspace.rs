@@ -1,3 +1,4 @@
+use phantom_core::precommit_hook::{is_current, HOOK_BLOCK, HOOK_MARKER};
 use phantom_workspace::{
     apply_setup_plan, build_capability_card, build_sealed_setup_plan, build_setup_plan,
     inspect_workspace, rollback_workspace, AuthorityState, CapabilityScope, NoopSetupParticipant,
@@ -344,11 +345,12 @@ fn filesystem_apply_is_atomic_idempotent_and_recoverable() {
         "[remote \"origin\"]\nurl = git@github.com:acme/project.git\n",
     );
     let original_ignore = "# keep this deny policy\n.env.production\n";
-    let original_hook = "#!/bin/sh\necho existing-check\n";
+    let original_hook_body = "echo existing-check\nexit 0\n";
+    let original_hook = format!("#!/bin/sh\n{original_hook_body}");
     write(workspace.path().join(".gitignore"), original_ignore);
     write(
         workspace.path().join(".git/hooks/pre-commit"),
-        original_hook,
+        &original_hook,
     );
     let client_config = r#"{"permissions":{"deny":["Read(.env*)"]},"custom":true}"#;
     write(
@@ -372,8 +374,11 @@ fn filesystem_apply_is_atomic_idempotent_and_recoverable() {
     let ignore = std::fs::read_to_string(workspace.path().join(".gitignore")).unwrap();
     assert!(ignore.starts_with(original_ignore));
     let hook = std::fs::read_to_string(workspace.path().join(".git/hooks/pre-commit")).unwrap();
-    assert!(hook.starts_with(original_hook));
-    assert!(hook.contains("# Phantom Secrets pre-commit hook"));
+    assert!(is_current(&hook));
+    assert!(hook.starts_with(&format!("#!/bin/sh\n{HOOK_BLOCK}\n")));
+    assert!(hook.ends_with(original_hook_body));
+    assert!(hook.find(HOOK_BLOCK).unwrap() < hook.find("exit 0").unwrap());
+    assert_eq!(hook.matches(HOOK_MARKER).count(), 1);
     assert!(hook.contains("command -v phantom"));
     assert!(hook.contains("phantom check --staged || exit $?"));
     assert!(hook.contains("exit 1"));
@@ -408,6 +413,7 @@ fn filesystem_apply_is_atomic_idempotent_and_recoverable() {
     assert_eq!(ignore_after.matches(".env.local").count(), 1);
     let hook_after =
         std::fs::read_to_string(workspace.path().join(".git/hooks/pre-commit")).unwrap();
+    assert_eq!(hook_after, hook);
     assert_eq!(
         hook_after
             .matches("phantom check --staged || exit $?")
