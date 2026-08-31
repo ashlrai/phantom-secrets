@@ -49,8 +49,14 @@ pub struct HookUpdate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookState {
     NotRepository,
-    Missing { path: PathBuf },
-    Present { path: PathBuf, content: String },
+    Missing {
+        path: PathBuf,
+    },
+    Present {
+        path: PathBuf,
+        content: String,
+        executable: bool,
+    },
 }
 
 /// Errors are deliberately specific so init/doctor callers never report a
@@ -147,7 +153,10 @@ fn resolve_path_with_git(
             message: stderr_message(&output.stderr),
         });
     }
-    let raw = trim_ascii(&output.stdout);
+    let raw = trim_git_line(&output.stdout).ok_or_else(|| HookError::InvalidPath {
+        project: absolute_project.clone(),
+        reason: "path output contained multiple lines or no trailing line terminator".to_string(),
+    })?;
     let text = std::str::from_utf8(raw).map_err(|_| HookError::InvalidPath {
         project: absolute_project.clone(),
         reason: "path output was not valid UTF-8".to_string(),
@@ -204,7 +213,18 @@ fn inspect_with_git(project_dir: &Path, git_program: &OsStr) -> Result<HookState
     })?;
     let content =
         String::from_utf8(bytes).map_err(|_| HookError::NonUtf8Content { path: path.clone() })?;
-    Ok(HookState::Present { path, content })
+    #[cfg(unix)]
+    let executable = {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    };
+    #[cfg(not(unix))]
+    let executable = true;
+    Ok(HookState::Present {
+        path,
+        content,
+        executable,
+    })
 }
 
 /// Install or repair the canonical hook at Git's effective path.
@@ -217,10 +237,14 @@ fn install_with_git(
     git_program: &OsStr,
 ) -> Result<Option<HookChange>, HookError> {
     let state = inspect_with_git(project_dir, git_program)?;
-    let (path, existing) = match state {
+    let (path, existing, executable) = match state {
         HookState::NotRepository => return Ok(None),
-        HookState::Missing { path } => (path, String::new()),
-        HookState::Present { path, content } => (path, content),
+        HookState::Missing { path } => (path, String::new(), false),
+        HookState::Present {
+            path,
+            content,
+            executable,
+        } => (path, content, executable),
     };
     let update = ensure(&existing);
     if update.change != HookChange::Unchanged {
@@ -247,7 +271,18 @@ fn install_with_git(
             },
         )?;
     }
-    Ok(Some(update.change))
+    let change = if update.change == HookChange::Unchanged && !executable {
+        HookChange::Repaired
+    } else {
+        update.change
+    };
+    Ok(Some(change))
+}
+
+/// A hook is effective only when its canonical block is reachable and Git can
+/// execute the file on platforms with executable permission bits.
+pub fn is_ready(content: &str, executable: bool) -> bool {
+    executable && is_current(content)
 }
 
 fn trim_ascii(bytes: &[u8]) -> &[u8] {
@@ -260,6 +295,16 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
         .rposition(|byte| !byte.is_ascii_whitespace())
         .map_or(start, |index| index + 1);
     &bytes[start..end]
+}
+
+fn trim_git_line(bytes: &[u8]) -> Option<&[u8]> {
+    let line = bytes.strip_suffix(b"\n")?;
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    if line.contains(&b'\n') || line.contains(&b'\r') {
+        None
+    } else {
+        Some(line)
+    }
 }
 
 fn stderr_message(stderr: &[u8]) -> String {
@@ -603,6 +648,25 @@ mod tests {
             HookError::UnsafeTarget { .. }
         ));
         assert!(hook.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_but_non_executable_hook_is_repaired() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let project = tempfile::tempdir().unwrap();
+        init_git(project.path());
+        let hook = resolve_path(project.path()).unwrap().unwrap();
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, ensure("").content).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_eq!(install(project.path()).unwrap(), Some(HookChange::Repaired));
+        assert!(matches!(
+            inspect(project.path()).unwrap(),
+            HookState::Present { content, executable: true, .. } if is_ready(&content, true)
+        ));
     }
 
     #[cfg(unix)]

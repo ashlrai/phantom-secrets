@@ -229,13 +229,22 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 8: Pre-commit hook
     match precommit_hook::inspect(&project_dir)? {
-        precommit_hook::HookState::Present { content, .. }
-            if precommit_hook::is_current(&content) =>
-        {
+        precommit_hook::HookState::Present {
+            content,
+            executable,
+            ..
+        } if precommit_hook::is_ready(&content, executable) => {
             check_pass("Git pre-commit hook runs the local Phantom check first");
         }
-        precommit_hook::HookState::Present { content, .. } => {
-            if precommit_hook::has_phantom_block(&content) {
+        precommit_hook::HookState::Present {
+            content,
+            executable,
+            ..
+        } => {
+            if precommit_hook::is_current(&content) && !executable {
+                check_warn("Git pre-commit hook is not executable");
+                check_fix("Run: phantom doctor --fix (repairs hook permissions)");
+            } else if precommit_hook::has_phantom_block(&content) {
                 check_warn("Git pre-commit hook uses a stale Phantom check");
                 check_fix("Run: phantom doctor --fix (uses the installed local binary)");
             } else {

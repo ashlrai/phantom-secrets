@@ -157,9 +157,11 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
     }
 
     let (has_precommit, precommit_error) = match crate::precommit_hook::inspect(project_dir) {
-        Ok(crate::precommit_hook::HookState::Present { content, .. }) => {
-            (crate::precommit_hook::is_current(&content), None)
-        }
+        Ok(crate::precommit_hook::HookState::Present {
+            content,
+            executable,
+            ..
+        }) => (crate::precommit_hook::is_ready(&content, executable), None),
         Ok(
             crate::precommit_hook::HookState::Missing { .. }
             | crate::precommit_hook::HookState::NotRepository,
@@ -718,7 +720,7 @@ mod tests {
     #[test]
     fn reports_verified_when_local_controls_are_present() {
         let dir = TempDir::new().unwrap();
-        let hook = init_git_with_custom_hooks(dir.path());
+        let _hook = init_git_with_custom_hooks(dir.path());
         let config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
             &std::fs::canonicalize(dir.path()).unwrap(),
         ));
@@ -730,8 +732,10 @@ mod tests {
         std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=phm_test\n").unwrap();
         std::fs::write(dir.path().join(".env.example"), "OPENAI_API_KEY=<secret>\n").unwrap();
         std::fs::write(dir.path().join(".gitignore"), ".env\n").unwrap();
-        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
-        std::fs::write(hook, crate::precommit_hook::ensure("").content).unwrap();
+        assert_eq!(
+            crate::precommit_hook::install(dir.path()).unwrap(),
+            Some(crate::precommit_hook::HookChange::Installed)
+        );
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         let current_exe = std::env::current_exe().unwrap();
         std::fs::write(
