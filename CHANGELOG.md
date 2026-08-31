@@ -4,17 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No user-facing changes have been recorded after 0.7.2.
+No user-facing changes have been recorded after 0.7.3.
 
-## [0.7.2] - 2026-08-31
+## [0.7.3] - 2026-08-31
 
-This is the security fix-forward for `0.7.0`. The protected `0.7.1`
-tag's workflow stopped before creating a GitHub Release because its release-note
-heading did not satisfy the fail-closed publication contract. Publication
-remains gated on protected-branch CI and the tag-triggered immutable-release
-workflow. The web changes also require the included Supabase migration before
-deployment; source publication does not imply that migration or the web
-application is active in production.
+This is the security fix-forward for `0.7.0`. The protected `0.7.1` and `0.7.2`
+tag workflows both stopped before creating a GitHub Release: `0.7.1` failed its
+release-note contract, while `0.7.2` exposed and removed a non-hermetic proxy
+unit test that depended on public `httpbin.org`. Publication remains gated on
+protected-branch CI and the tag-triggered immutable-release workflow. The web
+changes also require the included Supabase migration before deployment; source
+publication does not imply that migration or the web application is active in
+production.
 
 ### Breaking security changes
 
@@ -55,8 +56,8 @@ application is active in production.
 
 ### Breaking changes and migration
 
-- Treat `0.7.0` and the unpublished `0.7.1` tag as superseded, and upgrade to
-  `0.7.2` before using cloud, team,
+- Treat `0.7.0` and the unpublished `0.7.1` and `0.7.2` tags as superseded, and
+  upgrade to `0.7.3` before using cloud, team,
   proxy, connection-string, provider-rotation, or agent execution workflows.
 - Local vault namespaces now use a domain-separated SHA-256 digest of the
   canonical checkout path. The former 64-bit path namespace is deliberately
@@ -67,12 +68,20 @@ application is active in production.
   Cloud/team users can instead repopulate through a normal encrypted pull.
   Never copy plaintext secret values into a repository.
 
+## [0.7.2] - 2026-08-31
+
+The protected tag exists as evidence of a failed-closed release attempt. The
+release-note contract passed, but the exact-tag workspace suite exposed a proxy
+unit test whose mock route still depended on public `httpbin.org`; a transient
+upstream 502 failed the suite before any artifacts or GitHub Release were
+created. The test is hermetic in `0.7.3`.
+
 ## [0.7.1] - 2026-08-31
 
 The protected tag exists as evidence of a failed-closed release attempt. All
 source, platform-build, artifact-set, SBOM, and attestation gates passed, but
 the workflow rejected the changelog heading before creating a GitHub Release.
-No `0.7.1` release assets were published. Use `0.7.2`.
+No `0.7.1` release assets were published. Use `0.7.3`.
 
 ## [0.7.0] - 2026-08-31
 
@@ -159,7 +168,8 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.3
 [0.7.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.2
 [0.7.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.6.0...v0.7.0

@@ -182,7 +182,7 @@ function fakeHttps(sequence) {
       },
       execFileSyncImpl: (_path, _args, options) => {
         assert.ok(options.timeout > 0 && options.timeout < 120_000);
-        return Buffer.from("phantom-mcp 0.7.2\n");
+        return Buffer.from("phantom-mcp 0.7.3\n");
       },
     });
     assert.ok(dirname(observedArchivePath).startsWith(join(fixtureDir, ".install-")));

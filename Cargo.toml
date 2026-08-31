@@ -16,7 +16,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.7.2"
+version = "0.7.3"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/ashlrai/phantom-secrets"
@@ -49,17 +49,17 @@ base64 = "0.22"
 # and similar bare names are already taken on crates.io. The internal Rust
 # crate names stay `phantom_core`, `phantom_vault`, etc. via `[lib] name`
 # in each child Cargo.toml — so `use phantom_core::...` is unchanged.
-phantom-core = { path = "crates/phantom-core", version = "0.7.2", package = "phantom-secrets-core" }
-phantom-vault = { path = "crates/phantom-vault", version = "0.7.2", package = "phantom-secrets-vault" }
-phantom-proxy = { path = "crates/phantom-proxy", version = "0.7.2", package = "phantom-secrets-proxy" }
-phantom-mcp = { path = "crates/phantom-mcp", version = "0.7.2", package = "phantom-secrets-mcp" }
-phantom-authority = { path = "crates/phantom-authority", version = "0.7.2", package = "phantom-secrets-authority" }
-phantom-locus-contract = { path = "crates/phantom-locus-contract", version = "0.7.2", package = "phantom-secrets-locus-contract" }
-phantom-broker = { path = "crates/phantom-broker", version = "0.7.2", package = "phantom-secrets-broker" }
-phantom-runtime = { path = "crates/phantom-runtime", version = "0.7.2", package = "phantom-secrets-runtime" }
-phantom-evidence = { path = "crates/phantom-evidence", version = "0.7.2", package = "phantom-secrets-evidence" }
-phantom-session = { path = "crates/phantom-session", version = "0.7.2", package = "phantom-secrets-session" }
-phantom-workspace = { path = "crates/phantom-workspace", version = "0.7.2", package = "phantom-secrets-workspace" }
+phantom-core = { path = "crates/phantom-core", version = "0.7.3", package = "phantom-secrets-core" }
+phantom-vault = { path = "crates/phantom-vault", version = "0.7.3", package = "phantom-secrets-vault" }
+phantom-proxy = { path = "crates/phantom-proxy", version = "0.7.3", package = "phantom-secrets-proxy" }
+phantom-mcp = { path = "crates/phantom-mcp", version = "0.7.3", package = "phantom-secrets-mcp" }
+phantom-authority = { path = "crates/phantom-authority", version = "0.7.3", package = "phantom-secrets-authority" }
+phantom-locus-contract = { path = "crates/phantom-locus-contract", version = "0.7.3", package = "phantom-secrets-locus-contract" }
+phantom-broker = { path = "crates/phantom-broker", version = "0.7.3", package = "phantom-secrets-broker" }
+phantom-runtime = { path = "crates/phantom-runtime", version = "0.7.3", package = "phantom-secrets-runtime" }
+phantom-evidence = { path = "crates/phantom-evidence", version = "0.7.3", package = "phantom-secrets-evidence" }
+phantom-session = { path = "crates/phantom-session", version = "0.7.3", package = "phantom-secrets-session" }
+phantom-workspace = { path = "crates/phantom-workspace", version = "0.7.3", package = "phantom-secrets-workspace" }
 
 # The issuance/JWT tests generate a throwaway RSA keypair at runtime (via the
 # `rsa` dev-dependency) instead of committing a fixture key — no private key

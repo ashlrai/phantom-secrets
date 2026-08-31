@@ -28,9 +28,9 @@ function assetNames() {
 }
 
 function receipt(state = "draft") {
-  const releasePath = state === "draft" ? "untagged-draft" : "v0.7.2";
+  const releasePath = state === "draft" ? "untagged-draft" : "v0.7.3";
   return {
-    tagName: "v0.7.2",
+    tagName: "v0.7.3",
     isDraft: state === "draft",
     isPrerelease: false,
     assets: assetNames().map((name) => ({
@@ -46,7 +46,7 @@ function verify(payload, state) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-release-receipt-"));
   const receiptPath = path.join(directory, "receipt.json");
   fs.writeFileSync(receiptPath, JSON.stringify(payload));
-  return spawnSync(process.execPath, [verifier, receiptPath, "v0.7.2", state], {
+  return spawnSync(process.execPath, [verifier, receiptPath, "v0.7.3", state], {
     cwd: repoRoot,
     encoding: "utf8",
   });

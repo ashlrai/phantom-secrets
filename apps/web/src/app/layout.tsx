@@ -139,7 +139,7 @@ export default function RootLayout({
                 "https://www.npmjs.com/package/phantom-secrets",
               ],
               license: "https://opensource.org/licenses/MIT",
-              softwareVersion: "0.7.2",
+              softwareVersion: "0.7.3",
               description: DESCRIPTION,
               offers: {
                 "@type": "Offer",

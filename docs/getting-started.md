@@ -54,7 +54,7 @@ Download from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/relea
 
 ```bash
 phantom --version
-# phantom 0.7.2
+# phantom 0.7.3
 ```
 
 ---
