@@ -83,6 +83,7 @@ impl ProxyServer {
             proxy_token: config.proxy_token,
             allow_query_token_auth: config.allow_query_token_auth,
             max_body_size: config.max_body_size,
+            shutdown_tx: shutdown_tx.clone(),
             http_client: reqwest::Client::builder()
                 .danger_accept_invalid_certs(false)
                 // Credential-bearing custom headers survive cross-origin
@@ -120,6 +121,13 @@ impl ProxyServer {
         hex::encode(bytes)
     }
 
+    /// Subscribe to either a local Ctrl-C shutdown or an authenticated remote
+    /// shutdown request. The CLI uses this to exit the owning process without
+    /// sending a signal to a PID that may have been reused.
+    pub fn subscribe_shutdown(&self) -> watch::Receiver<bool> {
+        self.shutdown_tx.subscribe()
+    }
+
     /// Shut down the proxy server gracefully.
     pub async fn shutdown(self) {
         let _ = self.shutdown_tx.send(true);
@@ -135,6 +143,7 @@ struct ProxyState {
     proxy_token: String,
     allow_query_token_auth: bool,
     max_body_size: usize,
+    shutdown_tx: watch::Sender<bool>,
     http_client: reqwest::Client,
 }
 
@@ -295,6 +304,23 @@ async fn handle_request(
         return Ok(error_response(
             StatusCode::OK,
             r#"{"status":"ok","service":"phantom-proxy"}"#,
+        ));
+    }
+
+    // Authenticated graceful shutdown. Process control stays bound to the
+    // per-session proxy token instead of trusting a reusable operating-system
+    // PID from `.phantom.pid`.
+    if path == "/phantom/shutdown" {
+        if method != hyper::Method::POST {
+            return Ok(error_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                r#"{"error":"method_not_allowed"}"#,
+            ));
+        }
+        state.shutdown_tx.send_replace(true);
+        return Ok(error_response(
+            StatusCode::OK,
+            r#"{"status":"shutting_down","service":"phantom-proxy"}"#,
         ));
     }
 
@@ -821,6 +847,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(header_resp.status(), 200);
+
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn authenticated_shutdown_stops_only_the_matching_proxy_session() {
+        let (registry, interceptor) = test_state();
+        let token = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.clone(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+        let mut shutdown = proxy.subscribe_shutdown();
+        let client = reqwest::Client::new();
+
+        let rejected = client
+            .post(format!(
+                "http://127.0.0.1:{}/phantom/shutdown",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "wrong-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), 401);
+        assert!(!*shutdown.borrow());
+
+        let accepted = client
+            .post(format!(
+                "http://127.0.0.1:{}/phantom/shutdown",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), 200);
+        shutdown.changed().await.unwrap();
+        assert!(*shutdown.borrow());
 
         proxy.shutdown().await;
     }

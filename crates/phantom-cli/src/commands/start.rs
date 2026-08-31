@@ -346,7 +346,16 @@ async fn run_async() -> Result<()> {
     println!("\n{}", shell_hint(syntax));
 
     println!("\n{} Press Ctrl-C to stop the proxy.\n", "->".blue().bold());
-    tokio::signal::ctrl_c().await?;
+    let mut remote_shutdown = proxy.subscribe_shutdown();
+    tokio::select! {
+        ctrl_c = tokio::signal::ctrl_c() => ctrl_c?,
+        changed = remote_shutdown.changed() => {
+            changed.map_err(|_| anyhow::anyhow!("Proxy shutdown channel closed unexpectedly"))?;
+            if !*remote_shutdown.borrow() {
+                anyhow::bail!("Proxy shutdown channel changed without a shutdown request");
+            }
+        }
+    }
     println!();
 
     // Cleanup

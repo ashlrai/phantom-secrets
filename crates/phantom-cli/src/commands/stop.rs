@@ -1,7 +1,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use super::proxy_state::{read_proxy_state, ProxyState};
+use super::proxy_state::{read_proxy_state, request_authenticated_shutdown, ProxyState};
 
 pub fn run() -> Result<()> {
     let project_dir = std::env::current_dir()?;
@@ -13,7 +13,7 @@ pub fn run() -> Result<()> {
             return Ok(());
         }
         ProxyState::Stale(pid) => {
-            let _ = std::fs::remove_file(&pid_path);
+            std::fs::remove_file(&pid_path)?;
             println!(
                 "{} Removed stale proxy PID file (PID {}).",
                 "ok".green().bold(),
@@ -22,35 +22,26 @@ pub fn run() -> Result<()> {
             return Ok(());
         }
         ProxyState::Malformed(_) => {
-            let _ = std::fs::remove_file(&pid_path);
+            std::fs::remove_file(&pid_path)?;
             println!("{} Removed malformed proxy PID file.", "ok".green().bold());
             return Ok(());
         }
-        ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
-            // Send stop signal to the proxy process
-            #[cfg(unix)]
-            {
-                let _ = std::process::Command::new("kill")
-                    .arg(pid.pid.to_string())
-                    .status();
-            }
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &pid.pid.to_string(), "/F"])
-                    .status();
-            }
+        ProxyState::Unknown(pid) => {
+            anyhow::bail!(
+                "Refusing to stop PID {}: it did not prove ownership of the Phantom proxy session on 127.0.0.1:{}. The PID may have been reused. Inspect the process and remove .phantom.pid manually only if it is stale.",
+                pid.pid,
+                pid.port
+            );
+        }
+        ProxyState::Running(pid) => {
+            request_authenticated_shutdown(&pid).map_err(anyhow::Error::msg)?;
+            std::fs::remove_file(&pid_path)?;
             println!(
-                "{} Sent stop signal to proxy (PID {})",
+                "{} Authenticated proxy shutdown accepted (PID {}).",
                 "ok".green().bold(),
                 pid.pid
             );
+            return Ok(());
         }
     }
-
-    // Clean up PID file
-    let _ = std::fs::remove_file(&pid_path);
-    println!("{} Proxy stopped.", "ok".green().bold());
-
-    Ok(())
 }
