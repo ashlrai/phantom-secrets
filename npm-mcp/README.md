@@ -1,188 +1,153 @@
 # Phantom Secrets MCP Server
 
-**Value-blind secrets management over MCP.** Lets Claude Code, Cursor,
-Windsurf, and Codex inspect metadata and request gated lifecycle operations
-without MCP responses returning real values.
+**Value-blind secret metadata and gated lifecycle requests over MCP.**
 
-[![npm](https://img.shields.io/npm/v/phantom-secrets-mcp)](https://www.npmjs.com/package/phantom-secrets-mcp)
+[![GitHub release](https://img.shields.io/github/v/release/ashlrai/phantom-secrets)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ashlrai/phantom-secrets/blob/main/LICENSE)
 
-Part of [Phantom Secrets](https://www.npmjs.com/package/phantom-secrets) -- the
-CLI that replaces project secrets with scoped `phm_` tokens and gives agents
-value-blind secret-management tools.
+Phantom's MCP server lets compatible clients inspect protection state and
+request secret-management workflows without MCP responses returning stored
+credential values. That statement covers the MCP response contract, not other
+files, processes, tools, terminal output, network providers, or values pasted
+into an agent conversation.
 
-## Install
+## Verified runtime
 
-### Claude Code
+Use the local MCP runtime from the immutable
+[`v0.7.3` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3)
+or the trusted Homebrew formula. The npm registry is on an older release track
+as of August 31, 2026. This repository's `0.7.3` wrapper manifest is staged
+source, not evidence that a matching npm package has been published or accepted.
+
+On macOS:
 
 ```bash
-claude mcp add phantom-secrets-mcp -- npx -y phantom-secrets-mcp
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
+phantom --version
+phantom-mcp --version
 ```
 
-### Cursor
+For other release targets, download both matching binaries, checksums, and
+attestations from the verified release. `v0.7.3` provides archives for macOS
+arm64/x64, glibc Linux arm64/x64, and Windows arm64/x64. Published archives are
+not blanket proof of native keychain, shell, editor, or provider acceptance;
+review the [platform support matrix](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md).
 
-Add to Cursor Settings > Features > MCP Servers:
-- Name: `phantom`
-- Command: `npx`
-- Args: `-y phantom-secrets-mcp`
+## Configure a client
 
-### Windsurf
+Generate configuration with the installed local CLI:
 
-Add to `~/.codeium/windsurf/mcp_config.json`:
+```bash
+phantom setup --client claude
+phantom setup --client cursor
+phantom setup --client windsurf
+phantom setup --client codex
+```
+
+Released `v0.7.3` normally records its bundled local `phantom mcp serve`
+command. If it cannot resolve that executable, its setup implementation can
+fall back to a local `phantom-mcp` and finally to an unpinned registry launcher.
+That final legacy fallback resolves an older registry track; do not rely on it.
+Install both verified `v0.7.3` binaries and inspect the generated command.
+Current main removes the network fallback and fails closed when no local MCP
+runtime is available. That hardening is not `v0.7.3` behavior and requires a
+later verified release.
+
+A manual stdio configuration can call the reviewed local CLI directly:
 
 ```json
 {
   "mcpServers": {
     "phantom": {
-      "command": "npx",
-      "args": ["-y", "phantom-secrets-mcp"]
+      "command": "phantom",
+      "args": ["mcp", "serve"]
     }
   }
 }
 ```
 
-### Codex
+Prefer an absolute executable path where supported. Do not substitute an
+unpinned package-registry launcher when version parity matters.
 
-Add to `~/.codex/config.toml`:
+## Tool contract
 
-```toml
-[mcp_servers.phantom]
-command = "npx"
-args = ["-y", "phantom-secrets-mcp"]
-```
+The current source schema contains 54 unique tool names and is generated from
+the Rust server declarations. The installed runtime's `tools/list` response is
+canonical for that binary. The catalog includes these workflow groups:
 
-### Other MCP Clients
+- conversation authority, workspace proposals, status, doctor, classification,
+  checks, and value-free environment inventory;
+- interactive add, remove, token remapping, copy, selective script wrapping,
+  and local initialization;
+- provider validation and rotation, deployment sync, and personal cloud
+  requests;
+- team membership and fixed-membership encrypted-vault requests; and
+- audit, anomaly, incident, compliance, expiry, and scheduling workflows.
 
-Add to your MCP configuration:
+Some names describe reads while others can change local state, contact a
+provider, persist metadata, send a notification, or create a trusted-terminal
+request. A value-free response does not make an operation read-only. Consult the
+tool's live input schema and effect metadata, preserve explicit confirmation and
+approval gates, and review its target before invocation.
 
-```json
-{
-  "mcpServers": {
-    "phantom": {
-      "command": "npx",
-      "args": ["-y", "phantom-secrets-mcp"]
-    }
-  }
-}
-```
+Important boundaries:
 
-Works with any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io).
+- `phantom_add_secret` is deprecated and refuses plaintext secret values passed
+  over MCP. `phantom_add_secret_interactive` creates a trusted-terminal flow.
+- `phantom_do` proposes a closed engineering action and does not execute it.
+- `phantom_setup_workspace` can propose and request trusted-terminal setup; MCP
+  does not claim or apply the request.
+- Provider consent and credential grants occur outside MCP and confer no Locus,
+  broker, production, or deployment authority.
+- Validation, provider rotation, deployment sync, cloud, and team tools may
+  perform network or persistent effects when their required gates are met.
 
-## MCP Tools
+The exact names and schemas are in
+[`mcp-registry/server.json`](https://github.com/ashlrai/phantom-secrets/blob/main/mcp-registry/server.json).
 
-The MCP server exposes core secret-management tools plus advanced audit, validation, rotation, expiry, team-vault, and compliance workflows. The registry metadata is generated from the server's live tool declarations; this README summarizes the main groups.
+## How the local runtime works
 
-Conversation, status, and validation tools:
+1. The MCP server communicates with the client over stdio.
+2. MCP tools return names, protection state, plans, and value-free metadata.
+3. A trusted terminal remains the boundary for interactive secret entry and
+   explicitly authorized local actions.
+4. Application processes use `phm_` mappings under an authenticated local proxy
+   session; configured HTTP routes can then resolve those mappings at the
+   network boundary.
 
-Responses do not contain secret values. `phantom_setup_workspace` proposal may
-provision or harden machine-local Phantom state, and `phantom_validate_all`
-performs provider network calls and persists safe validation metadata.
+Persistent mappings are not provider credentials, but they can be resolved by
+an active authorized proxy with the matching vault. Rotate mappings when their
+exposure is suspected.
 
-| Tool | Description |
-|------|-------------|
-| `phantom_capability` | Report the conversation facade's authority and hard denials; advanced compatibility tools are separately gated |
-| `phantom_do` | Propose one closed Cargo action and return its digest/effect/blockers without execution |
-| `phantom_setup_workspace` | Propose value-blind setup, create a bearerless trusted-terminal request, or read authenticated status; proposal checks/hardens machine-local state and reports key provisioning |
-| `phantom_list_secrets` | List secret names in the vault (never exposes values) |
-| `phantom_status` | Check project configuration, vault health, and proxy state |
-| `phantom_doctor` | Diagnose configuration and vault health |
-| `phantom_why` | Explain why a key is or is not protected |
-| `phantom_check` | Scan for unprotected secrets (pre-commit-style) |
-| `phantom_sync` | Preview deployment-platform sync (Vercel, Railway) |
-| `phantom_cloud_status` | Check cloud authentication and sync status |
-| `phantom_validate_secret` | Show last-known credential validation status for one secret |
-| `phantom_validate_all` | Run live health checks for stored credentials and persist safe metadata |
+## Cloud and team boundaries
 
-Mutating tools (modify vault or `.env`):
+Personal Phantom Cloud push/pull can retain a client-encrypted backup for
+recovery on the same machine while its keychain-held cloud encryption key
+remains available. It is not currently a general cross-machine recovery path.
 
-| Tool | Description |
-|------|-------------|
-| `phantom_init` | Protect secrets in .env files -- store in vault, rewrite with phantom tokens |
-| `phantom_env` | Generate `.env.example` with secrets replaced by placeholders |
-| `phantom_add_secret_interactive` | Start a terminal prompt for adding a secret without passing the value through MCP |
-| `phantom_add_secret` | Deprecated compatibility tool; refuses plaintext values through MCP |
-| `phantom_remove_secret` | Remove a secret from the vault |
-| `phantom_rotate` | Regenerate all phantom tokens (invalidates old ones) |
-| `phantom_copy_secret` | Copy a secret from this project to another project's vault |
-| `phantom_wrap` | Wrap `package.json` scripts with `npx phantom-secrets exec` so npm scripts run through the proxy |
-| `phantom_unwrap` | Restore original `package.json` scripts from `:raw` variants |
-| `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted) |
-| `phantom_cloud_pull` | Pull and decrypt vault from Phantom Cloud |
-| `phantom_rotate_with_candidate` | Create a staged candidate credential without exposing values |
-| `phantom_rotate_promote` | Promote a validated staged candidate to primary |
-| `phantom_rotate_provider` | Rotate through a configured provider such as Stripe, GitHub, or AWS |
-| `phantom_rotate_with_expiry` | Rotate tokens and set TTL metadata on vault entries |
-| `phantom_secrets_auto_rotate` | Refresh one secret's token and expiry metadata |
+For a team push, every registered member included in that push receives a
+wrapped key share capable of decrypting the shared vault. Owner and admin roles
+gate invitations; they do not create per-secret access partitions. Removing a
+member from organizational metadata does not revoke an already distributed key
+share. Offboarding requires rotating affected provider credentials and pushing
+a new vault to the intended fixed membership.
 
-Team vault tools (Pro plan; multi-developer shared vaults):
+## Publication status
 
-| Tool | Description |
-|------|-------------|
-| `phantom_team_list` | List teams the user belongs to (read-only) |
-| `phantom_team_create` | Create a new team. Caller becomes owner |
-| `phantom_team_members` | List members of a team (read-only) |
-| `phantom_team_invite` | Invite someone to a team by GitHub username |
-| `phantom_team_key_publish` | Register the caller's X25519 public key on a team |
-| `phantom_team_vault_push` | Push the current project's vault to a team (envelope-encrypted to every registered member) |
-| `phantom_team_vault_pull` | Pull the team vault into the local vault |
-
-Audit, compliance, and expiry tools:
-
-| Tool | Description |
-|------|-------------|
-| `phantom_audit_recent` | Read recent audit events without values |
-| `phantom_audit_stats` | Aggregate audit access counts and anomaly scores |
-| `phantom_audit_anomalies` / `phantom_audit_anomalies_realtime` | Find suspicious access patterns |
-| `phantom_audit_hotspot_alerts` | Inspect and optionally acknowledge access-velocity alerts |
-| `phantom_audit_analytics` | Export audit analytics for dashboards |
-| `phantom_audit_incidents` / `phantom_leak_incidents_realtime` | Summarize leak incidents without exposing values |
-| `phantom_audit_alerts` / `phantom_audit_export_report` | Read alert records or generate compliance reports |
-| `phantom_compliance_status` | Report compliance readiness for the current project |
-| `phantom_secret_rotation_due` / `phantom_list_with_expiry` | Show rotation and expiry status |
-| `phantom_secrets_expiry_check` / `phantom_expiry_enforce` | Check expired secrets and policy violations |
-| `phantom_rotation_schedule_next` / `phantom_apply_expiry_policy` | Inspect rotation schedules and apply expiry demotion policy |
-| `phantom_validation_schedule` / `phantom_validation_history` | Manage validation cadence and read validation history |
-
-MCP responses do not return actual secret values, and the deprecated plaintext
-add tool rejects values passed through MCP. Agents can manage value-blind
-metadata and request gated lifecycle operations (add, remove, rotate, sync,
-share with teams, audit, validate, and enforce expiry). Mutating tools require
-`confirm: true`; higher-risk tools also use the separate MCP approval gate.
-
-## How It Works
-
-1. The MCP server runs as a stdio transport process alongside your AI coding tool
-2. When the AI needs to manage secrets, it calls Phantom MCP tools
-3. Phantom stores real secrets in the native credential store (macOS Keychain, Linux Secret Service, or Windows Credential Manager) or a ChaCha20-Poly1305 encrypted-file vault
-4. Agents use value-blind MCP metadata; application processes load tokens for authenticated proxy sessions
-5. A local reverse proxy swaps tokens back at the network layer when making API calls
-
-## Requirements
-
-- [Phantom Secrets CLI](https://www.npmjs.com/package/phantom-secrets) must be initialized in your project (`npx phantom-secrets init`)
-- Node.js >= 16
-- A published macOS (arm64/x64), glibc Linux (x64/arm64), or Windows (x64/arm64) release target. See the [platform support matrix](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md) for native-integration and acceptance limits.
-
-## Cloud Sync
-
-The MCP server includes cloud push/pull tools for syncing vaults across machines:
-
-```
-AI: "Push this project's secrets to the cloud"
--> phantom_cloud_push (E2E encrypted with ChaCha20-Poly1305, Argon2id key derivation)
-
-AI: "Pull secrets from the cloud to this machine"
--> phantom_cloud_pull (decrypted locally, server never sees plaintext)
-```
-
-Requires `phantom login` (GitHub OAuth) via the CLI first.
+This directory is the source for a thin native-binary wrapper. The local
+`package.json` version is not proof of npm publication, native artifact parity,
+MCP Registry publication, or platform acceptance. Until those channels are
+independently published and verified, configure the installed local runtime
+from the immutable GitHub release or trusted Homebrew formula.
 
 ## Links
 
-- [Phantom Secrets CLI](https://www.npmjs.com/package/phantom-secrets)
 - [GitHub](https://github.com/ashlrai/phantom-secrets)
-- [phm.dev](https://phm.dev) -- Cloud dashboard
-- [Security Model](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md)
+- [Security model](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md)
+- [Getting started](https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md)
+- [Platform evidence](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md)
 
 ## License
 

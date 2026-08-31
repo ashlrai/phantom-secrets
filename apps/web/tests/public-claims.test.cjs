@@ -52,10 +52,21 @@ const staticDocumentationClaims = Object.fromEntries(
   staticDocumentationPaths.map((relativePath) => [relativePath, readRepo(relativePath)]),
 );
 
+const publishedPackageDocumentationPaths = ["npm", "npm-mcp", "mcp-registry"].flatMap(
+  (directory) => repoFilesUnder(directory, [".md"]),
+);
+const publishedPackageDocumentationClaims = Object.fromEntries(
+  publishedPackageDocumentationPaths.map((relativePath) => [
+    relativePath,
+    readRepo(relativePath),
+  ]),
+);
+
 const repositoryGuidanceClaims = {
   "AGENTS.md": readRepo("AGENTS.md"),
   "README.md": readRepo("README.md"),
   ...staticDocumentationClaims,
+  ...publishedPackageDocumentationClaims,
   ...Object.fromEntries(
     Object.entries(claims).map(([relativePath, source]) => [
       `apps/web/${relativePath}`,
@@ -347,6 +358,69 @@ test("current-release guidance routes installs through verified GitHub or Homebr
       }
     }
   }
+});
+
+test("published package READMEs use verified local binaries and bounded claims", () => {
+  assert.deepEqual(
+    Object.keys(publishedPackageDocumentationClaims).sort(),
+    ["mcp-registry/README.md", "npm-mcp/README.md", "npm/README.md"],
+  );
+
+  const forbidden = [
+    /\bAI\s+never\s+sees\b/i,
+    /\bwithout\s+(?:the\s+)?AI\s+ever\s+seeing\b/i,
+    /\b(?:Phantom\s+)?Cloud[^\n]{0,100}\bacross\s+machines?\b/i,
+    /\bacross\s+machines?[^\n]{0,100}\b(?:Phantom\s+)?Cloud\b/i,
+    /\brole-based access control\b|\bRBAC\b/i,
+    /\bevery\s+(?:npm\s+)?script\b/i,
+    /\bworks with any (?:MCP )?(?:tool|client|platform)\b/i,
+    /\b(?:all|every)\s+(?:operating systems?|platforms?|devices?)\b/i,
+    /(?:^|[`"'(])(?:\$\s*)?npm\s+(?:install|i)\s+(?:-g\s+)?phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+    /(?:^|[`"'(])(?:\$\s*)?npx(?:\s+-y)?\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+  ];
+
+  for (const [file, source] of Object.entries(publishedPackageDocumentationClaims)) {
+    assert.match(source, new RegExp(verifiedReleaseUrl.replaceAll(".", "\\.")), file);
+    assert.match(source, /installed local `phantom`|installed local CLI/i, file);
+    assert.match(source, /`phantom mcp serve`/i, file);
+    assert.match(source, /Released `v0\.7\.3`[\s\S]{0,500}legacy fallback/i, file);
+    assert.match(source, /Current main[\s\S]{0,180}(?:fails closed|removes the network fallback)/i, file);
+    assert.match(source, /older (?:release|registry) track/i, file);
+    assert.match(
+      source,
+      /same machine[\s\S]{0,160}keychain-held (?:cloud )?encryption key|keychain-held (?:cloud )?encryption key[\s\S]{0,160}same machine/i,
+      file,
+    );
+    assert.match(source, /every registered member[\s\S]{0,180}(?:key )?share/i, file);
+    assert.match(source, /offboarding/i, file);
+    assert.match(source, /rotat(?:e|ing) affected provider credentials/i, file);
+
+    for (const claim of forbidden) {
+      assert.doesNotMatch(source, claim, file);
+    }
+  }
+});
+
+test("registry README catalog exactly matches the staged 54-tool schema", () => {
+  const registryReadme = publishedPackageDocumentationClaims["mcp-registry/README.md"];
+  const server = JSON.parse(readRepo("mcp-registry/server.json"));
+  const start = registryReadme.indexOf("<!-- tool-catalog:start -->");
+  const end = registryReadme.indexOf("<!-- tool-catalog:end -->");
+
+  assert.ok(start >= 0 && end > start, "registry README must delimit its tool catalog");
+  const documentedNames = [
+    ...registryReadme.slice(start, end).matchAll(/`(phantom_[a-z0-9_]+)`/g),
+  ].map((match) => match[1]);
+  const schemaNames = server.tools.map((tool) => tool.name);
+
+  assert.equal(schemaNames.length, 54, "staged schema must contain 54 tools");
+  assert.equal(new Set(schemaNames).size, 54, "staged schema tool names must be unique");
+  assert.equal(documentedNames.length, 54, "README catalog must contain 54 tool names");
+  assert.equal(new Set(documentedNames).size, 54, "README catalog names must be unique");
+  assert.deepEqual(documentedNames.sort(), schemaNames.sort());
+  assert.match(registryReadme, /npm package and MCP Registry entry remain on the older `0\.6\.0` track/i);
+  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.3`/i);
+  assert.match(registryReadme, /do not publish this manifest until/i);
 });
 
 test("released setup guidance separates v0.7.3 fallback from current-main hardening", () => {

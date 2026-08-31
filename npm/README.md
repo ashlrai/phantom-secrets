@@ -1,135 +1,162 @@
 # Phantom Secrets
 
-**AI uses your keys. Safely.**
+**Delegate supported API work while reducing credential exposure to agent context.**
 
-[![npm](https://img.shields.io/npm/v/phantom-secrets)](https://www.npmjs.com/package/phantom-secrets)
-[![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=social)](https://github.com/ashlrai/phantom-secrets/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/ashlrai/phantom-secrets)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ashlrai/phantom-secrets/blob/main/LICENSE)
 
-AI coding agents with dotenv filesystem access can put API keys into LLM context windows, where they may leak through prompt injection, session logs, malicious MCP servers, or generated artifacts.
+AI coding agents with dotenv filesystem access can put API keys into model
+context, session logs, malicious tool calls, or generated artifacts. Phantom
+moves detected values from managed dotenv files into a local vault and replaces
+them with `phm_` mappings. For configured HTTP routes, a local proxy resolves
+those mappings at the network boundary. This narrows credential exposure; it
+does not control unrelated files, processes, tools, pasted values, or
+unsupported traffic.
 
-Phantom replaces real secrets with inert `phm_` tokens. A local reverse proxy swaps them back at the network layer. **The AI never sees a real key.**
+## Verified installation path
 
-## Install
+The immutable GitHub release and trusted Homebrew formula are the verified
+`v0.7.3` distribution paths. The npm registry is on an older release track as
+of August 31, 2026, so do not use an unpinned npm or package-runner command when
+you need `v0.7.3` behavior.
 
-```bash
-npm install -g phantom-secrets
-```
-
-Or run directly:
-
-```bash
-npx phantom-secrets init
-```
-
-## Quick Start
-
-```bash
-# Protect your secrets
-$ npx phantom-secrets init
-# Detects .env files, stores real secrets in OS keychain,
-# rewrites .env with phantom tokens
-
-# Run your AI tool through the proxy
-$ phantom exec -- claude
-# Proxy on 127.0.0.1 swaps phm_ tokens with real keys at the network layer
-```
-
-## How It Works
-
-1. `phantom init` reads `.env`, stores real secrets in the OS keychain, rewrites values with `phm_` tokens
-2. `phantom exec -- claude` starts a local reverse proxy that sets `OPENAI_BASE_URL=http://127.0.0.1:PORT/openai` (and equivalents)
-3. API calls hit the proxy, which replaces phantom tokens with real secrets and forwards over TLS
-4. When the session ends, the proxy shuts down. Phantom tokens are worthless outside the proxy.
-
-## CLI commands
-
-| Command | Description |
-|---------|-------------|
-| `phantom init` | Import `.env` secrets into vault, rewrite with phantom tokens |
-| `phantom exec -- <cmd>` | Start proxy and run a command with secret injection |
-| `phantom start` / `stop` | Manage proxy lifecycle (standalone/daemon mode) |
-| `phantom list` | Show secret names stored in vault (never values) |
-| `phantom add <KEY>` | Add a secret through a hidden prompt (`--stdin` for piped input) |
-| `phantom remove <KEY>` | Remove a secret from the vault |
-| `phantom reveal <KEY>` | Print a secret value (or `--clipboard` to copy) |
-| `phantom status` | Show proxy state, vault info, and mapped services |
-| `phantom rotate` | Regenerate all phantom tokens (old ones become invalid) |
-| `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair) |
-| `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`) |
-| `phantom wrap` | Wrap package.json scripts with `phantom exec` automatically |
-| `phantom unwrap` | Restore original package.json scripts |
-| `phantom watch` | Watch .env files and auto-detect new unprotected secrets |
-| `phantom why <KEY>` | Explain why a key is or is not protected |
-| `phantom copy <KEY> --to <dir>` | Copy a secret to another project's vault |
-| `phantom sync` | Preview or push secrets to Vercel / Railway |
-| `phantom pull` | Pull secrets from Vercel / Railway into vault |
-| `phantom setup` | Configure Claude Code MCP server + hooks |
-| `phantom env` | Generate `.env.example` for team onboarding |
-| `phantom export` | Export vault to encrypted backup file |
-| `phantom import` | Import vault from encrypted backup |
-| `phantom login` / `logout` | Authenticate with Phantom Cloud via GitHub OAuth |
-| `phantom cloud push` | Push encrypted vault to Phantom Cloud |
-| `phantom cloud pull` | Pull and decrypt vault from Phantom Cloud |
-| `phantom team list/create/members/invite` | Team vault management |
-
-## MCP Server
-
-Phantom ships a companion MCP server package so AI coding tools can manage
-secrets directly without seeing real values. The release schema smoke currently
-enforces 54 unique tools; the runtime `tools/list` response is canonical.
+On macOS, install the reviewed formula:
 
 ```bash
-# Claude Code
-claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
-
-# Cursor / Windsurf / Codex
-# Add to your MCP config:
-{"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
+phantom --version
+phantom-mcp --version
 ```
 
-See [`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) on npm.
+On macOS, glibc Linux, or Windows, download the matching CLI and MCP archive
+from the [verified `v0.7.3` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3),
+verify it against the release checksums and attestations, and put both local
+binaries on `PATH`. The release contains archives for macOS arm64/x64, glibc
+Linux arm64/x64, and Windows arm64/x64. That archive matrix does not by itself
+prove every keychain, shell, editor, or provider integration on every host; see
+the [platform support matrix](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md)
+for evidence and limits.
 
-## Key Features
+## Quick start
 
-- **OS credential storage** -- macOS Keychain, Linux Secret Service, Windows Credential Manager, with an encrypted-file fallback for CI; Phantom does not claim Secure Enclave binding
-- **256-bit CSPRNG tokens** -- `phm_` prefix, rotatable on demand
-- **Streaming proxy** -- Full SSE/streaming support for OpenAI, Anthropic, and other APIs
-- **Response scrubbing** -- Prevents secrets from leaking in API responses back to the AI
-- **Smart detection** -- Heuristic engine distinguishes secrets from config values
-- **Platform sync** -- Push/pull secrets to Vercel and Railway
-- **Cloud sync** -- E2E encrypted zero-knowledge vault sync across machines (ChaCha20-Poly1305 + Argon2id)
-- **Team vaults** -- Shared vaults with role-based access control
-- **Pre-commit hook** -- Blocks commits containing unprotected secrets
-- **Script wrapping** -- `phantom wrap` patches package.json so every npm script runs through the proxy
-- **Watch mode** -- `phantom watch` monitors .env files for new unprotected secrets
-- **Export/import** -- Encrypted backup and restore with passphrase protection
+```bash
+# Inspect changes first.
+phantom init --dry-run
 
-## Platform Support
+# Protect detected dotenv values after reviewing the plan.
+phantom init
 
-| Platform | Architecture | Status |
-|----------|-------------|--------|
-| macOS | Apple Silicon (arm64) | Supported |
-| macOS | Intel (x64) | Supported |
-| Linux | x64 | Supported |
-| Linux | arm64 | Supported |
-| Windows | x64 | Supported |
+# Run a supported application through the local proxy.
+phantom exec -- your-command
+```
 
-## Security
+`phantom init` changes managed dotenv files and local vault state. Keep a
+recoverable copy before applying it and review the exact files selected by the
+command.
 
-- Real values are removed from dotenv files during initialization; Phantom does not create plaintext project-local backups
-- Proxy binds to 127.0.0.1 only -- never exposed to the network
-- Secrets zeroized from memory after injection
-- Zero-knowledge cloud -- server stores only ciphertext
+## Configure the MCP server
 
-See [SECURITY.md](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md) for the full threat model.
+Use the installed local `phantom` binary to generate client configuration:
 
-## Links
+```bash
+phantom setup --client claude
+phantom setup --client cursor
+phantom setup --client windsurf
+phantom setup --client codex
+```
 
-- [phm.dev](https://phm.dev) -- Cloud dashboard
-- [GitHub](https://github.com/ashlrai/phantom-secrets)
-- [Getting Started](https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md)
-- [MCP Server](https://www.npmjs.com/package/phantom-secrets-mcp)
+Released `v0.7.3` normally records its bundled local `phantom mcp serve`
+command. If that executable cannot be resolved, the released setup code can
+fall back to a local `phantom-mcp` binary and finally to an unpinned registry
+launcher. That final legacy fallback currently resolves an older registry
+track; do not rely on it. Install both verified `v0.7.3` binaries and inspect
+the generated command. Current main removes the network fallback and fails
+closed when no local MCP runtime is available; that hardening is not
+`v0.7.3` behavior and requires a later verified release.
+
+For a manual stdio entry, configure the reviewed local executable directly:
+
+```json
+{
+  "mcpServers": {
+    "phantom": {
+      "command": "phantom",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Prefer the absolute executable path emitted by `phantom setup` when the client
+supports it. The current source schema contains 54 unique MCP tool names; the
+runtime `tools/list` response from the installed binary is canonical.
+
+## How it works
+
+1. `phantom init` detects candidate values, stores selected values in a local
+   keychain or configured encrypted-file vault, and rewrites managed dotenv
+   entries with `phm_` mappings.
+2. `phantom exec -- <command>` starts a loopback proxy and supplies configured
+   service endpoints to the child process.
+3. The proxy substitutes mapped credentials on supported request routes and
+   forwards those requests over TLS.
+4. Persistent project mappings remain resolvable while an authorized proxy has
+   access to the matching vault; rotate them when exposure is suspected.
+
+## Selected commands
+
+| Command | Effect |
+|---------|--------|
+| `phantom init [--dry-run]` | Plan or apply dotenv protection |
+| `phantom exec -- <command>` | Run a child process through the local proxy |
+| `phantom list` | List stored names, not values |
+| `phantom add <NAME>` | Prompt for a value in the trusted terminal |
+| `phantom reveal <NAME>` | Intentionally disclose a stored value to the terminal or clipboard |
+| `phantom check [--staged]` | Scan selected content for unprotected secret candidates |
+| `phantom rotate` | Replace Phantom mappings; it does not rotate provider credentials |
+| `phantom wrap [--only <scripts>]` | Wrap scripts selected by its heuristic or explicit filter, preserving `:raw` variants |
+| `phantom setup --client <client>` | Write local MCP configuration for a supported client |
+| `phantom cloud push` / `pull` | Transfer a client-encrypted personal-vault payload |
+| `phantom team ...` | Request fixed-membership shared-vault workflows |
+
+## Cloud and team boundaries
+
+Personal Phantom Cloud push/pull can retain a client-encrypted backup for
+recovery on the same machine while its keychain-held cloud encryption key
+remains available. It is not currently a general cross-machine recovery path.
+
+Team vaults use per-member key shares. In the current implementation, owner and
+admin roles gate invitations, but every registered member included in a vault
+push receives a share capable of decrypting that pushed vault. This is not
+per-secret access control. Removing a member from organizational metadata does
+not revoke an already distributed share; rotate affected provider credentials
+and publish a new vault to the intended fixed membership when offboarding.
+
+## Security boundary
+
+- MCP responses are designed to return names and value-free metadata, not
+  stored credential values. Other tools and process access remain separate.
+- The proxy binds to loopback and applies route and request-size constraints.
+- Phantom removes selected values from managed dotenv files during
+  initialization, but explicit reveal/export paths and unrelated copies remain
+  the operator's responsibility.
+- Provider rotation, deployment sync, live validation, cloud operations, and
+  team workflows are explicit network or persistent effects with their own
+  confirmation and approval requirements.
+
+Read [SECURITY.md](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md)
+for the threat model and [Getting Started](https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md)
+for the full workflow.
+
+## Publication status
+
+This directory is source for a thin npm wrapper. Its local `package.json`
+version does not prove that the same version is published, signed, or backed by
+matching native archives. Use the immutable `v0.7.3` GitHub release or verified
+Homebrew formula until the wrapper and native assets are independently
+published and accepted.
 
 ## License
 

@@ -2,223 +2,198 @@
 
 <!-- mcp-name: io.github.ashlrai/phantom-secrets-mcp -->
 
-An MCP (Model Context Protocol) server for value-blind Phantom secret
-management and gated lifecycle requests.
+Phantom provides value-blind secret metadata and gated lifecycle requests over
+MCP stdio. Stored credential values are excluded from MCP responses. This is a
+response-contract boundary, not a claim about unrelated files, processes,
+tools, terminal output, provider traffic, or values pasted into a conversation.
 
-## What it does
+## Publication status
 
-Phantom Secrets replaces real secrets in managed `.env` files with opaque
-**phantom tokens** (`phm_...`). Agents use value-blind metadata while
-application processes load tokens for authenticated proxy sessions. When the
-application makes an allowlisted API call, the local proxy injects the matching
-credential at the network boundary.
+This directory is publication source, not a publication receipt. As last
+independently checked on August 31, 2026:
 
-The MCP server lets AI agents manage value-blind metadata and request gated
-lifecycle operations. MCP responses do not return actual secret values; the
-trusted terminal and local runtime remain separate security boundaries.
+- the immutable GitHub release and trusted Homebrew formula provide verified
+  `v0.7.3` CLI and MCP binaries;
+- the npm package and MCP Registry entry remain on the older `0.6.0` track; and
+- local `server.json` stages version `0.7.3` and points at a `0.7.3` npm wrapper,
+  but neither that file nor its README proves the package or registry entry was
+  published.
 
-Provider consent and `phantom grant` issuance are not MCP tools. They run in a
-trusted terminal, and their provider grants are credential lifecycle state,
-not inactive execution-kernel authority grants. Provider grants confer no
-Locus authority, broker lease, or execution permit.
+Do not publish this manifest until the exact npm wrapper is published and
+independently verified against the matching native release archives. Do not use
+an unpinned npm or package-runner command to configure the current runtime.
 
-## Tools
+## Verified local runtime
 
-The server exposes Phantom's live MCP catalog over stdio transport. The registry metadata tracks the exact tool names; this README summarizes the main groups so it stays readable.
-
-**Conversation, status, and validation operations (responses do not return secret values):**
-
-`phantom_setup_workspace` may provision machine-local state, and
-`phantom_validate_all` retrieves credentials, calls provider APIs, and persists
-value-free validation metadata. Those paths require `confirm: true` plus a
-one-use out-of-band `approval_token`; response value safety does not make an
-effect read-only.
-
-| Tool | Description |
-|------|-------------|
-| `phantom_capability` | Report the conversation facade's authority and hard denials; advanced compatibility tools are separately gated. |
-| `phantom_do` | Propose one closed Cargo action and return its canonical digest/effect/blockers. It never executes today. |
-| `phantom_setup_workspace` | Propose value-blind setup, request trusted-terminal apply, or read authenticated status. First proposal may provision a reported machine-local key; MCP never applies. |
-| `phantom_list_secrets` | List all secret names in the vault. Returns names only. |
-| `phantom_status` | Show project status: vault backend, secret count, service mappings, proxy state. |
-| `phantom_doctor` | Diagnose configuration and vault health. |
-| `phantom_why` | Explain why a key is or is not classified as a secret. |
-| `phantom_check` | Scan the repo for unprotected secrets (pre-commit-style). |
-| `phantom_env` | Generate `.env.example` with secrets replaced by placeholders. |
-| `phantom_sync` | Preview deployment-platform sync (Vercel, Railway). |
-| `phantom_cloud_status` | Check cloud authentication and sync status through a dual-gated provider request. |
-| `phantom_validate_secret` | Show last-known validation status for one secret. |
-| `phantom_validate_all` | Dual-gated live credential health checks with value-free metadata persistence. |
-| `phantom_validation_schedule` / `phantom_validation_history` | Inspect validation cadence/history; schedule writes are dual-gated. |
-
-**Mutating (modify the vault or `.env`):**
-
-| Tool | Description |
-|------|-------------|
-| `phantom_init` | Initialize Phantom in a project. Stores real secrets in the keychain vault and rewrites `.env` with phantom tokens. |
-| `phantom_add_secret_interactive` | Start a trusted terminal prompt for adding a new secret without passing the value through MCP. |
-| `phantom_add_secret` | Deprecated compatibility tool; refuses plaintext values passed through MCP. |
-| `phantom_remove_secret` | Remove a secret from the vault by name. |
-| `phantom_rotate` | Regenerate all phantom tokens. Old tokens become invalid; real secrets unchanged. |
-| `phantom_copy_secret` | Copy a secret from this project to another project's vault. |
-| `phantom_wrap` | Wrap `package.json` scripts with `npx phantom-secrets exec` so npm scripts run through the proxy and get real credentials at runtime. Originals are saved as `script:raw` variants. |
-| `phantom_unwrap` | Reverse `phantom_wrap`: restore original `package.json` scripts from `:raw` variants and remove the `:raw` entries. |
-| `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted). |
-| `phantom_cloud_pull` | Pull and decrypt vault from Phantom Cloud. |
-| `phantom_rotate_with_candidate` / `phantom_rotate_promote` | Stage and promote credential rotation candidates without exposing values. |
-| `phantom_rotate_provider` | Rotate through a configured vendor provider such as Stripe, GitHub, or AWS. |
-| `phantom_rotate_with_expiry` / `phantom_secrets_auto_rotate` | Refresh phantom tokens and expiry metadata. |
-
-**Team vaults (Pro plan; multi-developer shared vaults with envelope encryption):**
-
-| Tool | Description |
-|------|-------------|
-| `phantom_team_list` | List teams through a dual-gated authenticated provider request. |
-| `phantom_team_create` | Create a new team. Caller becomes owner. (Mutating, requires `confirm`.) |
-| `phantom_team_members` | List members through a dual-gated authenticated provider request. |
-| `phantom_team_invite` | Invite someone to a team by GitHub username. (Mutating, requires `confirm`.) |
-| `phantom_team_key_publish` | Register the caller's X25519 public key on a team. Idempotent. |
-| `phantom_team_vault_push` | Push the current project's vault to a team. Encrypts the vault with a fresh symmetric key, then wraps that key (X25519 + ChaCha20-Poly1305) for every member with a registered public key. (Mutating, requires `confirm`.) |
-| `phantom_team_vault_pull` | Pull the current project's team vault, decrypt the key share with the OS-keychain private key, decrypt the vault, write into the local vault. (Mutating, requires `confirm`.) |
-
-**Audit, compliance, rotation, and expiry:**
-
-| Tool | Description |
-|------|-------------|
-| `phantom_audit_recent` / `phantom_audit_stats` / `phantom_audit_analytics` | Read recent audit events and aggregate analytics without secret values. |
-| `phantom_audit_anomalies` / `phantom_audit_anomalies_realtime` / `phantom_audit_hotspot_alerts` | Detect suspicious patterns; hotspot acknowledgement/snooze writes are dual-gated. |
-| `phantom_audit_incidents` / `phantom_leak_incidents_realtime` / `phantom_audit_alerts` | Read persisted incidents; alert backfill persists correlation/alert state and may dispatch notifications, so it is dual-gated. The realtime dashboard never rotates. |
-| `phantom_audit_export_report` / `phantom_compliance_status` | Return value-free exports/status; saving a report is dual-gated. |
-| `phantom_secret_rotation_due` / `phantom_list_with_expiry` / `phantom_secrets_expiry_check` | Inspect rotation and expiry status. |
-| `phantom_expiry_enforce` / `phantom_rotation_schedule_next` / `phantom_apply_expiry_policy` | Enforce expiry policy and inspect scheduled rotation state. |
-
-## Architecture
-
-- **Binary**: `phantom-mcp` (Rust, compiled native binary)
-- **MCP SDK**: [rmcp](https://crates.io/crates/rmcp) v1.x (Rust MCP SDK)
-- **Transport**: stdio (JSON-RPC over stdin/stdout)
-- **Vault backend**: OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager)
-- **Local-first storage**: Core vault storage is local. Cloud sync, provider validation/rotation, team workflows, and deployment sync are explicit network operations.
-
-## Installation
-
-### From npm (recommended)
+Install both binaries from the
+[`v0.7.3` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3)
+or, on macOS, from the trusted formula:
 
 ```bash
-npm install -g phantom-secrets-mcp
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
+phantom --version
+phantom-mcp --version
 ```
 
-This installs a thin Node.js wrapper that downloads the correct native binary for your platform on first run.
+The verified release has archives for macOS arm64/x64, glibc Linux arm64/x64,
+and Windows arm64/x64. Artifact existence is not proof that every native
+keychain, shell, client, or provider integration has been accepted on every
+host. Review the repository's
+[platform evidence](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md).
 
-### From source
+Generate client configuration from the installed local CLI:
 
 ```bash
-git clone https://github.com/ashlrai/phantom-secrets.git
-cd phantom-secrets
-cargo build --release -p phantom-secrets-mcp --bin phantom-mcp
-# Binary at target/release/phantom-mcp
+phantom setup --client claude
+phantom setup --client cursor
+phantom setup --client windsurf
+phantom setup --client codex
 ```
 
-### From GitHub releases
+Released `v0.7.3` normally records its bundled local `phantom mcp serve`
+command. If it cannot resolve that executable, its setup implementation can
+fall back to local `phantom-mcp` and finally to an unpinned registry launcher.
+That final legacy fallback resolves the older registry track; do not rely on
+it. Install both verified `v0.7.3` binaries and inspect the generated command.
+Current main removes the network fallback and fails closed when no local MCP
+runtime is available. That change is not `v0.7.3` behavior and requires a later
+verified release.
 
-Download the `phantom-mcp` binary for your platform from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases) and place it on your PATH.
-
-## Configuration
-
-Add to your MCP client configuration (e.g., Claude Desktop `claude_desktop_config.json`):
+Manual stdio configuration can call the reviewed local executable:
 
 ```json
 {
   "mcpServers": {
-    "phantom-secrets": {
-      "command": "phantom-mcp",
-      "args": [],
+    "phantom": {
+      "command": "phantom",
+      "args": ["mcp", "serve"],
       "transport": "stdio"
     }
   }
 }
 ```
 
-Or if installed via npm:
+Prefer an absolute executable path where the client supports it.
 
-```json
-{
-  "mcpServers": {
-    "phantom-secrets": {
-      "command": "npx",
-      "args": ["-y", "phantom-secrets-mcp"],
-      "transport": "stdio"
-    }
-  }
-}
-```
+## Exact current-source tool catalog
 
-## How phantom tokens work
+The staged `server.json` contains exactly 54 unique tool names generated from
+the current Rust server declarations. This list is checked against that JSON in
+the web claim-regression suite. The installed runtime's `tools/list` response
+remains canonical for that binary.
 
-For agent-led onboarding, call `phantom_capability` first and then
-`phantom_setup_workspace`. Its default `propose` phase returns a value-blind,
-exact sealed plan. `request_apply` recomputes the supplied plan and pre-state
-digests before creating a bearerless pending request; `status` reads its
-authenticated workspace-scoped state. MCP cannot claim or apply a request and
-receives no bearer or approval token. The first proposal may provision the
-machine-local plan-seal key; machine-local Phantom state is checked or hardened,
-and the response reports `plan_seal_key_provisioned`. Run `phantom workspace apply --request
-<ID>` only in an attached trusted terminal. The related CLI commands are
-`phantom workspace plan [--json]`, `phantom workspace apply --request <ID>`,
-and `phantom workspace status --request <ID> [--json]`.
+<!-- tool-catalog:start -->
+1. `phantom_add_secret`
+2. `phantom_add_secret_interactive`
+3. `phantom_apply_expiry_policy`
+4. `phantom_audit_alerts`
+5. `phantom_audit_analytics`
+6. `phantom_audit_anomalies`
+7. `phantom_audit_anomalies_realtime`
+8. `phantom_audit_export_report`
+9. `phantom_audit_hotspot_alerts`
+10. `phantom_audit_incidents`
+11. `phantom_audit_recent`
+12. `phantom_audit_stats`
+13. `phantom_capability`
+14. `phantom_check`
+15. `phantom_cloud_pull`
+16. `phantom_cloud_push`
+17. `phantom_cloud_status`
+18. `phantom_compliance_status`
+19. `phantom_copy_secret`
+20. `phantom_do`
+21. `phantom_doctor`
+22. `phantom_env`
+23. `phantom_expiry_enforce`
+24. `phantom_init`
+25. `phantom_leak_incidents_realtime`
+26. `phantom_list_secrets`
+27. `phantom_list_with_expiry`
+28. `phantom_remove_secret`
+29. `phantom_rotate`
+30. `phantom_rotate_promote`
+31. `phantom_rotate_provider`
+32. `phantom_rotate_with_candidate`
+33. `phantom_rotate_with_expiry`
+34. `phantom_rotation_schedule_next`
+35. `phantom_secret_rotation_due`
+36. `phantom_secrets_auto_rotate`
+37. `phantom_secrets_expiry_check`
+38. `phantom_setup_workspace`
+39. `phantom_status`
+40. `phantom_sync`
+41. `phantom_team_create`
+42. `phantom_team_invite`
+43. `phantom_team_key_publish`
+44. `phantom_team_list`
+45. `phantom_team_members`
+46. `phantom_team_vault_pull`
+47. `phantom_team_vault_push`
+48. `phantom_unwrap`
+49. `phantom_validate_all`
+50. `phantom_validate_secret`
+51. `phantom_validation_history`
+52. `phantom_validation_schedule`
+53. `phantom_why`
+54. `phantom_wrap`
+<!-- tool-catalog:end -->
 
-1. You run `phantom_init` (or `phantom init` from the CLI) in a project with a `.env` file.
-2. Real secrets like `OPENAI_API_KEY=sk-abc123...` are moved into the OS keychain vault.
-3. The `.env` file is rewritten: `OPENAI_API_KEY=phm_a1b2c3d4e5f6...`
-4. Phantom does not grant agents dotenv read access. Agents inspect names and protection state through value-blind MCP tools; application processes load phantom tokens for authenticated proxy sessions.
-5. When your app runs under the Phantom proxy (`phantom exec -- npm start`), HTTP requests containing phantom tokens are intercepted and the real secret is substituted at the network layer.
+The exact input schemas and effect descriptions are in `server.json`. Some
+tools are reads; others can mutate local state, contact providers, persist
+metadata, dispatch configured notifications, or create trusted-terminal
+requests. A value-free response does not make an operation read-only. Preserve
+the live confirmation and approval requirements and review the exact target.
 
-## Security model
+Key authority boundaries:
 
-- **MCP responses are value-blind.** Phantom MCP returns names and safe metadata, not stored credential values. Other tools, process access, and pasted values remain outside this claim.
-- **Phantom tokens are cryptographically random** and carry no information about the real secret.
-- **OS keychain storage** uses platform-native encryption (macOS Keychain, GNOME Keyring / KWallet, Windows DPAPI).
-- **Token rotation** (`phantom_rotate`) invalidates all existing tokens without changing vault contents.
+- `phantom_add_secret` is deprecated and refuses plaintext values through MCP;
+  `phantom_add_secret_interactive` creates a trusted-terminal flow.
+- `phantom_do` proposes a closed action and does not execute it.
+- `phantom_setup_workspace` can propose and request setup, but MCP cannot claim
+  or apply the trusted-terminal request.
+- Provider consent and credential grants are not MCP tools and confer no Locus,
+  broker, deployment, or production execution authority.
+- Cloud, validation, rotation, sync, team, scheduling, report-saving, and alert
+  paths can have network or persistent effects when their gates are satisfied.
 
-## MCP Registry submission
+## Token and vault boundary
 
-This directory contains the files needed to publish to the [MCP Registry](https://registry.modelcontextprotocol.io/):
+`phantom init` moves selected values from managed dotenv files into a configured
+local vault and writes `phm_` mappings. Under an authenticated local proxy
+session, configured HTTP routes can resolve those mappings at the network
+boundary. Persistent mappings can therefore remain useful to an active
+authorized proxy with the matching vault; rotate them when exposure is
+suspected.
 
-- `server.json` — Server metadata for the registry.
-- `README.md` — This file.
+Personal Phantom Cloud push/pull can retain a client-encrypted backup for
+recovery on the same machine while its keychain-held cloud encryption key
+remains available. It is not currently a general cross-machine recovery path.
 
-### Prerequisites before publishing
+For each team push, every registered member included in the push receives a
+wrapped key share capable of decrypting that vault. Owner and admin roles gate
+invitations, but there is no per-secret access partition. Removing a member from
+organizational metadata does not revoke a share already distributed to that
+member. Offboarding requires rotating affected provider credentials and
+publishing a new vault to the intended fixed membership.
 
-1. **Verify the npm package**: The registry manifest may refer only to an exact
-   `phantom-secrets-mcp` version that is already published and independently
-   verified. The local wrapper source or this README is not proof that a
-   package or matching native archive has been published. Its `package.json`
-   must include:
-   ```json
-   {
-     "name": "phantom-secrets-mcp",
-     "mcpName": "io.github.ashlrai/phantom-secrets-mcp"
-   }
-   ```
+## Registry operator workflow
 
-2. **Install mcp-publisher**:
-   ```bash
-   brew install mcp-publisher
-   ```
+Publication is a separate, authorized release operation. Before invoking the
+publisher:
 
-3. **Authenticate**:
-   ```bash
-   mcp-publisher login github
-   ```
+1. Confirm the exact npm package version is live and independently installable.
+2. Verify the wrapper downloads only matching attested native archives.
+3. Confirm `server.json` names that exact package version and its 54-tool schema
+   matches the reviewed runtime.
+4. Authenticate the MCP publisher in a trusted operator terminal.
+5. Obtain separate authorization for the exact registry version and then
+   reconcile the published entry.
 
-4. **Publish only with separate authorization**:
-   ```bash
-   cd mcp-registry
-   mcp-publisher publish
-   ```
-
-These commands describe an operator workflow; they do not indicate that npm or
-MCP Registry publication, signing, or native acceptance has occurred.
+These prerequisites do not indicate that npm or MCP Registry publication has
+occurred.
 
 ## License
 
