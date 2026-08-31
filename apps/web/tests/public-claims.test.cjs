@@ -15,6 +15,15 @@ function filesUnder(relativeDirectory, acceptedExtensions) {
   });
 }
 
+function repoFilesUnder(relativeDirectory, acceptedExtensions) {
+  const absoluteDirectory = path.join(repoDir, relativeDirectory);
+  return fs.readdirSync(absoluteDirectory, { withFileTypes: true }).flatMap((entry) => {
+    const relativePath = path.join(relativeDirectory, entry.name);
+    if (entry.isDirectory()) return repoFilesUnder(relativePath, acceptedExtensions);
+    return acceptedExtensions.includes(path.extname(entry.name)) ? [relativePath] : [];
+  });
+}
+
 const claimPaths = [
   "src/app/layout.tsx",
   "src/app/manifest.ts",
@@ -36,6 +45,11 @@ const claims = Object.fromEntries(
   claimPaths.map((relativePath) => [relativePath, read(relativePath)]),
 );
 const allClaims = Object.values(claims).join("\n");
+
+const staticDocumentationPaths = repoFilesUnder("docs", [".html", ".md"]);
+const staticDocumentationClaims = Object.fromEntries(
+  staticDocumentationPaths.map((relativePath) => [relativePath, readRepo(relativePath)]),
+);
 
 const machineReadablePaths = [
   ...filesUnder("public", [".json", ".txt"]),
@@ -83,6 +97,46 @@ test("public surfaces reject previously audited absolute claims", () => {
   ]) {
     assert.doesNotMatch(allClaims, forbidden);
   }
+});
+
+test("active static documentation rejects audited submission and deployment absolutes", () => {
+  const forbidden = [
+    /works in production without modification/i,
+    /without leaking your keys/i,
+    /If you are in a headless environment, set `PHANTOM_VAULT_PASSPHRASE` before running cloud commands/i,
+    /An email draft was opened/i,
+  ];
+
+  for (const [file, source] of Object.entries(staticDocumentationClaims)) {
+    for (const claim of forbidden) {
+      assert.doesNotMatch(source, claim, file);
+    }
+  }
+});
+
+test("static waitlist reports a mail-app request and never claims a backend submission", () => {
+  const waitlist = staticDocumentationClaims["docs/waitlist.html"];
+  assert.match(waitlist, /A mail app was requested/i);
+  assert.match(waitlist, /no waitlist backend and submitted nothing/i);
+  assert.match(waitlist, /This page sends no request/i);
+  assert.doesNotMatch(waitlist, /window\.open\s*\(/i);
+  assert.doesNotMatch(waitlist, /\b(?:fetch|XMLHttpRequest)\s*\(|<form[^>]+\baction=/i);
+});
+
+test("static guides keep local-vault, cloud-key, and production authority distinct", () => {
+  const troubleshooting = staticDocumentationClaims["docs/troubleshooting.md"];
+  assert.match(troubleshooting, /Phantom Cloud push and pull currently require keychain access/i);
+  assert.match(
+    troubleshooting,
+    /PHANTOM_VAULT_PASSPHRASE[^\n]*local encrypted-file vault[\s\S]{0,180}not a substitute[^\n]*cloud encryption key/i,
+  );
+
+  const codexGuide = staticDocumentationClaims["docs/codex.md"];
+  assert.match(codexGuide, /production runtime must be provisioned separately/i);
+  assert.match(codexGuide, /does not deploy or authorize production credentials/i);
+
+  const landing = staticDocumentationClaims["docs/index.html"];
+  assert.match(landing, /supported API work while reducing credential exposure to agent context/i);
 });
 
 test("machine-readable guidance rejects absolute security guarantees", () => {

@@ -266,7 +266,12 @@ This opens your browser for GitHub OAuth. Once authenticated, your device is lin
 
 ### Cloud push fails with encryption error
 
-Ensure your OS keychain is accessible. The cloud encryption key is stored in your keychain. If you are in a headless environment, set `PHANTOM_VAULT_PASSPHRASE` before running cloud commands.
+Ensure your OS keychain is accessible. The cloud encryption key is stored in that
+keychain, and Phantom Cloud push and pull currently require keychain access.
+`PHANTOM_VAULT_PASSPHRASE` selects the local encrypted-file vault in headless/CI
+environments; it is not a substitute for the separate cloud encryption key. Run
+cloud commands on a machine with the original keychain entry. A headless-only
+cloud-key workflow is not currently shipped.
 
 ### Cloud pull doesn't restore all secrets
 

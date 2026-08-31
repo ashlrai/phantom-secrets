@@ -118,7 +118,13 @@ phantom exec -- codex "finish the Resend integration"
 phantom cloud push
 ```
 
-Codex writes code that references `process.env.RESEND_API_KEY` (or equivalent). That variable holds `phm_...` in the environment. When Codex executes a test call, the proxy swaps the token for the real key. The generated code is correct and works in production without modification.
+Codex writes code that references `process.env.RESEND_API_KEY` (or equivalent).
+Under `phantom exec`, that variable holds a fresh-session `phm_...` token. For a
+supported HTTP SDK route, the local proxy can swap that token when Codex makes a
+test call. The generated environment-variable lookup can remain unchanged, but
+the production runtime must be provisioned separately with the corresponding
+credential or an approved secret-manager integration. Phantom's local proxy
+does not deploy or authorize production credentials.
 
 ---
 
