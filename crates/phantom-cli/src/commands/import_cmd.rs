@@ -48,7 +48,7 @@ pub fn run(
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     let mut imported = 0usize;
     let mut skipped = 0usize;
@@ -248,7 +248,7 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     // Check for existing secrets and prompt unless --force
     let existing: Vec<String> = secrets

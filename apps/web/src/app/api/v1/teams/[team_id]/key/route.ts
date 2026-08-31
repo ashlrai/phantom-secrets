@@ -77,8 +77,19 @@ export async function POST(
       { status: 400 }
     );
   }
-  // 32 bytes base64 = 44 chars (with padding). Reject obvious garbage.
-  if (pk.length < 40 || pk.length > 100) {
+  // X25519 public keys are exactly 32 bytes encoded as canonical padded base64.
+  // A length-only check lets malformed shares poison future team-vault pushes.
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(pk, "base64");
+  } catch {
+    decoded = Buffer.alloc(0);
+  }
+  if (
+    !/^[A-Za-z0-9+/]{43}=$/.test(pk) ||
+    decoded.length !== 32 ||
+    decoded.toString("base64") !== pk
+  ) {
     return Response.json(
       { error: "public_key must be base64-encoded 32 bytes" },
       { status: 400 }

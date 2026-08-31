@@ -23,7 +23,7 @@ pub fn run(oneline: bool) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
     let names = vault.list().context("Failed to list secrets")?;
     let proxy_state = read_proxy_state(&pid_path);
 
@@ -40,7 +40,7 @@ pub fn run(oneline: bool) -> Result<()> {
 
     println!("{}", "Phantom Status".bold().underline());
     println!();
-    println!("  Project ID:  {}", config.phantom.project_id.dimmed());
+    println!("  Project ID:  {}", config.portable_project_id().dimmed());
     println!("  Vault:       {}", vault.backend_name().cyan());
     println!("  Secrets:     {}", names.len().to_string().green().bold());
     println!("  Proxy:       {}", proxy_human(&proxy_state));

@@ -51,7 +51,7 @@ pub fn run(key: &str) -> Result<()> {
                     }
                     println!(
                         "   Vault:  {}",
-                        phantom_vault::create_vault(&cfg.phantom.project_id)
+                        phantom_vault::create_vault(cfg.local_project_id())
                             .backend_name()
                             .cyan()
                     );

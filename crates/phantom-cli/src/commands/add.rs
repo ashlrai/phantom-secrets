@@ -83,7 +83,7 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
 
     // ── Store in vault ───────────────────────────────────────────────
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     // Warn if secret already exists
     if vault

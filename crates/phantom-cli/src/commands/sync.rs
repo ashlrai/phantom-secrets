@@ -40,7 +40,7 @@ async fn run_async(
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     // Cheap precondition check before decrypting anything.
     let secret_names = vault.list().context("Failed to list secrets")?;

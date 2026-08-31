@@ -14,7 +14,9 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (posthog.__loaded) {
-      posthog.capture("$pageview", { $current_url: window.location.href });
+      posthog.capture("$pageview", {
+        $current_url: `${window.location.origin}${pathname}`,
+      });
     }
   }, [pathname]);
 

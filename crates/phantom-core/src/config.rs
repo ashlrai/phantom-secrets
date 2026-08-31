@@ -3,6 +3,7 @@ use crate::leak_correlation::AlertingConfig;
 use crate::rotation_strategy::{RotationSchedule, RotationStrategy};
 use crate::sync::SyncTarget;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::Path;
@@ -16,6 +17,13 @@ use std::path::Path;
 #[serde(deny_unknown_fields)]
 pub struct PhantomConfig {
     pub phantom: PhantomMeta,
+    /// Machine-local namespace for vault, shadow, and scheduler state.
+    ///
+    /// This value is derived from the canonical directory containing
+    /// `.phantom.toml` and is never accepted from or serialized into the
+    /// repository-controlled config file.
+    #[serde(skip)]
+    local_project_id: Option<String>,
     /// Service pattern mappings: service name -> ServiceConfig
     #[serde(default)]
     pub services: BTreeMap<String, ServiceConfig>,
@@ -39,6 +47,28 @@ fn alerting_is_default(cfg: &AlertingConfig) -> bool {
     !cfg.enabled && cfg.backends.is_empty()
 }
 
+/// Validate an identifier before it is used as a cloud/team URL component.
+///
+/// Generated IDs are hexadecimal. Legacy IDs may additionally use `-` and
+/// `_`, but separators, URL metacharacters, whitespace, and Unicode are
+/// rejected so repository config cannot alter an endpoint path or query shape.
+fn validate_portable_project_id(project_id: &str) -> Result<()> {
+    let valid = !project_id.is_empty()
+        && project_id.len() <= 128
+        && project_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+
+    if valid {
+        Ok(())
+    } else {
+        Err(PhantomError::ConfigParseError(
+            "invalid portable project_id: expected 1-128 ASCII letters, digits, '-' or '_'"
+                .to_string(),
+        ))
+    }
+}
+
 /// Cloud vault sync configuration.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
@@ -52,7 +82,11 @@ pub struct CloudConfig {
 #[serde(deny_unknown_fields)]
 pub struct PhantomMeta {
     pub version: String,
-    /// Project identifier (hash of project path, for vault namespacing)
+    /// Portable project identifier used by cloud and team APIs.
+    ///
+    /// This committed value intentionally survives clones and directory moves.
+    /// Machine-local vault and state namespacing uses
+    /// [`PhantomConfig::local_project_id`] instead.
     pub project_id: String,
     /// Global rotation schedule — applies to all secrets unless overridden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -271,7 +305,7 @@ pub fn parse_rotate_every(s: &str) -> Option<RotationSchedule> {
 }
 
 /// Configuration for how a secret maps to an API service.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     /// The env var name holding the secret (e.g., "OPENAI_API_KEY")
@@ -301,6 +335,183 @@ fn default_secret_type() -> String {
     "api_key".to_string()
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TrustedProxyDefinition {
+    name: &'static str,
+    secret_key: &'static str,
+    pattern: &'static str,
+    header: &'static str,
+    header_format: &'static str,
+}
+
+impl TrustedProxyDefinition {
+    fn service_config(self) -> ServiceConfig {
+        ServiceConfig {
+            secret_key: self.secret_key.to_string(),
+            pattern: Some(self.pattern.to_string()),
+            header: Some(self.header.to_string()),
+            header_format: Some(self.header_format.to_string()),
+            secret_type: "api_key".to_string(),
+        }
+    }
+}
+
+/// The sole authority for repository-configurable built-in proxy routes.
+///
+/// Both config defaults and CLI init auto-detection consume this registry, and
+/// agentic validation requires full [`ServiceConfig`] equality with an entry.
+/// Keep names, destinations, headers, and formats exact: changing any one of
+/// them changes the trusted network capability.
+const TRUSTED_PROXY_SERVICES: &[TrustedProxyDefinition] = &[
+    TrustedProxyDefinition {
+        name: "openai",
+        secret_key: "OPENAI_API_KEY",
+        pattern: "api.openai.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "anthropic",
+        secret_key: "ANTHROPIC_API_KEY",
+        pattern: "api.anthropic.com",
+        header: "x-api-key",
+        header_format: "{secret}",
+    },
+    TrustedProxyDefinition {
+        name: "stripe",
+        secret_key: "STRIPE_SECRET_KEY",
+        pattern: "api.stripe.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "stripe_pub",
+        secret_key: "STRIPE_PUBLISHABLE_KEY",
+        pattern: "api.stripe.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "supabase",
+        secret_key: "SUPABASE_SERVICE_ROLE_KEY",
+        pattern: "supabase.co",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "supabase_anon",
+        secret_key: "SUPABASE_ANON_KEY",
+        pattern: "supabase.co",
+        header: "apikey",
+        header_format: "{secret}",
+    },
+    TrustedProxyDefinition {
+        name: "resend",
+        secret_key: "RESEND_API_KEY",
+        pattern: "api.resend.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "sendgrid",
+        secret_key: "SENDGRID_API_KEY",
+        pattern: "api.sendgrid.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "twilio",
+        secret_key: "TWILIO_AUTH_TOKEN",
+        pattern: "api.twilio.com",
+        header: "Authorization",
+        header_format: "Basic {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "cloudflare",
+        secret_key: "CLOUDFLARE_API_TOKEN",
+        pattern: "api.cloudflare.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "github_api",
+        secret_key: "GITHUB_TOKEN",
+        pattern: "api.github.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "pinecone",
+        secret_key: "PINECONE_API_KEY",
+        pattern: "pinecone.io",
+        header: "Api-Key",
+        header_format: "{secret}",
+    },
+    TrustedProxyDefinition {
+        name: "replicate",
+        secret_key: "REPLICATE_API_TOKEN",
+        pattern: "api.replicate.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "xai",
+        secret_key: "XAI_API_KEY",
+        pattern: "api.x.ai",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "mistral",
+        secret_key: "MISTRAL_API_KEY",
+        pattern: "api.mistral.ai",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "perplexity",
+        secret_key: "PERPLEXITY_API_KEY",
+        pattern: "api.perplexity.ai",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "cohere",
+        secret_key: "COHERE_API_KEY",
+        pattern: "api.cohere.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "huggingface",
+        secret_key: "HUGGINGFACE_API_KEY",
+        pattern: "api-inference.huggingface.co",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "google_ai",
+        secret_key: "GEMINI_API_KEY",
+        pattern: "generativelanguage.googleapis.com",
+        header: "x-goog-api-key",
+        header_format: "{secret}",
+    },
+];
+
+const DEFAULT_PROXY_SERVICE_NAMES: &[&str] = &[
+    "openai",
+    "anthropic",
+    "stripe",
+    "supabase",
+    "xai",
+    "mistral",
+    "perplexity",
+    "cohere",
+    "replicate",
+    "huggingface",
+    "google_ai",
+];
+
 impl PhantomConfig {
     /// Load config from a file path.
     pub fn load(path: &Path) -> Result<Self> {
@@ -311,7 +522,26 @@ impl PhantomConfig {
                 PhantomError::Io(e)
             }
         })?;
-        toml::from_str(&content).map_err(|e| PhantomError::ConfigParseError(e.to_string()))
+        let mut config: Self =
+            toml::from_str(&content).map_err(|e| PhantomError::ConfigParseError(e.to_string()))?;
+        validate_portable_project_id(&config.phantom.project_id)?;
+
+        // `.phantom.toml` is repository-controlled. Its portable project_id is
+        // retained for cloud/team identity, but it must never select
+        // machine-local vault, shadow, or scheduler state. Derive that local
+        // namespace exclusively from the canonical checkout directory.
+        // Non-project TOML fixtures retain a compatibility fallback to the
+        // serialized project ID.
+        if path.file_name().and_then(|name| name.to_str()) == Some(".phantom.toml") {
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let project_dir = std::fs::canonicalize(parent).map_err(PhantomError::Io)?;
+            config.local_project_id = Some(Self::project_id_from_path(&project_dir));
+        }
+
+        Ok(config)
     }
 
     /// Save config to a file path.
@@ -322,53 +552,37 @@ impl PhantomConfig {
         Ok(())
     }
 
+    /// Return an exact trusted built-in proxy definition by service name.
+    pub fn trusted_builtin_proxy_service(name: &str) -> Option<ServiceConfig> {
+        TRUSTED_PROXY_SERVICES
+            .iter()
+            .find(|definition| definition.name == name)
+            .copied()
+            .map(TrustedProxyDefinition::service_config)
+    }
+
+    /// Return the trusted service name and exact proxy definition for an
+    /// auto-detectable environment key.
+    pub fn trusted_builtin_proxy_service_for_secret(
+        secret_key: &str,
+    ) -> Option<(&'static str, ServiceConfig)> {
+        TRUSTED_PROXY_SERVICES
+            .iter()
+            .find(|definition| definition.secret_key == secret_key)
+            .copied()
+            .map(|definition| (definition.name, definition.service_config()))
+    }
+
     /// Create a new config with default service patterns and a project ID.
     pub fn new_with_defaults(project_id: String) -> Self {
-        let mut services = BTreeMap::new();
-
-        services.insert(
-            "openai".to_string(),
-            ServiceConfig {
-                secret_key: "OPENAI_API_KEY".to_string(),
-                pattern: Some("api.openai.com".to_string()),
-                header: Some("Authorization".to_string()),
-                header_format: Some("Bearer {secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
-
-        services.insert(
-            "anthropic".to_string(),
-            ServiceConfig {
-                secret_key: "ANTHROPIC_API_KEY".to_string(),
-                pattern: Some("api.anthropic.com".to_string()),
-                header: Some("x-api-key".to_string()),
-                header_format: Some("{secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
-
-        services.insert(
-            "stripe".to_string(),
-            ServiceConfig {
-                secret_key: "STRIPE_SECRET_KEY".to_string(),
-                pattern: Some("api.stripe.com".to_string()),
-                header: Some("Authorization".to_string()),
-                header_format: Some("Bearer {secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
-
-        services.insert(
-            "supabase".to_string(),
-            ServiceConfig {
-                secret_key: "SUPABASE_SERVICE_ROLE_KEY".to_string(),
-                pattern: Some("supabase.co".to_string()),
-                header: Some("Authorization".to_string()),
-                header_format: Some("Bearer {secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
+        let mut services: BTreeMap<String, ServiceConfig> = DEFAULT_PROXY_SERVICE_NAMES
+            .iter()
+            .map(|name| {
+                let service = Self::trusted_builtin_proxy_service(name)
+                    .expect("default proxy services must exist in the trusted registry");
+                ((*name).to_string(), service)
+            })
+            .collect();
 
         services.insert(
             "database".to_string(),
@@ -381,95 +595,14 @@ impl PhantomConfig {
             },
         );
 
-        // Additional first-class AI providers — every popular model API
-        // ships with default routing so users don't need to hand-author
-        // .phantom.toml entries for the common case.
-
-        services.insert(
-            "xai".to_string(),
-            ServiceConfig {
-                secret_key: "XAI_API_KEY".to_string(),
-                pattern: Some("api.x.ai".to_string()),
-                header: Some("Authorization".to_string()),
-                header_format: Some("Bearer {secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
-
-        services.insert(
-            "mistral".to_string(),
-            ServiceConfig {
-                secret_key: "MISTRAL_API_KEY".to_string(),
-                pattern: Some("api.mistral.ai".to_string()),
-                header: Some("Authorization".to_string()),
-                header_format: Some("Bearer {secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
-
-        services.insert(
-            "perplexity".to_string(),
-            ServiceConfig {
-                secret_key: "PERPLEXITY_API_KEY".to_string(),
-                pattern: Some("api.perplexity.ai".to_string()),
-                header: Some("Authorization".to_string()),
-                header_format: Some("Bearer {secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
-
-        services.insert(
-            "cohere".to_string(),
-            ServiceConfig {
-                secret_key: "COHERE_API_KEY".to_string(),
-                pattern: Some("api.cohere.com".to_string()),
-                header: Some("Authorization".to_string()),
-                header_format: Some("Bearer {secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
-
-        services.insert(
-            "replicate".to_string(),
-            ServiceConfig {
-                secret_key: "REPLICATE_API_TOKEN".to_string(),
-                pattern: Some("api.replicate.com".to_string()),
-                header: Some("Authorization".to_string()),
-                // Replicate uses "Token <key>" not "Bearer <key>"
-                header_format: Some("Token {secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
-
-        services.insert(
-            "huggingface".to_string(),
-            ServiceConfig {
-                secret_key: "HUGGINGFACE_API_KEY".to_string(),
-                pattern: Some("api-inference.huggingface.co".to_string()),
-                header: Some("Authorization".to_string()),
-                header_format: Some("Bearer {secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
-
-        services.insert(
-            "google_ai".to_string(),
-            ServiceConfig {
-                secret_key: "GEMINI_API_KEY".to_string(),
-                pattern: Some("generativelanguage.googleapis.com".to_string()),
-                header: Some("x-goog-api-key".to_string()),
-                header_format: Some("{secret}".to_string()),
-                secret_type: "api_key".to_string(),
-            },
-        );
-
         Self {
             phantom: PhantomMeta {
                 version: "1".to_string(),
-                project_id,
+                project_id: project_id.clone(),
                 rotation_policy: None,
                 secrets: BTreeMap::new(),
             },
+            local_project_id: Some(project_id),
             services,
             sync: Vec::new(),
             cloud: None,
@@ -494,16 +627,60 @@ impl PhantomConfig {
         self.phantom.rotation_policy.clone()
     }
 
-    /// Generate a stable project ID from a directory path.
-    /// Uses FNV-1a (64-bit) which is deterministic across Rust versions and platforms.
+    /// Generate a collision-resistant, machine-local project ID from a directory path.
+    ///
+    /// The platform tag and raw platform path encoding are domain-separated before
+    /// hashing so distinct non-UTF-8 Unix paths cannot collapse through lossy string
+    /// conversion. Local state is intentionally not portable across operating systems.
     pub fn project_id_from_path(path: &Path) -> String {
-        let bytes = path.to_string_lossy().as_bytes().to_vec();
-        let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
-        for byte in &bytes {
-            hash ^= *byte as u64;
-            hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+        // Resolve existing paths first so initialization and later config loads
+        // agree even when the working directory traverses a platform symlink
+        // (for example `/var` -> `/private/var` on macOS). For non-existing
+        // fixture paths, retain the deterministic lexical fallback.
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"phantom-local-project-v2\0");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            hasher.update(b"unix\0");
+            hasher.update(canonical.as_os_str().as_bytes());
         }
-        format!("{:016x}", hash)
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            hasher.update(b"windows\0");
+            for unit in canonical.as_os_str().encode_wide() {
+                hasher.update(unit.to_le_bytes());
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            hasher.update(b"other\0");
+            hasher.update(canonical.to_string_lossy().as_bytes());
+        }
+
+        hex::encode(hasher.finalize())
+    }
+
+    /// Return the canonical-path-derived namespace for machine-local state.
+    ///
+    /// Configs deserialized directly from TOML (rather than loaded from a
+    /// `.phantom.toml` path) fall back to the portable ID for compatibility
+    /// with tests and embedding callers that have no checkout path.
+    pub fn local_project_id(&self) -> &str {
+        self.local_project_id
+            .as_deref()
+            .unwrap_or(&self.phantom.project_id)
+    }
+
+    /// Return the committed project identity used by cloud and team APIs.
+    pub fn portable_project_id(&self) -> &str {
+        &self.phantom.project_id
     }
 
     /// Get service configs that have proxy patterns (API key type).
@@ -522,6 +699,31 @@ impl PhantomConfig {
             .filter(|(_, c)| c.secret_type == "connection_string")
             .map(|(name, config)| (name.as_str(), config))
             .collect()
+    }
+
+    /// Reject repository-authored proxy destinations that have not passed a
+    /// machine-local trust decision. The v1 config format has no such approval
+    /// ledger, so agentic proxy sessions are restricted to Phantom's exact
+    /// built-in route definitions. Custom gateways can be added in a future
+    /// format only with a value-blind, local approval record.
+    pub fn validate_agentic_proxy_routes(&self) -> Result<()> {
+        for (name, service) in &self.services {
+            if let Some(expected) = Self::trusted_builtin_proxy_service(name) {
+                if service != &expected {
+                    return Err(PhantomError::ConfigParseError(format!(
+                        "proxy service `{name}` differs from Phantom's trusted built-in route"
+                    )));
+                }
+                continue;
+            }
+
+            if service.pattern.is_some() && service.secret_type == "api_key" {
+                return Err(PhantomError::ConfigParseError(format!(
+                    "custom proxy service `{name}` is not approved for agentic execution"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Advisory risk analysis for service routing.
@@ -611,37 +813,17 @@ impl PhantomConfig {
 }
 
 fn expected_pattern_for_service(name: &str) -> Option<&'static str> {
-    match name {
-        "openai" => Some("api.openai.com"),
-        "anthropic" => Some("api.anthropic.com"),
-        "stripe" => Some("api.stripe.com"),
-        "supabase" => Some("supabase.co"),
-        "xai" => Some("api.x.ai"),
-        "mistral" => Some("api.mistral.ai"),
-        "perplexity" => Some("api.perplexity.ai"),
-        "cohere" => Some("api.cohere.com"),
-        "replicate" => Some("api.replicate.com"),
-        "huggingface" => Some("api-inference.huggingface.co"),
-        "google_ai" => Some("generativelanguage.googleapis.com"),
-        _ => None,
-    }
+    TRUSTED_PROXY_SERVICES
+        .iter()
+        .find(|definition| definition.name == name)
+        .map(|definition| definition.pattern)
 }
 
 fn expected_pattern_for_secret(secret_key: &str) -> Option<&'static str> {
-    match secret_key {
-        "OPENAI_API_KEY" => Some("api.openai.com"),
-        "ANTHROPIC_API_KEY" => Some("api.anthropic.com"),
-        "STRIPE_SECRET_KEY" => Some("api.stripe.com"),
-        "SUPABASE_SERVICE_ROLE_KEY" => Some("supabase.co"),
-        "XAI_API_KEY" => Some("api.x.ai"),
-        "MISTRAL_API_KEY" => Some("api.mistral.ai"),
-        "PERPLEXITY_API_KEY" => Some("api.perplexity.ai"),
-        "COHERE_API_KEY" => Some("api.cohere.com"),
-        "REPLICATE_API_TOKEN" => Some("api.replicate.com"),
-        "HUGGINGFACE_API_KEY" => Some("api-inference.huggingface.co"),
-        "GEMINI_API_KEY" => Some("generativelanguage.googleapis.com"),
-        _ => None,
-    }
+    TRUSTED_PROXY_SERVICES
+        .iter()
+        .find(|definition| definition.secret_key == secret_key)
+        .map(|definition| definition.pattern)
 }
 
 fn is_local_or_private_host(host: &str) -> bool {
@@ -693,6 +875,8 @@ mod tests {
         let config = PhantomConfig::new_with_defaults("test123".to_string());
         assert_eq!(config.phantom.version, "1");
         assert_eq!(config.phantom.project_id, "test123");
+        assert_eq!(config.portable_project_id(), "test123");
+        assert_eq!(config.local_project_id(), "test123");
         assert!(config.services.contains_key("openai"));
         assert!(config.services.contains_key("anthropic"));
         assert!(config.services.contains_key("stripe"));
@@ -716,11 +900,274 @@ mod tests {
     }
 
     #[test]
+    fn project_config_preserves_portable_identity_across_clone_or_move() {
+        let first = tempfile::TempDir::new().unwrap();
+        let second = tempfile::TempDir::new().unwrap();
+        let first_root = std::fs::canonicalize(first.path()).unwrap();
+        let second_root = std::fs::canonicalize(second.path()).unwrap();
+        let portable_id = PhantomConfig::project_id_from_path(&first_root);
+        let config = PhantomConfig::new_with_defaults(portable_id.clone());
+        let content = toml::to_string_pretty(&config).unwrap();
+        let first_path = first.path().join(".phantom.toml");
+        let second_path = second.path().join(".phantom.toml");
+        std::fs::write(&first_path, &content).unwrap();
+        std::fs::write(&second_path, &content).unwrap();
+
+        let first_config = PhantomConfig::load(&first_path).unwrap();
+        let second_config = PhantomConfig::load(&second_path).unwrap();
+
+        assert_eq!(first_config.portable_project_id(), portable_id);
+        assert_eq!(second_config.portable_project_id(), portable_id);
+        assert_eq!(
+            first_config.local_project_id(),
+            PhantomConfig::project_id_from_path(&first_root)
+        );
+        assert_eq!(
+            second_config.local_project_id(),
+            PhantomConfig::project_id_from_path(&second_root)
+        );
+        assert_ne!(
+            first_config.local_project_id(),
+            second_config.local_project_id()
+        );
+    }
+
+    #[test]
+    fn saving_loaded_project_config_preserves_only_portable_identity() {
+        let project = tempfile::TempDir::new().unwrap();
+        let portable_id = "0123456789abcdef";
+        let config = PhantomConfig::new_with_defaults(portable_id.to_string());
+        let config_path = project.path().join(".phantom.toml");
+        config.save(&config_path).unwrap();
+
+        let loaded = PhantomConfig::load(&config_path).unwrap();
+        assert_eq!(loaded.portable_project_id(), portable_id);
+        assert_ne!(loaded.local_project_id(), portable_id);
+        loaded.save(&config_path).unwrap();
+
+        let saved = std::fs::read_to_string(&config_path).unwrap();
+        assert!(saved.contains("project_id = \"0123456789abcdef\""));
+        assert!(!saved.contains("local_project_id"));
+        let reparsed: PhantomConfig = toml::from_str(&saved).unwrap();
+        assert_eq!(reparsed.portable_project_id(), portable_id);
+    }
+
+    #[test]
+    fn repository_project_id_cannot_select_another_local_namespace() {
+        let victim = tempfile::TempDir::new().unwrap();
+        let attacker = tempfile::TempDir::new().unwrap();
+        let victim_root = std::fs::canonicalize(victim.path()).unwrap();
+        let attacker_root = std::fs::canonicalize(attacker.path()).unwrap();
+        let victim_local_id = PhantomConfig::project_id_from_path(&victim_root);
+        let attacker_local_id = PhantomConfig::project_id_from_path(&attacker_root);
+        let malicious_config = PhantomConfig::new_with_defaults(victim_local_id.clone());
+        let config_path = attacker.path().join(".phantom.toml");
+        malicious_config.save(&config_path).unwrap();
+
+        let loaded = PhantomConfig::load(&config_path).unwrap();
+        assert_eq!(loaded.portable_project_id(), victim_local_id);
+        assert_eq!(loaded.local_project_id(), attacker_local_id);
+        assert_ne!(loaded.local_project_id(), loaded.portable_project_id());
+    }
+
+    #[test]
+    fn project_id_from_path_is_deterministic_collision_resistant_hex() {
+        let project = tempfile::TempDir::new().unwrap();
+        let first = PhantomConfig::project_id_from_path(project.path());
+        let second = PhantomConfig::project_id_from_path(project.path());
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn legacy_fnv_portable_id_cannot_select_the_local_namespace() {
+        fn legacy_fnv_id(path: &Path) -> String {
+            let canonical = std::fs::canonicalize(path).unwrap();
+            let mut hash: u64 = 0xcbf29ce484222325;
+            for byte in canonical.to_string_lossy().as_bytes() {
+                hash ^= *byte as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            format!("{hash:016x}")
+        }
+
+        let project = tempfile::TempDir::new().unwrap();
+        let legacy_id = legacy_fnv_id(project.path());
+        let config_path = project.path().join(".phantom.toml");
+        PhantomConfig::new_with_defaults(legacy_id.clone())
+            .save(&config_path)
+            .unwrap();
+
+        let loaded = PhantomConfig::load(&config_path).unwrap();
+        assert_eq!(loaded.portable_project_id(), legacy_id);
+        assert_eq!(
+            loaded.local_project_id(),
+            PhantomConfig::project_id_from_path(project.path())
+        );
+        assert_ne!(loaded.local_project_id(), loaded.portable_project_id());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_paths_do_not_collapse_through_lossy_conversion() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let parent = tempfile::TempDir::new().unwrap();
+        let first = parent.path().join(OsString::from_vec(vec![b'p', 0xff]));
+        let second = parent.path().join(OsString::from_vec(vec![b'p', 0xfe]));
+
+        assert_ne!(
+            PhantomConfig::project_id_from_path(&first),
+            PhantomConfig::project_id_from_path(&second)
+        );
+    }
+
+    #[test]
+    fn project_config_rejects_path_and_url_component_project_ids() {
+        let project = tempfile::TempDir::new().unwrap();
+        let config_path = project.path().join(".phantom.toml");
+        let invalid_ids = [
+            "",
+            ".",
+            "..",
+            "../victim",
+            "..\\victim",
+            "/absolute",
+            "C:\\absolute",
+            "nested/project",
+            "project?admin=true",
+            "project#fragment",
+            "project%2Fvictim",
+            "project name",
+            "project\nname",
+            "prójèct",
+        ];
+
+        for project_id in invalid_ids {
+            let config = PhantomConfig::new_with_defaults(project_id.to_string());
+            config.save(&config_path).unwrap();
+            let error = PhantomConfig::load(&config_path).unwrap_err().to_string();
+            assert!(
+                error.contains("invalid portable project_id"),
+                "unsafe project ID produced an unexpected error: {project_id:?}: {error}"
+            );
+        }
+
+        let oversized = "a".repeat(129);
+        let config = PhantomConfig::new_with_defaults(oversized);
+        config.save(&config_path).unwrap();
+        assert!(PhantomConfig::load(&config_path)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid portable project_id"));
+    }
+
+    #[test]
+    fn project_config_accepts_portable_project_id_character_set() {
+        let project = tempfile::TempDir::new().unwrap();
+        let config_path = project.path().join(".phantom.toml");
+        let portable_id = format!("A-z_9-{}", "x".repeat(122));
+        assert_eq!(portable_id.len(), 128);
+        PhantomConfig::new_with_defaults(portable_id.clone())
+            .save(&config_path)
+            .unwrap();
+
+        let loaded = PhantomConfig::load(&config_path).unwrap();
+        assert_eq!(loaded.portable_project_id(), portable_id);
+    }
+
+    #[test]
+    fn agentic_proxy_routes_require_exact_built_in_definitions() {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        assert!(config.validate_agentic_proxy_routes().is_ok());
+
+        config.services.get_mut("openai").unwrap().pattern = Some("attacker.example".to_string());
+        assert!(config.validate_agentic_proxy_routes().is_err());
+
+        let mut custom = PhantomConfig::new_with_defaults("test".to_string());
+        custom.services.insert(
+            "custom".to_string(),
+            ServiceConfig {
+                secret_key: "CUSTOM_API_KEY".to_string(),
+                pattern: Some("custom.example".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+        assert!(custom.validate_agentic_proxy_routes().is_err());
+    }
+
+    #[test]
+    fn trusted_proxy_registry_accepts_only_complete_canonical_definitions() {
+        for definition in TRUSTED_PROXY_SERVICES {
+            let exact = definition.service_config();
+            let mut config = PhantomConfig::new_with_defaults("test".to_string());
+            config.services.clear();
+            config
+                .services
+                .insert(definition.name.to_string(), exact.clone());
+            assert!(
+                config.validate_agentic_proxy_routes().is_ok(),
+                "canonical {} route should be trusted",
+                definition.name
+            );
+
+            for altered in [
+                ServiceConfig {
+                    pattern: Some("attacker.example".to_string()),
+                    ..exact.clone()
+                },
+                ServiceConfig {
+                    secret_key: "DIFFERENT_SECRET".to_string(),
+                    ..exact.clone()
+                },
+                ServiceConfig {
+                    header: Some("X-Different".to_string()),
+                    ..exact.clone()
+                },
+                ServiceConfig {
+                    header_format: Some("{secret}-altered".to_string()),
+                    ..exact.clone()
+                },
+                ServiceConfig {
+                    secret_type: "connection_string".to_string(),
+                    ..exact.clone()
+                },
+                ServiceConfig {
+                    pattern: None,
+                    ..exact.clone()
+                },
+            ] {
+                config.services.insert(definition.name.to_string(), altered);
+                assert!(
+                    config.validate_agentic_proxy_routes().is_err(),
+                    "altered {} route must fail closed",
+                    definition.name
+                );
+            }
+        }
+
+        assert_eq!(
+            PhantomConfig::trusted_builtin_proxy_service("replicate")
+                .unwrap()
+                .header_format
+                .as_deref(),
+            Some("Bearer {secret}")
+        );
+    }
+
+    #[test]
     fn test_roundtrip_serialize() {
         let config = PhantomConfig::new_with_defaults("test".to_string());
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.phantom.project_id, "test");
+        assert_eq!(parsed.portable_project_id(), "test");
+        assert_eq!(parsed.local_project_id(), "test");
         assert_eq!(parsed.services.len(), config.services.len());
     }
 
@@ -729,7 +1176,7 @@ mod tests {
         let id1 = PhantomConfig::project_id_from_path(Path::new("/home/user/project-a"));
         let id2 = PhantomConfig::project_id_from_path(Path::new("/home/user/project-b"));
         assert_ne!(id1, id2);
-        assert_eq!(id1.len(), 16);
+        assert_eq!(id1.len(), 64);
     }
 
     #[test]

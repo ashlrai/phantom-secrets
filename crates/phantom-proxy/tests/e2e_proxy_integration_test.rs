@@ -726,7 +726,7 @@ async fn test_proxy_forces_identity_and_rejects_encoded_upstream_responses() {
             "secret reached downstream for {path}"
         );
         assert!(
-            body.contains("[REDACTED:sk-*]"),
+            body.contains("[REDACTED:vault-secret]"),
             "scrubbing did not run for {path}"
         );
     }
@@ -1317,6 +1317,53 @@ async fn test_rate_limiter_429_response_headers_and_body() {
         0,
         "rate-limited request must not reach upstream"
     );
+
+    proxy.shutdown().await;
+    mock.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_buffered_upstream_response_is_bounded_before_scrubbing() {
+    let mock = ConfigurableMock::start(vec![MockRoute {
+        path_prefix: "/large".to_string(),
+        status: 200,
+        content_type: "application/json".to_string(),
+        body: vec![b'x'; 101],
+        response_headers: Vec::new(),
+    }])
+    .await;
+
+    let mut registry = ServiceRegistry::new();
+    registry.add_route(ServiceRoute {
+        name: "api".to_string(),
+        target_base: format!("http://127.0.0.1:{}", mock.port),
+        secret_key: "API_KEY".to_string(),
+        header: "Authorization".to_string(),
+        header_format: "Bearer {secret}".to_string(),
+    });
+
+    let proxy = ProxyServer::start(
+        ProxyConfig {
+            port: 0,
+            proxy_token: String::new(),
+            max_body_size: 100,
+            ..ProxyConfig::default()
+        },
+        registry,
+        Interceptor::new(HashMap::new()),
+    )
+    .await
+    .unwrap();
+
+    let response = make_client()
+        .get(format!("http://127.0.0.1:{}/api/large", proxy.port()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 502);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("upstream response too large"));
+    assert!(!body.contains(&"x".repeat(20)));
 
     proxy.shutdown().await;
     mock.shutdown().await;

@@ -15,7 +15,7 @@ body:
     attributes:
       label: Phantom version
       description: Output of `phantom --version`
-      placeholder: "phantom 0.7.0"
+      placeholder: "phantom 0.7.1"
     validations:
       required: true
 

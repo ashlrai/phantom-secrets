@@ -49,7 +49,14 @@ Each team member generates a long-lived X25519 keypair. The private key is store
 
 Contains project ID, service mappings (which upstream URLs map to which secret keys), vault backend preference, cloud sync settings, and team configuration. Does not contain secret values.
 
-**Sensitivity:** Low for confidentiality; moderate for integrity. A tampered `.phantom.toml` could redirect the proxy to an attacker-controlled upstream, or remove service mappings causing secrets to stop being injected (denial of service).
+**Sensitivity:** Low for confidentiality; moderate for integrity. Agentic proxy
+execution derives its local vault namespace from a domain-separated SHA-256
+digest of the canonical config directory instead of the committed portable
+project ID, and accepts only exact built-in service routes, so a tampered config
+cannot feasibly select another vault or redirect credentials. The former
+64-bit namespace is not opened automatically. Tampering can still cause denial
+of service or alter non-route behavior, and the file has no cryptographic
+signature.
 
 ### 1.5 The audit log
 
@@ -121,7 +128,7 @@ A malicious or backdoored dependency in the project's software supply chain (npm
 An AI-generated or attacker-controlled pull request that adds or modifies:
 
 - `.env` files to introduce real secrets (instead of phantom tokens).
-- `.phantom.toml` to redirect service mappings to attacker-controlled upstream URLs.
+- `.phantom.toml` to attempt cross-project vault selection or credential routing; current agentic execution ignores the committed portable project ID for local state and rejects any non-built-in or altered proxy route.
 - GitHub Actions workflows or other CI config to capture secrets at runtime.
 
 This actor has write access to the repository contents but not to the developer's local machine or vault.
@@ -148,8 +155,8 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 | Real secret values | Secret injected into non-auth fields (prompt injection via body) | F9 scoping: for JSON bodies, token substitution is restricted to a whitelist of known-secret fields; tokens in `prompt`, `messages`, `content` fields are left as phantom tokens and not substituted | Covered | `crates/phantom-proxy/src/server.rs`, `body_scope.rs`, field-scope tests |
 | Real secret values | Secret injected into non-auth headers (e.g. User-Agent) | F9 scoping: header substitution restricted to auth-bearing headers and the per-route configured header | Covered | `crates/phantom-proxy/src/server.rs`, header-scope tests |
 | Real secret values | Secret leaked in upstream API response back to LLM | Response headers plus buffered and streaming bodies are scanned; configured values and recognized credential formats are redacted before forwarding | Covered for supported proxy paths | `crates/phantom-proxy/src/server.rs`, response leak/scrubber tests |
-| Real secret values | Memory exposure after use | All secret values wrapped in `zeroize::Zeroizing<T>` which overwrites the heap buffer on drop | Covered | `crates/phantom-vault/src/file.rs:88,114`, `crates/phantom-vault/src/keychain.rs:155` |
-| Real secret values | Body too large for safe buffering | JSON and other buffered paths are byte/time bounded; supported text and form bodies use bounded incremental replacement without collecting the full body | Covered for supported paths | `crates/phantom-proxy/src/server.rs`, body-limit and streaming tests |
+| Real secret values | Memory exposure after use | Major vault retrieval, serialization, and decrypted-file buffers use `Zeroizing`; some proxy lookup copies and the file-vault passphrase remain ordinary strings | Partial — defense in depth remains | `crates/phantom-vault/src/file.rs`, `crates/phantom-vault/src/traits.rs`, `crates/phantom-proxy/src/interceptor.rs` |
+| Real secret values | Body too large for safe buffering | Every request body is completely accepted under a hard byte cap before any upstream request starts; buffered upstream responses use the same cap and streaming responses remain memory-bounded | Covered for supported paths | `crates/phantom-proxy/src/server.rs`, oversized request/response and zero-upstream-call tests |
 | Real secret values | Cloud server compromised — server reads plaintext | Vault is encrypted client-side before upload; server stores only ciphertext; encryption key never transmitted | Covered | `crates/phantom-core/src/cloud.rs`, `crates/phantom-vault/src/crypto.rs` |
 | Real secret values | Supply-chain attack injects `.env` real secrets | `phantom check` (including `--staged`) scans for real secret patterns and warns before commit; `pre-commit` hook integration | Covered | `crates/phantom-cli/src/commands/check.rs` (invoked by `phantom check --staged`) |
 | Provider issuance roots | Agent attempts to invoke consent or receive a root through MCP | Provider issuance is exposed through the trusted-terminal `phantom grant` CLI, not an MCP tool; output is metadata-only | Covered for the repository interface | `crates/phantom-cli/src/commands/grant/add.rs`, `crates/phantom-mcp/src/server.rs` |
@@ -162,7 +169,7 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 | Team X25519 private key | Exfiltration from OS keychain | Private key is stored in the native credential store, whose protection depends on platform and session/application policy | Partial — same native-policy limit as real secret values in the credential store |
 | Team X25519 private key | Insider reads another member's private key | Each member's private key never leaves their machine; the team vault push protocol encrypts to public keys only | Covered | `crates/phantom-core/src/team_crypto.rs:109–138` — `seal_sym_key` uses recipient public key only |
 | Team X25519 private key | Key revocation after member leaves team | No automated key-revocation or re-encryption flow exists. Removing a member from the team prevents future pushes encrypting to their key, but does not invalidate past pushes that included them | Not covered — see [§7](#7-known-gaps-and-non-mitigations) |
-| `.phantom.toml` integrity | LLM or PR tampers with service mappings to redirect proxy | No cryptographic integrity protection on `.phantom.toml`. The file is checked into the repository and subject to standard code review. Tampering would require either direct file access or a merged malicious PR | Not covered — relies on code review and filesystem permissions |
+| `.phantom.toml` integrity | LLM or PR tampers with vault selector or service mappings | The local namespace is a domain-separated SHA-256 digest of the canonical directory, independently of the committed portable project ID, and agentic execution accepts only exact built-in route definitions. The former collision-selectable namespace is not reopened automatically. The file is still unsigned, so other tampering can fail the session or alter non-route settings | Covered for practical cross-vault selection and credential redirection; partial overall | `crates/phantom-core/src/config.rs`, CLI config-boundary tests |
 | Audit log | Log tampered or deleted to cover tracks | Signed entries use an HMAC-SHA256 chain, monotonic sequence numbers, and a signed `audit-head.json` checkpoint. `phantom audit verify` fails on malformed lines, modified entries, inserted entries, sequence gaps, missing head checkpoints, and log tail/head mismatches. Deleting both log and checkpoint still requires external evidence | Partial — see [§7](#7-known-gaps-and-non-mitigations) |
 | Audit log | Sensitive values written to log | The log schema has no `value` field; callers are typed to pass `name: Option<&str>` only; a compile-time assertion test verifies the serialized schema contains no `value` key | Covered | `crates/phantom-core/src/audit.rs:36`, test at line 237 |
 | Cloud auth token | GitHub OAuth token stolen | Token stored in OS keychain; attacker with the token can call cloud API but cannot decrypt vault data (separate encryption key) | Partial — OS keychain protection; no second-factor for cloud API calls |
@@ -301,9 +308,16 @@ If an LLM provider incorporates conversation content into training data, phantom
 
 These are security properties that are not yet implemented. They are documented here to be honest with evaluators and to set roadmap expectations.
 
-### 7.1 Audit log tail truncation and deletion require out-of-band evidence
+### 7.1 Audit log rollback still requires out-of-band evidence
 
-The audit log at `~/.phantom/audit.log` is append-only by file-open semantics (`O_APPEND`) and signed entries use an HMAC chain with monotonic sequence numbers. `phantom audit verify` detects malformed JSON, modified entries, inserted entries, prefix deletion, and sequence gaps in the remaining signed log. It still cannot prove that the latest N entries were removed, or that the whole log was deleted, without an external checkpoint or backup of the expected head.
+The audit log at `~/.phantom/audit.log` is append-only by file-open semantics
+(`O_APPEND`), signed entries use an HMAC chain with monotonic sequence numbers,
+and the authenticated head is retained separately. `phantom audit verify` detects
+malformed JSON, modified or inserted entries, prefix and tail truncation, marker
+removal, and whole-log deletion or replacement while that head remains intact.
+An attacker who can delete or roll back both the log and the machine-local head
+can still erase evidence without an external checkpoint or backup of the
+expected head.
 
 ### 7.2 Proxy limits are not identity- or secret-aware anomaly controls
 
@@ -315,7 +329,17 @@ per-secret/use accounting at the authority boundary.
 
 ### 7.3 `.phantom.toml` has no integrity protection
 
-There is no signature or hash commitment on `.phantom.toml`. A malicious PR that adds a service mapping redirecting `openai` → `http://attacker.example.com` would take effect silently on the next `phantom exec`. Mitigations include: code review (current), and a future signed-config mechanism.
+There is no signature or hash commitment on `.phantom.toml`. Agentic execution
+therefore derives the machine-local vault, shadow, and scheduler namespace from
+a domain-separated SHA-256 digest of the canonical directory containing the
+config; the committed `project_id` is a portable cloud/team identity and cannot
+select local state. The former 64-bit namespace is not used as a compatibility
+fallback. Agentic execution
+also rejects any custom or altered proxy route instead of trusting repository
+state with a credential destination. A malicious change can still deny service
+or alter unrelated settings. Supporting custom gateways safely requires a
+future value-blind, machine-local trusted-terminal approval record; code review
+remains required for all other config changes.
 
 ### 7.4 Atomic team offboarding is unavailable
 

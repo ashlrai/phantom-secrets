@@ -141,7 +141,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     // Set up vault, store secrets, backup and rewrite .env
     vault::setup_and_store(
         &real_entries,
-        &phantom_config.phantom.project_id,
+        phantom_config.local_project_id(),
         &env_path,
         &dotenv,
     )?;

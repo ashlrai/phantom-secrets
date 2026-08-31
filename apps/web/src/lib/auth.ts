@@ -1,17 +1,11 @@
 import { createServiceClient } from "./supabase-server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type User } from "@supabase/supabase-js";
 import { createHash } from "crypto";
 
 export interface AuthUser {
   userId: string;
   plan: string;
 }
-
-type BrowserAuthUser = {
-  id: string;
-  email?: string | null;
-  user_metadata?: Record<string, unknown>;
-};
 
 function effectivePlan(user: { plan: string; plan_expires_at?: string | null }) {
   if (
@@ -24,16 +18,29 @@ function effectivePlan(user: { plan: string; plan_expires_at?: string | null }) 
   return user.plan;
 }
 
-function githubLoginForUser(user: BrowserAuthUser): string {
-  const userName = user.user_metadata?.user_name;
-  if (typeof userName === "string" && userName.trim()) return userName.trim();
+/**
+ * Resolve a GitHub login only from the provider identity maintained by
+ * Supabase Auth. `user_metadata` is intentionally excluded because users can
+ * edit it themselves and could otherwise impersonate another GitHub account.
+ */
+export function verifiedGithubLoginForUser(
+  user: Pick<User, "identities">
+): string | null {
+  const githubIdentity = user.identities?.find(
+    (identity) => identity.provider === "github"
+  );
+  const identityData = githubIdentity?.identity_data;
+  const candidate =
+    identityData?.user_name ??
+    identityData?.preferred_username ??
+    identityData?.login;
 
-  const preferredUsername = user.user_metadata?.preferred_username;
-  if (typeof preferredUsername === "string" && preferredUsername.trim()) {
-    return preferredUsername.trim();
+  if (typeof candidate !== "string") return null;
+  const normalized = candidate.trim().replace(/^@+/, "").toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/.test(normalized)) {
+    return null;
   }
-
-  return user.email?.split("@")[0] || "unknown";
+  return normalized;
 }
 
 /**
@@ -108,13 +115,14 @@ export async function authenticateBrowserRequest(
   if (error || !user) return null;
 
   const supabase = createServiceClient();
-  const browserUser = user as BrowserAuthUser;
+  const githubLogin = verifiedGithubLoginForUser(user);
+  if (!githubLogin) return null;
 
   const { error: upsertError } = await supabase.from("users").upsert(
     {
-      id: browserUser.id,
-      github_login: githubLoginForUser(browserUser),
-      email: browserUser.email ?? null,
+      id: user.id,
+      github_login: githubLogin,
+      email: user.email ?? null,
     },
     { onConflict: "id" }
   );
@@ -124,12 +132,12 @@ export async function authenticateBrowserRequest(
   const { data: dbUser } = await supabase
     .from("users")
     .select("plan, plan_expires_at")
-    .eq("id", browserUser.id)
+    .eq("id", user.id)
     .single();
 
   if (!dbUser) return null;
 
-  return { userId: browserUser.id, plan: effectivePlan(dbUser) };
+  return { userId: user.id, plan: effectivePlan(dbUser) };
 }
 
 /**

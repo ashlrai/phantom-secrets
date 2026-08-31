@@ -85,7 +85,10 @@ impl ProxyServer {
             max_body_size: config.max_body_size,
             http_client: reqwest::Client::builder()
                 .danger_accept_invalid_certs(false)
-                .redirect(reqwest::redirect::Policy::limited(5))
+                // Credential-bearing custom headers survive cross-origin
+                // redirects in some HTTP stacks. Never follow upstream
+                // redirects inside the secret-injecting proxy.
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(config.upstream_timeout_secs))
                 .connect_timeout(std::time::Duration::from_secs(config.connect_timeout_secs))
                 .build()?,
@@ -464,114 +467,53 @@ async fn handle_request(
     // client's compression preferences to the upstream.
     outgoing = outgoing.header(reqwest::header::ACCEPT_ENCODING, "identity");
 
-    // Decide streaming vs. buffered based on request content-type.
-    //
-    // Streaming path (text/*, application/x-www-form-urlencoded):
-    //   Feeds the incoming body frame-by-frame through token replacement
-    //   without ever materialising the full payload. A 67-byte carry buffer
-    //   handles tokens that straddle frame boundaries.
-    //
-    // Buffered path (application/json, unknown, binary):
-    //   Collects up to max_body_size, then runs scoped_body_replace.
-    //   JSON gets field-level F9 scoping; everything else passes through
-    //   unchanged. This is the existing behaviour — preserved verbatim.
-    //
-    // Why JSON is excluded from streaming:
-    //   scoped_body_replace for JSON requires a full serde_json parse tree
-    //   to enforce the field-level substitution allowlist (F9). Streaming
-    //   JSON without that tree would bypass F9 and leak secrets into
-    //   non-allowed fields (e.g. prompt/content). We prefer correctness over
-    //   memory savings for the JSON case.
-    if body_scope::should_stream_replace(request_content_type.as_deref()) {
-        // --- Streaming path ---
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(32);
-        let interceptor = state.interceptor.clone();
-        let max_size = state.max_body_size;
-        let mut incoming_body = req.into_body();
-        tokio::spawn(async move {
-            use http_body_util::BodyExt as _;
-            let mut carry: Vec<u8> = Vec::new();
-            let mut total_bytes: usize = 0;
-            loop {
-                match incoming_body.frame().await {
-                    Some(Ok(frame)) => {
-                        if let Ok(data) = frame.into_data() {
-                            total_bytes += data.len();
-                            if total_bytes > max_size {
-                                warn!("Streaming request body exceeded limit ({} bytes)", max_size);
-                                break;
-                            }
-                            let ready =
-                                body_scope::stream_replace_frame(&interceptor, &mut carry, &data);
-                            if !ready.is_empty() && tx.send(Ok(Bytes::from(ready))).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    Some(Err(e)) => {
-                        debug!("Streaming request body read error: {}", e);
-                        let _ = tx
-                            .send(Err(std::io::Error::new(
-                                std::io::ErrorKind::BrokenPipe,
-                                e.to_string(),
-                            )))
-                            .await;
-                        break;
-                    }
-                    None => {
-                        let tail = body_scope::stream_replace_flush(&interceptor, carry);
-                        if !tail.is_empty() {
-                            let _ = tx.send(Ok(Bytes::from(tail))).await;
-                        }
-                        break;
-                    }
-                }
-            }
-        });
-        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-        outgoing = outgoing.body(reqwest::Body::wrap_stream(stream));
-        debug!("Streaming request body with token replacement");
-    } else {
-        // --- Buffered path (original behaviour) ---
-        let limited_body = http_body_util::Limited::new(req.into_body(), state.max_body_size);
-        let body_bytes = match limited_body.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("length limit exceeded") {
-                    warn!(
-                        "Request body too large (limit: {} bytes)",
-                        state.max_body_size
-                    );
-                    return Ok(error_response(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        format!(
-                            r#"{{"error":"request body too large","limit":{}}}"#,
-                            state.max_body_size
-                        ),
-                    ));
-                }
-                error!("Failed to read request body: {}", e);
+    // Buffer every request body before contacting the upstream. This is a
+    // deliberate atomicity boundary: streaming a prefix and then discovering
+    // that the body exceeds the cap can cause an upstream mutation to execute
+    // on truncated input. The buffer remains strictly bounded.
+    let limited_body = http_body_util::Limited::new(req.into_body(), state.max_body_size);
+    let body_bytes = match limited_body.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("length limit exceeded") {
+                warn!(
+                    "Request body too large (limit: {} bytes)",
+                    state.max_body_size
+                );
                 return Ok(error_response(
-                    StatusCode::BAD_REQUEST,
-                    r#"{"error":"failed to read request body"}"#,
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!(
+                        r#"{{"error":"request body too large","limit":{}}}"#,
+                        state.max_body_size
+                    ),
                 ));
             }
-        };
-        if !body_bytes.is_empty() {
-            // F9: content-type-scoped substitution. JSON bodies get field-level
-            // replacement on a whitelist of known-secret fields; other
-            // content-types pass through without substitution.
-            let (replaced_body, did_replace) = body_scope::scoped_body_replace(
-                &state.interceptor,
-                request_content_type.as_deref(),
-                &body_bytes,
-            );
-            if did_replace {
-                debug!("Replaced phantom token(s) in request body (scoped)");
-            }
-            outgoing = outgoing.body(replaced_body);
+            error!("Failed to read request body: {}", e);
+            return Ok(error_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"failed to read request body"}"#,
+            ));
         }
+    };
+    if !body_bytes.is_empty() {
+        let (replaced_body, did_replace) =
+            if body_scope::should_stream_replace(request_content_type.as_deref()) {
+                // Text and form bodies used the streaming replacer before the
+                // atomicity fix. Preserve their substitution semantics after
+                // the complete bounded body has been accepted.
+                state.interceptor.replace_in_bytes(&body_bytes)
+            } else {
+                body_scope::scoped_body_replace(
+                    &state.interceptor,
+                    request_content_type.as_deref(),
+                    &body_bytes,
+                )
+            };
+        if did_replace {
+            debug!("Replaced phantom token(s) in bounded request body");
+        }
+        outgoing = outgoing.body(replaced_body);
     }
 
     // Send the request
@@ -707,17 +649,43 @@ async fn handle_request(
         let body = BoxBody::Right(StreamBody::new(stream));
         Ok(builder.body(body).unwrap())
     } else {
-        // Non-streaming: buffer, scrub secrets, and forward.
-        let response_body = match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                error!("Failed to read response body: {}", e);
+        // Non-streaming: buffer, scrub secrets, and forward. Apply the same
+        // hard byte cap used for inbound bodies so a compromised upstream
+        // cannot exhaust the local proxy before redaction runs.
+        let mut response_body = Vec::new();
+        let mut response_stream = response.bytes_stream();
+        while let Some(chunk_result) = response_stream.next().await {
+            let chunk = match chunk_result {
+                Ok(chunk) => chunk,
+                Err(e) => {
+                    error!("Failed to read response body: {}", e);
+                    return Ok(error_response(
+                        StatusCode::BAD_GATEWAY,
+                        r#"{"error":"failed to read upstream response"}"#,
+                    ));
+                }
+            };
+            let Some(next_len) = response_body.len().checked_add(chunk.len()) else {
                 return Ok(error_response(
                     StatusCode::BAD_GATEWAY,
-                    r#"{"error":"failed to read upstream response"}"#,
+                    r#"{"error":"upstream response too large"}"#,
+                ));
+            };
+            if next_len > state.max_body_size {
+                warn!(
+                    "Upstream response too large for service {} (limit: {} bytes)",
+                    route.name, state.max_body_size
+                );
+                return Ok(error_response(
+                    StatusCode::BAD_GATEWAY,
+                    format!(
+                        r#"{{"error":"upstream response too large","limit":{}}}"#,
+                        state.max_body_size
+                    ),
                 ));
             }
-        };
+            response_body.extend_from_slice(&chunk);
+        }
 
         let (final_body, scrub_event) =
             resp_scrubber.scrub_buffered(response_content_type.as_deref(), &response_body);
@@ -1400,10 +1368,18 @@ mod tests {
 
         let client = reqwest::Client::new();
 
-        // Send a request with body exceeding the limit
-        let large_body = "x".repeat(200);
+        // Exercise the formerly streaming text path with a chunked body. The
+        // proxy must reject the complete request atomically, before opening an
+        // upstream request or forwarding a truncated prefix.
+        let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(2);
+        body_tx.send(Ok(Bytes::from("x".repeat(60)))).await.unwrap();
+        body_tx.send(Ok(Bytes::from("y".repeat(60)))).await.unwrap();
+        drop(body_tx);
+        let large_body =
+            reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx));
         let resp = client
             .post(format!("http://127.0.0.1:{}/testapi/v1/data", proxy.port()))
+            .header("content-type", "text/plain")
             .body(large_body)
             .send()
             .await
@@ -1412,9 +1388,99 @@ mod tests {
         assert_eq!(resp.status(), 413);
         let body = resp.text().await.unwrap();
         assert!(body.contains("request body too large"));
+        assert!(
+            mock.get_requests().is_empty(),
+            "oversized request must make zero upstream calls"
+        );
 
         proxy.shutdown().await;
         mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_proxy_does_not_follow_upstream_redirects() {
+        let redirect_target = crate::test_server::MockServer::start().await;
+        let redirect_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirect_port = redirect_listener.local_addr().unwrap().port();
+        let target_url = format!(
+            "http://127.0.0.1:{}/credential-capture",
+            redirect_target.port
+        );
+        let redirect_handle = tokio::spawn(async move {
+            let (stream, _) = redirect_listener.accept().await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(
+                    io,
+                    hyper::service::service_fn(move |_req| {
+                        let location = target_url.clone();
+                        async move {
+                            Ok::<_, hyper::Error>(
+                                hyper::Response::builder()
+                                    .status(StatusCode::FOUND)
+                                    .header("location", location)
+                                    .body(http_body_util::Full::new(Bytes::new()))
+                                    .unwrap(),
+                            )
+                        }
+                    }),
+                )
+                .await
+                .unwrap();
+        });
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "redirectapi".to_string(),
+            target_base: format!("http://127.0.0.1:{redirect_port}"),
+            secret_key: "REDIRECT_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+        let mut named = HashMap::new();
+        named.insert(
+            "REDIRECT_KEY".to_string(),
+            "sk-must-not-cross-redirect".to_string(),
+        );
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_with_named(HashMap::new(), named),
+        )
+        .await
+        .unwrap();
+
+        // Disable redirects on the caller too, so the assertion observes the
+        // proxy's upstream response rather than following Location itself.
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let response = client
+            .get(format!(
+                "http://127.0.0.1:{}/redirectapi/v1/start",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert!(response.headers().contains_key("location"));
+        assert!(
+            redirect_target.get_requests().is_empty(),
+            "proxy followed a redirect and contacted the credential-capture target"
+        );
+
+        drop(response);
+        proxy.shutdown().await;
+        redirect_handle.abort();
+        let _ = redirect_handle.await;
+        redirect_target.shutdown().await;
     }
 
     // -----------------------------------------------------------------------
@@ -1602,7 +1668,7 @@ mod tests {
             "real secret leaked through SSE response scrubber: {body_text}"
         );
         assert!(
-            body_text.contains("[REDACTED:sk-*]"),
+            body_text.contains("[REDACTED:vault-secret]"),
             "redaction marker not present after SSE response scrub: {body_text}"
         );
 
@@ -1671,7 +1737,10 @@ mod tests {
         ))
         .await
         .unwrap();
-        assert_eq!(response.headers()["x-debug-secret"], "[REDACTED:sk-*]");
+        assert_eq!(
+            response.headers()["x-debug-secret"],
+            "[REDACTED:vault-secret]"
+        );
         let body = response.text().await.unwrap();
         assert!(!body.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
         assert!(body.contains("[REDACTED:ghp_*]"));

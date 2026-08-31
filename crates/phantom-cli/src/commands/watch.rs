@@ -129,7 +129,7 @@ fn check_and_rotate(config_path: &Path, env_path: &Path) {
         Err(_) => return,
     };
 
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
     let names = match vault.list() {
         Ok(n) => n,
         Err(_) => return,
@@ -287,7 +287,7 @@ fn handle_env_change(env_path: &Path, config_path: &Path, auto: bool) {
 
     if auto {
         if let Ok(config) = PhantomConfig::load(config_path) {
-            let vault = phantom_vault::create_vault(&config.phantom.project_id);
+            let vault = phantom_vault::create_vault(config.local_project_id());
             let mut token_map = TokenMap::new();
 
             for entry in &new_secrets {

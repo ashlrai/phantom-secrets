@@ -13,6 +13,19 @@ Phantom is still pre-1.0, so security support is focused on the current release 
 | Older release lines before `0.7.x` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
 | Forks, unofficial builds, or modified binaries | Not supported | Maintainers cannot verify the provenance or behavior of modified distributions. |
 
+### Urgent 0.7.0 upgrade notice
+
+`0.7.0` is superseded by the `0.7.1` security fix-forward. Upgrade before using
+Phantom Cloud, team-vault, local proxy, protected connection-string,
+provider-rotation, or agent execution workflows. The immutable `0.7.0` release
+remains available as historical evidence and will not be edited in place.
+
+The local vault namespace changes in `0.7.1`. For an offline-only `0.7.0`
+checkout, create an encrypted `phantom export --output FILE` backup from a
+trusted terminal before upgrading, then restore it with `phantom import FILE`.
+Cloud/team users may instead restore through an encrypted pull. Phantom does
+not automatically reopen the former 64-bit local namespace.
+
 ## Reporting a Vulnerability
 
 Please report suspected vulnerabilities privately. Do not open a public GitHub issue for a security report.
@@ -99,12 +112,12 @@ Phantom narrows the risk of AI agents seeing real secrets, but it is not a compl
 
 - A compromised operating system, root/admin attacker, malicious debugger, or replaced `phantom` binary can defeat local protections.
 - `PHANTOM_PROXY_TOKEN` is exposed to the `phantom exec` child process by design. A compromised child process can use the local proxy until the session ends.
-- `.phantom.toml` does not have cryptographic integrity protection. Treat service-route changes as security-sensitive code review items.
+- `.phantom.toml` does not have cryptographic integrity protection. Agentic proxy execution therefore accepts only exact built-in service routes and binds the project ID to the config directory; custom route approval is not yet supported.
 - Audit logging is opt-in and local by default. It cannot prove deletion of both the audit log and its local checkpoint without external evidence.
 - Team member removal does not retroactively revoke access to vault pushes that were encrypted to that member before removal. Rotate affected secrets after offboarding.
 - Provider-grant issuance requires a human provider-consent flow and separately configured provider application. Source and mock tests do not prove live provider, renewal, or customer acceptance.
 - `phantom grant revoke` currently fails closed before local mutation because remote revocation is not wired for the supported providers.
 - A provider grant is credential lifecycle state, not an execution-kernel authority grant. It cannot activate Locus verification, a broker lease, or production engineering execution.
-- The published `v0.6.0` assets rely on checksums and trusted distribution channels. The `v0.7.0` release workflow defines six archive-specific SPDX SBOMs and GitHub attestations, but those controls do not exist until the exact tagged workflow succeeds. Independent signatures, macOS notarization, Windows Authenticode, and exact-archive native acceptance remain open.
+- GitHub immutable releases, checksums, archive-specific SPDX SBOMs, and GitHub attestations protect the published `v0.7.x` release artifacts. Installers and the self-updater verify checksums but do not yet verify attestations directly. Independent signatures, macOS notarization, Windows Authenticode, and exact-archive native acceptance remain open.
 
 See [THREAT_MODEL.md](./THREAT_MODEL.md#7-known-gaps-and-non-mitigations) for the full list of known gaps and non-mitigations.

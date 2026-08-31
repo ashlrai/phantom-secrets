@@ -6,13 +6,13 @@ use std::collections::BTreeMap;
 use zeroize::Zeroize;
 
 pub fn run_push() -> Result<()> {
-    let token = auth::require_token()?;
     let api_base = auth::api_base_url()?;
+    let token = auth::require_token()?;
 
     let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
         .context("No .phantom.toml found. Run `phantom init` first.")?;
 
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
     let secret_names = vault.list()?;
 
     if secret_names.is_empty() {
@@ -51,7 +51,7 @@ pub fn run_push() -> Result<()> {
     let new_version = rt.block_on(cloud::push(
         &api_base,
         &token,
-        &config.phantom.project_id,
+        config.portable_project_id(),
         &blob_b64,
         expected_version,
     ))?;
@@ -73,13 +73,13 @@ pub fn run_push() -> Result<()> {
 }
 
 pub fn run_pull(force: bool) -> Result<()> {
-    let token = auth::require_token()?;
     let api_base = auth::api_base_url()?;
+    let token = auth::require_token()?;
 
     let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
         .context("No .phantom.toml found. Run `phantom init` first.")?;
 
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     println!("{}  Pulling from Phantom Cloud...", "->".blue().bold());
 
@@ -87,7 +87,7 @@ pub fn run_pull(force: bool) -> Result<()> {
         .context("Failed to write audit event for cloud pull")?;
 
     let rt = tokio::runtime::Runtime::new()?;
-    let pull_result = rt.block_on(cloud::pull(&api_base, &token, &config.phantom.project_id))?;
+    let pull_result = rt.block_on(cloud::pull(&api_base, &token, config.portable_project_id()))?;
 
     let pull_data = match pull_result {
         Some(data) => data,

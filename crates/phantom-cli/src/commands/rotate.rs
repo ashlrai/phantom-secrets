@@ -21,7 +21,7 @@ pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()>
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
     let names = vault.list().context("Failed to list secrets")?;
 
     if names.is_empty() {
@@ -208,7 +208,7 @@ pub fn run_shadow(name: &str) -> Result<String> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     if !vault
         .exists(name)
@@ -243,7 +243,7 @@ pub fn run_shadow(name: &str) -> Result<String> {
     );
     let shadow_id = shadow.shadow_id.clone();
 
-    let store = ShadowStore::new(shadow_dir(&config.phantom.project_id))
+    let store = ShadowStore::new(shadow_dir(config.local_project_id()))
         .context("Failed to open shadow store")?;
     store
         .save(&shadow)
@@ -285,9 +285,9 @@ pub fn run_validate_promote(name: &str, promote: bool) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
-    let store = ShadowStore::new(shadow_dir(&config.phantom.project_id))
+    let store = ShadowStore::new(shadow_dir(config.local_project_id()))
         .context("Failed to open shadow store")?;
 
     let meta = store
@@ -438,7 +438,7 @@ pub fn run_with_provider(
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     // Resolve provider config from .phantom.toml.
     let provider_config = config
@@ -677,7 +677,7 @@ pub fn run_batch(
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     // Gather all secrets with their expiry metadata and provider config.
     let names = vault.list().context("Failed to list secrets")?;
@@ -925,7 +925,7 @@ pub fn run_rotate_single(name: &str) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     if !vault
         .exists(name)

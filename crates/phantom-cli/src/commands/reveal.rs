@@ -40,7 +40,7 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     phantom_core::audit::log_result("vault.reveal", Some(name))
         .context("Failed to write audit event for secret reveal")?;
