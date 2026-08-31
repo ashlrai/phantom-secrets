@@ -12,6 +12,7 @@ use super::proxy_state::{cleanup_if_stale_or_malformed, read_proxy_state, ProxyS
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellSyntax {
     Bash,
+    Fish,
     PowerShell,
     #[cfg_attr(not(windows), allow(dead_code))]
     Cmd,
@@ -21,11 +22,10 @@ fn detect_shell_syntax() -> ShellSyntax {
     // POSIX shells (incl. Git Bash on Windows, WSL, macOS, Linux) set $SHELL.
     if let Ok(sh) = std::env::var("SHELL") {
         let lower = sh.to_lowercase();
-        if lower.contains("bash")
-            || lower.contains("zsh")
-            || lower.contains("fish")
-            || lower.ends_with("/sh")
-        {
+        if lower.contains("fish") {
+            return ShellSyntax::Fish;
+        }
+        if lower.contains("bash") || lower.contains("zsh") || lower.ends_with("/sh") {
             return ShellSyntax::Bash;
         }
     }
@@ -45,21 +45,55 @@ fn detect_shell_syntax() -> ShellSyntax {
 
 fn format_export(syntax: ShellSyntax, var: &str, value: &str) -> String {
     match syntax {
-        ShellSyntax::Bash => format!("  export {}={}", var, value),
-        ShellSyntax::PowerShell => format!("  $env:{} = \"{}\"", var, value),
+        ShellSyntax::Bash => format!("  export {}='{}'", var, quote_posix_single(value)),
+        ShellSyntax::Fish => format!("  set -gx {} '{}'", var, quote_fish_single(value)),
+        ShellSyntax::PowerShell => format!("  $env:{} = '{}'", var, value.replace('\'', "''")),
         ShellSyntax::Cmd => format!("  set {}={}", var, value),
     }
 }
 
+fn quote_posix_single(value: &str) -> String {
+    value.replace('\'', "'\\''")
+}
+
+fn quote_fish_single(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
 fn shell_hint(syntax: ShellSyntax) -> &'static str {
     match syntax {
-        ShellSyntax::Bash => {
-            "  # Detected bash/zsh/fish. PowerShell: `$env:X = \"Y\"`. cmd: `set X=Y`."
-        }
+        ShellSyntax::Bash => "  # Detected bash/zsh. fish: `set -gx X Y`. PowerShell: `$env:X = 'Y'`. cmd: `set X=Y`.",
+        ShellSyntax::Fish => "  # Detected fish. bash/zsh: `export X=Y`. PowerShell: `$env:X = 'Y'`. cmd: `set X=Y`.",
         ShellSyntax::PowerShell => "  # Detected PowerShell. bash: `export X=Y`. cmd: `set X=Y`.",
         ShellSyntax::Cmd => {
             "  # Assuming cmd.exe. PowerShell: `$env:X = \"Y\"`. bash: `export X=Y`."
         }
+    }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+
+    #[test]
+    fn fish_exports_use_native_syntax_and_escape_values() {
+        assert_eq!(
+            format_export(ShellSyntax::Fish, "PHANTOM_PROXY_TOKEN", "a'b\\c"),
+            "  set -gx PHANTOM_PROXY_TOKEN 'a\\'b\\\\c'"
+        );
+        assert!(shell_hint(ShellSyntax::Fish).contains("Detected fish"));
+    }
+
+    #[test]
+    fn posix_and_powershell_exports_quote_values() {
+        assert_eq!(
+            format_export(ShellSyntax::Bash, "X", "a'b"),
+            "  export X='a'\\''b'"
+        );
+        assert_eq!(
+            format_export(ShellSyntax::PowerShell, "X", "a'b"),
+            "  $env:X = 'a''b'"
+        );
     }
 }
 
