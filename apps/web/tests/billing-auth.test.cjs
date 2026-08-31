@@ -7,10 +7,34 @@ const ts = require("typescript");
 
 const repoDir = path.resolve(__dirname, "..");
 const authPath = path.join(repoDir, "src/lib/auth.ts");
+const planPath = path.join(repoDir, "src/lib/plan.ts");
 const checkoutPath = path.join(
   repoDir,
   "src/app/api/v1/billing/checkout/route.ts",
 );
+
+function loadPlanModule() {
+  const source = fs.readFileSync(planPath, "utf8");
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      esModuleInterop: true,
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: planPath,
+  }).outputText;
+  const module = { exports: {} };
+  const fn = new Function(
+    "exports",
+    "require",
+    "module",
+    "__filename",
+    "__dirname",
+    output,
+  );
+  fn(module.exports, require, module, planPath, path.dirname(planPath));
+  return module.exports;
+}
 
 function loadCheckoutGateHarness() {
   const source = fs.readFileSync(checkoutPath, "utf8");
@@ -34,6 +58,7 @@ function loadCheckoutGateHarness() {
         },
       };
     }
+    if (specifier === "@/lib/plan") return loadPlanModule();
     if (specifier === "@/lib/commissioning") {
       return {
         requireHostedService: () => {
@@ -130,6 +155,7 @@ function loadAuthModule({ serviceClient, browserUser = null, browserError = null
     if (specifier === "./supabase-server") {
       return { createServiceClient: () => serviceClient };
     }
+    if (specifier === "./plan") return loadPlanModule();
     if (specifier === "@supabase/supabase-js") {
       return {
         createClient: (...args) => {
@@ -210,6 +236,90 @@ function createMockServiceClient({
     },
   };
 }
+
+test("effective plan requires an exact Pro plan with a valid future expiry", () => {
+  const { effectivePlan } = loadPlanModule();
+  const now = Date.parse("2030-01-01T00:00:00.000Z");
+  const cases = [
+    {
+      name: "missing expiry",
+      stored: { plan: "pro" },
+      expected: "free",
+    },
+    {
+      name: "null expiry",
+      stored: { plan: "pro", plan_expires_at: null },
+      expected: "free",
+    },
+    {
+      name: "non-finite expiry",
+      stored: { plan: "pro", plan_expires_at: Number.POSITIVE_INFINITY },
+      expected: "free",
+    },
+    {
+      name: "malformed expiry",
+      stored: { plan: "pro", plan_expires_at: "not-a-date" },
+      expected: "free",
+    },
+    {
+      name: "invalid calendar date",
+      stored: { plan: "pro", plan_expires_at: "2030-02-30T00:00:00Z" },
+      expected: "free",
+    },
+    {
+      name: "missing timezone",
+      stored: { plan: "pro", plan_expires_at: "2031-01-01T00:00:00" },
+      expected: "free",
+    },
+    {
+      name: "invalid timezone",
+      stored: { plan: "pro", plan_expires_at: "2031-01-01T00:00:00+24:00" },
+      expected: "free",
+    },
+    {
+      name: "expired",
+      stored: { plan: "pro", plan_expires_at: "2029-12-31T23:59:59.999Z" },
+      expected: "free",
+    },
+    {
+      name: "exact boundary",
+      stored: { plan: "pro", plan_expires_at: "2030-01-01T00:00:00.000Z" },
+      expected: "free",
+    },
+    {
+      name: "future",
+      stored: { plan: "pro", plan_expires_at: "2030-01-01T00:00:00.001Z" },
+      expected: "pro",
+    },
+    {
+      name: "future with explicit offset",
+      stored: { plan: "pro", plan_expires_at: "2030-01-01T00:00:01+00:00" },
+      expected: "pro",
+    },
+    {
+      name: "unknown plan",
+      stored: { plan: "enterprise", plan_expires_at: "2099-01-01T00:00:00Z" },
+      expected: "free",
+    },
+    {
+      name: "case-variant plan",
+      stored: { plan: "Pro", plan_expires_at: "2099-01-01T00:00:00Z" },
+      expected: "free",
+    },
+  ];
+
+  for (const { name, stored, expected } of cases) {
+    assert.equal(effectivePlan(stored, now), expected, name);
+  }
+  assert.equal(
+    effectivePlan(
+      { plan: "pro", plan_expires_at: "2099-01-01T00:00:00Z" },
+      Number.NaN,
+    ),
+    "free",
+    "non-finite comparison clock",
+  );
+});
 
 test("device auth still validates hashed Phantom device tokens", async () => {
   const token = "cli-device-token";
@@ -341,6 +451,14 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
     path.join(repoDir, "src/app/api/v1/vault/push/route.ts"),
     "utf8",
   );
+  const devicePoll = fs.readFileSync(
+    path.join(repoDir, "src/app/api/v1/auth/device/poll/route.ts"),
+    "utf8",
+  );
+  const me = fs.readFileSync(
+    path.join(repoDir, "src/app/api/v1/me/route.ts"),
+    "utf8",
+  );
   const commissioning = fs.readFileSync(
     path.join(repoDir, "src/lib/commissioning.ts"),
     "utf8",
@@ -353,7 +471,7 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
   assert.match(checkout, /phantom_user_id/);
   assert.match(checkout, /is\("stripe_customer_id", null\)/);
   assert.match(checkout, /claimed\?\.stripe_customer_id === candidateCustomerId/);
-  assert.match(checkout, /hasActiveLegacyProPlan\(user\) \|\| user\.subscription_id/);
+  assert.match(checkout, /effectivePlan\(user\) === "pro" \|\| user\.subscription_id/);
   assert.match(checkout, /subscriptions\.list/);
   assert.match(checkout, /status: "all"/);
   assert.match(checkout, /checkout\.sessions\.list/);
@@ -372,6 +490,10 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
   assert.doesNotMatch(portal, /requireAuth\(req\)/);
   assert.match(vaultPush, /requireAuth\(req\)/);
   assert.doesNotMatch(vaultPush, /requireBrowserAuth/);
+  assert.match(devicePoll, /plan, plan_expires_at/);
+  assert.match(devicePoll, /plan: effectivePlan\(user\)/);
+  assert.doesNotMatch(devicePoll, /plan: user\.plan/);
+  assert.match(me, /plan: authResult\.plan/);
 
   const pricing = fs.readFileSync(
     path.join(repoDir, "src/app/pricing/page.tsx"),

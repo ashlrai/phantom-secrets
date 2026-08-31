@@ -1,5 +1,6 @@
 import { requireBrowserAuth } from "@/lib/auth";
 import { requireHostedService } from "@/lib/commissioning";
+import { effectivePlan } from "@/lib/plan";
 import { getStripe, getStripePriceId } from "@/lib/stripe";
 import { createServiceClient } from "@/lib/supabase-server";
 
@@ -13,15 +14,6 @@ type BillingUser = {
   plan: string;
   plan_expires_at: string | null;
 };
-
-function hasActiveLegacyProPlan(user: BillingUser): boolean {
-  if (user.plan !== "pro") return false;
-  if (!user.plan_expires_at) return true;
-
-  const expiry = Date.parse(user.plan_expires_at);
-  // A malformed entitlement timestamp must not create a second checkout.
-  return !Number.isFinite(expiry) || expiry > Date.now();
-}
 
 function subscriptionExistsResponse() {
   return Response.json(
@@ -172,7 +164,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "user not found" }, { status: 404 });
   }
 
-  if (hasActiveLegacyProPlan(user) || user.subscription_id) {
+  if (effectivePlan(user) === "pro" || user.subscription_id) {
     return subscriptionExistsResponse();
   }
 

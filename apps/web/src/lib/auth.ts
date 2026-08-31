@@ -1,21 +1,11 @@
 import { createServiceClient } from "./supabase-server";
+import { effectivePlan, type EffectivePlan } from "./plan";
 import { createClient, type User } from "@supabase/supabase-js";
 import { createHash } from "crypto";
 
 export interface AuthUser {
   userId: string;
-  plan: string;
-}
-
-function effectivePlan(user: { plan: string; plan_expires_at?: string | null }) {
-  if (
-    user.plan === "pro" &&
-    user.plan_expires_at &&
-    new Date(user.plan_expires_at) < new Date()
-  ) {
-    return "free";
-  }
-  return user.plan;
+  plan: EffectivePlan;
 }
 
 /**

@@ -12,7 +12,7 @@ import { getBrowserClient } from "./supabase-browser";
  * Usage:
  *
  *   const { data, error, loading } = useSupabaseQuery<UserRow>(
- *     (sb) => sb.from("users").select("plan, github_login").single(),
+ *     (sb) => sb.from("users").select("github_login, email").single(),
  *   );
  *
  * The `build` callback is given a fresh client from `getBrowserClient`

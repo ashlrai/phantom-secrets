@@ -62,6 +62,13 @@ function loadRoute(relativePath) {
         },
       };
     }
+    if (specifier === "@/lib/plan") {
+      return {
+        effectivePlan: () => {
+          throw new Error("entitlement check must follow authentication");
+        },
+      };
+    }
     if (specifier === "@/lib/http-body") {
       return {
         readBoundedJsonObject: async () => {
