@@ -310,8 +310,8 @@ test("current-release guidance routes installs through verified GitHub or Homebr
   const canonicalReleaseGuides = {
     "README.md": repositoryGuidanceClaims["README.md"],
     "docs/getting-started.md": repositoryGuidanceClaims["docs/getting-started.md"],
-    "docs/llms.txt": repositoryGuidanceClaims["docs/llms.txt"],
-    "docs/llms-full.txt": repositoryGuidanceClaims["docs/llms-full.txt"],
+    "docs/llms.txt": machineReadableClaims["docs/llms.txt"],
+    "docs/llms-full.txt": machineReadableClaims["docs/llms-full.txt"],
     "apps/web/public/llms.txt": repositoryGuidanceClaims["apps/web/public/llms.txt"],
     "apps/web/public/llms-full.txt":
       repositoryGuidanceClaims["apps/web/public/llms-full.txt"],
