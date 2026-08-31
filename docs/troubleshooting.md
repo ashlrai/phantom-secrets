@@ -279,7 +279,11 @@ Cloud sync is per-vault. Make sure you pushed from the same project directory. E
 
 ### "Subscription required" on cloud push
 
-The free tier allows 1 cloud vault. If you need more, upgrade to Pro ($8/mo) at [phm.dev/pricing](https://phm.dev/pricing).
+There is no self-service hosted-plan upgrade available today. Keep the vault
+local, or request a bounded pilot through the
+[Phantom Pro waitlist](https://phm.dev/waitlist.html). Hosted-plan eligibility,
+vault and team limits, and pricing are still to be determined and are confirmed
+during pilot onboarding.
 
 ## Audit Log
 
