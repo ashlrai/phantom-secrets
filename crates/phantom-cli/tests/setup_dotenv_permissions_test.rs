@@ -81,3 +81,81 @@ fn init_auto_setup_removes_only_legacy_exact_allows() {
 
     assert_hardened(&settings_path);
 }
+
+#[test]
+fn init_migrates_npx_to_the_bundled_local_runtime() {
+    let dir = TempDir::new().unwrap();
+    let claude_dir = dir.path().join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let settings_path = claude_dir.join("settings.local.json");
+    fs::write(
+        &settings_path,
+        serde_json::to_vec_pretty(&json!({
+            "mcpServers": {
+                "phantom": {
+                    "command": "npx",
+                    "args": ["-y", "phantom-secrets-mcp"]
+                },
+                "other": {"command": "other-server"}
+            },
+            "theme": "dark"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        "OPENAI_API_KEY=sk-test-only-value\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("phantom")
+        .unwrap()
+        .args(["init", "--from", ".env"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env(
+            "PHANTOM_VAULT_PASSPHRASE",
+            "setup-local-runtime-test-vault-passphrase",
+        )
+        .assert()
+        .success();
+
+    let settings: Value = serde_json::from_slice(&fs::read(settings_path).unwrap()).unwrap();
+    let phantom = &settings["mcpServers"]["phantom"];
+    assert_ne!(phantom["command"], "npx");
+    assert_eq!(phantom["args"], json!(["mcp", "serve"]));
+    assert_eq!(settings["mcpServers"]["other"]["command"], "other-server");
+    assert_eq!(settings["theme"], "dark");
+    assert!(!settings.to_string().contains("phantom-secrets-mcp"));
+}
+
+#[test]
+fn init_invalid_claude_config_fails_before_project_mutation() {
+    let dir = TempDir::new().unwrap();
+    let claude_dir = dir.path().join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let settings_path = claude_dir.join("settings.local.json");
+    let invalid_settings = b"{ invalid json\n";
+    fs::write(&settings_path, invalid_settings).unwrap();
+    let env_path = dir.path().join(".env");
+    let original_env = b"OPENAI_API_KEY=sk-test-only-value\n";
+    fs::write(&env_path, original_env).unwrap();
+
+    Command::cargo_bin("phantom")
+        .unwrap()
+        .args(["init", "--from", ".env"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env(
+            "PHANTOM_VAULT_PASSPHRASE",
+            "setup-invalid-config-test-vault-passphrase",
+        )
+        .assert()
+        .failure();
+
+    assert_eq!(fs::read(&settings_path).unwrap(), invalid_settings);
+    assert_eq!(fs::read(&env_path).unwrap(), original_env);
+    assert!(!dir.path().join(".phantom.toml").exists());
+    assert!(!dir.path().join(".env.example").exists());
+}

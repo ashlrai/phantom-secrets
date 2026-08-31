@@ -134,6 +134,10 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         println!("   Override with: {}", "phantom add <KEY>".dimmed());
     }
 
+    // Resolve the local MCP runtime and fully validate any detected Claude
+    // settings before mutating the vault, .env, or project metadata.
+    let claude_setup = prompts::prepare_auto_setup_claude_code(&project_dir, &cwd)?;
+
     // Load or create config, then auto-detect services
     let mut phantom_config = config::load_or_create(&project_dir, &config_path)?;
     config::apply_detected_services(&mut phantom_config, &real_entries);
@@ -177,9 +181,11 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         real_entries.len()
     );
 
-    // Auto-configure Claude Code if detected (merges phantom setup into init)
-    // Check project_dir first, fall back to cwd (repo root) for monorepos
-    prompts::auto_setup_claude_code(&project_dir, &cwd);
+    // Commit the already validated Claude update. Check project_dir first,
+    // falling back to cwd (repo root) for monorepos.
+    if let Some(prepared) = claude_setup {
+        prompts::apply_auto_setup_claude_code(prepared)?;
+    }
 
     // Add Phantom instructions to CLAUDE.md so Claude knows how to use it
     docs::auto_add_claude_md(&project_dir, &cwd);

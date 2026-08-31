@@ -42,7 +42,7 @@ impl Client {
 
 /// The command spec we write into each client's MCP config.
 #[derive(Debug, PartialEq, Eq)]
-struct McpCommand {
+pub(crate) struct McpCommand {
     command: String,
     args: Vec<String>,
 }
@@ -124,7 +124,7 @@ pub fn run(client: Option<Client>, print: bool, audit_mode: Option<AuditMode>) -
 /// Setup deliberately has no network fallback. Downloading an unpinned npm
 /// package here could silently configure a different release than the CLI the
 /// user reviewed and installed.
-fn mcp_command_spec() -> Result<McpCommand> {
+pub(crate) fn mcp_command_spec() -> Result<McpCommand> {
     let current_exe = std::env::current_exe().ok();
     let standalone = find_mcp_binary(current_exe.as_deref());
     resolve_mcp_command(current_exe.as_deref(), standalone.as_deref())
@@ -164,78 +164,10 @@ fn resolve_mcp_command(
 
 fn setup_claude_code(mcp: &McpCommand) -> Result<()> {
     let project_dir = std::env::current_dir()?;
-    let claude_dir = project_dir.join(".claude");
-    let settings_path = claude_dir.join("settings.local.json");
-
-    std::fs::create_dir_all(&claude_dir)?;
-
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = std::fs::read_to_string(&settings_path)?;
-        serde_json::from_str(&content).context("Failed to parse .claude/settings.local.json")?
-    } else {
-        serde_json::json!({})
-    };
-
-    let obj = settings
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("settings.local.json is not a JSON object"))?;
-
-    let mcp_servers = obj
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}));
-
-    if let Some(servers) = mcp_servers.as_object_mut() {
-        if !servers.contains_key("phantom") {
-            servers.insert(
-                "phantom".to_string(),
-                serde_json::json!({
-                    "command": mcp.command,
-                    "args": mcp.args_json(),
-                }),
-            );
-            println!(
-                "   {} MCP server: {} -> {}",
-                "+".green().bold(),
-                "phantom".bold(),
-                mcp.command.dimmed()
-            );
-        } else {
-            println!("   {} MCP server already configured", "-".dimmed());
-        }
-    }
-
-    // Remove legacy Phantom-managed dotenv read grants. Deny rules remain in
-    // force because `.env.*` can include plaintext backups from other tools.
-    let permissions = obj
-        .entry("permissions")
-        .or_insert_with(|| serde_json::json!({}));
-
-    if let Some(perms) = permissions.as_object_mut() {
-        if remove_legacy_dotenv_read_grants(perms) {
-            println!(
-                "   {} Removed legacy dotenv read permissions",
-                "+".green().bold()
-            );
-        }
-
-        if let Some(deny) = perms.get("deny") {
-            if let Some(deny_arr) = deny.as_array() {
-                let has_env_deny = deny_arr
-                    .iter()
-                    .any(|v| v.as_str().is_some_and(|s| s.contains(".env")));
-                if has_env_deny {
-                    println!(
-                        "   {} Preserving dotenv deny rules as a defense-in-depth boundary",
-                        "ok".green().bold()
-                    );
-                }
-            }
-        }
-    }
-
-    let content =
-        serde_json::to_string_pretty(&settings).context("Failed to serialize settings")?;
-    std::fs::write(&settings_path, content)?;
+    let settings_path = project_dir.join(".claude/settings.local.json");
+    let plan = prepare_claude_settings(&settings_path, mcp)?;
+    apply_claude_settings(&plan)?;
+    print_claude_changes(&plan, mcp);
 
     println!("\n{} Claude Code configured!", "ok".green().bold());
     println!(
@@ -245,6 +177,141 @@ fn setup_claude_code(mcp: &McpCommand) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum McpEntryChange {
+    Added,
+    Updated,
+    Unchanged,
+}
+
+/// A fully validated, value-free Claude settings update. Preparing a plan
+/// performs every fallible read/parse/serialize step without touching disk, so
+/// callers such as `phantom init` can fail before rewriting the vault or .env.
+pub(crate) struct ClaudeSettingsPlan {
+    settings_path: PathBuf,
+    content: String,
+    mcp_change: McpEntryChange,
+    removed_legacy_grants: bool,
+    preserves_env_deny: bool,
+    changed: bool,
+}
+
+pub(crate) fn prepare_claude_settings(
+    settings_path: &Path,
+    mcp: &McpCommand,
+) -> Result<ClaudeSettingsPlan> {
+    let existed = settings_path.exists();
+    let mut settings: serde_json::Value = if existed {
+        let content = std::fs::read_to_string(settings_path)
+            .with_context(|| format!("Failed to read {}", settings_path.display()))?;
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse {}", settings_path.display()))?
+    } else {
+        serde_json::json!({})
+    };
+
+    let obj = settings
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("{} is not a JSON object", settings_path.display()))?;
+    let servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| {
+            anyhow::anyhow!("mcpServers is not an object in {}", settings_path.display())
+        })?;
+
+    let desired = serde_json::json!({
+        "command": mcp.command,
+        "args": mcp.args_json(),
+    });
+    let mcp_change = match servers.get("phantom") {
+        None => McpEntryChange::Added,
+        Some(existing) if existing == &desired => McpEntryChange::Unchanged,
+        Some(_) => McpEntryChange::Updated,
+    };
+    if mcp_change != McpEntryChange::Unchanged {
+        servers.insert("phantom".to_string(), desired);
+    }
+
+    // Remove legacy Phantom-managed dotenv read grants. Deny rules remain in
+    // force because `.env.*` can include plaintext backups from other tools.
+    let permissions = obj
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "permissions is not an object in {}",
+                settings_path.display()
+            )
+        })?;
+    let removed_legacy_grants = remove_legacy_dotenv_read_grants(permissions);
+    let preserves_env_deny = permissions
+        .get("deny")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|deny| {
+            deny.iter()
+                .any(|value| value.as_str().is_some_and(|rule| rule.contains(".env")))
+        });
+
+    let content =
+        serde_json::to_string_pretty(&settings).context("Failed to serialize Claude settings")?;
+    Ok(ClaudeSettingsPlan {
+        settings_path: settings_path.to_path_buf(),
+        content,
+        mcp_change,
+        removed_legacy_grants,
+        preserves_env_deny,
+        changed: !existed || mcp_change != McpEntryChange::Unchanged || removed_legacy_grants,
+    })
+}
+
+pub(crate) fn apply_claude_settings(plan: &ClaudeSettingsPlan) -> Result<bool> {
+    if !plan.changed {
+        return Ok(false);
+    }
+    if let Some(parent) = plan.settings_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    std::fs::write(&plan.settings_path, &plan.content)
+        .with_context(|| format!("Failed to write {}", plan.settings_path.display()))?;
+    Ok(true)
+}
+
+pub(crate) fn print_claude_changes(plan: &ClaudeSettingsPlan, mcp: &McpCommand) {
+    match plan.mcp_change {
+        McpEntryChange::Added => println!(
+            "   {} MCP server: {} -> {}",
+            "+".green().bold(),
+            "phantom".bold(),
+            mcp.command.dimmed()
+        ),
+        McpEntryChange::Updated => println!(
+            "   {} MCP server updated: {} -> {}",
+            "+".green().bold(),
+            "phantom".bold(),
+            mcp.command.dimmed()
+        ),
+        McpEntryChange::Unchanged => {
+            println!("   {} MCP server already configured", "-".dimmed())
+        }
+    }
+    if plan.removed_legacy_grants {
+        println!(
+            "   {} Removed legacy dotenv read permissions",
+            "+".green().bold()
+        );
+    }
+    if plan.preserves_env_deny {
+        println!(
+            "   {} Preserving dotenv deny rules as a defense-in-depth boundary",
+            "ok".green().bold()
+        );
+    }
 }
 
 // ─────────────────────────── Cursor ────────────────────────────
@@ -287,10 +354,6 @@ fn setup_windsurf(mcp: &McpCommand) -> Result<()> {
 
 fn setup_codex(mcp: &McpCommand) -> Result<()> {
     let path = home_path(".codex/config.toml")?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let mut doc: toml::Table = if path.exists() {
         let content = std::fs::read_to_string(&path)?;
         toml::from_str(&content).context("Failed to parse ~/.codex/config.toml")?
@@ -324,6 +387,9 @@ fn setup_codex(mcp: &McpCommand) -> Result<()> {
     servers.insert("phantom".to_string(), toml::Value::Table(entry));
 
     let serialized = toml::to_string_pretty(&doc).context("Failed to serialize codex config")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(&path, serialized)?;
 
     if already {
@@ -359,18 +425,10 @@ fn setup_codex(mcp: &McpCommand) -> Result<()> {
 /// Read-or-create a JSON file with `mcpServers.phantom = {command, args}`.
 /// Used by Cursor and Windsurf, which share the same MCP config schema.
 fn upsert_mcp_servers_json(path: &Path, mcp: &McpCommand) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let mut value: serde_json::Value = if path.exists() {
         let content = std::fs::read_to_string(path)?;
-        if content.trim().is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::from_str(&content)
-                .with_context(|| format!("Failed to parse {}", path.display()))?
-        }
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse {}", path.display()))?
     } else {
         serde_json::json!({})
     };
@@ -396,6 +454,9 @@ fn upsert_mcp_servers_json(path: &Path, mcp: &McpCommand) -> Result<()> {
     );
 
     let content = serde_json::to_string_pretty(&value).context("Failed to serialize MCP config")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(path, content)?;
 
     println!(
@@ -666,6 +727,67 @@ mod tests {
             v["mcpServers"]["phantom"]["args"].as_array().unwrap().len(),
             0
         );
+    }
+
+    #[test]
+    fn claude_writer_migrates_stale_registry_entry_and_preserves_settings() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("settings.local.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "phantom": {"command": "npx", "args": ["-y", "phantom-secrets-mcp"]},
+                    "other": {"command": "other-server"}
+                },
+                "theme": "dark"
+            }"#,
+        )
+        .unwrap();
+
+        let mcp = McpCommand {
+            command: "/opt/phantom/bin/phantom".to_string(),
+            args: vec!["mcp".to_string(), "serve".to_string()],
+        };
+        let plan = prepare_claude_settings(&path, &mcp).unwrap();
+        assert!(apply_claude_settings(&plan).unwrap());
+
+        let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            value["mcpServers"]["phantom"],
+            serde_json::json!({
+                "command": "/opt/phantom/bin/phantom",
+                "args": ["mcp", "serve"]
+            })
+        );
+        assert_eq!(value["mcpServers"]["other"]["command"], "other-server");
+        assert_eq!(value["theme"], "dark");
+        assert!(!value.to_string().contains("npx"));
+    }
+
+    #[test]
+    fn invalid_existing_json_is_preserved_byte_for_byte() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("mcp.json");
+        let original = b"{ invalid json\n";
+        std::fs::write(&path, original).unwrap();
+
+        let error = upsert_mcp_servers_json(&path, &fake_mcp())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("Failed to parse"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn empty_existing_json_is_invalid_and_preserved() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("mcp.json");
+        std::fs::write(&path, b"").unwrap();
+
+        assert!(upsert_mcp_servers_json(&path, &fake_mcp()).is_err());
+        assert!(std::fs::read(&path).unwrap().is_empty());
     }
 
     fn mark_executable(path: &Path) {
