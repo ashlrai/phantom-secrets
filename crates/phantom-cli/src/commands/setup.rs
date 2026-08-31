@@ -198,6 +198,14 @@ pub(crate) struct ClaudeSettingsPlan {
     changed: bool,
 }
 
+impl ClaudeSettingsPlan {
+    pub(crate) fn transaction_file(&self) -> Option<phantom_vault::InitFile> {
+        self.changed.then(|| {
+            phantom_vault::InitFile::replace(&self.settings_path, self.content.as_bytes().to_vec())
+        })
+    }
+}
+
 pub(crate) fn prepare_claude_settings(
     settings_path: &Path,
     mcp: &McpCommand,

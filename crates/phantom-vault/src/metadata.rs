@@ -53,7 +53,7 @@ impl VaultMode {
 }
 
 /// Metadata attached to a single vault secret.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SecretMetadata {
     /// Unix timestamp when the secret was first stored.
     pub created_at: Option<Timestamp>,

@@ -43,6 +43,7 @@ pub struct InitFile {
     path: PathBuf,
     content: Zeroizing<Vec<u8>>,
     executable: bool,
+    commit_last: bool,
 }
 
 impl InitFile {
@@ -51,11 +52,21 @@ impl InitFile {
             path: path.into(),
             content: Zeroizing::new(content.into()),
             executable: false,
+            commit_last: false,
         }
     }
 
     pub fn executable(mut self, executable: bool) -> Self {
         self.executable = executable;
+        self
+    }
+
+    /// Mark a file as the final commit point after every value-free file and
+    /// vault entry is durable. The tokenized dotenv uses this so interruption
+    /// before the last atomic rename always leaves retryable plaintext rather
+    /// than unusable tokens.
+    pub fn commit_last(mut self) -> Self {
+        self.commit_last = true;
         self
     }
 }
@@ -67,6 +78,7 @@ impl fmt::Debug for InitFile {
             .field("path", &self.path)
             .field("content", &"[REDACTED]")
             .field("executable", &self.executable)
+            .field("commit_last", &self.commit_last)
             .finish()
     }
 }
@@ -104,7 +116,9 @@ struct FileSnapshot {
     permissions: Option<std::fs::Permissions>,
     after: Zeroizing<Vec<u8>>,
     executable: bool,
+    commit_last: bool,
     touched: bool,
+    created_parents: Vec<PathBuf>,
 }
 
 trait FileWriter {
@@ -154,7 +168,6 @@ fn commit_init_with(
                 reason: "file targets must be unique".to_string(),
             });
         }
-        preflight_path(&file.path)?;
     }
 
     let mut secret_snapshots = Vec::with_capacity(secrets.len());
@@ -189,6 +202,7 @@ fn commit_init_with(
 
     let mut file_snapshots = Vec::with_capacity(files.len());
     for mut file in files.drain(..) {
+        let created_parents = preflight_path(&file.path)?;
         let (before, permissions) = match std::fs::symlink_metadata(&file.path) {
             Ok(metadata) => (
                 Some(Zeroizing::new(std::fs::read(&file.path).map_err(
@@ -213,17 +227,26 @@ fn commit_init_with(
             permissions,
             after: std::mem::take(&mut file.content),
             executable: file.executable,
+            commit_last: file.commit_last,
             touched: false,
+            created_parents,
         });
     }
 
     let commit_result = (|| {
+        for snapshot in file_snapshots
+            .iter_mut()
+            .filter(|snapshot| !snapshot.commit_last)
+        {
+            commit_file(snapshot, writer)?;
+        }
+
         for snapshot in &mut secret_snapshots {
             ensure_secret_state(vault, snapshot, false)
                 .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
             match vault.store(&snapshot.name, snapshot.after.as_str()) {
                 Ok(()) => snapshot.touched = true,
-                Err(error) => {
+                Err(_error) => {
                     let current_is_after = vault
                         .retrieve(&snapshot.name)
                         .map(|current| current.as_str() == snapshot.after.as_str())
@@ -234,40 +257,29 @@ fn commit_init_with(
                     // touched so rollback fails closed instead of claiming a
                     // complete restoration.
                     snapshot.touched = current_is_after || !current_is_before;
-                    return Err((snapshot.name.clone(), error.to_string()));
+                    return Err((snapshot.name.clone(), "vault store failed".to_string()));
                 }
             }
             ensure_secret_state(vault, snapshot, true)
                 .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
+            ensure_secret_metadata(vault, snapshot)
+                .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
         }
 
-        for snapshot in &mut file_snapshots {
-            ensure_file_state(snapshot, false)
-                .map_err(|error| (snapshot.path.display().to_string(), error.to_string()))?;
-            if let Err(error) = writer.write(&snapshot.path, snapshot.after.as_slice()) {
-                let current_is_after =
-                    file_matches(&snapshot.path, Some(snapshot.after.as_slice()));
-                let current_is_before = snapshot
-                    .before
-                    .as_ref()
-                    .map(|before| file_matches(&snapshot.path, Some(before.as_slice())))
-                    .unwrap_or_else(|| file_matches(&snapshot.path, None));
-                snapshot.touched = current_is_after || !current_is_before;
-                return Err((snapshot.path.display().to_string(), error.to_string()));
-            }
-            snapshot.touched = true;
-            apply_permissions(snapshot)
-                .map_err(|error| (snapshot.path.display().to_string(), error.to_string()))?;
-            ensure_file_state(snapshot, true)
-                .map_err(|error| (snapshot.path.display().to_string(), error.to_string()))?;
+        for snapshot in file_snapshots
+            .iter_mut()
+            .filter(|snapshot| snapshot.commit_last)
+        {
+            commit_file(snapshot, writer)?;
         }
         Ok::<(), (String, String)>(())
     })();
 
     if let Err((target, reason)) = commit_result {
         let files_ok = rollback_files(&mut file_snapshots, writer);
+        let directories_ok = rollback_directories(&mut file_snapshots);
         let vault_ok = rollback_secrets(vault, &mut secret_snapshots);
-        return if files_ok && vault_ok {
+        return if files_ok && directories_ok && vault_ok {
             Err(InitTransactionError::Commit { target, reason })
         } else {
             Err(InitTransactionError::RollbackIncomplete { target })
@@ -286,31 +298,74 @@ fn commit_init_with(
     Ok(receipt)
 }
 
-fn preflight_vault(name: &str, error: PhantomError) -> InitTransactionError {
+fn commit_file(
+    snapshot: &mut FileSnapshot,
+    writer: &dyn FileWriter,
+) -> Result<(), (String, String)> {
+    create_missing_parents(snapshot)
+        .map_err(|error| (snapshot.path.display().to_string(), error.to_string()))?;
+    ensure_file_state(snapshot, false)
+        .map_err(|error| (snapshot.path.display().to_string(), error.to_string()))?;
+    if let Err(error) = writer.write(&snapshot.path, snapshot.after.as_slice()) {
+        let current_is_after = file_matches(&snapshot.path, Some(snapshot.after.as_slice()));
+        let current_is_before = snapshot
+            .before
+            .as_ref()
+            .map(|before| file_matches(&snapshot.path, Some(before.as_slice())))
+            .unwrap_or_else(|| file_matches(&snapshot.path, None));
+        snapshot.touched = current_is_after || !current_is_before;
+        return Err((snapshot.path.display().to_string(), error.to_string()));
+    }
+    snapshot.touched = true;
+    apply_permissions(snapshot)
+        .map_err(|error| (snapshot.path.display().to_string(), error.to_string()))?;
+    ensure_file_state(snapshot, true)
+        .map_err(|error| (snapshot.path.display().to_string(), error.to_string()))
+}
+
+fn preflight_vault(name: &str, _error: PhantomError) -> InitTransactionError {
     InitTransactionError::Preflight {
         target: name.to_string(),
-        reason: error.to_string(),
+        reason: "vault snapshot failed".to_string(),
     }
 }
 
-fn preflight_path(path: &Path) -> Result<(), InitTransactionError> {
+fn preflight_path(path: &Path) -> Result<Vec<PathBuf>, InitTransactionError> {
     let parent = path
         .parent()
         .ok_or_else(|| InitTransactionError::Preflight {
             target: path.display().to_string(),
             reason: "target has no parent directory".to_string(),
         })?;
-    let parent_metadata =
-        std::fs::symlink_metadata(parent).map_err(|error| InitTransactionError::Preflight {
-            target: path.display().to_string(),
-            reason: error.to_string(),
-        })?;
-    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
-        return Err(InitTransactionError::Preflight {
-            target: path.display().to_string(),
-            reason: "parent must be a real directory".to_string(),
-        });
+    let mut missing = Vec::new();
+    let mut cursor = parent;
+    loop {
+        match std::fs::symlink_metadata(cursor) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(InitTransactionError::Preflight {
+                    target: path.display().to_string(),
+                    reason: "every parent must be a real directory".to_string(),
+                });
+            }
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(cursor.to_path_buf());
+                cursor = cursor
+                    .parent()
+                    .ok_or_else(|| InitTransactionError::Preflight {
+                        target: path.display().to_string(),
+                        reason: "could not find an existing parent directory".to_string(),
+                    })?;
+            }
+            Err(error) => {
+                return Err(InitTransactionError::Preflight {
+                    target: path.display().to_string(),
+                    reason: error.to_string(),
+                });
+            }
+        }
     }
+    missing.reverse();
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             Err(InitTransactionError::Preflight {
@@ -318,13 +373,32 @@ fn preflight_path(path: &Path) -> Result<(), InitTransactionError> {
                 reason: "target must be a regular file or absent".to_string(),
             })
         }
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Ok(missing),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(missing),
         Err(error) => Err(InitTransactionError::Preflight {
             target: path.display().to_string(),
             reason: error.to_string(),
         }),
     }
+}
+
+fn create_missing_parents(snapshot: &mut FileSnapshot) -> std::io::Result<()> {
+    let planned = std::mem::take(&mut snapshot.created_parents);
+    for path in planned {
+        match std::fs::create_dir(&path) {
+            Ok(()) => snapshot.created_parents.push(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let metadata = std::fs::symlink_metadata(&path)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(std::io::Error::other(
+                        "planned parent became an unsafe filesystem object",
+                    ));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn ensure_secret_state(
@@ -340,14 +414,40 @@ fn ensure_secret_state(
     let current = match vault.retrieve(&snapshot.name) {
         Ok(value) => Some(value),
         Err(PhantomError::SecretNotFound(_)) => None,
-        Err(error) => {
+        Err(_error) => {
             return Err(InitTransactionError::Preflight {
                 target: snapshot.name.clone(),
-                reason: error.to_string(),
+                reason: "vault state verification failed".to_string(),
             });
         }
     };
     if current.as_ref().map(|value| value.as_str()) == expected {
+        Ok(())
+    } else {
+        Err(InitTransactionError::ConcurrentChange {
+            target: snapshot.name.clone(),
+        })
+    }
+}
+
+fn ensure_secret_metadata(
+    vault: &dyn VaultBackend,
+    snapshot: &SecretSnapshot,
+) -> Result<(), InitTransactionError> {
+    // New entries intentionally receive backend-generated creation metadata.
+    // Deleting the entry during rollback also deletes that metadata.
+    if snapshot.before.is_none() {
+        return Ok(());
+    }
+    let metadata_matches = vault
+        .get_metadata(&snapshot.name)
+        .map(|current| current == snapshot.metadata)
+        .unwrap_or(false);
+    let validation_matches = vault
+        .get_validation_metadata(&snapshot.name)
+        .map(|current| current == snapshot.validation)
+        .unwrap_or(false);
+    if metadata_matches && validation_matches {
         Ok(())
     } else {
         Err(InitTransactionError::ConcurrentChange {
@@ -436,6 +536,24 @@ fn rollback_files(snapshots: &mut [FileSnapshot], writer: &dyn FileWriter) -> bo
     ok
 }
 
+fn rollback_directories(snapshots: &mut [FileSnapshot]) -> bool {
+    let mut directories = snapshots
+        .iter_mut()
+        .flat_map(|snapshot| snapshot.created_parents.drain(..))
+        .collect::<Vec<_>>();
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    directories.dedup();
+    let mut ok = true;
+    for directory in directories {
+        match std::fs::remove_dir(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => ok = false,
+        }
+    }
+    ok
+}
+
 fn rollback_secrets(vault: &dyn VaultBackend, snapshots: &mut [SecretSnapshot]) -> bool {
     let mut ok = true;
     for snapshot in snapshots
@@ -452,15 +570,12 @@ fn rollback_secrets(vault: &dyn VaultBackend, snapshots: &mut [SecretSnapshot]) 
             continue;
         }
         let result = match &snapshot.before {
-            Some(before) => vault.store(&snapshot.name, before.as_str()).and_then(|_| {
-                if let Some(metadata) = &snapshot.metadata {
-                    vault.set_metadata(&snapshot.name, metadata.clone())?;
-                }
-                vault.set_validation_metadata(&snapshot.name, snapshot.validation.clone())
-            }),
+            Some(before) => vault.store(&snapshot.name, before.as_str()),
             None => vault.delete(&snapshot.name),
         };
-        if result.is_err() {
+        if result.is_err()
+            || (snapshot.before.is_some() && ensure_secret_metadata(vault, snapshot).is_err())
+        {
             ok = false;
         } else {
             snapshot.touched = false;
@@ -563,6 +678,8 @@ mod tests {
         std::fs::write(&env, b"A=old\nB=plain\n").unwrap();
         let inner = vault(&dir);
         inner.store("A", "prior").unwrap();
+        let prior_metadata = inner.get_metadata("A").unwrap();
+        let prior_validation = inner.get_validation_metadata("A").unwrap();
         let failing = FailingVault {
             inner,
             stores: AtomicUsize::new(0),
@@ -576,17 +693,27 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, InitTransactionError::Commit { .. }));
         assert_eq!(failing.retrieve("A").unwrap().as_str(), "prior");
+        assert_eq!(failing.get_metadata("A").unwrap(), prior_metadata);
+        assert_eq!(
+            failing.get_validation_metadata("A").unwrap(),
+            prior_validation
+        );
         assert!(!failing.exists("B").unwrap());
         assert_eq!(std::fs::read(&env).unwrap(), b"A=old\nB=plain\n");
     }
 
     #[test]
     fn every_file_boundary_rolls_back_vault_and_prior_files() {
-        for fail in 1..=2 {
+        for fail in 1..=5 {
             let dir = TempDir::new().unwrap();
-            let first = dir.path().join(".env");
-            let second = dir.path().join(".phantom.toml");
-            std::fs::write(&first, b"KEY=plain\n").unwrap();
+            let paths = [
+                dir.path().join(".env"),
+                dir.path().join(".phantom.toml"),
+                dir.path().join(".env.example"),
+                dir.path().join("hooks/pre-commit"),
+                dir.path().join("CLAUDE.md"),
+            ];
+            std::fs::write(&paths[0], b"KEY=plain\n").unwrap();
             let vault = vault(&dir);
             let writer = FailingWriter {
                 calls: AtomicUsize::new(0),
@@ -596,16 +723,23 @@ mod tests {
                 &vault,
                 vec![InitSecret::new("KEY", "plain")],
                 vec![
-                    InitFile::replace(&first, b"KEY=phm_token\n".to_vec()),
-                    InitFile::replace(&second, b"[phantom]\n".to_vec()),
+                    InitFile::replace(&paths[0], b"KEY=phm_token\n".to_vec()).commit_last(),
+                    InitFile::replace(&paths[1], b"[phantom]\n".to_vec()),
+                    InitFile::replace(&paths[2], b"KEY=\n".to_vec()),
+                    InitFile::replace(&paths[3], b"#!/bin/sh\nphantom check\n".to_vec())
+                        .executable(true),
+                    InitFile::replace(&paths[4], b"# Guidance\n".to_vec()),
                 ],
                 &writer,
             )
             .unwrap_err();
             assert!(matches!(error, InitTransactionError::Commit { .. }));
             assert!(!vault.exists("KEY").unwrap());
-            assert_eq!(std::fs::read(&first).unwrap(), b"KEY=plain\n");
-            assert!(!second.exists());
+            assert_eq!(std::fs::read(&paths[0]).unwrap(), b"KEY=plain\n");
+            for path in &paths[1..] {
+                assert!(!path.exists(), "{} survived rollback", path.display());
+            }
+            assert!(!dir.path().join("hooks").exists());
         }
     }
 

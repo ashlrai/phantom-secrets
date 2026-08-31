@@ -4,11 +4,12 @@ pub(crate) mod env;
 mod hooks;
 pub mod multi;
 mod prompts;
-mod vault;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::dotenv::{DotenvFile, SecretClassification};
+use phantom_core::token::TokenMap;
+use phantom_vault::{InitFile, InitSecret};
 use std::path::Path;
 
 /// `phantom init --empty`
@@ -31,15 +32,18 @@ pub fn run_empty() -> Result<()> {
     let project_id = phantom_core::config::PhantomConfig::project_id_from_path(&cwd);
     let phantom_config = phantom_core::config::PhantomConfig::new_with_defaults(project_id.clone());
 
-    // Touch the vault so it exists (create_vault is idempotent / lazy, but calling
-    // list() forces any on-disk initialisation that the backend needs).
     let vault = phantom_vault::create_vault(&project_id);
-    let _ = vault.list(); // ignore empty-vault errors
-
-    phantom_config.save(&config_path)?;
+    vault.list().context("Could not initialize the vault")?;
+    let mut files = vec![InitFile::replace(
+        &config_path,
+        toml::to_string_pretty(&phantom_config)?.into_bytes(),
+    )];
+    if let Some(file) = env::prepare_gitignore(&cwd)? {
+        files.push(file);
+    }
+    phantom_vault::commit_init(vault.as_ref(), Vec::new(), files)
+        .context("Empty initialization failed; prior project state was preserved")?;
     println!("{} Created .phantom.toml", "ok".green().bold());
-
-    env::ensure_gitignore(&cwd)?;
 
     println!(
         "\n{} Empty vault initialised. Add secrets with:\n     {}",
@@ -123,17 +127,39 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         }
 
         if existing_protected_setup {
+            let mut files = Vec::new();
             if config_path.exists() {
-                env::ensure_gitignore(&project_dir)?;
+                if let Some(file) = env::prepare_gitignore(&project_dir)? {
+                    files.push(file);
+                }
             }
-            hooks::install_precommit_hook(&project_dir).context(
+            let mut prepared_hook = hooks::prepare_precommit_hook(&project_dir)?;
+            if let Some(file) = prepared_hook.take_file() {
+                files.push(file);
+            }
+            if let Some(prepared) = &claude_setup {
+                if let Some(file) = prepared.transaction_file() {
+                    files.push(file);
+                }
+            }
+            let mut guidance = docs::prepare_guidance(&project_dir, &cwd)?;
+            files.extend(guidance.take_files());
+            let vault = if config_path.exists() {
+                let config = phantom_core::config::PhantomConfig::load(&config_path)?;
+                phantom_vault::create_vault(config.local_project_id())
+            } else {
+                let project_id =
+                    phantom_core::config::PhantomConfig::project_id_from_path(&project_dir);
+                phantom_vault::create_vault(&project_id)
+            };
+            phantom_vault::commit_init(vault.as_ref(), Vec::new(), files).context(
                 "Existing Phantom state was preserved, but local integration refresh is incomplete",
             )?;
-            if let Some(prepared) = claude_setup {
-                prompts::apply_auto_setup_claude_code(prepared)?;
+            prepared_hook.finish();
+            if let Some(prepared) = &claude_setup {
+                prompts::finish_auto_setup_claude_code(prepared);
             }
-            docs::auto_add_claude_md(&project_dir, &cwd);
-            docs::auto_add_readme(&project_dir, &cwd);
+            guidance.finish();
             prompts::detect_platforms(&project_dir, &cwd);
             if config_path.exists() {
                 print_next_steps(&config_path);
@@ -171,40 +197,88 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     let mut phantom_config = config::load_or_create(&project_dir, &config_path)?;
     config::apply_detected_services(&mut phantom_config, &real_entries);
 
-    // Set up vault, store secrets, backup and rewrite .env
-    vault::setup_and_store(
-        &real_entries,
-        phantom_config.local_project_id(),
-        &env_path,
-        &dotenv,
-    )?;
-
     // Persist public key classifications
     if !public_entries.is_empty() {
         phantom_config.public_keys = public_entries.iter().map(|e| e.key.clone()).collect();
     }
 
-    // Save config
-    phantom_config.save(&config_path)?;
-    println!("{} Saved .phantom.toml", "ok".green().bold());
+    // Fully prepare every vault and file change before mutating any target.
+    let mut token_map = TokenMap::new();
+    let secrets = real_entries
+        .iter()
+        .map(|entry| {
+            token_map.insert(entry.key.clone());
+            InitSecret::new(entry.key.clone(), entry.value.clone())
+        })
+        .collect::<Vec<_>>();
+    let (phantomized_env, mut originals) = dotenv.rewrite_with_phantoms(&token_map);
+    for value in originals.values_mut() {
+        use zeroize::Zeroize;
+        value.zeroize();
+    }
+    originals.clear();
 
-    // Add .phantom.toml to .gitignore if needed
-    env::ensure_gitignore(&project_dir)?;
-
-    // Generate .env.example for team onboarding
+    let mut files = vec![
+        InitFile::replace(&env_path, phantomized_env.into_bytes()).commit_last(),
+        InitFile::replace(
+            &config_path,
+            toml::to_string_pretty(&phantom_config)?.into_bytes(),
+        ),
+    ];
+    if let Some(file) = env::prepare_gitignore(&project_dir)? {
+        files.push(file);
+    }
     let example_path = project_dir.join(".env.example");
     let example_content = dotenv.generate_example_content(Some(&phantom_config));
-    std::fs::write(&example_path, &example_content)?;
+    files.push(InitFile::replace(
+        &example_path,
+        example_content.into_bytes(),
+    ));
+
+    let mut prepared_hook = hooks::prepare_precommit_hook(&project_dir)?;
+    if let Some(file) = prepared_hook.take_file() {
+        files.push(file);
+    }
+    if let Some(prepared) = &claude_setup {
+        if let Some(file) = prepared.transaction_file() {
+            files.push(file);
+        }
+    }
+    let mut guidance = docs::prepare_guidance(&project_dir, &cwd)?;
+    files.extend(guidance.take_files());
+
+    let vault = phantom_vault::create_vault(phantom_config.local_project_id());
+    println!(
+        "{} Using {} vault backend",
+        "->".blue().bold(),
+        vault.backend_name().cyan()
+    );
+    let receipt = phantom_vault::commit_init(vault.as_ref(), secrets, files)
+        .context("Initialization failed; inspect the reported rollback status before retrying")?;
+    for name in &receipt.secret_names {
+        let token = token_map
+            .get_token(name)
+            .expect("every committed secret has a staged token");
+        println!(
+            "   {} {} -> {}",
+            "+".green().bold(),
+            name.bold(),
+            token.as_str()[..12].dimmed()
+        );
+    }
+    println!(
+        "\n{} Rewrote {} with phantom tokens",
+        "ok".green().bold(),
+        env_path.display()
+    );
+    println!("{} Saved .phantom.toml", "ok".green().bold());
     println!(
         "{} Generated {} (commit this for team onboarding)",
         "ok".green().bold(),
         ".env.example".cyan()
     );
 
-    // Install pre-commit hook if in a git repo
-    hooks::install_precommit_hook(&project_dir).context(
-        "Secrets were protected, but initialization is incomplete because the Git hook was not installed",
-    )?;
+    prepared_hook.finish();
 
     println!(
         "\n{} {} secret(s) are now protected!",
@@ -212,17 +286,10 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         real_entries.len()
     );
 
-    // Commit the already validated Claude update. Check project_dir first,
-    // falling back to cwd (repo root) for monorepos.
-    if let Some(prepared) = claude_setup {
-        prompts::apply_auto_setup_claude_code(prepared)?;
+    if let Some(prepared) = &claude_setup {
+        prompts::finish_auto_setup_claude_code(prepared);
     }
-
-    // Add Phantom instructions to CLAUDE.md so Claude knows how to use it
-    docs::auto_add_claude_md(&project_dir, &cwd);
-
-    // Add development setup section to README.md
-    docs::auto_add_readme(&project_dir, &cwd);
+    guidance.finish();
 
     // Detect deployment platforms and suggest sync setup
     prompts::detect_platforms(&project_dir, &cwd);

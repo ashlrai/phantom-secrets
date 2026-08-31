@@ -467,7 +467,17 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
-        let env_path = self.project_dir.join(&params.env_path);
+        let requested_env = std::path::Path::new(&params.env_path);
+        if requested_env.is_absolute()
+            || requested_env
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(invalid_params_err(
+                "env_path must be a contained project-relative file path",
+            ));
+        }
+        let env_path = self.project_dir.join(requested_env);
 
         let dotenv = DotenvFile::parse_file(&env_path)
             .map_err(|e| invalid_params_err(format!("Failed to read {}: {e}", params.env_path)))?;
@@ -487,31 +497,38 @@ impl PhantomMcpServer {
             PhantomConfig::new_with_defaults(project_id.clone())
         };
 
-        let vault = phantom_vault::create_vault(config.local_project_id());
-
         let mut token_map = TokenMap::new();
-        let mut stored = Vec::new();
-        for entry in &real_entries {
-            token_map.insert(entry.key.clone());
-            vault
-                .store(&entry.key, &entry.value)
-                .map_err(|e| internal_err(format!("Failed to store {}: {e}", entry.key)))?;
-            stored.push(entry.key.clone());
+        let secrets = real_entries
+            .iter()
+            .map(|entry| {
+                token_map.insert(entry.key.clone());
+                phantom_vault::InitSecret::new(entry.key.clone(), entry.value.clone())
+            })
+            .collect::<Vec<_>>();
+        let (phantomized, mut originals) = dotenv.rewrite_with_phantoms(&token_map);
+        for value in originals.values_mut() {
+            use zeroize::Zeroize;
+            value.zeroize();
         }
-
-        dotenv
-            .write_phantomized(&token_map, &env_path)
-            .map_err(|e| internal_err(format!("Failed to rewrite .env: {e}")))?;
-
-        config
-            .save(&self.config_path())
-            .map_err(|e| internal_err(format!("Failed to save config: {e}")))?;
+        originals.clear();
+        let files = vec![
+            phantom_vault::InitFile::replace(&env_path, phantomized.into_bytes()).commit_last(),
+            phantom_vault::InitFile::replace(
+                self.config_path(),
+                toml::to_string_pretty(&config)
+                    .map_err(|_| internal_err("Failed to serialize config"))?
+                    .into_bytes(),
+            ),
+        ];
+        let vault = phantom_vault::create_vault(config.local_project_id());
+        let receipt = phantom_vault::commit_init(vault.as_ref(), secrets, files)
+            .map_err(|error| internal_err(format!("Initialization transaction failed: {error}")))?;
 
         let mut output = format!(
             "Phantom initialized! {} secret(s) protected:\n",
-            stored.len()
+            receipt.secret_names.len()
         );
-        for name in &stored {
+        for name in &receipt.secret_names {
             output.push_str(&format!("  - {}\n", name));
         }
         output.push_str("\n.env has been rewritten with phantom tokens.\n");
@@ -4597,6 +4614,26 @@ mod tests {
         assert!(!env_content.contains("sk-test-key"));
         // NODE_ENV should be unchanged
         assert!(env_content.contains("NODE_ENV=production"));
+    }
+
+    #[test]
+    fn test_init_rejects_paths_outside_project_without_mutation() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, dir) = setup_test_project();
+        let original = std::fs::read(dir.path().join(".env")).unwrap();
+
+        let error = server
+            .phantom_init(Parameters(InitParams {
+                env_path: "../.env".to_string(),
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap_err();
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(error.message.contains("contained project-relative"));
+        assert_eq!(std::fs::read(dir.path().join(".env")).unwrap(), original);
+        assert!(!dir.path().join(".phantom.toml").exists());
     }
 
     #[test]

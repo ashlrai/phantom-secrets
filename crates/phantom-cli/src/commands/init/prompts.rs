@@ -9,6 +9,12 @@ pub struct PreparedClaudeSetup {
     plan: crate::commands::setup::ClaudeSettingsPlan,
 }
 
+impl PreparedClaudeSetup {
+    pub fn transaction_file(&self) -> Option<phantom_vault::InitFile> {
+        self.plan.transaction_file()
+    }
+}
+
 /// Prepare Claude Code MCP configuration when a project-local `.claude`
 /// directory is present. This uses the exact local-runtime and settings merge
 /// implementation behind `phantom setup --client claude`.
@@ -41,14 +47,12 @@ where
     Ok(Some(PreparedClaudeSetup { mcp, plan }))
 }
 
-/// Commit a preflighted update and surface write failures to the caller.
-pub fn apply_auto_setup_claude_code(prepared: PreparedClaudeSetup) -> Result<()> {
-    let changed = crate::commands::setup::apply_claude_settings(&prepared.plan)?;
+/// Report a Claude settings update that was committed by the init transaction.
+pub fn finish_auto_setup_claude_code(prepared: &PreparedClaudeSetup) {
     crate::commands::setup::print_claude_changes(&prepared.plan, &prepared.mcp);
-    if changed {
+    if prepared.plan.transaction_file().is_some() {
         println!("{} Configured Claude Code MCP server", "ok".green().bold());
     }
-    Ok(())
 }
 
 /// Detect deployment platforms and suggest sync configuration.

@@ -90,3 +90,25 @@ pub fn ensure_gitignore(project_dir: &Path) -> Result<()> {
 
     Ok(())
 }
+
+/// Prepare the exact ignore-file update for inclusion in init's transaction.
+pub fn prepare_gitignore(project_dir: &Path) -> Result<Option<phantom_vault::InitFile>> {
+    let gitignore_path = project_dir.join(".gitignore");
+    let mut content = if gitignore_path.exists() {
+        std::fs::read_to_string(&gitignore_path)?
+    } else {
+        String::new()
+    };
+    let original = content.clone();
+    for pattern in &[".env", ".env.local", ".env.*.local", ".env.backup"] {
+        if !content.lines().any(|line| line.trim() == *pattern) {
+            if !content.is_empty() && !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push_str(pattern);
+            content.push('\n');
+        }
+    }
+    Ok((content != original)
+        .then(|| phantom_vault::InitFile::replace(gitignore_path, content.into_bytes())))
+}
