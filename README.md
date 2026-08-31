@@ -202,10 +202,13 @@ phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Install both `v0.7.3` release binaries before setup. If `phantom-mcp` is absent
-from `PATH`, the writer's npm fallback currently resolves the older published
-`0.6.0` MCP package, not the reviewed release. Restart the AI tool after running
-`phantom setup` so it picks up the new config.
+Install both `v0.7.3` release binaries before setup. The writer normally records
+the installed `phantom` executable with `mcp serve`. Its standalone fallback
+accepts only an executable local `phantom-mcp`: first on `PATH`, then beside
+`phantom` (`phantom-mcp.exe` on Windows), then in `~/.cargo/bin`. If no local
+runtime is available, setup fails closed with verified `v0.7.3` install guidance;
+it never downloads or executes an unpinned registry package. Restart the AI tool
+after running `phantom setup` so it picks up the new config.
 
 Phantom's stdio MCP server can be configured in MCP clients that support local
 command servers. The setup writer currently has reviewed presets for Claude

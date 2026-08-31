@@ -328,7 +328,7 @@ test("current-release guidance routes installs through verified GitHub or Homebr
 
   const unpinnedRegistryCommands = [
     /(?:^|[`"'(])(?:\$\s*)?npm\s+(?:install|i)\s+(?:-g\s+)?phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
-    /(?:^|[`"'(])(?:\$\s*)?npx(?:\s+-y)?\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+    /(?:^|[`"'(])(?:\$\s*)?npx(?:\s+-y)?\s+phantom-secrets(?:-mcp)?(?!\s+(?:agent|check|exec)\b)(?=$|[\s`"'<>),;])/im,
     /(?:^|[`"'(])(?:\$\s*)?cargo\s+install\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
   ];
 

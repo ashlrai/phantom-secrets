@@ -248,6 +248,8 @@ Print a shell-completion script to stdout. Source from your shell rc; see the RE
 
 Setup: install both reviewed `v0.7.3` binaries, then run `phantom setup --client claude`
 
+Setup normally records the installed `phantom` executable with `mcp serve`. Its standalone fallback accepts only an executable local `phantom-mcp`: first on PATH, then beside `phantom` (`phantom-mcp.exe` on Windows), then in `~/.cargo/bin`. If none is available, setup fails closed with verified `v0.7.3` install guidance; it never downloads or executes an unpinned registry package.
+
 The MCP server uses stdio transport via the rmcp 1.3 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex. The runtime `tools/list` response is the canonical parameter schema.
 
 ### Read-only and read-only-by-default tools

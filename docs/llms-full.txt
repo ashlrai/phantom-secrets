@@ -110,6 +110,12 @@ Run `phantom setup --client claude|cursor|windsurf|codex` after installing both
 files and confirmation-gated steps. Keep secret entry in the trusted terminal
 and deployment/provider authority separate.
 
+Setup normally records the installed `phantom` executable with `mcp serve`.
+Its standalone fallback accepts only an executable local `phantom-mcp`: first
+on PATH, then beside `phantom` (`phantom-mcp.exe` on Windows), then in
+`~/.cargo/bin`. If none is available, setup fails closed with verified `v0.7.3`
+install guidance; it never downloads or executes an unpinned registry package.
+
 ## MCP Server — Multi-IDE Support
 
 Phantom includes a native MCP server (`phantom-secrets-mcp`) with 54 tools enforced by the release schema smoke test.

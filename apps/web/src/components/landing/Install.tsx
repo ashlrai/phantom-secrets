@@ -10,28 +10,28 @@ const TARGETS = [
     label: "Claude Code",
     Logo: ClaudeLogo,
     cmd: "phantom setup --client claude",
-    note: "Uses the installed v0.7.3 phantom-mcp binary when it is on PATH and writes project-local Claude configuration.",
+    note: "Records the installed Phantom CLI's bundled MCP server and writes project-local Claude configuration.",
   },
   {
     id: "cursor",
     label: "Cursor",
     Logo: CursorLogo,
     cmd: "phantom setup --client cursor",
-    note: "Writes the Cursor MCP configuration for the installed v0.7.3 phantom-mcp binary.",
+    note: "Records the installed Phantom CLI's bundled MCP server in Cursor's configuration.",
   },
   {
     id: "windsurf",
     label: "Windsurf",
     Logo: WindsurfLogo,
     cmd: "phantom setup --client windsurf",
-    note: "Writes the Windsurf MCP configuration for the installed v0.7.3 phantom-mcp binary.",
+    note: "Records the installed Phantom CLI's bundled MCP server in Windsurf's configuration.",
   },
   {
     id: "codex",
     label: "Codex",
     Logo: OpenAILogo,
     cmd: "phantom setup --client codex",
-    note: "Writes the Codex MCP configuration for the installed v0.7.3 phantom-mcp binary.",
+    note: "Records the installed Phantom CLI's bundled MCP server in Codex's configuration.",
   },
 ];
 
@@ -47,9 +47,9 @@ export function Install() {
             Install and connect your client.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            After installing both reviewed v0.7.3 binaries, register the MCP
-            server for a supported client and verify the resulting local
-            configuration.
+            After installing both reviewed v0.7.3 binaries, register the bundled
+            MCP server for a supported client and verify the resulting local
+            configuration. Setup never downloads a registry fallback.
           </p>
         </div>
 

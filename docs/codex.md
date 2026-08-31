@@ -40,9 +40,12 @@ command = "phantom-mcp"
 args = []
 ```
 
-Install both `v0.7.3` release binaries before setup. If `phantom-mcp` is absent
-from `PATH`, the writer's npm fallback currently resolves older package `0.6.0`,
-not the reviewed release.
+Install both `v0.7.3` release binaries before setup. Setup normally records the
+installed `phantom` executable with `mcp serve`. Its standalone fallback accepts
+only an executable local `phantom-mcp`: first on `PATH`, then beside `phantom`
+(`phantom-mcp.exe` on Windows), then in `~/.cargo/bin`. If none is available,
+setup fails closed with verified `v0.7.3` install guidance; it never downloads
+or executes an unpinned registry package.
 
 To preview the snippet without modifying your config:
 

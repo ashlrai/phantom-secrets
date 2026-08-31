@@ -45,10 +45,13 @@ This writes `~/.cursor/mcp.json` with the `phantom` MCP server entry:
 }
 ```
 
-Install both `v0.7.3` release binaries before setup. If `phantom-mcp` is absent
-from `PATH`, the writer's npm fallback currently resolves older package `0.6.0`,
-not the reviewed release. The config is global and applies to every Cursor
-workspace.
+Install both `v0.7.3` release binaries before setup. Setup normally records the
+installed `phantom` executable with `mcp serve`. Its standalone fallback accepts
+only an executable local `phantom-mcp`: first on `PATH`, then beside `phantom`
+(`phantom-mcp.exe` on Windows), then in `~/.cargo/bin`. If none is available,
+setup fails closed with verified `v0.7.3` install guidance; it never downloads
+or executes an unpinned registry package. The config is global and applies to
+every Cursor workspace.
 
 To see what would be written without modifying your config:
 
@@ -125,8 +128,9 @@ cat ~/.cursor/mcp.json
 ```
 
 If it looks correct, restart Cursor. Cursor reads MCP config on startup only. If
-`phantom-mcp` is absent from `PATH`, reinstall both binaries from the reviewed
-`v0.7.3` release; the generated npm fallback currently points to older `0.6.0`.
+setup reports that the local MCP runtime is missing, reinstall both binaries
+from the reviewed `v0.7.3` release. Setup fails closed instead of generating a
+registry-backed command.
 
 **`phantom exec -- cursor .` opens Cursor but API calls fail**
 

@@ -28,9 +28,12 @@ Setup (recommended, one command per AI client):
 - Codex: `phantom setup --client codex` (writes ~/.codex/config.toml)
 - Generic: `phantom setup --client claude --print` (snippet to stdout)
 
-Install both `v0.7.3` release binaries first. If `phantom-mcp` is not on PATH,
-the setup writer's npm fallback currently resolves the older published `0.6.0`
-package rather than the reviewed release.
+Install both `v0.7.3` release binaries first. Setup normally records the
+installed `phantom` executable with `mcp serve`. Its standalone fallback accepts
+only an executable local `phantom-mcp`: on PATH, beside `phantom`
+(`phantom-mcp.exe` on Windows), or in `~/.cargo/bin`, in that order. If none is
+available, setup fails closed with verified `v0.7.3` install guidance and never
+downloads or executes an unpinned registry package.
 
 The runtime `tools/list` response is the canonical MCP parameter schema.
 The vault, package, cloud, and team mutation tools selected below require

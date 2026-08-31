@@ -39,10 +39,13 @@ This writes `~/.codeium/windsurf/mcp_config.json` with the `phantom` MCP server 
 }
 ```
 
-Install both `v0.7.3` release binaries before setup. If `phantom-mcp` is absent
-from `PATH`, the writer's npm fallback currently resolves older package `0.6.0`,
-not the reviewed release. The config is global and applies to every Windsurf
-workspace.
+Install both `v0.7.3` release binaries before setup. Setup normally records the
+installed `phantom` executable with `mcp serve`. Its standalone fallback accepts
+only an executable local `phantom-mcp`: first on `PATH`, then beside `phantom`
+(`phantom-mcp.exe` on Windows), then in `~/.cargo/bin`. If none is available,
+setup fails closed with verified `v0.7.3` install guidance; it never downloads
+or executes an unpinned registry package. The config is global and applies to
+every Windsurf workspace.
 
 To preview what would be written without modifying the file:
 
@@ -124,13 +127,13 @@ If the file is missing, re-run `phantom setup --client windsurf`. If the file is
 
 `phantom exec` sets environment variables in the shell that spawns Windsurf. If Windsurf was already running before you ran `phantom exec`, new terminal tabs inherit the original environment, not the proxy environment. Quit Windsurf completely and relaunch via `phantom exec -- windsurf .`.
 
-**`phantom setup` writes `npx` as the command instead of `phantom-mcp`**
+**`phantom setup` says the local MCP runtime is missing**
 
-This means `phantom-mcp` was not found on PATH at setup time. The `npx`
-fallback currently resolves the older published `0.6.0` package, not the
-reviewed `v0.7.3` release. Install both `v0.7.3` binaries using the
-platform-specific path in [getting started](./getting-started.md#install), then
-re-run `phantom setup --client windsurf`.
+Setup did not find a runnable bundled server or executable local standalone
+server. Install both `v0.7.3` binaries using the platform-specific path in
+[getting started](./getting-started.md#install), then re-run
+`phantom setup --client windsurf`. Setup does not generate a registry-backed
+fallback command.
 
 ---
 

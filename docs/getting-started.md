@@ -310,11 +310,14 @@ phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Install both `v0.7.3` release binaries before setup. If `phantom-mcp` is absent
-from `PATH`, the writer's npm fallback currently resolves older package `0.6.0`,
-not the reviewed release. For Claude Code, setup removes legacy Phantom-managed
-dotenv read grants and preserves deny rules; agents use value-blind MCP inventory
-instead. See [claude-code.md](./claude-code.md) for the full workflow. Runtime MCP
+Install both `v0.7.3` release binaries before setup. Setup normally records the
+installed `phantom` executable with `mcp serve`. Its standalone fallback accepts
+only an executable local `phantom-mcp`: first on `PATH`, then beside `phantom`
+(`phantom-mcp.exe` on Windows), then in `~/.cargo/bin`. If none is available,
+setup fails closed with verified `v0.7.3` install guidance; it never downloads
+or executes an unpinned registry package. For Claude Code, setup removes legacy
+Phantom-managed dotenv read grants and preserves deny rules; agents use
+value-blind MCP inventory instead. See [claude-code.md](./claude-code.md) for the full workflow. Runtime MCP
 `tools/list` is the canonical catalog.
 
 Restart the AI tool after running `phantom setup` so it picks up the new config.
@@ -456,16 +459,20 @@ export PHANTOM_VAULT_PASSPHRASE="$(openssl rand -hex 32)"
 
 Store this passphrase as a CI secret. See `docs/ci-cd.md` for full GitHub Actions and Docker examples.
 
-### `npx phantom-secrets` fails to download
+### An older registry-based install command fails
 
-The binary ships from GitHub Releases. Check your internet connection, then:
+The reviewed binaries ship from the immutable `v0.7.3` GitHub Release, not the
+older registry tracks. Download and verify the platform asset above, or build
+the exact tagged source:
 
 ```bash
-# Fallback: build the exact v0.7.3 source
-cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev cffd0f29ab85a45358f011fdcfd40667d576c420 phantom-secrets
+git clone https://github.com/ashlrai/phantom-secrets.git
+cd phantom-secrets
+git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-Or download the binary directly from [github.com/ashlrai/phantom-secrets/releases](https://github.com/ashlrai/phantom-secrets/releases).
+The full SHA above is the source commit resolved by `v0.7.3`.
 
 ### Claude Code cannot read `.env` after setup — is this broken?
 

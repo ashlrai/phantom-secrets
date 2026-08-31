@@ -113,14 +113,16 @@ If the daemon starts but the proxy fails:
 2. Check for port conflicts
 3. Verify `.phantom.toml` is valid: `phantom doctor`
 
-### `npx phantom-secrets` fails to download
+### An older registry-based install command fails
 
-The binary is downloaded from GitHub Releases. If it fails:
+The reviewed `v0.7.3` binaries ship through GitHub Releases and the trusted
+Homebrew formula; npm and crates.io remain older distribution tracks.
 
-1. Check your internet connection
-2. Verify the release exists: https://github.com/ashlrai/phantom-secrets/releases
-3. Use the exact `v0.7.3` asset and `.sha256` sidecar documented in
+1. Verify the immutable release exists: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
+2. Use the exact `v0.7.3` asset and `.sha256` sidecar documented in
    [getting started](./getting-started.md#install)
+3. On macOS, use the tap, trust, and fully qualified formula commands from the
+   same install guide
 
 ## CI/CD Usage
 
