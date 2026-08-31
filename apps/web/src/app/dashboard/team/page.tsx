@@ -39,29 +39,29 @@ export default function TeamPage() {
   if (memberships.length === 0) {
     return (
       <section className="rounded-2xl border border-border bg-s1 p-8 text-center max-w-[640px]">
-        <h2 className="text-[1.2rem] font-bold text-t1">No teams yet</h2>
+        <h2 className="text-[1.2rem] font-bold text-t1">No commissioned pilot teams</h2>
         <p className="mt-3 text-[0.9rem] text-t2 leading-[1.65] max-w-[480px] mx-auto">
-          Teams let multiple developers share the same encrypted vault. The
-          server never sees plaintext — each member decrypts client-side from
-          their own keypair. Pro tier required.
+          The repository contains a fixed-membership encrypted team-vault
+          workflow, but hosted team access and Pro entitlements are not
+          commissioned. Source code, sign-in, or this empty state does not
+          establish availability.
         </p>
-        <div className="mt-5 inline-block rounded-lg bg-s2/60 px-4 py-3 text-left text-[0.82rem] font-mono text-t2">
-          <span className="text-blue-b">$</span> phantom team create &quot;My team&quot;
-          <br />
-          <span className="text-blue-b">$</span> phantom team invite &lt;TEAM_ID&gt;
-          &lt;github-username&gt;
-        </div>
       </section>
     );
   }
 
   return (
     <div className="grid gap-6">
+      <section className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-5 py-4 text-[0.85rem] text-yellow-100 leading-[1.65]">
+        These rows are pilot metadata, not evidence of a public team service or
+        active Pro entitlement. Hosted use requires a separately commissioned
+        backend, account, and written pilot scope.
+      </section>
       {memberships.map((m) => (
         <TeamCard key={m.team_id} membership={m} />
       ))}
       <section className="rounded-xl border border-border bg-s1 px-5 py-4 text-[0.85rem] text-t2 leading-[1.65] max-w-[760px]">
-        Mutations stay in the CLI for now:{" "}
+        For a commissioned pilot, mutations remain CLI-only:{" "}
         <code className="font-mono text-blue-b">phantom team create</code>,{" "}
         <code className="font-mono text-blue-b">phantom team invite</code>,{" "}
         <code className="font-mono text-blue-b">phantom team key-publish</code>.

@@ -202,13 +202,15 @@ phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Install both `v0.7.3` release binaries before setup. The writer normally records
-the installed `phantom` executable with `mcp serve`. Its standalone fallback
-accepts only an executable local `phantom-mcp`: first on `PATH`, then beside
-`phantom` (`phantom-mcp.exe` on Windows), then in `~/.cargo/bin`. If no local
-runtime is available, setup fails closed with verified `v0.7.3` install guidance;
-it never downloads or executes an unpinned registry package. Restart the AI tool
-after running `phantom setup` so it picks up the new config.
+Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
+records the running `phantom` executable with `mcp serve`; if that executable
+cannot be resolved, it looks for the local standalone `phantom-mcp`. Its final
+legacy fallback is unpinned `npx -y phantom-secrets-mcp`, which currently
+resolves an older registry track. Do not rely on that path: keep both verified
+release binaries installed and inspect the generated entry. Current main removes
+the registry fallback and fails closed when neither local runtime is executable;
+that hardening is not part of `v0.7.3` and awaits a later release. Restart the AI
+tool after setup so it picks up the new config.
 
 Phantom's stdio MCP server can be configured in MCP clients that support local
 command servers. The setup writer currently has reviewed presets for Claude

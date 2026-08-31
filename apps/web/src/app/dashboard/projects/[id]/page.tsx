@@ -41,7 +41,7 @@ export default function ProjectDetail() {
       <div className="rounded-2xl border border-border bg-s1 p-8 text-center">
         <p className="text-[1rem] font-bold text-t1">Project not found</p>
         <p className="mt-2 text-[0.88rem] text-t3">
-          We couldn&apos;t find a cloud vault for{" "}
+          No commissioned pilot metadata was returned for{" "}
           <code className="font-mono text-blue-b">{projectId}</code> on your
           account.
         </p>
@@ -67,6 +67,11 @@ export default function ProjectDetail() {
       </a>
 
       <section className="rounded-2xl border border-border bg-s1 p-6">
+        <p className="mb-5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-[0.82rem] text-yellow-100 leading-[1.6]">
+          This is source-backed pilot metadata. It does not establish a public
+          cloud entitlement or prove that the hosted backend and account were
+          commissioned.
+        </p>
         <p className="text-[0.72rem] font-mono uppercase tracking-[0.1em] text-t3">
           Project
         </p>
@@ -87,12 +92,11 @@ export default function ProjectDetail() {
           <LockIcon /> Vault contents
         </h3>
         <p className="mt-3 text-[0.88rem] text-t2 leading-[1.7] max-w-[640px]">
-          The vault is end-to-end encrypted with{" "}
-          <code className="font-mono text-blue-b">ChaCha20-Poly1305</code> and{" "}
-          <code className="font-mono text-blue-b">Argon2id</code>. Only your
-          local CLI holds the passphrase. We never see plaintext — and{" "}
-          neither does this dashboard. To inspect or modify secrets in this
-          project:
+          The source workflow expects a client-encrypted ciphertext payload;
+          this dashboard does not decrypt or display its secret values. The
+          row alone does not prove end-to-end operation or hosted-service
+          acceptance. In a separately commissioned pilot, use the local CLI to
+          inspect or modify the project:
         </p>
         <ul className="mt-4 grid gap-2 text-[0.86rem] text-t2">
           <li>

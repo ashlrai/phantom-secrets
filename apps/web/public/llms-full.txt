@@ -248,7 +248,7 @@ Print a shell-completion script to stdout. Source from your shell rc; see the RE
 
 Setup: install both reviewed `v0.7.3` binaries, then run `phantom setup --client claude`
 
-Setup normally records the installed `phantom` executable with `mcp serve`. Its standalone fallback accepts only an executable local `phantom-mcp`: first on PATH, then beside `phantom` (`phantom-mcp.exe` on Windows), then in `~/.cargo/bin`. If none is available, setup fails closed with verified `v0.7.3` install guidance; it never downloads or executes an unpinned registry package.
+Released `v0.7.3` normally records the running `phantom` executable with `mcp serve`; if that cannot be resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is unpinned `npx -y phantom-secrets-mcp`, which resolves an older registry track. Keep both verified `v0.7.3` binaries installed and inspect the generated entry instead of relying on that fallback. Current main removes the network fallback and fails closed; that hardening is not in `v0.7.3` and awaits a later release.
 
 The MCP server uses stdio transport via the rmcp 1.3 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex. The runtime `tools/list` response is the canonical parameter schema.
 
@@ -570,7 +570,8 @@ personal cloud backups portable.
 Auth: GitHub OAuth via device code flow (like GitHub CLI).
 
 Packaging direction:
-  Free tier: 1 cloud vault, unlimited local vaults
+  Free tier: local vault, proxy, and MCP; no public hosted cloud-vault
+  entitlement is commissioned
   Pro (planned hosted pilot): proposed packaging for expanded cloud-backup,
   cloud-key-portability evaluation, and team-vault capabilities; limits and
   pricing are TBD, and no self-serve checkout is commissioned

@@ -45,13 +45,14 @@ This writes `~/.cursor/mcp.json` with the `phantom` MCP server entry:
 }
 ```
 
-Install both `v0.7.3` release binaries before setup. Setup normally records the
-installed `phantom` executable with `mcp serve`. Its standalone fallback accepts
-only an executable local `phantom-mcp`: first on `PATH`, then beside `phantom`
-(`phantom-mcp.exe` on Windows), then in `~/.cargo/bin`. If none is available,
-setup fails closed with verified `v0.7.3` install guidance; it never downloads
-or executes an unpinned registry package. The config is global and applies to
-every Cursor workspace.
+Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
+records the running `phantom` executable with `mcp serve`; if that cannot be
+resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is
+unpinned `npx -y phantom-secrets-mcp`, an older registry track, so keep both
+verified binaries installed and inspect the generated entry. Current main
+removes that network fallback and fails closed; this is not `v0.7.3` behavior
+and awaits a later release. The config is global and applies to every Cursor
+workspace.
 
 To see what would be written without modifying your config:
 
@@ -127,10 +128,11 @@ Check that `~/.cursor/mcp.json` exists and contains the `phantom` entry:
 cat ~/.cursor/mcp.json
 ```
 
-If it looks correct, restart Cursor. Cursor reads MCP config on startup only. If
-setup reports that the local MCP runtime is missing, reinstall both binaries
-from the reviewed `v0.7.3` release. Setup fails closed instead of generating a
-registry-backed command.
+If it looks correct, restart Cursor. Cursor reads MCP config on startup only. On
+current main, if setup reports that the local MCP runtime is missing, reinstall
+both verified binaries. That post-`v0.7.3` source fails closed instead of
+generating a registry-backed command. Released `v0.7.3` still has the legacy
+final `npx` fallback described above, so review its generated entry.
 
 **`phantom exec -- cursor .` opens Cursor but API calls fail**
 

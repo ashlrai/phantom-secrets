@@ -14,7 +14,7 @@ deployment changes, activate Locus, or prove that a customer workflow works.
 You need:
 
 - a Git repository and a supported local shell;
-- Node.js with `npx`, or an installed `phantom` binary;
+- both `phantom` and `phantom-mcp` from the reviewed `v0.7.3` distribution;
 - the AI client you intend to use; and
 - an independent recoverable copy of each real credential, such as the
   provider's credential console or an approved password manager.
@@ -28,7 +28,7 @@ file, or a command-line argument. Use secret names such as
 From the repository root, run:
 
 ```bash
-npx phantom-secrets agent setup --dry-run
+phantom agent setup --dry-run
 ```
 
 This is a read-only preview. Review the listed files, commands, and any item

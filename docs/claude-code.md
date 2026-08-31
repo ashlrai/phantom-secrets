@@ -30,11 +30,13 @@ This writes `.claude/settings.local.json` with two things at once:
 - The `phantom` MCP server entry (so Claude can call the Phantom tool catalog)
 - Removal of legacy Phantom-managed `.env` read grants; dotenv denies remain a defense-in-depth boundary while MCP exposes value-blind inventory
 
-Setup normally records the installed `phantom` executable with `mcp serve`. Its
-standalone fallback accepts only an executable local `phantom-mcp`: first on
-`PATH`, then beside `phantom` (`phantom-mcp.exe` on Windows), then in
-`~/.cargo/bin`. If none is available, setup fails closed with verified `v0.7.3`
-install guidance; it never downloads or executes an unpinned registry package.
+Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
+records the running `phantom` executable with `mcp serve`; if that cannot be
+resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is
+unpinned `npx -y phantom-secrets-mcp`, an older registry track, so keep both
+verified binaries installed and inspect the generated entry. Current main
+removes that network fallback and fails closed; this is not `v0.7.3` behavior
+and awaits a later release.
 
 Verify it registered:
 

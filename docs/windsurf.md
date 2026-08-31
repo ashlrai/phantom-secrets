@@ -39,13 +39,14 @@ This writes `~/.codeium/windsurf/mcp_config.json` with the `phantom` MCP server 
 }
 ```
 
-Install both `v0.7.3` release binaries before setup. Setup normally records the
-installed `phantom` executable with `mcp serve`. Its standalone fallback accepts
-only an executable local `phantom-mcp`: first on `PATH`, then beside `phantom`
-(`phantom-mcp.exe` on Windows), then in `~/.cargo/bin`. If none is available,
-setup fails closed with verified `v0.7.3` install guidance; it never downloads
-or executes an unpinned registry package. The config is global and applies to
-every Windsurf workspace.
+Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
+records the running `phantom` executable with `mcp serve`; if that cannot be
+resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is
+unpinned `npx -y phantom-secrets-mcp`, an older registry track, so keep both
+verified binaries installed and inspect the generated entry. Current main
+removes that network fallback and fails closed; this is not `v0.7.3` behavior
+and awaits a later release. The config is global and applies to every Windsurf
+workspace.
 
 To preview what would be written without modifying the file:
 
@@ -129,11 +130,12 @@ If the file is missing, re-run `phantom setup --client windsurf`. If the file is
 
 **`phantom setup` says the local MCP runtime is missing**
 
-Setup did not find a runnable bundled server or executable local standalone
-server. Install both `v0.7.3` binaries using the platform-specific path in
-[getting started](./getting-started.md#install), then re-run
-`phantom setup --client windsurf`. Setup does not generate a registry-backed
-fallback command.
+On current main, this means setup did not find a runnable bundled server or
+executable local standalone server. Install both verified binaries using the
+platform-specific path in [getting started](./getting-started.md#install), then
+re-run `phantom setup --client windsurf`. The fail-closed diagnostic is
+post-`v0.7.3` hardening and awaits a later release; released `v0.7.3` still has
+the legacy final `npx` fallback described above.
 
 ---
 

@@ -61,18 +61,18 @@ export default function DashboardOverview() {
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard
           label="Access"
-          value="Local"
-          hint="cloud pilot not commissioned"
+          value="Uncommissioned"
+          hint="local CLI remains separate"
         />
         <StatCard
-          label="Cloud vaults"
+          label="Pilot metadata rows"
           value={String(vaults.length)}
-          hint="encrypted pilot backups"
+          hint="not a public entitlement"
         />
         <StatCard
-          label="Total ciphertext"
+          label="Returned ciphertext"
           value={`${vaults.reduce((s, v) => s + bytesToKb(v.encrypted_blob), 0).toFixed(1)} kB`}
-          hint="end-to-end encrypted"
+          hint="size only; not availability evidence"
         />
       </section>
 
@@ -85,9 +85,9 @@ export default function DashboardOverview() {
         </div>
         {vaults.length === 0 ? (
           <div className="px-5 py-10 text-center text-[0.88rem] text-t3">
-            No cloud vaults yet. Run{" "}
-            <code className="font-mono text-blue-b">phantom cloud push</code>{" "}
-            from a project to upload an encrypted backup.
+            No commissioned pilot metadata was returned. Phantom Cloud is not
+            a public entitlement; do not infer access or run a hosted write
+            from this page without written pilot scope.
           </div>
         ) : (
           <table className="w-full text-left">

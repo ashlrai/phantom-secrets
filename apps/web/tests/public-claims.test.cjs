@@ -29,6 +29,7 @@ const claimPaths = [
   "src/app/manifest.ts",
   "src/app/pricing/page.tsx",
   "src/app/sitemap.ts",
+  ...filesUnder("src/app/dashboard", [".tsx"]),
   ...filesUnder("src/components/landing", [".tsx"]),
   ...filesUnder("public", [".json", ".txt"]),
 ];
@@ -334,8 +335,87 @@ test("current-release guidance routes installs through verified GitHub or Homebr
 
   for (const [file, source] of Object.entries(repositoryGuidanceClaims)) {
     for (const command of unpinnedRegistryCommands) {
-      assert.doesNotMatch(source, command, file);
+      for (const match of source.matchAll(new RegExp(command.source, `${command.flags}g`))) {
+        const start = Math.max(0, match.index - 260);
+        const end = Math.min(source.length, match.index + match[0].length + 260);
+        const context = source.slice(start, end);
+        assert.match(
+          context,
+          /legacy fallback[\s\S]{0,260}(?:older registry track|do not rely)|(?:older registry track|do not rely)[\s\S]{0,260}legacy fallback/i,
+          `${file}: unpinned registry invocation is allowed only as a warning about the released legacy fallback`,
+        );
+      }
     }
+  }
+});
+
+test("released setup guidance separates v0.7.3 fallback from current-main hardening", () => {
+  const setupBoundaryGuides = {
+    "README.md": repositoryGuidanceClaims["README.md"],
+    "docs/getting-started.md": repositoryGuidanceClaims["docs/getting-started.md"],
+    "docs/claude-code.md": repositoryGuidanceClaims["docs/claude-code.md"],
+    "docs/codex.md": repositoryGuidanceClaims["docs/codex.md"],
+    "docs/cursor.md": repositoryGuidanceClaims["docs/cursor.md"],
+    "docs/windsurf.md": repositoryGuidanceClaims["docs/windsurf.md"],
+    "docs/llms.txt": machineReadableClaims["docs/llms.txt"],
+    "docs/llms-full.txt": machineReadableClaims["docs/llms-full.txt"],
+    "apps/web/public/llms.txt": repositoryGuidanceClaims["apps/web/public/llms.txt"],
+    "apps/web/public/llms-full.txt":
+      repositoryGuidanceClaims["apps/web/public/llms-full.txt"],
+  };
+
+  for (const [file, source] of Object.entries(setupBoundaryGuides)) {
+    assert.match(source, /Install both[^\n]*`v0\.7\.3`|both verified `v0\.7\.3` binaries/i, file);
+    assert.match(
+      source,
+      /Released `v0\.7\.3`[\s\S]{0,420}legacy fallback[\s\S]{0,120}npx -y phantom-secrets-mcp/i,
+      file,
+    );
+    assert.match(
+      source,
+      /Current main[\s\S]{0,160}(?:fails closed|removes (?:the )?network fallback)[\s\S]{0,180}(?:not (?:part of|in) `v0\.7\.3`|not `v0\.7\.3` behavior)/i,
+      file,
+    );
+  }
+});
+
+test("HowTo and delegation guidance avoid timing and unpinned quickstart claims", () => {
+  const installHowTo = structuredMetadataBlock(claims["src/app/layout.tsx"], "HowTo");
+  const delegation = repositoryGuidanceClaims["docs/delegation-quickstart.md"];
+
+  assert.doesNotMatch(installHowTo, /totalTime|PT1M/i);
+  assert.match(installHowTo, /Released v0\.7\.3 normally registers its bundled `phantom mcp serve`/i);
+  assert.match(installHowTo, /Current main removes that network fallback and fails closed/i);
+  assert.match(delegation, /both `phantom` and `phantom-mcp` from the reviewed `v0\.7\.3` distribution/i);
+  assert.match(delegation, /phantom agent setup --dry-run/i);
+  assert.doesNotMatch(delegation, /npx(?:\s+-y)?\s+phantom-secrets\s+agent setup/i);
+});
+
+test("dashboard surfaces describe uncommissioned pilot metadata, not live entitlements", () => {
+  const dashboardPaths = filesUnder("src/app/dashboard", [".tsx"]);
+  const dashboardClaims = dashboardPaths.map((file) => read(file)).join("\n");
+
+  for (const forbidden of [
+    /\b1\s+cloud\s+vault\b/i,
+    /Pro tier required/i,
+    /View your cloud vaults, billing, and team membership/i,
+    /No cloud vaults yet/i,
+    /upload an encrypted backup/i,
+  ]) {
+    assert.doesNotMatch(dashboardClaims, forbidden);
+  }
+
+  for (const file of [
+    "src/app/dashboard/layout.tsx",
+    "src/app/dashboard/page.tsx",
+    "src/app/dashboard/team/page.tsx",
+    "src/app/dashboard/projects/[id]/page.tsx",
+  ]) {
+    assert.match(
+      read(file),
+      /not commissioned|uncommissioned|commissioned pilot|separately commissioned/i,
+      file,
+    );
   }
 });
 

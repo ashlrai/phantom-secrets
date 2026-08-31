@@ -56,9 +56,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             Sign in to your dashboard
           </h1>
           <p className="mt-4 text-[0.95rem] text-t2 leading-[1.65]">
-            View your cloud vaults, billing, and team membership. Same GitHub
-            account you used with{" "}
-            <code className="font-mono text-blue-b">phantom login</code>.
+            This source-backed dashboard is for explicitly commissioned pilot
+            accounts. Public cloud, team, and billing entitlements are not
+            commissioned; signing in does not create or activate one.
           </p>
           <button
             type="button"
@@ -107,8 +107,9 @@ function DashboardNav({ email }: { email: string | null }) {
           {email ? `Signed in as ${email}` : "Signed in"}
         </h1>
         <p className="mt-1 text-[0.85rem] text-t3">
-          Read-only view of your projects, teams, and billing. Mutations
-          stay in the CLI: <code className="font-mono text-blue-b">phantom</code>.
+          Read-only pilot metadata when the hosted backend and account have
+          both been commissioned. Source code and sign-in alone do not prove
+          service availability.
         </p>
       </div>
       <nav className="flex flex-wrap gap-1 rounded-lg border border-border bg-s1 p-1">

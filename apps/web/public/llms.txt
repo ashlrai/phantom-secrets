@@ -39,12 +39,13 @@ One command per AI client — Phantom writes the right config file for each:
 | Codex | `phantom setup --client codex` | `~/.codex/config.toml` |
 | Other | `phantom setup --client claude --print` | snippet to stdout |
 
-Install both `v0.7.3` release binaries first. Setup normally records the
-installed `phantom` executable with `mcp serve`. Its standalone fallback accepts
-only an executable local `phantom-mcp`: on PATH, beside `phantom`
-(`phantom-mcp.exe` on Windows), or in `~/.cargo/bin`, in that order. If none is
-available, setup fails closed with verified `v0.7.3` install guidance and never
-downloads or executes an unpinned registry package.
+Install both `v0.7.3` release binaries first. Released `v0.7.3` normally records
+the running `phantom` executable with `mcp serve`; if that cannot be resolved, it
+looks for a local `phantom-mcp`. Its final legacy fallback is unpinned
+`npx -y phantom-secrets-mcp`, which resolves an older registry track. Keep both
+verified binaries installed and inspect the generated entry instead of relying
+on that fallback. Current main removes the network fallback and fails closed;
+that hardening is not in `v0.7.3` and awaits a later release.
 
 ## What an AI agent should do
 
@@ -155,7 +156,8 @@ Detection and runtime injection are different capabilities. Database connection 
 
 ## Pricing
 
-- Free: local vault, proxy, MCP, 1 cloud vault (≤10 secrets), Vercel/Railway sync
+- Free: local vault, proxy, MCP, and Vercel/Railway sync workflows; no public
+  hosted cloud-vault entitlement is commissioned
 - Pro (planned hosted pilot): proposed packaging for cloud-backup, cloud-key-portability evaluation, and team-vault capabilities; limits and pricing are TBD, and no self-serve checkout is commissioned
 - Enterprise evaluation: team-vault source and local audit tooling are present; SSO/SAML, centralized enterprise authorization, certification, and contractual SLA are not shipped by this repository. Service and support scope require a separate written agreement with Ashlr AI — `mason@ashlr.ai`.
 

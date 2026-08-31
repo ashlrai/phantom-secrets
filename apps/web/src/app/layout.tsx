@@ -179,9 +179,8 @@ export default function RootLayout({
               name: "Install Phantom Secrets",
               description:
                 "Set up Phantom so supported AI-agent workflows receive placeholders instead of real API keys.",
-              totalTime: "PT1M",
               tool: [
-                { "@type": "HowToTool", name: "Homebrew 6 on macOS, or an exact v0.7.3 GitHub release asset" },
+                { "@type": "HowToTool", name: "Homebrew on macOS, or an exact v0.7.3 GitHub release asset" },
                 { "@type": "HowToTool", name: "Claude Code, Cursor, Windsurf, or Codex" },
               ],
               step: [
@@ -193,7 +192,7 @@ export default function RootLayout({
                 {
                   "@type": "HowToStep",
                   name: "Register the MCP server with your editor",
-                  text: "Run `phantom setup --client claude`, `cursor`, `windsurf`, or `codex` so the installed v0.7.3 phantom-mcp binary is registered with the selected client.",
+                  text: "Install both v0.7.3 binaries, then run `phantom setup --client claude`, `cursor`, `windsurf`, or `codex`. Released v0.7.3 normally registers its bundled `phantom mcp serve` runtime; it retains a legacy final `npx` fallback, so review the generated entry and keep the verified standalone `phantom-mcp` binary installed. Current main removes that network fallback and fails closed, but that change awaits a later release.",
                 },
                 {
                   "@type": "HowToStep",
