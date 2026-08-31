@@ -65,6 +65,9 @@ const publishedPackageDocumentationClaims = Object.fromEntries(
 const repositoryGuidanceClaims = {
   "AGENTS.md": readRepo("AGENTS.md"),
   "README.md": readRepo("README.md"),
+  "integrations/github-actions/example-workflow.yml": readRepo(
+    "integrations/github-actions/example-workflow.yml",
+  ),
   ...staticDocumentationClaims,
   ...publishedPackageDocumentationClaims,
   ...Object.fromEntries(
