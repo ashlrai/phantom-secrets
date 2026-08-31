@@ -276,5 +276,74 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
     pricing,
     /mailto:mason@ashlr\.ai\?subject=Phantom%20Pro%20pilot/,
   );
-  assert.match(billingDashboard, /isPro \|\| hasBillingAccount/);
+  assert.doesNotMatch(
+    billingDashboard,
+    /\/api\/v1\/billing\/(?:checkout|portal)/,
+  );
+  assert.match(
+    billingDashboard,
+    /does not collect payment or start a\s+subscription/,
+  );
+});
+
+test("dashboard and auth do not present uncommissioned Pro billing as live", () => {
+  const billingDashboard = fs.readFileSync(
+    path.join(repoDir, "src/app/dashboard/billing/page.tsx"),
+    "utf8",
+  );
+  const dashboardOverview = fs.readFileSync(
+    path.join(repoDir, "src/app/dashboard/page.tsx"),
+    "utf8",
+  );
+  const auth = fs.readFileSync(authPath, "utf8");
+  const dashboardClaims = `${billingDashboard}\n${dashboardOverview}`;
+  const plannedProSurfaces = `${dashboardClaims}\n${auth}`;
+
+  for (const activeClaim of [
+    /Upgrade to Pro/i,
+    /\$\s*8\s*(?:\/|per\s+)\s*(?:mo(?:nth)?|month)/i,
+    /unlimited cloud vaults?/i,
+    /priority[\s-]+support/i,
+  ]) {
+    assert.doesNotMatch(plannedProSurfaces, activeClaim);
+  }
+
+  for (const activeBillingUi of [
+    /\/api\/v1\/billing\/(?:checkout|portal)/i,
+    /signInWithOAuth/i,
+    /Manage billing in Stripe/i,
+    /Opening Stripe/i,
+    /Renews on/i,
+    /Receipt \+ invoices/i,
+    /Past invoices, payment methods/i,
+  ]) {
+    assert.doesNotMatch(dashboardClaims, activeBillingUi);
+  }
+
+  assert.match(billingDashboard, /planned|not commissioned|uncommissioned/i);
+  assert.match(billingDashboard, /mailto:|contact/i);
+  assert.match(dashboardOverview, /pilot|planned|not commissioned|uncommissioned/i);
+
+  assert.doesNotMatch(auth, /checkout_url/i);
+  assert.match(auth, /not commissioned|uncommissioned|unavailable/i);
+  assert.match(auth, /status:\s*503/);
+});
+
+test("planned Pro authorization fails closed for every stored plan label", async () => {
+  const { auth } = loadAuthModule({
+    serviceClient: createMockServiceClient(),
+  });
+
+  for (const plan of ["free", "pro"]) {
+    const response = auth.requirePro({ userId: `user-${plan}`, plan });
+    assert.ok(response instanceof Response, plan);
+    assert.equal(response.status, 503, plan);
+
+    const body = await response.json();
+    assert.equal(body.error, "feature_unavailable", plan);
+    assert.match(body.message, /not commissioned/i, plan);
+    assert.match(body.interest_url, /^mailto:/i, plan);
+    assert.equal("checkout_url" in body, false, plan);
+    assert.doesNotMatch(JSON.stringify(body), /\$\s*8|per month|\/month/i, plan);
+  }
 });
