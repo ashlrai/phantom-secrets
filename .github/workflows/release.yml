@@ -68,7 +68,7 @@ jobs:
           node scripts/release/extract-release-notes.mjs "$GITHUB_REF_NAME" > /tmp/phantom-release-notes.md
 
       - name: Test fail-closed publication and release receipts
-        run: node --test scripts/publish-crates.test.js scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs scripts/release/verify-github-tag-binding.test.mjs
+        run: node --test scripts/publish-crates.test.js scripts/release/compare-release-artifacts.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs scripts/release/verify-github-tag-binding.test.mjs
 
       - name: Install verified cargo-deny
         env:
@@ -439,7 +439,22 @@ jobs:
           node scripts/release/verify-github-release-receipt.mjs \
             release-receipt.json "$GITHUB_REF_NAME" draft
 
-      - name: Publish the immutable release
+      - name: Verify hosted draft artifacts match the trusted build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          hosted_dir=$(mktemp -d)
+          trap 'rm -rf "$hosted_dir"' EXIT
+          gh release download "$GITHUB_REF_NAME" --dir "$hosted_dir"
+          node scripts/release/verify-release-artifacts.mjs "$hosted_dir"
+          node scripts/release/compare-release-artifacts.mjs artifacts "$hosted_dir"
+
+      # The Ashlr organization enforces immutable releases for this selected
+      # repository. The administration-read policy endpoint is intentionally
+      # unavailable to the job token; the hosted receipt below still requires
+      # GitHub to report isImmutable=true after publication.
+      - name: Publish the organization-enforced immutable release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false
@@ -462,3 +477,4 @@ jobs:
           trap 'rm -rf "$hosted_dir"' EXIT
           gh release download "$GITHUB_REF_NAME" --dir "$hosted_dir"
           node scripts/release/verify-release-artifacts.mjs "$hosted_dir"
+          node scripts/release/compare-release-artifacts.mjs artifacts "$hosted_dir"
