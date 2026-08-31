@@ -263,7 +263,18 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
     path.join(repoDir, "src/app/dashboard/billing/page.tsx"),
     "utf8",
   );
-  assert.match(pricing, /conflict\.error === "subscription_exists"/);
-  assert.match(pricing, /window\.location\.href = "\/dashboard\/billing"/);
+  assert.doesNotMatch(pricing, /\/api\/v1\/billing\/checkout/);
+  assert.doesNotMatch(pricing, /signInWithOAuth/);
+  assert.doesNotMatch(pricing, /subscription_exists/);
+  assert.doesNotMatch(pricing, /Start with Pro/);
+  assert.match(
+    pricing,
+    /Pro billing and cloud entitlements are not commissioned/,
+  );
+  assert.match(pricing, /Join the Pro pilot list/);
+  assert.match(
+    pricing,
+    /mailto:mason@ashlr\.ai\?subject=Phantom%20Pro%20pilot/,
+  );
   assert.match(billingDashboard, /isPro \|\| hasBillingAccount/);
 });
