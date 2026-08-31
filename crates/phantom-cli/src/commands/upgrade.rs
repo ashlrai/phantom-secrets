@@ -31,6 +31,24 @@ fn select_release_asset(
         .cloned()
 }
 
+fn reviewed_release_url(version: &str) -> String {
+    format!("https://github.com/ashlrai/phantom-secrets/releases/tag/v{version}")
+}
+
+fn permission_denied_guidance(source: InstallSource, version: &str) -> String {
+    match source {
+        InstallSource::Homebrew => "Use the reviewed tap and fully qualified formula:\n\
+             brew tap ashlrai/phantom\n\
+             brew trust --formula ashlrai/phantom/phantom\n\
+             brew upgrade ashlrai/phantom/phantom"
+            .to_string(),
+        _ => format!(
+            "Use the checksum-verifiable assets from the reviewed release: {}",
+            reviewed_release_url(version)
+        ),
+    }
+}
+
 pub(crate) fn detect_install_source() -> InstallSource {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -69,7 +87,8 @@ pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
         println!(
             "  {}",
             format!(
-                "Install the reviewed release: https://github.com/ashlrai/phantom-secrets/releases/tag/v{current}"
+                "Install the reviewed release: {}",
+                reviewed_release_url(current)
             )
             .cyan()
             .bold()
@@ -139,15 +158,11 @@ pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
         Err(self_update::errors::Error::Io(e))
             if e.kind() == std::io::ErrorKind::PermissionDenied =>
         {
-            let cmd = match source {
-                InstallSource::Homebrew => "brew upgrade phantom",
-                InstallSource::Cargo => "cargo install phantom-secrets --force",
-                _ => "brew upgrade phantom",
-            };
+            let guidance = permission_denied_guidance(source, current);
             println!(
-                "{} Permission denied. Try the package-manager path instead: {}",
+                "{} Permission denied. {}",
                 "!".red().bold(),
-                cmd.yellow(),
+                guidance.yellow(),
             );
             std::process::exit(1);
         }
@@ -195,5 +210,28 @@ mod tests {
             release_archive_name("aarch64-apple-darwin"),
             "phantom-aarch64-apple-darwin.tar.gz"
         );
+    }
+
+    #[test]
+    fn permission_recovery_never_recommends_unreviewed_distribution() {
+        for source in [
+            InstallSource::Npm,
+            InstallSource::Cargo,
+            InstallSource::Curl,
+            InstallSource::Unknown,
+        ] {
+            let guide = permission_denied_guidance(source, "0.7.3");
+            assert!(guide.contains("releases/tag/v0.7.3"));
+            assert!(!guide.contains("cargo install"));
+            assert!(!guide.contains("npm install"));
+            assert!(!guide.contains("npx "));
+            assert!(!guide.contains("brew upgrade phantom"));
+        }
+
+        let brew = permission_denied_guidance(InstallSource::Homebrew, "0.7.3");
+        assert!(brew.contains("brew tap ashlrai/phantom"));
+        assert!(brew.contains("brew trust --formula ashlrai/phantom/phantom"));
+        assert!(brew.contains("brew upgrade ashlrai/phantom/phantom"));
+        assert!(!brew.contains("brew upgrade phantom\n"));
     }
 }

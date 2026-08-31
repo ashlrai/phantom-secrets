@@ -27,7 +27,9 @@ const { dirname, isAbsolute, join, resolve } = require("path");
 const VERSION = "0.7.3";
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom";
-const INSTALL_FROM_SOURCE = "cargo install phantom-secrets";
+const REVIEWED_RELEASE_URL = `https://github.com/${REPO}/releases/tag/v${VERSION}`;
+const REVIEWED_RELEASE_GUIDANCE =
+  `Use the checksum-verifiable ${BINARY_NAME} assets from the reviewed release: ${REVIEWED_RELEASE_URL}`;
 const MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 5;
@@ -56,7 +58,7 @@ const SUPPORTED_TARGETS = Object.freeze({
 });
 
 function unsupportedPlatformMessage(runtime = process) {
-  return `Unsupported platform: ${runtime.platform}-${runtime.arch}. Install from source: ${INSTALL_FROM_SOURCE}`;
+  return `Unsupported platform: ${runtime.platform}-${runtime.arch}. ${REVIEWED_RELEASE_GUIDANCE}`;
 }
 
 function getPlatformTarget(runtime = process) {
@@ -707,7 +709,7 @@ async function main() {
   } catch (error) {
     if (!Number.isInteger(error.status) && !error.signal) {
       console.error(`phantom wrapper failed: ${error.message}`);
-      console.error(`Install from source: ${INSTALL_FROM_SOURCE}`);
+      console.error(REVIEWED_RELEASE_GUIDANCE);
     }
     propagateChildFailure(error);
   }

@@ -114,6 +114,26 @@ test('canonical installers exactly match the public mirrors', () => {
   assert.deepEqual(readFileSync(psInstaller), readFileSync(join(repo, 'apps/web/public/install.ps1')));
 });
 
+test('Unix installer guidance never emits pipe-to-shell or older-registry fallbacks', () => {
+  const source = readFileSync(shellInstaller, 'utf8');
+  assert.doesNotMatch(source, /curl[^\n]*https?:\/\/[^\n]*\|\s*(?:ba)?sh\b/i);
+  assert.doesNotMatch(source, /cargo install|npm (?:i|install)|npx /i);
+  assert.match(source, /checksum-verifiable asset from \$RELEASES_URL/);
+  assert.match(source, /Do not pipe a network response directly into a shell/);
+});
+
+test('Unix unsupported-target failures point to reviewed release assets', () => {
+  for (const options of [
+    { unameS: 'FreeBSD', unameM: 'x86_64' },
+    { unameS: 'Darwin', unameM: 'riscv64' },
+  ]) {
+    const { result } = runInstaller(options);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /checksum-verifiable asset from https:\/\/github\.com\/ashlrai\/phantom-secrets\/releases/);
+    assert.doesNotMatch(result.stderr, /cargo install|npm (?:i|install)|npx |curl[^\n]*\|/i);
+  }
+});
+
 test('Unix installer uses bounded HTTPS downloads and promotes both exact binaries', () => {
   const { install, log, result, root } = runInstaller();
   assert.equal(result.status, 0, result.stderr);

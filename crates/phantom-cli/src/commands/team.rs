@@ -275,43 +275,48 @@ pub fn run_invite(team_id: &str, github_login: &str, role: &str) -> Result<()> {
         role
     );
 
-    println!(
-        "\n{} Send your teammate this checklist so they can join:",
-        "next".blue().bold()
-    );
-    println!(
-        "  {}. Install Phantom:    {}",
-        "1".bold(),
-        "curl -fsSL phm.dev/install | sh".cyan().bold()
-    );
-    println!(
-        "  {}. Sign in:            {}",
-        "2".bold(),
-        "phantom login".cyan().bold()
-    );
-    println!(
-        "  {}. Publish their key:  {}",
-        "3".bold(),
-        format!("phantom team key-publish {team_id}").cyan().bold()
-    );
-    println!(
-        "  {}. Pull this vault:    {}",
-        "4".bold(),
-        format!("phantom team vault-pull {team_id}").cyan().bold()
-    );
-    println!(
-        "\n{} Then re-run `phantom team vault-push {team_id}` so this teammate is sealed in.",
-        "tip".dimmed()
-    );
+    println!("\n{}", invitation_checklist(team_id));
 
     Ok(())
 }
 
+fn invitation_checklist(team_id: &str) -> String {
+    format!(
+        "Send your teammate this ordered checklist:\n\
+         1. Install a checksum-verifiable release from https://github.com/ashlrai/phantom-secrets/releases/tag/v{}\n\
+         2. Sign in: phantom login\n\
+         3. Member publishes this device key: phantom team key-publish {team_id}\n\
+         4. Owner/admin creates the member key share: phantom team vault-push {team_id}\n\
+         5. Member pulls only after step 4 succeeds: phantom team vault-pull {team_id}\n\
+         Access boundary: current team roles do not restrict shared-vault read/write access.\n\
+         Offboarding boundary: removing a member does not revoke old ciphertext; rotate affected secrets after offboarding.",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use super::invitation_checklist;
+
     #[test]
     fn team_revoke_fails_before_auth_or_network_access() {
         let error = super::run_revoke("team-test", "member-test", true).unwrap_err();
         assert!(error.to_string().contains("atomic membership-removal"));
+    }
+
+    #[test]
+    fn invitation_guidance_is_reviewed_and_orders_key_share_before_pull() {
+        let guide = invitation_checklist("team-test");
+        let publish = guide.find("phantom team key-publish team-test").unwrap();
+        let push = guide.find("phantom team vault-push team-test").unwrap();
+        let pull = guide.find("phantom team vault-pull team-test").unwrap();
+        assert!(publish < push && push < pull);
+        assert!(guide.contains("releases/tag/v"));
+        assert!(guide.contains("roles do not restrict shared-vault read/write access"));
+        assert!(guide.contains("rotate affected secrets after offboarding"));
+        assert!(!guide.contains("curl"));
+        assert!(!guide.contains("cargo install"));
+        assert!(!guide.contains("npm install"));
+        assert!(!guide.contains("npx "));
     }
 }

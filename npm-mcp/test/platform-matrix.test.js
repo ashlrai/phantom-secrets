@@ -91,15 +91,25 @@ function assertWrapperMatchesReleaseMatrix(name, wrapper) {
     { platform: "freebsd", arch: "x64" },
     { platform: "win32", arch: "ia32" },
   ]) {
-    assert.throws(
-      () => wrapper.getPlatformTarget(runtime),
-      new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`),
-      `${name} rejects ${runtime.platform}-${runtime.arch}`
-    );
+    assert.throws(() => wrapper.getPlatformTarget(runtime), (error) => {
+      assert.match(error.message, new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`));
+      assert.match(error.message, /releases\/tag\/v0\.7\.3/);
+      assert.match(error.message, /checksum-verifiable/);
+      assert.doesNotMatch(error.message, /cargo install|npm install|npx |curl[^\n]*\|/i);
+      return true;
+    }, `${name} rejects ${runtime.platform}-${runtime.arch}`);
   }
 }
 
 assertWrapperMatchesReleaseMatrix("phantom-secrets", phantomCli);
 assertWrapperMatchesReleaseMatrix("phantom-secrets-mcp", phantomMcp);
+
+for (const wrapperPath of [
+  join(repoRoot, "npm", "bin", "cli.js"),
+  join(repoRoot, "npm-mcp", "bin", "cli.js"),
+]) {
+  const source = readFileSync(wrapperPath, "utf8");
+  assert.doesNotMatch(source, /Install from source|cargo install phantom-secrets/);
+}
 
 console.log("npm wrapper platform matrix tests passed");

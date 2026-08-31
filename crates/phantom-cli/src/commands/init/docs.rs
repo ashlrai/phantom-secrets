@@ -97,8 +97,16 @@ phantom --version          # use the installed local binary that ran `phantom in
 
 # Personal backup only: restore on the machine holding the original cloud key
 phantom cloud pull
-# Team vault instead: after invitation and `phantom team key-publish <TEAM_ID>`
+# Team vault instead (ordered):
+# 1. Member registers this device before any pull
+phantom team key-publish <TEAM_ID>
+# 2. Owner/admin creates that member's key share after the key is visible
+phantom team vault-push <TEAM_ID>
+# 3. Member pulls only after the owner/admin push succeeds
 phantom team vault-pull <TEAM_ID>
+
+# Current roles do not restrict shared-vault read/write access. Removing a
+# member does not revoke previously shared ciphertext; rotate affected secrets.
 
 phantom exec -- npm run dev
 ```
@@ -141,8 +149,16 @@ mod tests {
         assert!(readme.contains("Personal backup only"));
         assert!(readme.contains("phantom cloud pull"));
         assert!(readme.contains("phantom team vault-pull <TEAM_ID>"));
+        let publish = readme.find("phantom team key-publish <TEAM_ID>").unwrap();
+        let push = readme.find("phantom team vault-push <TEAM_ID>").unwrap();
+        let pull = readme.find("phantom team vault-pull <TEAM_ID>").unwrap();
+        assert!(publish < push && push < pull);
+        assert!(readme.contains("roles do not restrict shared-vault read/write access"));
+        assert!(readme.contains("rotate affected secrets"));
         assert!(!readme.contains("restore team vault"));
         assert!(!readme.contains("npm i -g phantom-secrets"));
         assert!(!readme.contains("npx phantom-secrets"));
+        assert!(!readme.contains("cargo install"));
+        assert!(!readme.contains("curl"));
     }
 }

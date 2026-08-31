@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Phantom Secrets — one-liner installer.
+# Phantom Secrets — checksum-verifying release installer.
 #
-#   curl -fsSL https://phm.dev/install.sh | bash
+# Download this script from the reviewed GitHub release, inspect it, and run
+# the local file. Do not pipe a network response directly into a shell.
 #
 # Downloads a release from GitHub, verifies its SHA-256 sidecar and exact
 # archive shape, validates both binaries, then promotes a private sibling
@@ -15,6 +16,7 @@ warn() { printf "  \033[1;33m!\033[0m phantom: %s\n" "$1" >&2; }
 die()  { printf "  \033[1;31m✗\033[0m phantom: %s\n" "$1" >&2; exit 1; }
 
 REPO="${PHANTOM_REPO:-ashlrai/phantom-secrets}"
+RELEASES_URL="https://github.com/ashlrai/phantom-secrets/releases"
 INSTALL_DIR="${PHANTOM_INSTALL_DIR:-$HOME/.phantom-secrets/bin}"
 PIN_TAG="${PHANTOM_TAG:-}"
 MAX_API_BYTES=1048576
@@ -116,12 +118,12 @@ command -v tar >/dev/null 2>&1 || die "tar is required"
 case "$(uname -s)" in
   Darwin) os="apple-darwin" ;;
   Linux)  os="unknown-linux-gnu" ;;
-  *) die "unsupported OS: $(uname -s) — install from source: cargo install phantom-secrets" ;;
+  *) die "unsupported OS: $(uname -s) — use a checksum-verifiable asset from $RELEASES_URL" ;;
 esac
 case "$(uname -m)" in
   x86_64|amd64)  arch="x86_64" ;;
   arm64|aarch64) arch="aarch64" ;;
-  *) die "unsupported arch: $(uname -m) — install from source: cargo install phantom-secrets" ;;
+  *) die "unsupported arch: $(uname -m) — use a checksum-verifiable asset from $RELEASES_URL" ;;
 esac
 target="${arch}-${os}"
 say "target: $target"
