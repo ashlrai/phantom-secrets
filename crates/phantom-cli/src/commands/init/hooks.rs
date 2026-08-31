@@ -1,4 +1,5 @@
 use colored::Colorize;
+use phantom_core::precommit_hook::{self, HookChange};
 use std::path::Path;
 
 /// Make a file executable on Unix platforms.
@@ -32,46 +33,40 @@ pub fn install_precommit_hook(project_dir: &Path) {
     let hooks_dir = git_dir.join("hooks");
     let hook_path = hooks_dir.join("pre-commit");
 
-    // Check if hook already exists
-    if hook_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&hook_path) {
-            if content.contains("phantom") {
-                return; // Already installed
-            }
-            // Existing hook without phantom — append
-            let updated = format!(
-                "{}\n\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\n",
-                content.trim_end()
-            );
-            if std::fs::write(&hook_path, updated).is_ok() {
-                make_executable(&hook_path);
-                println!(
-                    "{} Appended phantom check to existing pre-commit hook",
-                    "ok".green().bold()
-                );
-            }
-            return;
-        }
-    }
-
     // Create hooks directory if needed
     let _ = std::fs::create_dir_all(&hooks_dir);
 
-    let hook_content = r#"#!/bin/sh
-# Phantom Secrets pre-commit hook
-# Scans staged files for unprotected secrets
+    let existing = if hook_path.exists() {
+        match std::fs::read_to_string(&hook_path) {
+            Ok(content) => content,
+            Err(e) => {
+                println!(
+                    "{} Could not inspect pre-commit hook: {}",
+                    "warn".yellow().bold(),
+                    e
+                );
+                return;
+            }
+        }
+    } else {
+        String::new()
+    };
+    let update = precommit_hook::ensure(&existing);
+    if update.change == HookChange::Unchanged {
+        return;
+    }
 
-npx phantom-secrets check --staged
-exit $?
-"#;
-
-    match std::fs::write(&hook_path, hook_content) {
+    match std::fs::write(&hook_path, update.content) {
         Ok(_) => {
             make_executable(&hook_path);
-            println!(
-                "{} Installed pre-commit hook (scans for leaked secrets)",
-                "ok".green().bold()
-            );
+            let message = match update.change {
+                HookChange::Installed => "Installed pre-commit hook (scans for leaked secrets)",
+                HookChange::Repaired => {
+                    "Repaired pre-commit hook to use the installed local phantom binary"
+                }
+                HookChange::Unchanged => unreachable!(),
+            };
+            println!("{} {}", "ok".green().bold(), message);
         }
         Err(e) => {
             println!(
@@ -80,5 +75,45 @@ exit $?
                 e
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn install_repairs_legacy_npx_hook_without_losing_existing_commands() {
+        let project = TempDir::new().unwrap();
+        let hooks = project.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\necho before\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\necho after\n",
+        )
+        .unwrap();
+
+        install_precommit_hook(project.path());
+
+        let installed = std::fs::read_to_string(hook).unwrap();
+        assert!(precommit_hook::is_current(&installed));
+        assert!(installed.contains("echo before"));
+        assert!(installed.contains("echo after"));
+        assert!(!installed.contains("npx phantom-secrets"));
+    }
+
+    #[test]
+    fn install_is_idempotent() {
+        let project = TempDir::new().unwrap();
+        std::fs::create_dir_all(project.path().join(".git")).unwrap();
+        install_precommit_hook(project.path());
+        let hook = project.path().join(".git/hooks/pre-commit");
+        let first = std::fs::read_to_string(&hook).unwrap();
+
+        install_precommit_hook(project.path());
+
+        assert_eq!(std::fs::read_to_string(hook).unwrap(), first);
     }
 }

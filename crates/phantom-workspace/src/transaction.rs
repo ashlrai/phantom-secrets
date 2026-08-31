@@ -4,6 +4,7 @@ use crate::{inspect_workspace, Result, SetupAction, SetupActionKind, SetupPlan, 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use phantom_core::config::PhantomConfig;
+use phantom_core::precommit_hook;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -27,8 +28,6 @@ const TRANSACTION_SCHEMA_VERSION: u8 = 1;
 const JOURNAL_SCHEMA_VERSION: u8 = 1;
 const JOURNAL_AAD_DOMAIN: &[u8] = b"phantom.workspace-transaction-journal.v1\0";
 const ENV_IGNORE_PATTERNS: &[&str] = &[".env", ".env.local", ".env.*.local", ".env.backup"];
-const HOOK_MARKER: &str = "# Phantom Secrets pre-commit hook";
-const HOOK_COMMAND: &str = "npx phantom-secrets check --staged";
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static PROCESS_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -1043,7 +1042,7 @@ fn build_filesystem_mutations(
             SetupActionKind::InstallPreCommitCheck if root.join(".git").is_dir() => {
                 Some(ensure_pre_commit_hook(
                     secure_read_target(root, root_directory, &action.target)?.unwrap_or_default(),
-                ))
+                )?)
             }
             _ => None,
         };
@@ -1125,21 +1124,12 @@ fn value_free_example(inspection: &WorkspaceInspection) -> Vec<u8> {
     content.into_bytes()
 }
 
-fn ensure_pre_commit_hook(existing: Vec<u8>) -> Vec<u8> {
-    if existing
-        .windows(HOOK_COMMAND.len())
-        .any(|window| window == HOOK_COMMAND.as_bytes())
-    {
-        return existing;
-    }
-    let mut content = existing;
-    if content.is_empty() {
-        content.extend_from_slice(b"#!/bin/sh\n");
-    } else if !content.ends_with(b"\n") {
-        content.push(b'\n');
-    }
-    content.extend_from_slice(format!("\n{HOOK_MARKER}\n{HOOK_COMMAND}\n").as_bytes());
-    content
+fn ensure_pre_commit_hook(existing: Vec<u8>) -> Result<Vec<u8>> {
+    let content = String::from_utf8(existing).map_err(|error| WorkspaceError::Io {
+        path: PathBuf::from(".git/hooks/pre-commit"),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+    })?;
+    Ok(precommit_hook::ensure(&content).content.into_bytes())
 }
 
 fn ensure_unique_targets(mutations: &mut [FileMutation]) -> Result<()> {
@@ -2100,6 +2090,29 @@ fn acquire_workspace_lock(root: &Path) -> Result<WorkspaceLock> {
         _process: process,
         _file: lock,
     })
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_generator_repairs_legacy_hook_with_canonical_local_command() {
+        let legacy = b"#!/bin/sh\necho before\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\nexit $?\necho after\n".to_vec();
+
+        let generated = String::from_utf8(ensure_pre_commit_hook(legacy).unwrap()).unwrap();
+
+        assert!(precommit_hook::is_current(&generated));
+        assert!(generated.contains("echo before"));
+        assert!(generated.contains("echo after"));
+        assert!(!generated.contains("npx phantom-secrets"));
+    }
+
+    #[test]
+    fn workspace_generator_rejects_non_utf8_hook_instead_of_overwriting_it() {
+        let error = ensure_pre_commit_hook(vec![0xff]).unwrap_err();
+        assert!(matches!(error, WorkspaceError::Io { .. }));
+    }
 }
 
 #[cfg(all(test, unix))]

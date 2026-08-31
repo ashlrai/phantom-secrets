@@ -83,15 +83,23 @@ This project uses [Phantom](https://phm.dev) to protect API keys from AI leaks.
 
 /// Add a "Secrets" section to README.md so humans know the project uses Phantom.
 pub fn auto_add_readme(project_dir: &Path, cwd: &Path) {
-    let section = r#"
+    let version = env!("CARGO_PKG_VERSION");
+    let section = format!(
+        r#"
 ## Secrets
 
 This project uses [Phantom](https://phm.dev) to protect API keys from AI agent leaks.
 
 **Setup (with Phantom):**
 ```bash
-npm i -g phantom-secrets  # or: npx phantom-secrets
-phantom cloud pull         # restore team vault
+phantom --version          # use the installed local binary that ran `phantom init`
+# Reviewed release: https://github.com/ashlrai/phantom-secrets/releases/tag/v{version}
+
+# Personal backup only: restore on the machine holding the original cloud key
+phantom cloud pull
+# Team vault instead: after invitation and `phantom team key-publish <TEAM_ID>`
+phantom team vault-pull <TEAM_ID>
+
 phantom exec -- npm run dev
 ```
 
@@ -101,15 +109,40 @@ cp .env.example .env
 # Fill in real API keys
 npm run dev
 ```
-"#;
+"#
+    );
 
     append_section_to_file(
         "README.md",
         project_dir,
         cwd,
         &["## secrets", "## environment", "phantom"],
-        section,
+        &section,
         "Added \"Secrets\" section to README.md",
         false,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn generated_readme_uses_verified_local_binary_and_distinguishes_vaults() {
+        let project = TempDir::new().unwrap();
+        std::fs::write(project.path().join("README.md"), "# Example\n").unwrap();
+
+        auto_add_readme(project.path(), project.path());
+
+        let readme = std::fs::read_to_string(project.path().join("README.md")).unwrap();
+        assert!(readme.contains("releases/tag/v"));
+        assert!(readme.contains("phantom --version"));
+        assert!(readme.contains("Personal backup only"));
+        assert!(readme.contains("phantom cloud pull"));
+        assert!(readme.contains("phantom team vault-pull <TEAM_ID>"));
+        assert!(!readme.contains("restore team vault"));
+        assert!(!readme.contains("npm i -g phantom-secrets"));
+        assert!(!readme.contains("npx phantom-secrets"));
+    }
 }

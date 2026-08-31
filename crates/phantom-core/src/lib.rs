@@ -13,6 +13,7 @@ pub mod importers;
 pub mod issuance;
 pub mod leak_correlation;
 pub mod mcp_approval;
+pub mod precommit_hook;
 pub mod rotation_provider;
 pub mod rotation_strategy;
 pub mod sync;

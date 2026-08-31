@@ -280,8 +280,13 @@ impl DotenvFile {
     ) -> String {
         let mut output_lines = vec![
             "# Environment variables for this project".to_string(),
-            "# Copy to .env and fill in real values, or use Phantom:".to_string(),
-            "#   npm install -g phantom-secrets && phantom init".to_string(),
+            "# Copy to .env and fill in real values, or use an installed local Phantom binary:"
+                .to_string(),
+            "#   phantom init".to_string(),
+            format!(
+                "# Reviewed release: https://github.com/ashlrai/phantom-secrets/releases/tag/v{}",
+                env!("CARGO_PKG_VERSION")
+            ),
             "#".to_string(),
             "# See https://phm.dev for details".to_string(),
             String::new(),
@@ -946,6 +951,9 @@ KEY3=unquoted
         let content = "# Config\nOPENAI_API_KEY=sk-real-secret\nNEXT_PUBLIC_URL=https://app.example.com\nPORT=3000\n";
         let dotenv = DotenvFile::parse_str(content);
         let example = dotenv.generate_example_content(None);
+        assert!(example.contains("phantom init"));
+        assert!(example.contains("/releases/tag/v"));
+        assert!(!example.contains("npm install -g phantom-secrets"));
         // Secret should be a placeholder
         assert!(example.contains("OPENAI_API_KEY=your_openai_api_key_here"));
         // Public key should preserve actual value

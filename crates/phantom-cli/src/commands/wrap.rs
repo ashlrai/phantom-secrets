@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-/// Rewrite package.json scripts to auto-prefix with `npx phantom-secrets exec --`.
+/// Rewrite package.json scripts to auto-prefix with the installed local `phantom` binary.
 /// Original scripts are saved as `*:raw` variants for escape-hatch usage.
 pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>) -> Result<()> {
     let project_dir = std::env::current_dir()?;
@@ -73,7 +73,7 @@ pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>) -> Result<()>
         scripts.insert(raw_name, serde_json::Value::String(value.clone()));
 
         // Wrap the script
-        let wrapped = format!("npx phantom-secrets exec -- {}", value);
+        let wrapped = wrapped_script_command(&value);
         scripts.insert(name.clone(), serde_json::Value::String(wrapped));
 
         println!(
@@ -115,6 +115,10 @@ pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>) -> Result<()>
     Ok(())
 }
 
+fn wrapped_script_command(original: &str) -> String {
+    format!("phantom exec -- {original}")
+}
+
 /// Heuristic: should this script name be wrapped with phantom exec?
 fn should_wrap_script(name: &str) -> bool {
     let name_lower = name.to_lowercase();
@@ -150,6 +154,14 @@ fn should_wrap_script(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_script_uses_installed_local_binary() {
+        let wrapped = wrapped_script_command("next dev");
+        assert_eq!(wrapped, "phantom exec -- next dev");
+        assert!(!wrapped.contains("npx"));
+        assert!(!wrapped.contains("npm"));
+    }
 
     #[test]
     fn test_should_wrap_script() {

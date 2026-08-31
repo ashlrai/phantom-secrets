@@ -63,13 +63,16 @@ pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
 
     if matches!(source, InstallSource::Npm) {
         println!(
-            "{} phantom was installed via npm. Use the npm package manager to upgrade:",
+            "{} phantom was installed via the npm wrapper, which this command cannot replace safely.",
             "->".blue().bold(),
         );
-        println!("    {}", "npm i -g phantom-secrets@latest".cyan().bold());
         println!(
-            "  {} (`phantom upgrade` would be reverted on the next `npm install`).",
-            "note".dimmed()
+            "  {}",
+            format!(
+                "Install the reviewed release: https://github.com/ashlrai/phantom-secrets/releases/tag/v{current}"
+            )
+            .cyan()
+            .bold()
         );
         return Ok(());
     }

@@ -1,11 +1,12 @@
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{classify, is_public_key, DotenvFile, SecretClassification};
+use phantom_core::precommit_hook::{self, HookChange};
 use phantom_core::token::{PhantomToken, TokenMap};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::tools::helpers::{
     internal_err, invalid_params_err, require_approval_token, require_confirm, text_result,
@@ -1377,20 +1378,32 @@ impl PhantomMcpServer {
         if git_dir.exists() {
             if git_hook.exists() {
                 let content = std::fs::read_to_string(&git_hook).unwrap_or_default();
-                if content.contains("phantom") {
+                if precommit_hook::is_current(&content) {
                     lines.push("pass: Git pre-commit hook includes phantom check".to_string());
                 } else {
-                    lines.push("warn: Git pre-commit hook exists but no phantom check".to_string());
-                    if params.fix {
-                        let mut c = content;
-                        c.push_str(
-                            "\n\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\n",
+                    if precommit_hook::has_phantom_block(&content) {
+                        lines.push(
+                            "warn: Git pre-commit hook uses a stale Phantom check".to_string(),
                         );
-                        std::fs::write(&git_hook, c).map_err(|e| {
-                            internal_err(format!("Failed to update pre-commit hook: {e}"))
-                        })?;
-                        lines
-                            .push("  Fixed: Appended phantom check to pre-commit hook".to_string());
+                    } else {
+                        lines.push(
+                            "warn: Git pre-commit hook exists but no phantom check".to_string(),
+                        );
+                    }
+                    if params.fix {
+                        let change = ensure_mcp_git_hook(&git_hook, &content)?;
+                        let message = match change {
+                            HookChange::Installed => {
+                                "  Fixed: Appended local phantom check to pre-commit hook"
+                            }
+                            HookChange::Repaired => {
+                                "  Fixed: Repaired stale Phantom pre-commit hook"
+                            }
+                            HookChange::Unchanged => {
+                                "  Fixed: Phantom pre-commit hook already current"
+                            }
+                        };
+                        lines.push(message.to_string());
                         fixed += 1;
                     } else {
                         issues += 1;
@@ -1401,18 +1414,7 @@ impl PhantomMcpServer {
                 if params.fix {
                     let hooks_dir = git_dir.join("hooks");
                     let _ = std::fs::create_dir_all(&hooks_dir);
-                    let hook = "#!/bin/sh\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\nexit $?\n";
-                    std::fs::write(&git_hook, hook).map_err(|e| {
-                        internal_err(format!("Failed to install pre-commit hook: {e}"))
-                    })?;
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(
-                            &git_hook,
-                            std::fs::Permissions::from_mode(0o755),
-                        );
-                    }
+                    ensure_mcp_git_hook(&git_hook, "")?;
                     lines.push("  Fixed: Installed pre-commit hook".to_string());
                     fixed += 1;
                 } else {
@@ -1602,9 +1604,9 @@ impl PhantomMcpServer {
         text_result(output.trim_end().to_string())
     }
 
-    /// Wrap package.json scripts with `npx phantom-secrets exec --`.
+    /// Wrap package.json scripts with the installed local `phantom` binary.
     #[tool(
-        description = "Wrap package.json scripts with `npx phantom-secrets exec --` so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts."
+        description = "Wrap package.json scripts with the installed local `phantom exec --` command so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts."
     )]
     fn phantom_wrap(
         &self,
@@ -1656,7 +1658,7 @@ impl PhantomMcpServer {
                     return None;
                 }
                 // Skip already wrapped
-                if value.contains("phantom-secrets") {
+                if value.contains("phantom-secrets") || value.contains("phantom exec") {
                     return None;
                 }
                 // Apply skip list from params
@@ -1690,7 +1692,7 @@ impl PhantomMcpServer {
             scripts.insert(raw_key, serde_json::Value::String(original.clone()));
             scripts.insert(
                 name.clone(),
-                serde_json::Value::String(format!("npx phantom-secrets exec -- {original}")),
+                serde_json::Value::String(wrapped_script_command(original)),
             );
         }
 
@@ -3274,7 +3276,7 @@ impl PhantomMcpServer {
         description = "Return the compliance state of the current Phantom project as a \
             structured JSON badge. Checks: vault_accessible (vault can be read), \
             audit_enabled (PHANTOM_AUDIT env var is set), \
-            precommit_installed (git pre-commit hook contains phantom check), \
+            precommit_installed (git pre-commit hook contains the current local-only phantom check), \
             env_clean (no unprotected real secrets in .env), \
             secrets_have_ttl (all vault secrets have a rotation policy set). \
             Each check is true/false with an optional detail string. \
@@ -3318,7 +3320,7 @@ impl PhantomMcpServer {
         let git_hook = self.project_dir.join(".git/hooks/pre-commit");
         let precommit_ok = if git_hook.exists() {
             std::fs::read_to_string(&git_hook)
-                .map(|c| c.contains("phantom"))
+                .map(|content| precommit_hook::is_current(&content))
                 .unwrap_or(false)
         } else {
             false
@@ -4193,6 +4195,25 @@ impl PhantomMcpServer {
     }
 }
 
+fn ensure_mcp_git_hook(path: &Path, existing: &str) -> Result<HookChange, McpError> {
+    let update = precommit_hook::ensure(existing);
+    if update.change != HookChange::Unchanged {
+        std::fs::write(path, update.content)
+            .map_err(|e| internal_err(format!("Failed to write pre-commit hook: {e}")))?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| internal_err(format!("Failed to make pre-commit hook executable: {e}")))?;
+    }
+    Ok(update.change)
+}
+
+fn wrapped_script_command(original: &str) -> String {
+    format!("phantom exec -- {original}")
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 /// Convert a Unix timestamp to a minimal ISO-8601 string (UTC, no external deps).
@@ -4334,6 +4355,28 @@ mod tests {
     fn get_result_text(result: &CallToolResult) -> String {
         // CallToolResult content is serialized — extract text via debug format
         format!("{:?}", result.content)
+    }
+
+    #[test]
+    fn mcp_doctor_fix_repairs_stale_hook_without_network_execution() {
+        let project = TempDir::new().unwrap();
+        let hook = project.path().join("pre-commit");
+        let existing = "#!/bin/sh\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\nexit $?\n";
+
+        let change = ensure_mcp_git_hook(&hook, existing).unwrap();
+
+        let repaired = std::fs::read_to_string(hook).unwrap();
+        assert_eq!(change, HookChange::Repaired);
+        assert!(precommit_hook::is_current(&repaired));
+        assert!(!repaired.contains("npx phantom-secrets"));
+    }
+
+    #[test]
+    fn mcp_wrap_generator_uses_installed_local_binary() {
+        let wrapped = wrapped_script_command("next dev");
+        assert_eq!(wrapped, "phantom exec -- next dev");
+        assert!(!wrapped.contains("npx"));
+        assert!(!wrapped.contains("npm"));
     }
 
     #[test]
@@ -5980,6 +6023,25 @@ mod tests {
                 "missing check '{check_name}'"
             );
         }
+    }
+
+    #[test]
+    fn compliance_status_rejects_stale_network_capable_hook() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, dir) = setup_initialized_project();
+        std::fs::create_dir_all(dir.path().join(".git/hooks")).unwrap();
+        std::fs::write(
+            dir.path().join(".git/hooks/pre-commit"),
+            "#!/bin/sh\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\n",
+        )
+        .unwrap();
+
+        let result = server
+            .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert_eq!(json["checks"]["precommit_installed"]["pass"], false);
     }
 
     #[test]
