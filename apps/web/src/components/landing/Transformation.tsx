@@ -6,7 +6,7 @@ import type { ComponentType, SVGProps } from "react";
 import {
   ClaudeLogo,
   OpenAILogo,
-  PostgresLogo,
+  ResendLogo,
   StripeLogo,
 } from "./BrandLogos";
 
@@ -42,9 +42,9 @@ const ROWS: EnvRow[] = [
     after: "phm_491e6dc8a273",
   },
   {
-    Logo: PostgresLogo,
-    k: "DATABASE_URL",
-    before: "postgres://app:••••@db.prod:5432/app",
+    Logo: ResendLogo,
+    k: "RESEND_API_KEY",
+    before: "re_example_7Yp2m…",
     after: "phm_99a8d2bf17e0",
   },
 ];
@@ -107,7 +107,8 @@ export function Transformation() {
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
             One command rewrites your <code className="font-mono text-blue-b">.env</code>.
-            Real secrets move to the vault. AI sees only the phantoms.
+            Real secrets move to the vault. Supported agent workflows read
+            managed placeholders.
           </p>
         </div>
 
@@ -119,7 +120,7 @@ export function Transformation() {
           />
           <EnvBlock
             title="After phantom init"
-            subtitle="What AI sees now. Decoys only. Proxy injects the real keys."
+            subtitle="Managed placeholders. Configured HTTP routes resolve session tokens."
             variant="after"
           />
         </div>

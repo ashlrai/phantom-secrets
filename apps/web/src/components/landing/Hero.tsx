@@ -29,18 +29,18 @@ export function Hero() {
         </span>
 
         <h1 className="mt-7 font-extrabold tracking-[-0.045em] leading-[1.0] text-white text-[clamp(2.6rem,6.4vw,4.6rem)]">
-          Delegate everything to AI.
+          Delegate credentialed API work to AI.
           <br />
           <span className="bg-gradient-to-br from-blue-b via-blue to-blue-d bg-clip-text text-transparent">
-            Without sharing a single key.
+            Without handing agents provider keys.
           </span>
         </h1>
 
         <p className="mt-6 mx-auto max-w-[600px] text-[0.98rem] sm:text-[1.04rem] leading-[1.65] text-t2">
-          Phantom hands every AI tool a worthless{" "}
+          Phantom gives supported AI workflows a value-blind{" "}
           <code className="font-mono text-blue-b text-[0.92em]">phm_</code>{" "}
-          token. The local proxy injects the real key at the network layer.
-          Full access. Zero exposure.
+          placeholder in the managed path. The authenticated local proxy
+          resolves fresh session tokens only for configured upstream routes.
         </p>
 
         <div className="mt-8 mx-auto w-full max-w-[460px]">
@@ -81,11 +81,11 @@ function KeyWall() {
 
   return (
     <section
-      aria-label="Phantom protects API keys for every popular service"
+      aria-label="Examples of credential names Phantom can recognize"
       className="relative mt-16 sm:mt-20"
     >
       <p className="mx-auto max-w-[940px] px-7 text-center text-[0.78rem] font-medium uppercase tracking-[0.18em] text-t3 mb-8">
-        Replaces real keys for {KEY_ENTRIES.length}+ services and counting
+        Recognizes common credential names across {KEY_ENTRIES.length}+ services
       </p>
 
       <div className="relative space-y-3 sm:space-y-4">
@@ -164,7 +164,7 @@ function KeyCard({ item }: { item: typeof KEY_ENTRIES[number] }) {
               aria-hidden
               className="inline-block h-1.5 w-1.5 rounded-full bg-green animate-pulse"
             />
-            safe
+            placeholder
           </span>
         </div>
         <div className="mt-1 font-mono text-[0.72rem] leading-tight truncate">

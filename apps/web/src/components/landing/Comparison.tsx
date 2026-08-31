@@ -45,7 +45,7 @@ const ROWS: Row[] = [
     awsSm: "no",
   },
   {
-    label: "MCP-native (every editor)",
+    label: "MCP-native (supported clients)",
     phantom: "yes",
     rawEnv: "no",
     doppler: "no",
@@ -54,7 +54,7 @@ const ROWS: Row[] = [
     awsSm: "no",
   },
   {
-    label: "Pre-commit secret scanning",
+    label: "Staged dotenv and prefix checks",
     phantom: "yes",
     rawEnv: "no",
     doppler: "yes",

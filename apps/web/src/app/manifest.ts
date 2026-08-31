@@ -2,10 +2,10 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Phantom — Delegate everything to AI",
+    name: "Phantom — Delegate credentialed API work to AI",
     short_name: "Phantom",
     description:
-      "Open-source CLI that lets AI use your API keys without seeing them.",
+      "Open-source CLI that gives supported AI workflows placeholders while an authenticated local proxy resolves configured HTTP API routes.",
     start_url: "/",
     display: "standalone",
     background_color: "#050508",

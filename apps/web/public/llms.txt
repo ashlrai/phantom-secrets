@@ -1,6 +1,6 @@
 # Phantom
 
-> Open-source CLI that lets AI coding agents use API keys safely. Replaces real secrets in `.env` with worthless `phm_` tokens; a local proxy on 127.0.0.1 swaps the token for the real key just before TLS — so AI tools never see plaintext credentials.
+> Open-source CLI for keeping real API keys out of supported, value-blind AI-agent paths. Phantom replaces managed `.env` values with `phm_` placeholders; an authenticated local proxy resolves fresh session tokens only for configured HTTP upstreams.
 
 - Site: https://phm.dev
 - GitHub: https://github.com/ashlrai/phantom-secrets
@@ -38,7 +38,9 @@ If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets
 - Never call a destructive tool without `confirm: true` and explicit user consent.
 - Suggest `phantom exec -- <command>` when running code that needs real credentials.
 
-## MCP tools (25 total)
+## Selected MCP tools
+
+The runtime `tools/list` response and release-checked MCP schema are the canonical catalog.
 
 Read-only (safe to call freely):
 - `phantom_list_secrets` — names only, never values
@@ -51,7 +53,7 @@ Read-only (safe to call freely):
 - `phantom_sync` — preview platform sync
 
 Init / scaffolding:
-- `phantom_init` — protect a fresh `.env`. Requires `confirm: true`.
+- `phantom_init` — protect a fresh `.env`; this mutates the local vault, dotenv file, and Phantom configuration.
 - `phantom_wrap` — wrap `package.json` scripts with `phantom exec` so secrets are injected via the proxy at runtime
 - `phantom_unwrap` — reverse `phantom_wrap`, restoring original scripts from `:raw` variants
 
@@ -68,6 +70,8 @@ Teams (multi-developer shared vaults — Pro plan):
 - `phantom_team_key_publish` — register the user's X25519 pubkey on a team (idempotent; pubkey only — private key stays in OS keychain)
 - `phantom_team_create`, `phantom_team_invite` — require `confirm: true`
 - `phantom_team_vault_push`, `phantom_team_vault_pull` — require `confirm: true`. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305). Server only stores ciphertext.
+
+Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control.
 
 ## CLI surface
 
@@ -105,6 +109,16 @@ Opt-in audit log:
 
 Phantom auto-classifies env vars by name + value heuristics. Detected: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `STRIPE_SECRET_KEY`, `GITHUB_TOKEN`, `DATABASE_URL`, `AWS_SECRET_KEY`, `VERCEL_TOKEN`, `SUPABASE_KEY`, `MONGODB_URI`, `RAILWAY_TOKEN`, `CLOUDFLARE_API_TOKEN`, `TWILIO_AUTH_TOKEN`, `SENDGRID_API_KEY`, `RESEND_API_KEY`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `CLERK_SECRET_KEY`, `POSTHOG_API_KEY`, `SENTRY_AUTH_TOKEN`, `DATADOG_API_KEY`, `LINEAR_API_KEY`, `NOTION_API_KEY`, `FIGMA_TOKEN`, `XAI_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `PERPLEXITY_API_KEY`, `REPLICATE_API_TOKEN`, `PINECONE_API_KEY`, `NEON_API_KEY`, `UPSTASH_REDIS_TOKEN`, `DOCKER_TOKEN`, `GCP_API_KEY`, `CURSOR_API_KEY`, `WINDSURF_API_KEY`. Non-secrets like `NODE_ENV`, `PORT`, `DEBUG` are left alone.
 
+Detection and runtime injection are different capabilities. Database connection strings such as `DATABASE_URL` can be detected and vaulted, but database drivers do not use Phantom's HTTP proxy; `phantom exec` fails closed when a protected connection string would otherwise be passed to the child.
+
+## Runtime and data boundaries
+
+- The `phm_` placeholder written to a managed `.env` persists until an explicit rotation or rewrite.
+- `phantom exec` gives its child fresh session `phm_` values plus a separate fresh `PHANTOM_PROXY_TOKEN`; those session credentials stop working when that proxy exits.
+- Upstream API requests still leave the machine and reach the configured provider. Phantom keeps local vault operations and placeholder resolution under local control; it does not make application traffic local-only.
+- `phantom init` intentionally creates no plaintext project-local backup. `phantom unwrap` only reverses package-script wrapping and does not restore dotenv values.
+- The installed pre-commit hook runs `phantom check --staged`: staged dotenv content uses Phantom's detection heuristics, while added lines in other staged files are checked for a bounded set of credential prefixes. It is not a whole-repository or general-purpose secret scanner.
+
 ## Architecture
 
 12-crate Rust workspace:
@@ -113,14 +127,14 @@ Phantom auto-classifies env vars by name + value heuristics. Detected: `OPENAI_A
 - `phantom-vault` — `VaultBackend` trait. macOS Keychain / Linux Secret Service / Windows Credential Manager / encrypted file fallback. ChaCha20-Poly1305 + Argon2id (hardened to OWASP balanced m=64 MiB / t=3 / p=1, with legacy-default fallback for older vaults).
 - `phantom-proxy` — HTTP reverse proxy on 127.0.0.1. Streaming token replacement for `text/*`/form bodies; buffered+scoped for JSON. SSE/streaming preserved.
 - `phantom-cli` — `clap` binary with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows.
-- `phantom-mcp` — `rmcp` stdio server, 54 tools enforced by the release schema smoke test.
+- `phantom-mcp` — `rmcp` stdio server with a release-checked tool schema; use runtime `tools/list` for the current catalog.
 - Authority, Locus-contract, broker, runtime, evidence, session, and workspace crates are fail-closed foundations; they do not activate production execution.
 
 ## Pricing
 
 - Free: local vault, proxy, MCP, 1 cloud vault (≤10 secrets), Vercel/Railway sync
-- Pro $8/mo: unlimited cloud vaults, multi-device sync, vault backup
-- Enterprise: team vaults, audit log, SSO/SAML — `mason@ashlr.ai`
+- Pro $8/mo: unlimited cloud vaults and multi-device encrypted sync
+- Enterprise evaluation: team-vault source and local audit tooling are present; SSO/SAML, centralized enterprise authorization, certification, and contractual SLA are not shipped by this repository. Service and support scope require a separate written agreement with Ashlr AI — `mason@ashlr.ai`.
 
 ## Documentation
 

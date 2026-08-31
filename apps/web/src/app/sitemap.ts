@@ -33,13 +33,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "weekly",
       priority: 0.9,
     },
-    {
-      url: `${SITE_URL}/.well-known/ai-plugin.json`,
-      lastModified: now,
-      changeFrequency: "monthly",
-      priority: 0.7,
-    },
-
     // Documentation hosted on GitHub (canonical source)
     {
       url: `${REPO_URL}/blob/main/docs/getting-started.md`,

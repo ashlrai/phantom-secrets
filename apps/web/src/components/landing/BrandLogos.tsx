@@ -339,8 +339,6 @@ export const KEY_ENTRIES: LogoEntry[] = [
 
   // Databases
   { Logo: SupabaseLogo,   name: "Supabase",    color: "#3ecf8e", category: "db",     env: "SUPABASE_KEY",        token: "phm_4f1c8ae3" },
-  { Logo: PostgresLogo,   name: "Postgres",    color: "#6f9ed4", category: "db",     env: "DATABASE_URL",        token: "phm_3a2e7c81" },
-  { Logo: MongoLogo,      name: "MongoDB",     color: "#47a248", category: "db",     env: "MONGODB_URI",         token: "phm_6e0fb529" },
   { Logo: NeonLogo,       name: "Neon",        color: "#00e699", category: "db",     env: "NEON_API_KEY",        token: "phm_aa9d34f0" },
   { Logo: UpstashLogo,    name: "Upstash",     color: "#00e9a3", category: "db",     env: "UPSTASH_REDIS_TOKEN", token: "phm_3fc0e851" },
   { Logo: PineconeLogo,   name: "Pinecone",    color: "#ffffff", category: "db",     env: "PINECONE_API_KEY",    token: "phm_b71204e5" },

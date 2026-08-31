@@ -1,6 +1,6 @@
 # Phantom — Full Reference
 
-Phantom is an open-source CLI that protects API keys from AI coding agent leaks. It replaces real secrets in .env files with worthless "phantom tokens" (phm_...) and injects real credentials at the network layer via a local HTTP reverse proxy.
+Phantom is an open-source CLI that keeps real API keys out of supported, value-blind AI-agent paths. It replaces managed dotenv values with `phm_` placeholders; an authenticated local HTTP proxy resolves fresh session tokens only for configured upstream routes.
 
 Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
@@ -27,7 +27,7 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 
 4. Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN. Header-aware clients can set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 and send it as x-phantom-proxy-token instead of using path-authenticated local SDK URLs.
 
-5. The AI agent never sees, logs, or transmits a real secret.
+5. In the supported managed workflow, the agent receives placeholders and scrubbed responses rather than real credential values. Unmanaged files, logs, direct environment injection, custom tools, and provider behavior remain outside that claim.
 
 
 ## Install
@@ -220,6 +220,8 @@ Options: --rename <newname>
 ### phantom team list / create / members / invite / key-publish / vault-push / vault-pull
 Multi-developer shared-vault commands (Pro plan). `list` and `members` are read-only. `create` and `invite` are mutating (require explicit user confirmation when called via MCP). `key-publish` is one-time setup that registers this device's X25519 public key with the team — pubkey only, the private key stays in the OS keychain. `vault-push` wraps the project's secrets with a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305) and uploads ciphertext only; `vault-pull` is the corresponding download/decrypt.
 
+Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control.
+
 ### phantom open [target]
 Open a Phantom page in the browser. Aliases: `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, `site`. Any other word becomes `https://phm.dev/<word>`; full URLs pass through.
 
@@ -230,7 +232,7 @@ Self-replace this binary with the latest GitHub release.
 Print a shell-completion script to stdout. Source from your shell rc; see the README for per-shell paths.
 
 
-## MCP Server — 54 Tools
+## MCP server — release-checked catalog
 
 Install: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
@@ -366,6 +368,8 @@ phantom_team_vault_pull
   Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push.
   Params: team_id, confirm (bool, must be true). Overwrites local secrets.
 
+Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control.
+
 ### MCP setup by IDE
 
 Claude Code:
@@ -412,16 +416,18 @@ phantom-cli
   CLI output uses -> (info), ok (success), ! (error), warn (warning) prefixes.
 
 phantom-mcp
-  MCP server using rmcp SDK. Stdio transport. 54 release-checked tools.
+  MCP server using rmcp SDK and stdio transport. The release checks its schema; use runtime tools/list for the current catalog.
 
 apps/web
   Next.js backend on Vercel. Supabase for database. Stripe for billing.
   Device auth API, vault sync API, billing webhooks.
 
+Authority, Locus-contract, broker, runtime, session, evidence, and workspace crates are fail-closed foundations. They do not activate production execution, issue live Locus authority, or prove an externally trusted receipt.
+
 
 ## Security Model
 
-Real secrets never on disk in project directory — only in OS keychain or encrypted vault.
+`phantom init` atomically replaces managed dotenv values and intentionally creates no plaintext project-local backup. Unmanaged files, existing backups, logs, and external tools remain outside that claim.
 
 Vault encryption: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key).
 
@@ -435,7 +441,7 @@ Secrets zeroized from memory after use (zeroize crate).
 
 Allowlist model: proxy only injects for configured service URL patterns. Unknown services are not modified.
 
-Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN; CLI-generated SDK URLs include it locally, and header-aware clients can opt into x-phantom-proxy-token.
+The `phm_` placeholders written to managed `.env` files persist until an explicit rotation or rewrite. `phantom exec` replaces them in the child environment with fresh session `phm_` values and also creates a separate fresh `PHANTOM_PROXY_TOKEN`; those session credentials stop working when that proxy exits. CLI-generated SDK URLs include the proxy token locally, and header-aware clients can opt into x-phantom-proxy-token.
 
 Cloud tokens stored hashed (SHA-256) in database — never plaintext.
 
@@ -469,6 +475,8 @@ Public key prefixes (never protected — browser-safe by convention):
 
 Non-secrets left untouched:
   NODE_ENV, PORT, DEBUG, APP_NAME, LOG_LEVEL, and similar config values
+
+Detection does not imply proxy compatibility. Connection strings can be classified and vaulted, but database drivers do not use Phantom's HTTP proxy; `phantom exec` fails closed rather than pass a protected connection string to the child. The proxy substitutes credentials only on configured HTTP upstream routes.
 
 
 ## Configuration (.phantom.toml)
@@ -526,7 +534,7 @@ Supported platforms: Vercel, Railway. Requires platform API token in environment
 
 Phantom Cloud provides end-to-end encrypted vault sync.
 
-Zero-knowledge: server stores opaque encrypted blobs. Never sees plaintext secrets.
+For the implemented encrypted cloud-vault path, the server stores opaque ciphertext; encryption and decryption occur in the client. This claim does not make provider API traffic local: configured upstream requests still leave the machine.
 
 Client-side encryption: ChaCha20-Poly1305 with Argon2id key derivation. Encryption key stored only in user's OS keychain.
 
@@ -556,7 +564,7 @@ For deploy secrets, run `phantom sync --platform vercel --project <id>` or `phan
 
 ## Monorepo Support
 
-Running `phantom init` in a subdirectory with its own .env creates a project-scoped vault. Each subdirectory can have its own .phantom.toml and independent secret set. A single `phantom exec` session handles all of them.
+Running `phantom init` in a subdirectory with its own .env creates a project-scoped vault. Each subdirectory can have its own .phantom.toml and independent secret set. Run `phantom exec` from the subproject whose configuration and dotenv file the command needs; one session does not aggregate independently initialized subprojects.
 
 
 ## What to Commit
@@ -581,7 +589,7 @@ Do not commit:
 6. Vault backup (encrypted): phantom export --output backup.enc / phantom import backup.enc (hidden prompts; use a private --passphrase-file for automation)
 7. Team onboarding: phantom env generates .env.example with placeholders
 8. CI/CD: use phantom check in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
-9. Pre-commit safety: phantom check in git hooks or pre-commit framework
+9. Pre-commit safety: `phantom check --staged` checks staged dotenv content with Phantom's heuristics and added lines in other staged files for a bounded credential-prefix set
 10. Rotate with sync: phantom rotate --sync regenerates tokens and pushes to deployment platforms
 11. Monorepo: phantom init in each subdirectory — each gets its own vault and config
 12. Multi-IDE team: same MCP server works across Claude Code, Cursor, Windsurf, and Codex
@@ -589,9 +597,6 @@ Do not commit:
 14. Audit trail: PHANTOM_AUDIT=1 + phantom audit show/tail/verify for compliance and forensics
 
 
-## Test and Quality Stats
+## Test and quality evidence
 
-Tests: 69 (at last count)
-Clippy: zero warnings (enforced in CI with -D warnings)
-License: MIT
-Rust edition: 2021
+Use the repository's current CI workflow and release artifacts for test, lint, and build evidence. Do not infer a current test count, deployment, certification, or service-level commitment from this reference.

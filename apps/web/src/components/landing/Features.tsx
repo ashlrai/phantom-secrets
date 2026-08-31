@@ -24,12 +24,12 @@ interface Feature {
 
 const FEATURES: Feature[] = [
   {
-    title: "MCP-native, every editor",
+    title: "MCP-native, supported clients",
     body: (
       <>
         Claude Code, Cursor, Windsurf, Codex. Phantom registers as an MCP server
-        so AI can manage secrets through a tool interface — without ever seeing
-        the values.
+        so supported, value-blind tools can manage secret metadata and gated
+        operations without returning credential values.
       </>
     ),
     code: `$ claude mcp add phantom-secrets-mcp \\
@@ -41,8 +41,10 @@ ok  registered live MCP catalog`,
     title: "Catches leaks before they ship",
     body: (
       <>
-        <code className="font-mono text-blue-b">phantom check</code> runs as a
-        pre-commit hook and blocks any commit containing an unprotected secret.
+        When installed, the pre-commit hook runs{" "}
+        <code className="font-mono text-blue-b">phantom check --staged</code>.
+        It checks staged dotenv content with Phantom&apos;s heuristics and added
+        lines in other staged files for a bounded set of credential prefixes.
         CI remains the durable safety net.
       </>
     ),

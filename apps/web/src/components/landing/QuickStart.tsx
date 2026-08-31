@@ -1,6 +1,6 @@
 // Three-step "first 60 seconds" panel. Each step has the exact command,
-// click-to-copy, and the literal expected output. Reduces install friction
-// by removing every "wait what next?" moment.
+// click-to-copy, and an explicitly illustrative output summary. Ports,
+// service routes, and vault backends vary by machine and configuration.
 
 import { CopyButton } from "./CopyButton";
 
@@ -14,7 +14,6 @@ const STEPS = [
 ->  Found 4 secrets in .env
 ok  vault initialized · macOS Keychain
 ok  .env rewritten with phm_ tokens
-ok  pre-commit hook installed
 ok  CLAUDE.md updated`,
   },
   {
@@ -31,13 +30,13 @@ ok  Phantom MCP wiring detected`,
   {
     n: "03",
     title: "Code with AI normally",
-    body: "Your AI tool reads phm_ tokens. The proxy injects real keys at the network layer.",
+    body: "Supported HTTP SDK routes use fresh session tokens through the authenticated local proxy.",
     cmd: "phantom exec -- claude",
     out: `$ phantom exec -- claude
-->  proxy started on 127.0.0.1:8484
-->  intercepting api.openai.com, api.anthropic.com,
-    api.stripe.com (+10)
-->  launching claude with PHANTOM_PROXY env`,
+->  Starting proxy with <n> secret(s)...
+ok  Proxy running on 127.0.0.1:<ephemeral-port>
+->  <configured SDK base URL overrides>
+->  launching claude`,
   },
 ];
 
@@ -50,8 +49,8 @@ export function QuickStart() {
             Sixty seconds to a safe .env.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            Three commands. Real output. Nothing hidden. If anything looks
-            different on your machine, run{" "}
+            Three commands with illustrative output; ports, routes, and vault
+            backends vary by configuration. For exact local state, run{" "}
             <code className="font-mono text-blue-b">phantom agent doctor</code>.
           </p>
         </div>

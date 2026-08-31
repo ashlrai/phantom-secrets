@@ -31,7 +31,7 @@ const TIERS: Tier[] = [
     features: [
       "Local vault (OS keychain or encrypted file)",
       "Proxy with full streaming support",
-      "MCP server for every editor",
+      "MCP server for supported clients",
       "Agent readiness CLI · MCP tool catalog",
       "Unlimited local secrets",
       "1 cloud vault",
@@ -47,16 +47,15 @@ const TIERS: Tier[] = [
     name: "Pro",
     price: "$8",
     cadence: "/mo",
-    pitch: "Cloud sync, multi-device, full backup.",
+    pitch: "Encrypted cloud sync and multi-device recovery.",
     featured: true,
     features: [
       "Everything in Free",
       "Unlimited cloud vaults",
       "Multi-device sync (E2E encrypted)",
-      "Team vaults & shared secrets",
-      "Vault backup & restore",
-      "Pre-commit secret scanning",
-      "Priority support",
+      "Team vaults for fixed-membership pilots",
+      "Encrypted vault export & import",
+      "Staged dotenv and prefix checks",
     ],
     cta: { kind: "checkout", label: "Start with Pro" },
   },
@@ -64,14 +63,14 @@ const TIERS: Tier[] = [
     name: "Enterprise",
     price: "Custom",
     cadence: "",
-    pitch: "Teams, audit, SSO, dedicated support.",
+    pitch: "Evaluate team vaults, audit tooling, and support needs.",
     featured: false,
     features: [
       "Everything in Pro",
-      "Audit log",
-      "SSO/SAML (planned)",
+      "Local audit tooling",
+      "SSO/SAML not shipped",
       "On-prem deployment option (planned)",
-      "Dedicated support",
+      "Support scope by written agreement",
     ],
     cta: { kind: "link", label: "Talk to sales", href: "mailto:mason@ashlr.ai" },
   },
@@ -356,8 +355,8 @@ export default function PricingPage() {
             <p className="mt-10 text-center text-[0.82rem] text-t3 max-w-[680px] mx-auto leading-[1.7]">
               All plans include the open-source CLI, the local proxy, the MCP
               server, and the local vault. Cloud features require a Phantom
-              account. Vaults are end-to-end encrypted — we never see your
-              secrets, even on Pro or Enterprise.
+              account. Cloud-vault payloads are encrypted by the client; the
+              service stores ciphertext.
             </p>
           </div>
         </section>

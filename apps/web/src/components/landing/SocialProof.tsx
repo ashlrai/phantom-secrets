@@ -8,8 +8,8 @@ const BADGES = [
   "MIT licensed",
   "Open source",
   "Local-first",
-  "End-to-end encrypted",
-  "Zero data sent",
+  "Client-encrypted cloud vaults",
+  "Route-scoped credential injection",
 ];
 
 export function SocialProof() {

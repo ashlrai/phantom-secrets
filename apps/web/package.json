@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "test": "node --test tests/*.test.cjs",
-    "test:billing-auth": "node --test tests/billing-auth.test.cjs"
+    "test:billing-auth": "node --test tests/billing-auth.test.cjs",
+    "test:claims": "node --test tests/public-claims.test.cjs"
   },
   "dependencies": {
     "@icons-pack/react-simple-icons": "^13.13.0",
