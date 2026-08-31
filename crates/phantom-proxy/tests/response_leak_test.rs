@@ -100,6 +100,37 @@ fn test_body_multiple_occurrences() {
     );
 }
 
+/// A short exact vault value must not be reused as its own redaction label.
+#[test]
+fn test_short_vault_secret_discloses_no_characters() {
+    let secret = "xyz";
+    let analyzer = ResponseLeakAnalyzer::new(&make_named(&[("SHORT_SECRET", secret)]));
+
+    let (scrubbed, events) = analyzer.analyze_body(secret.as_bytes());
+    let scrubbed = String::from_utf8(scrubbed).unwrap();
+
+    assert_eq!(scrubbed, "[REDACTED:vault-secret]");
+    assert!(secret.chars().all(|ch| !scrubbed.contains(ch)));
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].pattern, "vault-secret");
+}
+
+/// Multibyte exact values must redact without byte-boundary panics or labels
+/// derived from any character in the value.
+#[test]
+fn test_non_ascii_vault_secret_discloses_no_characters_or_panic() {
+    let secret = "🔐密碼é";
+    let analyzer = ResponseLeakAnalyzer::new(&make_named(&[("UNICODE_SECRET", secret)]));
+
+    let (scrubbed, events) = analyzer.analyze_body(secret.as_bytes());
+    let scrubbed = String::from_utf8(scrubbed).unwrap();
+
+    assert_eq!(scrubbed, "[REDACTED:vault-secret]");
+    assert!(secret.chars().all(|ch| !scrubbed.contains(ch)));
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].pattern, "vault-secret");
+}
+
 /// Secret embedded inside a JSON "message" field (partial context).
 #[test]
 fn test_partial_leak_in_json_error_field() {

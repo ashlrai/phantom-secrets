@@ -242,13 +242,18 @@ pub trait RotationProvider: Send + Sync {
 /// Fail closed: mock rotations return fixed, publicly known values and would
 /// otherwise let anyone who can plant a mock-prefixed bootstrap credential
 /// forge a "successful" rotation that overwrites the real vaulted secret.
-/// Allowed only under `cfg(test)` or with the explicit
-/// `PHANTOM_ALLOW_MOCK_ROTATION=1` opt-in (test environments only).
+/// Allowed only in this crate's unit-test build. Runtime environment variables
+/// are agent-controlled and therefore cannot safely enable mock credentials or
+/// alternate provider endpoints in a shipped binary.
 pub(crate) fn mock_rotation_allowed() -> bool {
-    cfg!(test)
-        || std::env::var("PHANTOM_ALLOW_MOCK_ROTATION")
-            .map(|v| v == "1")
-            .unwrap_or(false)
+    #[cfg(test)]
+    {
+        true
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 
 /// Guard shared by every provider's mock fast-path: permits the mock branch
@@ -263,8 +268,8 @@ pub(crate) fn guard_mock_rotation(secret_name: &str) -> Result<(), RotationProvi
     } else {
         Err(RotationProviderError::NotSupported {
             reason: "bootstrap credential has a reserved mock prefix, but mock rotation \
-                     is disabled in this build. Mock rotations are for tests only; set \
-                     PHANTOM_ALLOW_MOCK_ROTATION=1 to enable them in a test environment."
+                     is disabled in this build. Mock rotations are available only to \
+                     Phantom's compiled unit tests."
                 .to_string(),
         })
     }
@@ -789,13 +794,14 @@ fn stripe_is_oauth_refresh(config: &RotationProviderConfig) -> bool {
 }
 
 /// Resolve the Stripe OAuth token endpoint. Production is
-/// `https://api.stripe.com/v1/oauth/token`; a `$PHANTOM_STRIPE_API_BASE`
-/// override is honored **only** when mock rotation is enabled (tests), and only
-/// for https / localhost — so a prompt-injected agent can never redirect the
-/// refresh exchange to an attacker-controlled host in a shipped binary.
+/// `https://api.stripe.com/v1/oauth/token`. The alternate endpoint exists only
+/// in the crate's unit-test build; shipped binaries cannot redirect this
+/// credential-bearing exchange with an environment variable.
 fn stripe_oauth_token_url() -> Result<String, RotationProviderError> {
     const DEFAULT: &str = "https://api.stripe.com/v1/oauth/token";
-    if mock_rotation_allowed() {
+
+    #[cfg(test)]
+    {
         if let Ok(base) = std::env::var("PHANTOM_STRIPE_API_BASE") {
             if !base.is_empty() {
                 if !is_https_or_localhost(&base) {
@@ -809,11 +815,13 @@ fn stripe_oauth_token_url() -> Result<String, RotationProviderError> {
             }
         }
     }
+
     Ok(DEFAULT.to_string())
 }
 
 /// Accept only `https://…`, `http://localhost…`, or `http://127.0.0.1…`
 /// (mirrors the issuance endpoint guard's host-confusion boundaries).
+#[cfg(test)]
 fn is_https_or_localhost(url: &str) -> bool {
     url.starts_with("https://")
         || url == "http://localhost"

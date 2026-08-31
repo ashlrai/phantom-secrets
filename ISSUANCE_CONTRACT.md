@@ -4,8 +4,10 @@ Bootstrapping the *first* credential (durable root) via sanctioned human
 consent, complementing the shipped `RotationProvider` (which renews from a root
 that already exists). Issuance produces what rotation consumes.
 
-Status: design only (READ-ONLY task). Nothing in this document is built yet.
-Branch: `feat/credential-issuance` off `origin/main` (`24c8e8f`).
+Status: historical implementation contract. The current shipped behavior is
+documented in `docs/grants-spec.md` and governed by the code and tests; this
+file is retained as design history and must not be used as an operations
+runbook.
 
 ---
 
@@ -16,13 +18,13 @@ Branch: `feat/credential-issuance` off `origin/main` (`24c8e8f`).
 | `RotationProvider` trait, `default_rotation_providers()`, `GitHubRotationProvider` (mints installation tokens from a *pre-minted* App JWT), `VercelRotationProvider` | `crates/phantom-core/src/rotation_provider.rs` | Issuance writes the `rotation_provider` block these consume; issuance produces the PEM/refresh-token that these renew from. |
 | `RotationProviderConfig` (`provider`, `api_key_env`, `account_id`, `region`, `timeout_secs`, `enabled`), `#[serde(deny_unknown_fields)]` | same | Issuance *emits* this config so `phantom rotate` / `watch --auto-rotate` work unchanged. |
 | Value hygiene idiom: `Zeroizing<String>` everywhere; `encode_challenge_payload`/`decode_challenge_payload` (base64url, `payload_` prefix); `redact_challenge_id`; `summarize_error_body` (allowlists only `type`/`code`/`status`, withholds body); redacting `Debug` on `AutoSyncOutcome` | same | Issuance imports the identical helpers (promote them to `pub(crate)`); `IssuanceOutcome` gets the same redacting `Debug`. |
-| Mock guard: `mock_rotation_allowed()` (`cfg(test)` or `PHANTOM_ALLOW_MOCK_ROTATION=1`), `guard_mock_rotation()`, `vault.rotation.mock` audit tag, magic prefixes (`sk_test_mock_`, `ghp_mock_`, …) | same | Issuance mirrors it: `issuance_mock_allowed()` + `guard_mock_issuance()` + `grant.issuance.mock`. |
+| Mock guard: `mock_rotation_allowed()` is compiled only for unit tests; runtime environment variables cannot activate mock rotation or alternate credential-bearing endpoints | same | Issuance test seams must remain compiled-test-only or accept explicitly supplied test clients without production credentials. |
 | `build_http_client(timeout_secs)` → `reqwest::blocking::Client` (rustls, json, blocking) | same | Issuance uses `reqwest::blocking` too — same runtime story, no async infection of core. |
 | Vault trait `VaultBackend` (`store`, `retrieve`, `store_with_expiry`, `set_rotation_policy`, `record_provider_rotation`, `get/set_metadata`) | `crates/phantom-vault/src/traits.rs` | **Core never calls the vault** (dependency direction is vault → core). Issuance follows rotation's split: core returns `Zeroizing` materials + a store-plan; the **CLI/MCP layer** performs `vault.store(...)`. |
 | CLI auto-sync wiring: reads bootstrap env-then-vault, calls `auto_sync_rotation_with_bootstrap`, then `vault.store(name, secret.as_str())`, then `record_provider_rotation`, then `post_store_cleanup` | `crates/phantom-cli/src/commands/rotate.rs:500-570` | `phantom grant add` mirrors this exact ordering (issue → vault.store the root → write config → audit). |
 | MCP gate: `require_confirm` + `require_approval_token(tool, token, params_json, project_id)`, metadata-only returns | `crates/phantom-mcp/src/server.rs:551`, `tools/helpers.rs` | `phantom_grant_status` is metadata-only; issuance *itself* is **not** exposed as an agent-callable MCP tool (consent is a human act — see §4.4). |
 | Test idiom: `assert_cmd` CLI tests + `wiremock = "0.6"` (dev-dep, phantom-cli) + magic-prefix hermetic mocks; tests assert the known fake value is **never** in stdout/stderr | `crates/phantom-cli/tests/rotate_provider_test.rs` | Issuance tests reuse all three (§5). |
-| Env-override precedent for endpoints: `auth::api_base_url()` reads `PHANTOM_API_URL`, validates https-or-localhost, else default | `crates/phantom-core/src/auth.rs:207` | Issuance introduces per-provider base-URL overrides on the *same* pattern (§5.1) — the injection seam wiremock targets. |
+| Phantom Cloud credential origin is fixed to `https://phm.dev/api/v1`; `PHANTOM_API_URL` is rejected | `crates/phantom-core/src/auth.rs` | Credential-bearing production endpoints must not be redirected by agent-controlled environment variables. |
 
 **Two gaps this contract closes** (neither is a blocker; both are net-new work):
 
@@ -454,26 +456,29 @@ mocks for pure-unit core tests. Core unit tests live in
 `#[cfg(test)] mod tests` inside each `issuance/*.rs` (per CONTRIBUTING);
 integration tests in `crates/phantom-cli/tests/grant_*.rs`.
 
-### 5.1 The injection seam (new, follows `api_base_url()` precedent)
+### 5.1 Historical injection-seam proposal (superseded)
+
+The environment-override proposal below is not an approved production pattern.
+Current credential-bearing endpoint selection is closed in production. Tests
+must use compiled test-only seams or explicitly injected clients that cannot
+load real keychain or vault credentials.
 
 `issuance/endpoints.rs`:
 
 ```rust
 pub struct Endpoints { pub github_web, github_api, authorize, token, device_code: String }
 impl Endpoints {
-    /// Prod defaults; overridable per-provider by env for tests, validated
-    /// https-or-localhost exactly like auth::api_base_url (PHANTOM_API_URL).
+    /// Historical proposal only. Current production endpoint selection is
+    /// closed and must not be redirected through agent-controlled env vars.
     pub fn for_provider(p: &str) -> Result<Self, IssuanceError>;
 }
 ```
 
-Overrides (localhost/https only, else hard error): `PHANTOM_GITHUB_API_BASE`,
+The design originally proposed localhost/HTTPS overrides such as `PHANTOM_GITHUB_API_BASE`,
 `PHANTOM_GITHUB_WEB_BASE`, `PHANTOM_OAUTH_AUTHORIZE_BASE`,
 `PHANTOM_OAUTH_TOKEN_BASE`, `PHANTOM_OAUTH_DEVICE_BASE`. Defaults:
 `https://api.github.com`, `https://github.com`, vendor authorize/token URLs.
-Tests point these at `wiremock::MockServer::uri()`. This is the sole reason
-issuance is testable where `rotation_provider.rs` (hardcoded host) is not — and
-worth back-porting there later.
+That runtime override pattern is superseded and must not be reintroduced.
 
 ### 5.2 Fake browser + fake loopback (deterministic, no real ports/tabs)
 

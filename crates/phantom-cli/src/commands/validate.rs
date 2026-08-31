@@ -70,7 +70,7 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
     }
 
     let config = PhantomConfig::load(&config_path)?;
-    let project_id = config.phantom.project_id.clone();
+    let project_id = config.local_project_id().to_string();
 
     if watch {
         return run_watch_loop(&config, &project_id, jobs, json);

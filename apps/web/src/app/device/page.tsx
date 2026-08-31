@@ -44,14 +44,17 @@ export default function DevicePage() {
 
     if (!session) {
       // Redirect to GitHub OAuth, storing the code for after auth
-      localStorage.setItem("phantom_device_code", code);
+      sessionStorage.setItem("phantom_device_code", code);
       const { error: authError } = await getSupabase().auth.signInWithOAuth({
         provider: "github",
         options: {
-          redirectTo: `${window.location.origin}/device?code=${encodeURIComponent(code)}`,
+          // The one-time device code stays in tab-scoped session storage and never enters a
+          // URL, referrer, provider callback, analytics event, or server log.
+          redirectTo: `${window.location.origin}/device?oauth=1`,
         },
       });
       if (authError) {
+        sessionStorage.removeItem("phantom_device_code");
         setError(authError.message);
         setStatus("input");
       }
@@ -95,13 +98,17 @@ export default function DevicePage() {
   useEffect(() => {
     if (redirectHandled.current) return;
     const params = new URLSearchParams(window.location.search);
-    const redirectCode = params.get("code");
-    const storedCode = localStorage.getItem("phantom_device_code");
+    const isOAuthReturn = params.get("oauth") === "1";
+    const storedCode = sessionStorage.getItem("phantom_device_code");
 
-    if (redirectCode && storedCode) {
+    if (isOAuthReturn) {
       redirectHandled.current = true;
+      window.history.replaceState(null, "", "/device");
+    }
+
+    if (isOAuthReturn && storedCode) {
       setCode(storedCode);
-      localStorage.removeItem("phantom_device_code");
+      sessionStorage.removeItem("phantom_device_code");
 
       getSupabase().auth.getSession().then(({ data: { session } }) => {
         if (session) {

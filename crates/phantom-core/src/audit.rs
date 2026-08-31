@@ -549,8 +549,9 @@ impl VerifyReport {
 
 /// Walk `~/.phantom/audit.log` and verify the HMAC chain.
 ///
-/// - Lines with no `hmac` field are counted as **legacy**.
-/// - The marker line (`hmac_chain_started_at`) is skipped silently.
+/// - Lines with no `hmac` field before the marker/signed era are counted as
+///   **legacy**; unsigned lines after that boundary are **tampered**.
+/// - The marker line (`hmac_chain_started_at`) declares the signed era.
 /// - Malformed JSON lines are counted as **malformed** and fail verification.
 /// - Lines with a bad `hmac` are counted as **tampered** and their
 ///   1-based line number is recorded in `tampered_lines`.
@@ -564,7 +565,8 @@ impl VerifyReport {
 pub fn verify_log() -> std::io::Result<VerifyReport> {
     let path = log_path()?;
     if !path.exists() {
-        return Ok(VerifyReport::default());
+        let key = load_or_skip_hmac_key(&path)?;
+        return verify_log_content("", key.as_deref(), &path);
     }
 
     let _lock = acquire_log_lock_shared(&path)?;
@@ -1019,12 +1021,21 @@ pub struct AuditStats {
 
 /// Read `~/.phantom/audit.log` and compute aggregate statistics.
 ///
-/// Returns `Ok(AuditStats)` even if the log file doesn't exist (all counts
-/// will be zero). Returns `Err` only on I/O failures.
+/// Returns empty statistics when neither a log nor an authenticated head has
+/// ever existed. Integrity mismatches, including an erased log with a retained
+/// head checkpoint, return `InvalidData`.
 pub fn audit_stats() -> std::io::Result<AuditStats> {
     let path = log_path()?;
 
     if !path.exists() {
+        let key = load_or_skip_hmac_key(&path)?;
+        let verification = verify_log_content("", key.as_deref(), &path)?;
+        if !verification.is_clean() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "audit log integrity verification failed; refusing to compute statistics",
+            ));
+        }
         return Ok(AuditStats {
             total_events: 0,
             secret_events: 0,
@@ -1036,6 +1047,14 @@ pub fn audit_stats() -> std::io::Result<AuditStats> {
 
     let _lock = acquire_log_lock_shared(&path)?;
     let content = std::fs::read_to_string(&path)?;
+    let key = load_or_skip_hmac_key(&path)?;
+    let verification = verify_log_content(&content, key.as_deref(), &path)?;
+    if !verification.is_clean() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "audit log integrity verification failed; refusing to compute statistics",
+        ));
+    }
 
     // name → mutable stats accumulator
     let mut by_name: std::collections::BTreeMap<String, SecretStats> =
@@ -1437,6 +1456,8 @@ fn verify_log_content(
     let mut report = VerifyReport::default();
     let mut prev_hmac = "GENESIS".to_string();
     let mut chain_started = false;
+    let mut marker_seen = false;
+    let mut pre_chain_unsigned_lines = Vec::new();
     let mut expected_seq = 1_u64;
     let mut final_seq = None;
     let mut final_hmac = None;
@@ -1456,6 +1477,11 @@ fn verify_log_content(
             }
         };
         if v.get("hmac_chain_started_at").is_some() {
+            // The marker is the compatibility boundary: unsigned records are
+            // legacy only before this point, even if the first signed event
+            // has been erased or moved later in the file.
+            marker_seen = true;
+            chain_started = true;
             continue;
         }
         let hmac_field = v
@@ -1465,13 +1491,25 @@ fn verify_log_content(
 
         match hmac_field {
             None => {
-                report.legacy += 1;
+                if chain_started {
+                    // Legacy records are accepted only before the first signed
+                    // event. An unsigned append inside an established chain is
+                    // tampering, not backwards compatibility.
+                    report.tampered += 1;
+                    report.tampered_lines.push(line_no);
+                } else {
+                    report.legacy += 1;
+                    pre_chain_unsigned_lines.push(line_no);
+                }
             }
             Some(recorded_hmac) => {
                 let key_bytes = match key {
                     Some(k) => k,
                     None => {
-                        report.legacy += 1;
+                        // A signed record without its verification key cannot
+                        // establish integrity and must never pass as clean.
+                        report.tampered += 1;
+                        report.tampered_lines.push(line_no);
                         continue;
                     }
                 };
@@ -1505,12 +1543,31 @@ fn verify_log_content(
         }
     }
 
-    if let (Some(seq), Some(hmac), Some(key_bytes)) = (final_seq, final_hmac.as_deref(), key) {
-        match read_head(log_path, key_bytes)? {
+    let head_exists = head_path(log_path).exists();
+    match (final_seq, final_hmac.as_deref(), key) {
+        (Some(seq), Some(hmac), Some(key_bytes)) => match read_head(log_path, key_bytes)? {
             Some(head) if head.last_seq == seq && head.last_hmac == hmac => {}
             Some(_) => report.head_mismatch = true,
             None => report.head_missing = true,
+        },
+        // A retained head proves that a sequenced signed era existed. An
+        // empty, marker-only, legacy-only, or wholly missing log cannot match
+        // that authenticated checkpoint and must not verify as a clean reset.
+        _ if head_exists => {
+            report.head_mismatch = true;
         }
+        _ => {}
+    }
+
+    // The chain marker has accompanied signed audit eras since HMAC chaining
+    // was introduced. A sequenced event or retained head proves such an era
+    // existed, so removing the marker must not turn a forged unsigned prefix
+    // back into compatible legacy history.
+    if !marker_seen && (final_seq.is_some() || head_exists) {
+        report.head_mismatch = true;
+        report.legacy = report.legacy.saturating_sub(pre_chain_unsigned_lines.len());
+        report.tampered += pre_chain_unsigned_lines.len();
+        report.tampered_lines.extend(pre_chain_unsigned_lines);
     }
 
     Ok(report)
@@ -1519,7 +1576,8 @@ fn verify_log_content(
 pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedEventWithContext>)> {
     let path = log_path()?;
     if !path.exists() {
-        return Ok((VerifyReport::default(), vec![]));
+        let key = load_or_skip_hmac_key(&path)?;
+        return Ok((verify_log_content("", key.as_deref(), &path)?, vec![]));
     }
 
     // Take a single shared lock for the entire operation to avoid the
@@ -2665,9 +2723,8 @@ mod tests {
             use std::io::Write;
             writeln!(f, "{{not json}}").unwrap();
 
-            let stats = audit_stats().expect("audit_stats should not error");
-            // Malformed line is skipped — only the 1 real event counted.
-            assert_eq!(stats.total_events, 1);
+            let error = audit_stats().expect_err("tampered stats must fail closed");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         });
     }
 
@@ -2690,6 +2747,150 @@ mod tests {
             assert_eq!(report.legacy, 2, "two legacy lines expected");
             assert_eq!(report.verified, 2, "two signed lines expected");
             assert_eq!(report.tampered, 0);
+        });
+    }
+
+    #[test]
+    fn unsigned_append_after_signed_chain_fails_verification_and_stats() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("SIGNED_KEY"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log_p)
+                .unwrap();
+            writeln!(
+                file,
+                r#"{{"ts":1700000100,"op":"vault.retrieve","name":"FORGED_KEY","process":"attacker","pid":1}}"#
+            )
+            .unwrap();
+
+            let report = verify_log().unwrap();
+            assert_eq!(report.tampered, 1);
+            assert!(!report.is_clean());
+
+            let error = audit_stats().unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        });
+    }
+
+    #[test]
+    fn unsigned_record_immediately_after_marker_is_tampering() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("SIGNED_KEY"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&log_p).unwrap();
+            let mut lines = content.lines();
+            let marker = lines.next().expect("chain marker");
+            let signed = lines.next().expect("signed event");
+            let forged = r#"{"ts":1700000100,"op":"vault.retrieve","name":"FORGED_KEY","process":"attacker","pid":1}"#;
+            std::fs::write(&log_p, format!("{marker}\n{forged}\n{signed}\n")).unwrap();
+
+            let report = verify_log().unwrap();
+            assert_eq!(report.verified, 1);
+            assert_eq!(report.tampered, 1);
+            assert_eq!(report.tampered_lines, vec![2]);
+            assert!(!report.is_clean());
+            assert_eq!(
+                audit_stats().unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+        });
+    }
+
+    #[test]
+    fn removing_marker_does_not_reclassify_unsigned_prefix_as_legacy() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("SIGNED_KEY"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&log_p).unwrap();
+            let signed = content.lines().nth(1).expect("signed event");
+            let forged = r#"{"ts":1700000100,"op":"vault.retrieve","name":"FORGED_KEY","process":"attacker","pid":1}"#;
+            std::fs::write(&log_p, format!("{forged}\n{signed}\n")).unwrap();
+
+            let report = verify_log().unwrap();
+            assert_eq!(report.verified, 1);
+            assert_eq!(report.legacy, 0);
+            assert_eq!(report.tampered, 1);
+            assert_eq!(report.tampered_lines, vec![1]);
+            assert!(report.head_mismatch);
+            assert!(!report.is_clean());
+            assert_eq!(
+                audit_stats().unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+        });
+    }
+
+    #[test]
+    fn authenticated_head_rejects_erased_or_replaced_log() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("SIGNED_KEY"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&log_p).unwrap();
+            let marker = content.lines().next().expect("chain marker").to_string();
+            let replacements = [
+                ("empty", String::new()),
+                ("marker-only", format!("{marker}\n")),
+                (
+                    "legacy-only",
+                    r#"{"ts":1700000000,"op":"vault.store","name":"OLD_KEY","process":"phantom","pid":1}
+"#
+                    .to_string(),
+                ),
+            ];
+
+            for (case, replacement) in replacements {
+                std::fs::write(&log_p, replacement).unwrap();
+                let report = verify_log().unwrap();
+                assert!(report.head_mismatch, "{case} log must mismatch the head");
+                assert!(!report.is_clean(), "{case} log must fail verification");
+                assert_eq!(
+                    audit_stats().unwrap_err().kind(),
+                    std::io::ErrorKind::InvalidData,
+                    "{case} log must not produce trusted statistics"
+                );
+            }
+
+            std::fs::remove_file(&log_p).unwrap();
+            let report = verify_log().unwrap();
+            assert!(report.head_mismatch);
+            assert!(!report.is_clean());
+            let (context_report, events) = verify_log_with_context().unwrap();
+            assert!(context_report.head_mismatch);
+            assert!(events.is_empty());
+            assert_eq!(
+                audit_stats().unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+        });
+    }
+
+    #[test]
+    fn legacy_only_log_without_head_remains_compatible() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            std::fs::create_dir_all(log_p.parent().unwrap()).unwrap();
+            std::fs::write(
+                &log_p,
+                r#"{"ts":1700000000,"op":"vault.store","name":"OLD_KEY","process":"phantom","pid":1}
+"#,
+            )
+            .unwrap();
+
+            let report = verify_log().unwrap();
+            assert!(report.is_clean());
+            assert_eq!(report.legacy, 1);
+            assert!(!head_path(&log_p).exists());
+
+            let stats = audit_stats().unwrap();
+            assert_eq!(stats.total_events, 1);
+            assert_eq!(stats.secret_events, 1);
         });
     }
 

@@ -13,20 +13,23 @@ fn phantom(dir: &TempDir) -> Command {
 #[test]
 fn doctor_warns_on_risky_phantom_config() {
     let dir = TempDir::new().unwrap();
+    let project_id = phantom_core::config::PhantomConfig::project_id_from_path(dir.path());
     fs::write(
         dir.path().join(".phantom.toml"),
-        r#"
+        format!(
+            r#"
 [phantom]
 version = "1"
-project_id = "abc"
+project_id = "{project_id}"
 
 [services.openai]
 secret_key = "OPENAI_API_KEY"
 pattern = "attacker.example.com"
 header = "Authorization"
-header_format = "Bearer {secret}"
+header_format = "Bearer {{secret}}"
 secret_type = "api_key"
-"#,
+"#
+        ),
     )
     .expect("write .phantom.toml");
     fs::write(dir.path().join(".env"), "OPENAI_API_KEY=phm_test\n").expect("write .env");
@@ -47,7 +50,9 @@ secret_type = "api_key"
 #[test]
 fn doctor_passes_service_routes_for_default_config() {
     let dir = TempDir::new().unwrap();
-    let config = phantom_core::config::PhantomConfig::new_with_defaults("abc".to_string());
+    let config = phantom_core::config::PhantomConfig::new_with_defaults(
+        phantom_core::config::PhantomConfig::project_id_from_path(dir.path()),
+    );
     fs::write(
         dir.path().join(".phantom.toml"),
         toml::to_string_pretty(&config).unwrap(),

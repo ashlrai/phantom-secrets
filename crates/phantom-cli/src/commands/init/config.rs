@@ -41,115 +41,6 @@ fn auto_detect_services(
 ) -> BTreeMap<String, ServiceConfig> {
     let mut detected = BTreeMap::new();
 
-    // Map of key name patterns to service configs
-    let known_services: Vec<(&str, &str, &str, &str, &str, &str)> = vec![
-        // (key_name, service_name, pattern, header, header_format, type)
-        (
-            "OPENAI_API_KEY",
-            "openai",
-            "api.openai.com",
-            "Authorization",
-            "Bearer {secret}",
-            "api_key",
-        ),
-        (
-            "ANTHROPIC_API_KEY",
-            "anthropic",
-            "api.anthropic.com",
-            "x-api-key",
-            "{secret}",
-            "api_key",
-        ),
-        (
-            "STRIPE_SECRET_KEY",
-            "stripe",
-            "api.stripe.com",
-            "Authorization",
-            "Bearer {secret}",
-            "api_key",
-        ),
-        (
-            "STRIPE_PUBLISHABLE_KEY",
-            "stripe_pub",
-            "api.stripe.com",
-            "Authorization",
-            "Bearer {secret}",
-            "api_key",
-        ),
-        (
-            "SUPABASE_SERVICE_ROLE_KEY",
-            "supabase",
-            "supabase.co",
-            "Authorization",
-            "Bearer {secret}",
-            "api_key",
-        ),
-        (
-            "SUPABASE_ANON_KEY",
-            "supabase_anon",
-            "supabase.co",
-            "apikey",
-            "{secret}",
-            "api_key",
-        ),
-        (
-            "RESEND_API_KEY",
-            "resend",
-            "api.resend.com",
-            "Authorization",
-            "Bearer {secret}",
-            "api_key",
-        ),
-        (
-            "SENDGRID_API_KEY",
-            "sendgrid",
-            "api.sendgrid.com",
-            "Authorization",
-            "Bearer {secret}",
-            "api_key",
-        ),
-        (
-            "TWILIO_AUTH_TOKEN",
-            "twilio",
-            "api.twilio.com",
-            "Authorization",
-            "Basic {secret}",
-            "api_key",
-        ),
-        (
-            "CLOUDFLARE_API_TOKEN",
-            "cloudflare",
-            "api.cloudflare.com",
-            "Authorization",
-            "Bearer {secret}",
-            "api_key",
-        ),
-        (
-            "GITHUB_TOKEN",
-            "github_api",
-            "api.github.com",
-            "Authorization",
-            "Bearer {secret}",
-            "api_key",
-        ),
-        (
-            "PINECONE_API_KEY",
-            "pinecone",
-            "pinecone.io",
-            "Api-Key",
-            "{secret}",
-            "api_key",
-        ),
-        (
-            "REPLICATE_API_TOKEN",
-            "replicate",
-            "api.replicate.com",
-            "Authorization",
-            "Bearer {secret}",
-            "api_key",
-        ),
-    ];
-
     // Connection string patterns
     let conn_string_keys = [
         "DATABASE_URL",
@@ -163,19 +54,14 @@ fn auto_detect_services(
     ];
 
     for entry in entries {
-        // Check known API services
-        for (key_name, svc_name, pattern, header, header_format, svc_type) in &known_services {
-            if entry.key == *key_name && !existing_config.services.contains_key(*svc_name) {
-                detected.insert(
-                    svc_name.to_string(),
-                    ServiceConfig {
-                        secret_key: key_name.to_string(),
-                        pattern: Some(pattern.to_string()),
-                        header: Some(header.to_string()),
-                        header_format: Some(header_format.to_string()),
-                        secret_type: svc_type.to_string(),
-                    },
-                );
+        // Resolve API services through the same exact registry used by
+        // agentic route validation. Init can therefore never emit a built-in
+        // definition that validation later rejects.
+        if let Some((service_name, service)) =
+            PhantomConfig::trusted_builtin_proxy_service_for_secret(&entry.key)
+        {
+            if !existing_config.services.contains_key(service_name) {
+                detected.insert(service_name.to_string(), service);
             }
         }
 
@@ -201,4 +87,62 @@ fn auto_detect_services(
     }
 
     detected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_auto_detected_proxy_route_passes_exact_agentic_validation() {
+        let expected = [
+            ("OPENAI_API_KEY", "openai"),
+            ("ANTHROPIC_API_KEY", "anthropic"),
+            ("STRIPE_SECRET_KEY", "stripe"),
+            ("STRIPE_PUBLISHABLE_KEY", "stripe_pub"),
+            ("SUPABASE_SERVICE_ROLE_KEY", "supabase"),
+            ("SUPABASE_ANON_KEY", "supabase_anon"),
+            ("RESEND_API_KEY", "resend"),
+            ("SENDGRID_API_KEY", "sendgrid"),
+            ("TWILIO_AUTH_TOKEN", "twilio"),
+            ("CLOUDFLARE_API_TOKEN", "cloudflare"),
+            ("GITHUB_TOKEN", "github_api"),
+            ("PINECONE_API_KEY", "pinecone"),
+            ("REPLICATE_API_TOKEN", "replicate"),
+            ("XAI_API_KEY", "xai"),
+            ("MISTRAL_API_KEY", "mistral"),
+            ("PERPLEXITY_API_KEY", "perplexity"),
+            ("COHERE_API_KEY", "cohere"),
+            ("HUGGINGFACE_API_KEY", "huggingface"),
+            ("GEMINI_API_KEY", "google_ai"),
+        ];
+        let entries: Vec<EnvEntry> = expected
+            .iter()
+            .map(|(key, _)| EnvEntry {
+                key: (*key).to_string(),
+                value: "test-value".to_string(),
+                is_phantom: false,
+            })
+            .collect();
+        let entry_refs: Vec<&EnvEntry> = entries.iter().collect();
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        config.services.clear();
+
+        let detected = auto_detect_services(&entry_refs, &config);
+        config.services.extend(detected);
+
+        assert_eq!(config.services.len(), expected.len());
+        for (_, service_name) in expected {
+            assert!(
+                config.services.contains_key(service_name),
+                "missing auto-detected service {service_name}"
+            );
+        }
+        config
+            .validate_agentic_proxy_routes()
+            .expect("init-generated routes must be exact trusted built-ins");
+
+        config.services.get_mut("resend").unwrap().pattern = Some("attacker.example".to_string());
+        assert!(config.validate_agentic_proxy_routes().is_err());
+    }
 }

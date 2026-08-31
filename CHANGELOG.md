@@ -4,7 +4,65 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No user-facing changes have been recorded after 0.7.0.
+No user-facing changes have been recorded after 0.7.1.
+
+## [0.7.1] - 2026-08-31
+
+This is an urgent security fix-forward for `0.7.0`. Publication remains gated
+on protected-branch CI and the tag-triggered immutable-release workflow. The
+web changes also require the included Supabase migration before deployment;
+source publication does not imply that migration or the web application is
+active in production.
+
+### Breaking security changes
+
+- `phantom exec` and `phantom start` accept only Phantom's exact built-in API
+  routes. Repository-defined or altered proxy destinations now fail closed
+  until a future trusted-terminal approval format can bind custom routes to a
+  machine-local decision.
+- `.phantom.toml` keeps its committed project ID as the portable cloud/team
+  identity, while local vault, shadow, and scheduler state are namespaced from
+  the canonical checkout directory. A clone or move therefore keeps its remote
+  identity but starts with isolated local state and cannot select another
+  checkout's vault through repository config.
+- Protected connection strings such as `DATABASE_URL` are no longer injected
+  into an agent child process. These now fail closed pending a protocol-aware
+  database broker.
+- Runtime mock-rotation and alternate Stripe endpoint environment variables no
+  longer activate in shipped binaries. Hermetic mock behavior is compiled only
+  into unit tests.
+
+### Security
+
+- Pins Phantom Cloud authentication to `https://phm.dev/api/v1`; runtime API
+  origin overrides are rejected before cloud network access.
+- Replaces secret-derived response labels with the constant
+  `[REDACTED:vault-secret]`, including short and Unicode values.
+- Disables upstream redirects, buffers and validates complete bounded request
+  bodies before contacting an upstream, and bounds buffered upstream responses
+  before redaction.
+- Rejects unsafe file-vault project IDs before creating any vault path.
+- Makes audit statistics verify the HMAC chain and treats unsigned records
+  appended after a signed chain as tampering.
+- Makes GitHub login identity immutable to ordinary user updates, resolves team
+  invites through a normalized unique identity, and moves device-code issuance
+  plus per-client/global rate limiting into one database transaction.
+- Removes device codes from OAuth URLs and analytics page-view capture, strictly
+  validates team X25519 public keys, and adds browser isolation headers.
+- Updates Rust and video dependency graphs to resolve actionable advisories.
+
+### Upgrade guidance
+
+- Treat `0.7.0` as superseded and upgrade to `0.7.1` before using cloud, team,
+  proxy, connection-string, provider-rotation, or agent execution workflows.
+- Local vault namespaces now use a domain-separated SHA-256 digest of the
+  canonical checkout path. The former 64-bit path namespace is deliberately
+  not opened automatically because collision compatibility would preserve a
+  cross-vault selection risk. Before upgrading an offline-only `0.7.0`
+  checkout, create an encrypted backup with `phantom export --output FILE` from
+  a trusted terminal; after upgrading, restore it with `phantom import FILE`.
+  Cloud/team users can instead repopulate through a normal encrypted pull.
+  Never copy plaintext secret values into a repository.
 
 ## [0.7.0] - 2026-08-31
 
@@ -91,6 +149,7 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.6.0

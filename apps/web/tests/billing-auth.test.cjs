@@ -165,7 +165,13 @@ test("browser auth validates Supabase sessions and upserts public user rows", as
     browserUser: {
       id: "user-browser",
       email: "octo@example.com",
-      user_metadata: { user_name: "octocat" },
+      identities: [
+        {
+          provider: "github",
+          identity_data: { user_name: "OctoCat" },
+        },
+      ],
+      user_metadata: { user_name: "attacker-controlled" },
     },
   });
 
@@ -190,6 +196,31 @@ test("browser auth validates Supabase sessions and upserts public user rows", as
     },
     options: { onConflict: "id" },
   });
+});
+
+test("browser auth rejects mutable metadata without a verified GitHub identity", async () => {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon";
+
+  const serviceClient = createMockServiceClient();
+  const { auth } = loadAuthModule({
+    serviceClient,
+    browserUser: {
+      id: "user-attacker",
+      email: "attacker@example.com",
+      identities: [],
+      user_metadata: { user_name: "octocat" },
+    },
+  });
+
+  const result = await auth.authenticateBrowserRequest(
+    new Request("https://phm.dev/api/v1/billing/checkout", {
+      headers: { authorization: "Bearer browser-session-token" },
+    }),
+  );
+
+  assert.equal(result, null);
+  assert.equal(serviceClient.calls.length, 0);
 });
 
 test("billing routes opt into browser auth without widening CLI API routes", () => {

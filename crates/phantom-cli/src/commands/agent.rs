@@ -85,7 +85,7 @@ fn readiness_report(project_dir: &std::path::Path) -> AgentReadinessReport {
 fn vault_probe(project_dir: &std::path::Path) -> Option<VaultProbe> {
     let config_path = project_dir.join(".phantom.toml");
     let config = PhantomConfig::load(&config_path).ok()?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
     let backend = vault.backend_name().to_string();
     match vault.list() {
         Ok(names) => Some(VaultProbe {

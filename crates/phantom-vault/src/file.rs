@@ -31,6 +31,7 @@ struct VaultData {
 impl FileVault {
     /// Create a new encrypted file vault.
     pub fn new(base_dir: &Path, project_id: &str, passphrase: String) -> Result<Self> {
+        validate_project_id(project_id)?;
         let vault_dir = base_dir.join("vaults");
         std::fs::create_dir_all(&vault_dir)?;
 
@@ -144,6 +145,27 @@ impl FileVault {
     }
 }
 
+/// Validate the identifier before it is ever interpolated into a filesystem
+/// path. Generated Phantom IDs are hexadecimal, while legacy/test IDs may also
+/// contain `-` or `_`; path separators, dot segments, whitespace, and Unicode
+/// are deliberately rejected so the file backend cannot escape `vaults/` on
+/// any supported platform.
+fn validate_project_id(project_id: &str) -> Result<()> {
+    let valid = !project_id.is_empty()
+        && project_id.len() <= 128
+        && project_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+
+    if valid {
+        Ok(())
+    } else {
+        Err(PhantomError::VaultError(
+            "Invalid project ID for encrypted file vault".to_string(),
+        ))
+    }
+}
+
 impl VaultBackend for FileVault {
     fn store(&self, name: &str, value: &str) -> Result<()> {
         let _lock = self.lock_file()?;
@@ -248,6 +270,41 @@ mod tests {
         let vault =
             FileVault::new(dir.path(), "test-project", "test-passphrase".to_string()).unwrap();
         (vault, dir)
+    }
+
+    #[test]
+    fn test_project_id_rejects_path_traversal_and_unsafe_components() {
+        for project_id in [
+            "../escape",
+            "..\\escape",
+            ".",
+            "..",
+            "nested/project",
+            "nested\\project",
+            "contains space",
+            "café",
+            "",
+        ] {
+            let dir = TempDir::new().unwrap();
+            let result = FileVault::new(dir.path(), project_id, "passphrase".to_string());
+            assert!(
+                result.is_err(),
+                "unsafe project ID accepted: {project_id:?}"
+            );
+            assert!(
+                !dir.path().join("vaults").exists(),
+                "validation must run before creating the vault directory"
+            );
+        }
+    }
+
+    #[test]
+    fn test_project_id_accepts_portable_legacy_identifiers() {
+        for project_id in ["0123456789abcdef", "test-project", "project_name-42"] {
+            let dir = TempDir::new().unwrap();
+            FileVault::new(dir.path(), project_id, "passphrase".to_string())
+                .expect("portable project ID should be accepted");
+        }
     }
 
     #[test]

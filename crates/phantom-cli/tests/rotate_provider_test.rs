@@ -50,8 +50,9 @@ fn phantom(dir: &TempDir) -> Command {
     cmd.current_dir(dir.path())
         .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
         .env("HOME", dir.path())
-        // Mock provider fast-paths are fail-closed in shipped binaries and
-        // require this explicit test-only opt-in.
+        // Regression input: this legacy runtime flag must be ignored by the
+        // shipped CLI binary. Positive mock-provider behavior is covered by
+        // phantom-core's compiled unit tests instead.
         .env("PHANTOM_ALLOW_MOCK_ROTATION", "1")
         .env_remove("PHANTOM_AUDIT")
         .env_remove("STRIPE_ROTATION_ADMIN_KEY");
@@ -59,7 +60,7 @@ fn phantom(dir: &TempDir) -> Command {
 }
 
 #[test]
-fn rotate_provider_stores_value_without_printing_it() {
+fn rotate_provider_runtime_mock_flag_cannot_store_or_print_values() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
 
@@ -74,13 +75,13 @@ fn rotate_provider_stores_value_without_printing_it() {
         ])
         .env("STRIPE_ROTATION_ADMIN_KEY", "sk_test_mock_env_bootstrap")
         .assert()
-        .success();
+        .failure();
 
     let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
     let combined = format!("{stdout}{stderr}");
 
-    // The value written to the vault must NEVER surface in any output stream.
+    // Neither a generated mock value nor the bootstrap credential may surface.
     assert!(
         !combined.contains(MOCK_ROTATED_VALUE),
         "rotated secret value leaked into CLI output"
@@ -90,18 +91,13 @@ fn rotate_provider_stores_value_without_printing_it() {
         !combined.contains("sk_test_mock_env_bootstrap"),
         "bootstrap credential leaked into CLI output"
     );
-    // Metadata-only success message.
     assert!(
-        stdout.contains("stored in the vault"),
-        "expected success metadata, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("not printed"),
-        "expected value-withheld notice, got: {stdout}"
+        stderr.contains("mock rotation is disabled in this build"),
+        "expected fail-closed mock error, got: {stderr}"
     );
 
-    // The .env phm_ token must have been refreshed — and must not contain
-    // the rotated value either.
+    // The failed rotation must leave the .env protected by a phantom token and
+    // must not write the deterministic mock value anywhere.
     let env_content = fs::read_to_string(dir.path().join(".env")).expect("read .env");
     assert!(
         env_content.contains("STRIPE_SECRET_KEY=phm_"),
@@ -114,7 +110,7 @@ fn rotate_provider_stores_value_without_printing_it() {
 }
 
 #[test]
-fn rotate_provider_json_emits_metadata_only() {
+fn rotate_provider_json_runtime_mock_flag_fails_without_secret_output() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
 
@@ -129,38 +125,28 @@ fn rotate_provider_json_emits_metadata_only() {
         ])
         .env("STRIPE_ROTATION_ADMIN_KEY", "sk_test_mock_json_bootstrap")
         .assert()
-        .success();
+        .failure();
 
     let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
 
-    // The whole stdout must parse as one JSON object (scripting contract).
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON with --json");
-
-    assert_eq!(parsed["secret"], "STRIPE_SECRET_KEY");
-    assert_eq!(parsed["provider"], "stripe");
-    assert_eq!(parsed["status"], "rotated");
-    assert_eq!(parsed["vendor_rotated"], true);
-    assert_eq!(parsed["stored_in_vault"], true);
-    assert_eq!(parsed["value_printed"], false);
     assert!(
-        parsed.get("expires_at").is_some(),
-        "JSON must carry an expires_at field (null when no TTL)"
+        stdout.is_empty(),
+        "failed JSON rotation must emit no stdout"
     );
-
-    // No secret material anywhere in the JSON.
+    assert!(stderr.contains("mock rotation is disabled in this build"));
     assert!(
-        !stdout.contains(MOCK_ROTATED_VALUE),
-        "rotated secret value leaked into --json output"
+        !stderr.contains(MOCK_ROTATED_VALUE),
+        "rotated secret value leaked into error output"
     );
     assert!(
-        !stdout.contains("sk_test_mock_json_bootstrap"),
-        "bootstrap credential leaked into --json output"
+        !stderr.contains("sk_test_mock_json_bootstrap"),
+        "bootstrap credential leaked into error output"
     );
 }
 
 #[test]
-fn rotate_provider_resolves_provider_and_bootstrap_from_config_and_vault() {
+fn rotate_provider_resolves_vault_bootstrap_but_runtime_mock_still_fails_closed() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
 
@@ -177,7 +163,7 @@ fn rotate_provider_resolves_provider_and_bootstrap_from_config_and_vault() {
     let output = phantom(&dir)
         .args(["rotate", "--name", "STRIPE_SECRET_KEY"])
         .assert()
-        .success();
+        .failure();
 
     let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
@@ -188,8 +174,8 @@ fn rotate_provider_resolves_provider_and_bootstrap_from_config_and_vault() {
         "provider resolved from config must be reported, got: {stdout}"
     );
     assert!(
-        stdout.contains("stored in the vault"),
-        "expected success metadata, got: {stdout}"
+        stderr.contains("mock rotation is disabled in this build"),
+        "expected fail-closed mock error, got: {stderr}"
     );
     assert!(
         !combined.contains(MOCK_ROTATED_VALUE),
@@ -296,14 +282,14 @@ fn rotate_provider_dispatches_by_config_not_secret_name() {
         .args(["rotate", "--name", "PAYMENTS_API_KEY", "--json"])
         .env("STRIPE_ROTATION_ADMIN_KEY", "sk_test_mock_dispatch_cfg")
         .assert()
-        .success();
+        .failure();
 
     let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
-    assert_eq!(parsed["secret"], "PAYMENTS_API_KEY");
-    assert_eq!(parsed["provider"], "stripe");
-    assert_eq!(parsed["status"], "rotated");
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("PAYMENTS_API_KEY"));
+    assert!(stderr.contains("mock rotation is disabled in this build"));
+    assert!(!stderr.contains("configured for provider"));
 }
 
 #[test]

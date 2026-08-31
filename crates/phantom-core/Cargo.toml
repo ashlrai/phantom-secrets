@@ -49,7 +49,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 libc = "0.2"
 # RS256 signing of the in-process GitHub App JWT minted from the vaulted PEM
 # (issuance → rotation bootstrap). No key generation here — signing only.
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 
 [dev-dependencies]
 # Generate a throwaway RSA keypair at test runtime so the issuance/JWT tests

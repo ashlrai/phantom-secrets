@@ -81,7 +81,6 @@ fn team_revoke_fails_before_auth_network_or_local_mutation() {
     let dir = TempDir::new().unwrap();
     let before = directory_entries(&dir);
     let output = command(&dir)
-        .env("PHANTOM_API_URL", "http://127.0.0.1:9")
         .args(["team", "revoke", "team-test", "member-test", "--yes"])
         .output()
         .unwrap();
@@ -109,4 +108,38 @@ fn help_hides_legacy_plaintext_and_revocation_flags() {
     let team = command(&dir).args(["team", "--help"]).output().unwrap();
     assert!(team.status.success());
     assert!(!String::from_utf8_lossy(&team.stdout).contains("revoke"));
+}
+
+#[test]
+fn exec_refuses_protected_connection_strings_before_launching_child() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        "DATABASE_URL=postgresql://agent:must-not-leak@db.example.test/app\n",
+    )
+    .unwrap();
+
+    command(&dir)
+        .args(["init", "--from", ".env"])
+        .assert()
+        .success();
+
+    let output = command(&dir)
+        .args(["exec", "--", "phantom", "--version"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Refusing to expose connection-string secret"),
+        "unexpected exec failure: {combined}"
+    );
+    assert!(!combined.contains("postgresql://"));
+    assert!(!combined.contains("must-not-leak"));
+    assert!(!combined.contains("Launching:"));
 }

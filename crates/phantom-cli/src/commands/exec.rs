@@ -40,7 +40,10 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    config
+        .validate_agentic_proxy_routes()
+        .context("Refusing unapproved repository-controlled proxy routing")?;
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
 
@@ -94,6 +97,22 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
                 }
             }
         }
+    }
+
+    let blocked_connection_strings: Vec<&str> = config
+        .connection_string_services()
+        .into_iter()
+        .filter_map(|(_, service)| {
+            env_key_to_session_token
+                .contains_key(&service.secret_key)
+                .then_some(service.secret_key.as_str())
+        })
+        .collect();
+    if !blocked_connection_strings.is_empty() {
+        anyhow::bail!(
+            "Refusing to expose connection-string secret(s) to the child process: {}. Phantom requires a protocol-aware broker for database credentials; direct environment injection is disabled.",
+            blocked_connection_strings.join(", ")
+        );
     }
 
     if session_token_to_secret.is_empty() {
@@ -164,29 +183,6 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         );
     }
 
-    // Inject connection string secrets as env vars (with real values, not proxied)
-    let conn_services = config.connection_string_services();
-    let mut conn_env_vars: Vec<(String, String)> = Vec::new();
-    for (_name, svc) in &conn_services {
-        // Try namespaced key first, then bare for default env
-        let namespaced = phantom_core::env_scope::namespaced_key(&active_env, &svc.secret_key);
-        let real_value = if vault.exists(&namespaced).unwrap_or(false) {
-            vault.retrieve(&namespaced).ok()
-        } else if active_env == DEFAULT_ENV {
-            vault.retrieve(&svc.secret_key).ok()
-        } else {
-            None
-        };
-        if let Some(real_value) = real_value {
-            conn_env_vars.push((svc.secret_key.clone(), String::from(real_value.as_str())));
-            println!(
-                "   {} {} (injected as env var)",
-                "->".dimmed(),
-                svc.secret_key.bold()
-            );
-        }
-    }
-
     // --- Framework auto-detection ---
     let mut framework_env_vars: Vec<(String, String)> = Vec::new();
     let package_json_path = project_dir.join("package.json");
@@ -229,7 +225,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     }
 
     // Summary: proxied secrets vs injected env vars
-    let injected_count = conn_env_vars.len() + framework_env_vars.len();
+    let injected_count = framework_env_vars.len();
     println!(
         "\n{} {} secret(s) proxied, {} env var(s) injected directly",
         "->".blue().bold(),
@@ -250,7 +246,6 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     let mut child = tokio::process::Command::new(program)
         .args(args)
         .envs(overrides.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .envs(conn_env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .envs(
             env_key_to_session_token
                 .iter()

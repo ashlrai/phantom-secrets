@@ -394,8 +394,8 @@ impl VaultSetupParticipant {
             }
             PhantomConfig::load(&config_path)
                 .context("Existing .phantom.toml could not be loaded safely")?
-                .phantom
-                .project_id
+                .local_project_id()
+                .to_string()
         } else {
             PhantomConfig::project_id_from_path(workspace_root)
         };

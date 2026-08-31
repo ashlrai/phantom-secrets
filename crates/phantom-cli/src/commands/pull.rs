@@ -77,7 +77,7 @@ async fn run_async(
         PhantomConfig::new_with_defaults(project_id.clone())
     };
 
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
     let existing_names = vault.list().unwrap_or_default();
 
     let mut token_map = TokenMap::new();

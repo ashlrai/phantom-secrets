@@ -164,6 +164,7 @@ fn run_daemon() -> Result<()> {
 
     // Load config to build the export commands.
     let config = PhantomConfig::load(&config_path)?;
+    config.validate_agentic_proxy_routes()?;
     let registry = ServiceRegistry::from_config(&config.services);
 
     println!(
@@ -247,7 +248,8 @@ async fn run_async() -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path)?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    config.validate_agentic_proxy_routes()?;
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     // Build token mapping
     let mut token_to_secret: HashMap<String, String> = HashMap::new();

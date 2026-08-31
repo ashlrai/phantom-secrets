@@ -8,11 +8,11 @@
     "render-gif": "remotion render src/index.js PhantomDemo --output out/phantom-demo.gif --image-format png"
   },
   "dependencies": {
-    "@remotion/cli": "^4.0.441",
-    "@remotion/player": "^4.0.441",
-    "puppeteer": "^24.40.0",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "remotion": "^4.0.441"
+    "@remotion/cli": "4.0.519",
+    "@remotion/player": "4.0.519",
+    "puppeteer": "25.9.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.519"
   }
 }

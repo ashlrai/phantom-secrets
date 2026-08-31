@@ -114,11 +114,11 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
 
     let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
         .context("No .phantom.toml found. Run `phantom init` first.")?;
-    let project_id = config.phantom.project_id.clone();
+    let project_id = config.portable_project_id().to_string();
 
     // Read the local vault into a Zeroizing-valued map so the secret
     // bytes are scrubbed when the helper drops them.
-    let vault = phantom_vault::create_vault(&project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
     let secret_names = vault.list()?;
     if secret_names.is_empty() {
         println!("{}  No secrets to push", "warn".yellow().bold());
@@ -166,7 +166,7 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
 
     let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
         .context("No .phantom.toml found. Run `phantom init` first.")?;
-    let project_id = config.phantom.project_id.clone();
+    let project_id = config.portable_project_id().to_string();
 
     let (secrets, version) = rt.block_on(teams_vault::pull_for_project(
         &api_base,
@@ -179,7 +179,7 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
     // Write into local vault, overwriting existing values. The secrets
     // map's values are Zeroizing<String> — scrubbed on drop after this
     // loop returns.
-    let vault = phantom_vault::create_vault(&project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
     let mut written = 0usize;
     for (name, value) in &secrets {
         vault
@@ -211,7 +211,7 @@ pub fn run_rotate_vault(team_id: &str) -> Result<()> {
 
     let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
         .context("No .phantom.toml found. Run `phantom init` first.")?;
-    let project_id = config.phantom.project_id.clone();
+    let project_id = config.portable_project_id().to_string();
 
     println!(
         "{}  Rotating vault key for team {} (all members will be re-wrapped)...",

@@ -215,31 +215,13 @@ impl ResponseLeakAnalyzer {
     }
 }
 
-/// Derive a concise pattern label from a secret value (e.g. "sk_live_abc…" → "sk_live_*").
-fn format_pattern_label(value: &str) -> String {
-    // Try to match a known prefix.
-    let known_prefixes = [
-        "sk_live_",
-        "sk_test_",
-        "sk-",
-        "ghp_",
-        "github_pat_",
-        "AKIA",
-        "AIza",
-        "xoxb-",
-        "xoxp-",
-        "SG.",
-        "AC",
-        "phm_",
-    ];
-    for prefix in &known_prefixes {
-        if value.starts_with(prefix) {
-            return format!("{}*", prefix);
-        }
-    }
-    // Fallback: first 8 chars + *
-    let truncated = if value.len() > 8 { &value[..8] } else { value };
-    format!("{}*", truncated)
+/// Return a value-independent label for an exact vault-secret match.
+///
+/// Never derive response text, logs, or audit metadata from the secret itself:
+/// even a prefix (or an entire short/non-ASCII value) crosses the value-blind
+/// boundary that redaction is meant to enforce.
+fn format_pattern_label(_value: &str) -> String {
+    "vault-secret".to_string()
 }
 
 fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {

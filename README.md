@@ -354,7 +354,7 @@ the rotation window, with per-provider rate limits and a shared audit
 - **Secret explainer** -- `phantom why <KEY>` explains detection heuristics
 - **Cross-project copy** -- `phantom copy` shares secrets between project vaults
 - **Team vaults** -- Shared vaults with role-based access control
-- **Built-in service routing** -- OpenAI, Anthropic, Stripe, Supabase, and custom services via `.phantom.toml`
+- **Fail-closed service routing** -- agentic proxy sessions accept Phantom's exact built-in OpenAI, Anthropic, Stripe, Supabase, and other reviewed routes; repository-defined destinations are rejected pending trusted-terminal approval support
 - **Threat model** -- See [THREAT_MODEL.md](THREAT_MODEL.md) for assets, actors, mitigations, and known gaps
 
 ## Installation

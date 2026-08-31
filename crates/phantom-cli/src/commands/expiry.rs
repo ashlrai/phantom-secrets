@@ -44,7 +44,7 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     let entries = vault
         .list_with_metadata()
@@ -155,7 +155,7 @@ fn run_auto_rotate(
     use phantom_core::token::TokenMap;
     use phantom_vault::metadata::{now_secs, RotationPolicy, SecretMetadata};
 
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
     let project_dir = std::env::current_dir()?;
     let env_path = project_dir.join(".env");
 
@@ -286,7 +286,7 @@ pub fn run_set(key: &str, days: u64) -> Result<()> {
     let expires_at = compute_new_expires_at(days, now);
 
     // Ensure the secret exists in the vault (advisory; don't block if vault unavailable).
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
     match vault.list() {
         Ok(names) if !names.contains(&key.to_string()) => {
             eprintln!(
@@ -470,7 +470,7 @@ pub fn run_rotate(key: &str) -> Result<()> {
     }
 
     let mut config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(&config.phantom.project_id);
+    let vault = phantom_vault::create_vault(config.local_project_id());
 
     // Ensure the secret exists.
     if !vault.exists(key).unwrap_or(false) {

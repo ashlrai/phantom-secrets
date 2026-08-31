@@ -23,7 +23,7 @@ pub fn run_schedule(interval: Option<&str>, status: bool, disable: bool, json: b
     }
 
     let config = PhantomConfig::load(&config_path)?;
-    let state_path = state_file_path(&config.phantom.project_id);
+    let state_path = state_file_path(config.local_project_id());
     let mut state = SchedulerState::load(&state_path).unwrap_or_default();
 
     // --disable
@@ -84,7 +84,7 @@ pub fn run_history(last: Option<usize>, json: bool) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path)?;
-    let state_path = state_file_path(&config.phantom.project_id);
+    let state_path = state_file_path(config.local_project_id());
     let state = SchedulerState::load(&state_path).unwrap_or_default();
 
     if state.history.is_empty() {

@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase-server";
+import { verifiedGithubLoginForUser } from "@/lib/auth";
 import { isValidDeviceUserCode, normalizeDeviceUserCode } from "@/lib/device-code";
 import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createClient } from "@supabase/supabase-js";
@@ -45,13 +46,15 @@ export async function POST(req: Request) {
   const supabase = createServiceClient();
 
   // Ensure user exists in public.users
-  const githubLogin =
-    user.user_metadata?.user_name ||
-    user.user_metadata?.preferred_username ||
-    user.email?.split("@")[0] ||
-    "unknown";
+  const githubLogin = verifiedGithubLoginForUser(user);
+  if (!githubLogin) {
+    return Response.json(
+      { error: "A verified GitHub identity is required." },
+      { status: 403, headers: { "cache-control": "no-store" } }
+    );
+  }
 
-  await supabase.from("users").upsert(
+  const { error: upsertError } = await supabase.from("users").upsert(
     {
       id: user.id,
       github_login: githubLogin,
@@ -59,6 +62,12 @@ export async function POST(req: Request) {
     },
     { onConflict: "id" }
   );
+  if (upsertError) {
+    return Response.json(
+      { error: "Failed to establish the authenticated user." },
+      { status: 500, headers: { "cache-control": "no-store" } }
+    );
+  }
 
   // Find and approve the device token
   const cleanCode = normalizeDeviceUserCode(user_code);

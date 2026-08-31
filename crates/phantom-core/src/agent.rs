@@ -607,7 +607,9 @@ mod tests {
     #[test]
     fn reports_verified_when_local_controls_are_present() {
         let dir = TempDir::new().unwrap();
-        let config = PhantomConfig::new_with_defaults("abc".to_string());
+        let config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
+            &std::fs::canonicalize(dir.path()).unwrap(),
+        ));
         std::fs::write(
             dir.path().join(".phantom.toml"),
             toml::to_string_pretty(&config).unwrap(),

@@ -307,9 +307,9 @@ the vault, never new exposure paths.
   call.
 - **Fail closed.** Unsupported providers return `NotSupported` with an
   operator-facing reason — no guessing, no partial rotation. Mock fast-paths
-  are guarded (`cfg(test)` or explicit `PHANTOM_ALLOW_MOCK_ROTATION=1`) and
-  audit-tagged `vault.rotation.mock` so a mock can never masquerade as a real
-  rotation.
+  are compiled only into unit tests and audit-tagged `vault.rotation.mock`;
+  runtime environment variables cannot activate a mock credential or alternate
+  credential-bearing endpoint in a shipped binary.
 - **No silent demotion.** A broken grant surfaces as `broken` and blocks; it
   never falls back to a weaker credential, a cached value, or heuristic
   provider matching. A secret's bootstrap credential is never sent to any

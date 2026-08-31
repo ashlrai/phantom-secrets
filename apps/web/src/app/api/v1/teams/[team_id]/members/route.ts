@@ -139,11 +139,11 @@ export async function POST(req: Request, context: RouteContext) {
 
     targetUserId = targetUser.id;
   } else if (typeof github_login === "string" && github_login.trim()) {
-    const normalizedLogin = github_login.trim().replace(/^@+/, "");
+    const normalizedLogin = github_login.trim().replace(/^@+/, "").toLowerCase();
 
-    if (!normalizedLogin) {
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/.test(normalizedLogin)) {
       return Response.json(
-        { error: "user_id or github_login is required" },
+        { error: "github_login is invalid" },
         { status: 400 }
       );
     }
@@ -151,7 +151,7 @@ export async function POST(req: Request, context: RouteContext) {
     const { data: targetUsers, error: targetError } = await supabase
       .from("users")
       .select("id")
-      .ilike("github_login", normalizedLogin)
+      .eq("github_login_normalized", normalizedLogin)
       .limit(2);
 
     if (targetError) {

@@ -75,7 +75,7 @@ impl PhantomMcpServer {
         &self,
     ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
         let config = self.load_config().map_err(internal_err)?;
-        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let vault = phantom_vault::create_vault(config.local_project_id());
         Ok((config, vault))
     }
 
@@ -393,7 +393,7 @@ impl PhantomMcpServer {
         let names = vault.list().unwrap_or_default();
 
         let mut output = String::new();
-        output.push_str(&format!("Project ID: {}\n", config.phantom.project_id));
+        output.push_str(&format!("Project ID: {}\n", config.portable_project_id()));
         output.push_str(&format!("Vault backend: {}\n", vault.backend_name()));
         output.push_str(&format!("Secrets stored: {}\n", names.len()));
 
@@ -466,7 +466,7 @@ impl PhantomMcpServer {
             PhantomConfig::new_with_defaults(project_id.clone())
         };
 
-        let vault = phantom_vault::create_vault(&config.phantom.project_id);
+        let vault = phantom_vault::create_vault(config.local_project_id());
 
         let mut token_map = TokenMap::new();
         let mut stored = Vec::new();
@@ -674,7 +674,7 @@ impl PhantomMcpServer {
         let candidate_added_at = shadow.candidate_added_at;
         let ttl_remaining = shadow.ttl_remaining_secs();
 
-        let store = ShadowStore::new(shadow_dir(&config.phantom.project_id))
+        let store = ShadowStore::new(shadow_dir(config.local_project_id()))
             .map_err(|e| internal_err(format!("Failed to open shadow store: {e}")))?;
         store
             .save(&shadow)
@@ -711,7 +711,7 @@ impl PhantomMcpServer {
             &self.project_id(),
         )?;
         use phantom_vault::shadowing::{shadow_dir, ShadowStore, ShadowedSecret};
-        let store = ShadowStore::new(shadow_dir(&config.phantom.project_id))
+        let store = ShadowStore::new(shadow_dir(config.local_project_id()))
             .map_err(|e| internal_err(format!("Failed to open shadow store: {e}")))?;
 
         let meta = store
@@ -1025,7 +1025,7 @@ impl PhantomMcpServer {
         let new_version = phantom_core::cloud::push(
             &api_base,
             &token,
-            &config.phantom.project_id,
+            config.portable_project_id(),
             &blob_b64,
             version,
         )
@@ -1066,9 +1066,10 @@ impl PhantomMcpServer {
 
         let api_base = phantom_core::auth::api_base_url()
             .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
-        let pull_result = phantom_core::cloud::pull(&api_base, &token, &config.phantom.project_id)
-            .await
-            .map_err(|e| internal_err(format!("Cloud pull failed: {e}")))?;
+        let pull_result =
+            phantom_core::cloud::pull(&api_base, &token, config.portable_project_id())
+                .await
+                .map_err(|e| internal_err(format!("Cloud pull failed: {e}")))?;
 
         let pull_data = match pull_result {
             Some(data) => data,
@@ -1199,7 +1200,7 @@ impl PhantomMcpServer {
         let target_config = PhantomConfig::load(&target_config_path)
             .map_err(|e| internal_err(format!("Failed to load target config: {e}")))?;
 
-        let target_vault = phantom_vault::create_vault(&target_config.phantom.project_id);
+        let target_vault = phantom_vault::create_vault(target_config.local_project_id());
         let target_name = params.rename.as_deref().unwrap_or(&params.name);
 
         target_vault
@@ -1245,10 +1246,9 @@ impl PhantomMcpServer {
             match PhantomConfig::load(&config_path) {
                 Ok(cfg) => {
                     let id_short = cfg
-                        .phantom
-                        .project_id
+                        .portable_project_id()
                         .get(..8)
-                        .unwrap_or(&cfg.phantom.project_id);
+                        .unwrap_or(cfg.portable_project_id());
                     lines.push(format!("pass: Config valid (project: {id_short})"));
                     Some(cfg)
                 }
@@ -1267,7 +1267,7 @@ impl PhantomMcpServer {
 
         // ── Check 2: Vault accessible ───────────────────────────────────
         if let Some(cfg) = &config {
-            let vault = phantom_vault::create_vault(&cfg.phantom.project_id);
+            let vault = phantom_vault::create_vault(cfg.local_project_id());
             lines.push(format!("pass: Vault backend: {}", vault.backend_name()));
             match vault.list() {
                 Ok(names) => {
@@ -2236,7 +2236,7 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
 
         let (config, vault) = self.load_config_and_vault()?;
-        let project_id = config.phantom.project_id.clone();
+        let project_id = config.portable_project_id().to_string();
 
         let names = vault
             .list()
@@ -3544,7 +3544,7 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
 
         let (config, vault) = self.load_config_and_vault()?;
-        let project_id = config.phantom.project_id.clone();
+        let project_id = config.portable_project_id().to_string();
 
         let (secrets, version) = phantom_core::teams_vault::pull_for_project(
             &api_base,
@@ -3726,7 +3726,7 @@ impl PhantomMcpServer {
         use phantom_core::validation_scheduler::{state_file_path, Schedule, SchedulerState};
 
         let (config, _vault) = self.load_config_and_vault()?;
-        let state_path = state_file_path(&config.phantom.project_id);
+        let state_path = state_file_path(config.local_project_id());
         let mut state = SchedulerState::load(&state_path).unwrap_or_default();
 
         // If an interval was provided, update the schedule.
@@ -3778,7 +3778,7 @@ impl PhantomMcpServer {
         use phantom_core::validation_scheduler::{state_file_path, SchedulerState, MAX_HISTORY};
 
         let (config, _vault) = self.load_config_and_vault()?;
-        let state_path = state_file_path(&config.phantom.project_id);
+        let state_path = state_file_path(config.local_project_id());
         let state = SchedulerState::load(&state_path).unwrap_or_default();
 
         let limit = params.limit.min(MAX_HISTORY);
