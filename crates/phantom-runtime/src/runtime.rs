@@ -650,6 +650,10 @@ mod direct {
         let m = p.manifest.memory_bytes;
         let f = p.manifest.file_bytes;
         let n = p.manifest.open_files;
+        #[cfg(target_os = "macos")]
+        let pr = macos_account_process_limit(p.manifest.processes)
+            .map_err(|_| ExecutionError::RuntimeSetup)?;
+        #[cfg(not(target_os = "macos"))]
         let pr = p.manifest.processes;
         let cpu = (p.manifest.timeout_ms / 1000).saturating_add(1);
         unsafe {
@@ -690,6 +694,44 @@ mod direct {
         } else {
             Err(std::io::Error::last_os_error())
         }
+    }
+    #[cfg(target_os = "macos")]
+    fn macos_account_process_limit(descendant_budget: u64) -> std::io::Result<u64> {
+        // Darwin applies RLIMIT_NPROC to every process owned by the real UID,
+        // not to this process group. Preserve the manifest's descendant budget
+        // by adding the already-running account processes before pre_exec sets
+        // the finite soft limit. A concurrent account-wide process burst still
+        // fails closed when Cargo tries to spawn rather than silently widening
+        // the limit.
+        const PROC_UID_ONLY: u32 = 4;
+        const MAX_ACCOUNT_PIDS: usize = 65_536;
+        let mut pids = vec![0 as libc::pid_t; MAX_ACCOUNT_PIDS];
+        let buffer_bytes = pids
+            .len()
+            .checked_mul(std::mem::size_of::<libc::pid_t>())
+            .and_then(|bytes| libc::c_int::try_from(bytes).ok())
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let returned_bytes = unsafe {
+            libc::proc_listpids(
+                PROC_UID_ONLY,
+                libc::getuid(),
+                pids.as_mut_ptr().cast(),
+                buffer_bytes,
+            )
+        };
+        if returned_bytes <= 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let returned_bytes = usize::try_from(returned_bytes)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+        if returned_bytes >= buffer_bytes as usize {
+            return Err(std::io::Error::from(std::io::ErrorKind::OutOfMemory));
+        }
+        let returned_pids = returned_bytes / std::mem::size_of::<libc::pid_t>();
+        let account_processes = pids[..returned_pids].iter().filter(|pid| **pid > 0).count() as u64;
+        account_processes
+            .checked_add(descendant_budget)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))
     }
     fn kill_group(pid: u32) {
         unsafe {
