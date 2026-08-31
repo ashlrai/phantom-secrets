@@ -217,7 +217,7 @@ as separate recovery material:
 # Interactive: hidden prompt + confirmation on an attached terminal
 phantom export --output phantom-backup.enc
 
-# Automation: bounded private file, never argv
+# Non-Windows automation: bounded private file, never argv
 chmod 600 /secure/path/phantom-backup.pass
 phantom export --output phantom-backup.enc \
   --passphrase-file /secure/path/phantom-backup.pass
@@ -231,13 +231,15 @@ phantom import phantom-backup.enc \
   --passphrase-file /secure/path/phantom-backup.pass
 ```
 
-Passphrase files must be regular files, not symlinks, and are limited to 4096
-bytes. On Unix they must be mode `0600` or stricter. Export refuses existing
-targets and symlinks; it creates a `0600` staging file on Unix (or uses the
-containing directory's inherited ACL on Windows), flushes it, and publishes it
-without overwriting. Store neither the encrypted backup nor its passphrase in
-the repository. Plaintext JSON export and the legacy argv `--passphrase` flow
-are disabled.
+Passphrase files on non-Windows platforms must be regular files, not symlinks,
+and are limited to 4096 bytes. On Unix they must be mode `0600` or stricter.
+`--passphrase-file` fails closed on Windows pending no-reparse handle and
+effective private-ACL verification; use the attached hidden terminal prompt.
+Export refuses existing targets and symlinks; it creates a `0600` staging file
+on Unix (or uses the containing directory's inherited ACL on Windows), flushes
+it, and publishes it without overwriting. Store neither the encrypted backup
+nor its passphrase in the repository. Plaintext JSON export and the legacy argv
+`--passphrase` flow are disabled.
 
 If the command reports that audit logging failed after publication, the backup
 already exists at the reported path. Do not retry with the same output path;
