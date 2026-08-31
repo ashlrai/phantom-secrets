@@ -1,10 +1,12 @@
 pub mod crypto;
 pub mod file;
+pub mod init_transaction;
 pub mod keychain;
 pub mod metadata;
 pub mod shadowing;
 pub mod traits;
 
+pub use init_transaction::{commit_init, InitFile, InitReceipt, InitSecret, InitTransactionError};
 pub use metadata::{RotationPolicy, SecretMetadata};
 pub use traits::VaultBackend;
 
