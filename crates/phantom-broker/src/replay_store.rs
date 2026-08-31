@@ -1179,7 +1179,7 @@ impl From<ReplayStorageError> for ReplayStoreError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
     use crate::lease::test_support::binding;
@@ -1921,5 +1921,21 @@ mod tests {
                 & 0o777,
             0o600
         );
+    }
+}
+
+#[cfg(all(test, not(any(target_os = "linux", target_os = "macos"))))]
+mod unsupported_platform_tests {
+    use super::*;
+
+    #[test]
+    fn durable_replay_storage_fails_closed_on_unsupported_platforms() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        assert!(matches!(
+            DurableReplayStore::bootstrap(temp.path().join("broker"), workspace, [7_u8; 32]),
+            Err(ReplayStoreError::UnsupportedPlatform)
+        ));
     }
 }

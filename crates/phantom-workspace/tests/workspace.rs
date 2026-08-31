@@ -284,6 +284,7 @@ fn seal_key() -> PlanSealKey {
     PlanSealKey::from_bytes([0xa7; 32])
 }
 
+#[cfg(unix)]
 #[test]
 fn sealed_plan_rejects_same_key_value_drift_without_exposing_values_or_seal_key() {
     let workspace = TempDir::new().unwrap();
@@ -309,6 +310,7 @@ fn sealed_plan_rejects_same_key_value_drift_without_exposing_values_or_seal_key(
     assert!(!error.to_string().contains(second_value));
 }
 
+#[cfg(unix)]
 #[test]
 fn sealed_plan_rejects_existing_config_namespace_drift() {
     let workspace = TempDir::new().unwrap();
@@ -328,6 +330,7 @@ fn sealed_plan_rejects_existing_config_namespace_drift() {
     assert!(matches!(error, WorkspaceError::PlanDrift { .. }));
 }
 
+#[cfg(unix)]
 #[test]
 fn filesystem_apply_is_atomic_idempotent_and_recoverable() {
     let workspace = TempDir::new().unwrap();
@@ -439,6 +442,7 @@ impl SetupTransactionParticipant for CommitFailureParticipant {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn participant_commit_failure_restores_every_filesystem_change() {
     let workspace = TempDir::new().unwrap();
@@ -518,6 +522,7 @@ fn sealed_plan_refuses_existing_hardlinked_targets() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn apply_rejects_env_path_that_becomes_a_nested_repository() {
     let workspace = TempDir::new().unwrap();
@@ -564,6 +569,7 @@ impl SetupTransactionParticipant for PrepareFailureParticipant {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn participant_prepare_failure_runs_compensation_without_changing_files() {
     let workspace = TempDir::new().unwrap();
@@ -639,6 +645,7 @@ impl SetupTransactionParticipant for InvalidMutationParticipant {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn duplicate_and_unauthorized_participant_mutations_are_rejected_and_compensated() {
     for mode in [
@@ -673,6 +680,7 @@ fn duplicate_and_unauthorized_participant_mutations_are_rejected_and_compensated
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn explicit_rollback_refuses_to_overwrite_later_file_changes() {
     let workspace = TempDir::new().unwrap();
@@ -697,6 +705,7 @@ fn explicit_rollback_refuses_to_overwrite_later_file_changes() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn concurrent_applies_allow_only_one_exact_plan_to_mutate() {
     use std::sync::{Arc, Barrier};
@@ -747,4 +756,20 @@ fn concurrent_applies_allow_only_one_exact_plan_to_mutate() {
         1
     );
     assert!(workspace.path().join(".phantom.toml").is_file());
+}
+
+#[cfg(not(unix))]
+#[test]
+fn filesystem_apply_fails_closed_when_safe_mutation_is_unsupported() {
+    let workspace = TempDir::new().unwrap();
+    write(
+        workspace.path().join(".env"),
+        "OPENAI_API_KEY=sk-platform-test-sentinel\n",
+    );
+    let key = seal_key();
+    let sealed = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+
+    let error = apply_setup_plan(&sealed, &key, &mut NoopSetupParticipant).unwrap_err();
+    assert!(matches!(error, WorkspaceError::SafeMutationUnsupported));
+    assert!(!workspace.path().join(".phantom.toml").exists());
 }

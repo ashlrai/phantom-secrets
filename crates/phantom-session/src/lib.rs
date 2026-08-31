@@ -687,14 +687,49 @@ fn atomic_write(dir: &Path, path: &Path, b: &[u8]) -> Result<(), SessionError> {
         let mut f = o.open(&tmp)?;
         f.write_all(b)?;
         f.sync_all()?;
-        std::fs::rename(&tmp, path)?;
-        File::open(dir)?.sync_all()?;
+        replace_and_sync(dir, &tmp, path)?;
         Ok(())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+#[cfg(unix)]
+fn replace_and_sync(dir: &Path, tmp: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(tmp, path)?;
+    File::open(dir)?.sync_all()
+}
+
+#[cfg(windows)]
+fn replace_and_sync(_dir: &Path, tmp: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let from = tmp
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let to = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn replace_and_sync(_dir: &Path, tmp: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(tmp, path)
 }
 
 #[derive(Debug, thiserror::Error)]
