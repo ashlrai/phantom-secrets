@@ -9,20 +9,33 @@ delivery channel.
 
 The tap repo is live. End users install with:
 
-   ```
-   brew tap ashlrai/phantom
-   brew install phantom
-   ```
+```bash
+brew tap ashlrai/phantom
+```
 
-Every release should bump `version` + the four `sha256` lines in
+Homebrew 6.0 and later require third-party formulae to be trusted explicitly.
+On those versions, trust Phantom's specific formula:
+
+```bash
+brew trust --formula ashlrai/phantom/phantom
+```
+
+Then install the fully qualified formula:
+
+```bash
+brew install ashlrai/phantom/phantom
+```
+
+Every release should update the four release URLs and four `sha256` lines in
 `Formula/phantom.rb` of the tap after the exact archives and checksums are
-verified. This is a separately authorized, manual distribution step; the
-current release workflow does not mutate the tap. The simplest workflow is:
+verified. Homebrew infers the version from those concrete URLs. This is a
+separately authorized, manual distribution step; the current release workflow
+does not mutate the tap. The simplest workflow is:
 
 ```bash
 # After tagging and the binaries are uploaded:
 curl -sL https://github.com/ashlrai/phantom-secrets/releases/download/vX.Y.Z/SHA256SUMS
-# Update Formula/phantom.rb with the new version + new SHAs
+# Update Formula/phantom.rb with the four new URLs + four new SHAs
 git -C ~/code/homebrew-phantom commit -am "phantom X.Y.Z"
 git -C ~/code/homebrew-phantom push
 ```
@@ -37,8 +50,14 @@ Before pushing to the tap, you can test the formula against the local
 copy:
 
 ```bash
-brew install --formula ./integrations/homebrew/Formula/phantom.rb
-phantom --version  # → "phantom 0.6.0"
-phantom-mcp --version  # → "phantom-mcp 0.6.0"
+brew tap-new --no-git codex/phantom-local-test
+tap_dir="$(brew --repository codex/phantom-local-test)"
+cp ./integrations/homebrew/Formula/phantom.rb "${tap_dir}/Formula/phantom.rb"
+brew trust --formula codex/phantom-local-test/phantom
+brew install codex/phantom-local-test/phantom
+brew test codex/phantom-local-test/phantom
+phantom --version  # → "phantom 0.7.3"
+phantom-mcp --version  # → "phantom-mcp 0.7.3"
 brew uninstall phantom
+brew untap codex/phantom-local-test
 ```
