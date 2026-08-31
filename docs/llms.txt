@@ -19,6 +19,14 @@ Setup (recommended, one command per AI client):
 
 Falls back to `npx -y phantom-secrets-mcp` if `phantom-mcp` is not on PATH. Global registration alternative: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`.
 
+The runtime `tools/list` response is the canonical MCP parameter schema.
+The vault, package, cloud, and team mutation tools selected below require
+explicit consent, `confirm: true`, and the `approval_token` obtained through
+the server's out-of-band `phantom mcp-approve` challenge. Advanced audit,
+validation, rotation, and expiry tools have distinct schemas; inspect
+`tools/list` rather than extrapolating these gates. `phantom_check` accepts
+`runtime`; staged index scanning is a CLI-only `phantom check --staged` option.
+
 Vault: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret_interactive, phantom_add_secret (deprecated; refuses plaintext), phantom_remove_secret, phantom_rotate, phantom_copy_secret
 
 Detection: phantom_doctor, phantom_why, phantom_check, phantom_env
@@ -33,7 +41,7 @@ init (--from <file>, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json 
 
 ## Dashboard
 
-https://phm.dev/dashboard (read-only): list of cloud-backed projects, plan tier, team membership, billing portal link.
+https://phm.dev/dashboard: local/pilot access state and available cloud-backed project metadata. Hosted billing is not commissioned, and the dashboard does not start checkout or collect payment.
 
 ## Key Features
 

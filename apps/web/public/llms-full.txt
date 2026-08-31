@@ -219,7 +219,7 @@ Copy a secret to another phantom-initialized project without exposing the value.
 Options: --rename <newname>
 
 ### phantom team list / create / members / invite / key-publish / vault-push / vault-pull
-Multi-developer fixed-membership shared-vault commands for a planned Pro pilot. Current vault access is member-wide: every team member can read and write the shared vault, and roles do not provide per-vault access control. `list` and `members` are read-only. `create` and `invite` are mutating (require explicit user confirmation when called via MCP); the authenticated creator becomes owner, and invitation management is owner/admin-gated. `key-publish` is one-time setup that registers this device's X25519 public key with the team — pubkey only, the private key stays in the OS keychain. `vault-push` wraps the project's secrets with a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305) and uploads ciphertext only; `vault-pull` is the corresponding download/decrypt.
+Multi-developer fixed-membership shared-vault commands for a planned Pro pilot. Current vault access is member-wide: every team member can read and write the shared vault, and roles do not provide per-vault access control. `list` and `members` are read-only. `create`, `invite`, `key-publish`, `vault-push`, and `vault-pull` are mutating and require explicit user consent plus the MCP confirmation and out-of-band approval gates. The authenticated creator becomes owner, and invitation management is owner/admin-gated. `key-publish` registers this device's X25519 public key with the team — pubkey only, the private key stays in the OS keychain. `vault-push` wraps the project's secrets with a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305) and uploads ciphertext only; `vault-pull` is the corresponding download/decrypt.
 
 Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control. Pro is a planned hosted plan, not a generally purchasable or commissioned entitlement evidenced by this repository.
 
@@ -237,9 +237,9 @@ Print a shell-completion script to stdout. Source from your shell rc; see the RE
 
 Install: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
-The MCP server uses stdio transport via the rmcp 1.3 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex.
+The MCP server uses stdio transport via the rmcp 1.3 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex. The runtime `tools/list` response is the canonical parameter schema.
 
-### Read-only tools (safe to call any time)
+### Read-only and read-only-by-default tools
 
 phantom_list_secrets
   List secret names stored in vault. Never returns values.
@@ -270,7 +270,7 @@ phantom_sync
 
 phantom_doctor
   Run all health checks.
-  Params: fix (bool) — auto-fix safe issues if true
+  Params: fix (bool), confirm (bool), approval_token (string, optional in schema) — `confirm: true` and a valid approval token are required when fix is true
   Returns: pass/warn/fail for each check, summary.
   Checks: .phantom.toml, vault access, .env protection, .gitignore, .env.example, pre-commit hook.
 
@@ -278,61 +278,64 @@ phantom_doctor
 
 phantom_init
   Read .env, store real secrets in vault, rewrite with phantom tokens, write .phantom.toml.
-  Params: env_path (string, default: ".env")
+  Params: env_path (string, default: ".env"), confirm (bool, must be true), approval_token (string)
   Returns: list of protected secrets.
 
 phantom_env
   Generate .env.example from .env. Secrets replaced with descriptive placeholders.
-  Params: output (string, default: ".env.example")
+  Params: output (string, default: ".env.example"), confirm (bool, must be true), approval_token (string)
   Returns: confirmation with entry count.
 
-### Destructive tools — require confirm=true
+### Mutating tools — require confirmation and out-of-band approval
 
-All destructive tools return an error if called without confirm=true.
-The agent must ask the user for explicit consent before calling any of these.
+These tools return an error unless called with `confirm: true` and a valid
+`approval_token` obtained through the server's out-of-band
+`phantom mcp-approve` challenge. The agent must obtain explicit user consent;
+an approval token does not replace that consent.
 
 phantom_add_secret_interactive
   Start a trusted terminal prompt for adding a secret without passing the value through MCP.
-  Params: name (string), confirm (bool, must be true)
+  Params: name (string), confirm (bool, must be true), approval_token (string)
   Effect: returns the terminal command to run; the user enters the value outside agent context.
 
 phantom_add_secret
   Deprecated compatibility tool. Plaintext values passed through MCP are rejected.
+  Params: name (string), confirm (bool, must be true), approval_token (string). There is no value parameter.
 
 phantom_remove_secret
   Permanently delete a secret from the vault.
-  Params: name (string), confirm (bool, must be true)
+  Params: name (string), confirm (bool, must be true), approval_token (string)
   Effect: secret is gone — not recoverable unless cloud backup exists.
 
 phantom_rotate
   Regenerate all phantom tokens in .env. Old tokens immediately invalid.
-  Params: confirm (bool, must be true)
+  Params: confirm (bool, must be true), approval_token (string)
   Effect: .env rewritten with new phm_ tokens. Real secrets unchanged.
 
 phantom_cloud_push
   Encrypt vault client-side and upload to Phantom Cloud.
-  Params: confirm (bool, must be true)
+  Params: confirm (bool, must be true), approval_token (string)
   Effect: overwrites existing cloud copy. Requires phantom login first.
   Encryption: ChaCha20-Poly1305 client-side. Server never sees plaintext.
 
 phantom_cloud_pull
   Download and decrypt vault from Phantom Cloud.
-  Params: force (bool), confirm (bool, must be true)
+  Params: force (bool), confirm (bool, must be true), approval_token (string)
   Effect: writes secrets into local vault. force=true overwrites existing entries.
 
 phantom_copy_secret
   Copy a secret from this vault to another phantom-initialized project.
-  Params: name (string), target_dir (string), rename (string, optional), confirm (bool, must be true)
+  Params: name (string), target_dir (string), rename (string, optional), confirm (bool, must be true), approval_token (string)
   Effect: writes into target vault. .. path traversal is rejected.
 
 phantom_wrap
   Wrap selected runtime/build package.json scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with `npx phantom-secrets exec --`; skip test, lint, type, format, and other scripts.
-  Params: only (array), skip (array), confirm (bool, must be true)
+  Params: only (array), skip (array), confirm (bool, must be true), approval_token (string)
   Effect: modifies package.json. Saves originals as script:raw variants.
 
 phantom_unwrap
   Restore original package.json scripts from :raw variants.
-  Params: confirm (bool, must be true)
+  Params: confirm (bool, must be true), approval_token (string)
   Effect: restores and removes :raw entries.
 
 ### Team tools (planned Pro pilot, multi-developer fixed-membership shared vaults)
@@ -345,31 +348,31 @@ phantom_team_list
 
 phantom_team_members
   List members of a team by team_id. Returns GitHub login, email, and role for each.
-  Read-only. Params: team_id
+  Read-only. Params: team_id, optional confirm, optional approval_token. The reused schema exposes the two gate fields, but this read-only handler ignores them.
 
 phantom_team_key_publish
   One-time setup: register this device's X25519 public key with the team so encrypted vaults can be addressed to it.
   Idempotent — safe to call again after a key rotation. Pubkey only; the private key stays in the OS keychain.
-  Params: team_id
+  Params: team_id, confirm (bool, must be true), approval_token (string)
 
 phantom_team_create
   Create a new team. The authenticated user becomes the owner. Planned Pro entitlement required when the hosted service is commissioned.
-  Params: name, confirm (bool, must be true)
+  Params: name, confirm (bool, must be true), approval_token (string)
 
 phantom_team_invite
   Invite someone to a team by GitHub username. Requires owner or admin role.
-  Params: team_id, github_login, role ("member" | "admin" | "owner"), confirm (bool, must be true)
+  Params: team_id, github_login, role ("member" | "admin" | "owner"), confirm (bool, must be true), approval_token (string)
 
 phantom_team_vault_push
   Push this project's secrets to the shared team vault so all members can pull them.
   Encrypts client-side for each member who has registered a key (phantom_team_key_publish).
   Server only stores ciphertext.
-  Params: team_id, confirm (bool, must be true)
+  Params: team_id, confirm (bool, must be true), approval_token (string)
 
 phantom_team_vault_pull
   Download and decrypt the team vault for this project into the local vault.
   Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push.
-  Params: team_id, confirm (bool, must be true). Overwrites local secrets.
+  Params: team_id, confirm (bool, must be true), approval_token (string). Overwrites local secrets.
 
 Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control.
 
@@ -448,7 +451,7 @@ The `phm_` placeholders written to managed `.env` files persist until an explici
 
 Cloud tokens stored hashed (SHA-256) in database — never plaintext.
 
-MCP destructive tools require explicit confirm=true as a guard against unintended mutation. Confirmation is not prompt-injection immunity; an agent or user can still authorize a harmful request.
+The vault, package, cloud, and team mutation tools documented above require explicit consent, `confirm=true`, and the out-of-band `approval_token` challenge as guards against unintended mutation. Advanced tools have distinct runtime schemas and conditional gates; inspect `tools/list` instead of extrapolating. These gates are not prompt-injection immunity; an agent or user can still authorize a harmful request.
 
 phantom_reveal blocked in non-interactive contexts by default to prevent AI agents from reading real values.
 

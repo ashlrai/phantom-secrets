@@ -29,35 +29,41 @@ If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets
 
 The runtime `tools/list` response and `mcp-registry/server.json` are the
 canonical catalog. The table below highlights the core and team-vault surface.
+Every mutating entry below is gated by both `confirm: true` and the
+`approval_token` returned after the server's out-of-band `phantom mcp-approve`
+challenge. Optional fields are marked; parameter names match the runtime JSON
+schema exactly.
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `phantom_init` | Protect .env secrets — stores real values in vault, rewrites .env with phm_ tokens | directory (optional) |
+| `phantom_init` | Protect .env secrets — stores real values in vault, rewrites .env with phm_ tokens | env_path (default `.env`), confirm, approval_token |
 | `phantom_list_secrets` | List all protected secret names (never shows values) | — |
 | `phantom_status` | Show project status, vault backend, secret count, service mappings | — |
-| `phantom_doctor` | Diagnose configuration and vault health (read-only) | — |
-| `phantom_why` | Explain why a key is or is not protected (detection heuristics) | name |
-| `phantom_check` | Scan repo for unprotected secrets (pre-commit-style) | staged (bool) |
-| `phantom_env` | List environment variables and their protection status (no values) | — |
-| `phantom_sync` | Preview/perform deployment-platform sync (Vercel, Railway) | platform (optional) |
-| `phantom_add_secret` | **Deprecated** — refuses plaintext via MCP to prevent secrets entering AI context. Use `phantom_add_secret_interactive` (terminal-side prompt) instead | name, value |
-| `phantom_add_secret_interactive` | Prompt the user for a value on the terminal and store it in the vault. Safe — value never crosses the MCP wire | name |
-| `phantom_remove_secret` | Remove a secret from the vault | name, confirm |
-| `phantom_rotate` | Regenerate all phantom tokens. Old tokens become invalid | confirm |
-| `phantom_copy_secret` | Copy a secret from this project to another project's vault | name, target, confirm |
-| `phantom_wrap` | Wrap a plaintext .env value into a vaulted phm_ token | name |
-| `phantom_unwrap` | Reverse a wrap (restore plaintext to .env from vault) | name, confirm |
-| `phantom_cloud_push` | Push encrypted vault to Phantom Cloud (E2E encrypted) | confirm |
-| `phantom_cloud_pull` | Pull vault from Phantom Cloud | force (bool), confirm |
+| `phantom_doctor` | Diagnose configuration and vault health; `fix=true` mutates files and activates both gates | fix, confirm, approval_token |
+| `phantom_why` | Explain why a key is or is not protected (detection heuristics) | key |
+| `phantom_check` | Scan supported dotenv files, or selected process variables with `runtime=true` | runtime |
+| `phantom_env` | Generate an env example file with secret placeholders | output (default `.env.example`), confirm, approval_token |
+| `phantom_sync` | Preview deployment-platform sync configuration (Vercel, Railway) | platform (optional), project_id (optional) |
+| `phantom_add_secret` | **Deprecated** — refuses plaintext via MCP. Use `phantom_add_secret_interactive` instead | name, confirm, approval_token |
+| `phantom_add_secret_interactive` | Return a trusted-terminal command that prompts for the value outside MCP | name, confirm, approval_token |
+| `phantom_remove_secret` | Remove a secret from the vault | name, confirm, approval_token |
+| `phantom_rotate` | Regenerate all phantom tokens. Old tokens become invalid | confirm, approval_token |
+| `phantom_copy_secret` | Copy a secret to another project's vault | name, target_dir, rename (optional), confirm, approval_token |
+| `phantom_wrap` | Wrap selected `package.json` scripts with `phantom exec` | only, skip, confirm, approval_token |
+| `phantom_unwrap` | Restore wrapped `package.json` scripts from their `:raw` variants | confirm, approval_token |
+| `phantom_cloud_push` | Push a client-encrypted vault payload to Phantom Cloud | confirm, approval_token |
+| `phantom_cloud_pull` | Pull a vault from Phantom Cloud | force, confirm, approval_token |
 | `phantom_cloud_status` | Check cloud auth and sync status | — |
 | `phantom_team_list` | List teams the authenticated user belongs to | — |
-| `phantom_team_create` | Create a new team. Pro plan required. Caller becomes owner | name, confirm |
-| `phantom_team_members` | List members of a team (GitHub login + role) | team_id |
-| `phantom_team_invite` | Invite someone to a team by GitHub username | team_id, github_login, role, confirm |
-| `phantom_team_key_publish` | Register the caller's X25519 public key on a team. Required once per team before pushing/pulling vaults. Private key stays in OS keychain | team_id |
-| `phantom_team_vault_push` | Push the current project's vault to a shared team vault, encrypted client-side (X25519 + ChaCha20-Poly1305) to every member with a registered public key | team_id, confirm |
-| `phantom_team_vault_pull` | Pull the current project's team vault into the local vault. Decrypts the per-member key share locally | team_id, confirm |
-| `phantom_rotate_with_candidate` / `phantom_rotate_promote` / `phantom_rotate_provider` | Stage, promote, or provider-rotate credentials without returning values. For `phantom_rotate_provider`, `provider` is optional (resolved from the secret's rotation_provider config) and the bootstrap credential is sourced from the server environment or the vault — never the MCP wire | name, provider (optional), confirm |
+| `phantom_team_create` | Create a new team. Caller becomes owner | name, confirm, approval_token |
+| `phantom_team_members` | List members of a team (read-only; shared schema exposes unused gate fields) | team_id, confirm (optional, ignored), approval_token (optional, ignored) |
+| `phantom_team_invite` | Invite someone to a team by GitHub username | team_id, github_login, role, confirm, approval_token |
+| `phantom_team_key_publish` | Register this device's X25519 public key; the private key stays in the OS keychain | team_id, confirm, approval_token |
+| `phantom_team_vault_push` | Push the current project's vault to a client-encrypted shared team vault | team_id, confirm, approval_token |
+| `phantom_team_vault_pull` | Pull and locally decrypt the current project's team vault | team_id, confirm, approval_token |
+| `phantom_rotate_with_candidate` | Stage a candidate credential without returning its value | name, auto_promote_ttl_secs (optional), confirm, approval_token |
+| `phantom_rotate_promote` | Promote a staged candidate credential | name, confirm, approval_token |
+| `phantom_rotate_provider` | Provider-rotate a credential; `provider` may resolve from config | name, provider (optional), confirm, approval_token |
 
 ## When to recommend Phantom
 

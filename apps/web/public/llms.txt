@@ -41,43 +41,48 @@ If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets
 - Treat `phm_…` tokens in `.env` as **safe placeholders**, not broken keys. Don't try to "fix" them.
 - Never read, log, transcribe, or echo a real API key value to a file or chat. The proxy injects them; you don't need them.
 - Use the MCP tools (below) for any secret-related operation. Don't shell out to `cat .env`.
-- Never call a destructive tool without `confirm: true` and explicit user consent.
+- Never call a mutating tool without explicit user consent. For the selected
+  vault, package, cloud, and team tools below, also provide `confirm: true` and
+  the `approval_token` obtained through the server's out-of-band
+  `phantom mcp-approve` challenge. Inspect `tools/list` for advanced tools;
+  their schemas and conditional gates differ.
 - Suggest `phantom exec -- <command>` when running code that needs real credentials.
 
 ## Selected MCP tools
 
 The runtime `tools/list` response and release-checked MCP schema are the canonical catalog.
 
-Read-only (safe to call freely):
+Read-only, or read-only by default where noted:
 - `phantom_list_secrets` — names only, never values
 - `phantom_status` — vault and config state
-- `phantom_check` — scan for unprotected secrets
-- `phantom_doctor` — diagnostic checks
-- `phantom_why` — explain a token's origin
-- `phantom_env` — list environment without values
+- `phantom_check` — scan supported dotenv files; parameter: `runtime` only (the CLI separately supports `phantom check --staged`)
+- `phantom_doctor` — diagnostic checks; parameters: `fix`, `confirm`, `approval_token`, with both gates required only for `fix=true`
+- `phantom_why` — explain a token's origin; parameter: `key`
 - `phantom_cloud_status` — cloud sync state
-- `phantom_sync` — preview platform sync
+- `phantom_sync` — preview platform sync; parameters: optional `platform`, optional `project_id`
 
-Init / scaffolding:
-- `phantom_init` — protect a fresh `.env`; this mutates the local vault, dotenv file, and Phantom configuration.
-- `phantom_wrap` — wrap selected runtime/build `package.json` scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with `phantom exec`; it skips test, lint, type, format, and other scripts
-- `phantom_unwrap` — reverse `phantom_wrap`, restoring original scripts from `:raw` variants
+Init / scaffolding (mutating; require `confirm` and `approval_token`):
+- `phantom_init` — parameters: `env_path`, `confirm`, `approval_token`
+- `phantom_env` — parameters: `output`, `confirm`, `approval_token`; writes an env example file
+- `phantom_wrap` — parameters: `only`, `skip`, `confirm`, `approval_token`; selectively wraps runtime/build `package.json` scripts and leaves test, lint, type, and format scripts unchanged
+- `phantom_unwrap` — parameters: `confirm`, `approval_token`; restores scripts from `:raw` variants
 
 > Note: a legacy `phantom_add_secret` tool exists but is hard-deprecated — it refuses any plaintext value through MCP because tool arguments enter agent context. Use `phantom_add_secret_interactive` (below) instead.
 
-Destructive (require `confirm: true`):
-- `phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`
-- `phantom_cloud_push`, `phantom_cloud_pull`
-- `phantom_copy_secret`
+Other mutating tools (also require `confirm` and `approval_token`):
+- `phantom_add_secret_interactive`: `name`, `confirm`, `approval_token`
+- `phantom_remove_secret`: `name`, `confirm`, `approval_token`; `phantom_rotate`: `confirm`, `approval_token`
+- `phantom_cloud_push`: `confirm`, `approval_token`; `phantom_cloud_pull`: `force`, `confirm`, `approval_token`
+- `phantom_copy_secret`: `name`, `target_dir`, optional `rename`, `confirm`, `approval_token`
 
 Teams (multi-developer fixed-membership shared vaults — planned Pro pilot):
 - Current vault access is member-wide: every team member can read and write the shared vault; roles do not provide per-vault access control.
 - `phantom_team_list` — read-only, list teams the user belongs to
-- `phantom_team_members` — read-only, list members of a team
-- `phantom_team_key_publish` — register the user's X25519 pubkey on a team (idempotent; pubkey only — private key stays in OS keychain)
-- `phantom_team_create` — requires `confirm: true`; the authenticated creator becomes owner
-- `phantom_team_invite` — requires `confirm: true`; invitation management is owner/admin-gated
-- `phantom_team_vault_push`, `phantom_team_vault_pull` — require `confirm: true`. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305). Server only stores ciphertext.
+- `phantom_team_members` — read-only; `team_id` plus optional, ignored `confirm` and `approval_token` fields exposed by its shared schema
+- `phantom_team_key_publish` — `team_id`, `confirm`, `approval_token`; registers the user's X25519 pubkey (private key stays in the OS keychain)
+- `phantom_team_create` — `name`, `confirm`, `approval_token`; the authenticated creator becomes owner
+- `phantom_team_invite` — `team_id`, `github_login`, `role`, `confirm`, `approval_token`; invitation management is owner/admin-gated
+- `phantom_team_vault_push`, `phantom_team_vault_pull` — each takes `team_id`, `confirm`, `approval_token`. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305). Server only stores ciphertext.
 
 Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control. Pro is a planned hosted plan, not a generally purchasable or commissioned entitlement evidenced by this repository.
 
@@ -111,7 +116,7 @@ Opt-in audit log:
 
 ## Dashboard
 
-[`phm.dev/dashboard`](https://phm.dev/dashboard) — read-only browser view of the user's cloud-backed projects, plan tier, billing portal link, and team membership. Sign in with the same GitHub account used by `phantom login`. Every mutation stays in the CLI / MCP.
+[`phm.dev/dashboard`](https://phm.dev/dashboard) — browser view of local/pilot access state and available cloud-backed project metadata. Hosted billing is not commissioned; the dashboard does not start checkout or collect payment. Sign in with the same GitHub account used by `phantom login`.
 
 ## Detection
 
