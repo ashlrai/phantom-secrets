@@ -1,6 +1,6 @@
 # Phantom — Full Reference
 
-Phantom is an open-source CLI that keeps real API keys out of supported, value-blind AI-agent paths. It replaces managed dotenv values with `phm_` placeholders; an authenticated local HTTP proxy resolves fresh session tokens only for configured upstream routes.
+Phantom is an open-source CLI that keeps real API keys out of supported, value-blind AI-agent paths. It replaces managed dotenv values with persistent `phm_` mappings; an authenticated local HTTP proxy resolves fresh session credentials only for configured upstream routes. Persistent mappings are sensitive metadata and must remain confidential.
 
 Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
@@ -19,15 +19,15 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 
 ## How Phantom Works
 
-1. `phantom init` reads your .env, stores real secrets in an encrypted vault (OS keychain or ChaCha20-Poly1305 encrypted file), and rewrites .env with worthless phantom tokens (phm_...).
+1. `phantom init` reads your .env, stores real secrets in an encrypted vault (OS keychain or ChaCha20-Poly1305 encrypted file), and rewrites .env with persistent `phm_` mappings. Those mappings do not contain the plaintext value, but they are sensitive metadata and must not be disclosed or published.
 
 2. `phantom exec -- claude` starts a local HTTP reverse proxy on 127.0.0.1. It sets SDK-compatible BASE_URL environment variables (e.g., OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/), exposes a fresh PHANTOM_PROXY_TOKEN to the child process, then launches the specified command.
 
-3. When code makes an API call, the proxy authenticates the local session, removes its local auth token before forwarding, replaces phantom tokens with real credentials in request headers and body, and forwards over TLS to the real API endpoint. Full streaming/SSE support for OpenAI and Anthropic.
+3. When code makes an API call, the proxy authenticates the local session, removes its local auth token before forwarding, replaces mapped tokens in request headers, buffers the request body in full within its size bound before scoped replacement, and forwards over TLS to the configured API endpoint. Provider responses can stream, including SSE.
 
 4. Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN. Header-aware clients can set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 and send it as x-phantom-proxy-token instead of using path-authenticated local SDK URLs.
 
-5. In the supported managed workflow, the agent receives placeholders and scrubbed responses rather than real credential values. Unmanaged files, logs, direct environment injection, custom tools, and provider behavior remain outside that claim.
+5. In the supported managed workflow, the agent receives sensitive managed mappings and scrubbed responses rather than real credential values. `phantom exec` supplies separate fresh session credentials, which must be protected while active. Unmanaged files, logs, direct environment injection, custom tools, and provider behavior remain outside that claim.
 
 
 ## Install
@@ -62,10 +62,10 @@ phantom --version
 ## CLI Commands
 
 ### phantom init
-Read .env, store real secrets in vault, rewrite with phantom tokens, create .phantom.toml.
+Read .env, store real secrets in vault, rewrite it with persistent sensitive mappings, and create .phantom.toml.
 Options: --from <path> (non-standard .env location)
 Safe to re-run: new secrets are added, existing tokens preserved.
-Multi-project: phantom init --all <DIR> processes eligible git repositories found within a five-level bounded scan and stops below the first matching repository.
+Multi-project: phantom init --all <DIR> processes eligible git repositories found within a scan of at most five levels and stops descending below the first matching repository.
   --dry-run: preview which repos would be touched without modifying anything.
   --jobs N / -j N: number of repos to initialise concurrently (default: 4; also reads PHANTOM_INIT_JOBS env var).
   A progress bar shows live status during --all runs.
@@ -94,7 +94,7 @@ Show secret names stored in vault. Never shows values.
 Options: --json (emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded)
 
 ### phantom add <KEY>
-Add a secret to the vault. Writes phantom token to .env.
+Add a secret to the vault. Writes a persistent sensitive `phm_` mapping to .env.
 Prompts silently on the controlling terminal, so the value never enters shell history or `ps aux`. Positional secret values are rejected; use `--stdin` for a pipe.
 Example (interactive, hidden input): phantom add STRIPE_SECRET_KEY
 Options: --stdin (read one line from a piped stdin; CI-friendly: `echo "$VAL" | phantom add KEY --stdin`)
@@ -107,7 +107,7 @@ View a real secret value. Blocked in non-interactive contexts by default.
 Options: --clipboard (auto-clears after 30s). Attached terminals and exact typed confirmation are always required; there is no non-interactive bypass.
 
 ### phantom rotate
-Regenerate all phantom tokens in .env. Real secrets in vault are unchanged.
+Regenerate all persistent `phm_` mappings in .env. Real secrets in vault are unchanged; old mappings become invalid.
 Options: --sync (push updated tokens to deployment platforms simultaneously)
 
 ### phantom status
@@ -119,7 +119,7 @@ Options: --fix (auto-fix safe issues)
 
 ### phantom check
 Scans for unprotected real secrets. Exit code 1 if found.
-Options: --staged (read content from the git index instead of the working tree; staged .env files are also scanned — suitable for pre-commit hooks), --runtime (detect phantom tokens in the current environment when the proxy is not running, indicating a leak path)
+Options: --staged (read content from the git index instead of the working tree; staged .env files are also scanned — suitable for pre-commit hooks), --runtime (detect sensitive `phm_` values in the current environment when the proxy is not running, indicating a session-credential leak path)
 Example: phantom check --staged
 
 ### phantom sync
@@ -260,8 +260,8 @@ phantom_why
 
 phantom_check
   Scan for security issues.
-  Params: runtime (bool) — if true, scans process environment for phantom tokens without proxy
-  Returns: list of unprotected secrets or phantom token warnings.
+  Params: runtime (bool) — if true, scans the process environment for sensitive `phm_` values without a proxy
+  Returns: list of unprotected secrets or sensitive mapping/session-credential warnings.
 
 phantom_sync
   Show sync configuration and what would be pushed to deployment platforms.
@@ -277,7 +277,7 @@ phantom_doctor
 ### Initialization tools
 
 phantom_init
-  Read .env, store real secrets in vault, rewrite with phantom tokens, write .phantom.toml.
+  Read .env, store real secrets in vault, rewrite with persistent sensitive `phm_` mappings, write .phantom.toml.
   Params: env_path (string, default: ".env"), confirm (bool, must be true), approval_token (string)
   Returns: list of protected secrets.
 
@@ -308,9 +308,9 @@ phantom_remove_secret
   Effect: secret is gone — not recoverable unless cloud backup exists.
 
 phantom_rotate
-  Regenerate all phantom tokens in .env. Old tokens immediately invalid.
+  Regenerate all persistent `phm_` mappings in .env. Old mappings immediately invalid.
   Params: confirm (bool, must be true), approval_token (string)
-  Effect: .env rewritten with new phm_ tokens. Real secrets unchanged.
+  Effect: .env rewritten with new persistent `phm_` mappings. Real secrets unchanged; mappings remain sensitive metadata.
 
 phantom_cloud_push
   Encrypt vault client-side and upload to Phantom Cloud.
@@ -397,7 +397,7 @@ OpenAI Codex (~/.codex/config.json):
 12-crate Rust workspace:
 
 phantom-core
-  Config (.phantom.toml), .env parsing/rewriting, phantom token generation (256-bit CSPRNG, phm_ prefix),
+  Config (.phantom.toml), .env parsing/rewriting, persistent mapping generation (256-bit CSPRNG, phm_ prefix),
   error types, auth, cloud API client, smart secret detection heuristics.
 
 phantom-vault
@@ -405,12 +405,12 @@ phantom-vault
   Shared crypto module: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key).
 
 phantom-proxy
-  HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, replaces phantom tokens in headers/body
-  with real secrets from vault, forwards over TLS. Uses hyper for server, reqwest for outbound HTTPS.
-  Streaming token replacement for text/* and application/x-www-form-urlencoded request bodies
-  (frame-by-frame, 67-byte carry buffer for tokens straddling chunk boundaries).
-  JSON bodies use a buffered path with field-level F9 scoping (tokens in prompt/messages/content
-  fields are not substituted). Full SSE/streaming response support for OpenAI and Anthropic APIs.
+  HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, resolves mapped values in headers and
+  bounded, fully buffered request bodies, then forwards over TLS. Uses hyper for server and reqwest
+  for outbound HTTPS.
+  Request bodies are buffered in full within the enforced size bound before replacement.
+  JSON bodies use field-level F9 scoping (tokens in prompt/messages/content fields are not
+  substituted). Provider responses can stream, including SSE.
 
 phantom-core
   Also contains: importers module (doppler, infisical, dotenvx, 1password, env parsers);
@@ -437,7 +437,7 @@ Authority, Locus-contract, broker, runtime, session, evidence, and workspace cra
 
 Vault encryption: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key).
 
-Phantom tokens: 256-bit CSPRNG with phm_ prefix. The prefix distinguishes placeholders from supported real-key formats, and random collisions are cryptographically negligible rather than mathematically impossible.
+Phantom mappings: 256-bit CSPRNG values with a `phm_` prefix. The prefix distinguishes mappings from supported real-key formats, and random collisions are cryptographically negligible rather than mathematically impossible. Persistent mappings are sensitive metadata even though they do not contain plaintext secret values.
 
 Proxy binds to 127.0.0.1 only and is not bound to a non-loopback interface. Host compromise, same-user local-process access, and bearer theft remain in the threat model.
 
@@ -447,7 +447,7 @@ Secrets zeroized from memory after use (zeroize crate).
 
 Allowlist model: proxy only injects for configured service URL patterns. Unknown services are not modified.
 
-The `phm_` placeholders written to managed `.env` files persist until an explicit rotation or rewrite. `phantom exec` replaces them in the child environment with fresh session `phm_` values and also creates a separate fresh `PHANTOM_PROXY_TOKEN`; those session credentials stop working when that proxy exits. CLI-generated SDK URLs include the proxy token locally, and header-aware clients can opt into x-phantom-proxy-token.
+The persistent `phm_` mappings written to managed `.env` files persist until an explicit rotation or rewrite and must be handled as sensitive metadata. `phantom exec` replaces them in the child environment with fresh session `phm_` values and also creates a separate fresh `PHANTOM_PROXY_TOKEN`; those session credentials stop working when that proxy exits and must be protected while active. CLI-generated SDK URLs include the proxy token locally, and header-aware clients can opt into x-phantom-proxy-token.
 
 Cloud tokens stored hashed (SHA-256) in database — never plaintext.
 
@@ -550,7 +550,7 @@ Auth: GitHub OAuth via device code flow (like GitHub CLI).
 
 Packaging direction:
   Free tier: 1 cloud vault, unlimited local vaults
-  Pro (planned hosted plan): proposed $8/mo packaging for unlimited cloud vaults and multi-device sync
+  Pro (planned hosted pilot): proposed packaging for expanded cloud-vault and multi-device sync capabilities; limits and pricing are TBD, and no self-serve checkout is commissioned
 
 The Pro plan is not generally purchasable or commissioned based on repository source alone. Verify the deployed service, account entitlement, and written plan terms before relying on it.
 
@@ -582,7 +582,7 @@ Commit:
   .env.example        — generated by `phantom env`, shows required variable names
 
 Do not commit:
-  .env                — contains phantom tokens specific to your vault
+  .env                — contains persistent `phm_` mappings specific to your vault; treat them as sensitive metadata
   .env.local          — same reason
   .env*.local         — same reason
 

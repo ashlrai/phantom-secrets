@@ -1,6 +1,6 @@
 # Phantom
 
-> Open-source CLI for keeping real API keys out of supported, value-blind AI-agent paths. Phantom replaces managed `.env` values with `phm_` placeholders; an authenticated local proxy resolves fresh session tokens only for configured HTTP upstreams.
+> Open-source CLI for keeping real API keys out of supported, value-blind AI-agent paths. Phantom replaces managed `.env` values with persistent `phm_` mappings; an authenticated local proxy resolves fresh session credentials only for configured HTTP upstreams. Persistent mappings are sensitive metadata and must remain confidential.
 
 - Site: https://phm.dev
 - GitHub: https://github.com/ashlrai/phantom-secrets
@@ -8,13 +8,13 @@
 - Architecture diagram: https://phm.dev/architecture-diagram.png
 - License: MIT
 
-## Install (10 seconds)
+## Install
 
 ```
 npx phantom-secrets init
 ```
 
-Homebrew 6 (macOS, third-party tap):
+Homebrew (macOS, third-party tap):
 
 ```
 brew tap ashlrai/phantom
@@ -38,7 +38,7 @@ If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets
 
 ## What an AI agent should do
 
-- Treat `phm_…` tokens in `.env` as **safe placeholders**, not broken keys. Don't try to "fix" them.
+- Treat persistent `phm_…` mappings in `.env` as sensitive metadata, not broken keys. Don't try to "fix" them, disclose them, or publish them. Fresh `phantom exec` session credentials are separately scoped to that proxy session.
 - Never read, log, transcribe, or echo a real API key value to a file or chat. The proxy injects them; you don't need them.
 - Use the MCP tools (below) for any secret-related operation. Don't shell out to `cat .env`.
 - Never call a mutating tool without explicit user consent. For the selected
@@ -92,7 +92,7 @@ Team member removal and automatic vault-key rotation are not shipped. Use fixed-
 
 Recently-added flags worth knowing:
 
-- `phantom init --all <DIR>` processes eligible git repositories found within a five-level bounded scan and stops below the first matching repository. Use `--dry-run` to preview the exact set and `--jobs N` / `-j N` to control parallelism (default 4; also reads `PHANTOM_INIT_JOBS`). A progress bar shows live status.
+- `phantom init --all <DIR>` processes eligible git repositories found within a scan of at most five levels and stops descending below the first matching repository. Use `--dry-run` to preview the exact set and `--jobs N` / `-j N` to control parallelism (default 4; also reads `PHANTOM_INIT_JOBS`). A progress bar shows live status.
 - `phantom agent doctor` shows a human-readable AI-agent readiness report. `phantom agent report --json` emits stable JSON with status, risk, findings, fixes, commands, files, approval requirements, and exit code.
 - `phantom agent setup --dry-run` previews safe setup changes for agent use; `phantom agent setup --apply` writes them.
 - `phantom sync --dry-run --json` previews deployment sync targets, selected key names, skipped key names, token-env presence, and warnings without decrypting values or calling platform APIs.
@@ -126,9 +126,9 @@ Detection and runtime injection are different capabilities. Database connection 
 
 ## Runtime and data boundaries
 
-- The `phm_` placeholder written to a managed `.env` persists until an explicit rotation or rewrite.
-- `phantom exec` gives its child fresh session `phm_` values plus a separate fresh `PHANTOM_PROXY_TOKEN`; those session credentials stop working when that proxy exits.
-- Upstream API requests still leave the machine and reach the configured provider. Phantom keeps local vault operations and placeholder resolution under local control; it does not make application traffic local-only.
+- The persistent `phm_` mapping written to a managed `.env` persists until an explicit rotation or rewrite and must be handled as sensitive metadata.
+- `phantom exec` gives its child fresh session `phm_` values plus a separate fresh `PHANTOM_PROXY_TOKEN`; those session credentials stop working when that proxy exits and must be protected while active.
+- Upstream API requests still leave the machine and reach the configured provider. Phantom keeps local vault operations and mapping resolution under local control; it does not make application traffic local-only.
 - `phantom init` intentionally creates no plaintext project-local backup. `phantom unwrap` only reverses package-script wrapping and does not restore dotenv values.
 - The installed pre-commit hook runs `phantom check --staged`: staged dotenv content uses Phantom's detection heuristics, while added lines in other staged files are checked for a bounded set of credential prefixes. It is not a whole-repository or general-purpose secret scanner.
 
@@ -138,7 +138,7 @@ Detection and runtime injection are different capabilities. Database connection 
 
 - `phantom-core` — config (`.phantom.toml`), `.env` parsing, token generation (256-bit CSPRNG, `phm_` prefix)
 - `phantom-vault` — `VaultBackend` trait. macOS Keychain / Linux Secret Service / Windows Credential Manager / encrypted file fallback. ChaCha20-Poly1305 + Argon2id (hardened to OWASP balanced m=64 MiB / t=3 / p=1, with legacy-default fallback for older vaults).
-- `phantom-proxy` — HTTP reverse proxy on 127.0.0.1. Streaming token replacement for `text/*`/form bodies; buffered+scoped for JSON. SSE/streaming preserved.
+- `phantom-proxy` — HTTP reverse proxy on 127.0.0.1. It buffers each request body in full within its size bound before scoped replacement. Responses can stream, including SSE.
 - `phantom-cli` — `clap` binary with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows.
 - `phantom-mcp` — `rmcp` stdio server with a release-checked tool schema; use runtime `tools/list` for the current catalog.
 - Authority, Locus-contract, broker, runtime, evidence, session, and workspace crates are fail-closed foundations; they do not activate production execution.
@@ -146,7 +146,7 @@ Detection and runtime injection are different capabilities. Database connection 
 ## Pricing
 
 - Free: local vault, proxy, MCP, 1 cloud vault (≤10 secrets), Vercel/Railway sync
-- Pro (planned hosted plan): proposed $8/mo packaging for unlimited cloud vaults and multi-device encrypted sync; it is not generally purchasable or commissioned based on repository source alone
+- Pro (planned hosted pilot): proposed packaging for expanded cloud-vault and multi-device encrypted-sync capabilities; limits and pricing are TBD, and no self-serve checkout is commissioned
 - Enterprise evaluation: team-vault source and local audit tooling are present; SSO/SAML, centralized enterprise authorization, certification, and contractual SLA are not shipped by this repository. Service and support scope require a separate written agreement with Ashlr AI — `mason@ashlr.ai`.
 
 ## Documentation
