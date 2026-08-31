@@ -21,7 +21,7 @@ independently checked on August 31, 2026:
 - the immutable GitHub release and trusted Homebrew formula provide verified
   `v0.7.3` CLI and MCP binaries;
 - the npm package and MCP Registry entry remain on the older `0.6.0` track; and
-- local `server.json` stages version `0.7.3` and points at a `0.7.3` npm wrapper,
+- local `server.json` stages version `0.7.4` and points at a `0.7.4` npm wrapper,
   but neither that file nor its README proves the package or registry entry was
   published.
 

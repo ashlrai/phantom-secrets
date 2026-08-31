@@ -9,7 +9,7 @@
     "source": "github",
     "subfolder": "crates/phantom-mcp"
   },
-  "version": "0.7.3",
+  "version": "0.7.4",
   "tools": [
     {
       "name": "phantom_add_secret",
@@ -1744,7 +1744,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "phantom-secrets-mcp",
-      "version": "0.7.3",
+      "version": "0.7.4",
       "transport": {
         "type": "stdio"
       }

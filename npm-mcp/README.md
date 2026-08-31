@@ -16,7 +16,7 @@ into an agent conversation.
 Use the local MCP runtime from the immutable
 [`v0.7.3` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3)
 or the trusted Homebrew formula. The npm registry is on an older release track
-as of August 31, 2026. This repository's `0.7.3` wrapper manifest is staged
+as of August 31, 2026. This repository's `0.7.4` wrapper manifest is staged
 source, not evidence that a matching npm package has been published or accepted.
 
 On macOS:

@@ -93,7 +93,7 @@ function assertWrapperMatchesReleaseMatrix(name, wrapper) {
   ]) {
     assert.throws(() => wrapper.getPlatformTarget(runtime), (error) => {
       assert.match(error.message, new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`));
-      assert.match(error.message, /releases\/tag\/v0\.7\.3/);
+      assert.match(error.message, /releases\/tag\/v0\.7\.4/);
       assert.match(error.message, /checksum-verifiable/);
       assert.doesNotMatch(error.message, /cargo install|npm install|npx |curl[^\n]*\|/i);
       return true;

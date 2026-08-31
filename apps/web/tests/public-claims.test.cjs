@@ -431,7 +431,7 @@ test("registry README catalog exactly matches the staged 54-tool schema", () => 
   assert.equal(new Set(documentedNames).size, 54, "README catalog names must be unique");
   assert.deepEqual(documentedNames.sort(), schemaNames.sort());
   assert.match(registryReadme, /npm package and MCP Registry entry remain on the older `0\.6\.0` track/i);
-  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.3`/i);
+  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.4`/i);
   assert.match(registryReadme, /do not publish this manifest until/i);
 });
 

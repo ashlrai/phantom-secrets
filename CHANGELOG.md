@@ -4,7 +4,75 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No user-facing changes have been recorded after 0.7.3.
+No user-facing changes have been recorded after 0.7.4.
+
+## [0.7.4] - 2026-08-31
+
+This release hardens local agent setup, transactional secret protection, MCP
+effect authorization, and the default-closed hosted-service boundary.
+Publication remains gated on protected-branch CI and the tag-triggered
+immutable-release workflow. This source section is not evidence that the tag,
+release artifacts, Homebrew formula, npm packages, crates.io packages, MCP
+Registry entry, database migrations, web deployment, provider integrations, or
+customer acceptance exist or are active.
+
+### Breaking changes and migration
+
+- `phantom setup` and initialization no longer generate an unpinned `npx`
+  fallback when a local MCP runtime cannot be resolved. After the immutable
+  `0.7.4` release receipt exists, install both `phantom` and `phantom-mcp` from
+  that same release, then rerun setup; until then, `0.7.3` remains the reviewed
+  distribution. Existing legacy registry-backed entries are migrated only when
+  the local replacement can be resolved safely.
+- Initialization now requires a supported dry-run flag combination, an exact
+  canonical executable pre-commit hook, and a transaction that commits the
+  managed dotenv file last. Rerun `phantom init` from a trusted terminal to
+  repair stale setup. Partial failures roll back only transaction-owned state;
+  operators should still keep a separately protected recovery copy.
+- Legacy `phantom watch --auto-rotate` and scheduled placeholder-remap paths no
+  longer claim provider credential rotation. The MCP compatibility names
+  `phantom_secrets_auto_rotate` and `phantom_rotate_with_expiry` perform only
+  approved local `phm_` remaps and do not renew credential lifecycle metadata,
+  clear incidents, or sync. Use an explicitly configured and approved
+  provider-rotation flow for real credential replacement.
+- Hosted billing, personal cloud-vault, and team routes now return unavailable
+  unless their exact commissioning gates are enabled. Operators must separately
+  verify required migrations, environment variables, provider configuration,
+  rollback, and authenticated acceptance before enabling those gates.
+
+### Security
+
+- Serializes the full MCP terminal-approval and one-use consumption critical
+  sections across threads and processes, uses collision-safe atomic storage,
+  and gives approved tokens a fresh five-minute use window. Concurrent replay
+  of one approval now permits exactly one successful consumption.
+- Classifies all 54 current MCP tools by effect. Tools that write state,
+  retrieve or use credentials, or make provider/network requests require both
+  `confirm: true` and a matching out-of-band one-use approval token; conditional
+  tools require those gates whenever effectful parameters are supplied.
+- Keeps incident reads read-only, removes false auto-rotation behavior, rejects
+  unsupported team ownership invitation, and keeps stored secret values out of
+  approval and MCP response contracts.
+- Resolves the effective Git hook through Git, including linked worktrees and
+  `core.hooksPath`, and requires Phantom's canonical local check to be first and
+  executable before readiness passes.
+
+### Reliability and authority boundaries
+
+- Makes initialization recoverable across vault, config, guidance, hook, and
+  dotenv updates using compare-and-swap checks, collision-safe atomic writes,
+  and rollback that never stores plaintext secret backups or journals.
+- Normalizes Pro access from an exact lowercase plan plus a strictly valid,
+  timezone-qualified future expiry. Billing lookup exhausts bounded Stripe
+  subscription pagination and fails closed on malformed or non-progressing
+  pages.
+- Keeps generated scripts and hooks on reviewed local executables, and aligns
+  current-source package metadata, MCP schemas, and documentation with shipped
+  behavior rather than uncommissioned pricing or hosted-service promises.
+- The authority, Locus-contract, broker, runtime, session, and evidence crates
+  remain fail-closed foundations. This release does not activate a Locus
+  verifier, issue broker leases, execute production engineering actions, or
+  create externally trusted execution receipts.
 
 ## [0.7.3] - 2026-08-31
 
@@ -168,7 +236,8 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.3
 [0.7.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.2
 [0.7.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.1

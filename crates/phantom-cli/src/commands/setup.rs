@@ -864,7 +864,7 @@ mod tests {
     fn command_resolution_fails_closed_without_a_local_runtime() {
         let error = resolve_mcp_command(None, None).unwrap_err().to_string();
         assert!(error.contains("Phantom MCP runtime not found"));
-        assert!(error.contains("releases/tag/v0.7.3"));
+        assert!(error.contains(&format!("releases/tag/v{}", env!("CARGO_PKG_VERSION"))));
         assert!(error.contains("will not download"));
         assert!(!error.contains("npx"));
     }

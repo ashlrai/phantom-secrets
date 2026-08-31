@@ -106,14 +106,14 @@ publication tiers are:
 Run the non-publishing gate while preparing a candidate:
 
 ```bash
-./scripts/publish-crates.sh --verify-only --version 0.7.3
+./scripts/publish-crates.sh --verify-only --version 0.7.4
 ```
 
 Use `--allow-dirty` only for local development diagnostics. Before requesting
 publication authorization, perform the read-only crates.io reconciliation:
 
 ```bash
-./scripts/publish-crates.sh --dry-run --version 0.7.3
+./scripts/publish-crates.sh --dry-run --version 0.7.4
 ```
 
 The dry run builds each local `.crate`, queries the exact crates.io package
@@ -139,8 +139,8 @@ Release containing the exact nineteen-asset release contract, Cargo's normal
 credentials or `CARGO_REGISTRY_TOKEN`, and an exact confirmation value:
 
 ```bash
-PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.7.3 \
-  ./scripts/publish-crates.sh --publish --version 0.7.3
+PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.7.4 \
+  ./scripts/publish-crates.sh --publish --version 0.7.4
 ```
 
 Do not place the registry token on the command line. The script removes registry
