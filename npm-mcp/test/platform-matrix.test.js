@@ -6,6 +6,10 @@ const repoRoot = resolve(__dirname, "..", "..");
 const phantomCli = require(join(repoRoot, "npm", "bin", "cli.js"));
 const phantomMcp = require(join(repoRoot, "npm-mcp", "bin", "cli.js"));
 
+function normalizeNewlines(input) {
+  return input.replace(/\r\n?/g, "\n");
+}
+
 function releaseTargetToPlatformKey(target) {
   switch (target) {
     case "aarch64-apple-darwin":
@@ -30,25 +34,26 @@ function releaseMatrixTargets() {
     join(repoRoot, ".github", "workflows", "release.yml"),
     "utf8"
   );
-  assert.match(workflow, /^\s{2}verify-source:$/m, "release source verification job");
-  assert.match(workflow, /^\s{4}needs: verify-source$/m, "build requires source verification");
+  const normalizedWorkflow = normalizeNewlines(workflow);
+  assert.match(normalizedWorkflow, /^\s{2}verify-source:$/m, "release source verification job");
+  assert.match(normalizedWorkflow, /^\s{4}needs: verify-source$/m, "build requires source verification");
   assert.match(
-    workflow,
+    normalizedWorkflow,
     /cargo test --workspace --all-targets --locked --no-fail-fast/,
     "locked all-target source tests"
   );
-  assert.match(workflow, /cargo build --release --locked --target/, "locked release build");
-  assert.match(workflow, /check-version-parity\.mjs "\$GITHUB_REF_NAME"/, "tag parity gate");
-  assert.match(workflow, /mcp-stdio-smoke\.mjs/, "MCP stdio release smoke");
-  const matrixRows = [...workflow.matchAll(
+  assert.match(normalizedWorkflow, /cargo build --release --locked --target/, "locked release build");
+  assert.match(normalizedWorkflow, /check-version-parity\.mjs "\$GITHUB_REF_NAME"/, "tag parity gate");
+  assert.match(normalizedWorkflow, /mcp-stdio-smoke\.mjs/, "MCP stdio release smoke");
+  const matrixRows = [...normalizedWorkflow.matchAll(
     /^\s+- target: (\S+)\n\s+os: (\S+)\n\s+artifact: (\S+)$/gm
   )];
   const targets = matrixRows.map((match) => match[1]);
   for (const [, target, , artifact] of matrixRows) {
     assert.strictEqual(artifact, `phantom-${target}`, `release artifact for ${target}`);
   }
-  assert.match(workflow, /tar czf .* phantom phantom-mcp/, "Unix archive binaries");
-  assert.match(workflow, /7z a .* phantom\.exe phantom-mcp\.exe/, "Windows archive binaries");
+  assert.match(normalizedWorkflow, /tar czf .* phantom phantom-mcp/, "Unix archive binaries");
+  assert.match(normalizedWorkflow, /7z a .* phantom\.exe phantom-mcp\.exe/, "Windows archive binaries");
 
   return Object.fromEntries(
     targets
@@ -56,6 +61,8 @@ function releaseMatrixTargets() {
       .sort(([a], [b]) => a.localeCompare(b))
   );
 }
+
+assert.strictEqual(normalizeNewlines("first\r\nsecond\rthird"), "first\nsecond\nthird");
 
 function sortedTargets(wrapper) {
   return Object.fromEntries(
