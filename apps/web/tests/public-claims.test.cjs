@@ -83,6 +83,20 @@ const machineReadableGuides = Object.entries(machineReadableClaims).filter(
   ([file]) => /llms(?:-full)?\.txt$/.test(file),
 );
 
+const verifiedReleaseUrl =
+  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3";
+const gitGuardianReportUrl =
+  "https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/";
+
+function structuredMetadataBlock(source, type) {
+  const marker = `"@type": "${type}"`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `missing ${type} structured metadata`);
+  const end = source.indexOf("{/* JSON-LD:", start);
+  assert.notEqual(end, -1, `missing boundary after ${type} structured metadata`);
+  return source.slice(start, end);
+}
+
 test("public surfaces reject previously audited absolute claims", () => {
   for (const forbidden of [
     /backed up automatically/i,
@@ -267,6 +281,108 @@ test("machine-readable Homebrew guidance uses the trusted fully qualified formul
       file,
     );
     assert.doesNotMatch(source, /brew install phantom(?:\s|`|$)/im, file);
+  }
+});
+
+test("public Cloud guidance does not promise machine-portable recovery", () => {
+  const portableCloudClaims = [
+    /\b(?:Phantom\s+)?Cloud(?:\s+(?:sync|push|pull|vault|backup))?[^\n]{0,120}\bacross\s+machines?\b/i,
+    /\bacross\s+machines?[^\n]{0,120}\b(?:Phantom\s+)?Cloud\b/i,
+    /\b(?:Phantom\s+)?Cloud(?:\s+(?:sync|push|pull))?[\s\S]{0,160}\b(?:new|another|second)\s+machine\b/i,
+    /\b(?:new|another|second)\s+machine[\s\S]{0,160}\b(?:Phantom\s+)?Cloud(?:\s+(?:sync|push|pull))?\b/i,
+    /\bphantom\s+cloud\s+pull[\s\S]{0,160}\b(?:new|another|second)\s+machine\b/i,
+  ];
+
+  for (const [file, source] of Object.entries(repositoryGuidanceClaims)) {
+    for (const claim of portableCloudClaims) {
+      assert.doesNotMatch(source, claim, file);
+    }
+  }
+
+  const supportedBackupClaim =
+    "Phantom Cloud can retain a client-encrypted backup for recovery on the same machine while its keychain-held key remains available.";
+  for (const claim of portableCloudClaims) {
+    assert.doesNotMatch(supportedBackupClaim, claim);
+  }
+});
+
+test("current-release guidance routes installs through verified GitHub or Homebrew artifacts", () => {
+  const canonicalReleaseGuides = {
+    "README.md": repositoryGuidanceClaims["README.md"],
+    "docs/getting-started.md": repositoryGuidanceClaims["docs/getting-started.md"],
+    "docs/llms.txt": repositoryGuidanceClaims["docs/llms.txt"],
+    "docs/llms-full.txt": repositoryGuidanceClaims["docs/llms-full.txt"],
+    "apps/web/public/llms.txt": repositoryGuidanceClaims["apps/web/public/llms.txt"],
+    "apps/web/public/llms-full.txt":
+      repositoryGuidanceClaims["apps/web/public/llms-full.txt"],
+  };
+
+  for (const [file, source] of Object.entries(canonicalReleaseGuides)) {
+    assert.match(source, new RegExp(verifiedReleaseUrl.replaceAll(".", "\\.")), file);
+    assert.match(
+      source,
+      /brew tap ashlrai\/phantom[\s\S]{0,300}brew trust --formula ashlrai\/phantom\/phantom[\s\S]{0,300}brew install ashlrai\/phantom\/phantom/i,
+      file,
+    );
+  }
+
+  const unpinnedRegistryCommands = [
+    /(?:^|[`"'(])(?:\$\s*)?npm\s+(?:install|i)\s+(?:-g\s+)?phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+    /(?:^|[`"'(])(?:\$\s*)?npx(?:\s+-y)?\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+    /(?:^|[`"'(])(?:\$\s*)?cargo\s+install\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+  ];
+
+  for (const [file, source] of Object.entries(repositoryGuidanceClaims)) {
+    for (const command of unpinnedRegistryCommands) {
+      assert.doesNotMatch(source, command, file);
+    }
+  }
+});
+
+test("current SoftwareApplication and HowTo metadata point at the verified release", () => {
+  const layout = claims["src/app/layout.tsx"];
+  const softwareApplication = structuredMetadataBlock(layout, "SoftwareApplication");
+  const installHowTo = structuredMetadataBlock(layout, "HowTo");
+
+  assert.match(softwareApplication, /softwareVersion:\s*"0\.7\.3"/);
+  assert.match(softwareApplication, /releases\/tag\/v0\.7\.3/);
+  assert.doesNotMatch(softwareApplication, /npmjs\.com\/package\/phantom-secrets/i);
+  assert.match(
+    installHowTo,
+    /(?:releases\/tag\/v0\.7\.3|brew trust --formula ashlrai\/phantom\/phantom)/i,
+  );
+  assert.doesNotMatch(
+    installHowTo,
+    /\b(?:npm\s+(?:install|i)|npx(?:\s+-y)?|cargo\s+install)\s+phantom-secrets(?:-mcp)?\b/i,
+  );
+});
+
+test("public leak statistics use the primary GitGuardian 2026 report accurately", () => {
+  const statisticalClaims = Object.entries(repositoryGuidanceClaims).filter(
+    ([, source]) =>
+      /GitGuardian|AI-assisted\s+commits?[^\n]{0,80}(?:leak|baseline)|(?:secrets?|credentials)[^\n]{0,80}(?:public\s+)?GitHub[^\n]{0,80}2025/i.test(
+        source,
+      ),
+  );
+  assert.ok(statisticalClaims.length >= 4, "expected public leak-statistic references");
+
+  for (const [file, source] of statisticalClaims) {
+    assert.doesNotMatch(source, /39\.6\s*(?:M|million)\b/i, file);
+    assert.match(source, /28\.65\s*(?:M|million)\b|28,?649,?024\b/i, file);
+    assert.match(
+      source,
+      /34\s*%[^\n]{0,80}year[- ]over[- ]year|year[- ]over[- ]year[^\n]{0,80}34\s*%/i,
+      file,
+    );
+    assert.match(source, new RegExp(gitGuardianReportUrl.replaceAll(".", "\\.")), file);
+
+    for (const line of source.split("\n").filter((value) => /81\s*%/.test(value))) {
+      assert.match(
+        line,
+        /AI[- ]service[^\n]{0,80}81\s*%|81\s*%[^\n]{0,80}AI[- ]service/i,
+        `${file}: ${line}`,
+      );
+    }
   }
 });
 
