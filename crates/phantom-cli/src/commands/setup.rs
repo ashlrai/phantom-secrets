@@ -41,6 +41,7 @@ impl Client {
 }
 
 /// The command spec we write into each client's MCP config.
+#[derive(Debug, PartialEq, Eq)]
 struct McpCommand {
     command: String,
     args: Vec<String>,
@@ -82,7 +83,10 @@ pub fn run(client: Option<Client>, print: bool, audit_mode: Option<AuditMode>) -
     }
 
     let client = client.unwrap_or(Client::ClaudeCode);
-    let mcp = mcp_command_spec();
+    // Resolve the MCP executable before touching any client configuration. A
+    // missing local runtime must fail closed instead of leaving a config that
+    // downloads and executes whatever version a package registry serves.
+    let mcp = mcp_command_spec()?;
 
     if print {
         return print_snippet(client, &mcp);
@@ -93,12 +97,7 @@ pub fn run(client: Option<Client>, print: bool, audit_mode: Option<AuditMode>) -
         "->".blue().bold(),
         client.label().bold()
     );
-    if mcp.command == "npx" {
-        println!(
-            "   {} phantom-mcp not found — using `npx -y phantom-secrets-mcp` as fallback.",
-            "note".dimmed()
-        );
-    } else if mcp.args.first().map(|a| a == "mcp").unwrap_or(false) {
+    if mcp.args.first().map(|a| a == "mcp").unwrap_or(false) {
         println!(
             "   {} using bundled MCP server ({} mcp serve)",
             "note".dimmed(),
@@ -119,30 +118,46 @@ pub fn run(client: Option<Client>, print: bool, audit_mode: Option<AuditMode>) -
 /// Resolution order:
 ///   1. Current executable + `["mcp", "serve"]` — the bundled in-process server
 ///      (always preferred: one binary, no PATH dependency).
-///   2. `phantom-mcp` binary on PATH or next to the current exe — legacy standalone.
-///   3. `npx -y phantom-secrets-mcp` — works on a machine that only has Node/npm.
-fn mcp_command_spec() -> McpCommand {
+///   2. A verified local `phantom-mcp` binary on PATH, next to the current
+///      executable, or in Cargo's default bin directory — legacy standalone.
+///
+/// Setup deliberately has no network fallback. Downloading an unpinned npm
+/// package here could silently configure a different release than the CLI the
+/// user reviewed and installed.
+fn mcp_command_spec() -> Result<McpCommand> {
+    let current_exe = std::env::current_exe().ok();
+    let standalone = find_mcp_binary(current_exe.as_deref());
+    resolve_mcp_command(current_exe.as_deref(), standalone.as_deref())
+}
+
+fn resolve_mcp_command(
+    current_exe: Option<&Path>,
+    standalone: Option<&Path>,
+) -> Result<McpCommand> {
     // (1) Prefer the bundled subcommand in the current binary.
-    if let Ok(exe) = std::env::current_exe() {
-        return McpCommand {
+    if let Some(exe) = current_exe.filter(|path| is_runnable_file(path)) {
+        return Ok(McpCommand {
             command: exe.to_string_lossy().into_owned(),
             args: vec!["mcp".to_string(), "serve".to_string()],
-        };
+        });
     }
 
     // (2) Fall back to a separate phantom-mcp binary on disk / PATH.
-    if let Some(path) = find_mcp_binary() {
-        return McpCommand {
-            command: path,
+    if let Some(path) = standalone.filter(|path| is_runnable_file(path)) {
+        return Ok(McpCommand {
+            command: path.to_string_lossy().into_owned(),
             args: vec![],
-        };
+        });
     }
 
-    // (3) Last resort: npx wrapper.
-    McpCommand {
-        command: "npx".to_string(),
-        args: vec!["-y".to_string(), "phantom-secrets-mcp".to_string()],
-    }
+    anyhow::bail!(
+        "Phantom MCP runtime not found. Reinstall both `phantom` and `phantom-mcp` \
+         from the same v{} release (https://github.com/ashlrai/phantom-secrets/releases/tag/v{}) \
+         and ensure the installed binaries are executable. `phantom setup` will not download \
+         or execute an unpinned registry package.",
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 // ───────────────────────── Claude Code ─────────────────────────
@@ -447,33 +462,45 @@ fn print_snippet(client: Client, mcp: &McpCommand) -> Result<()> {
 
 // ─────────────────────────── Helpers ───────────────────────────
 
-fn find_mcp_binary() -> Option<String> {
-    let candidates = [
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("phantom-mcp")))
-            .map(|p| p.to_string_lossy().to_string()),
-        dirs::home_dir().map(|h| {
-            h.join(".cargo")
-                .join("bin")
-                .join("phantom-mcp")
-                .to_string_lossy()
-                .into_owned()
-        }),
-        Some("phantom-mcp".to_string()),
-    ];
+fn find_mcp_binary(current_exe: Option<&Path>) -> Option<PathBuf> {
+    let path_match = which::which("phantom-mcp").ok();
+    let cargo_bin = dirs::home_dir().map(|home| home.join(".cargo").join("bin"));
+    find_mcp_binary_from(current_exe, path_match, cargo_bin.as_deref())
+}
 
-    for candidate in candidates.into_iter().flatten() {
-        if candidate == "phantom-mcp" {
-            if which::which("phantom-mcp").is_ok() {
-                return Some(candidate);
-            }
-        } else if Path::new(&candidate).exists() {
-            return Some(candidate);
-        }
+fn find_mcp_binary_from(
+    current_exe: Option<&Path>,
+    path_match: Option<PathBuf>,
+    cargo_bin: Option<&Path>,
+) -> Option<PathBuf> {
+    let binary_name = format!("phantom-mcp{}", std::env::consts::EXE_SUFFIX);
+    let sibling = current_exe.and_then(|exe| exe.parent().map(|dir| dir.join(&binary_name)));
+    let cargo_candidate = cargo_bin.map(|dir| dir.join(&binary_name));
+
+    [path_match, sibling, cargo_candidate]
+        .into_iter()
+        .flatten()
+        .find(|path| is_runnable_file(path))
+}
+
+fn is_runnable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
     }
 
-    None
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -641,16 +668,75 @@ mod tests {
         );
     }
 
+    fn mark_executable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+    }
+
     #[test]
-    fn npx_fallback_command_spec() {
-        // Hard to test mcp_command_spec() directly because it depends on env.
-        // Instead verify the args are correct when we construct the npx fallback.
-        let mcp = McpCommand {
-            command: "npx".to_string(),
-            args: vec!["-y".to_string(), "phantom-secrets-mcp".to_string()],
-        };
-        assert_eq!(mcp.args_json().as_array().unwrap().len(), 2);
-        assert_eq!(mcp.args_json()[0], "-y");
+    fn standalone_resolution_prefers_path_then_current_exe_sibling() {
+        let tmp = tempdir().unwrap();
+        let current_exe = tmp
+            .path()
+            .join(format!("phantom{}", std::env::consts::EXE_SUFFIX));
+        let sibling = tmp
+            .path()
+            .join(format!("phantom-mcp{}", std::env::consts::EXE_SUFFIX));
+        let path_match = tmp
+            .path()
+            .join(format!("path-phantom-mcp{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&sibling, b"test").unwrap();
+        std::fs::write(&path_match, b"test").unwrap();
+        mark_executable(&sibling);
+        mark_executable(&path_match);
+
+        assert_eq!(
+            find_mcp_binary_from(
+                Some(&current_exe),
+                Some(path_match.clone()),
+                Some(tmp.path())
+            ),
+            Some(path_match)
+        );
+        assert_eq!(
+            find_mcp_binary_from(Some(&current_exe), None, Some(tmp.path())),
+            Some(sibling)
+        );
+    }
+
+    #[test]
+    fn standalone_resolution_rejects_non_executable_files() {
+        let tmp = tempdir().unwrap();
+        let current_exe = tmp
+            .path()
+            .join(format!("phantom{}", std::env::consts::EXE_SUFFIX));
+        let sibling = tmp
+            .path()
+            .join(format!("phantom-mcp{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&sibling, b"test").unwrap();
+
+        #[cfg(unix)]
+        assert_eq!(find_mcp_binary_from(Some(&current_exe), None, None), None);
+
+        #[cfg(not(unix))]
+        assert_eq!(
+            find_mcp_binary_from(Some(&current_exe), None, None),
+            Some(sibling)
+        );
+    }
+
+    #[test]
+    fn command_resolution_fails_closed_without_a_local_runtime() {
+        let error = resolve_mcp_command(None, None).unwrap_err().to_string();
+        assert!(error.contains("Phantom MCP runtime not found"));
+        assert!(error.contains("releases/tag/v0.7.3"));
+        assert!(error.contains("will not download"));
+        assert!(!error.contains("npx"));
     }
 
     #[test]
