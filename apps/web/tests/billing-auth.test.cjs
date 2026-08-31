@@ -7,6 +7,96 @@ const ts = require("typescript");
 
 const repoDir = path.resolve(__dirname, "..");
 const authPath = path.join(repoDir, "src/lib/auth.ts");
+const checkoutPath = path.join(
+  repoDir,
+  "src/app/api/v1/billing/checkout/route.ts",
+);
+
+function loadCheckoutGateHarness() {
+  const source = fs.readFileSync(checkoutPath, "utf8");
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      esModuleInterop: true,
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: checkoutPath,
+  }).outputText;
+
+  const effects = { auth: 0, database: 0, stripe: 0 };
+  const module = { exports: {} };
+  const localRequire = (specifier) => {
+    if (specifier === "@/lib/auth") {
+      return {
+        requireBrowserAuth: async () => {
+          effects.auth += 1;
+          return Response.json({ error: "unauthorized" }, { status: 401 });
+        },
+      };
+    }
+    if (specifier === "@/lib/stripe") {
+      return {
+        getStripe: () => {
+          effects.stripe += 1;
+          throw new Error("Stripe must not be reached by the gate test");
+        },
+        getStripePriceId: () => {
+          effects.stripe += 1;
+          throw new Error(
+            "Stripe price lookup must not be reached by the gate test",
+          );
+        },
+      };
+    }
+    if (specifier === "@/lib/supabase-server") {
+      return {
+        createServiceClient: () => {
+          effects.database += 1;
+          throw new Error("Database must not be reached by the gate test");
+        },
+      };
+    }
+    return require(specifier);
+  };
+
+  const fn = new Function(
+    "exports",
+    "require",
+    "module",
+    "__filename",
+    "__dirname",
+    output,
+  );
+  fn(
+    module.exports,
+    localRequire,
+    module,
+    checkoutPath,
+    path.dirname(checkoutPath),
+  );
+
+  return { checkout: module.exports, effects };
+}
+
+async function withCheckoutGate(value, action) {
+  const envName = "PHANTOM_BILLING_CHECKOUT_ENABLED";
+  const previous = process.env[envName];
+  if (value === undefined) {
+    delete process.env[envName];
+  } else {
+    process.env[envName] = value;
+  }
+
+  try {
+    return await action();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[envName];
+    } else {
+      process.env[envName] = previous;
+    }
+  }
+}
 
 function loadAuthModule({ serviceClient, browserUser = null, browserError = null }) {
   const source = fs.readFileSync(authPath, "utf8");
@@ -250,6 +340,16 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
   assert.match(checkout, /checkout\.sessions\.list/);
   assert.match(checkout, /status: "open"/);
   assert.match(checkout, /phantom-checkout-v1/);
+  assert.match(checkout, /PHANTOM_BILLING_CHECKOUT_ENABLED/);
+  assert.match(
+    checkout,
+    /process\.env\[BILLING_CHECKOUT_ENABLED_ENV\] !== "true"/,
+  );
+  assert.ok(
+    checkout.indexOf("process.env[BILLING_CHECKOUT_ENABLED_ENV]") <
+      checkout.indexOf("requireBrowserAuth(req)"),
+    "commissioning gate must run before authentication",
+  );
   assert.match(portal, /requireBrowserAuth/);
   assert.doesNotMatch(portal, /requireAuth\(req\)/);
   assert.match(vaultPush, /requireAuth\(req\)/);
@@ -284,6 +384,54 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
     billingDashboard,
     /does not collect payment or start a\s+subscription/,
   );
+});
+
+test(
+  "checkout commissioning gate denies before every downstream side effect",
+  async () => {
+    for (const gateValue of [undefined, "", "false", "TRUE", "1", " true "]) {
+      const { checkout, effects } = loadCheckoutGateHarness();
+      const response = await withCheckoutGate(gateValue, () =>
+        checkout.POST(
+          new Request("https://phm.dev/api/v1/billing/checkout", {
+            method: "POST",
+          }),
+        ),
+      );
+
+      assert.equal(response.status, 503, String(gateValue));
+      const body = await response.json();
+      assert.deepEqual(
+        body,
+        {
+          error: "feature_unavailable",
+          message: "Phantom Pro checkout is not commissioned.",
+        },
+        String(gateValue),
+      );
+      assert.equal("checkout_url" in body, false, String(gateValue));
+      assert.deepEqual(
+        effects,
+        { auth: 0, database: 0, stripe: 0 },
+        String(gateValue),
+      );
+    }
+  },
+);
+
+test("only exact true advances checkout as far as authentication", async () => {
+  const { checkout, effects } = loadCheckoutGateHarness();
+  const response = await withCheckoutGate("true", () =>
+    checkout.POST(
+      new Request("https://phm.dev/api/v1/billing/checkout", {
+        method: "POST",
+      }),
+    ),
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: "unauthorized" });
+  assert.deepEqual(effects, { auth: 1, database: 0, stripe: 0 });
 });
 
 test("dashboard and auth do not present uncommissioned Pro billing as live", () => {

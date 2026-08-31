@@ -10,8 +10,27 @@ const checkoutPath = path.join(
   "src/app/api/v1/billing/checkout/route.ts",
 );
 const USER_ID = "7b54bdf6-519f-485b-aa3b-18057d91c697";
+const CHECKOUT_GATE_ENV = "PHANTOM_BILLING_CHECKOUT_ENABLED";
+let originalCheckoutGate;
+let checkoutGateCaptured = false;
+
+function enableCommissionedCheckoutForTest() {
+  if (!checkoutGateCaptured) {
+    originalCheckoutGate = process.env[CHECKOUT_GATE_ENV];
+    checkoutGateCaptured = true;
+    test.after(() => {
+      if (originalCheckoutGate === undefined) {
+        delete process.env[CHECKOUT_GATE_ENV];
+      } else {
+        process.env[CHECKOUT_GATE_ENV] = originalCheckoutGate;
+      }
+    });
+  }
+  process.env[CHECKOUT_GATE_ENV] = "true";
+}
 
 function loadCheckoutModule({ serviceClient, stripe, userId = USER_ID }) {
+  enableCommissionedCheckoutForTest();
   const source = fs.readFileSync(checkoutPath, "utf8");
   const output = ts.transpileModule(source, {
     compilerOptions: {

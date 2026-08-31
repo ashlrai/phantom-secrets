@@ -2,6 +2,8 @@ import { requireBrowserAuth } from "@/lib/auth";
 import { getStripe, getStripePriceId } from "@/lib/stripe";
 import { createServiceClient } from "@/lib/supabase-server";
 
+const BILLING_CHECKOUT_ENABLED_ENV = "PHANTOM_BILLING_CHECKOUT_ENABLED";
+
 type BillingUser = {
   email: string | null;
   stripe_customer_id: string | null;
@@ -93,6 +95,19 @@ async function getOrCreateCustomerId(
 }
 
 export async function POST(req: Request) {
+  // Checkout is a separately commissioned production capability. Keep this
+  // exact and fail closed: missing, malformed, or loosely truthy values must
+  // not reach authentication, the database, or Stripe.
+  if (process.env[BILLING_CHECKOUT_ENABLED_ENV] !== "true") {
+    return Response.json(
+      {
+        error: "feature_unavailable",
+        message: "Phantom Pro checkout is not commissioned.",
+      },
+      { status: 503 },
+    );
+  }
+
   const authResult = await requireBrowserAuth(req);
   if (authResult instanceof Response) return authResult;
 
