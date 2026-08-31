@@ -16,14 +16,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install the immutable Phantom v0.7.3 Linux release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.7.3 --repo ashlrai/phantom-secrets \
+            --pattern phantom-x86_64-unknown-linux-gnu.tar.gz \
+            --pattern phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
+          sha256sum -c phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
+          tar -xzf phantom-x86_64-unknown-linux-gnu.tar.gz
+          install -d "$HOME/.local/bin"
+          install -m 0755 phantom phantom-mcp "$HOME/.local/bin/"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Check for unprotected secrets
-        run: npx phantom-secrets check
+        run: phantom check
 
       - name: Build
         run: npm ci && npm run build
 ```
 
 The repository action at `integrations/github-actions/action.yml` is a fail-fast placeholder until a supported non-interactive Phantom Cloud auth flow exists.
+The example downloads an immutable reviewed release and verifies its published
+checksum before executing it; do not replace it with an unpinned registry
+command. Select the matching asset for ARM64 or a non-Linux runner.
 
 ## Vercel
 

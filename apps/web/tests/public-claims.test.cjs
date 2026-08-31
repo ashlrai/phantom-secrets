@@ -267,6 +267,18 @@ test("machine-readable guidance rejects absolute security guarantees", () => {
   }
 });
 
+test("active wrapping guidance uses the installed local Phantom runtime", () => {
+  for (const [file, source] of Object.entries(machineReadableClaims)) {
+    assert.doesNotMatch(source, /npx\s+(?:-y\s+)?phantom-secrets\s+exec/i, file);
+  }
+});
+
+test("active documentation does not execute Phantom through an unpinned registry fallback", () => {
+  for (const [file, source] of Object.entries(repositoryGuidanceClaims)) {
+    assert.doesNotMatch(source, /^\s*(?:run:\s*)?npx\s+(?:-y\s+)?phantom(?:-secrets|-secrets-mcp)?\b/im, file);
+  }
+});
+
 test("machine-readable init --all guidance states its traversal bounds", () => {
   for (const [file, source] of machineReadableGuides) {
     assert.match(

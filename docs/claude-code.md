@@ -101,7 +101,7 @@ Claude must ask for explicit user consent before calling any of these. Calling w
 | `phantom_cloud_push` | Encrypt and upload the local vault to Phantom Cloud. Overwrites the existing cloud copy. Requires `phantom login` first. |
 | `phantom_cloud_pull` | Download and decrypt a vault from Phantom Cloud. Writes secrets into the local vault. Pass `force=true` to overwrite existing entries. |
 | `phantom_copy_secret` | Copy a secret from this project's vault to another phantom-initialized project without exposing the value. Path traversal (`..`) is rejected. |
-| `phantom_wrap` | Wrap `package.json` scripts with `npx phantom-secrets exec --` so secrets are injected at runtime. Saves originals as `script:raw` variants. |
+| `phantom_wrap` | Wrap `package.json` scripts with the installed local `phantom exec --` runtime so secrets are injected at runtime. Saves originals as `script:raw` variants. |
 | `phantom_unwrap` | Reverse `phantom_wrap` — restore original scripts from `:raw` variants and remove the `:raw` entries. |
 
 Provider requests and other effectful operations also require both

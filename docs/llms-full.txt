@@ -170,7 +170,7 @@ extrapolating this selected catalog.
 - `phantom_copy_secret` — Copy a secret from this project's vault to another project's vault without returning the value. Params: name, target_dir, rename (optional), confirm, approval_token.
 
 **Package.json wrapping:**
-- `phantom_wrap` — Wrap `package.json` scripts with `npx phantom-secrets exec` so secrets are injected via the proxy at runtime. Originals are saved as `script:raw` variants. Heuristically picks dev/start/build/serve/deploy scripts and skips lint/test/format scripts. Params: only, skip, confirm, approval_token.
+- `phantom_wrap` — Wrap `package.json` scripts with the installed local `phantom exec --` runtime so secrets are injected via the proxy. Originals are saved as `script:raw` variants. Heuristically picks dev/start/build/serve/deploy scripts and skips lint/test/format scripts. Params: only, skip, confirm, approval_token.
 - `phantom_unwrap` — Reverse `phantom_wrap`: restore original scripts from `:raw` variants and remove the `:raw` entries. Params: confirm, approval_token.
 
 **Teams (source-backed fixed-membership pilot; hosted Pro commissioning required):**

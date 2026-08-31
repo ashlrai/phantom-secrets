@@ -212,7 +212,7 @@ Each log entry contains: ts (Unix epoch), op, name (secret name — never value)
 Each entry is chained with HMAC-SHA256 over the previous entry's hash and checked against a signed head checkpoint. `phantom audit verify` detects malformed lines, modified or inserted entries, sequence gaps, prefix deletion, and log tail/head mismatches; full log and checkpoint deletion still requires external evidence.
 
 ### phantom wrap
-Wrap selected runtime/build package.json scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with `npx phantom-secrets exec --` so secrets are injected at runtime. It skips test, lint, type, format, and other scripts.
+Wrap selected runtime/build package.json scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with the installed local `phantom exec --` runtime so secrets are injected at runtime. It skips test, lint, type, format, and other scripts.
 Saves originals as script:raw variants.
 Options: --only <scripts> (whitelist), --skip <scripts> (blacklist)
 
@@ -342,7 +342,7 @@ phantom_copy_secret
   Effect: writes into target vault. .. path traversal is rejected.
 
 phantom_wrap
-  Wrap selected runtime/build package.json scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with `npx phantom-secrets exec --`; skip test, lint, type, format, and other scripts.
+  Wrap selected runtime/build package.json scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with the installed local `phantom exec --` runtime; skip test, lint, type, format, and other scripts.
   Params: only (array), skip (array), confirm (bool, must be true), approval_token (string)
   Effect: modifies package.json. Saves originals as script:raw variants.
 
@@ -584,14 +584,30 @@ The Pro plan is not generally purchasable or commissioned based on repository so
 Direct Phantom Cloud pulls from headless CI are not supported in this release because the CLI does not expose a non-interactive cloud login flow. Use GitHub Actions for checks and builds, then sync deploy-time secrets to Vercel or Railway before deployment.
 
 ```yaml
+- name: Install the immutable Phantom v0.7.3 Linux release
+  env:
+    GH_TOKEN: ${{ github.token }}
+  run: |
+    gh release download v0.7.3 --repo ashlrai/phantom-secrets \
+      --pattern phantom-x86_64-unknown-linux-gnu.tar.gz \
+      --pattern phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
+    sha256sum -c phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
+    tar -xzf phantom-x86_64-unknown-linux-gnu.tar.gz
+    install -d "$HOME/.local/bin"
+    install -m 0755 phantom phantom-mcp "$HOME/.local/bin/"
+    echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
 - name: Check for unprotected secrets
-  run: npx phantom-secrets check
+  run: phantom check
 
 - name: Build
   run: npm ci && npm run build
 ```
 
 For deploy secrets, run `phantom sync --platform vercel --project <id>` or `phantom sync --platform railway --project <id>` from a trusted environment.
+The example verifies the immutable reviewed Linux x64 release before executing
+it. Select the matching release asset for other runner architectures and do not
+replace it with an unpinned registry command.
 
 
 ## Monorepo Support
