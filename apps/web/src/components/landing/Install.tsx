@@ -9,29 +9,29 @@ const TARGETS = [
     id: "claude",
     label: "Claude Code",
     Logo: ClaudeLogo,
-    cmd: "claude mcp add phantom-secrets-mcp -- npx -y phantom-secrets-mcp",
-    note: "One command. Claude registers the MCP server and discovers the live tool catalog.",
+    cmd: "phantom setup --client claude",
+    note: "Uses the installed v0.7.3 phantom-mcp binary when it is on PATH and writes project-local Claude configuration.",
   },
   {
     id: "cursor",
     label: "Cursor",
     Logo: CursorLogo,
-    cmd: '{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}',
-    note: "Settings → MCP Servers → paste the JSON. Cursor restarts the server automatically.",
+    cmd: "phantom setup --client cursor",
+    note: "Writes the Cursor MCP configuration for the installed v0.7.3 phantom-mcp binary.",
   },
   {
     id: "windsurf",
     label: "Windsurf",
     Logo: WindsurfLogo,
-    cmd: '{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}',
-    note: "Settings → MCP Configuration → paste. Same JSON, same protection.",
+    cmd: "phantom setup --client windsurf",
+    note: "Writes the Windsurf MCP configuration for the installed v0.7.3 phantom-mcp binary.",
   },
   {
     id: "codex",
     label: "Codex",
     Logo: OpenAILogo,
-    cmd: '[mcp_servers.phantom]\ncommand = "npx"\nargs = ["-y", "phantom-secrets-mcp"]',
-    note: "Paste into ~/.codex/config.toml, then restart Codex.",
+    cmd: "phantom setup --client codex",
+    note: "Writes the Codex MCP configuration for the installed v0.7.3 phantom-mcp binary.",
   },
 ];
 
@@ -47,8 +47,9 @@ export function Install() {
             Install and connect your client.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            Register the MCP server for a supported client, then verify the
-            resulting local configuration.
+            After installing both reviewed v0.7.3 binaries, register the MCP
+            server for a supported client and verify the resulting local
+            configuration.
           </p>
         </div>
 

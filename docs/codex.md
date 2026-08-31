@@ -22,11 +22,9 @@ audit, import/export, cloud sync, team vaults, and safe MCP setup for Codex.
 
 ### Step 1: install Phantom
 
-```bash
-npx phantom-secrets init
-```
-
-This installs the CLI and initializes your current project in one step.
+Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+verified path in [getting started](./getting-started.md#install), then run
+`phantom init` in the project.
 
 ### Step 2: wire up Codex (one command)
 
@@ -42,7 +40,9 @@ command = "phantom-mcp"
 args = []
 ```
 
-If `phantom-mcp` is not on PATH, the command falls back to `npx -y phantom-secrets-mcp`.
+Install both `v0.7.3` release binaries before setup. If `phantom-mcp` is absent
+from `PATH`, the writer's npm fallback currently resolves older package `0.6.0`,
+not the reviewed release.
 
 To preview the snippet without modifying your config:
 

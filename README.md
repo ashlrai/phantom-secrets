@@ -10,7 +10,6 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 
 [![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/stargazers)
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/phantom-secrets?style=for-the-badge&logo=npm&color=cb3837&labelColor=0b0b14)](https://www.npmjs.com/package/phantom-secrets)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
 
 [**Quick start**](#quick-start) ·
@@ -36,7 +35,7 @@ AI coding agents routinely work in repositories that also contain local credenti
 Traditional secrets managers focus on keys *at rest* and *in transit*. Phantom adds a boundary for agent **context**:
 
 - 🔒 **Designed to keep real keys out of the LLM** — project dotenv files contain `phm_` tokens, agents use value-blind MCP metadata, and the proxy injects values only into scoped authenticated requests.
-- ⚡ **Fast local setup** — `npx phantom-secrets init` protects a project without requiring an account, DNS changes, or a custom CA.
+- ⚡ **Fast local setup** — after installing the reviewed `v0.7.3` release, `phantom init` protects a project without requiring an account, DNS changes, or a custom CA.
 - 🧰 **Agent-native integrations** — setup helpers and value-blind MCP workflows for Claude Code, Cursor, Windsurf, and Codex, plus project instructions for GitHub Copilot.
 - 🦀 **Open source, local-first, MIT** — secrets use the native OS credential store when it is available, with an explicit encrypted-file fallback. Optional cloud sync encrypts vault payloads client-side before the server stores them.
 
@@ -58,8 +57,20 @@ evidence behind those boundaries.
 
 ## Quick Start
 
+Install the reviewed `v0.7.3` release first. On macOS, the verified Homebrew
+path is:
+
 ```bash
-$ npx phantom-secrets init
+$ brew tap ashlrai/phantom
+$ brew trust --formula ashlrai/phantom/phantom
+$ brew install ashlrai/phantom/phantom
+```
+
+Linux and Windows users should use the exact `v0.7.3` assets in
+[Installation](#installation). Then protect and verify the project:
+
+```bash
+$ phantom init
 # Auto-detects .env, .env.local, or .env in subdirectories
 # Stores real secrets in the native credential store or encrypted vault,
 # then rewrites .env with phantom tokens
@@ -81,7 +92,10 @@ Teams evaluating a controlled rollout can start with the
 
 ### Windows
 
-The same core commands work on native Windows. `npx phantom-secrets init` installs via npm as on macOS/Linux. WSL is a separate Linux environment with its own filesystem and credential-store context.
+The same core commands work on native Windows. Install the exact `v0.7.3`
+Windows ZIP for your architecture from [Installation](#installation), verify its
+published `.sha256` sidecar, and place both executables on `PATH`. WSL is a
+separate Linux environment with its own filesystem and credential-store context.
 
 After `phantom start --daemon`, the CLI detects your shell and prints the matching env-var syntax. For reference:
 
@@ -188,18 +202,24 @@ phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-If `phantom-mcp` isn't on PATH, Phantom falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine. Restart the AI tool after running `phantom setup` so it picks up the new config.
+Install both `v0.7.3` release binaries before setup. If `phantom-mcp` is absent
+from `PATH`, the writer's npm fallback currently resolves the older published
+`0.6.0` MCP package, not the reviewed release. Restart the AI tool after running
+`phantom setup` so it picks up the new config.
 
 Phantom's stdio MCP server can be configured in MCP clients that support local
 command servers. The setup writer currently has reviewed presets for Claude
 Code, Cursor, Windsurf, and Codex; other clients require their own compatible
 configuration.
 
-## Cloud Sync + Dashboard
+## Cloud backup + Dashboard
 
-Sync vaults across machines with client-side encryption. Phantom Cloud receives
-the encrypted vault payload rather than the decrypted secret values; endpoint,
-client, and account security remain part of the trust boundary.
+Back up and restore a vault on the same keychain machine with client-side
+encryption. Phantom Cloud receives the encrypted vault payload rather than the
+decrypted secret values; endpoint, client, account, and OS-keychain security
+remain part of the trust boundary. The cloud encryption key is generated and
+stored in the local OS keychain. Phantom does not currently ship key transfer or
+recovery, so account sign-in without that key cannot decrypt this backup.
 
 ```bash
 $ phantom login
@@ -208,7 +228,7 @@ $ phantom login
 $ phantom cloud push
 # Encrypted client-side, uploaded to phm.dev
 
-$ phantom cloud pull   # on another machine
+$ phantom cloud pull   # restore on the machine that holds the original cloud key
 # Downloaded and decrypted locally
 
 $ phantom open
@@ -216,7 +236,11 @@ $ phantom open
 # vault sizes, last sync, plan tier, and team membership.
 ```
 
-Cloud sync uses ChaCha20-Poly1305 with a client-side passphrase derived via Argon2id. The server stores only ciphertext.
+Cloud backup uses ChaCha20-Poly1305 with a random client-side passphrase stored
+in the OS keychain and derived via Argon2id for encryption. The server stores
+only ciphertext. Team vaults are separate: they wrap a shared vault key to each
+registered member's X25519 public key; that does not make personal cloud backups
+portable.
 
 ## Team vaults (source-backed pilot)
 
@@ -359,7 +383,7 @@ the rotation window, with per-provider rate limits and a shared audit
 - **Platform sync** -- Push/pull secrets to Vercel and Railway
 - **Pre-commit hook** -- Runs `phantom check --staged` when Git invokes the hook; it checks staged dotenv content plus a bounded set of hardcoded-key prefixes. Hooks can be bypassed or skipped, so CI and a broader secret scanner remain necessary.
 - **MCP server** -- core vault, diagnostics, cloud, team, audit, rotation, validation, expiry, and compliance tools for Claude Code, Cursor, Windsurf, and Codex to manage secrets without seeing values
-- **Cloud sync** -- client-encrypted vault payload sync across machines; deployed-service and account configuration remain separate operational gates
+- **Cloud backup** -- client-encrypted same-keychain-machine backup and restore; key transfer and recovery are not shipped, and deployed-service and account configuration remain separate operational gates
 - **Export/import** -- Encrypted backup and restore through a hidden terminal prompt or private bounded passphrase file; plaintext export and argv passphrases are disabled; import from Doppler, Infisical, dotenvx, 1Password, or plain `.env` via `--from`
 - **Tamper-evident audit log** -- `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log`. Each entry is chained with HMAC-SHA256; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for log access.
 - **Response scrubbing** -- Scrubs configured secret values from supported API response paths before returning data to the caller
@@ -377,19 +401,7 @@ the rotation window, with per-provider rate limits and a shared audit
 
 ## Installation
 
-### npm (recommended)
-
-```bash
-$ npm install -g phantom-secrets
-```
-
-Or use directly with npx:
-
-```bash
-$ npx phantom-secrets init
-```
-
-### Homebrew (macOS, current v0.7.3 release)
+### Homebrew (macOS, reviewed v0.7.3 release)
 
 Homebrew 6 requires explicit formula trust for third-party taps:
 
@@ -399,16 +411,45 @@ $ brew trust --formula ashlrai/phantom/phantom
 $ brew install ashlrai/phantom/phantom
 ```
 
-### Claude Code MCP
+This formula installs both `phantom` and `phantom-mcp` from the immutable
+[`v0.7.3` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3).
+
+### Exact GitHub assets (Linux and Windows)
+
+Use the asset matching your OS and architecture. Download its adjacent
+`.sha256` file from the release, verify it before extraction, and place both
+`phantom` and `phantom-mcp` (`.exe` on Windows) on `PATH`.
+
+| Platform | `v0.7.3` archive | Published checksum |
+|---|---|---|
+| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
+| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip.sha256) |
+| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+
+On Linux, verify with `sha256sum -c <archive>.sha256`. On Windows, compare
+`Get-FileHash -Algorithm SHA256 <archive>` with the published sidecar.
+
+### Build the exact release source
+
+The `v0.7.3` tag resolves to source commit
+`cffd0f29ab85a45358f011fdcfd40667d576c420`:
 
 ```bash
-$ claude mcp add phantom-secrets-mcp -- npx -y phantom-secrets-mcp
+$ git clone https://github.com/ashlrai/phantom-secrets.git
+$ cd phantom-secrets
+$ git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+$ cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-### Cargo
+Do not treat unpinned package-manager commands as `v0.7.3`. As verified on
+2026-08-31, npm and the MCP Registry publish `0.6.0`, while crates.io publishes
+`0.5.1`; those are older distribution tracks, not the reviewed current release.
+
+### Connect an MCP client
 
 ```bash
-$ cargo install phantom-secrets
+$ phantom setup --client claude   # or cursor, windsurf, codex
 ```
 
 ## Architecture
@@ -433,7 +474,10 @@ The Rust workspace is organized as product crates plus fail-closed execution-ker
 
 **`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
 
-**npm packages**: [`phantom-secrets`](https://www.npmjs.com/package/phantom-secrets) (CLI), [`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) (MCP server).
+**Older registry tracks**: npm currently publishes
+[`phantom-secrets`](https://www.npmjs.com/package/phantom-secrets) and
+[`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) at
+`0.6.0`; these are not the reviewed `v0.7.3` release.
 
 CI runs locked, all-target workspace builds and tests on macOS, Linux, and Windows runner environments, plus formatting, Clippy, and npm release-mapping checks. Release builds and native end-to-end acceptance are separate evidence layers; see [Platform support](docs/platform-support.md).
 
@@ -456,7 +500,7 @@ See [SECURITY.md](SECURITY.md) for the responsible disclosure policy and [THREAT
 | Local vault | Available without a hosted entitlement | Available | Available |
 | Hosted cloud vaults | No commissioned entitlement represented here | Eligibility and limits TBD | Scope defined by written agreement |
 | MCP server | Yes | Yes | Yes |
-| Cloud sync | Yes | Yes | Yes |
+| Personal cloud backup | Same-keychain-machine restore only | Key portability evaluation planned | Scope defined by written agreement |
 | Team features | -- | Fixed-membership pilot; eligibility and limits TBD | Planned enterprise controls; scope TBD |
 | Price | No charge for local open-source use | Pricing TBD; no self-serve checkout commissioned | Written agreement |
 

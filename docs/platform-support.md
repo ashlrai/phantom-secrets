@@ -47,11 +47,12 @@ acceptance and never place provider client secrets on the command line.
 
 ## Install methods
 
-- `cargo install phantom-secrets` and `cargo install phantom-secrets-mcp` build
-  from source for a supported Rust target; they do not verify GitHub archives.
-- The primary npm package validates a release checksum and binary identity
-  before execution. A wrapper mapping still depends on a matching published
-  archive.
+- The reviewed `v0.7.3` source build checks out
+  `cffd0f29ab85a45358f011fdcfd40667d576c420` and runs
+  `cargo build --release --locked --bin phantom --bin phantom-mcp`. An unpinned
+  crates.io install currently resolves the older `0.5.1` track.
+- The npm packages currently resolve `0.6.0`, not the reviewed `v0.7.3`
+  release. A wrapper mapping also depends on a matching published archive.
 - `scripts/install.sh` supports macOS and GNU Linux targets. Native Windows uses
   `scripts/install.ps1`; both scripts verify bounded HTTPS downloads, strict
   sidecar checksums, archive shape, and binary identity before promotion.

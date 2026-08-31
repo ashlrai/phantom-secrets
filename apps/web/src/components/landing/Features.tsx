@@ -32,8 +32,7 @@ const FEATURES: Feature[] = [
         operations without returning credential values.
       </>
     ),
-    code: `$ claude mcp add phantom-secrets-mcp \\
-    -- npx -y phantom-secrets-mcp
+    code: `$ phantom setup --client claude
 ok  registered live MCP catalog`,
     logos: [ClaudeLogo, CursorLogo, WindsurfLogo, OpenAILogo],
   },
@@ -56,12 +55,14 @@ fix: run \`phantom add\` to vault them.`,
     logos: [GitHubLogo],
   },
   {
-    title: "One source of truth, everywhere",
+    title: "Explicit provider sync and local recovery",
     body: (
       <>
-        Push secrets to Vercel and Railway. Pull on a new machine. Sync to
-        Phantom Cloud (end-to-end encrypted) so your team is never stuck Slacking
-        a <code className="font-mono text-blue-b">.env</code>.
+        Push selected secrets to Vercel and Railway, or pull them back with
+        explicit provider credentials. Personal Phantom Cloud snapshots can be
+        restored only on the machine that holds their original OS-keychain
+        encryption key. Fixed-membership team vaults use separate per-member
+        encryption.
       </>
     ),
     code: `$ phantom sync --platform vercel

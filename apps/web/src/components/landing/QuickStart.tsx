@@ -7,21 +7,23 @@ import { CopyButton } from "./CopyButton";
 const STEPS = [
   {
     n: "01",
-    title: "Install",
-    body: "Run Phantom through npm for the current platform.",
-    cmd: "npx phantom-secrets init",
-    out: `$ npx phantom-secrets init
-->  Found 4 secrets in .env
-ok  vault initialized · macOS Keychain
-ok  .env rewritten with phm_ tokens
-ok  CLAUDE.md updated`,
+    title: "Install v0.7.3 on macOS",
+    body: "Use the reviewed Homebrew tap, trust, and fully qualified formula path.",
+    cmd: "brew tap ashlrai/phantom\nbrew trust --formula ashlrai/phantom/phantom\nbrew install ashlrai/phantom/phantom",
+    out: `$ phantom --version
+phantom 0.7.3
+$ phantom-mcp --version
+phantom-mcp 0.7.3`,
   },
   {
     n: "02",
-    title: "Verify agent readiness",
-    body: "Run the built-in preflight for supported client configuration and local state.",
-    cmd: "phantom agent doctor",
-    out: `$ phantom agent doctor
+    title: "Protect and verify",
+    body: "Initialize the project, then run the built-in readiness preflight.",
+    cmd: "phantom init && phantom agent doctor",
+    out: `$ phantom init
+ok  vault initialized · <selected backend>
+ok  .env rewritten with phm_ tokens
+$ phantom agent doctor
 ok  status: verified
 ok  vault accessible
 ok  env files protected
@@ -50,7 +52,9 @@ export function QuickStart() {
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
             Three commands with illustrative output; ports, routes, and vault
-            backends vary by configuration. For exact local state, run{" "}
+            backends vary by configuration. Linux and Windows use the exact
+            v0.7.3 GitHub release assets linked in the repository. For exact
+            local state, run{" "}
             <code className="font-mono text-blue-b">phantom agent doctor</code>.
           </p>
         </div>

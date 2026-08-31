@@ -119,7 +119,8 @@ The binary is downloaded from GitHub Releases. If it fails:
 
 1. Check your internet connection
 2. Verify the release exists: https://github.com/ashlrai/phantom-secrets/releases
-3. Try installing directly: `cargo install phantom-secrets`
+3. Use the exact `v0.7.3` asset and `.sha256` sidecar documented in
+   [getting started](./getting-started.md#install)
 
 ## CI/CD Usage
 
@@ -128,7 +129,7 @@ The binary is downloaded from GitHub Releases. If it fails:
 ```yaml
 - name: Set up Phantom
   run: |
-    cargo install phantom-secrets
+    cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev cffd0f29ab85a45358f011fdcfd40667d576c420 phantom-secrets
     echo "PHANTOM_VAULT_PASSPHRASE=${{ secrets.PHANTOM_VAULT_PASSPHRASE }}" >> $GITHUB_ENV
     phantom pull --from vercel --project ${{ vars.VERCEL_PROJECT_ID }}
   env:
@@ -139,7 +140,7 @@ The binary is downloaded from GitHub Releases. If it fails:
 
 ```dockerfile
 # Install phantom
-RUN cargo install phantom-secrets
+RUN cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev cffd0f29ab85a45358f011fdcfd40667d576c420 phantom-secrets
 
 # Set passphrase for encrypted vault (pass at runtime, not build time)
 ENV PHANTOM_VAULT_PASSPHRASE=""

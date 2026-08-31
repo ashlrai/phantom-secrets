@@ -3,10 +3,16 @@
 ## TL;DR
 
 ```bash
-npx phantom-secrets init   # installs Phantom and protects your .env
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom   # reviewed v0.7.3 macOS release
+phantom init               # protects your .env
 phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code with real secrets injected by proxy
 ```
+
+That install example is for macOS. Linux and Windows users should select and
+verify the exact `v0.7.3` GitHub asset below.
 
 That's the local setup. Keep agent dotenv reads denied and launch supported API
 work through `phantom exec`; Phantom reduces credential exposure, but it does
@@ -32,22 +38,7 @@ For a detailed breakdown of assets protected, threat actors, mitigations, and kn
 
 ## Install
 
-### npx (recommended — no global install required)
-
-```bash
-npx phantom-secrets init
-```
-
-Downloads the correct platform binary and runs `phantom init` in one step.
-
-### npm global
-
-```bash
-npm install -g phantom-secrets
-phantom init
-```
-
-### Homebrew (macOS)
+### Homebrew (macOS, reviewed v0.7.3)
 
 ```bash
 brew tap ashlrai/phantom
@@ -55,9 +46,36 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-### Direct binary download
+The formula installs both `phantom` and `phantom-mcp` from the immutable
+[`v0.7.3` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3).
 
-Download from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases), extract, and place `phantom` on your `$PATH`.
+### Exact GitHub assets (Linux and Windows)
+
+| Platform | `v0.7.3` archive | Published checksum |
+|---|---|---|
+| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
+| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip.sha256) |
+| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+
+Download the archive and its sidecar, then verify before extraction. Use
+`sha256sum -c <archive>.sha256` on Linux. On Windows, compare
+`Get-FileHash -Algorithm SHA256 <archive>` with the sidecar. Put both extracted
+executables on `PATH`.
+
+### Build the exact release source
+
+```bash
+git clone https://github.com/ashlrai/phantom-secrets.git
+cd phantom-secrets
+git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+cargo build --release --locked --bin phantom --bin phantom-mcp
+```
+
+The full SHA above is the source commit resolved by `v0.7.3`. Do not treat an
+unpinned registry install as that release. As verified on 2026-08-31, npm and
+the MCP Registry publish `0.6.0`, while crates.io publishes `0.5.1`; those are
+older distribution tracks.
 
 ### Verify
 
@@ -170,14 +188,16 @@ phantom rotate
 
 ### `phantom cloud push` / `phantom cloud pull`
 
-Sync your vault across machines using client-side encryption. The cloud vault
-API receives ciphertext rather than decrypted secret values; client, endpoint,
-and account security remain part of the trust boundary.
+Back up and restore your vault on the same keychain machine using client-side
+encryption. The cloud vault API receives ciphertext rather than decrypted secret
+values; client, endpoint, account, and OS-keychain security remain part of the
+trust boundary. Phantom does not currently transfer or recover the machine-local
+cloud encryption key.
 
 ```bash
 phantom login              # GitHub OAuth, once per device
 phantom cloud push         # upload encrypted vault
-phantom cloud pull         # download and decrypt on another machine
+phantom cloud pull         # restore where the original cloud key is available
 ```
 
 ### `phantom sync` / `phantom pull`
@@ -197,7 +217,7 @@ phantom sync --platform vercel --project prj_abc123 --only "STRIPE_*" --only "*_
 # Preview without decrypting values or touching platform APIs
 phantom sync --platform vercel --project prj_abc123 --dry-run --json
 
-# Pull from Vercel on a new machine
+# Pull from Vercel with authorized provider access
 phantom pull --from vercel --project prj_abc123
 
 # Railway
@@ -290,7 +310,12 @@ phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine. For Claude Code, setup removes legacy Phantom-managed dotenv read grants and preserves deny rules; agents use value-blind MCP inventory instead. See [claude-code.md](./claude-code.md) for the full workflow. Runtime MCP `tools/list` is the canonical catalog.
+Install both `v0.7.3` release binaries before setup. If `phantom-mcp` is absent
+from `PATH`, the writer's npm fallback currently resolves older package `0.6.0`,
+not the reviewed release. For Claude Code, setup removes legacy Phantom-managed
+dotenv read grants and preserves deny rules; agents use value-blind MCP inventory
+instead. See [claude-code.md](./claude-code.md) for the full workflow. Runtime MCP
+`tools/list` is the canonical catalog.
 
 Restart the AI tool after running `phantom setup` so it picks up the new config.
 
@@ -436,8 +461,8 @@ Store this passphrase as a CI secret. See `docs/ci-cd.md` for full GitHub Action
 The binary ships from GitHub Releases. Check your internet connection, then:
 
 ```bash
-# Fallback: install from source
-cargo install phantom-secrets
+# Fallback: build the exact v0.7.3 source
+cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev cffd0f29ab85a45358f011fdcfd40667d576c420 phantom-secrets
 ```
 
 Or download the binary directly from [github.com/ashlrai/phantom-secrets/releases](https://github.com/ashlrai/phantom-secrets/releases).

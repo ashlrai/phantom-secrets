@@ -863,7 +863,7 @@
     <div class="hero-inner">
         <div class="sr hero-badge">
             <span class="hero-badge-dot"></span>
-            39.6M secrets leaked on GitHub in 2025
+            28.65M new hardcoded secrets in public GitHub commits in 2025
         </div>
 
         <h1 class="sr sr-d1">
@@ -876,12 +876,12 @@
         </p>
 
         <div class="sr sr-d3">
-            <div class="hero-install" onclick="copyCmd('npx phantom-secrets init')">
+            <div class="hero-install" onclick="copyCmd('phantom init')">
                 <span class="prompt">$</span>
-                <span class="cmd">npx phantom-secrets init</span>
+                <span class="cmd">phantom init</span>
                 <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </div>
-            <div class="hero-hint">One command protects detected, managed dotenv secrets.</div>
+            <div class="hero-hint">After a verified v0.7.3 install, one command protects detected, managed dotenv secrets.</div>
         </div>
 
         <div class="sr sr-d3 hero-ctas">
@@ -949,7 +949,7 @@
         <div class="danger-card sr sr-d1">
             <span class="danger-icon">&#128274;</span>
             <h3>Secrets in AI-generated commits</h3>
-            <p>AI assistants embed secrets in code, config files, and commit messages. 2x higher leak rate with AI-assisted commits.</p>
+            <p>AI-service secrets increased 81% year over year, a category-specific figure rather than the rate for all secrets.</p>
         </div>
         <div class="danger-card full sr">
             <span class="env-label">&#8595; What Claude sees in your project right now</span>
@@ -963,18 +963,19 @@
 
     <div class="stats-row sr" style="transition-delay:.1s">
         <div class="stat">
-            <div class="stat-num">39.6M</div>
-            <div class="stat-label">secrets leaked on GitHub in 2025</div>
+            <div class="stat-num">28.65M</div>
+            <div class="stat-label">new hardcoded secrets in public GitHub commits in 2025</div>
         </div>
         <div class="stat">
-            <div class="stat-num">2&times;</div>
-            <div class="stat-label">higher leak rate with AI-assisted commits</div>
+            <div class="stat-num">+34% year-over-year</div>
+            <div class="stat-label">increase across new hardcoded secrets</div>
         </div>
         <div class="stat">
-            <div class="stat-num">+81%</div>
-            <div class="stat-label">YoY increase in AI service key leaks</div>
+            <div class="stat-num">+81% AI-service</div>
+            <div class="stat-label">year-over-year increase for AI-service secrets specifically</div>
         </div>
     </div>
+    <p class="sr" style="margin-top:14px;text-align:center;font-size:.8rem;color:var(--t3)">Source: <a href="https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/">GitGuardian, State of Secrets Sprawl 2026</a>.</p>
 </section>
 
 <!-- ─── HOW IT WORKS ─── -->
@@ -1032,7 +1033,7 @@
         <div class="feat sr">
             <span class="feat-icon">&#128272;</span>
             <h3>Local encrypted vault</h3>
-            <p>Native OS credential storage where available, with a ChaCha20-Poly1305 encrypted-file fallback using Argon2id. Optional cloud sync uploads ciphertext; provider sync intentionally sends selected values to that provider.</p>
+            <p>Native OS credential storage where available, with a ChaCha20-Poly1305 encrypted-file fallback using Argon2id. Optional personal cloud backup uploads ciphertext and restores only where the original OS-keychain cloud key is available; provider sync intentionally sends selected values to that provider.</p>
         </div>
         <div class="feat sr sr-d1">
             <span class="feat-icon">&#127760;</span>
@@ -1051,8 +1052,8 @@
         </div>
         <div class="feat sr sr-d1">
             <span class="feat-icon">&#9729;&#65039;</span>
-            <h3>Cloud sync &amp; teams</h3>
-            <p>Preview and push selected secrets to Vercel or Railway, and use client-encrypted team vault workflows where the deployed service and account plan support them. Provider and customer acceptance remain separate gates.</p>
+            <h3>Cloud backup &amp; teams</h3>
+            <p>Personal cloud snapshots require the original machine-local key to restore. Separately, preview and push selected secrets to Vercel or Railway, or use fixed-membership team vault workflows where the deployed service and account plan support them. Provider and customer acceptance remain separate gates.</p>
         </div>
         <div class="feat sr sr-d2">
             <span class="feat-icon">&#128737;</span>
@@ -1066,8 +1067,8 @@
         </div>
         <div class="feat sr sr-d1">
             <span class="feat-icon">&#128230;</span>
-            <h3>npm install</h3>
-            <p><code style="background:var(--bg-inset);padding:1px 5px;border-radius:4px;font-size:.78rem;color:var(--cyan);border:1px solid var(--border);">npx phantom-secrets init</code> selects the release binary for supported platform/architecture pairs. No Rust toolchain is needed for the npm path.</p>
+            <h3>Reviewed v0.7.3 distribution</h3>
+            <p>macOS uses the trusted Homebrew formula. Linux and Windows use the exact GitHub release archive and adjacent checksum for their architecture. npm/MCP Registry 0.6.0 and crates.io 0.5.1 are older distribution tracks.</p>
         </div>
         <div class="feat sr sr-d2">
             <span class="feat-icon">&#128736;</span>
@@ -1085,19 +1086,19 @@
 
     <div class="install-grid sr">
         <div class="install-card">
-            <h3>npm (recommended)</h3>
-            <div class="install-cmd" onclick="copyCmd('npx phantom-secrets init')">$ npx phantom-secrets init</div>
-            <div class="install-sub">Downloads binary automatically</div>
-        </div>
-        <div class="install-card">
-            <h3>Homebrew</h3>
+            <h3>Homebrew (macOS v0.7.3)</h3>
             <div class="install-cmd" onclick="copyCmd('brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom')">$ brew tap ashlrai/phantom<br>$ brew trust --formula ashlrai/phantom/phantom<br>$ brew install ashlrai/phantom/phantom</div>
-            <div class="install-sub">macOS</div>
+            <div class="install-sub">Trusted, fully qualified third-party formula</div>
         </div>
         <div class="install-card">
-            <h3>Cargo</h3>
-            <div class="install-cmd" onclick="copyCmd('cargo install phantom-secrets')">$ cargo install phantom-secrets</div>
-            <div class="install-sub">Build from source</div>
+            <h3>Linux + Windows v0.7.3</h3>
+            <div class="install-cmd"><a href="https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3">Exact archives + .sha256 sidecars</a></div>
+            <div class="install-sub">Verify the selected asset before extraction</div>
+        </div>
+        <div class="install-card">
+            <h3>Exact source build</h3>
+            <div class="install-cmd" onclick="copyCmd('git checkout cffd0f29ab85a45358f011fdcfd40667d576c420 && cargo build --release --locked --bin phantom --bin phantom-mcp')">$ git checkout cffd0f29ab85a45358f011fdcfd40667d576c420<br>$ cargo build --release --locked --bin phantom --bin phantom-mcp</div>
+            <div class="install-sub">Source commit resolved by v0.7.3</div>
         </div>
     </div>
 </section>

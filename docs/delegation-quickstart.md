@@ -45,9 +45,8 @@ vault backend, atomically rewrites the managed dotenv file with `phm_`
 placeholders, writes Phantom configuration, generates `.env.example`, and
 attempts to install the repository pre-commit check.
 
-```bash
-npx phantom-secrets init
-```
+Install the reviewed `v0.7.3` release using the platform-specific path in
+[getting started](./getting-started.md#install), then run `phantom init`.
 
 If auto-detection selects the wrong file, stop and use an explicit path shown by
 `phantom init --help`. Phantom intentionally does not leave a plaintext

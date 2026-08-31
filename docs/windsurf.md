@@ -16,11 +16,9 @@ Cascade chat. The current release contract enforces 54 unique tools; runtime
 
 ### Step 1: install Phantom
 
-```bash
-npx phantom-secrets init
-```
-
-This installs the CLI and initializes your current project in one step.
+Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+verified path in [getting started](./getting-started.md#install), then run
+`phantom init` in the project.
 
 ### Step 2: wire up Windsurf (one command)
 
@@ -41,7 +39,10 @@ This writes `~/.codeium/windsurf/mcp_config.json` with the `phantom` MCP server 
 }
 ```
 
-If `phantom-mcp` is not on PATH, the command falls back to `npx -y phantom-secrets-mcp`. The config is global — it applies to every Windsurf workspace.
+Install both `v0.7.3` release binaries before setup. If `phantom-mcp` is absent
+from `PATH`, the writer's npm fallback currently resolves older package `0.6.0`,
+not the reviewed release. The config is global and applies to every Windsurf
+workspace.
 
 To preview what would be written without modifying the file:
 
@@ -125,7 +126,11 @@ If the file is missing, re-run `phantom setup --client windsurf`. If the file is
 
 **`phantom setup` writes `npx` as the command instead of `phantom-mcp`**
 
-This means `phantom-mcp` was not found on PATH at setup time. The `npx` fallback is functional but adds startup latency on the first call. To switch to the binary, install it (`npm install -g phantom-secrets-mcp` or the Rust install path), then re-run `phantom setup --client windsurf`.
+This means `phantom-mcp` was not found on PATH at setup time. The `npx`
+fallback currently resolves the older published `0.6.0` package, not the
+reviewed `v0.7.3` release. Install both `v0.7.3` binaries using the
+platform-specific path in [getting started](./getting-started.md#install), then
+re-run `phantom setup --client windsurf`.
 
 ---
 

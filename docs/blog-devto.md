@@ -13,7 +13,10 @@ I didn't ask Claude to use the key. It just... did what a helpful agent does. It
 
 ## The threat is not hypothetical
 
-GitGuardian's 2025 State of Secrets Sprawl report found 39.6 million secrets leaked in public repositories — an 81% year-over-year increase. The number that matters: **AI-assisted commits leak secrets at twice the baseline rate.** The tools that make us most productive are also the most prolific secret-leakers in the history of software development.
+GitGuardian's [State of Secrets Sprawl 2026](https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/)
+reports 28.65 million new hardcoded secrets in public GitHub commits in 2025, a
+34% year-over-year increase. AI-service secrets separately increased 81% year
+over year; that category-specific figure does not apply to all secrets.
 
 Here is one common high-risk pattern when an AI coding tool has dotenv access:
 
@@ -114,8 +117,8 @@ closed; Phantom does not inject them into the child environment.
 ## Real usage: three commands
 
 ```bash
-# 1. Initialize — detects secrets, stores them safely, rewrites .env
-$ npx phantom-secrets init
+# 1. After installing the reviewed v0.7.3 release, initialize the project
+$ phantom init
 -> Found .env with 5 entries
 -> Detected 3 secret(s): OPENAI_API_KEY, STRIPE_SECRET_KEY, ANTHROPIC_API_KEY
 -> Skipped 2 non-secret(s): NODE_ENV, PORT
@@ -143,7 +146,7 @@ $ phantom sync --platform vercel
 Phantom also ships an MCP server so Claude Code, Cursor, Windsurf, and Codex can manage secrets natively — listing, adding, rotating — without ever seeing a real value:
 
 ```bash
-$ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
+$ phantom setup --client claude
 ```
 
 The release-schema-verified catalog currently contains 54 unique tools covering
@@ -191,10 +194,12 @@ transcripts, generated files, or tool calls.
 ## Get started
 
 ```bash
-npx phantom-secrets init
+phantom init
 ```
 
-Three commands establish the local boundary for supported API routes. Keep
+Install the checksum-verified `v0.7.3` binaries using the
+[current platform instructions](./getting-started.md#install) before running
+this command. Three commands establish the local boundary for supported API routes. Keep
 dotenv reads denied, review the generated config, and use the documented
 recovery and CI controls for the rest of the system.
 

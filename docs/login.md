@@ -1,6 +1,10 @@
 # phantom login — Phantom Cloud Authentication
 
-`phantom login` authenticates your machine with Phantom Cloud using a device authorization flow. After login, you can push and pull encrypted vault snapshots across machines and share secrets with team members.
+`phantom login` authenticates your machine with Phantom Cloud using a device
+authorization flow. After login, you can push and pull encrypted personal-vault
+snapshots on the machine that holds their OS-keychain encryption key. Login does
+not transfer or recover that key. Team vault sharing is a separate fixed-membership
+workflow that encrypts a shared vault key to registered members.
 
 ---
 
@@ -58,7 +62,9 @@ ok  Already logged in as @yourname (free)
 phantom logout
 ```
 
-This deletes the access token from the OS keychain. It does not delete your vault data on Phantom Cloud — the cloud copy remains and can be restored on any machine after logging in again.
+This deletes the access token from the OS keychain. It does not delete your vault
+data on Phantom Cloud. The cloud copy remains ciphertext and can be restored only
+where the original machine-local cloud encryption key remains available.
 
 ---
 
@@ -70,13 +76,17 @@ Push the local vault to Phantom Cloud:
 phantom cloud push
 ```
 
-Pull a vault from Phantom Cloud (on a new machine or after a teammate pushes):
+Pull a personal-vault snapshot from Phantom Cloud on the machine that holds the
+original cloud encryption key:
 
 ```bash
 phantom cloud pull
 ```
 
-Both commands require an active login. The vault is end-to-end encrypted — Phantom Cloud stores only ciphertext and cannot read your secrets.
+Both commands require an active login and access to the original OS-keychain
+encryption key. Phantom Cloud stores only ciphertext. Phantom does not currently
+ship personal cloud-key export, transfer, or recovery, so this path is a
+same-keychain-machine backup rather than cross-machine sync.
 
 From an MCP-connected AI client, you can trigger these with `phantom_cloud_push` and `phantom_cloud_pull` (both require `confirm: true`).
 

@@ -16,11 +16,9 @@ catalog for value-free secret workflows. The current release contract enforces
 
 ### Step 1: install Phantom
 
-```bash
-npx phantom-secrets init
-```
-
-This installs the CLI and initializes your current project in one step.
+Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+verified path in [getting started](./getting-started.md#install), then run
+`phantom init` in the project.
 
 ### Step 2: wire up Claude Code (one command)
 
@@ -32,17 +30,15 @@ This writes `.claude/settings.local.json` with two things at once:
 - The `phantom` MCP server entry (so Claude can call the Phantom tool catalog)
 - Removal of legacy Phantom-managed `.env` read grants; dotenv denies remain a defense-in-depth boundary while MCP exposes value-blind inventory
 
-If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp`. To register the server **globally** instead of per-project, use Claude's CLI:
-
-```bash
-claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
-```
+If `phantom-mcp` is not on `PATH`, reinstall both binaries from the same
+`v0.7.3` release. The setup writer's npm fallback currently resolves the older
+published `0.6.0` MCP package and is not the reviewed `v0.7.3` path.
 
 Verify it registered:
 
 ```bash
 claude mcp list
-# phantom-secrets-mcp   npx phantom-secrets-mcp   enabled
+# phantom-secrets-mcp   phantom-mcp   enabled
 ```
 
 ### Step 3: run Claude with the proxy active
@@ -128,7 +124,7 @@ Claude: [calls phantom_doctor]
         All checks pass. Config valid, vault accessible, .env fully protected,
         .env is in .gitignore, .env.example exists.
 
-You: push the vault to cloud so I can sync to my laptop later
+You: back up this vault to cloud so I can restore it on this keychain machine later
 
 Claude: I'll push to Phantom Cloud — this overwrites the existing cloud copy. 
         Confirm? [calls phantom_cloud_push with confirm: true after your yes]
@@ -156,13 +152,15 @@ scrubbing, or processes launched outside `phantom exec`.
 
 Claude can call `phantom_sync` (read-only mode) to show which secrets and targets are configured, then guide you to run `phantom sync --platform vercel --project prj_xxx` in the terminal to execute the actual push.
 
-### Onboarding a new machine
+### Setting up from a deployment provider
 
 ```
 You: I'm on a new laptop. Help me get set up.
 
 Claude: [calls phantom_status — sees no .phantom.toml]
-        Phantom isn't initialized here. Do you have secrets in cloud sync or on Vercel?
+        Phantom isn't initialized here. Do you have authorized access to the
+        project's secrets in Vercel? Personal Phantom Cloud backups cannot be
+        decrypted here without the original machine's cloud key.
 
 You: Vercel, project ID is prj_abc123
 
@@ -201,7 +199,7 @@ exact action and keep deployment/provider authority separately constrained.
 
 ## Reference
 
-- MCP install: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
+- MCP setup: `phantom setup --client claude` after installing both `v0.7.3` binaries
 - Full command list: [getting-started.md](./getting-started.md)
 - Troubleshooting: [troubleshooting.md](./troubleshooting.md)
 - GitHub: [https://github.com/ashlrai/phantom-secrets](https://github.com/ashlrai/phantom-secrets)

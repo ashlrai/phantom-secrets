@@ -6,15 +6,19 @@ Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Install: `npx phantom-secrets init`; Homebrew requires the exact tap, trust, and install commands below
-MCP: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
+Current reviewed release: `v0.7.3` at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
+Install: macOS uses the exact Homebrew tap/trust/fully-qualified formula commands below; Linux and Windows use the exact checksum-verified `v0.7.3` assets below
+MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`
 
 
 ## The Problem
 
 AI coding tools with dotenv filesystem access can put real API keys into the LLM context window. They can leak via session logs and transcripts, prompt injection attacks, malicious MCP servers, code generation, and potential training data exposure.
 
-GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits leak at 2x the baseline rate.
+GitGuardian reports 28.65M new hardcoded secrets in public GitHub commits in
+2025, a 34% year-over-year increase.
+AI-service secrets separately increased 81% year over year; that category-specific figure does not apply to all secrets. Primary source:
+https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/
 
 
 ## How Phantom Works
@@ -32,26 +36,31 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 
 ## Install
 
-### npx (recommended)
-```
-npx phantom-secrets init
-```
-Downloads the correct platform binary automatically. No Rust toolchain needed.
-
-### Homebrew (macOS)
+### Homebrew (macOS, reviewed v0.7.3)
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-### Direct binary download
-Download from: https://github.com/ashlrai/phantom-secrets/releases
+### Exact v0.7.3 assets
+Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz
+Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz
+Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip
+Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip
+For each archive, download its adjacent `.sha256` sidecar, verify it, extract both `phantom` and `phantom-mcp` executables, and place them on PATH.
 
-### Cargo (from source)
+### Exact source build
 ```
-cargo install phantom-secrets
+git clone https://github.com/ashlrai/phantom-secrets.git
+cd phantom-secrets
+git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
+
+Registry status verified 2026-08-31: npm and the MCP Registry publish 0.6.0;
+crates.io publishes 0.5.1. Unpinned npm, npx, and `cargo install` commands are
+older distribution tracks, not the reviewed v0.7.3 release.
 
 ### Verify
 ```
@@ -154,7 +163,9 @@ Sign out of Phantom Cloud.
 Encrypt vault client-side and upload to Phantom Cloud. Server never sees plaintext.
 
 ### phantom cloud pull
-Download and decrypt vault from Phantom Cloud.
+Download and decrypt a personal-vault snapshot from Phantom Cloud. Decryption
+requires the cloud encryption key in the original OS keychain; login alone on a
+different machine is insufficient.
 Options: --force (overwrite existing local secrets)
 
 ### phantom cloud status
@@ -235,7 +246,7 @@ Print a shell-completion script to stdout. Source from your shell rc; see the RE
 
 ## MCP server — release-checked catalog
 
-Install: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
+Setup: install both reviewed `v0.7.3` binaries, then run `phantom setup --client claude`
 
 The MCP server uses stdio transport via the rmcp 1.3 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex. The runtime `tools/list` response is the canonical parameter schema.
 
@@ -379,17 +390,16 @@ Team member removal and automatic vault-key rotation are not shipped. Use fixed-
 ### MCP setup by IDE
 
 Claude Code:
-  claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
+  phantom setup --client claude
 
 Cursor:
-  Settings > Features > MCP Servers
-  Name: phantom, Command: npx, Args: phantom-secrets-mcp
+  phantom setup --client cursor
 
 Windsurf:
-  {"mcpServers": {"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}}
+  phantom setup --client windsurf
 
-OpenAI Codex (~/.codex/config.json):
-  {"mcpServers": {"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}}
+OpenAI Codex:
+  phantom setup --client codex
 
 
 ## Architecture
@@ -526,7 +536,7 @@ phantom sync --platform vercel --project prj_xxx
 phantom sync --platform railway --project xxx
 ```
 
-Pull secrets from platforms (new machine onboarding):
+Pull secrets from deployment platforms (requires that provider's credentials):
 ```
 phantom pull --from vercel --project prj_xxx
 phantom pull --from railway --project xxx --environment production
@@ -536,21 +546,32 @@ phantom pull --from vercel --project prj_xxx --force   # overwrite existing
 Supported platforms: Vercel, Railway. Requires platform API token in environment.
 
 
-## Cloud Sync Architecture
+## Personal Cloud Backup Architecture
 
-Phantom Cloud provides end-to-end encrypted vault sync.
+Phantom Cloud provides client-encrypted personal-vault backup and restore on the
+machine that holds the original OS-keychain encryption key.
 
 For the implemented encrypted cloud-vault path, the server stores opaque ciphertext; encryption and decryption occur in the client. This claim does not make provider API traffic local: configured upstream requests still leave the machine.
 
-Client-side encryption: ChaCha20-Poly1305 with Argon2id key derivation. Encryption key stored only in user's OS keychain.
+Client-side encryption: ChaCha20-Poly1305 with Argon2id key derivation. The
+random encryption passphrase is stored only in the user's OS keychain. Personal
+cloud-key export, transfer, and recovery are not shipped, so account login on a
+different machine cannot decrypt the snapshot.
 
-Optimistic concurrency: version numbers prevent conflicting pushes from multiple devices.
+Optimistic concurrency: version numbers reject a push based on a stale local
+version. This does not imply cross-device decryption.
+
+Team vaults use a separate design: a fresh shared key is wrapped to each
+registered member's X25519 public key. That fixed-membership flow does not make
+personal cloud backups portable.
 
 Auth: GitHub OAuth via device code flow (like GitHub CLI).
 
 Packaging direction:
   Free tier: 1 cloud vault, unlimited local vaults
-  Pro (planned hosted pilot): proposed packaging for expanded cloud-vault and multi-device sync capabilities; limits and pricing are TBD, and no self-serve checkout is commissioned
+  Pro (planned hosted pilot): proposed packaging for expanded cloud-backup,
+  cloud-key-portability evaluation, and team-vault capabilities; limits and
+  pricing are TBD, and no self-serve checkout is commissioned
 
 The Pro plan is not generally purchasable or commissioned based on repository source alone. Verify the deployed service, account entitlement, and written plan terms before relying on it.
 
@@ -591,9 +612,9 @@ Do not commit:
 
 1. Solo developer with Claude Code: phantom init, then phantom exec -- claude
 2. Delegate to Claude: add MCP server, say "protect my API keys" — Claude runs phantom_init
-3. Multi-device sync: phantom login, phantom cloud push on one machine, phantom cloud pull on another
+3. Same-keychain-machine backup: phantom login, phantom cloud push, then phantom cloud pull where the original cloud encryption key remains available
 4. Deploy to Vercel: phantom sync --platform vercel --project prj_xxx
-5. New machine onboarding: phantom pull --from vercel --project prj_xxx
+5. Provider-backed machine setup: phantom pull --from vercel --project prj_xxx (requires Vercel credentials)
 6. Vault backup (encrypted): phantom export --output backup.enc / phantom import backup.enc (hidden prompts; use a private --passphrase-file for automation)
 7. Team onboarding: phantom env generates .env.example with placeholders
 8. CI/CD: use phantom check in GitHub Actions; sync deploy secrets to Vercel or Railway before builds

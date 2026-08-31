@@ -22,11 +22,9 @@ contract enforces 54 unique tools; runtime `tools/list` is canonical.
 
 ### Step 1: install Phantom
 
-```bash
-npx phantom-secrets init
-```
-
-This installs the CLI and initializes your current project in one step.
+Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+verified path in [getting started](./getting-started.md#install), then run
+`phantom init` in the project.
 
 ### Step 2: wire up Cursor (one command)
 
@@ -47,7 +45,10 @@ This writes `~/.cursor/mcp.json` with the `phantom` MCP server entry:
 }
 ```
 
-If `phantom-mcp` is not on PATH, the command falls back to `npx -y phantom-secrets-mcp`. The config is global — it applies to every Cursor workspace.
+Install both `v0.7.3` release binaries before setup. If `phantom-mcp` is absent
+from `PATH`, the writer's npm fallback currently resolves older package `0.6.0`,
+not the reviewed release. The config is global and applies to every Cursor
+workspace.
 
 To see what would be written without modifying your config:
 
@@ -123,7 +124,9 @@ Check that `~/.cursor/mcp.json` exists and contains the `phantom` entry:
 cat ~/.cursor/mcp.json
 ```
 
-If it looks correct, restart Cursor. Cursor reads MCP config on startup only. If `phantom-mcp` is not on PATH, the fallback command is `npx -y phantom-secrets-mcp` — npm must be installed for the fallback to work.
+If it looks correct, restart Cursor. Cursor reads MCP config on startup only. If
+`phantom-mcp` is absent from `PATH`, reinstall both binaries from the reviewed
+`v0.7.3` release; the generated npm fallback currently points to older `0.6.0`.
 
 **`phantom exec -- cursor .` opens Cursor but API calls fail**
 

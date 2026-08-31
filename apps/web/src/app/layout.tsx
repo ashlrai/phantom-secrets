@@ -134,10 +134,11 @@ export default function RootLayout({
               url: SITE_URL,
               sameAs: [
                 "https://github.com/ashlrai/phantom-secrets",
-                "https://www.npmjs.com/package/phantom-secrets",
               ],
               license: "https://opensource.org/licenses/MIT",
               softwareVersion: "0.7.3",
+              downloadUrl:
+                "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3",
               description: DESCRIPTION,
               offers: {
                 "@type": "Offer",
@@ -180,19 +181,19 @@ export default function RootLayout({
                 "Set up Phantom so supported AI-agent workflows receive placeholders instead of real API keys.",
               totalTime: "PT1M",
               tool: [
-                { "@type": "HowToTool", name: "Node.js (for npx)" },
+                { "@type": "HowToTool", name: "Homebrew 6 on macOS, or an exact v0.7.3 GitHub release asset" },
                 { "@type": "HowToTool", name: "Claude Code, Cursor, Windsurf, or Codex" },
               ],
               step: [
                 {
                   "@type": "HowToStep",
                   name: "Install Phantom and protect your .env",
-                  text: "Run `npx phantom-secrets init` in your project root. Phantom auto-detects API keys, stores them in an OS credential store when available or in its ChaCha20-Poly1305 encrypted-file fallback, and rewrites the .env with phm_ tokens.",
+                  text: "Install the reviewed release from https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3. On macOS run `brew tap ashlrai/phantom`, `brew trust --formula ashlrai/phantom/phantom`, then the fully qualified install; on Linux or Windows, checksum-verify the exact v0.7.3 GitHub asset. Then run `phantom init` in the project root.",
                 },
                 {
                   "@type": "HowToStep",
                   name: "Register the MCP server with your editor",
-                  text: "Run `claude mcp add phantom-secrets-mcp -- npx -y phantom-secrets-mcp` for Claude Code, or paste the mcpServers JSON into Cursor / Windsurf MCP settings.",
+                  text: "Run `phantom setup --client claude`, `cursor`, `windsurf`, or `codex` so the installed v0.7.3 phantom-mcp binary is registered with the selected client.",
                 },
                 {
                   "@type": "HowToStep",

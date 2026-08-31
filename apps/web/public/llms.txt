@@ -10,9 +10,8 @@
 
 ## Install
 
-```
-npx phantom-secrets init
-```
+Reviewed release: `v0.7.3` at
+https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
 
 Homebrew (macOS, third-party tap):
 
@@ -21,6 +20,12 @@ brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
+
+Linux and Windows: select the exact `v0.7.3` archive for your architecture from
+the release, download its adjacent `.sha256` sidecar, verify it, and place both
+release executables on PATH. As verified 2026-08-31, npm and the MCP Registry
+publish older `0.6.0` packages and crates.io publishes `0.5.1`; unpinned npm,
+npx, and Cargo installs are not the reviewed `v0.7.3` path.
 
 ## Editor MCP setup
 
@@ -34,7 +39,9 @@ One command per AI client — Phantom writes the right config file for each:
 | Codex | `phantom setup --client codex` | `~/.codex/config.toml` |
 | Other | `phantom setup --client claude --print` | snippet to stdout |
 
-If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine. For global Claude Code registration: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`.
+Install both `v0.7.3` release binaries first. If `phantom-mcp` is not on PATH,
+the setup writer's npm fallback currently resolves the older published `0.6.0`
+package rather than the reviewed release.
 
 ## What an AI agent should do
 
@@ -146,7 +153,7 @@ Detection and runtime injection are different capabilities. Database connection 
 ## Pricing
 
 - Free: local vault, proxy, MCP, 1 cloud vault (≤10 secrets), Vercel/Railway sync
-- Pro (planned hosted pilot): proposed packaging for expanded cloud-vault and multi-device encrypted-sync capabilities; limits and pricing are TBD, and no self-serve checkout is commissioned
+- Pro (planned hosted pilot): proposed packaging for cloud-backup, cloud-key-portability evaluation, and team-vault capabilities; limits and pricing are TBD, and no self-serve checkout is commissioned
 - Enterprise evaluation: team-vault source and local audit tooling are present; SSO/SAML, centralized enterprise authorization, certification, and contractual SLA are not shipped by this repository. Service and support scope require a separate written agreement with Ashlr AI — `mason@ashlr.ai`.
 
 ## Documentation

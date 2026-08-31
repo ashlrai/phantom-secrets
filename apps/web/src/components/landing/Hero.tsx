@@ -44,7 +44,7 @@ export function Hero() {
         </p>
 
         <div className="mt-8 mx-auto w-full max-w-[460px]">
-          <CopyButton text="npx phantom-secrets init" />
+          <CopyButton text="brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom" />
         </div>
 
         <div className="mt-5 flex flex-wrap justify-center gap-2.5">

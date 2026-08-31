@@ -6,8 +6,9 @@ Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Install: `npx phantom-secrets init`; on Homebrew 6, tap `ashlrai/phantom`, trust `ashlrai/phantom/phantom`, then install the fully qualified formula.
-MCP: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
+Current reviewed release: `v0.7.3` at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
+Install: macOS uses the exact Homebrew tap/trust/fully-qualified formula commands below; Linux and Windows use the exact checksum-verified `v0.7.3` assets below.
+MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`.
 
 ## The Problem
 
@@ -18,7 +19,10 @@ AI coding tools with dotenv filesystem access can put API keys into the LLM cont
 - Training data
 - Code generation (AI writes keys into files)
 
-GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits leak at 2x the baseline rate. AI service key leaks increased 81% year-over-year.
+GitGuardian reports 28.65M new hardcoded secrets in public GitHub commits in
+2025, a 34% year-over-year increase.
+AI-service secrets separately increased 81% year over year; that category-specific figure does not apply to all secrets. Primary source:
+https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/
 
 ## How Phantom Works
 
@@ -39,7 +43,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom login` — Sign in to Phantom Cloud via GitHub OAuth (device code flow).
 - `phantom logout` — Sign out of Phantom Cloud.
 - `phantom cloud push` — Push encrypted vault to Phantom Cloud (end-to-end encrypted).
-- `phantom cloud pull` — Pull vault from Phantom Cloud to local machine.
+- `phantom cloud pull` — Restore a personal-vault snapshot on the machine that holds the original OS-keychain cloud encryption key; login without that key is insufficient.
 - `phantom cloud status` — Check cloud auth and sync status.
 - `phantom export --output <file>` — Export the vault to a new encrypted backup using a hidden terminal prompt. For bounded automation, use `--passphrase-file <private-file>`; plaintext export and argv passphrases are disabled.
 - `phantom import <file>` — Restore an encrypted backup using a hidden terminal prompt, or use `--passphrase-file <private-file>`. `--from doppler|infisical|dotenvx|1password|env --file <path>` imports from another format; add `--force` to overwrite existing entries.
@@ -72,29 +76,39 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 
 ## Installation
 
-### Claude Code MCP (recommended for value-blind secret workflows)
-```
-claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
-```
-Once configured, ask Claude to propose protection and review the affected files and confirmation-gated steps. Keep secret entry in the trusted terminal and deployment/provider authority separate.
-
-### npm
-```
-npx phantom-secrets init
-```
-Downloads the correct platform binary automatically. No Rust toolchain needed.
-
-### Homebrew (macOS)
+### Homebrew (macOS, reviewed v0.7.3)
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-### Cargo (from source)
+### Exact v0.7.3 assets
+Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz
+Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz
+Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip
+Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip
+Download the adjacent `.sha256` sidecar for the selected archive, verify it,
+then extract both release executables and place them on PATH.
+
+### Exact source build
 ```
-cargo install phantom-secrets
+git clone https://github.com/ashlrai/phantom-secrets.git
+cd phantom-secrets
+git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
+
+Registry status verified 2026-08-31: npm and the MCP Registry publish 0.6.0;
+crates.io publishes 0.5.1. Unpinned npm, npx, and `cargo install` commands are
+older distribution tracks, not the reviewed v0.7.3 release.
+
+### MCP setup
+
+Run `phantom setup --client claude|cursor|windsurf|codex` after installing both
+`v0.7.3` binaries. Ask the client to propose protection and review affected
+files and confirmation-gated steps. Keep secret entry in the trusted terminal
+and deployment/provider authority separate.
 
 ## MCP Server — Multi-IDE Support
 
@@ -104,19 +118,16 @@ Phantom includes a native MCP server (`phantom-secrets-mcp`) with 54 tools enfor
 
 **Claude Code:**
 ```
-claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
+phantom setup --client claude
 ```
 
-**Cursor:** Add in Settings > Features > MCP Servers (name: `phantom`, command: `npx phantom-secrets-mcp`)
+**Cursor:** `phantom setup --client cursor`
 
-**Windsurf:** Add to MCP configuration (name: `phantom`, command: `npx`, args: `["phantom-secrets-mcp"]`)
+**Windsurf:** `phantom setup --client windsurf`
 
 **GitHub Copilot:** Uses `.github/copilot-instructions.md` for project-level instructions. MCP via VS Code settings.
 
-**OpenAI Codex:** Add to MCP config:
-```json
-{"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}
-```
+**OpenAI Codex:** `phantom setup --client codex`
 
 ### MCP Tools
 
@@ -137,7 +148,7 @@ extrapolating this selected catalog.
 - `phantom_remove_secret` — Remove a secret from the vault. Params: name, confirm, approval_token.
 - `phantom_rotate` — Regenerate all phantom tokens in .env. Params: confirm, approval_token.
 
-**Cloud Sync:**
+**Personal Cloud Backup:**
 - `phantom_cloud_push` — Push a client-encrypted ChaCha20-Poly1305 vault payload to Phantom Cloud. Params: confirm, approval_token. The vault API receives ciphertext rather than decrypted secret values; client, account, endpoint, and deployment security remain in scope.
 - `phantom_cloud_pull` — Pull vault from Phantom Cloud. Params: force, confirm, approval_token. Downloads and decrypts vault, stores secrets locally.
 - `phantom_cloud_status` — Check cloud auth status, plan, and last sync version.
@@ -174,12 +185,13 @@ When an AI agent detects a `.env` file with real API keys (sk-*, ghp_*, etc.):
 4. Use `phantom_cloud_push` to back up the vault
 5. Never attempt to read real secret values — use `phantom_list_secrets` to see what's available
 
-## Cloud Sync Architecture
+## Personal Cloud Backup Architecture
 
 Phantom Cloud's implemented client encrypts vault payloads before upload:
-- **Encrypted vault payload**: The cloud vault API stores ciphertext rather than decrypted secret values; client, endpoint, and account security remain in the trust boundary.
-- **Client-side encryption**: ChaCha20-Poly1305 with Argon2id key derivation. Encryption key stored only in user's OS keychain.
-- **Optimistic concurrency**: Version numbers prevent conflicting pushes from multiple devices.
+- **Encrypted vault payload**: The cloud vault API stores ciphertext rather than decrypted secret values; client, endpoint, account, and OS-keychain security remain in the trust boundary.
+- **Client-side encryption**: ChaCha20-Poly1305 with Argon2id key derivation. A random passphrase is stored only in the user's OS keychain. Personal cloud-key export, transfer, and recovery are not shipped, so account login without that key cannot decrypt the snapshot.
+- **Optimistic concurrency**: Version numbers reject a push based on a stale local version. This does not imply cross-device decryption.
+- **Team-vault distinction**: A team vault separately wraps a shared key to each registered member's X25519 public key. It does not make personal cloud backups portable.
 - **Packaging copy**: Hosted Pro is a planned pilot. Eligibility, team and vault limits, and pricing are TBD; no self-serve checkout is commissioned. Verify the deployed entitlement and current written terms rather than treating source copy as activation evidence.
 - **Auth**: GitHub OAuth via device code flow (like GitHub CLI).
 
@@ -204,7 +216,7 @@ phantom sync --platform vercel --project prj_xxx
 phantom sync --platform railway --project xxx
 ```
 
-Pull secrets from platforms (for new machine onboarding):
+Pull secrets from deployment platforms (requires that provider's credentials):
 ```
 phantom pull --from vercel --project prj_xxx
 phantom pull --from railway --project xxx --environment production
@@ -240,9 +252,9 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 
 1. **Solo developer with Claude Code**: `phantom init` then `phantom exec -- claude` — code safely
 2. **Delegate the bounded setup**: Add the MCP server, ask Claude to propose protection, then review mutations and complete secret entry or provider authority in the trusted terminal
-3. **Multi-device sync**: `phantom login` then `phantom cloud push` on one machine, `phantom cloud pull` on another
+3. **Same-keychain-machine backup**: `phantom login`, `phantom cloud push`, then `phantom cloud pull` where the original cloud encryption key remains available
 4. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
-5. **New machine onboarding**: `phantom pull --from vercel --project prj_xxx`
+5. **Provider-backed machine setup**: `phantom pull --from vercel --project prj_xxx` (requires Vercel credentials)
 6. **Vault backup**: `phantom export --output backup.enc` then `phantom import backup.enc`; both use hidden terminal prompts. Automation may use the same private `--passphrase-file` for both commands.
 6b. **Migrate from Doppler/Infisical/dotenvx/1Password**: `phantom import --from doppler --file dump.json`
 6c. **Audit trail**: `PHANTOM_AUDIT=1` + `phantom audit show/tail/verify` for compliance and forensics

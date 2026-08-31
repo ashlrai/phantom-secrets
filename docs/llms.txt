@@ -4,9 +4,20 @@
 
 ## Install
 
+Reviewed release: `v0.7.3` at
+https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
+
+macOS:
 ```
-npx phantom-secrets init
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
 ```
+
+Linux and Windows: select the exact `v0.7.3` archive for your architecture from
+the release, download its adjacent `.sha256` sidecar, verify it, and put both
+release executables on PATH. Registry status verified 2026-08-31: npm and the
+MCP Registry publish older `0.6.0` packages; crates.io publishes `0.5.1`.
 
 ## MCP Server
 
@@ -17,7 +28,9 @@ Setup (recommended, one command per AI client):
 - Codex: `phantom setup --client codex` (writes ~/.codex/config.toml)
 - Generic: `phantom setup --client claude --print` (snippet to stdout)
 
-Falls back to `npx -y phantom-secrets-mcp` if `phantom-mcp` is not on PATH. Global registration alternative: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`.
+Install both `v0.7.3` release binaries first. If `phantom-mcp` is not on PATH,
+the setup writer's npm fallback currently resolves the older published `0.6.0`
+package rather than the reviewed release.
 
 The runtime `tools/list` response is the canonical MCP parameter schema.
 The vault, package, cloud, and team mutation tools selected below require
@@ -50,7 +63,7 @@ https://phm.dev/dashboard: local/pilot access state and available cloud-backed p
 - Response scrubbing — redacts configured vault values and recognized key formats from supported response paths before returning them to the caller
 - Public key awareness — detects and skips publishable/public keys that don't need protection
 - OS keychain storage — macOS Keychain, Linux Secret Service, Windows Credential Manager, encrypted file fallback. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
-- Cloud sync — client-encrypted vault payload sync; deployed service and account configuration remain separate gates
+- Personal cloud backup — client-encrypted restore on the same keychain machine; cloud-key transfer and recovery are not shipped, and deployed service and account configuration remain separate gates
 - Multi-project scanner — `phantom init --all <DIR>` processes eligible repos found within five levels, stops below the first matching repo, and supports `--dry-run` plus `--jobs N`
 - Multi-IDE setup — `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool
 - Tamper-evident audit log — `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log` (secret name only). HMAC-SHA256 chain; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for access.
