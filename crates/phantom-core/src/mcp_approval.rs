@@ -18,7 +18,7 @@
 //!    terminal.  The CLI verifies the nonce exists, has not expired, and computes
 //!    an approval token = HMAC-SHA256(nonce_hex || ":" || arg_hash_hex, approval_key).
 //!    The approval event is written to the audit log.  The pending record is
-//!    atomically marked approved (TTL removed).
+//!    atomically marked approved with a fresh, short use window.
 //!
 //! 3. **Enforce** — The MCP tool handler requires
 //!    `approval_token: "<nonce_hex>:<token_hex>"` in the request. The server
@@ -34,13 +34,15 @@
 //! The approval key is machine-local and is generated on first use.
 
 use hmac::{Hmac, Mac};
+use lazy_static::lazy_static;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -49,6 +51,18 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Pending approvals expire after 5 minutes.
 pub const APPROVAL_TTL_SECS: u64 = 300;
+
+/// Approved tokens must be consumed within 5 minutes of terminal approval.
+pub const APPROVED_USE_TTL_SECS: u64 = 300;
+
+const APPROVAL_LOCK_FILE: &str = "mcp-approvals.lock";
+
+lazy_static! {
+    /// `flock`/Windows file locks provide the cross-process boundary. This
+    /// mutex also makes ownership explicit between threads in this process,
+    /// independent of platform-specific same-process file-lock semantics.
+    static ref APPROVAL_PROCESS_LOCK: Mutex<()> = Mutex::new(());
+}
 
 // ── Paths ──────────────────────────────────────────────────────────────────────
 
@@ -87,6 +101,71 @@ pub fn approval_key_path() -> std::io::Result<PathBuf> {
     Ok(home_dir()?.join(".phantom").join("mcp-approval-key"))
 }
 
+fn approval_home() -> std::io::Result<PathBuf> {
+    Ok(home_dir()?.join(".phantom"))
+}
+
+fn ensure_private_approval_home(path: &Path) -> std::io::Result<()> {
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "MCP approval storage directory is not a real directory",
+            ));
+        }
+    }
+    std::fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn require_regular_file_if_present(path: &Path, label: &str) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{label} is not a regular file"),
+            ))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn acquire_storage_lock() -> std::io::Result<ApprovalStorageLock> {
+    let process_guard = APPROVAL_PROCESS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = approval_home()?;
+    ensure_private_approval_home(&home)?;
+    let lock_path = home.join(APPROVAL_LOCK_FILE);
+    require_regular_file_if_present(&lock_path, "MCP approval lock")?;
+
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(lock_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    fs2::FileExt::lock_exclusive(&file)?;
+    Ok(ApprovalStorageLock {
+        file,
+        _process_guard: process_guard,
+    })
+}
+
 // ── Data types ─────────────────────────────────────────────────────────────────
 
 /// A pending (or approved) MCP approval record.
@@ -102,8 +181,8 @@ pub struct ApprovalRecord {
     pub project_id: String,
     /// Unix timestamp when this record was created.
     pub created_at: u64,
-    /// Unix timestamp when this record expires (created_at + TTL).
-    /// Absent once approved — approved records have no expiry.
+    /// Unix timestamp when this record expires. Pending records use the
+    /// creation TTL; approved records get a fresh, bounded use window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
     /// Whether the nonce has been approved by the user.
@@ -115,16 +194,25 @@ pub struct ApprovalRecord {
 }
 
 impl ApprovalRecord {
-    /// True if the record has expired (only relevant for unapproved records).
+    /// True if the record is no longer usable. Missing expiry metadata fails
+    /// closed, including legacy approved records that previously lived forever.
     pub fn is_expired(&self) -> bool {
-        if self.approved {
-            return false;
-        }
-        let now = now_unix();
-        match self.expires_at {
-            Some(exp) => now > exp,
-            None => false,
-        }
+        self.is_expired_at(now_unix())
+    }
+
+    fn is_expired_at(&self, now: u64) -> bool {
+        self.expires_at.is_none_or(|expires_at| now >= expires_at)
+    }
+}
+
+struct ApprovalStorageLock {
+    file: File,
+    _process_guard: MutexGuard<'static, ()>,
+}
+
+impl Drop for ApprovalStorageLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
     }
 }
 
@@ -132,13 +220,15 @@ impl ApprovalRecord {
 
 /// Load the approval HMAC key, generating + persisting it on first call.
 pub fn load_or_create_approval_key() -> std::io::Result<Vec<u8>> {
+    let _lock = acquire_storage_lock()?;
+    load_or_create_approval_key_locked()
+}
+
+fn load_or_create_approval_key_locked() -> std::io::Result<Vec<u8>> {
     let key_path = approval_key_path()?;
+    require_regular_file_if_present(&key_path, "MCP approval key")?;
     if key_path.exists() {
         return read_key(&key_path);
-    }
-    // Ensure parent dir exists.
-    if let Some(parent) = key_path.parent() {
-        std::fs::create_dir_all(parent)?;
     }
     let key = generate_32_bytes();
     write_key_0600(&key_path, &key)?;
@@ -157,27 +247,7 @@ fn read_key(path: &Path) -> std::io::Result<Vec<u8>> {
 
 fn write_key_0600(path: &Path, key: &[u8]) -> std::io::Result<()> {
     let hex_key = hex::encode(key);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        f.write_all(hex_key.as_bytes())?;
-    }
-    #[cfg(not(unix))]
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
-        f.write_all(hex_key.as_bytes())?;
-    }
-    Ok(())
+    crate::fs::atomic_write(path, hex_key.as_bytes())
 }
 
 // ── Canonical arg-hash ─────────────────────────────────────────────────────────
@@ -213,8 +283,18 @@ pub fn generate_pending_approval(
     params_json: &str,
     project_id: &str,
 ) -> std::io::Result<String> {
-    let key = load_or_create_approval_key()?;
-    let nonce = hex::encode(generate_32_bytes());
+    let _lock = acquire_storage_lock()?;
+    let key = load_or_create_approval_key_locked()?;
+    let path = approvals_path()?;
+    let mut records = load_records_if_present(&path)?;
+    records.retain(|record| !record.is_expired());
+
+    let nonce = loop {
+        let candidate = hex::encode(generate_32_bytes());
+        if records.iter().all(|record| record.nonce != candidate) {
+            break candidate;
+        }
+    };
     let arg_hash = compute_arg_hash(params_json, &key);
     let now = now_unix();
 
@@ -229,7 +309,8 @@ pub fn generate_pending_approval(
         approved_at: None,
     };
 
-    append_record(&record)?;
+    records.push(record);
+    rewrite_records(&path, &records)?;
     Ok(nonce)
 }
 
@@ -262,7 +343,8 @@ pub struct ApprovalOutcome {
 /// Verifies the nonce exists, has not expired, marks it approved, logs the
 /// event, and returns the approval token.
 pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
-    let key = load_or_create_approval_key()?;
+    let _lock = acquire_storage_lock()?;
+    let key = load_or_create_approval_key_locked()?;
     let path = approvals_path()?;
 
     if !path.exists() {
@@ -307,7 +389,7 @@ pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
     let now = now_unix();
     records[idx].approved = true;
     records[idx].approved_at = Some(now);
-    records[idx].expires_at = None; // approved records have no expiry
+    records[idx].expires_at = Some(now.saturating_add(APPROVED_USE_TTL_SECS));
 
     let tool_name = records[idx].tool_name.clone();
     let arg_hash = records[idx].arg_hash.clone();
@@ -351,8 +433,10 @@ pub fn validate_and_consume_approval(
     params_json: &str,
     project_id: &str,
 ) -> Result<(), String> {
-    let key =
-        load_or_create_approval_key().map_err(|e| format!("Failed to load approval key: {e}"))?;
+    let _lock =
+        acquire_storage_lock().map_err(|e| format!("Failed to lock approval storage: {e}"))?;
+    let key = load_or_create_approval_key_locked()
+        .map_err(|e| format!("Failed to load approval key: {e}"))?;
 
     let path = approvals_path().map_err(|e| format!("Failed to resolve approvals path: {e}"))?;
 
@@ -399,6 +483,12 @@ pub fn validate_and_consume_approval(
             ));
         }
 
+        if rec.is_expired() {
+            return Err(format!(
+                "Approval token for nonce '{nonce_hex}' has expired. Call the tool again to generate a fresh nonce."
+            ));
+        }
+
         // Re-compute arg-hash from current params to detect param-substitution.
         let expected_arg_hash = compute_arg_hash(params_json, &key);
         if expected_arg_hash != rec.arg_hash {
@@ -441,57 +531,55 @@ pub fn validate_and_consume_approval(
 
 // ── Storage helpers ────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn append_record(record: &ApprovalRecord) -> std::io::Result<()> {
+    let _lock = acquire_storage_lock()?;
     let path = approvals_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut line = serde_json::to_vec(record)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    line.push(b'\n');
+    let mut records = load_records_if_present(&path)?;
+    records.push(record.clone());
+    rewrite_records(&path, &records)
+}
 
-    let mut f = OpenOptions::new().append(true).create(true).open(&path)?;
-    f.write_all(&line)
+fn load_records_if_present(path: &Path) -> std::io::Result<Vec<ApprovalRecord>> {
+    require_regular_file_if_present(path, "MCP approval records")?;
+    if path.exists() {
+        load_all_records(path)
+    } else {
+        Ok(Vec::new())
+    }
 }
 
 fn load_all_records(path: &Path) -> std::io::Result<Vec<ApprovalRecord>> {
+    require_regular_file_if_present(path, "MCP approval records")?;
     let f = File::open(path)?;
     let reader = BufReader::new(f);
     let mut records = Vec::new();
-    for line in reader.lines() {
+    for (index, line) in reader.lines().enumerate() {
         let line = line?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        if let Ok(rec) = serde_json::from_str::<ApprovalRecord>(trimmed) {
-            records.push(rec);
-        }
+        let record = serde_json::from_str::<ApprovalRecord>(trimmed).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid MCP approval record on line {}: {error}", index + 1),
+            )
+        })?;
+        records.push(record);
     }
     Ok(records)
 }
 
 fn rewrite_records(path: &Path, records: &[ApprovalRecord]) -> std::io::Result<()> {
-    // Write to a temp file in the same directory, then atomic rename.
-    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let tmp_path = dir.join("mcp-approvals.jsonl.tmp");
-
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?;
-        for rec in records {
-            let mut line = serde_json::to_vec(rec)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            line.push(b'\n');
-            f.write_all(&line)?;
-        }
-        f.flush()?;
+    require_regular_file_if_present(path, "MCP approval records")?;
+    let mut contents = Vec::new();
+    for record in records {
+        serde_json::to_writer(&mut contents, record)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        contents.push(b'\n');
     }
-
-    std::fs::rename(&tmp_path, path)
+    crate::fs::atomic_write(path, &contents)
 }
 
 // ── Crypto helpers ─────────────────────────────────────────────────────────────
@@ -531,6 +619,7 @@ fn now_unix() -> u64 {
 
 /// Return all non-expired pending approval records (for status display).
 pub fn list_pending_approvals() -> std::io::Result<Vec<ApprovalRecord>> {
+    let _lock = acquire_storage_lock()?;
     let path = approvals_path()?;
     if !path.exists() {
         return Ok(vec![]);
@@ -544,6 +633,7 @@ pub fn list_pending_approvals() -> std::io::Result<Vec<ApprovalRecord>> {
 
 /// Prune expired and consumed records from the approvals file.
 pub fn prune_stale_approvals() -> std::io::Result<usize> {
+    let _lock = acquire_storage_lock()?;
     let path = approvals_path()?;
     if !path.exists() {
         return Ok(0);
@@ -625,6 +715,38 @@ mod tests {
     }
 
     #[test]
+    fn approved_token_gets_fresh_bounded_use_window_and_expires() {
+        with_temp_home(|| {
+            let params = r#"{"confirm":true}"#;
+            let nonce = generate_pending_approval("phantom_rotate", params, "proj-expiry").unwrap();
+            let outcome = approve_nonce(&nonce).unwrap();
+            let path = approvals_path().unwrap();
+            let mut records = load_all_records(&path).unwrap();
+            let record = records
+                .iter_mut()
+                .find(|record| record.nonce == nonce)
+                .expect("approved record exists");
+            let approved_at = record.approved_at.expect("approval timestamp");
+            assert_eq!(
+                record.expires_at,
+                Some(approved_at.saturating_add(APPROVED_USE_TTL_SECS))
+            );
+
+            record.expires_at = Some(1);
+            rewrite_records(&path, &records).unwrap();
+            let error = validate_and_consume_approval(
+                &nonce,
+                &outcome.approval_token,
+                "phantom_rotate",
+                params,
+                "proj-expiry",
+            )
+            .unwrap_err();
+            assert!(error.contains("expired"), "unexpected error: {error}");
+        });
+    }
+
+    #[test]
     fn test_ttl_expiration() {
         // Build a record that expired 1 second ago.
         let expired = ApprovalRecord {
@@ -647,13 +769,27 @@ mod tests {
         };
         assert!(!fresh.is_expired());
 
-        // An approved record is never expired.
-        let approved = ApprovalRecord {
+        // Approved records remain bounded by their use-window expiry.
+        let approved_fresh = ApprovalRecord {
             approved: true,
-            expires_at: None,
+            expires_at: Some(future_exp),
             ..expired.clone()
         };
-        assert!(!approved.is_expired());
+        assert!(!approved_fresh.is_expired());
+
+        let approved_expired = ApprovalRecord {
+            approved: true,
+            expires_at: Some(1),
+            ..expired.clone()
+        };
+        assert!(approved_expired.is_expired());
+
+        let legacy_unbounded = ApprovalRecord {
+            approved: true,
+            expires_at: None,
+            ..expired
+        };
+        assert!(legacy_unbounded.is_expired());
     }
 
     #[test]
@@ -778,6 +914,50 @@ mod tests {
                 "proj-replay",
             );
             assert!(result.is_err(), "replay should be rejected");
+        });
+    }
+
+    #[test]
+    fn concurrent_identical_consumption_allows_exactly_one_success() {
+        with_temp_home(|| {
+            use std::sync::{Arc, Barrier};
+
+            const CALLERS: usize = 12;
+            let params = r#"{"name":"KEY","confirm":true}"#;
+            let project = "proj-concurrent-replay";
+            let tool = "phantom_remove_secret";
+            let nonce = generate_pending_approval(tool, params, project).unwrap();
+            let outcome = approve_nonce(&nonce).unwrap();
+            let barrier = Arc::new(Barrier::new(CALLERS));
+
+            let handles = (0..CALLERS)
+                .map(|_| {
+                    let barrier = Arc::clone(&barrier);
+                    let nonce = nonce.clone();
+                    let token = outcome.approval_token.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        validate_and_consume_approval(&nonce, &token, tool, params, project)
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let results = handles
+                .into_iter()
+                .map(|handle| handle.join().expect("consumer thread panicked"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                results.iter().filter(|result| result.is_ok()).count(),
+                1,
+                "exactly one concurrent caller may consume an approval: {results:?}"
+            );
+            assert_eq!(
+                results.iter().filter(|result| result.is_err()).count(),
+                CALLERS - 1
+            );
+            assert!(load_all_records(&approvals_path().unwrap())
+                .unwrap()
+                .is_empty());
         });
     }
 
