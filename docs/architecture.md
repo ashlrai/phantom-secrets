@@ -248,7 +248,7 @@ Other non-negotiable boundaries are:
 | Resource | Owner today | Lifecycle rule |
 |---|---|---|
 | Real secret value | `VaultBackend` and proxy interceptor | Resolve only for a scoped operation; do not serialize into agent-facing results. |
-| Phantom token | Project dotenv/config | Worthless placeholder; rotation invalidates the old mapping. |
+| Project Phantom token | Project dotenv/config | Random placeholder, not a provider credential. It persists until rotation and can be mapped only by a Phantom process with vault access; treat exposure as a reason to rotate. |
 | Proxy session bearer | CLI/proxy session | Fresh per run, loopback-scoped, invalid after shutdown; exposed to the child environment. |
 | Workspace request | Authenticated machine-local request store | `Pending -> Claimed -> Applied`, or explicit `Expired`, `Failed`, or `RolledBack`; claimed work may require recovery. |
 | Setup recovery journal | Workspace transaction engine | Authenticate before recovery; reconcile or roll back before accepting new conclusions. |

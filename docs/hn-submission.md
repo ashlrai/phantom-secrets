@@ -14,7 +14,11 @@ The core architecture: `phantom init` replaces managed real secrets in your .env
 
 When you run `phantom exec -- claude`, a local reverse proxy starts on 127.0.0.1. It rewrites `OPENAI_BASE_URL` to point at localhost. Your code (or the AI's code) sends requests there with phantom tokens; the proxy swaps them for real credentials and forwards over TLS to the actual API. Not a MITM proxy — no CA certs, no TLS interception. Standard reverse proxy pattern.
 
-Allowlist model: secrets only go to configured endpoints. Localhost-bound. Session-scoped — proxy dies when your session ends.
+Reviewed-route model: the agentic proxy accepts Phantom's exact built-in API
+destinations and binds to loopback. Each `phantom exec` run has a fresh proxy
+bearer and fresh child-process tokens; the persistent project tokens remain in
+dotenv until rotation. Protected database connection strings currently fail
+closed rather than being injected into the child process.
 
 Modular Rust workspace. MIT licensed. No SaaS dependency for local protection.
 

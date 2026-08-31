@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://phm.dev/og-image.png" alt="Phantom — Stop AI agents from leaking your API keys" width="720" />
+<img src="https://phm.dev/og-image.png" alt="Phantom — Delegate supported API work to AI" width="720" />
 
 <h1>Phantom</h1>
 
@@ -128,7 +128,7 @@ Notes:
 1. `phantom init` reads `.env`, stores real secrets in the native OS credential store or encrypted-file fallback, and rewrites `.env` with `phm_` tokens
 2. `phantom exec -- claude` starts a local reverse proxy, sets SDK-compatible service base URLs such as `OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/`, exposes `PHANTOM_PROXY_TOKEN` to the child process, and launches the command
 3. API calls hit the proxy, which authenticates the local session, removes the local auth token before forwarding, replaces phantom tokens with real secrets, and forwards over TLS
-4. When the session ends, the proxy shuts down and the proxy session token is invalid. Phantom tokens remain worthless placeholders outside an authenticated proxy session.
+4. When the session ends, the proxy shuts down and its bearer is invalid. `phantom exec` also replaces project tokens with fresh child-process tokens for that run. Project `phm_` values persist until rotation; they are not provider credentials, but anyone who also controls an authenticated active Phantom proxy may be able to resolve a mapped token.
 
 Phantom does not grant AI tools permission to read `.env` or other dotenv files. `phantom setup` removes legacy Phantom-managed dotenv read grants and preserves deny rules; agents use value-blind MCP inventory instead.
 
@@ -190,11 +190,16 @@ phantom setup --client claude --print   # snippet to stdout for any other client
 
 If `phantom-mcp` isn't on PATH, Phantom falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine. Restart the AI tool after running `phantom setup` so it picks up the new config.
 
-Phantom works with any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io).
+Phantom's stdio MCP server can be configured in MCP clients that support local
+command servers. The setup writer currently has reviewed presets for Claude
+Code, Cursor, Windsurf, and Codex; other clients require their own compatible
+configuration.
 
 ## Cloud Sync + Dashboard
 
-Sync vaults across machines with end-to-end encryption. The server never sees plaintext.
+Sync vaults across machines with client-side encryption. Phantom Cloud receives
+the encrypted vault payload rather than the decrypted secret values; endpoint,
+client, and account security remain part of the trust boundary.
 
 ```bash
 $ phantom login
@@ -215,7 +220,11 @@ Cloud sync uses ChaCha20-Poly1305 with a client-side passphrase derived via Argo
 
 ## Team vaults (Pro)
 
-Multiple developers can share a single E2E-encrypted vault per project. Server only ever stores ciphertext + per-member ciphertext shares.
+The repository includes Pro-gated, fixed-membership team-vault workflows. The
+service path stores ciphertext plus per-member encrypted key shares. Team roles
+gate invitation management, but all members can read and write the shared vault;
+member removal and atomic offboarding rotation are not shipped. Treat this as a
+pilot capability until the hosted service and account entitlement are commissioned.
 
 ```bash
 $ phantom team create "engineering"
@@ -244,7 +253,7 @@ Team memberships and member lists are visible in the read-only dashboard at [phm
 
 | Command | Description |
 |---------|-------------|
-| `phantom init` | Import `.env` secrets into vault, rewrite with phantom tokens. `--all <DIR>` protects every git repo with a `.env` under `<DIR>` in one go (with `--dry-run` to preview, `--jobs N` / `-j N` to control parallelism) |
+| `phantom init` | Import `.env` secrets into vault and rewrite with phantom tokens. `--all <DIR>` processes eligible repositories found by the bounded five-level scan; discovery stops below the first matching repository. Use `--dry-run` to inspect the exact set and `--jobs N` / `-j N` to control parallelism. |
 | `phantom exec -- <cmd>` | Start an authenticated proxy and run a command with secret injection |
 | `phantom start` / `stop` | Manage proxy lifecycle (standalone/daemon mode) |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
@@ -346,21 +355,21 @@ the rotation window, with per-provider rate limits and a shared audit
 - **Full SSE/streaming support** -- Response streaming preserved end-to-end for OpenAI, Anthropic, and other streaming APIs
 - **Smart detection** -- Heuristic engine distinguishes secrets (`*_KEY`, `*_TOKEN`, `sk-*`, `ghp_*`) from config (`NODE_ENV`, `PORT`)
 - **Platform sync** -- Push/pull secrets to Vercel and Railway
-- **Pre-commit hook** -- Blocks commits containing unprotected secrets
+- **Pre-commit hook** -- Runs `phantom check --staged` when Git invokes the hook; it checks staged dotenv content plus a bounded set of hardcoded-key prefixes. Hooks can be bypassed or skipped, so CI and a broader secret scanner remain necessary.
 - **MCP server** -- core vault, diagnostics, cloud, team, audit, rotation, validation, expiry, and compliance tools for Claude Code, Cursor, Windsurf, and Codex to manage secrets without seeing values
-- **Cloud sync** -- E2E encrypted zero-knowledge vault sync across machines
+- **Cloud sync** -- client-encrypted vault payload sync across machines; deployed-service and account configuration remain separate operational gates
 - **Export/import** -- Encrypted backup and restore through a hidden terminal prompt or private bounded passphrase file; plaintext export and argv passphrases are disabled; import from Doppler, Infisical, dotenvx, 1Password, or plain `.env` via `--from`
 - **Tamper-evident audit log** -- `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log`. Each entry is chained with HMAC-SHA256; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for log access.
 - **Response scrubbing** -- Scrubs configured secret values from supported API response paths before returning data to the caller
-- **Script wrapping** -- `phantom wrap` patches package.json so every npm script runs through the proxy
+- **Script wrapping** -- `phantom wrap` wraps selected runtime/build scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) and deliberately leaves test, lint, type, and format scripts alone
 - **Watch mode** -- `phantom watch` monitors .env files for new unprotected secrets
-- **Multi-project scanner** -- `phantom init --all <DIR>` protects every git repo with a `.env` under `<DIR>` in one command (with `--dry-run`); `--jobs N` controls parallelism
+- **Multi-project scanner** -- `phantom init --all <DIR>` processes eligible repositories found within a five-level bounded scan and stops below the first matching repository; use `--dry-run` to verify the exact set and `--jobs N` to control parallelism
 - **Multi-IDE setup** -- `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool, or `--print` for a generic snippet
 - **Agent readiness** -- `phantom agent doctor` and `phantom agent report --json` answer whether a repo is safe for Claude Code, Codex, Cursor, Windsurf, and other agents
 - **Enriched diagnostics** -- `phantom doctor` reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client
 - **Secret explainer** -- `phantom why <KEY>` explains detection heuristics
 - **Cross-project copy** -- `phantom copy` shares secrets between project vaults
-- **Team vaults** -- Shared vaults with role-based access control
+- **Team vaults** -- Fixed-membership encrypted sharing; owner/admin roles gate invitations, while current vault access is member-wide and offboarding rotation is not shipped
 - **Fail-closed service routing** -- agentic proxy sessions accept Phantom's exact built-in OpenAI, Anthropic, Stripe, Supabase, and other reviewed routes; repository-defined destinations are rejected pending trusted-terminal approval support
 - **Threat model** -- See [THREAT_MODEL.md](THREAT_MODEL.md) for assets, actors, mitigations, and known gaps
 
@@ -376,6 +385,16 @@ Or use directly with npx:
 
 ```bash
 $ npx phantom-secrets init
+```
+
+### Homebrew (macOS, current v0.7.3 release)
+
+Homebrew 6 requires explicit formula trust for third-party taps:
+
+```bash
+$ brew tap ashlrai/phantom
+$ brew trust --formula ashlrai/phantom/phantom
+$ brew install ashlrai/phantom/phantom
 ```
 
 ### Claude Code MCP
@@ -420,9 +439,9 @@ CI runs locked, all-target workspace builds and tests on macOS, Linux, and Windo
 
 - **Managed dotenv replacement** -- after successful initialization, Phantom-managed dotenv values are tokens; unmanaged files, backups, logs, and external tools remain outside this claim
 - **ChaCha20-Poly1305** encryption for file vault and cloud sync, **Argon2id** key derivation
-- **Zero-knowledge cloud** -- server stores only ciphertext; encryption key never leaves the client
+- **Client-encrypted cloud vaults** -- the cloud vault API stores ciphertext; decryption happens in the authenticated client. This claim does not cover plaintext sent intentionally to deployment providers during `phantom sync`.
 - **256-bit CSPRNG tokens** -- `phm_` prefix distinguishes Phantom tokens from supported real-key formats; random collisions are cryptographically negligible, not mathematically impossible
-- **Proxy binds 127.0.0.1 only** -- never exposed to the network
+- **Proxy binds 127.0.0.1 only** -- not bound to a non-loopback interface; same-user local-process and bearer theft remain in the threat model
 - **Secrets zeroized from memory** after injection via the `zeroize` crate
 - **Allowlist model** -- proxy only injects secrets for explicitly configured service patterns
 
@@ -430,14 +449,19 @@ See [SECURITY.md](SECURITY.md) for the responsible disclosure policy and [THREAT
 
 ## Pricing
 
-| | Free | Pro | Enterprise |
+| Packaging direction | Free | Pro (planned hosted plan) | Enterprise (planned contract) |
 |---|---|---|---|
 | Local vaults | Unlimited | Unlimited | Unlimited |
 | Cloud vaults | 1 | Unlimited | Unlimited |
 | MCP server | Yes | Yes | Yes |
 | Cloud sync | Yes | Yes | Yes |
-| Team features | -- | Yes | Yes |
-| Price | $0 | $8/mo | Contact us |
+| Team features | -- | Fixed-membership pilot | Planned enterprise controls |
+| Price | $0 | $8/mo (planned) | Written agreement |
+
+This table is packaging direction, not evidence that a hosted entitlement,
+enterprise control, support term, or price is active for a particular account.
+Verify the deployed service and written plan terms; see the
+[enterprise adoption guide](docs/enterprise-adoption.md) for shipped-versus-planned gates.
 
 ## Links
 

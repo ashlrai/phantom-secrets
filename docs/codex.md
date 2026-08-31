@@ -4,7 +4,12 @@
 
 OpenAI Codex runs in a sandboxed environment and executes tasks autonomously. It reads files in your repository — including `.env` — to understand the project. Real API keys in `.env` would be visible to the agent and present in its working context throughout the task.
 
-After `phantom init`, your `.env` contains only phantom tokens (`phm_...`). Codex reads the tokens, not the real values. When code under test makes API calls, the local Phantom proxy replaces tokens with real credentials before requests leave your machine — Codex never needs the real values to write, test, or integrate code that uses them.
+After `phantom init`, managed dotenv secrets are replaced by `phm_` tokens, so
+Codex can use value-blind metadata instead of real values. For supported HTTP
+API routes in a process launched by `phantom exec`, the authenticated local
+proxy replaces a fresh session token before the request reaches the configured
+provider. Connection strings and unsupported protocols fail closed or require
+a separately approved workflow; unmanaged files remain outside this boundary.
 
 The MCP integration registers Phantom's release-schema-verified catalog in
 Codex. The current release contract enforces 54 unique tools; runtime
@@ -62,7 +67,9 @@ phantom agent report --json
 phantom exec -- codex "add Stripe checkout to checkout.ts"
 ```
 
-This starts the Phantom proxy, sets `*_BASE_URL` environment variables, then hands off to Codex. Any API calls Codex makes while testing or executing code flow through the proxy.
+This starts the Phantom proxy, sets the implemented `*_BASE_URL` overrides,
+then hands off to Codex. Calls made by SDKs that honor those overrides use the
+proxy; arbitrary network clients and unsupported protocols do not.
 
 For interactive sessions or repeated Codex runs, start the proxy once and leave it running:
 

@@ -8,15 +8,23 @@ phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code with real secrets injected by proxy
 ```
 
-That's it. Your AI tool never sees a real key again.
+That's the local setup. Keep agent dotenv reads denied and launch supported API
+work through `phantom exec`; Phantom reduces credential exposure, but it does
+not control unmanaged files, other processes, provider logs, or every tool an
+agent may invoke.
 
 ---
 
 ## What Phantom actually does
 
-Phantom replaces real API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in your OS keychain. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`, service SDKs are redirected through `*_BASE_URL` environment variables, and the proxy session is authenticated with a fresh `PHANTOM_PROXY_TOKEN`. CLI-generated SDK URLs include the token as a local `/_phantom/<token>/` path segment so unmodified SDKs work; header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token` instead. The proxy removes its local auth token before forwarding, swaps phantom tokens for real credentials in request headers and body, then forwards over TLS to the actual API endpoint. Application and test processes load the placeholders; agents use value-blind MCP metadata and do not need dotenv read access.
+Phantom replaces detected API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in the available OS credential store or encrypted-file fallback. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`, supported service SDKs are redirected through implemented `*_BASE_URL` variables, and the proxy session is authenticated with a fresh `PHANTOM_PROXY_TOKEN`. CLI-generated SDK URLs include the token as a local `/_phantom/<token>/` path segment; header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token` instead. The proxy removes its local auth token before forwarding, replaces session tokens only in allowed headers and body fields, then forwards over TLS to the configured API endpoint. Agents can use value-blind MCP metadata without dotenv read access.
 
-For `text/*` and `application/x-www-form-urlencoded` request bodies the proxy replaces tokens frame-by-frame without buffering the full payload (streaming token replacement). JSON bodies use a buffered path with field-level scoping to avoid substituting tokens that appear in non-secret fields such as `prompt` or `messages`. Full SSE/streaming responses (OpenAI, Anthropic) are preserved end-to-end.
+All request bodies are accepted into a bounded buffer before the upstream call,
+so an oversized body fails with HTTP 413 before any partial mutation reaches a
+provider. Text/form bodies retain whole-body token replacement; JSON bodies use
+field-level scoping so values in fields such as `prompt` or `messages` are not
+substituted. SSE/streaming responses remain streamed through content-aware
+response scrubbing.
 
 For a detailed breakdown of assets protected, threat actors, mitigations, and known gaps, see [THREAT_MODEL.md](../THREAT_MODEL.md).
 
@@ -43,7 +51,8 @@ phantom init
 
 ```bash
 brew tap ashlrai/phantom
-brew install phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
 ```
 
 ### Direct binary download
@@ -93,6 +102,18 @@ Non-secret values (`NODE_ENV`, `PORT`) are left untouched. If your `.env` is at 
 phantom init --from .env.local
 ```
 
+`phantom init` does not create a plaintext project backup. Keep an independent
+provider or password-manager recovery source, or use Phantom's encrypted
+export below. `phantom unwrap` is unrelated to secret recovery: it only restores
+`package.json` scripts previously changed by `phantom wrap`.
+
+Connection strings such as `DATABASE_URL` are detected, vaulted, and replaced
+in dotenv files, but they are **not proxied**. `phantom exec` fails closed when a
+protected connection string is present because injecting the real URL into the
+child environment would put the credential back inside the agent boundary. A
+protocol-aware database broker is planned; until then, split API-key work from
+database work or use a separately approved trusted-terminal workflow.
+
 ---
 
 ## Core commands
@@ -106,15 +127,20 @@ phantom init
 phantom init --from .env.local
 ```
 
-**Multi-project — protect every repo in a workspace at once:**
+**Multi-project — process eligible repos found by the bounded workspace scan:**
 
 ```bash
 phantom init --all ~/code --dry-run    # preview which repos would be touched
-phantom init --all ~/code              # run init in every git repo with a .env
+phantom init --all ~/code              # process the exact repos shown by dry-run
 phantom init --all ~/code --jobs 8     # run up to 8 repos concurrently (default: 4)
 ```
 
-`--all` walks the directory, finds every git repo with one of `.env`, `.env.local`, `.env.development`, `.env.production`, etc., and runs init in each. Skips repos that already have `.phantom.toml`, plus `node_modules`, `target`, `dist`, `build`, and dot-dirs. A progress bar shows live status. The parallelism default can also be set via the `PHANTOM_INIT_JOBS` environment variable.
+`--all` scans at most five directory levels for repositories containing a
+supported dotenv filename and stops descending below the first matching
+repository. It skips already-protected repositories, dot-directories, and
+known dependency/build directories. Always review `--dry-run`; deeper or
+nested repositories may require their own invocation. A progress bar shows
+live status, and `PHANTOM_INIT_JOBS` can set the default parallelism.
 
 ### `phantom add` / `phantom remove`
 
@@ -133,7 +159,10 @@ phantom remove STRIPE_SECRET_KEY
 
 ### `phantom rotate`
 
-Regenerates all phantom tokens without changing the real secrets. Use this if you suspect a token mapping was exposed (tokens are worthless without the proxy, but rotation is a clean reset).
+Regenerates all project phantom tokens without changing the real secrets. A
+`phm_` value is not accepted by the upstream provider, but an exposed mapping
+should still be rotated because an authenticated active Phantom proxy is the
+component that can resolve it.
 
 ```bash
 phantom rotate
@@ -141,7 +170,9 @@ phantom rotate
 
 ### `phantom cloud push` / `phantom cloud pull`
 
-Sync your vault across machines. End-to-end encrypted — the server never sees plaintext.
+Sync your vault across machines using client-side encryption. The cloud vault
+API receives ciphertext rather than decrypted secret values; client, endpoint,
+and account security remain part of the trust boundary.
 
 ```bash
 phantom login              # GitHub OAuth, once per device
@@ -186,7 +217,10 @@ only         = ["STRIPE_*", "SENDGRID_*"]   # never push DEV_* or DEBUG_* to pro
 
 ### `phantom check`
 
-Scans `.env` files for unprotected secrets. Use as a pre-commit hook.
+Scans supported dotenv files for heuristically detected secrets. With
+`--staged`, it also checks staged dotenv content and a bounded set of
+hardcoded-key prefixes on added lines. Use it as one pre-commit layer, not as a
+complete repository secret scanner.
 
 ```bash
 phantom check
@@ -410,7 +444,12 @@ Or download the binary directly from [github.com/ashlrai/phantom-secrets/release
 
 ### Claude Code cannot read `.env` after setup — is this broken?
 
-No. Phantom tokens are meaningless without the authenticated proxy, but keeping dotenv reads denied also protects unmanaged sibling files and backups created by other tools. `phantom setup --client claude` wires MCP while removing legacy Phantom-managed dotenv read grants; agents use value-blind metadata instead.
+No. A `phm_` value is not a provider credential, but keeping dotenv reads
+denied also protects unmanaged sibling files and backups created by other
+tools. It also reduces exposure of mappings that an authenticated active
+Phantom proxy could resolve. `phantom setup --client claude` wires MCP while
+removing legacy Phantom-managed dotenv read grants; agents use value-blind
+metadata instead.
 
 ---
 

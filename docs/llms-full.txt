@@ -1,12 +1,12 @@
-# Phantom — Delegate Everything to AI
+# Phantom — Delegate Supported Secret Workflows to AI
 
-Phantom is an open-source CLI tool that lets AI coding agents (Claude Code, Cursor, Copilot, Windsurf, Codex) use your real API keys without the security risk. It replaces secrets in .env files with worthless "phantom tokens" and injects real credentials at the network layer via a local HTTP proxy.
+Phantom is an open-source CLI that helps keep real API keys out of AI-agent context. It replaces heuristically detected, managed dotenv secrets with random `phm_` placeholders and uses an authenticated local proxy for reviewed HTTP API routes. It reduces one credential-exposure path; it does not eliminate risk from unmanaged files, same-user processes, provider endpoints, arbitrary tools, or unsupported protocols.
 
 Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Install: `npx phantom-secrets init` or `brew tap ashlrai/phantom && brew install phantom`
+Install: `npx phantom-secrets init`; on Homebrew 6, tap `ashlrai/phantom`, trust `ashlrai/phantom/phantom`, then install the fully qualified formula.
 MCP: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
 
 ## The Problem
@@ -22,14 +22,16 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 
 ## How Phantom Works
 
-1. `phantom init` reads your .env, stores real secrets in an encrypted vault (OS keychain or ChaCha20-Poly1305 encrypted file), and rewrites .env with worthless phantom tokens (phm_...).
-2. `phantom exec -- claude` starts a local HTTP reverse proxy on 127.0.0.1, sets SDK-compatible BASE_URL environment variables (e.g., OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/), exposes a fresh PHANTOM_PROXY_TOKEN to the child process, and launches the specified command.
+1. `phantom init` reads your .env, stores detected real secrets in an OS credential store or ChaCha20-Poly1305 encrypted-file fallback, and rewrites managed values with `phm_` placeholders. It does not create a plaintext project backup. `phantom unwrap` restores package scripts changed by `phantom wrap`; it does not recover secret values.
+2. `phantom exec -- claude` validates reviewed proxy routes, generates fresh child-process `phm_` tokens plus a fresh PHANTOM_PROXY_TOKEN, starts a local HTTP reverse proxy on 127.0.0.1, sets implemented SDK BASE_URL variables (e.g., OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/), and launches the command. Project dotenv tokens persist until rotation; the child tokens stop resolving when that exec proxy exits.
 3. When code makes an API call, the proxy authenticates the local session, removes its local auth token before forwarding, replaces phantom tokens with real credentials in headers and body, and forwards over TLS to the real API endpoint. Full streaming/SSE support for OpenAI and Anthropic.
 4. Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN. Header-aware clients can set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 and send it as x-phantom-proxy-token instead of using path-authenticated local SDK URLs.
 
+Connection strings such as DATABASE_URL can be detected, vaulted, and replaced in dotenv, but `phantom exec` refuses to launch with them. Direct environment injection is disabled until a protocol-aware database broker exists.
+
 ## CLI Commands
 
-- `phantom init` — Import .env secrets into vault, rewrite with phantom tokens. Auto-detects 13+ services. Supports monorepo subdirectory detection. `--all <DIR>` protects every git repo with a .env under a directory in one go (with `--dry-run` to preview, `--jobs N` / `-j N` for parallelism, default 4).
+- `phantom init` — Import .env secrets into vault and rewrite managed values. `--all <DIR>` processes eligible repositories found within a five-level scan, stops below the first matching repository, and supports `--dry-run` plus `--jobs N` / `-j N` (default 4).
 - `phantom agent report --json` — Read-only AI-agent readiness report with status, risk_level, findings, fixes, commands, files, requires_approval, and exit_code.
 - `phantom agent doctor` — Human-readable view of the same readiness policy. Status values: unsafe, protected, verified, team-ready, compliance-ready.
 - `phantom agent setup --dry-run|--apply` — Preview or apply safe defaults for agent use, including MCP wiring and .env.example generation.
@@ -53,7 +55,7 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 - `phantom rotate` — Regenerate all phantom tokens in .env. Supports `--sync` to push updated tokens to deployment platforms.
 - `phantom status` — Show project ID, vault backend, secret count, service mappings.
 - `phantom doctor` — Health check: config, vault, .env, .gitignore, Claude Code MCP, cloud auth.
-- `phantom check` — Scans `.env` files for unprotected real secrets. Exit code 1 if found. Add `--staged` to read content from the git index instead of the working tree (suitable for pre-commit hooks; staged `.env` files are also scanned). Add `--runtime` to detect phantom tokens in the current environment when the proxy is not running.
+- `phantom check` — Heuristically scans supported `.env` files for unprotected real secrets. Exit code 1 if found. `--staged` reads dotenv content from the index and checks a bounded set of hardcoded-key prefixes on added lines. `--runtime` detects phantom tokens in selected environment variables when the proxy is not running. It is not a complete repository secret scanner.
 - `phantom sync --platform vercel --project <id>` — Push secrets to Vercel or Railway. Use `--dry-run --json` to preview targets, selected key names, skipped key names, token-env presence, and warnings without decrypting values or calling platform APIs. Use `--only PATTERN` (glob, repeatable, OR-ed) to limit which keys get pushed; the same filter is also honoured via `only = ["PATTERN", ...]` on each `[[sync]]` block in `.phantom.toml`.
 - `phantom pull --from vercel --project <id>` — Pull secrets from platforms into vault.
 - `phantom env` — Generate .env.example with secret values masked.
@@ -70,11 +72,11 @@ GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits 
 
 ## Installation
 
-### Claude Code MCP (recommended — AI manages everything)
+### Claude Code MCP (recommended for value-blind secret workflows)
 ```
 claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 ```
-Once configured, just tell Claude: "Protect my API keys" — it will run phantom_init and handle everything.
+Once configured, ask Claude to propose protection and review the affected files and confirmation-gated steps. Keep secret entry in the trusted terminal and deployment/provider authority separate.
 
 ### npm
 ```
@@ -85,7 +87,8 @@ Downloads the correct platform binary automatically. No Rust toolchain needed.
 ### Homebrew (macOS)
 ```
 brew tap ashlrai/phantom
-brew install phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
 ```
 
 ### Cargo (from source)
@@ -127,14 +130,14 @@ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 - `phantom_rotate` — Regenerate all phantom tokens in .env. Supports `--sync` flag to push to deployment platforms simultaneously.
 
 **Cloud Sync:**
-- `phantom_cloud_push` — Push local vault to Phantom Cloud. Encrypts client-side with ChaCha20-Poly1305 before upload. Server never sees plaintext.
+- `phantom_cloud_push` — Push a client-encrypted ChaCha20-Poly1305 vault payload to Phantom Cloud. The vault API receives ciphertext rather than decrypted secret values; client, account, endpoint, and deployment security remain in scope.
 - `phantom_cloud_pull` — Pull vault from Phantom Cloud. Params: force (bool). Downloads and decrypts vault, stores secrets locally.
 - `phantom_cloud_status` — Check cloud auth status, plan, and last sync version.
 
 **Diagnostics & Cross-Project:**
 - `phantom_doctor` — Health checks: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook. With `fix=true` auto-repairs safe issues; requires `confirm: true` in that mode.
 - `phantom_why` — Explain whether a key is classified as Secret / PublicKey / NotSecret and which heuristic matched. Params: key.
-- `phantom_check` — Scan for unprotected secrets. With `runtime=true`, scans the current environment for phantom tokens without a proxy (leak detection). With `staged=true`, reads git-staged content (including staged .env files) — suitable for pre-commit hooks. Default scans .env files in the working tree.
+- `phantom_check` — Run Phantom's bounded dotenv/key-prefix detector. With `runtime=true`, checks selected environment variables for phantom tokens without a proxy. With `staged=true`, reads staged dotenv content and checks supported key prefixes on added lines. Default scans supported dotenv files in the working tree; use a broader scanner for repository-wide assurance.
 - `phantom_env` — Generate a .env.example file from .env. Secrets become descriptive placeholders; non-secret config values are preserved.
 - `phantom_sync` — Show sync configuration and what secrets would be pushed to deployment platforms (Vercel, Railway). Informational; actual push requires platform API tokens.
 - `phantom_copy_secret` — Copy a secret from this project's vault to another project's vault. The value is never exposed; transfer happens between encrypted vaults. Mutating; requires `confirm: true`.
@@ -143,7 +146,7 @@ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 - `phantom_wrap` — Wrap `package.json` scripts with `npx phantom-secrets exec` so secrets are injected via the proxy at runtime. Originals are saved as `script:raw` variants. Heuristically picks dev/start/build/serve/deploy scripts and skips lint/test/format scripts. Params: only, skip.
 - `phantom_unwrap` — Reverse `phantom_wrap`: restore original scripts from `:raw` variants and remove the `:raw` entries.
 
-**Teams (Pro plan, multi-developer shared vaults):**
+**Teams (source-backed fixed-membership pilot; hosted Pro commissioning required):**
 - `phantom_team_list` — Read-only. List teams the authenticated user belongs to.
 - `phantom_team_members` — Read-only. List members of a team by team_id.
 - `phantom_team_key_publish` — One-time setup. Register this device's X25519 public key with the team so encrypted vaults can be addressed to it. Idempotent. Pubkey only — the private key stays in the OS keychain.
@@ -152,31 +155,33 @@ claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
 - `phantom_team_vault_push` — Push this project's secrets to the shared team vault. Encrypts client-side for each member who has registered a key. Mutating; requires `confirm: true`.
 - `phantom_team_vault_pull` — Download and decrypt the team vault for this project into the local vault (use this, not phantom_cloud_pull, for team-shared secrets). Overwrites local secrets; requires `confirm: true`.
 
+Owner/admin roles gate invitations, but current vault read/write access is member-wide. Member removal and atomic offboarding key rotation are not shipped; do not treat this pilot as enterprise RBAC or an offboarding control.
+
 ### How AI Agents Should Use Phantom
 
 When an AI agent detects a `.env` file with real API keys (sk-*, ghp_*, etc.):
 1. Suggest running `phantom_init` to protect secrets
-2. After init, the .env only contains phm_ tokens — safe for AI to read
+2. After init, managed dotenv secrets are phm_ tokens rather than provider credentials; keep dotenv reads denied because unmanaged values and token mappings still matter
 3. Use `phantom_add_secret_interactive` to add new keys; the user types values only into the trusted terminal prompt
 4. Use `phantom_cloud_push` to back up the vault
 5. Never attempt to read real secret values — use `phantom_list_secrets` to see what's available
 
 ## Cloud Sync Architecture
 
-Phantom Cloud provides end-to-end encrypted vault sync:
-- **Zero-knowledge**: Server stores opaque encrypted blobs. Never sees plaintext secrets.
+Phantom Cloud's implemented client encrypts vault payloads before upload:
+- **Encrypted vault payload**: The cloud vault API stores ciphertext rather than decrypted secret values; client, endpoint, and account security remain in the trust boundary.
 - **Client-side encryption**: ChaCha20-Poly1305 with Argon2id key derivation. Encryption key stored only in user's OS keychain.
 - **Optimistic concurrency**: Version numbers prevent conflicting pushes from multiple devices.
-- **Free tier**: 1 cloud vault. Pro ($8/mo) unlocks unlimited vaults and multi-device sync.
+- **Packaging copy**: Repository pricing copy currently describes one Free cloud vault and planned Pro packaging at $8/month; verify the deployed entitlement and current written terms rather than treating source copy as activation evidence.
 - **Auth**: GitHub OAuth via device code flow (like GitHub CLI).
 
 ## Security Model
 
-- Real secrets never on disk in project directory — only in OS keychain or encrypted vault
+- After successful init, managed dotenv values are tokens; unmanaged files, logs, backups, and external tools remain outside this claim
 - Vault encryption: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key)
-- Phantom tokens: 256-bit CSPRNG with phm_ prefix (never collide with real API key formats)
-- Proxy binds to 127.0.0.1 only — never exposed to network
-- Proxy token authentication prevents other local processes from using the proxy
+- Phantom tokens: 256-bit CSPRNG with phm_ prefix; random collision with supported real-key formats is cryptographically negligible, not impossible
+- Proxy binds to 127.0.0.1 rather than a non-loopback interface; same-user local-process and bearer threats remain
+- Proxy token authentication rejects callers without the bearer; bearer theft and same-user local-process access remain in the threat model
 - Secrets zeroized from memory after use
 - Allowlist model: proxy only injects for configured service patterns
 - Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN; CLI-generated SDK URLs include it locally, and header-aware clients can opt into x-phantom-proxy-token
@@ -215,7 +220,7 @@ Phantom automatically identifies secrets vs config values using heuristics:
 12-crate Rust workspace + Next.js backend:
 - phantom-core: Config, .env parsing, token generation, sync, auth, cloud API client
 - phantom-vault: VaultBackend trait, OS keychain + encrypted file backends, shared crypto module
-- phantom-proxy: HTTP reverse proxy with streaming token replacement (text/*/form bodies) and SSE/streaming support, request interceptor
+- phantom-proxy: authenticated HTTP reverse proxy with bounded request-body replacement, field-scoped JSON handling, response scrubbing, and SSE/streaming response support
 - phantom-cli: clap CLI with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows
 - phantom-mcp: MCP server via rmcp SDK (stdio transport, 54 release-checked tools)
 - phantom-authority, phantom-locus-contract, phantom-broker, phantom-runtime, phantom-evidence, phantom-session, phantom-workspace: fail-closed authority, compatibility, lease, execution-denial, evidence, session, and setup foundations
@@ -226,7 +231,7 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 ## Common Use Cases
 
 1. **Solo developer with Claude Code**: `phantom init` then `phantom exec -- claude` — code safely
-2. **Just tell Claude**: Add MCP server, say "protect my API keys" — Claude handles everything
+2. **Delegate the bounded setup**: Add the MCP server, ask Claude to propose protection, then review mutations and complete secret entry or provider authority in the trusted terminal
 3. **Multi-device sync**: `phantom login` then `phantom cloud push` on one machine, `phantom cloud pull` on another
 4. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
 5. **New machine onboarding**: `phantom pull --from vercel --project prj_xxx`
@@ -234,8 +239,8 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 6b. **Migrate from Doppler/Infisical/dotenvx/1Password**: `phantom import --from doppler --file dump.json`
 6c. **Audit trail**: `PHANTOM_AUDIT=1` + `phantom audit show/tail/verify` for compliance and forensics
 7. **Team onboarding**: `phantom env` generates .env.example with placeholders
-8. **CI/CD**: Use `phantom check` in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
-9. **Pre-commit safety**: Add `phantom check` to git hooks or pre-commit framework
+8. **CI/CD**: Use `phantom check` as a bounded dotenv/key-prefix gate and pair it with a broader repository scanner; preview selected provider sync targets before applying
+9. **Pre-commit safety**: Add `phantom check --staged` to hooks while remembering hooks can be skipped or bypassed
 10. **Rotate with sync**: `phantom rotate --sync` regenerates tokens and pushes to deployment platforms
 11. **Monorepo**: Run `phantom init` in each subdirectory — each gets its own vault and config
 12. **Multi-IDE team**: Same MCP server works across Claude Code, Cursor, Windsurf, and Codex

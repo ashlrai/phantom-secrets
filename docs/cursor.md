@@ -4,7 +4,13 @@
 
 Cursor indexes your project files to power its AI completions and chat context. If your `.env` contains real API keys, those values flow directly into Cursor's context window and can appear in completions, inline suggestions, and chat transcripts.
 
-After `phantom init`, your `.env` contains only phantom tokens (`phm_...`). Cursor indexes the file, finds nothing sensitive, and cannot leak credentials. When your code makes an API call during a Cursor terminal session, the local Phantom proxy intercepts the request and injects the real value — over TLS, before the packet leaves your machine.
+After `phantom init`, managed dotenv secrets are replaced by `phm_` tokens.
+Those values are not accepted by providers, but they remain sensitive mappings
+until rotation. When supported API code runs in a Cursor process launched by
+`phantom exec`, the authenticated local proxy replaces a session token on a
+reviewed route and sends the real value to the configured provider over TLS.
+Unmanaged files, unsupported protocols, and processes outside that environment
+remain outside this boundary.
 
 The MCP integration exposes the release-schema-verified catalog in Cursor Chat,
 so you can manage secrets without leaving the editor. The current release
@@ -125,7 +131,10 @@ The proxy sets `*_BASE_URL` variables only in the shell environment `phantom exe
 
 **Cursor AI sees `phm_...` tokens in code completions**
 
-This is expected and correct behavior. The phantom token is what belongs in source code and `.env`. The proxy swaps it for the real value at runtime. If the token appears in a completion, accept it — the value is safe to commit.
+Managed dotenv files contain project `phm_` mappings, but those mappings should
+not be copied into source or intentionally committed. If a token appears in a
+completion, remove it from generated code and rotate it with `phantom rotate`;
+an authenticated active Phantom proxy is the component that can resolve it.
 
 ---
 

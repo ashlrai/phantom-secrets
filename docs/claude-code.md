@@ -147,7 +147,10 @@ Claude: I'll push to Phantom Cloud — this overwrites the existing cloud copy.
 
 ### Debugging production issues with real keys
 
-Real keys are in the vault; Claude never sees them. Claude can call `phantom_status` to confirm the right keys are loaded, then help you trace a bug without any credential exposure in the transcript.
+In the supported path, Claude uses value-blind MCP status and reviewed proxy
+routes rather than receiving provider credentials. That boundary does not cover
+unmanaged files, external tools, provider responses outside configured
+scrubbing, or processes launched outside `phantom exec`.
 
 ### Deploying to Vercel
 
@@ -174,9 +177,19 @@ Claude: Run this to pull secrets from Vercel:
 
 These limits are intentional and enforced at the protocol level.
 
-**Cannot read real secret values.** `phantom_list_secrets` returns names only. There is no MCP tool that returns a secret value. Claude can never retrieve a plaintext credential, even if instructed to.
+**Phantom's MCP does not return real secret values.** `phantom_list_secrets`
+returns names only, the deprecated plaintext add tool refuses values, and
+interactive entry happens in the trusted terminal. This is a statement about
+the Phantom MCP surface, not about unrelated files, shell commands, providers,
+or tools that may grant the agent broader access.
 
-**Cannot call mutating tools without `confirm: true`.** `phantom_init`, `phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_copy_secret`, `phantom_env`, `phantom_wrap`, `phantom_unwrap`, `phantom_doctor` (when `fix=true`), and team write tools all hard-fail if `confirm` is not explicitly set to `true`. Claude must ask you before proceeding — this prevents prompt injection attacks from silently modifying your vault.
+**Cannot call listed mutating tools without `confirm: true`.** `phantom_init`,
+`phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`,
+`phantom_cloud_push`, `phantom_cloud_pull`, `phantom_copy_secret`,
+`phantom_env`, `phantom_wrap`, `phantom_unwrap`, `phantom_doctor` (when
+`fix=true`), and team write tools hard-fail if confirmation is absent. This is
+a useful mutation gate, not a general prompt-injection defense; review the
+exact action and keep deployment/provider authority separately constrained.
 
 **Cannot receive real secret values through MCP.** Plaintext values passed to `phantom_add_secret` are rejected. New secrets must be entered through the terminal prompt started by `phantom_add_secret_interactive`.
 

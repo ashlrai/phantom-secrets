@@ -42,17 +42,25 @@ The default upstream timeout is 30 seconds. For long-running API calls:
 
 - Check your network connection
 - Verify the upstream service is accessible
-- The proxy follows redirects automatically (up to 5 hops)
+- The proxy deliberately does not follow upstream redirects. Inspect a returned
+  3xx response and use the reviewed canonical service endpoint instead.
 
-### Streaming request body larger than 10 MB is silently dropped
+### Request body larger than 10 MB returns HTTP 413
 
-For `text/*` and `application/x-www-form-urlencoded` content types, the proxy uses a streaming token-replacement path. If the body exceeds the 10 MB limit, the streaming task is dropped and the upstream sees a broken connection (not a clean HTTP 413). For JSON bodies the proxy returns HTTP 413 cleanly.
+The proxy buffers each request body under a strict size limit before contacting
+the upstream. Bodies over the default 10 MB limit fail closed with HTTP 413, so
+the upstream receives no truncated prefix. Accepted text/form bodies use
+whole-body replacement; accepted JSON bodies use field-scoped replacement.
 
-If you are sending large streaming bodies through the proxy and seeing broken-pipe errors upstream, either split the payload or increase the body limit via a future `.phantom.toml` option (not yet exposed; track [#issues](https://github.com/ashlrai/phantom-secrets/issues)).
+Split larger requests. The body-limit configuration is not currently exposed
+through `.phantom.toml`; track the repository issues for future configuration.
 
 ### Claude Code can't read my .env file
 
-Many Claude Code setups block reading `.env` files by default. Keep that boundary: although Phantom-managed entries become worthless `phm_` tokens, sibling dotenv files or backups from other tools can still contain plaintext.
+Many Claude Code setups block reading `.env` files by default. Keep that
+boundary: Phantom-managed `phm_` entries are not provider credentials, but an
+authenticated active Phantom proxy can resolve a mapped token. Sibling dotenv
+files or backups from other tools can also still contain plaintext.
 
 Fix it automatically:
 ```bash
@@ -179,7 +187,13 @@ phantom pull --from vercel --project prj_xxx --force
 
 ### Is Phantom safe to use with Claude Code / Cursor?
 
-That's exactly what it's built for. The AI agent only sees phantom tokens (`phm_...`), never real secrets. Even if the AI includes a phantom token in generated code or sends it to an LLM, the token is worthless — it only works through the local proxy during the current session.
+That is the intended boundary when the agent uses value-blind MCP tools and a
+supported API is launched through `phantom exec`. The upstream provider does
+not accept `phm_` values directly, and `phantom exec` issues fresh child-process
+tokens for each run. Treat any exposed token as sensitive metadata and rotate
+it: a party that also controls an authenticated active proxy may be able to
+resolve the mapping. Phantom does not cover unmanaged plaintext files or tools
+launched outside the proxy environment.
 
 ## Vault Backup
 

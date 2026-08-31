@@ -41,7 +41,7 @@
     <h1>Phantom <em>Pro</em></h1>
     <p class="sub">Cloud-synced vaults, team sharing, audit logs, and deployment platform integration. Be the first to know when it launches.</p>
 
-    <div id="success">You're on the list! We'll email you when Pro launches.</div>
+    <div id="success">An email draft was opened. Send it to request early access; nothing is submitted automatically.</div>
 
     <form id="waitlist" onsubmit="return submitWaitlist(event)">
         <input type="email" name="email" placeholder="your@email.com" required>
@@ -55,11 +55,11 @@
             <li>Cloud-synced vault across all your machines</li>
             <li>Team vault sharing (up to 10 users)</li>
             <li>phantom sync to Vercel and Railway with local platform tokens</li>
-            <li>phantom pull for instant new machine onboarding</li>
+            <li>phantom pull workflow for new-machine onboarding</li>
             <li>Versioned cloud vault backups</li>
-            <li>Audit log — who accessed what, when</li>
+            <li>Central audit reporting (planned; identity and retention design TBD)</li>
             <li>CI/CD integration</li>
-            <li>Priority support</li>
+            <li>Priority support (planned)</li>
         </ul>
     </div>
 
@@ -70,12 +70,11 @@
 function submitWaitlist(e) {
     e.preventDefault();
     const email = e.target.email.value;
-    // For now, open mailto — replace with real API later
+    // No backend is connected: compose an explicit user-sent email request.
     const subject = encodeURIComponent('Phantom Pro Waitlist');
     const body = encodeURIComponent('I want early access to Phantom Pro.\n\nEmail: ' + email);
     window.open('mailto:mason@ashlr.ai?subject=' + subject + '&body=' + body, '_blank');
     document.getElementById('success').style.display = 'block';
-    e.target.style.display = 'none';
     return false;
 }
 </script>

@@ -1,6 +1,6 @@
 # Phantom
 
-> Open-source CLI that protects API keys from AI coding agent leaks by replacing real secrets with worthless phantom tokens and injecting real credentials via a local HTTP proxy.
+> Open-source CLI that helps keep real API keys out of AI-agent context by replacing managed dotenv secrets with non-provider `phm_` tokens and proxying supported API routes through an authenticated local service.
 
 ## Install
 
@@ -38,30 +38,30 @@ https://phm.dev/dashboard (read-only): list of cloud-backed projects, plan tier,
 ## Key Features
 
 - Phantom token proxy — replaces real secrets with `phm_` tokens, injects real keys at the network layer
-- Streaming token replacement — `text/*` and form request bodies processed frame-by-frame; JSON bodies buffered with field-level F9 scoping
-- Response scrubbing — prevents secrets from leaking in API responses back to the AI
+- Bounded request replacement — every request body is accepted under a size cap before the upstream call; text/form bodies use whole-body replacement and JSON uses field-scoped replacement
+- Response scrubbing — redacts configured vault values and recognized key formats from supported response paths before returning them to the caller
 - Public key awareness — detects and skips publishable/public keys that don't need protection
 - OS keychain storage — macOS Keychain, Linux Secret Service, Windows Credential Manager, encrypted file fallback. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
-- Cloud sync — E2E encrypted zero-knowledge vault sync via phm.dev
-- Multi-project scanner — `phantom init --all <DIR>` with `--jobs N` parallelism protects every git repo with a `.env` under `<DIR>` in one shot
+- Cloud sync — client-encrypted vault payload sync; deployed service and account configuration remain separate gates
+- Multi-project scanner — `phantom init --all <DIR>` processes eligible repos found within five levels, stops below the first matching repo, and supports `--dry-run` plus `--jobs N`
 - Multi-IDE setup — `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool
 - Tamper-evident audit log — `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log` (secret name only). HMAC-SHA256 chain; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for access.
 - Competitor import — `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>` migrates secrets directly
 - Encrypted recovery — export/import use hidden terminal prompts or a private bounded `--passphrase-file`; plaintext export and argv passphrases are disabled
 - Enriched diagnostics — `phantom doctor` reports install source, vault backend, audit-log status, Argon2 params, MCP wiring per client
-- Script wrapping — `phantom wrap` patches package.json so every npm script runs through the proxy
+- Script wrapping — `phantom wrap` wraps selected runtime/build scripts and deliberately skips test, lint, type, and format scripts
 - Watch mode — `phantom watch` monitors .env files for new unprotected secrets
 - Secret explainer — `phantom why <KEY>` explains detection heuristics
 - Cross-project copy — `phantom copy` shares secrets between project vaults
 - Doctor with auto-fix — `phantom doctor --fix` repairs configuration issues
-- Team vaults — shared vaults with role-based access control
-- Pre-commit hook — blocks commits containing unprotected secrets
+- Team vaults — fixed-membership encrypted sharing; invitation management is owner/admin-gated, vault access is member-wide, and offboarding rotation is not shipped
+- Pre-commit hook — runs a bounded staged dotenv/key-prefix check when Git invokes it; pair with CI and a broader scanner
 - Threat model — see THREAT_MODEL.md for assets, actors, mitigations, known gaps
 
 ## How AI Should Behave
 
 - NEVER show, log, or write real API key values into code files
-- The `.env` file contains `phm_...` tokens — these are safe placeholders, not broken keys
+- Managed dotenv values become `phm_...` placeholders rather than provider credentials. Keep dotenv reads denied and rotate exposed mappings because an authenticated active Phantom proxy may resolve them.
 - Use `phantom_list_secrets` to see what secrets are available (never shows values)
 - Use `phantom_add_secret_interactive` to add new keys; the user types values only into the trusted terminal prompt
 - Use `phantom_init` to protect an unprotected `.env` file
