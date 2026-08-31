@@ -1445,8 +1445,7 @@ impl PhantomMcpServer {
                 content,
                 executable,
                 ..
-            } if precommit_hook::is_ready(&content, executable) =>
-            {
+            } if precommit_hook::is_ready(&content, executable) => {
                 lines.push(
                     "pass: Git pre-commit hook runs the local Phantom check first".to_string(),
                 );
@@ -3435,9 +3434,7 @@ impl PhantomMcpServer {
                 content,
                 executable,
                 ..
-            }) => {
-                precommit_hook::is_ready(&content, executable)
-            }
+            }) => precommit_hook::is_ready(&content, executable),
             Ok(
                 precommit_hook::HookState::Missing { .. }
                 | precommit_hook::HookState::NotRepository,

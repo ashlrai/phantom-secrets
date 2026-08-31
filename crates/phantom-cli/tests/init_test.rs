@@ -54,7 +54,10 @@ fn init_rejects_single_project_dry_run_without_mutating() {
         .output()
         .expect("run phantom init --dry-run");
 
-    assert!(!output.status.success(), "unsupported flag combination must fail");
+    assert!(
+        !output.status.success(),
+        "unsupported flag combination must fail"
+    );
     assert_eq!(
         fs::read_to_string(&env_path).expect("read .env"),
         original,
