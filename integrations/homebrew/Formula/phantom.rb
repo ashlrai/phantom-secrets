@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Phantom — Homebrew formula
 #
 # This formula lives in the ashlrai/homebrew-phantom tap repo.
@@ -11,28 +13,28 @@
 class Phantom < Formula
   desc "Stop AI coding agents from leaking your API keys"
   homepage "https://phm.dev"
-  version "0.6.0"
+  version "0.7.0"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/ashlrai/phantom-secrets/releases/download/v#{version}/phantom-aarch64-apple-darwin.tar.gz"
-      sha256 "a924eb14971cddb56cf9728b46dfa401c525b864afd7c075907ca38fda986453"
+      sha256 "c5f259fe7a8c6fd4ac05385529040b4d66f2a4e71760ef6a5798539127a74c70"
     end
     on_intel do
       url "https://github.com/ashlrai/phantom-secrets/releases/download/v#{version}/phantom-x86_64-apple-darwin.tar.gz"
-      sha256 "e82fb7e773af3701e8813f3bc851abb1c5677735751a93eebf0ede91f533974d"
+      sha256 "de23343d284db4ef0d3011da5c2521ebd64ca953666cbf97e0fe43935a2dd9fc"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/ashlrai/phantom-secrets/releases/download/v#{version}/phantom-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "1b94f2dcf47df2b6d82ec81897555e9293345133ce227c267f18e616c54c6ca4"
+      sha256 "fc91f90f98a85f1fd8b63f455877e2d5a225aa147d9d7945b077f729eb97515b"
     end
     on_intel do
       url "https://github.com/ashlrai/phantom-secrets/releases/download/v#{version}/phantom-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "cdc8ac1fc874d8c7d0d84221ee6a90bf3619ca313bf0d2835be23319bec9b8cc"
+      sha256 "a6fd418652fe0aa85c8e01283c3b7f761cc57c3a803b5e30c5fa040ae66b4824"
     end
   end
 
