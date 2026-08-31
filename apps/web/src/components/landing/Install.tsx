@@ -44,10 +44,11 @@ export function Install() {
       <div className="mx-auto max-w-[1100px] px-7">
         <div className="max-w-[640px] mb-12">
           <h2 className="text-[1.8rem] sm:text-[2.4rem] font-extrabold tracking-[-0.035em] leading-[1.08] text-white">
-            Install in ten seconds.
+            Install and connect your client.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            One CLI, one MCP registration. Pick your editor.
+            Register the MCP server for a supported client, then verify the
+            resulting local configuration.
           </p>
         </div>
 

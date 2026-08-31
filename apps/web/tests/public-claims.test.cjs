@@ -99,6 +99,32 @@ test("public surfaces reject previously audited absolute claims", () => {
   }
 });
 
+test("active landing copy rejects universal agent, leak, timing, and competitor claims", () => {
+  const landingFiles = [
+    "src/components/landing/Comparison.tsx",
+    "src/components/landing/FAQ.tsx",
+    "src/components/landing/Install.tsx",
+    "src/components/landing/QuickStart.tsx",
+  ];
+  const activeLandingClaims = landingFiles.map((file) => claims[file]).join("\n");
+
+  for (const forbidden of [
+    /Every other secrets manager/i,
+    /moment you give (?:one|a key) to an AI tool, it leaks/i,
+    /Every AI tool/i,
+    /any other agent/i,
+    /Install in (?:ten|10) seconds/i,
+    /Sixty seconds to a safe \.env/i,
+  ]) {
+    assert.doesNotMatch(activeLandingClaims, forbidden);
+  }
+
+  const comparison = claims["src/components/landing/Comparison.tsx"];
+  assert.match(comparison, /managed path with giving an agent a plaintext dotenv value/i);
+  assert.match(comparison, /not a vendor feature benchmark/i);
+  assert.doesNotMatch(comparison, /Doppler|1Password CLI|Infisical|AWS Secrets Mgr/i);
+});
+
 test("active static documentation rejects audited submission and deployment absolutes", () => {
   const forbidden = [
     /works in production without modification/i,

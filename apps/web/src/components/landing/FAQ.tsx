@@ -25,13 +25,13 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     a: (
       <>
         Your <Tok>.env</Tok> file contains <Tok>phm_xxxxxxxx</Tok> tokens
-        instead of real values. Every AI tool (Claude Code, Cursor,
-        Windsurf, Codex, or another tool with dotenv access) reads those
-        placeholders in the managed workflow. <Tok>phantom exec</Tok> gives
-        the child fresh session tokens, and the authenticated local proxy
-        resolves them only for configured upstream routes. Human plaintext
-        reveal is a separate trusted-terminal action with no noninteractive
-        bypass.
+        instead of real values. In the managed workflow, supported clients
+        read those placeholders rather than provider values from the rewritten
+        dotenv file. <Tok>phantom exec</Tok> gives the child fresh session
+        tokens, and the authenticated local proxy resolves them only for
+        configured upstream routes. Other files and unmanaged processes remain
+        outside that boundary. Human plaintext reveal is a separate
+        trusted-terminal action with no noninteractive bypass.
       </>
     ),
   },

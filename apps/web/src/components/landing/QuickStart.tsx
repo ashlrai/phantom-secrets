@@ -1,4 +1,4 @@
-// Three-step "first 60 seconds" panel. Each step has the exact command,
+// Three-step quick-start panel. Each step has the exact command,
 // click-to-copy, and an explicitly illustrative output summary. Ports,
 // service routes, and vault backends vary by machine and configuration.
 
@@ -8,7 +8,7 @@ const STEPS = [
   {
     n: "01",
     title: "Install",
-    body: "One command. Downloads the binary for your platform.",
+    body: "Run Phantom through npm for the current platform.",
     cmd: "npx phantom-secrets init",
     out: `$ npx phantom-secrets init
 ->  Found 4 secrets in .env
@@ -19,7 +19,7 @@ ok  CLAUDE.md updated`,
   {
     n: "02",
     title: "Verify agent readiness",
-    body: "One preflight for Claude Code, Codex, Cursor, Windsurf, and any other agent.",
+    body: "Run the built-in preflight for supported client configuration and local state.",
     cmd: "phantom agent doctor",
     out: `$ phantom agent doctor
 ok  status: verified
@@ -46,7 +46,7 @@ export function QuickStart() {
       <div className="mx-auto max-w-[1100px] px-7">
         <div className="max-w-[640px] mb-12">
           <h2 className="text-[1.8rem] sm:text-[2.4rem] font-extrabold tracking-[-0.035em] leading-[1.08] text-white">
-            Sixty seconds to a safe .env.
+            A bounded path to a protected .env.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
             Three commands with illustrative output; ports, routes, and vault
