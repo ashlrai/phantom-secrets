@@ -218,9 +218,11 @@ $ phantom open
 
 Cloud sync uses ChaCha20-Poly1305 with a client-side passphrase derived via Argon2id. The server stores only ciphertext.
 
-## Team vaults (Pro)
+## Team vaults (source-backed pilot)
 
-The repository includes Pro-gated, fixed-membership team-vault workflows. The
+The repository includes fixed-membership team-vault workflows intended for a
+planned hosted Pro pilot. Pilot eligibility, team and vault limits, and pricing
+are TBD; no self-serve checkout is commissioned. The
 service path stores ciphertext plus per-member encrypted key shares. Team roles
 gate invitation management, but all members can read and write the shared vault;
 member removal and atomic offboarding rotation are not shipped. Treat this as a
@@ -449,18 +451,20 @@ See [SECURITY.md](SECURITY.md) for the responsible disclosure policy and [THREAT
 
 ## Pricing
 
-| Packaging direction | Free | Pro (planned hosted plan) | Enterprise (planned contract) |
+| Packaging direction | Local open source | Pro (planned hosted pilot) | Enterprise (planned contract) |
 |---|---|---|---|
-| Local vaults | Unlimited | Unlimited | Unlimited |
-| Cloud vaults | 1 | Unlimited | Unlimited |
+| Local vault | Available without a hosted entitlement | Available | Available |
+| Hosted cloud vaults | No commissioned entitlement represented here | Eligibility and limits TBD | Scope defined by written agreement |
 | MCP server | Yes | Yes | Yes |
 | Cloud sync | Yes | Yes | Yes |
-| Team features | -- | Fixed-membership pilot | Planned enterprise controls |
-| Price | $0 | $8/mo (planned) | Written agreement |
+| Team features | -- | Fixed-membership pilot; eligibility and limits TBD | Planned enterprise controls; scope TBD |
+| Price | No charge for local open-source use | Pricing TBD; no self-serve checkout commissioned | Written agreement |
 
 This table is packaging direction, not evidence that a hosted entitlement,
 enterprise control, support term, or price is active for a particular account.
-Verify the deployed service and written plan terms; see the
+The planned Pro pilot has no commissioned self-serve checkout; eligibility,
+team and vault limits, and pricing remain TBD. Verify the deployed service and
+written plan terms; see the
 [enterprise adoption guide](docs/enterprise-adoption.md) for shipped-versus-planned gates.
 
 ## Links

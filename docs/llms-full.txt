@@ -65,7 +65,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom copy <KEY> --to <DIR> [--rename NEW]` — Copy a secret from this project's vault to another project's vault without ever exposing the value. Optional rename in the target project.
 - `phantom wrap [--only A,B] [--skip X,Y]` — Wrap `package.json` scripts with `phantom exec` so npm scripts get real credentials at runtime. Originals are preserved as `script:raw` variants.
 - `phantom unwrap` — Reverse `phantom wrap`, restoring originals from `:raw` variants.
-- `phantom team list / create / members / invite / key-publish / vault-push / vault-pull` — Multi-developer shared vault (Pro). Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305); the server only ever stores ciphertext.
+- `phantom team list / create / members / invite / key-publish / vault-push / vault-pull` — Source-backed fixed-membership shared-vault workflow intended for a planned hosted Pro pilot. Pilot eligibility, team and vault limits, and pricing are TBD; no self-serve checkout is commissioned. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305); the server only ever stores ciphertext.
 - `phantom open [target]` — Open a Phantom page in the browser. Aliases: `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, `site`. Any other word becomes `https://phm.dev/<word>`; full URLs pass through.
 - `phantom upgrade [--check-only] [--force]` — Self-replace this binary with the latest GitHub release.
 - `phantom completion <bash|zsh|fish|powershell|elvish>` — Print a shell-completion script to stdout.
@@ -180,7 +180,7 @@ Phantom Cloud's implemented client encrypts vault payloads before upload:
 - **Encrypted vault payload**: The cloud vault API stores ciphertext rather than decrypted secret values; client, endpoint, and account security remain in the trust boundary.
 - **Client-side encryption**: ChaCha20-Poly1305 with Argon2id key derivation. Encryption key stored only in user's OS keychain.
 - **Optimistic concurrency**: Version numbers prevent conflicting pushes from multiple devices.
-- **Packaging copy**: Repository pricing copy currently describes one Free cloud vault and planned Pro packaging at $8/month; verify the deployed entitlement and current written terms rather than treating source copy as activation evidence.
+- **Packaging copy**: Hosted Pro is a planned pilot. Eligibility, team and vault limits, and pricing are TBD; no self-serve checkout is commissioned. Verify the deployed entitlement and current written terms rather than treating source copy as activation evidence.
 - **Auth**: GitHub OAuth via device code flow (like GitHub CLI).
 
 ## Security Model
