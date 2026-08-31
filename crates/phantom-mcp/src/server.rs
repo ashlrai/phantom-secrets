@@ -6,14 +6,14 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::tools::helpers::{
     internal_err, invalid_params_err, require_approval_token, require_confirm, text_result,
 };
 use crate::tools::params::{
-    AddSecretInteractiveParams, AddSecretParams, ApplyExpiryPolicyParams, AuditAlertsParams,
-    AuditAnalyticsParams, AuditAnomaliesParams, AuditAnomaliesRealtimeParams,
+    AddSecretInteractiveParams, AddSecretParams, ApplyExpiryPolicyParams, ApprovalParams,
+    AuditAlertsParams, AuditAnalyticsParams, AuditAnomaliesParams, AuditAnomaliesRealtimeParams,
     AuditExportReportParams, AuditHotspotAlertsParams, AuditIncidentsParams, AuditRecentParams,
     AuditStatsParams, AutoRotateParams, CheckParams, CloudPullParams, CloudPushParams,
     ComplianceStatusParams, CopySecretParams, DoctorParams, EngineeringDoParams,
@@ -185,7 +185,7 @@ impl PhantomMcpServer {
 
     /// Propose setup, request trusted-terminal application, or read request status.
     #[tool(
-        description = "Conversation-native, value-blind workspace setup. With no arguments or phase=propose, returns an exact sealed setup plan without workspace or vault mutation; it checks or hardens machine-local Phantom state and reports whether the plan-seal key was provisioned. phase=request_apply requires the exact plan_id and pre_state_id from propose, recomputes them without provisioning a key, rejects drift, and creates a bearerless trusted-terminal request; it never applies changes through MCP. phase=status returns authenticated value-free request status. Claim and apply are intentionally unavailable over MCP."
+        description = "Conversation-native, value-blind workspace setup. phase=propose returns an exact sealed plan; if the machine-local plan-seal key is absent, provisioning it requires confirm plus approval_token. phase=request_apply always requires both gates because it persists a bearerless trusted-terminal request. phase=status is read-only. MCP never claims or applies workspace changes."
     )]
     fn phantom_setup_workspace(
         &self,
@@ -204,9 +204,21 @@ impl PhantomMcpServer {
                 let inspection = phantom_workspace::inspect_workspace(&self.project_dir)
                     .map_err(|e| internal_err(format!("Workspace inspection failed: {e}")))?;
                 let (key, host_state_mutated) =
-                    phantom_core::workspace_request::load_or_create_workspace_plan_key_with_status(
-                    )
-                    .map_err(|e| internal_err(format!("Plan seal key unavailable: {e}")))?;
+                    match phantom_core::workspace_request::load_existing_workspace_plan_key() {
+                        Ok(key) => (key, false),
+                        Err(_) => {
+                            require_confirm("phantom_setup_workspace", params.confirm)?;
+                            let params_json = serde_json::to_string(&params).unwrap_or_default();
+                            require_approval_token(
+                                "phantom_setup_workspace",
+                                params.approval_token.as_deref(),
+                                &params_json,
+                                &self.project_id(),
+                            )?;
+                            phantom_core::workspace_request::load_or_create_workspace_plan_key_with_status()
+                                .map_err(|e| internal_err(format!("Plan seal key unavailable: {e}")))?
+                        }
+                    };
                 let seal_key = phantom_workspace::PlanSealKey::from_bytes(*key);
                 let sealed_plan =
                     phantom_workspace::build_sealed_setup_plan(&self.project_dir, &seal_key)
@@ -226,6 +238,14 @@ impl PhantomMcpServer {
                 })
             }
             SetupWorkspacePhase::RequestApply => {
+                require_confirm("phantom_setup_workspace", params.confirm)?;
+                let params_json = serde_json::to_string(&params).unwrap_or_default();
+                require_approval_token(
+                    "phantom_setup_workspace",
+                    params.approval_token.as_deref(),
+                    &params_json,
+                    &self.project_id(),
+                )?;
                 if params.request_id.is_some() {
                     return Err(invalid_params_err(
                         "request_apply does not accept request_id",
@@ -1399,63 +1419,71 @@ impl PhantomMcpServer {
         }
 
         // ── Check 7: Pre-commit hook ────────────────────────────────────
-        let git_dir = self.project_dir.join(".git");
-        let git_hook = git_dir.join("hooks/pre-commit");
-        if git_dir.exists() {
-            if git_hook.exists() {
-                let content = std::fs::read_to_string(&git_hook).map_err(|e| {
-                    internal_err(format!(
-                        "Refusing to inspect or repair unreadable pre-commit hook {}: {e}",
-                        git_hook.display()
-                    ))
-                })?;
-                if precommit_hook::is_current(&content) {
-                    lines.push(
-                        "pass: Git pre-commit hook runs the local Phantom check first".to_string(),
-                    );
+        match precommit_hook::inspect(&self.project_dir).map_err(|error| {
+            internal_err(format!(
+                "Could not inspect the effective Git pre-commit hook: {error}"
+            ))
+        })? {
+            precommit_hook::HookState::Present {
+                content,
+                executable,
+                ..
+            } if precommit_hook::is_ready(&content, executable) =>
+            {
+                lines.push(
+                    "pass: Git pre-commit hook runs the local Phantom check first".to_string(),
+                );
+            }
+            precommit_hook::HookState::Present {
+                content,
+                executable,
+                ..
+            } => {
+                if precommit_hook::is_current(&content) && !executable {
+                    lines.push("warn: Git pre-commit hook is not executable".to_string());
+                } else if precommit_hook::has_phantom_block(&content) {
+                    lines.push("warn: Git pre-commit hook uses a stale Phantom check".to_string());
                 } else {
-                    if precommit_hook::has_phantom_block(&content) {
-                        lines.push(
-                            "warn: Git pre-commit hook uses a stale Phantom check".to_string(),
-                        );
-                    } else {
-                        lines.push(
-                            "warn: Git pre-commit hook exists but no phantom check".to_string(),
-                        );
-                    }
-                    if params.fix {
-                        let change = ensure_mcp_git_hook(&git_hook, &content)?;
-                        let message = match change {
-                            HookChange::Installed => {
-                                "  Fixed: Installed local Phantom check before existing hook commands"
-                            }
-                            HookChange::Repaired => {
-                                "  Fixed: Repaired stale Phantom pre-commit hook"
-                            }
-                            HookChange::Unchanged => {
-                                "  Fixed: Phantom pre-commit hook already current"
-                            }
-                        };
-                        lines.push(message.to_string());
-                        fixed += 1;
-                    } else {
-                        issues += 1;
-                    }
+                    lines.push("warn: Git pre-commit hook exists but no phantom check".to_string());
                 }
-            } else {
+                if params.fix {
+                    let change = precommit_hook::install(&self.project_dir)
+                        .map_err(|error| {
+                            internal_err(format!(
+                                "Failed to repair the effective Git pre-commit hook: {error}"
+                            ))
+                        })?
+                        .expect("Git hook state already established a repository");
+                    let message = match change {
+                        HookChange::Installed => {
+                            "  Fixed: Installed local Phantom check before existing hook commands"
+                        }
+                        HookChange::Repaired => "  Fixed: Repaired stale Phantom pre-commit hook",
+                        HookChange::Unchanged => "  Fixed: Phantom pre-commit hook already current",
+                    };
+                    lines.push(message.to_string());
+                    fixed += 1;
+                } else {
+                    issues += 1;
+                }
+            }
+            precommit_hook::HookState::Missing { .. } => {
                 lines.push("warn: No pre-commit hook installed".to_string());
                 if params.fix {
-                    let hooks_dir = git_dir.join("hooks");
-                    let _ = std::fs::create_dir_all(&hooks_dir);
-                    ensure_mcp_git_hook(&git_hook, "")?;
+                    precommit_hook::install(&self.project_dir).map_err(|error| {
+                        internal_err(format!(
+                            "Failed to install the effective Git pre-commit hook: {error}"
+                        ))
+                    })?;
                     lines.push("  Fixed: Installed pre-commit hook".to_string());
                     fixed += 1;
                 } else {
                     issues += 1;
                 }
             }
-        } else {
-            lines.push("info: Not a git repo — pre-commit hook not applicable".to_string());
+            precommit_hook::HookState::NotRepository => {
+                lines.push("info: Not a git repo — pre-commit hook not applicable".to_string());
+            }
         }
 
         // ── Summary ─────────────────────────────────────────────────────
@@ -1510,14 +1538,9 @@ impl PhantomMcpServer {
 
         if entry.is_phantom {
             // Already protected with a phantom token
-            let truncated = if entry.value.len() > 12 {
-                format!("{}...", &entry.value[..12])
-            } else {
-                entry.value.clone()
-            };
             output.push_str(&format!(
-                "PROTECTED: '{}' is a phantom token ({}).\n",
-                params.key, truncated
+                "PROTECTED: '{}' has a phantom token.\n",
+                params.key
             ));
             output.push_str(
                 "The real secret is stored in the vault; only the phantom token appears in .env.\n",
@@ -2049,8 +2072,21 @@ impl PhantomMcpServer {
     }
 
     /// Check cloud auth and sync status.
-    #[tool(description = "Check Phantom Cloud authentication status, plan, and last sync version.")]
-    async fn phantom_cloud_status(&self) -> Result<CallToolResult, McpError> {
+    #[tool(
+        description = "Check Phantom Cloud authentication status, plan, and last sync version. This uses the stored cloud credential and makes a provider request; requires confirm plus approval_token."
+    )]
+    async fn phantom_cloud_status(
+        &self,
+        Parameters(params): Parameters<ApprovalParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_cloud_status", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token(
+            "phantom_cloud_status",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let api_base = phantom_core::auth::api_base_url()
             .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
 
@@ -2092,9 +2128,20 @@ impl PhantomMcpServer {
 
     /// List teams the user belongs to.
     #[tool(
-        description = "List teams the authenticated user belongs to. Returns team id, name, and the user's role for each. Read-only."
+        description = "List teams the authenticated user belongs to. Returns team id, name, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token."
     )]
-    async fn phantom_team_list(&self) -> Result<CallToolResult, McpError> {
+    async fn phantom_team_list(
+        &self,
+        Parameters(params): Parameters<ApprovalParams>,
+    ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_team_list", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token(
+            "phantom_team_list",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -2141,12 +2188,20 @@ impl PhantomMcpServer {
 
     /// List members of a team.
     #[tool(
-        description = "List members of a team by team_id. Returns GitHub login, email, and role for each member. Read-only."
+        description = "List members of a team by team_id. Returns GitHub login, email, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token."
     )]
     async fn phantom_team_members(
         &self,
         Parameters(params): Parameters<TeamIdParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_team_members", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token(
+            "phantom_team_members",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -2790,7 +2845,8 @@ impl PhantomMcpServer {
             Set ack=true to acknowledge all returned alerts (removes them from the active list). \
             Set snooze_seconds>0 with ack=true to snooze instead of fully acknowledging. \
             Pass include_acked=true to also return already-acknowledged or snoozed alerts. \
-            Use secret_name to filter to a specific secret. Read-only when ack=false."
+            Use secret_name to filter to a specific secret. Read-only when ack=false; \
+            ack=true persists acknowledgement state and requires confirm plus approval_token."
     )]
     fn phantom_audit_hotspot_alerts(
         &self,
@@ -2799,6 +2855,17 @@ impl PhantomMcpServer {
         use phantom_core::audit::{
             acknowledge_hotspot_alert, detect_hotspot_alerts, HotspotAckStatus,
         };
+
+        if params.ack {
+            require_confirm("phantom_audit_hotspot_alerts", params.confirm)?;
+            let params_json = serde_json::to_string(&params).unwrap_or_default();
+            require_approval_token(
+                "phantom_audit_hotspot_alerts",
+                params.approval_token.as_deref(),
+                &params_json,
+                &self.project_id(),
+            )?;
+        }
 
         // Detect current alerts.
         let mut alerts = detect_hotspot_alerts()
@@ -2815,8 +2882,14 @@ impl PhantomMcpServer {
                 .iter()
                 .filter(|a| a.ack_status == HotspotAckStatus::Unacked)
             {
-                // Best-effort: ignore individual ack errors.
-                let _ = acknowledge_hotspot_alert(&alert.secret_name, params.snooze_seconds);
+                acknowledge_hotspot_alert(&alert.secret_name, params.snooze_seconds).map_err(
+                    |e| {
+                        internal_err(format!(
+                            "Failed to persist acknowledgement for '{}': {e}",
+                            alert.secret_name
+                        ))
+                    },
+                )?;
             }
             // Re-detect so the returned list reflects the new ack states.
             alerts = detect_hotspot_alerts()
@@ -2960,8 +3033,8 @@ impl PhantomMcpServer {
             0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. \
             Each incident includes: incident_id, secret_name (never the value), \
             location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. \
-            Incidents are cleared automatically when the affected secret is rotated \
-            (vault.store event newer than last_seen_ts). Read-only — safe for AI agents."
+            Incidents whose secret was subsequently stored are omitted. Reads only the persisted incident \
+            store; it does not run correlation or write state."
     )]
     fn phantom_audit_incidents(
         &self,
@@ -2971,9 +3044,6 @@ impl PhantomMcpServer {
 
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
-
-        // Run correlation to pick up any new events (best-effort; ignore errors).
-        let _ = engine.run();
 
         let incidents = engine
             .active_incidents(params.min_confidence)
@@ -3002,8 +3072,8 @@ impl PhantomMcpServer {
     ///
     /// Queries active incidents (confidence > 0.5, < 24 h old) from
     /// `~/.phantom/leak-incidents.jsonl` and returns structured summaries.
-    /// When `auto_rotate_on_high` is set, automatically rotates secrets whose
-    /// confidence >= 0.9 — but only after the agent has passed `confirm: true`.
+    /// This dashboard is deliberately read-only. Rotation remains available
+    /// through the separately approved rotation tools.
     #[tool(
         description = "Query active leak incidents for a real-time security dashboard. \
             Returns incidents with confidence > 0.5 seen within the last 24 hours, \
@@ -3011,10 +3081,8 @@ impl PhantomMcpServer {
             secret_name (never the value), location_label, confidence, \
             first_seen (ISO-8601), last_seen (ISO-8601), incident_id. \
             Set min_confidence (default 0.5) to narrow results. \
-            Set auto_rotate_on_high=true to automatically call phantom rotate for any \
-            incident whose confidence >= 0.9; requires confirm=true (AI agents cannot \
-            auto-rotate without explicit user consent — MCP approval gate). \
-            Read-only unless auto_rotate_on_high=true. Never exposes secret values."
+            Reads only persisted incidents and never rotates, writes correlation state, \
+            or exposes secret values. Use a separately approved rotation tool to remediate."
     )]
     fn phantom_leak_incidents_realtime(
         &self,
@@ -3022,16 +3090,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::leak_correlation::LeakCorrelationEngine;
 
-        // Enforce approval gate for auto-rotate path.
-        if params.auto_rotate_on_high {
-            require_confirm("phantom_leak_incidents_realtime", params.confirm)?;
-        }
-
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
-
-        // Run correlation to pick up any new events (best-effort).
-        let _ = engine.run();
 
         // Retrieve active incidents: confidence >= min_confidence, < 24 h old.
         let incidents = engine
@@ -3072,40 +3132,11 @@ impl PhantomMcpServer {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // Auto-rotate high-confidence incidents when requested.
-        let mut rotated: Vec<String> = Vec::new();
-        if params.auto_rotate_on_high {
-            // confirm was already verified above.
-            let (_, vault) = self.load_config_and_vault()?;
-            let names = vault
-                .list()
-                .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
-
-            for inc in &incidents {
-                if inc.confidence < 0.9 {
-                    continue;
-                }
-                if !names.contains(&inc.secret_name) {
-                    continue; // secret not in this project's vault — skip
-                }
-
-                // Regenerate phantom token for the secret (rotate in vault metadata).
-                // We record an audit event and log the action.
-                phantom_core::audit::log("vault.auto_rotated_on_leak", Some(&inc.secret_name));
-                rotated.push(inc.secret_name.clone());
-
-                eprintln!(
-                    "phantom: auto-rotated '{}' due to leak incident {} (confidence={:.2})",
-                    inc.secret_name, inc.incident_id, inc.confidence
-                );
-            }
-        }
-
         let out = serde_json::json!({
             "incident_count": summaries.len(),
             "min_confidence": params.min_confidence,
-            "auto_rotate_on_high": params.auto_rotate_on_high,
-            "rotated_secrets": rotated,
+            "effect": "read_only",
+            "rotation_performed": false,
             "incidents": summaries,
         });
 
@@ -3119,8 +3150,9 @@ impl PhantomMcpServer {
         description = "Retrieve persisted leak-incident alert records from ~/.phantom/leak-alerts.jsonl. \
             Each alert represents a high-confidence proxy response leak that was dispatched to \
             configured backends (webhook/Slack/PagerDuty). \
-            Set 'backfill: true' to re-run the correlation engine and emit any pending alerts \
-            before returning the list. \
+            Set 'backfill: true' to re-run correlation, persist new incidents/alerts, and dispatch \
+            configured notifications before returning the list; this requires confirm plus \
+            approval_token. \
             Returns the most recent 'last' alerts (default 50) in chronological order, \
             including: secret_name, location_label, confidence, event_count, alerted_at, \
             backends_notified, and remediation advice. \
@@ -3141,6 +3173,14 @@ impl PhantomMcpServer {
         let alerts_path = home.join(".phantom").join("leak-alerts.jsonl");
 
         if params.backfill {
+            require_confirm("phantom_audit_alerts", params.confirm)?;
+            let params_json = serde_json::to_string(&params).unwrap_or_default();
+            require_approval_token(
+                "phantom_audit_alerts",
+                params.approval_token.as_deref(),
+                &params_json,
+                &self.project_id(),
+            )?;
             let engine = LeakCorrelationEngine::new()
                 .map_err(|e| internal_err(format!("Cannot initialise correlation engine: {e}")))?;
             let incidents = engine
@@ -3162,7 +3202,9 @@ impl PhantomMcpServer {
                     alerts_path.clone(),
                     Box::new(HttpAlertDispatch),
                 );
-                let _ = alerter.process_incidents(&incidents);
+                alerter
+                    .process_incidents(&incidents)
+                    .map_err(|e| internal_err(format!("Alert dispatch/backfill failed: {e}")))?;
             }
         }
 
@@ -3221,7 +3263,8 @@ impl PhantomMcpServer {
             incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since \
             last vault.store per secret, (d) anomaly executive summary of high-score secrets. \
             Use 'from'/'to' (YYYY-MM-DD) to scope the date range. \
-            Set 'save: true' to persist the report to ~/.phantom/reports/. \
+            Set 'save: true' to persist the report to ~/.phantom/reports/; saving requires \
+            confirm plus approval_token. \
             Never exposes secret values. Read-only (save=false). Safe for AI agents."
     )]
     fn phantom_audit_export_report(
@@ -3231,6 +3274,22 @@ impl PhantomMcpServer {
         use phantom_core::audit_export::{
             parse_date_to_ts, parse_date_to_ts_end, AuditExporter, ExportFilter,
         };
+
+        if params.save {
+            if params.action == "export" {
+                return Err(invalid_params_err(
+                    "save=true is supported only for action='report'",
+                ));
+            }
+            require_confirm("phantom_audit_export_report", params.confirm)?;
+            let params_json = serde_json::to_string(&params).unwrap_or_default();
+            require_approval_token(
+                "phantom_audit_export_report",
+                params.approval_token.as_deref(),
+                &params_json,
+                &self.project_id(),
+            )?;
+        }
 
         let exporter = AuditExporter::new()
             .map_err(|e| internal_err(format!("Failed to initialise audit exporter: {e}")))?;
@@ -3274,14 +3333,13 @@ impl PhantomMcpServer {
                     .map_err(|e| internal_err(format!("Report generation failed: {e}")))?;
 
                 let saved_path = if params.save {
-                    match exporter.save_report(&report) {
-                        Ok(p) => Some(p.to_string_lossy().into_owned()),
-                        Err(e) => {
-                            // Don't fail the whole call just because save failed.
-                            tracing::warn!("Failed to save compliance report: {e}");
-                            None
-                        }
-                    }
+                    Some(
+                        exporter
+                            .save_report(&report)
+                            .map_err(|e| internal_err(format!("Failed to save report: {e}")))?
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
                 } else {
                     None
                 };
@@ -3350,13 +3408,23 @@ impl PhantomMcpServer {
         }));
 
         // Check 3: pre-commit hook installed
-        let git_hook = self.project_dir.join(".git/hooks/pre-commit");
-        let precommit_ok = if git_hook.exists() {
-            std::fs::read_to_string(&git_hook)
-                .map(|content| precommit_hook::is_current(&content))
-                .unwrap_or(false)
-        } else {
-            false
+        let precommit_ok = match precommit_hook::inspect(&self.project_dir) {
+            Ok(precommit_hook::HookState::Present {
+                content,
+                executable,
+                ..
+            }) => {
+                precommit_hook::is_ready(&content, executable)
+            }
+            Ok(
+                precommit_hook::HookState::Missing { .. }
+                | precommit_hook::HookState::NotRepository,
+            ) => false,
+            Err(error) => {
+                return Err(internal_err(format!(
+                    "Could not inspect the effective Git pre-commit hook: {error}"
+                )));
+            }
         };
         if !precommit_ok {
             all_pass = false;
@@ -3664,14 +3732,22 @@ impl PhantomMcpServer {
             Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: \
             total, valid, invalid, unreachable, not_checked counts and per-secret entries \
             (name, validator, status, reason, checked_at). \
-            Secret VALUES are never returned or logged. Read-only; no confirm required. \
-            Note: this makes real outbound HTTP requests — run during maintenance windows \
-            to avoid contributing to rate limits."
+            Secret VALUES are never returned or logged. This retrieves credentials, makes real \
+            outbound provider requests, and persists value-free validation metadata; it requires \
+            confirm plus approval_token and should run during a maintenance window."
     )]
     fn phantom_validate_all(
         &self,
         Parameters(params): Parameters<ValidateAllParams>,
     ) -> Result<CallToolResult, McpError> {
+        require_confirm("phantom_validate_all", params.confirm)?;
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token(
+            "phantom_validate_all",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
         let (_config, vault) = self.load_config_and_vault()?;
 
         let names = vault
@@ -3734,8 +3810,14 @@ impl PhantomMcpServer {
                 }
                 _ => continue,
             };
-            // Best-effort — don't fail the whole call if metadata persistence fails.
-            let _ = vault.set_validation_metadata(&entry.name, meta);
+            vault
+                .set_validation_metadata(&entry.name, meta)
+                .map_err(|e| {
+                    internal_err(format!(
+                        "Validation completed but metadata persistence failed for '{}': {e}",
+                        entry.name
+                    ))
+                })?;
         }
 
         let out = serde_json::to_string_pretty(&report)
@@ -3752,7 +3834,8 @@ impl PhantomMcpServer {
             Pass `interval` to update (accepted values: 'hourly', '6h', '12h', 'daily', \
             'daily@2am', 'weekly', 'disabled'). Omit `interval` to read the current \
             schedule and staleness status. Returns schedule, last_run_at, and staleness \
-            indicators. Read-only when interval is omitted; no confirm required."
+            indicators. Read-only when interval is omitted. Providing interval persists scheduler \
+            state and requires confirm plus approval_token."
     )]
     fn phantom_validation_schedule(
         &self,
@@ -3766,6 +3849,14 @@ impl PhantomMcpServer {
 
         // If an interval was provided, update the schedule.
         if let Some(ref interval_str) = params.interval {
+            require_confirm("phantom_validation_schedule", params.confirm)?;
+            let params_json = serde_json::to_string(&params).unwrap_or_default();
+            require_approval_token(
+                "phantom_validation_schedule",
+                params.approval_token.as_deref(),
+                &params_json,
+                &self.project_id(),
+            )?;
             let sched = Schedule::parse(interval_str).map_err(|e| {
                 crate::tools::helpers::invalid_params_err(format!("Invalid schedule interval: {e}"))
             })?;
@@ -4228,21 +4319,6 @@ impl PhantomMcpServer {
     }
 }
 
-fn ensure_mcp_git_hook(path: &Path, existing: &str) -> Result<HookChange, McpError> {
-    let update = precommit_hook::ensure(existing);
-    if update.change != HookChange::Unchanged {
-        std::fs::write(path, update.content)
-            .map_err(|e| internal_err(format!("Failed to write pre-commit hook: {e}")))?;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| internal_err(format!("Failed to make pre-commit hook executable: {e}")))?;
-    }
-    Ok(update.change)
-}
-
 fn wrapped_script_command(original: &str) -> String {
     format!("phantom exec -- {original}")
 }
@@ -4390,25 +4466,17 @@ mod tests {
         format!("{:?}", result.content)
     }
 
-    #[test]
-    fn mcp_doctor_fix_repairs_stale_hook_without_network_execution() {
-        let project = TempDir::new().unwrap();
-        let hook = project.path().join("pre-commit");
-        let existing = "#!/bin/sh\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\nexit $?\n";
-
-        let change = ensure_mcp_git_hook(&hook, existing).unwrap();
-
-        let repaired = std::fs::read_to_string(hook).unwrap();
-        assert_eq!(change, HookChange::Repaired);
-        assert!(precommit_hook::is_current(&repaired));
-        assert!(!repaired.contains("npx phantom-secrets"));
-    }
-
     #[cfg(unix)]
     #[test]
     fn mcp_doctor_fix_refuses_to_overwrite_non_utf8_hook() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, dir) = setup_test_project();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success());
         let hook = dir.path().join(".git/hooks/pre-commit");
         std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
         let original = b"#!/bin/sh\necho user-hook\n\xff\n";
@@ -4422,6 +4490,43 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(hook).unwrap(), original);
+    }
+
+    #[test]
+    fn mcp_doctor_repairs_custom_effective_hook_path() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, dir) = setup_test_project();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "core.hooksPath", "effective-hooks"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success());
+        }
+        let hook = dir.path().join("effective-hooks/pre-commit");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\necho before\nexit 0\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\n",
+        )
+        .unwrap();
+
+        server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: true,
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap();
+
+        let repaired = std::fs::read_to_string(&hook).unwrap();
+        assert!(precommit_hook::is_current(&repaired));
+        assert!(repaired.find("phantom check").unwrap() < repaired.find("exit 0").unwrap());
+        assert!(!dir.path().join(".git/hooks/pre-commit").exists());
     }
 
     #[test]
@@ -4692,7 +4797,17 @@ mod tests {
         let (server, _dir) = setup_test_project();
 
         let params: SetupWorkspaceParams = serde_json::from_value(serde_json::json!({})).unwrap();
-        let result = server.phantom_setup_workspace(Parameters(params)).unwrap();
+        let err = server
+            .phantom_setup_workspace(Parameters(params))
+            .unwrap_err();
+        assert!(err.message.contains("confirm: true"));
+
+        let result = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                confirm: true,
+                ..SetupWorkspaceParams::default()
+            }))
+            .unwrap();
         let text = extract_content_text(&result);
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
 
@@ -4728,7 +4843,10 @@ mod tests {
         let before_entries = std::fs::read_dir(dir.path()).unwrap().count();
 
         let proposed = server
-            .phantom_setup_workspace(Parameters(SetupWorkspaceParams::default()))
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                confirm: true,
+                ..SetupWorkspaceParams::default()
+            }))
             .unwrap();
         let proposed: serde_json::Value =
             serde_json::from_str(&extract_content_text(&proposed)).unwrap();
@@ -4747,6 +4865,8 @@ mod tests {
                 plan_id: Some(plan_id),
                 pre_state_id: Some(pre_state_id),
                 request_id: None,
+                confirm: true,
+                approval_token: None,
             }))
             .unwrap();
         let text = extract_content_text(&requested);
@@ -4783,6 +4903,8 @@ mod tests {
                 plan_id: Some("0".repeat(64)),
                 pre_state_id: Some("1".repeat(64)),
                 request_id: None,
+                confirm: true,
+                approval_token: None,
             }))
             .unwrap_err();
 
@@ -4796,7 +4918,10 @@ mod tests {
         let _home = TestHome::new();
         let (server, dir) = setup_test_project();
         let proposed = server
-            .phantom_setup_workspace(Parameters(SetupWorkspaceParams::default()))
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                confirm: true,
+                ..SetupWorkspaceParams::default()
+            }))
             .unwrap();
         let proposed: serde_json::Value =
             serde_json::from_str(&extract_content_text(&proposed)).unwrap();
@@ -4815,6 +4940,8 @@ mod tests {
                 plan_id: Some("0".repeat(64)),
                 pre_state_id: Some(pre_state_id.clone()),
                 request_id: None,
+                confirm: true,
+                approval_token: None,
             }))
             .unwrap_err();
         assert_eq!(mismatch.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -4830,6 +4957,8 @@ mod tests {
                 plan_id: Some(plan_id),
                 pre_state_id: Some(pre_state_id),
                 request_id: None,
+                confirm: true,
+                approval_token: None,
             }))
             .unwrap_err();
         assert_eq!(drift.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -4842,7 +4971,10 @@ mod tests {
         let home = TestHome::new();
         let (server, _dir) = setup_test_project();
         let proposed = server
-            .phantom_setup_workspace(Parameters(SetupWorkspaceParams::default()))
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                confirm: true,
+                ..SetupWorkspaceParams::default()
+            }))
             .unwrap();
         let proposed: serde_json::Value =
             serde_json::from_str(&extract_content_text(&proposed)).unwrap();
@@ -4862,6 +4994,8 @@ mod tests {
                         .to_string(),
                 ),
                 request_id: None,
+                confirm: true,
+                approval_token: None,
             }))
             .unwrap();
         let requested: serde_json::Value =
@@ -4910,11 +5044,106 @@ mod tests {
     }
 
     #[test]
-    fn test_setup_workspace_params_deny_unknown_fields() {
+    fn test_setup_workspace_params_accept_authority_fields_and_deny_unknown_fields() {
         assert!(
             serde_json::from_value::<SetupWorkspaceParams>(serde_json::json!({
                 "phase": "propose",
-                "approval_token": "must-never-be-accepted"
+                "confirm": true,
+                "approval_token": "nonce:token"
+            }))
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<SetupWorkspaceParams>(serde_json::json!({
+                "phase": "propose",
+                "bearer_token": "must-never-be-accepted"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn high_effect_tool_schemas_expose_confirm_and_approval_token() {
+        fn assert_dual_gate<T: schemars::JsonSchema>() {
+            let schema = serde_json::to_value(schemars::schema_for!(T)).unwrap();
+            let properties = schema["properties"].as_object().unwrap();
+            assert!(properties.contains_key("confirm"));
+            assert!(properties.contains_key("approval_token"));
+        }
+
+        assert_dual_gate::<SetupWorkspaceParams>();
+        assert_dual_gate::<ApprovalParams>();
+        assert_dual_gate::<TeamIdParams>();
+        assert_dual_gate::<ValidateAllParams>();
+        assert_dual_gate::<ValidationScheduleParams>();
+        assert_dual_gate::<AuditAlertsParams>();
+        assert_dual_gate::<AuditHotspotAlertsParams>();
+        assert_dual_gate::<AuditExportReportParams>();
+    }
+
+    #[test]
+    fn conditional_effects_fail_before_writes_or_provider_calls_without_confirm() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+
+        let validate = server
+            .phantom_validate_all(Parameters(ValidateAllParams {
+                jobs: 1,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap_err();
+        assert!(validate.message.contains("confirm: true"));
+
+        let schedule_path = phantom_core::validation_scheduler::state_file_path(
+            server.load_config().unwrap().local_project_id(),
+        );
+        let schedule = server
+            .phantom_validation_schedule(Parameters(ValidationScheduleParams {
+                interval: Some("daily".to_string()),
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap_err();
+        assert!(schedule.message.contains("confirm: true"));
+        assert!(!schedule_path.exists());
+
+        let alerts = server
+            .phantom_audit_alerts(Parameters(AuditAlertsParams {
+                last: 10,
+                backfill: true,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap_err();
+        assert!(alerts.message.contains("confirm: true"));
+        assert!(!home._dir.path().join(".phantom/leak-alerts.jsonl").exists());
+
+        let report = server
+            .phantom_audit_export_report(Parameters(AuditExportReportParams {
+                action: "report".to_string(),
+                format: "json".to_string(),
+                from: None,
+                to: None,
+                secret_name: None,
+                operation: None,
+                save: true,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap_err();
+        assert!(report.message.contains("confirm: true"));
+        assert!(!home._dir.path().join(".phantom/reports").exists());
+    }
+
+    #[test]
+    fn realtime_incident_params_reject_simulated_auto_rotation() {
+        assert!(
+            serde_json::from_value::<LeakIncidentsRealtimeParams>(serde_json::json!({
+                "min_confidence": 0.9,
+                "auto_rotate_on_high": true,
+                "confirm": true
             }))
             .is_err()
         );
@@ -5674,6 +5903,8 @@ mod tests {
                 ack: false,
                 snooze_seconds: 0,
                 include_acked: false,
+                confirm: false,
+                approval_token: None,
             }))
             .unwrap();
 
@@ -5730,6 +5961,8 @@ mod tests {
                 ack: false,
                 snooze_seconds: 0,
                 include_acked: false,
+                confirm: false,
+                approval_token: None,
             }))
             .unwrap();
 
@@ -5799,6 +6032,8 @@ mod tests {
                 ack: true,
                 snooze_seconds: 0,
                 include_acked: false,
+                confirm: true,
+                approval_token: None,
             }))
             .unwrap();
 
@@ -5842,6 +6077,8 @@ mod tests {
                 ack: false,
                 snooze_seconds: 0,
                 include_acked: false,
+                confirm: false,
+                approval_token: None,
             }))
             .unwrap();
 
@@ -5887,6 +6124,8 @@ mod tests {
                 ack: false,
                 snooze_seconds: 0,
                 include_acked: false,
+                confirm: false,
+                approval_token: None,
             }))
             .unwrap();
 
@@ -6107,6 +6346,12 @@ mod tests {
     fn compliance_status_rejects_stale_network_capable_hook() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (server, dir) = setup_initialized_project();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success());
         std::fs::create_dir_all(dir.path().join(".git/hooks")).unwrap();
         std::fs::write(
             dir.path().join(".git/hooks/pre-commit"),

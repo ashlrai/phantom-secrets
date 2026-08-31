@@ -36,7 +36,11 @@ verified binaries installed and inspect the generated entry instead of relying
 on that fallback. Current main removes the network fallback and fails closed;
 that hardening is not in `v0.7.3` and awaits a later release.
 
-The runtime `tools/list` response is the canonical MCP parameter schema.
+The runtime `tools/list` response is the canonical MCP parameter schema and is
+checked for exact parity with `mcp-registry/server.json`. Provider/network
+requests, credential retrieval/use, and persistent effects require both
+`confirm: true` and an out-of-band `approval_token`; conditional tools expose
+ungated inspection separately from their gated effectful parameters.
 The vault, package, cloud, and team mutation tools selected below require
 explicit consent, `confirm: true`, and the `approval_token` obtained through
 the server's out-of-band `phantom mcp-approve` challenge. Advanced audit,

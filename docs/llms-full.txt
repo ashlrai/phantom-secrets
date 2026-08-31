@@ -159,7 +159,7 @@ extrapolating this selected catalog.
 **Personal Cloud Backup:**
 - `phantom_cloud_push` — Push a client-encrypted ChaCha20-Poly1305 vault payload to Phantom Cloud. Params: confirm, approval_token. The vault API receives ciphertext rather than decrypted secret values; client, account, endpoint, and deployment security remain in scope.
 - `phantom_cloud_pull` — Pull vault from Phantom Cloud. Params: force, confirm, approval_token. Downloads and decrypts vault, stores secrets locally.
-- `phantom_cloud_status` — Check cloud auth status, plan, and last sync version.
+- `phantom_cloud_status` — Dual-gated authenticated provider request for cloud auth status, plan, and last sync version. Params: confirm, approval_token.
 
 **Diagnostics & Cross-Project:**
 - `phantom_doctor` — Health checks: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook. Params: fix, confirm, approval_token. `confirm` and `approval_token` are required only when `fix=true`.
@@ -174,8 +174,8 @@ extrapolating this selected catalog.
 - `phantom_unwrap` — Reverse `phantom_wrap`: restore original scripts from `:raw` variants and remove the `:raw` entries. Params: confirm, approval_token.
 
 **Teams (source-backed fixed-membership pilot; hosted Pro commissioning required):**
-- `phantom_team_list` — Read-only. List teams the authenticated user belongs to.
-- `phantom_team_members` — Read-only. List members of a team. Params: team_id; the reused schema also exposes optional confirm and approval_token fields, but this read-only handler ignores them.
+- `phantom_team_list` — Dual-gated authenticated provider request listing the teams the user belongs to. Params: confirm, approval_token.
+- `phantom_team_members` — Dual-gated authenticated provider request listing members. Params: team_id, confirm, approval_token.
 - `phantom_team_key_publish` — Register this device's X25519 public key with the team. Params: team_id, confirm, approval_token. Pubkey only — the private key stays in the OS keychain.
 - `phantom_team_create` — Create a new team. The authenticated user becomes the owner. Params: name, confirm, approval_token.
 - `phantom_team_invite` — Invite someone to a team by GitHub username. Requires owner or admin role. Params: team_id, github_login, role, confirm, approval_token.

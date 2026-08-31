@@ -78,6 +78,25 @@ pub struct SetupWorkspaceParams {
     /// Bearerless request identifier returned by request_apply.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// Required for phases that persist machine-local state (`propose` when the
+    /// plan-seal key has not been provisioned, and every `request_apply`).
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
+}
+
+/// Dual approval gate for tools whose only inputs are authority controls.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalParams {
+    /// Required. Must be true before the provider or persistent-state effect.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -327,6 +346,7 @@ pub struct TeamCreateParams {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TeamIdParams {
     /// Team identifier (UUID)
     pub team_id: String,
@@ -385,10 +405,18 @@ pub struct ValidateSecretParams {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ValidateAllParams {
     /// Maximum number of concurrent validation jobs (default: 4, max: 16).
     #[serde(default = "default_validate_jobs")]
     pub jobs: usize,
+    /// Required because validation retrieves credentials, calls provider APIs,
+    /// and persists the value-free result metadata.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 fn default_validate_jobs() -> usize {
@@ -522,22 +550,12 @@ fn default_min_confidence() -> f64 {
 
 /// Parameters for `phantom_leak_incidents_realtime`.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LeakIncidentsRealtimeParams {
     /// Only return incidents whose confidence score is at or above this value
     /// (range 0.0–1.0). Defaults to 0.5 per spec (active incident threshold).
     #[serde(default = "default_realtime_min_confidence")]
     pub min_confidence: f64,
-    /// When true, automatically call `phantom rotate <secret>` for any incident
-    /// with confidence >= 0.9 and log the action.
-    /// AI agents MUST set `confirm: true` to enable auto-rotate — the approval
-    /// gate prevents unattended rotation without explicit user consent.
-    #[serde(default)]
-    pub auto_rotate_on_high: bool,
-    /// Required when `auto_rotate_on_high` is true. The calling agent must
-    /// obtain explicit user consent before auto-rotating secrets.
-    /// Defends against prompt-injected instructions silently rotating keys.
-    #[serde(default)]
-    pub confirm: bool,
 }
 
 fn default_realtime_min_confidence() -> f64 {
@@ -548,6 +566,7 @@ fn default_realtime_min_confidence() -> f64 {
 
 /// Parameters for `phantom_audit_alerts`.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AuditAlertsParams {
     /// Maximum number of recent alerts to return (default: 50).
     #[serde(default = "default_alerts_last")]
@@ -556,6 +575,13 @@ pub struct AuditAlertsParams {
     /// before returning the list. Default: false.
     #[serde(default)]
     pub backfill: bool,
+    /// Required when `backfill=true` because correlation state and alert
+    /// records may be persisted and notification backends may be called.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 fn default_alerts_last() -> usize {
@@ -566,6 +592,7 @@ fn default_alerts_last() -> usize {
 
 /// Parameters for `phantom_audit_export_report`.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AuditExportReportParams {
     /// Action: "export" to get raw rows as CSV/JSON, or "report" to get a
     /// full compliance report. Default: "report".
@@ -589,6 +616,12 @@ pub struct AuditExportReportParams {
     /// Save the compliance report to ~/.phantom/reports/ (report action only).
     #[serde(default)]
     pub save: bool,
+    /// Required when `save=true` because a report is persisted to disk.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 fn default_export_action() -> String {
@@ -604,6 +637,7 @@ fn default_export_format_for_report() -> String {
 /// Parameters for `phantom_audit_hotspot_alerts` — inspect and acknowledge
 /// per-secret access-velocity spike alerts.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AuditHotspotAlertsParams {
     /// If set, only return alerts for this specific secret name.
     #[serde(default)]
@@ -620,17 +654,30 @@ pub struct AuditHotspotAlertsParams {
     /// Default: false (only unacked alerts).
     #[serde(default)]
     pub include_acked: bool,
+    /// Required when `ack=true` because acknowledgement state is persisted.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 // ── Validation scheduler ──────────────────────────────────────────────
 
 /// Parameters for `phantom_validation_schedule` (get/set schedule).
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ValidationScheduleParams {
     /// New schedule interval to set: "hourly", "6h", "daily", "daily@2am",
     /// "weekly", "disabled". Omit to read the current schedule only.
     #[serde(default)]
     pub interval: Option<String>,
+    /// Required when `interval` is present because scheduler state is persisted.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 /// Parameters for `phantom_validation_history`.

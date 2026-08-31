@@ -28,10 +28,11 @@ The server exposes Phantom's live MCP catalog over stdio transport. The registry
 
 **Conversation, status, and validation operations (responses do not return secret values):**
 
-`phantom_setup_workspace` proposal may provision or harden machine-local Phantom
-state, and `phantom_validate_all` performs provider network calls and persists
-safe validation metadata. Treat those effects separately from response value
-safety.
+`phantom_setup_workspace` may provision machine-local state, and
+`phantom_validate_all` retrieves credentials, calls provider APIs, and persists
+value-free validation metadata. Those paths require `confirm: true` plus a
+one-use out-of-band `approval_token`; response value safety does not make an
+effect read-only.
 
 | Tool | Description |
 |------|-------------|
@@ -45,10 +46,10 @@ safety.
 | `phantom_check` | Scan the repo for unprotected secrets (pre-commit-style). |
 | `phantom_env` | Generate `.env.example` with secrets replaced by placeholders. |
 | `phantom_sync` | Preview deployment-platform sync (Vercel, Railway). |
-| `phantom_cloud_status` | Check cloud authentication and sync status. |
+| `phantom_cloud_status` | Check cloud authentication and sync status through a dual-gated provider request. |
 | `phantom_validate_secret` | Show last-known validation status for one secret. |
-| `phantom_validate_all` | Run live credential health checks and persist safe validation metadata. |
-| `phantom_validation_schedule` / `phantom_validation_history` | Inspect validation cadence and run history. |
+| `phantom_validate_all` | Dual-gated live credential health checks with value-free metadata persistence. |
+| `phantom_validation_schedule` / `phantom_validation_history` | Inspect validation cadence/history; schedule writes are dual-gated. |
 
 **Mutating (modify the vault or `.env`):**
 
@@ -72,9 +73,9 @@ safety.
 
 | Tool | Description |
 |------|-------------|
-| `phantom_team_list` | List teams the authenticated user belongs to. (Read-only.) |
+| `phantom_team_list` | List teams through a dual-gated authenticated provider request. |
 | `phantom_team_create` | Create a new team. Caller becomes owner. (Mutating, requires `confirm`.) |
-| `phantom_team_members` | List members of a team. (Read-only.) |
+| `phantom_team_members` | List members through a dual-gated authenticated provider request. |
 | `phantom_team_invite` | Invite someone to a team by GitHub username. (Mutating, requires `confirm`.) |
 | `phantom_team_key_publish` | Register the caller's X25519 public key on a team. Idempotent. |
 | `phantom_team_vault_push` | Push the current project's vault to a team. Encrypts the vault with a fresh symmetric key, then wraps that key (X25519 + ChaCha20-Poly1305) for every member with a registered public key. (Mutating, requires `confirm`.) |
@@ -85,9 +86,9 @@ safety.
 | Tool | Description |
 |------|-------------|
 | `phantom_audit_recent` / `phantom_audit_stats` / `phantom_audit_analytics` | Read recent audit events and aggregate analytics without secret values. |
-| `phantom_audit_anomalies` / `phantom_audit_anomalies_realtime` / `phantom_audit_hotspot_alerts` | Detect suspicious access patterns and access-velocity alerts. |
-| `phantom_audit_incidents` / `phantom_leak_incidents_realtime` / `phantom_audit_alerts` | Review leak incidents and alert records without exposing credentials. |
-| `phantom_audit_export_report` / `phantom_compliance_status` | Export audit data and report compliance readiness. |
+| `phantom_audit_anomalies` / `phantom_audit_anomalies_realtime` / `phantom_audit_hotspot_alerts` | Detect suspicious patterns; hotspot acknowledgement/snooze writes are dual-gated. |
+| `phantom_audit_incidents` / `phantom_leak_incidents_realtime` / `phantom_audit_alerts` | Read persisted incidents; alert backfill persists correlation/alert state and may dispatch notifications, so it is dual-gated. The realtime dashboard never rotates. |
+| `phantom_audit_export_report` / `phantom_compliance_status` | Return value-free exports/status; saving a report is dual-gated. |
 | `phantom_secret_rotation_due` / `phantom_list_with_expiry` / `phantom_secrets_expiry_check` | Inspect rotation and expiry status. |
 | `phantom_expiry_enforce` / `phantom_rotation_schedule_next` / `phantom_apply_expiry_policy` | Enforce expiry policy and inspect scheduled rotation state. |
 

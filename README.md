@@ -181,16 +181,31 @@ Phantom ships an MCP server so AI coding tools can inspect value-blind metadata
 and request gated lifecycle operations. MCP responses do not return real secret
 values.
 
-- **Conversation facade** — `phantom_capability` reports authority and hard denials for the small facade (not the separately gated advanced compatibility catalog); `phantom_do` canonicalizes one closed Cargo action and reports the exact activation blockers without executing it; `phantom_setup_workspace` proposes an exact value-blind plan, creates a bearerless apply request after revalidation, or reads authenticated request status. Proposal checks or hardens machine-local Phantom state and reports whether it provisioned the seal key; MCP never claims or applies the request.
+- **Conversation facade** — `phantom_capability` reports authority and hard denials for the small facade (not the separately gated advanced compatibility catalog); `phantom_do` canonicalizes one closed Cargo action and reports the exact activation blockers without executing it; `phantom_setup_workspace` proposes an exact value-blind plan, creates a bearerless apply request after revalidation, or reads authenticated request status. Provisioning the machine-local seal key and creating a request both require `confirm` plus an out-of-band approval token; MCP never claims or applies the request.
 - **Vault** — `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_add_secret` (deprecated; refuses plaintext), `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
 - **Detection + diagnostics** — `phantom_doctor`, `phantom_why`, `phantom_check`, `phantom_env`, `phantom_validate_secret`, `phantom_validate_all`
 - **Local-to-cloud** — `phantom_wrap`, `phantom_unwrap`, `phantom_sync`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`
 - **Teams** — `phantom_team_list`, `phantom_team_create`, `phantom_team_members`, `phantom_team_invite`, `phantom_team_key_publish`, `phantom_team_vault_push`, `phantom_team_vault_pull`
-- **Advanced audit, rotation, expiry, and compliance** — audit analytics/recent events/anomalies/leak incidents, staged and provider rotation, validation scheduling, expiry enforcement, and compliance status tools
+- **Advanced audit, rotation, expiry, and compliance** — `phantom_audit_recent`, `phantom_audit_stats`, `phantom_audit_analytics`, `phantom_audit_anomalies`, `phantom_audit_anomalies_realtime`, `phantom_audit_hotspot_alerts`, `phantom_audit_incidents`, `phantom_leak_incidents_realtime`, `phantom_audit_alerts`, `phantom_audit_export_report`, `phantom_compliance_status`, `phantom_rotate_with_candidate`, `phantom_rotate_promote`, `phantom_rotate_provider`, `phantom_rotate_with_expiry`, `phantom_list_with_expiry`, `phantom_secret_rotation_due`, `phantom_validation_schedule`, `phantom_validation_history`, `phantom_secrets_expiry_check`, `phantom_secrets_auto_rotate`, `phantom_expiry_enforce`, `phantom_rotation_schedule_next`, `phantom_apply_expiry_policy`
 
-Mutating tools require an explicit `confirm: true` parameter so a prompt-injected agent can't silently mutate state. Real secret values are never accepted as MCP tool arguments; new secrets are entered out-of-band in a trusted terminal.
+Tools that write state, retrieve or use credentials, or make provider/network
+requests require both `confirm: true` and the one-use `approval_token` returned
+by the out-of-band `phantom mcp-approve` challenge. Conditional tools keep
+their inspection mode ungated and activate both gates only for the effectful
+parameters. Real secret values are never accepted as MCP tool arguments; new
+secrets are entered out-of-band in a trusted terminal. The exact 54-tool names,
+descriptions, and JSON schemas are mirrored from runtime `tools/list` into
+[`mcp-registry/server.json`](mcp-registry/server.json), and release smoke tests
+reject any drift.
 
-Workspace setup is deliberately split across trust boundaries. MCP can call `phantom_setup_workspace` with `phase=propose`, then `phase=request_apply` using the exact returned `plan_id` and `pre_state_id`. That creates only a value-free request outside the repository. Apply it from an attached trusted terminal with `phantom workspace apply --request <ID>`; MCP has no claim or apply operation and receives no bearer or approval token.
+Workspace setup is deliberately split across trust boundaries. MCP can call
+`phantom_setup_workspace` with `phase=propose`, then `phase=request_apply` using
+the exact returned `plan_id` and `pre_state_id`. The first proposal requires
+dual approval only when it must provision the machine-local plan-seal key;
+`request_apply` always requires dual approval because it persists a value-free
+request outside the repository. Apply it from an attached trusted terminal
+with `phantom workspace apply --request <ID>`; MCP has no claim or apply
+operation.
 
 One command per AI client — Phantom writes the right config file in the right place:
 

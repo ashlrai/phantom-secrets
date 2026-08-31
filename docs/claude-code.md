@@ -76,7 +76,6 @@ catalog. The following table highlights the core workflows; use MCP
 |------|-------------|
 | `phantom_list_secrets` | List secret names in the vault. Never returns values. |
 | `phantom_status` | Show project ID, vault backend, secret count, service mappings, and `.env` protection state. |
-| `phantom_cloud_status` | Check cloud auth status, plan tier, and last sync version. |
 | `phantom_why` | Explain why a specific `.env` key is or isn't classified as a secret (shows the matching heuristic). |
 | `phantom_check` | Scan `.env` files for unprotected real secrets, or scan the runtime environment for phantom tokens without an active proxy. |
 | `phantom_sync` | Show sync configuration and which secrets would be pushed to Vercel or Railway. Informational only — does not execute the sync. |
@@ -104,6 +103,14 @@ Claude must ask for explicit user consent before calling any of these. Calling w
 | `phantom_copy_secret` | Copy a secret from this project's vault to another phantom-initialized project without exposing the value. Path traversal (`..`) is rejected. |
 | `phantom_wrap` | Wrap `package.json` scripts with `npx phantom-secrets exec --` so secrets are injected at runtime. Saves originals as `script:raw` variants. |
 | `phantom_unwrap` | Reverse `phantom_wrap` — restore original scripts from `:raw` variants and remove the `:raw` entries. |
+
+Provider requests and other effectful operations also require both
+`confirm: true` and an out-of-band `approval_token`, even when their response is
+value-blind. This includes `phantom_cloud_status`, `phantom_team_list`,
+`phantom_team_members`, and `phantom_validate_all`. Conditional operations keep
+their inspection mode read-only, but require both gates for schedule updates,
+alert backfill/dispatch, hotspot acknowledgement, and saved reports. Runtime
+`tools/list` is the exact parameter contract.
 
 ---
 

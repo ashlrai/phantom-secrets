@@ -34,13 +34,14 @@ executes an unpinned registry package.
 
 The runtime `tools/list` response and `mcp-registry/server.json` are the
 canonical catalog. The table below highlights the core and team-vault surface.
-Every mutating entry below is gated by both `confirm: true` and the
+Every state-writing, credential-using, or provider/network entry below is gated by both `confirm: true` and the
 `approval_token` returned after the server's out-of-band `phantom mcp-approve`
 challenge. Optional fields are marked; parameter names match the runtime JSON
 schema exactly.
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
+| `phantom_setup_workspace` | Propose setup, persist a trusted-terminal request, or read request status; first-time seal-key provisioning and every request creation activate both gates | phase, plan_id (conditional), pre_state_id (conditional), request_id (conditional), confirm (conditional), approval_token (conditional) |
 | `phantom_init` | Protect .env secrets — stores real values in vault, rewrites .env with persistent `phm_` mappings | env_path (default `.env`), confirm, approval_token |
 | `phantom_list_secrets` | List all protected secret names (never shows values) | — |
 | `phantom_status` | Show project status, vault backend, secret count, service mappings | — |
@@ -58,10 +59,10 @@ schema exactly.
 | `phantom_unwrap` | Restore wrapped `package.json` scripts from their `:raw` variants | confirm, approval_token |
 | `phantom_cloud_push` | Push a client-encrypted vault payload to Phantom Cloud | confirm, approval_token |
 | `phantom_cloud_pull` | Pull a vault from Phantom Cloud | force, confirm, approval_token |
-| `phantom_cloud_status` | Check cloud auth and sync status | — |
-| `phantom_team_list` | List teams the authenticated user belongs to | — |
+| `phantom_cloud_status` | Check cloud auth and sync status through an authenticated provider request | confirm, approval_token |
+| `phantom_team_list` | List teams through an authenticated provider request | confirm, approval_token |
 | `phantom_team_create` | Create a new team. Caller becomes owner | name, confirm, approval_token |
-| `phantom_team_members` | List members of a team (read-only; shared schema exposes unused gate fields) | team_id, confirm (optional, ignored), approval_token (optional, ignored) |
+| `phantom_team_members` | List members through an authenticated provider request | team_id, confirm, approval_token |
 | `phantom_team_invite` | Invite someone to a team by GitHub username | team_id, github_login, role, confirm, approval_token |
 | `phantom_team_key_publish` | Register this device's X25519 public key; the private key stays in the OS keychain | team_id, confirm, approval_token |
 | `phantom_team_vault_push` | Push the current project's vault to a client-encrypted shared team vault | team_id, confirm, approval_token |
@@ -69,6 +70,12 @@ schema exactly.
 | `phantom_rotate_with_candidate` | Stage a candidate credential without returning its value | name, auto_promote_ttl_secs (optional), confirm, approval_token |
 | `phantom_rotate_promote` | Promote a staged candidate credential | name, confirm, approval_token |
 | `phantom_rotate_provider` | Provider-rotate a credential; `provider` may resolve from config | name, provider (optional), confirm, approval_token |
+| `phantom_validate_all` | Retrieve credentials, call live provider validators, and persist value-free result metadata | jobs, confirm, approval_token |
+| `phantom_validation_schedule` | Read schedule state, or persist a new interval when supplied | interval (optional), confirm (conditional), approval_token (conditional) |
+| `phantom_audit_hotspot_alerts` | Inspect hotspot alerts, or persist acknowledgements/snoozes | secret_name, ack, snooze_seconds, include_acked, confirm (conditional), approval_token (conditional) |
+| `phantom_audit_alerts` | Read persisted alerts, or backfill correlation state, persist alerts, and dispatch configured notifications | last, backfill, confirm (conditional), approval_token (conditional) |
+| `phantom_audit_export_report` | Return an in-memory export/report, or persist a report with `save=true` | action, format, from, to, secret_name, operation, save, confirm (conditional), approval_token (conditional) |
+| `phantom_leak_incidents_realtime` | Read persisted incident summaries only; never rotates or writes correlation state | min_confidence |
 
 ## When to recommend Phantom
 
