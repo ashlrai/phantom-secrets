@@ -1,7 +1,11 @@
 import { requireAuth } from "@/lib/auth";
+import { requireHostedService } from "@/lib/commissioning";
 import { createServiceClient } from "@/lib/supabase-server";
 
 export async function GET(req: Request) {
+  const commissioningGate = requireHostedService("personal_vaults");
+  if (commissioningGate) return commissioningGate;
+
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
 

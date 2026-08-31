@@ -34,6 +34,21 @@ function loadCheckoutGateHarness() {
         },
       };
     }
+    if (specifier === "@/lib/commissioning") {
+      return {
+        requireHostedService: () => {
+          if (process.env.PHANTOM_BILLING_ENABLED === "true") return null;
+          return Response.json(
+            {
+              error: "feature_unavailable",
+              service: "billing",
+              message: "Phantom managed billing is not commissioned.",
+            },
+            { status: 503, headers: { "cache-control": "no-store" } },
+          );
+        },
+      };
+    }
     if (specifier === "@/lib/stripe") {
       return {
         getStripe: () => {
@@ -79,7 +94,7 @@ function loadCheckoutGateHarness() {
 }
 
 async function withCheckoutGate(value, action) {
-  const envName = "PHANTOM_BILLING_CHECKOUT_ENABLED";
+  const envName = "PHANTOM_BILLING_ENABLED";
   const previous = process.env[envName];
   if (value === undefined) {
     delete process.env[envName];
@@ -326,6 +341,10 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
     path.join(repoDir, "src/app/api/v1/vault/push/route.ts"),
     "utf8",
   );
+  const commissioning = fs.readFileSync(
+    path.join(repoDir, "src/lib/commissioning.ts"),
+    "utf8",
+  );
 
   assert.match(checkout, /requireBrowserAuth/);
   assert.doesNotMatch(checkout, /requireAuth\(req\)/);
@@ -334,19 +353,18 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
   assert.match(checkout, /phantom_user_id/);
   assert.match(checkout, /is\("stripe_customer_id", null\)/);
   assert.match(checkout, /claimed\?\.stripe_customer_id === candidateCustomerId/);
-  assert.match(checkout, /user\.plan === "pro" \|\| user\.subscription_id/);
+  assert.match(checkout, /hasActiveLegacyProPlan\(user\) \|\| user\.subscription_id/);
   assert.match(checkout, /subscriptions\.list/);
   assert.match(checkout, /status: "all"/);
   assert.match(checkout, /checkout\.sessions\.list/);
   assert.match(checkout, /status: "open"/);
   assert.match(checkout, /phantom-checkout-v1/);
-  assert.match(checkout, /PHANTOM_BILLING_CHECKOUT_ENABLED/);
-  assert.match(
-    checkout,
-    /process\.env\[BILLING_CHECKOUT_ENABLED_ENV\] !== "true"/,
-  );
+  assert.match(checkout, /requireHostedService\("billing"\)/);
+  assert.match(portal, /requireHostedService\("billing"\)/);
+  assert.match(commissioning, /PHANTOM_BILLING_ENABLED/);
+  assert.match(commissioning, /=== "true"/);
   assert.ok(
-    checkout.indexOf("process.env[BILLING_CHECKOUT_ENABLED_ENV]") <
+    checkout.indexOf('requireHostedService("billing")') <
       checkout.indexOf("requireBrowserAuth(req)"),
     "commissioning gate must run before authentication",
   );
@@ -405,7 +423,8 @@ test(
         body,
         {
           error: "feature_unavailable",
-          message: "Phantom Pro checkout is not commissioned.",
+          service: "billing",
+          message: "Phantom managed billing is not commissioned.",
         },
         String(gateValue),
       );

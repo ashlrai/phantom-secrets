@@ -1,8 +1,12 @@
 import { requireBrowserAuth } from "@/lib/auth";
+import { requireHostedService } from "@/lib/commissioning";
 import { getStripe } from "@/lib/stripe";
 import { createServiceClient } from "@/lib/supabase-server";
 
 export async function POST(req: Request) {
+  const commissioningGate = requireHostedService("billing");
+  if (commissioningGate) return commissioningGate;
+
   const authResult = await requireBrowserAuth(req);
   if (authResult instanceof Response) return authResult;
 

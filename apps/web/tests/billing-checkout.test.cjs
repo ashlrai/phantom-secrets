@@ -10,7 +10,7 @@ const checkoutPath = path.join(
   "src/app/api/v1/billing/checkout/route.ts",
 );
 const USER_ID = "7b54bdf6-519f-485b-aa3b-18057d91c697";
-const CHECKOUT_GATE_ENV = "PHANTOM_BILLING_CHECKOUT_ENABLED";
+const CHECKOUT_GATE_ENV = "PHANTOM_BILLING_ENABLED";
 let originalCheckoutGate;
 let checkoutGateCaptured = false;
 
@@ -45,6 +45,9 @@ function loadCheckoutModule({ serviceClient, stripe, userId = USER_ID }) {
   const localRequire = (specifier) => {
     if (specifier === "@/lib/auth") {
       return { requireBrowserAuth: async () => ({ userId, plan: "free" }) };
+    }
+    if (specifier === "@/lib/commissioning") {
+      return { requireHostedService: () => null };
     }
     if (specifier === "@/lib/stripe") {
       return {
@@ -82,6 +85,7 @@ function createServiceClient({
     stripe_customer_id: null,
     subscription_id: null,
     plan: "free",
+    plan_expires_at: null,
   },
   claimError = null,
 } = {}) {
@@ -323,6 +327,7 @@ test("an existing database subscription blocks checkout before Stripe is called"
       stripe_customer_id: "cus_existing",
       subscription_id: "sub_existing",
       plan: "free",
+      plan_expires_at: null,
     },
   });
   const stripeHarness = createStripe();
@@ -338,6 +343,59 @@ test("an existing database subscription blocks checkout before Stripe is called"
   assert.equal(stripeHarness.calls.subscriptionList.length, 0);
   assert.equal(stripeHarness.calls.sessionList.length, 0);
   assert.equal(stripeHarness.calls.sessionCreate.length, 0);
+});
+
+test("an unexpired legacy Pro plan blocks a second checkout", async () => {
+  const serviceClient = createServiceClient({
+    user: {
+      email: "octo@example.com",
+      stripe_customer_id: "cus_existing",
+      subscription_id: null,
+      plan: "pro",
+      plan_expires_at: "2099-01-01T00:00:00.000Z",
+    },
+  });
+  const stripeHarness = createStripe();
+  const { POST } = loadCheckoutModule({
+    serviceClient,
+    stripe: stripeHarness.stripe,
+  });
+
+  const response = await POST(checkoutRequest());
+
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "subscription_exists");
+  assert.equal(stripeHarness.calls.subscriptionList.length, 0);
+  assert.equal(stripeHarness.calls.sessionList.length, 0);
+  assert.equal(stripeHarness.calls.sessionCreate.length, 0);
+});
+
+test("an expired legacy Pro plan no longer blocks checkout", async () => {
+  const serviceClient = createServiceClient({
+    user: {
+      email: "octo@example.com",
+      stripe_customer_id: "cus_existing",
+      subscription_id: null,
+      plan: "pro",
+      plan_expires_at: "2000-01-01T00:00:00.000Z",
+    },
+  });
+  const stripeHarness = createStripe({
+    subscriptions: [{ id: "sub_old", status: "canceled" }],
+  });
+  const { POST } = loadCheckoutModule({
+    serviceClient,
+    stripe: stripeHarness.stripe,
+  });
+
+  const response = await POST(checkoutRequest());
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    url: "https://checkout.stripe.test/session",
+  });
+  assert.equal(stripeHarness.calls.subscriptionList.length, 1);
+  assert.equal(stripeHarness.calls.sessionCreate.length, 1);
 });
 
 test("an existing live Stripe subscription blocks checkout", async () => {

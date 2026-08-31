@@ -1,4 +1,5 @@
 import { requireAuth, requirePro } from "@/lib/auth";
+import { requireHostedService } from "@/lib/commissioning";
 import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
 
@@ -8,6 +9,9 @@ const MAX_TEAM_BODY_BYTES = 4_096;
  * GET /api/v1/teams — List teams the authenticated user belongs to.
  */
 export async function GET(req: Request) {
+  const commissioningGate = requireHostedService("teams");
+  if (commissioningGate) return commissioningGate;
+
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
 
@@ -56,6 +60,9 @@ export async function GET(req: Request) {
  * Body: { name: string }
  */
 export async function POST(req: Request) {
+  const commissioningGate = requireHostedService("teams");
+  if (commissioningGate) return commissioningGate;
+
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
 

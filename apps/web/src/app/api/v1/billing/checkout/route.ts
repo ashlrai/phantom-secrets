@@ -1,8 +1,8 @@
 import { requireBrowserAuth } from "@/lib/auth";
+import { requireHostedService } from "@/lib/commissioning";
 import { getStripe, getStripePriceId } from "@/lib/stripe";
 import { createServiceClient } from "@/lib/supabase-server";
 
-const BILLING_CHECKOUT_ENABLED_ENV = "PHANTOM_BILLING_CHECKOUT_ENABLED";
 const SUBSCRIPTION_PAGE_SIZE = 100;
 const MAX_SUBSCRIPTION_PAGES = 100;
 
@@ -11,7 +11,17 @@ type BillingUser = {
   stripe_customer_id: string | null;
   subscription_id: string | null;
   plan: string;
+  plan_expires_at: string | null;
 };
+
+function hasActiveLegacyProPlan(user: BillingUser): boolean {
+  if (user.plan !== "pro") return false;
+  if (!user.plan_expires_at) return true;
+
+  const expiry = Date.parse(user.plan_expires_at);
+  // A malformed entitlement timestamp must not create a second checkout.
+  return !Number.isFinite(expiry) || expiry > Date.now();
+}
 
 function subscriptionExistsResponse() {
   return Response.json(
@@ -145,18 +155,8 @@ async function getOrCreateCustomerId(
 }
 
 export async function POST(req: Request) {
-  // Checkout is a separately commissioned production capability. Keep this
-  // exact and fail closed: missing, malformed, or loosely truthy values must
-  // not reach authentication, the database, or Stripe.
-  if (process.env[BILLING_CHECKOUT_ENABLED_ENV] !== "true") {
-    return Response.json(
-      {
-        error: "feature_unavailable",
-        message: "Phantom Pro checkout is not commissioned.",
-      },
-      { status: 503 },
-    );
-  }
+  const commissioningGate = requireHostedService("billing");
+  if (commissioningGate) return commissioningGate;
 
   const authResult = await requireBrowserAuth(req);
   if (authResult instanceof Response) return authResult;
@@ -164,7 +164,7 @@ export async function POST(req: Request) {
   const supabase = createServiceClient();
   const { data: user } = await supabase
     .from("users")
-    .select("email, stripe_customer_id, subscription_id, plan")
+    .select("email, stripe_customer_id, subscription_id, plan, plan_expires_at")
     .eq("id", authResult.userId)
     .single();
 
@@ -172,7 +172,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "user not found" }, { status: 404 });
   }
 
-  if (user.plan === "pro" || user.subscription_id) {
+  if (hasActiveLegacyProPlan(user) || user.subscription_id) {
     return subscriptionExistsResponse();
   }
 

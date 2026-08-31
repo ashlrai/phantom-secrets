@@ -1,4 +1,5 @@
 import { requireAuth, requirePro } from "@/lib/auth";
+import { requireHostedService } from "@/lib/commissioning";
 import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
 
@@ -19,6 +20,9 @@ interface RouteContext {
  * Requires the caller to be a member of the team.
  */
 export async function GET(req: Request, context: RouteContext) {
+  const commissioningGate = requireHostedService("teams");
+  if (commissioningGate) return commissioningGate;
+
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
 
@@ -85,6 +89,9 @@ export async function GET(req: Request, context: RouteContext) {
  * Body: { user_id?: string, github_login?: string, role?: "admin" | "member" }
  */
 export async function POST(req: Request, context: RouteContext) {
+  const commissioningGate = requireHostedService("teams");
+  if (commissioningGate) return commissioningGate;
+
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
 
