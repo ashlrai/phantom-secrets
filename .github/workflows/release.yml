@@ -24,6 +24,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify immutable annotated release tag binding
+        run: |
+          test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+          node scripts/release/verify-github-tag-binding.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
+
       # Run before dependency/cache restoration so this scans the checked-out
       # source tree rather than generated target, node_modules, or .next files.
       - name: Install verified Gitleaks
@@ -63,7 +68,7 @@ jobs:
           node scripts/release/extract-release-notes.mjs "$GITHUB_REF_NAME" > /tmp/phantom-release-notes.md
 
       - name: Test fail-closed publication and release receipts
-        run: node --test scripts/publish-crates.test.js scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs
+        run: node --test scripts/publish-crates.test.js scripts/release/compare-release-artifacts.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs scripts/release/verify-github-tag-binding.test.mjs
 
       - name: Install verified cargo-deny
         env:
@@ -378,11 +383,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Refuse to overwrite an existing GitHub release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-release-bundle
+          path: artifacts
+
+      - name: Verify exact release artifact set
+        run: node scripts/release/verify-release-artifacts.mjs artifacts
+
+      - name: Extract reviewed release notes
+        run: node scripts/release/extract-release-notes.mjs "$GITHUB_REF_NAME" > release-notes.md
+
+      - name: Re-verify release tag binding and absence immediately before creation
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+          node scripts/release/verify-github-tag-binding.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
           status=$(curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error \
             --connect-timeout 10 --max-time 30 \
             --header "Accept: application/vnd.github+json" \
@@ -395,16 +413,6 @@ jobs:
             200) echo "release ${GITHUB_REF_NAME} already exists; publish a new fix-forward tag" >&2; exit 1 ;;
             *) echo "could not prove release absence (HTTP ${status:-none})" >&2; exit 1 ;;
           esac
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: verified-release-bundle
-          path: artifacts
-
-      - name: Verify exact release artifact set
-        run: node scripts/release/verify-release-artifacts.mjs artifacts
-
-      - name: Extract reviewed release notes
-        run: node scripts/release/extract-release-notes.mjs "$GITHUB_REF_NAME" > release-notes.md
 
       - name: Create release
         id: create-draft-release
@@ -427,11 +435,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$GITHUB_REF_NAME" \
-            --json tagName,isDraft,isPrerelease,assets,url > release-receipt.json
+            --json tagName,isDraft,isImmutable,isPrerelease,assets,url > release-receipt.json
           node scripts/release/verify-github-release-receipt.mjs \
             release-receipt.json "$GITHUB_REF_NAME" draft
 
-      - name: Publish the immutable release
+      - name: Verify hosted draft artifacts match the trusted build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          hosted_dir=$(mktemp -d)
+          trap 'rm -rf "$hosted_dir"' EXIT
+          gh release download "$GITHUB_REF_NAME" --dir "$hosted_dir"
+          node scripts/release/verify-release-artifacts.mjs "$hosted_dir"
+          node scripts/release/compare-release-artifacts.mjs artifacts "$hosted_dir"
+
+      # The Ashlr organization enforces immutable releases for this selected
+      # repository. The administration-read policy endpoint is intentionally
+      # unavailable to the job token; the hosted receipt below still requires
+      # GitHub to report isImmutable=true after publication.
+      - name: Publish the organization-enforced immutable release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false
@@ -441,6 +464,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$GITHUB_REF_NAME" \
-            --json tagName,isDraft,isPrerelease,assets,url > release-receipt.json
+            --json tagName,isDraft,isImmutable,isPrerelease,assets,url > release-receipt.json
           node scripts/release/verify-github-release-receipt.mjs \
             release-receipt.json "$GITHUB_REF_NAME" published
+
+      - name: Re-verify hosted immutable release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          hosted_dir=$(mktemp -d)
+          trap 'rm -rf "$hosted_dir"' EXIT
+          gh release download "$GITHUB_REF_NAME" --dir "$hosted_dir"
+          node scripts/release/verify-release-artifacts.mjs "$hosted_dir"
+          node scripts/release/compare-release-artifacts.mjs artifacts "$hosted_dir"
