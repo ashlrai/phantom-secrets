@@ -11,7 +11,7 @@ const TIERS = [
     pitch: "Local-first. Open source. Forever.",
     features: [
       "Local vault (OS keychain or encrypted file)",
-      "Proxy with full streaming support",
+      "Local proxy: requests are size-bounded and buffered; responses can stream",
       "MCP server for supported clients",
       "Unlimited local secrets",
     ],

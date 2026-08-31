@@ -26,7 +26,7 @@ const TIERS: Tier[] = [
     featured: false,
     features: [
       "Local vault (OS keychain or encrypted file)",
-      "Proxy with full streaming support",
+      "Local proxy: requests are size-bounded and buffered; responses can stream",
       "MCP server for supported clients",
       "Agent readiness CLI · MCP tool catalog",
       "Unlimited local secrets",
