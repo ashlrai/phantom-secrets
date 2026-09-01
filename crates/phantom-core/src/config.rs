@@ -531,15 +531,24 @@ const DEFAULT_PROXY_SERVICE_NAMES: &[&str] = &[
 impl PhantomConfig {
     /// Load config from a file path.
     pub fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path).map_err(|e| {
+        let content = std::fs::read(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 PhantomError::ConfigNotFound(path.display().to_string())
             } else {
                 PhantomError::Io(e)
             }
         })?;
+        Self::load_from_bytes(path, &content)
+    }
+
+    /// Parse an already-snapshotted project config while deriving the same
+    /// canonical machine-local namespace as [`Self::load`]. Transactional
+    /// callers use this to bind review and commit to one exact byte image.
+    pub fn load_from_bytes(path: &Path, content: &[u8]) -> Result<Self> {
+        let content = std::str::from_utf8(content)
+            .map_err(|error| PhantomError::ConfigParseError(error.to_string()))?;
         let mut config: Self =
-            toml::from_str(&content).map_err(|e| PhantomError::ConfigParseError(e.to_string()))?;
+            toml::from_str(content).map_err(|e| PhantomError::ConfigParseError(e.to_string()))?;
         validate_portable_project_id(&config.phantom.project_id)?;
 
         // `.phantom.toml` is repository-controlled. Its portable project_id is

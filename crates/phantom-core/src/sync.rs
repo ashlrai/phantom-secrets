@@ -212,14 +212,14 @@ struct VercelEnvMetadataResponse {
     envs: Vec<VercelEnvVarMetadata>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct VercelEnvVar {
     key: String,
     #[serde(default)]
-    value: Option<String>,
+    value: Option<PulledSecret>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct VercelEnvListResponse {
     envs: Vec<VercelEnvVar>,
 }
@@ -490,7 +490,7 @@ async fn read_bounded_provider_response(
 pub async fn pull_from_vercel(
     token: &str,
     project_id: &str,
-) -> std::result::Result<BTreeMap<String, String>, String> {
+) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, String> {
     let client = reqwest::Client::new();
 
     // Use decrypt=true to get actual values
@@ -505,15 +505,17 @@ pub async fn pull_from_vercel(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Vercel API error ({status}): {body}"));
+        return Err(format!("Vercel pull request failed (HTTP {status})"));
     }
 
-    let data: VercelEnvListResponse = resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+    let bytes = read_bounded_provider_response(resp, "Vercel pull").await?;
+    let data: VercelEnvListResponse = serde_json::from_slice(&bytes)
+        .map_err(|_| "Vercel pull response was invalid".to_string())?;
 
     let mut secrets = BTreeMap::new();
     for env_var in data.envs {
         if let Some(value) = env_var.value {
+            let value = value.into_zeroizing();
             if !value.is_empty() {
                 secrets.insert(env_var.key, value);
             }
@@ -529,16 +531,21 @@ pub async fn pull_from_railway(
     project_id: &str,
     environment_id: &str,
     service_id: Option<&str>,
-) -> std::result::Result<BTreeMap<String, String>, String> {
+) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, String> {
     let client = reqwest::Client::new();
 
-    // Use GraphQL variables to prevent injection
-    let mut vars = serde_json::json!({
-        "projectId": project_id,
-        "environmentId": environment_id,
-    });
-    if let Some(svc_id) = service_id {
-        vars["serviceId"] = serde_json::json!(svc_id);
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PullVariables<'a> {
+        project_id: &'a str,
+        environment_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        service_id: Option<&'a str>,
+    }
+    #[derive(Serialize)]
+    struct PullRequest<'a> {
+        query: &'static str,
+        variables: PullVariables<'a>,
     }
 
     let query = if service_id.is_some() {
@@ -547,7 +554,14 @@ pub async fn pull_from_railway(
         "query($projectId: String!, $environmentId: String!) { variables(projectId: $projectId, environmentId: $environmentId) }"
     };
 
-    let body = serde_json::json!({ "query": query, "variables": vars });
+    let body = PullRequest {
+        query,
+        variables: PullVariables {
+            project_id,
+            environment_id,
+            service_id,
+        },
+    };
 
     let resp = client
         .post("https://backboard.railway.com/graphql/v2")
@@ -559,34 +573,61 @@ pub async fn pull_from_railway(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
-        return Err(format!("Railway API error ({status}): {body_text}"));
+        return Err(format!("Railway pull request failed (HTTP {status})"));
     }
 
-    let resp_body: serde_json::Value =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+    let bytes = read_bounded_provider_response(resp, "Railway pull").await?;
+    parse_railway_pull_response(&bytes)
+}
 
-    // Check for GraphQL errors
-    if let Some(errors) = resp_body.get("errors") {
-        return Err(format!("GraphQL errors: {errors}"));
+#[derive(Deserialize)]
+struct PulledSecret(String);
+
+impl PulledSecret {
+    fn into_zeroizing(mut self) -> Zeroizing<String> {
+        Zeroizing::new(std::mem::take(&mut self.0))
     }
+}
 
-    // Railway returns variables as a flat JSON object: { "KEY": "value", ... }
-    let variables = resp_body
-        .get("data")
-        .and_then(|d| d.get("variables"))
-        .ok_or_else(|| "Missing 'data.variables' in response".to_string())?;
-
-    let mut secrets = BTreeMap::new();
-    if let Some(obj) = variables.as_object() {
-        for (key, value) in obj {
-            if let Some(v) = value.as_str() {
-                secrets.insert(key.clone(), v.to_string());
-            }
-        }
+impl Drop for PulledSecret {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.zeroize();
     }
+}
 
-    Ok(secrets)
+#[derive(Deserialize)]
+struct RailwayPullResponse {
+    #[serde(default)]
+    data: Option<RailwayPullData>,
+    #[serde(default)]
+    errors: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+struct RailwayPullData {
+    variables: BTreeMap<String, PulledSecret>,
+}
+
+fn parse_railway_pull_response(
+    bytes: &[u8],
+) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, String> {
+    let response: RailwayPullResponse = serde_json::from_slice(bytes)
+        .map_err(|_| "Railway pull response was invalid".to_string())?;
+    if response.errors.is_some() {
+        return Err("Railway pull returned GraphQL errors".to_string());
+    }
+    let data = response
+        .data
+        .ok_or_else(|| "Railway pull did not return data.variables".to_string())?;
+    Ok(data
+        .variables
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let value = value.into_zeroizing();
+            (!value.is_empty()).then_some((name, value))
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -699,5 +740,26 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("exceeded"));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn railway_pull_secret_echo_in_errors_is_never_formatted() {
+        let error = parse_railway_pull_response(
+            br#"{"data":null,"errors":[{"message":"provider-echoed-secret"}]}"#,
+        )
+        .unwrap_err();
+        assert_eq!(error, "Railway pull returned GraphQL errors");
+        assert!(!error.contains("provider-echoed-secret"));
+    }
+
+    #[test]
+    fn railway_pull_returns_zeroizing_values() {
+        let pulled = parse_railway_pull_response(
+            br#"{"data":{"variables":{"API_KEY":"secret-value","EMPTY":""}}}"#,
+        )
+        .unwrap();
+        let value: &Zeroizing<String> = pulled.get("API_KEY").unwrap();
+        assert_eq!(value.as_str(), "secret-value");
+        assert!(!pulled.contains_key("EMPTY"));
     }
 }
