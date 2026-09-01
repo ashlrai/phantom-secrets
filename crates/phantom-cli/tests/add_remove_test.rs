@@ -68,10 +68,7 @@ fn headless_remove_is_denied_and_preserves_the_key() {
 
     // Destructive removal requires a separately controlled attached terminal.
     // A headless agent or script must fail before changing vault or dotenv state.
-    let denied = phantom(&dir)
-        .args(["remove", "MY_KEY"])
-        .assert()
-        .failure();
+    let denied = phantom(&dir).args(["remove", "MY_KEY"]).assert().failure();
     assert!(String::from_utf8_lossy(&denied.get_output().stderr)
         .contains("requires attached stdin, stdout, and stderr terminals"));
 
