@@ -4,6 +4,7 @@ pub mod audit;
 pub mod audit_export;
 pub mod auth;
 pub mod cloud;
+mod cloud_http;
 pub mod config;
 pub mod dotenv;
 pub mod env_scope;

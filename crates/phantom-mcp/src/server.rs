@@ -96,16 +96,32 @@ impl PhantomMcpServer {
         Ok((config, vault))
     }
 
-    fn save_cloud_version(&self, config: &mut PhantomConfig, version: u64) -> Result<(), McpError> {
+    fn save_cloud_version(
+        &self,
+        vault: &dyn phantom_vault::VaultBackend,
+        config: &mut PhantomConfig,
+        config_before: Vec<u8>,
+        version: u64,
+    ) -> Result<(), McpError> {
         let cloud_config = config.cloud.get_or_insert_default();
         cloud_config.version = version;
         cloud_config.reconciliation_required = false;
         cloud_config.reconciliation_remote_version = None;
-        config.save(&self.config_path()).map_err(|error| {
+        let config_after = toml::to_string_pretty(config)
+            .map_err(|error| internal_err(format!("Failed to serialize cloud version: {error}")))?
+            .into_bytes();
+        let config_file = phantom_vault::InitFile::replace_if_unchanged(
+            self.config_path(),
+            Some(config_before),
+            config_after,
+        );
+        phantom_vault::commit_init(&self.project_dir, vault, Vec::new(), vec![config_file])
+            .map_err(|error| {
             internal_err(format!(
                 "Cloud upload succeeded at remote version {version}, but the local version could not be recorded: {error}. Do not retry automatically; inspect remote and local versions first."
             ))
-        })
+        })?;
+        Ok(())
     }
 
     /// Returns the project identifier used for approval nonce scoping.
@@ -1055,28 +1071,52 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<CloudPushParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_push", params.confirm)?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+        use std::collections::BTreeMap;
+
+        let config_path = self.config_path();
+        let (config, config_before) = load_mcp_config_exact(&config_path)?;
+        let vault = phantom_vault::try_create_vault(config.local_project_id())
+            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        ensure_cloud_push_allowed_mcp(&config)?;
+        let mut names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+        names.sort();
+
+        if names.is_empty() {
+            return text_result("No secrets to push.");
+        }
+
+        let version = config
+            .cloud
+            .as_ref()
+            .map(|cloud| cloud.version)
+            .unwrap_or(0);
+        let params_json = serde_json::to_string(&serde_json::json!({
+            "confirm": params.confirm,
+            "plan": {
+                "canonical_project": self.project_id(),
+                "local_project_id": config.local_project_id(),
+                "portable_project_id": config.portable_project_id(),
+                "config_sha256": hex::encode(Sha256::digest(&config_before)),
+                "vault_backend": vault.backend_name(),
+                "expected_remote_version": version,
+                "secret_count": names.len(),
+                "secret_names_sha256": bounded_name_digest(&names)?,
+            }
+        }))
+        .map_err(|error| internal_err(format!("Failed to bind cloud-push approval: {error}")))?;
         require_approval_token(
             "phantom_cloud_push",
             params.approval_token.as_deref(),
             &params_json,
             &self.project_id(),
         )?;
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-        use std::collections::BTreeMap;
 
         let token = phantom_core::auth::load_token()
             .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
-
-        let (config, vault) = self.load_config_and_vault()?;
-        ensure_cloud_push_allowed_mcp(&config)?;
-        let names = vault
-            .list()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
-
-        if names.is_empty() {
-            return text_result("No secrets to push.");
-        }
+        require_exact_config_before_effect(&config_path, &config_before)?;
 
         let mut secrets = BTreeMap::new();
         for name in &names {
@@ -1098,14 +1138,15 @@ impl PhantomMcpServer {
             serialize_result.map_err(|e| internal_err(format!("Failed to serialize: {e}")))?,
         );
 
-        let passphrase = phantom_core::auth::get_or_create_cloud_passphrase()
-            .map_err(|e| internal_err(format!("Failed to access cloud key: {e}")))?;
+        let passphrase = zeroize::Zeroizing::new(
+            phantom_core::auth::get_or_create_cloud_passphrase()
+                .map_err(|e| internal_err(format!("Failed to access cloud key: {e}")))?,
+        );
 
         let encrypted = phantom_vault::crypto::encrypt(plaintext.as_bytes(), &passphrase)
             .map_err(|e| internal_err(format!("Encryption failed: {e}")))?;
 
         let blob_b64 = BASE64.encode(&encrypted);
-        let version = config.cloud.as_ref().map(|c| c.version).unwrap_or(0);
         let api_base = phantom_core::auth::api_base_url()
             .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
 
@@ -1120,7 +1161,7 @@ impl PhantomMcpServer {
         .map_err(|e| internal_err(format!("Cloud push failed: {e}")))?;
 
         let mut config = config;
-        self.save_cloud_version(&mut config, new_version)?;
+        self.save_cloud_version(vault.as_ref(), &mut config, config_before, new_version)?;
 
         text_result(format!(
             "Pushed {} secret(s) to Phantom Cloud (v{new_version}). End-to-end encrypted.",
@@ -1137,7 +1178,23 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<CloudPullParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_pull", params.confirm)?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        let config_path = self.config_path();
+        let (config, config_before) = load_mcp_config_exact(&config_path)?;
+        let vault = phantom_vault::try_create_vault(config.local_project_id())
+            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let params_json = serde_json::to_string(&serde_json::json!({
+            "force": params.force,
+            "confirm": params.confirm,
+            "plan": {
+                "canonical_project": self.project_id(),
+                "local_project_id": config.local_project_id(),
+                "portable_project_id": config.portable_project_id(),
+                "config_sha256": hex::encode(Sha256::digest(&config_before)),
+                "vault_backend": vault.backend_name(),
+                "local_merge_version": config.cloud.as_ref().map(|cloud| cloud.version).unwrap_or(0),
+            }
+        }))
+        .map_err(|error| internal_err(format!("Failed to bind cloud-pull approval: {error}")))?;
         require_approval_token(
             "phantom_cloud_pull",
             params.approval_token.as_deref(),
@@ -1148,13 +1205,7 @@ impl PhantomMcpServer {
 
         let token = phantom_core::auth::load_token()
             .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
-
-        let (config, vault) = self.load_config_and_vault()?;
-        let config_before = std::fs::read(self.config_path()).map_err(|error| {
-            internal_err(format!(
-                "Failed to snapshot .phantom.toml before cloud pull: {error}"
-            ))
-        })?;
+        require_exact_config_before_effect(&config_path, &config_before)?;
 
         let api_base = phantom_core::auth::api_base_url()
             .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
@@ -1172,8 +1223,10 @@ impl PhantomMcpServer {
             }
         };
 
-        let passphrase = phantom_core::auth::get_or_create_cloud_passphrase()
-            .map_err(|e| internal_err(format!("Failed to access cloud key: {e}")))?;
+        let passphrase = zeroize::Zeroizing::new(
+            phantom_core::auth::get_or_create_cloud_passphrase()
+                .map_err(|e| internal_err(format!("Failed to access cloud key: {e}")))?,
+        );
 
         let encrypted = BASE64
             .decode(&pull_data.encrypted_blob)
@@ -1191,7 +1244,7 @@ impl PhantomMcpServer {
         // so every early-return path below scrubs the parsed plaintext map.
         let (added, skipped) = apply_cloud_pull_transaction(
             &self.project_dir,
-            &self.config_path(),
+            &config_path,
             vault.as_ref(),
             &secrets,
             params.force,
@@ -3262,13 +3315,57 @@ impl PhantomMcpServer {
 
         if params.backfill {
             require_confirm("phantom_audit_alerts", params.confirm)?;
-            let params_json = serde_json::to_string(&params).unwrap_or_default();
+            let config_path = self.config_path();
+            let config_before = phantom_core::fs::read_regular_file(&config_path)
+                .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?;
+            let alerting_config = match config_before.as_deref() {
+                Some(bytes) => {
+                    PhantomConfig::load_from_bytes(&config_path, bytes)
+                        .map_err(|error| internal_err(format!("Failed to load config: {error}")))?
+                        .alerting
+                }
+                None => AlertingConfig::default(),
+            };
+            let backend_kinds = alerting_config
+                .backends
+                .iter()
+                .map(|backend| match backend {
+                    phantom_core::leak_correlation::AlertBackendConfig::Webhook { .. } => "webhook",
+                    phantom_core::leak_correlation::AlertBackendConfig::Slack { .. } => "slack",
+                    phantom_core::leak_correlation::AlertBackendConfig::PagerDuty { .. } => {
+                        "pagerduty"
+                    }
+                })
+                .collect::<Vec<_>>();
+            let destination_origins = sanitized_alert_origins(&alerting_config)?;
+            let params_json = serde_json::to_string(&serde_json::json!({
+                "last": params.last,
+                "backfill": params.backfill,
+                "confirm": params.confirm,
+                "plan": {
+                    "canonical_project": self.project_id(),
+                    "config_sha256": config_before.as_deref().map(|bytes| hex::encode(Sha256::digest(bytes))),
+                    "alerting_enabled": alerting_config.enabled,
+                    "minimum_confidence": alerting_config.min_confidence,
+                    "backend_kinds": backend_kinds,
+                    "destination_origins": destination_origins,
+                    "alert_state_path_sha256": hex::encode(Sha256::digest(alerts_path.to_string_lossy().as_bytes())),
+                }
+            }))
+            .map_err(|error| internal_err(format!("Failed to bind alert approval: {error}")))?;
             require_approval_token(
                 "phantom_audit_alerts",
                 params.approval_token.as_deref(),
                 &params_json,
                 &self.project_id(),
             )?;
+            let current_config = phantom_core::fs::read_regular_file(&config_path)
+                .map_err(|error| internal_err(format!("Failed to recheck config: {error}")))?;
+            if current_config != config_before {
+                return Err(internal_err(
+                    ".phantom.toml changed after alert backfill approval; no correlation or notification effect was attempted",
+                ));
+            }
             let engine = LeakCorrelationEngine::new()
                 .map_err(|e| internal_err(format!("Cannot initialise correlation engine: {e}")))?;
             let incidents = engine
@@ -3276,15 +3373,6 @@ impl PhantomMcpServer {
                 .map_err(|e| internal_err(format!("Correlation engine failed: {e}")))?;
 
             if !incidents.is_empty() {
-                // Load alerting config from .phantom.toml in cwd if present.
-                let alerting_config = if self.config_path().exists() {
-                    self.load_config()
-                        .map(|cfg| cfg.alerting)
-                        .unwrap_or_default()
-                } else {
-                    AlertingConfig::default()
-                };
-
                 let alerter = LeakIncidentAlerter::with_path(
                     alerting_config,
                     alerts_path.clone(),
@@ -3719,21 +3807,44 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamVaultParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_pull", params.confirm)?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        if params.team_id.is_empty()
+            || params.team_id.len() > 128
+            || !params
+                .team_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(invalid_params_err("team_id is not a valid Phantom team ID"));
+        }
+        let config_path = self.config_path();
+        let (config, config_before) = load_mcp_config_exact(&config_path)?;
+        let vault = phantom_vault::try_create_vault(config.local_project_id())
+            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let project_id = config.portable_project_id().to_string();
+        let params_json = serde_json::to_string(&serde_json::json!({
+            "team_id": &params.team_id,
+            "confirm": params.confirm,
+            "plan": {
+                "canonical_project": self.project_id(),
+                "local_project_id": config.local_project_id(),
+                "portable_project_id": &project_id,
+                "config_sha256": hex::encode(Sha256::digest(&config_before)),
+                "vault_backend": vault.backend_name(),
+            }
+        }))
+        .map_err(|error| internal_err(format!("Failed to bind team-pull approval: {error}")))?;
         require_approval_token(
             "phantom_team_vault_pull",
             params.approval_token.as_deref(),
             &params_json,
             &self.project_id(),
         )?;
+        require_exact_config_before_effect(&config_path, &config_before)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
         let kp = phantom_core::auth::get_or_create_team_keypair()
             .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
-
-        let (config, vault) = self.load_config_and_vault()?;
-        let project_id = config.portable_project_id().to_string();
 
         let (secrets, version) = phantom_core::teams_vault::pull_for_project(
             &api_base,
@@ -3751,8 +3862,13 @@ impl PhantomMcpServer {
         // retained. Exact before-images plus commit_init ensure an nth write
         // failure restores transaction-owned changes and a concurrent local
         // change is never overwritten.
-        let written =
-            apply_team_vault_pull_transaction(&self.project_dir, vault.as_ref(), &secrets)?;
+        let written = apply_team_vault_pull_transaction(
+            &self.project_dir,
+            &config_path,
+            config_before,
+            vault.as_ref(),
+            &secrets,
+        )?;
 
         text_result(format!(
             "Pulled {written} secret(s) from team id {} (v{}). Local vault updated.",
@@ -4709,16 +4825,48 @@ fn load_mcp_config_exact(path: &Path) -> Result<(PhantomConfig, Vec<u8>), McpErr
     let before = phantom_core::fs::read_regular_file(path)
         .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?
         .ok_or_else(|| invalid_params_err("Target .phantom.toml does not exist"))?;
-    let config = PhantomConfig::load(path)
+    let config = PhantomConfig::load_from_bytes(path, &before)
         .map_err(|error| internal_err(format!("Failed to load config: {error}")))?;
-    let after = phantom_core::fs::read_regular_file(path)
-        .map_err(|error| internal_err(format!("Failed to recheck config: {error}")))?;
-    if after.as_deref() != Some(before.as_slice()) {
+    Ok((config, before))
+}
+
+fn require_exact_config_before_effect(path: &Path, expected: &[u8]) -> Result<(), McpError> {
+    let current = phantom_core::fs::read_regular_file(path)
+        .map_err(|error| internal_err(format!("Failed to recheck project config: {error}")))?;
+    if current.as_deref() != Some(expected) {
         return Err(internal_err(
-            ".phantom.toml changed during copy preflight; no source secret was read",
+            ".phantom.toml changed after approval; no secret value or network effect was attempted",
         ));
     }
-    Ok((config, before))
+    Ok(())
+}
+
+fn bounded_name_digest(names: &[String]) -> Result<String, McpError> {
+    const MAX_NAMES: usize = 4096;
+    const MAX_NAME_BYTES: usize = 256;
+    if names.len() > MAX_NAMES
+        || names.iter().any(|name| {
+            name.is_empty() || name.len() > MAX_NAME_BYTES || name.chars().any(char::is_control)
+        })
+    {
+        return Err(invalid_params_err(
+            "vault name set is too large or contains unsafe approval identifiers",
+        ));
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"phantom-cloud-vault-names-v1\0");
+    for name in names {
+        digest.update((name.len() as u64).to_be_bytes());
+        digest.update(name.as_bytes());
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+fn sanitized_alert_origins(
+    config: &phantom_core::leak_correlation::AlertingConfig,
+) -> Result<Vec<String>, McpError> {
+    phantom_core::leak_correlation::alert_backend_review_origins(config)
+        .map_err(|error| invalid_params_err(error.to_string()))
 }
 
 fn mcp_dotenv_has_key(before: Option<&[u8]>, name: &str) -> Result<bool, McpError> {
@@ -4863,6 +5011,8 @@ fn apply_mcp_copy_transaction(
 
 fn apply_team_vault_pull_transaction(
     project_dir: &Path,
+    config_path: &Path,
+    config_before: Vec<u8>,
     vault: &dyn phantom_vault::VaultBackend,
     secrets: &SensitiveSecretMap,
 ) -> Result<usize, McpError> {
@@ -4876,8 +5026,18 @@ fn apply_team_vault_pull_transaction(
         ));
     }
     let written = mutations.len();
-    phantom_vault::commit_init(project_dir, vault, mutations, Vec::new())
-        .map_err(|error| internal_err(format!("Team vault pull transaction failed: {error}")))?;
+    let config_guard = phantom_vault::InitFile::replace_if_unchanged(
+        config_path,
+        Some(config_before.clone()),
+        config_before,
+    );
+    phantom_vault::commit_init(project_dir, vault, mutations, vec![config_guard]).map_err(
+        |error| {
+            internal_err(format!(
+                "Team vault data was fetched, but the exact local config/vault transaction was denied: {error}. No success receipt is valid; inspect local state before retrying."
+            ))
+        },
+    )?;
     Ok(written)
 }
 
@@ -5734,6 +5894,8 @@ mod tests {
     #[test]
     fn team_vault_pull_restores_exact_before_images_on_nth_commit_failure() {
         let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config_before = write_cloud_test_config(&config_path, &cloud_test_config(0));
         let inner = phantom_vault::file::FileVault::new(
             dir.path(),
             "team-pull-nth-failure",
@@ -5758,10 +5920,18 @@ mod tests {
             ),
         ]));
 
-        let error = apply_team_vault_pull_transaction(dir.path(), &vault, &secrets)
-            .expect_err("the second commit must fail and roll back the first");
+        let error = apply_team_vault_pull_transaction(
+            dir.path(),
+            &config_path,
+            config_before,
+            &vault,
+            &secrets,
+        )
+        .expect_err("the second commit must fail and roll back the first");
 
-        assert!(error.message.contains("Team vault pull transaction failed"));
+        assert!(error
+            .message
+            .contains("exact local config/vault transaction"));
         assert_eq!(
             phantom_vault::VaultBackend::retrieve(&vault, "A")
                 .unwrap()
@@ -5776,6 +5946,114 @@ mod tests {
         );
         assert!(!error.message.contains("remote-a"));
         assert!(!error.message.contains("remote-b"));
+    }
+
+    #[test]
+    fn team_vault_pull_config_drift_rolls_back_every_local_secret_write() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config_before = write_cloud_test_config(&config_path, &cloud_test_config(0));
+        let mut concurrent = config_before.clone();
+        concurrent.extend_from_slice(b"\n# concurrent owner\n");
+        std::fs::write(&config_path, &concurrent).unwrap();
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "team-pull-config-drift",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        let secrets = SensitiveSecretMap::new(std::collections::BTreeMap::from([(
+            "REMOTE".to_string(),
+            zeroize::Zeroizing::new("remote-value".to_string()),
+        )]));
+
+        let error = apply_team_vault_pull_transaction(
+            dir.path(),
+            &config_path,
+            config_before,
+            &vault,
+            &secrets,
+        )
+        .expect_err("config drift must deny the local commit");
+
+        assert!(error
+            .message
+            .contains("exact local config/vault transaction"));
+        assert_eq!(std::fs::read(&config_path).unwrap(), concurrent);
+        assert!(matches!(
+            vault.retrieve("REMOTE"),
+            Err(phantom_core::error::PhantomError::SecretNotFound(_))
+        ));
+        assert!(!error.message.contains("remote-value"));
+    }
+
+    #[test]
+    fn cloud_push_remote_success_never_overwrites_concurrent_config() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = cloud_test_config(2);
+        let config_before = write_cloud_test_config(&config_path, &config);
+        let mut concurrent = config_before.clone();
+        concurrent.extend_from_slice(b"\n# concurrent owner\n");
+        std::fs::write(&config_path, &concurrent).unwrap();
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "cloud-push-config-drift",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+
+        let error = server
+            .save_cloud_version(&vault, &mut config, config_before, 3)
+            .expect_err("remote success must not overwrite concurrent local config");
+
+        assert!(error
+            .message
+            .contains("upload succeeded at remote version 3"));
+        assert!(error.message.contains("Do not retry automatically"));
+        assert_eq!(std::fs::read(&config_path).unwrap(), concurrent);
+    }
+
+    #[test]
+    fn alert_approval_origins_never_include_secret_destination_components() {
+        use phantom_core::leak_correlation::AlertBackendConfig;
+
+        let config = phantom_core::leak_correlation::AlertingConfig {
+            enabled: true,
+            min_confidence: 0.7,
+            backends: vec![
+                AlertBackendConfig::Webhook {
+                    url: "https://alerts.example:8443/private/secret-path?token=secret-query"
+                        .into(),
+                },
+                AlertBackendConfig::Slack {
+                    url: "https://hooks.slack.com/services/secret/path".into(),
+                },
+                AlertBackendConfig::PagerDuty {
+                    integration_key: "secret-routing-key".into(),
+                },
+            ],
+        };
+        let origins = sanitized_alert_origins(&config).unwrap();
+
+        assert_eq!(
+            origins,
+            vec![
+                "webhook:https://alerts.example:8443",
+                "slack:https://hooks.slack.com",
+                "pagerduty:https://events.pagerduty.com",
+            ]
+        );
+        let rendered = origins.join(" ");
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("/services"));
+        assert!(!rendered.contains('?'));
+    }
+
+    #[test]
+    fn cloud_name_digest_rejects_terminal_spoofing_names() {
+        assert!(bounded_name_digest(&["SAFE".to_string(), "EVIL\nNAME".to_string()]).is_err());
     }
 
     #[test]

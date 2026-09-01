@@ -12,6 +12,11 @@ pub struct PullResponse {
     pub version: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct VersionConflictResponse {
+    server_version: u64,
+}
+
 /// Push an encrypted vault blob to the cloud.
 pub async fn push(
     api_base: &str,
@@ -20,7 +25,7 @@ pub async fn push(
     encrypted_blob: &str,
     expected_version: u64,
 ) -> Result<u64> {
-    let client = reqwest::Client::new();
+    let client = crate::cloud_http::client()?;
     let resp = client
         .put(format!("{api_base}/vault/push"))
         .bearer_auth(token)
@@ -31,84 +36,70 @@ pub async fn push(
         }))
         .send()
         .await
-        .map_err(|e| PhantomError::CloudError {
+        .map_err(|_| PhantomError::CloudError {
             status: 0,
-            message: format!("Failed to connect: {e}"),
+            message: "Failed to connect to Phantom Cloud".to_string(),
         })?;
 
     let status = resp.status().as_u16();
 
     match status {
         200 | 201 => {
+            let bytes = crate::cloud_http::read_bounded_response(resp, "Cloud vault push").await?;
             let push_resp: PushResponse =
-                resp.json().await.map_err(|e| PhantomError::CloudError {
-                    status,
-                    message: format!("Invalid response: {e}"),
-                })?;
+                crate::cloud_http::parse_json(&bytes, status, "Cloud vault push")?;
             Ok(push_resp.version)
         }
         402 => Err(PhantomError::PlanRequired),
         409 => {
-            let body = resp.text().await.unwrap_or_default();
-            // Try to extract server version from response
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                let server_version = v["server_version"].as_u64().unwrap_or(0);
-                Err(PhantomError::VersionConflict {
-                    local: expected_version,
-                    remote: server_version,
-                })
-            } else {
-                Err(PhantomError::CloudError {
-                    status,
-                    message: body,
-                })
-            }
-        }
-        401 => Err(PhantomError::AuthRequired),
-        _ => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(PhantomError::CloudError {
-                status,
-                message: body,
+            let bytes =
+                crate::cloud_http::read_bounded_response(resp, "Cloud vault push conflict").await?;
+            let conflict: VersionConflictResponse =
+                crate::cloud_http::parse_json(&bytes, status, "Cloud vault push conflict")?;
+            Err(PhantomError::VersionConflict {
+                local: expected_version,
+                remote: conflict.server_version,
             })
         }
+        401 => Err(PhantomError::AuthRequired),
+        _ => Err(crate::cloud_http::response_error(
+            status,
+            "Cloud vault push",
+            "Phantom Cloud rejected the request",
+        )),
     }
 }
 
 /// Pull an encrypted vault blob from the cloud.
 pub async fn pull(api_base: &str, token: &str, project_id: &str) -> Result<Option<PullResponse>> {
-    let client = reqwest::Client::new();
+    let client = crate::cloud_http::client()?;
     let resp = client
         .get(format!("{api_base}/vault/pull"))
         .bearer_auth(token)
         .query(&[("project_id", project_id)])
         .send()
         .await
-        .map_err(|e| PhantomError::CloudError {
+        .map_err(|_| PhantomError::CloudError {
             status: 0,
-            message: format!("Failed to connect: {e}"),
+            message: "Failed to connect to Phantom Cloud".to_string(),
         })?;
 
     let status = resp.status().as_u16();
 
     match status {
         200 => {
+            let bytes = crate::cloud_http::read_bounded_response(resp, "Cloud vault pull").await?;
             let pull_resp: PullResponse =
-                resp.json().await.map_err(|e| PhantomError::CloudError {
-                    status,
-                    message: format!("Invalid response: {e}"),
-                })?;
+                crate::cloud_http::parse_json(&bytes, status, "Cloud vault pull")?;
             Ok(Some(pull_resp))
         }
         404 => Ok(None),
         402 => Err(PhantomError::PlanRequired),
         401 => Err(PhantomError::AuthRequired),
-        _ => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(PhantomError::CloudError {
-                status,
-                message: body,
-            })
-        }
+        _ => Err(crate::cloud_http::response_error(
+            status,
+            "Cloud vault pull",
+            "Phantom Cloud rejected the request",
+        )),
     }
 }
