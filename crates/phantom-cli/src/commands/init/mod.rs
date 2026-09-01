@@ -174,7 +174,13 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Dotenv path has no reviewed direct-child name"))?;
     let env_before = read_reviewed_project_file(&reviewed_project, Path::new(env_name), &env_path)?
         .ok_or_else(|| anyhow::anyhow!("Dotenv disappeared during preflight"))?;
-    let dotenv_basename = phantom_core::managed_dotenv::dotenv_basename(&project_dir, &env_path)?;
+    // Bind the transaction target to the canonical retained project spelling.
+    // Windows can represent the same file as both `C:\...` and `\\?\C:\...`;
+    // carrying the ambient spelling into the lexical containment check would
+    // reject a file that was already reviewed as this exact direct child.
+    let env_transaction_path = project_dir.join(env_name);
+    let dotenv_basename =
+        phantom_core::managed_dotenv::dotenv_basename(&project_dir, &env_transaction_path)?;
 
     println!("{} Reading {}...", "->".blue().bold(), env_path.display());
     let env_text =
@@ -325,7 +331,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
 
     let mut files = vec![
         InitFile::replace_if_exact_snapshot(
-            &env_path,
+            &env_transaction_path,
             Some(&env_before),
             phantomized_env.into_bytes(),
         )
