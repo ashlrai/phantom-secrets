@@ -1,0 +1,73 @@
+# Exact historical Gitleaks fingerprints admitted for the release candidate
+# plus every canonical origin branch head. Each entry binds one reviewed commit,
+# path, rule, and line. Local-only refs are intentionally excluded.
+#
+# The private-key entry is the 2026-08-18 throwaway RSA signing fixture from
+# origin/feat/credential-issuance. It was test-only and removed in commit
+# 1231835145eb799dbdfa78ccd554a49614c5ddd0; no private bytes are reproduced here.
+362560773bd05d6f018a3f4123acd35d77bd00a6:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:generic-api-key:587
+362560773bd05d6f018a3f4123acd35d77bd00a6:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:generic-api-key:588
+362560773bd05d6f018a3f4123acd35d77bd00a6:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:314
+362560773bd05d6f018a3f4123acd35d77bd00a6:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:370
+362560773bd05d6f018a3f4123acd35d77bd00a6:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:452
+362560773bd05d6f018a3f4123acd35d77bd00a6:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:511
+362560773bd05d6f018a3f4123acd35d77bd00a6:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:611
+362560773bd05d6f018a3f4123acd35d77bd00a6:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:619
+362560773bd05d6f018a3f4123acd35d77bd00a6:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:635
+36a6bdf8fcac9f51c2a94d3b72eae19893ae8f92:crates/phantom-core/src/dotenv.rs:generic-api-key:435
+4c3683760be827996a002c188f5c32d9af903c91:crates/phantom-core/tests/data/issuance_test_key.pem:private-key:1
+56e1b6f34c91bf507dfac90ec4f907f4c0c8cd7f:docs/blog-launch.md:generic-api-key:35
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:generic-api-key:587
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:generic-api-key:588
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:120
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:121
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:314
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:360
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:361
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:370
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:444
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:445
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:452
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:511
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:611
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:614
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:619
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:627
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:629
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:635
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:751
+5990a9a3080865e8f14eb09ec4bf0b8d7aabbdf7:crates/phantom-proxy/tests/e2e_proxy_integration_test.rs:stripe-access-token:794
+612efc996dae821f56fa8bde224bdaa33f82f0a7:apps/web/src/components/landing/Hero.tsx:generic-api-key:35
+612efc996dae821f56fa8bde224bdaa33f82f0a7:apps/web/src/components/landing/Hero.tsx:generic-api-key:40
+612efc996dae821f56fa8bde224bdaa33f82f0a7:apps/web/src/components/landing/Hero.tsx:generic-api-key:42
+612efc996dae821f56fa8bde224bdaa33f82f0a7:apps/web/src/components/landing/Hero.tsx:generic-api-key:43
+612efc996dae821f56fa8bde224bdaa33f82f0a7:apps/web/src/components/landing/Hero.tsx:generic-api-key:44
+612efc996dae821f56fa8bde224bdaa33f82f0a7:apps/web/src/components/landing/Hero.tsx:generic-api-key:45
+612efc996dae821f56fa8bde224bdaa33f82f0a7:apps/web/src/components/landing/Hero.tsx:generic-api-key:46
+835b26cd65e3fd7bee751cd06d95597468ba2b07:crates/phantom-proxy/tests/e2e_proxy_integration_test.rs:stripe-access-token:773
+8e741ae1f56a61ff48e0a709b62d23e86934ac28:docs/blog-devto.md:generic-api-key:24
+8e741ae1f56a61ff48e0a709b62d23e86934ac28:docs/blog-devto.md:generic-api-key:77
+929d92a5c9907cb8fac2dd21b87a9119383df3fa:docs/blog-devto.md:generic-api-key:42
+9982012f2c3ae0a8a45781d4a0ffc70580451490:README.md:generic-api-key:19
+a5da86941bc853a62194dac372b2d9d983495c19:mcp-registry/README.md:generic-api-key:91
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:generic-api-key:552
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:124
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:125
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:313
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:360
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:361
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:369
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:426
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:427
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:436
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:489
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:566
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:568
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:572
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:578
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:580
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:584
+d4f9270acfd435b3506d0ff317e695cbd3328efc:crates/phantom-proxy/tests/adaptive_scrubber_test.rs:stripe-access-token:691
+dfc39b64bc5ee6ad8e6e9c40c4db7078b8ff273e:Cargo.lock:generic-api-key:440
+f07f8ad2602a284f7660054283b7d3e83e14f88f:crates/phantom-core/src/dotenv.rs:private-key:60
+f07f8ad2602a284f7660054283b7d3e83e14f88f:crates/phantom-core/src/dotenv.rs:private-key:862

@@ -198,6 +198,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Fetch canonical origin heads for history policy
+        run: git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
       - name: Install pinned Gitleaks
         env:
           GITLEAKS_VERSION: 8.30.0
@@ -215,6 +218,14 @@ jobs:
           "$install_dir/gitleaks" version
       - name: Scan current source with the reviewed fixture policy
         run: /tmp/phantom-gitleaks-bin/gitleaks dir . --config .gitleaks.toml --redact --no-banner --max-target-megabytes 5 --timeout 60
+
+      - name: Validate exact candidate and canonical-origin history policy
+        run: |
+          node --test scripts/release/validate-gitleaks-ignore.test.mjs
+          node scripts/release/validate-gitleaks-ignore.mjs .gitleaksignore HEAD
+
+      - name: Scan candidate and canonical origin ancestry against reviewed fingerprints
+        run: /tmp/phantom-gitleaks-bin/gitleaks git . --log-opts='HEAD --remotes=origin' --config .gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact --no-banner --max-target-megabytes 5 --timeout 120
 
   crate-publication-contract:
     name: Crate publication contract
