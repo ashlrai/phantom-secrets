@@ -67,6 +67,19 @@ impl AnchoredFilePermissions {
             readonly: false,
         }
     }
+
+    /// Whether the captured portable permission token carries a Unix execute
+    /// bit. Non-Unix platforms do not model executable permission bits here.
+    pub const fn is_executable(&self) -> bool {
+        #[cfg(unix)]
+        {
+            matches!(self.unix_mode, Some(mode) if mode & 0o111 != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
 }
 
 /// An exact, value-bearing before-image read through an anchored handle.

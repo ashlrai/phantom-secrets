@@ -183,9 +183,6 @@ pub fn run(env_path_arg: &str) -> Result<()> {
                 files.push(file);
             }
             let mut prepared_hook = hooks::prepare_precommit_hook(&project_dir)?;
-            if let Some(file) = prepared_hook.take_file() {
-                files.push(file);
-            }
             if let Some(prepared) = &claude_setup {
                 if let Some(file) = prepared.transaction_file() {
                     files.push(file);
@@ -201,6 +198,9 @@ pub fn run(env_path_arg: &str) -> Result<()> {
                 files,
                 "Existing Phantom state was preserved, but local integration refresh is incomplete",
             )?;
+            prepared_hook.commit().with_context(|| {
+                "Project files were committed, but the separate Git pre-commit hook transaction is incomplete; project changes were not rolled back"
+            })?;
             prepared_hook.finish();
             if let Some(prepared) = &claude_setup {
                 prompts::finish_auto_setup_claude_code(prepared);
@@ -287,9 +287,6 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     ));
 
     let mut prepared_hook = hooks::prepare_precommit_hook(&project_dir)?;
-    if let Some(file) = prepared_hook.take_file() {
-        files.push(file);
-    }
     if let Some(prepared) = &claude_setup {
         if let Some(file) = prepared.transaction_file() {
             files.push(file);
@@ -356,6 +353,9 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         ".env.example".cyan()
     );
 
+    prepared_hook.commit().with_context(|| {
+        "Project files and vault entries were committed, but the separate Git pre-commit hook transaction is incomplete; project changes were not rolled back"
+    })?;
     prepared_hook.finish();
 
     println!(

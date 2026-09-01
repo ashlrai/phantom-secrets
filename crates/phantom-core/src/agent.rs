@@ -685,7 +685,9 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        dir.join("effective-hooks/pre-commit")
+        let hook = dir.join("effective-hooks/pre-commit");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        hook
     }
 
     fn no_vault() -> AgentReadinessOptions {

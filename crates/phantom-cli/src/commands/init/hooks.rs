@@ -3,13 +3,29 @@ use phantom_core::precommit_hook::{self, HookChange};
 use std::path::Path;
 
 pub struct PreparedHook {
-    file: Option<phantom_vault::InitFile>,
+    project_dir: std::path::PathBuf,
+    plan: Option<precommit_hook::PreparedHookPlan>,
+    authorization: Option<precommit_hook::ExternalHookAuthorization>,
     change: Option<HookChange>,
 }
 
 impl PreparedHook {
-    pub fn take_file(&mut self) -> Option<phantom_vault::InitFile> {
-        self.file.take()
+    /// Commit the hook as a separate Git-metadata transaction after the
+    /// project-root transaction has completed. This cannot roll back project
+    /// files if the independently rooted hook operation fails.
+    pub fn commit(&mut self) -> anyhow::Result<()> {
+        let Some(plan) = self.plan.as_ref() else {
+            return Ok(());
+        };
+        self.change = Some(
+            precommit_hook::commit_prepared_install(
+                &self.project_dir,
+                plan,
+                self.authorization.as_ref(),
+            )
+            .map_err(|error| anyhow::anyhow!("Pre-commit hook setup failed: {error}"))?,
+        );
+        Ok(())
     }
 
     pub fn finish(&self) {
@@ -30,53 +46,22 @@ impl PreparedHook {
 
 /// Resolve and fully prepare the effective hook without mutating it.
 pub fn prepare_precommit_hook(project_dir: &Path) -> anyhow::Result<PreparedHook> {
-    let state = precommit_hook::inspect(project_dir)
+    let plan = precommit_hook::prepare_install_plan(project_dir)
         .map_err(|error| anyhow::anyhow!("Pre-commit hook setup failed: {error}"))?;
-    let (path, before, executable) = match state {
-        precommit_hook::HookState::NotRepository => {
-            return Ok(PreparedHook {
-                file: None,
-                change: None,
-            });
-        }
-        precommit_hook::HookState::Missing { path } => (path, None, false),
-        precommit_hook::HookState::Present {
-            path,
-            content,
-            executable,
-        } => {
-            let before = phantom_core::fs::read_regular_file(&path).map_err(|error| {
-                anyhow::anyhow!("Failed to safely snapshot {}: {error}", path.display())
-            })?;
-            if before.as_deref() != Some(content.as_bytes()) {
-                anyhow::bail!(
-                    "Pre-commit hook changed during init preflight: {}",
-                    path.display()
-                );
-            }
-            (path, before, executable)
-        }
-    };
-    let existing = before
-        .as_deref()
-        .map(std::str::from_utf8)
-        .transpose()
-        .map_err(|_| anyhow::anyhow!("Pre-commit hook is not valid UTF-8"))?
-        .unwrap_or_default();
-    let update = precommit_hook::ensure(existing);
-    let needs_executable_repair = !executable && !existing.is_empty();
-    let change = if update.change == HookChange::Unchanged && needs_executable_repair {
-        HookChange::Repaired
+    let authorization = if plan.as_ref().is_some_and(|plan| {
+        plan.change() != HookChange::Unchanged && plan.authority().is_external()
+    }) {
+        precommit_hook::authorize_external_install_from_terminal(project_dir)
+            .map_err(|error| anyhow::anyhow!("Pre-commit hook setup failed: {error}"))?
     } else {
-        update.change
+        None
     };
-    let file = (update.change != HookChange::Unchanged || needs_executable_repair).then(|| {
-        phantom_vault::InitFile::replace_if_unchanged(path, before, update.content.into_bytes())
-            .executable(true)
-    });
+    let change = plan.as_ref().map(precommit_hook::PreparedHookPlan::change);
     Ok(PreparedHook {
-        file,
-        change: Some(change),
+        project_dir: project_dir.to_path_buf(),
+        plan,
+        authorization,
+        change,
     })
 }
 
@@ -169,6 +154,29 @@ mod tests {
         let prepared = prepare_precommit_hook(project.path()).unwrap();
 
         assert_eq!(prepared.change, Some(HookChange::Repaired));
-        assert!(prepared.file.is_some());
+    }
+
+    #[test]
+    fn commit_rejects_hook_change_after_init_preflight() {
+        let project = TempDir::new().unwrap();
+        init_git(project.path());
+        let hook = project.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho reviewed\n").unwrap();
+        let mut prepared = prepare_precommit_hook(project.path()).unwrap();
+        let concurrent = b"#!/bin/sh\necho concurrent-owner\n";
+        std::fs::write(&hook, concurrent).unwrap();
+
+        let error = prepared.commit().unwrap_err().to_string();
+
+        assert!(error.contains("changed after init preflight"));
+        assert_eq!(std::fs::read(hook).unwrap(), concurrent);
+    }
+
+    #[test]
+    fn init_reports_independent_hook_failure_without_claiming_project_rollback() {
+        let source = include_str!("mod.rs");
+        assert!(source.contains("separate Git pre-commit hook transaction is incomplete"));
+        assert!(source.contains("project changes were not rolled back"));
+        assert!(source.contains("Project files and vault entries were committed"));
     }
 }

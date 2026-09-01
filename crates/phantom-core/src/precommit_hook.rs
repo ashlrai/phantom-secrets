@@ -6,10 +6,18 @@
 //! never invokes a package runner that could download code during a commit.
 
 use std::ffi::OsStr;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use thiserror::Error;
+
+use crate::fs::{
+    AnchoredEffect, AnchoredFilePermissions, AnchoredLock, AnchoredRead, AnchoredTarget,
+    FileIdentity, TrustedAnchor,
+};
 
 /// Start marker used to find and safely repair Phantom-owned hook blocks.
 pub const HOOK_MARKER: &str = "# Phantom Secrets pre-commit hook";
@@ -18,6 +26,8 @@ pub const HOOK_MARKER: &str = "# Phantom Secrets pre-commit hook";
 pub const HOOK_END_MARKER: &str = "# End Phantom Secrets pre-commit hook";
 
 const LEGACY_NPX_COMMAND: &str = "npx phantom-secrets check --staged";
+const HOOK_LOCK_NAME: &str = ".phantom-precommit.lock";
+const PROCESS_LOCK_SHARDS: usize = 64;
 
 /// The current Phantom-owned hook block.
 pub const HOOK_BLOCK: &str = r#"# Phantom Secrets pre-commit hook
@@ -51,12 +61,89 @@ pub enum HookState {
     NotRepository,
     Missing {
         path: PathBuf,
+        authority: HookAuthority,
     },
     Present {
         path: PathBuf,
         content: String,
         executable: bool,
+        authority: HookAuthority,
     },
+}
+
+/// Why Git's effective hook parent is eligible (or ineligible) for mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookAuthority {
+    Project,
+    GitCommon,
+    ExternalOperatorConfig { scope: String, origin: String },
+    ExternalDenied { scope: String, origin: String },
+}
+
+impl HookAuthority {
+    pub fn is_external(&self) -> bool {
+        matches!(
+            self,
+            Self::ExternalOperatorConfig { .. } | Self::ExternalDenied { .. }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HookLocation {
+    path: PathBuf,
+    parent: PathBuf,
+    authority: HookAuthority,
+    authority_root: Option<PathBuf>,
+    relative_parent: Option<PathBuf>,
+}
+
+/// Privately constructed proof that this process received an exact
+/// trusted-terminal confirmation for one operator-configured external hook
+/// location. Same-user process and terminal compromise remain out of scope.
+#[derive(Debug)]
+pub struct ExternalHookAuthorization {
+    location: HookLocation,
+    parent_identity: crate::fs::FileIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HookBeforeImage {
+    bytes: Vec<u8>,
+    identity: FileIdentity,
+    permissions: AnchoredFilePermissions,
+}
+
+/// Exact preflight plan for one independently rooted hook transaction.
+/// Commit rejects identity, byte, permission, path, or provenance drift.
+#[derive(Debug)]
+pub struct PreparedHookPlan {
+    location: HookLocation,
+    before: Option<HookBeforeImage>,
+    content: Vec<u8>,
+    change: HookChange,
+}
+
+impl PreparedHookPlan {
+    pub fn change(&self) -> HookChange {
+        self.change
+    }
+
+    pub fn authority(&self) -> &HookAuthority {
+        &self.location.authority
+    }
+
+    fn requires_write(&self) -> bool {
+        self.change != HookChange::Unchanged
+    }
+}
+
+struct HookTransaction {
+    _process: MutexGuard<'static, ()>,
+    _lock: AnchoredLock,
+    _parent: TrustedAnchor,
+    target: AnchoredTarget,
+    location: HookLocation,
 }
 
 /// Errors are deliberately specific so init/doctor callers never report a
@@ -95,6 +182,36 @@ pub enum HookError {
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "pre-commit hook {path} changed after init preflight; project changes were not rolled back"
+    )]
+    ReviewedStateChanged { path: PathBuf },
+    #[error("effective external pre-commit hook {path} is controlled by {scope} config from {origin}; repository/worktree/command config cannot authorize an external write")]
+    ExternalWriteDenied {
+        path: PathBuf,
+        scope: String,
+        origin: String,
+    },
+    #[error("external pre-commit hook authorization requires attached stdin, stdout, and stderr terminals")]
+    TrustedTerminalRequired,
+    #[error("external pre-commit hook authorization did not match exactly; no hook was changed")]
+    AuthorizationRejected,
+    #[error("external pre-commit hook parent changed after authorization; no hook was changed")]
+    AuthorizationDrift,
+    #[error("could not read or render external pre-commit hook authorization: {0}")]
+    AuthorizationIo(#[source] std::io::Error),
+    #[error("could not acquire the cooperative pre-commit hook lock in {path}: {source}")]
+    Lock {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("pre-commit hook {path} was replaced, but durability could not be verified: {source}")]
+    CommittedButUncertain {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[cfg(unix)]
     #[error("could not make pre-commit hook executable {path}: {source}")]
     Permissions {
@@ -108,13 +225,21 @@ pub enum HookError {
 /// repository/global `core.hooksPath` configuration without parsing `.git`
 /// indirection files or invoking a shell.
 pub fn resolve_path(project_dir: &Path) -> Result<Option<PathBuf>, HookError> {
-    resolve_path_with_git(project_dir, OsStr::new("git"))
+    Ok(resolve_location_with_git(project_dir, OsStr::new("git"))?.map(|location| location.path))
 }
 
+#[cfg(test)]
 fn resolve_path_with_git(
     project_dir: &Path,
     git_program: &OsStr,
 ) -> Result<Option<PathBuf>, HookError> {
+    Ok(resolve_location_with_git(project_dir, git_program)?.map(|location| location.path))
+}
+
+fn resolve_location_with_git(
+    project_dir: &Path,
+    git_program: &OsStr,
+) -> Result<Option<HookLocation>, HookError> {
     let absolute_project = if project_dir.is_absolute() {
         project_dir.to_path_buf()
     } else {
@@ -232,20 +357,291 @@ fn resolve_path_with_git(
             project: absolute_project.clone(),
             reason: format!("could not canonicalize Git common directory: {source}"),
         })?;
-    if !path.starts_with(&absolute_project)
-        && !path.starts_with(&canonical_project)
-        && !path.starts_with(&common_path)
-        && !path.starts_with(&common_dir)
-    {
+    let (authority, authority_root, relative_hook) =
+        if let Ok(relative) = path.strip_prefix(&canonical_project) {
+            (
+                HookAuthority::Project,
+                Some(canonical_project.clone()),
+                Some(relative.to_path_buf()),
+            )
+        } else if let Ok(relative) = path.strip_prefix(&absolute_project) {
+            (
+                HookAuthority::Project,
+                Some(canonical_project),
+                Some(relative.to_path_buf()),
+            )
+        } else if let Ok(relative) = path.strip_prefix(&common_dir) {
+            (
+                HookAuthority::GitCommon,
+                Some(common_dir.clone()),
+                Some(relative.to_path_buf()),
+            )
+        } else if let Ok(relative) = path.strip_prefix(&common_path) {
+            (
+                HookAuthority::GitCommon,
+                Some(common_dir),
+                Some(relative.to_path_buf()),
+            )
+        } else {
+            (
+                resolve_external_authority(&absolute_project, git_program, &path)?,
+                None,
+                None,
+            )
+        };
+    let parent = path.parent().ok_or_else(|| HookError::InvalidPath {
+        project: absolute_project,
+        reason: format!("{} has no parent directory", path.display()),
+    })?;
+    Ok(Some(HookLocation {
+        path: path.clone(),
+        parent: parent.to_path_buf(),
+        authority,
+        authority_root,
+        relative_parent: relative_hook
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf),
+    }))
+}
+
+fn resolve_external_authority(
+    project: &Path,
+    git_program: &OsStr,
+    hook_path: &Path,
+) -> Result<HookAuthority, HookError> {
+    let output = Command::new(git_program)
+        .arg("-C")
+        .arg(project)
+        .args([
+            "config",
+            "--null",
+            "--show-origin",
+            "--show-scope",
+            "--get",
+            "core.hooksPath",
+        ])
+        .output()
+        .map_err(|source| HookError::GitUnavailable {
+            project: project.to_path_buf(),
+            source,
+        })?;
+    if !output.status.success() {
         return Err(HookError::InvalidPath {
-            project: absolute_project,
+            project: project.to_path_buf(),
             reason: format!(
-                "effective hook path escapes the project and Git common directory: {}",
-                path.display()
+                "external effective hook {} has no attributable core.hooksPath configuration",
+                hook_path.display()
             ),
         });
     }
-    Ok(Some(path))
+    let fields = output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .collect::<Vec<_>>();
+    if fields.len() != 4 || !fields[3].is_empty() {
+        return Err(HookError::InvalidPath {
+            project: project.to_path_buf(),
+            reason: "Git returned malformed core.hooksPath provenance".to_string(),
+        });
+    }
+    let scope = std::str::from_utf8(fields[0]).map_err(|_| HookError::InvalidPath {
+        project: project.to_path_buf(),
+        reason: "core.hooksPath scope was not valid UTF-8".to_string(),
+    })?;
+    let origin = std::str::from_utf8(fields[1]).map_err(|_| HookError::InvalidPath {
+        project: project.to_path_buf(),
+        reason: "core.hooksPath origin was not valid UTF-8".to_string(),
+    })?;
+    let configured = std::str::from_utf8(fields[2]).map_err(|_| HookError::InvalidPath {
+        project: project.to_path_buf(),
+        reason: "core.hooksPath value was not valid UTF-8".to_string(),
+    })?;
+    if configured.contains(['\n', '\r', '\0'])
+        || origin.contains(['\n', '\r', '\0'])
+        || scope.contains(['\n', '\r', '\0'])
+    {
+        return Err(HookError::InvalidPath {
+            project: project.to_path_buf(),
+            reason: "core.hooksPath provenance contained control separators".to_string(),
+        });
+    }
+    let authority = match scope {
+        "global" | "system" => HookAuthority::ExternalOperatorConfig {
+            scope: scope.to_string(),
+            origin: origin.to_string(),
+        },
+        _ => HookAuthority::ExternalDenied {
+            scope: scope.to_string(),
+            origin: origin.to_string(),
+        },
+    };
+    Ok(authority)
+}
+
+fn process_lock_for(parent: &Path) -> MutexGuard<'static, ()> {
+    static LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
+    let locks = LOCKS.get_or_init(|| (0..PROCESS_LOCK_SHARDS).map(|_| Mutex::new(())).collect());
+    let mut hasher = DefaultHasher::new();
+    parent.hash(&mut hasher);
+    locks[hasher.finish() as usize % locks.len()]
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn open_hook_parent(location: &HookLocation) -> Result<TrustedAnchor, HookError> {
+    if let Some(root) = location.authority_root.as_ref() {
+        let anchor = TrustedAnchor::open(root).map_err(|source| HookError::CreateDirectory {
+            path: root.clone(),
+            source,
+        })?;
+        let relative = location
+            .relative_parent
+            .as_deref()
+            .unwrap_or_else(|| Path::new(""));
+        if relative.as_os_str().is_empty() {
+            return Ok(anchor);
+        }
+        return anchor
+            .open_subdirectory(relative)
+            .map_err(|source| HookError::CreateDirectory {
+                path: location.parent.clone(),
+                source,
+            });
+    }
+    let metadata = std::fs::symlink_metadata(&location.parent).map_err(|source| {
+        HookError::CreateDirectory {
+            path: location.parent.clone(),
+            source,
+        }
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(HookError::UnsafeTarget {
+            path: location.parent.clone(),
+        });
+    }
+    TrustedAnchor::open_canonical(&location.parent).map_err(|source| HookError::CreateDirectory {
+        path: location.parent.clone(),
+        source,
+    })
+}
+
+fn acquire_hook_transaction(
+    location: HookLocation,
+    authorization: Option<&ExternalHookAuthorization>,
+) -> Result<HookTransaction, HookError> {
+    match &location.authority {
+        HookAuthority::Project | HookAuthority::GitCommon => {}
+        HookAuthority::ExternalOperatorConfig { scope, origin } => {
+            if authorization.map(|proof| &proof.location) != Some(&location) {
+                return Err(HookError::ExternalWriteDenied {
+                    path: location.path.clone(),
+                    scope: scope.clone(),
+                    origin: origin.clone(),
+                });
+            }
+        }
+        HookAuthority::ExternalDenied { scope, origin } => {
+            return Err(HookError::ExternalWriteDenied {
+                path: location.path.clone(),
+                scope: scope.clone(),
+                origin: origin.clone(),
+            });
+        }
+    }
+    let process = process_lock_for(&location.parent);
+    let parent = open_hook_parent(&location)?;
+    if let Some(proof) = authorization {
+        if location.authority.is_external() && parent.identity() != proof.parent_identity {
+            return Err(HookError::AuthorizationDrift);
+        }
+    }
+    let lock = parent
+        .acquire_lock(HOOK_LOCK_NAME)
+        .map_err(|source| HookError::Lock {
+            path: location.parent.clone(),
+            source,
+        })?;
+    let target = parent
+        .target("pre-commit")
+        .map_err(|source| HookError::Read {
+            path: location.path.clone(),
+            source,
+        })?;
+    Ok(HookTransaction {
+        _process: process,
+        _lock: lock,
+        _parent: parent,
+        target,
+        location,
+    })
+}
+
+fn inspect_location(location: HookLocation) -> Result<HookState, HookError> {
+    let read = read_location(&location)?;
+    let Some(read) = read else {
+        return Ok(HookState::Missing {
+            path: location.path,
+            authority: location.authority,
+        });
+    };
+    state_from_read(location, &read)
+}
+
+fn read_location(location: &HookLocation) -> Result<Option<AnchoredRead>, HookError> {
+    if let HookAuthority::ExternalDenied { scope, origin } = &location.authority {
+        return Err(HookError::ExternalWriteDenied {
+            path: location.path.clone(),
+            scope: scope.clone(),
+            origin: origin.clone(),
+        });
+    }
+    let parent = open_hook_parent(location)?;
+    let target = parent
+        .target("pre-commit")
+        .map_err(|source| HookError::Read {
+            path: location.path.clone(),
+            source,
+        })?;
+    target
+        .read_regular()
+        .map_err(|source| map_hook_read_error(&location.path, source))
+}
+
+fn map_hook_read_error(path: &Path, source: std::io::Error) -> HookError {
+    let message = source.to_string();
+    if message.contains("non-regular")
+        || message.contains("reparse")
+        || message.contains("symlink")
+        || message.contains("multiply-linked")
+    {
+        HookError::UnsafeTarget {
+            path: path.to_path_buf(),
+        }
+    } else {
+        HookError::Read {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+}
+
+fn state_from_read(location: HookLocation, read: &AnchoredRead) -> Result<HookState, HookError> {
+    let content = std::str::from_utf8(read.bytes())
+        .map_err(|_| HookError::NonUtf8Content {
+            path: location.path.clone(),
+        })?
+        .to_string();
+    #[cfg(unix)]
+    let executable = read.permissions().is_executable();
+    #[cfg(not(unix))]
+    let executable = true;
+    Ok(HookState::Present {
+        path: location.path,
+        content,
+        executable,
+        authority: location.authority,
+    })
 }
 
 /// Read the effective hook without silently treating unreadable or non-UTF-8
@@ -255,160 +651,287 @@ pub fn inspect(project_dir: &Path) -> Result<HookState, HookError> {
 }
 
 fn inspect_with_git(project_dir: &Path, git_program: &OsStr) -> Result<HookState, HookError> {
-    let Some(path) = resolve_path_with_git(project_dir, git_program)? else {
+    let Some(location) = resolve_location_with_git(project_dir, git_program)? else {
         return Ok(HookState::NotRepository);
     };
-    let bytes = match crate::fs::read_regular_file(&path) {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => return Ok(HookState::Missing { path }),
-        Err(source) if source.to_string().contains("symlink") => {
-            return Err(HookError::UnsafeTarget { path })
-        }
-        Err(source) => return Err(HookError::Read { path, source }),
-    };
-    let content =
-        String::from_utf8(bytes).map_err(|_| HookError::NonUtf8Content { path: path.clone() })?;
-    #[cfg(unix)]
-    let executable = {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = std::fs::symlink_metadata(&path).map_err(|source| HookError::Read {
-            path: path.clone(),
-            source,
-        })?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(HookError::UnsafeTarget { path });
-        }
-        metadata.permissions().mode() & 0o111 != 0
-    };
-    #[cfg(not(unix))]
-    let executable = true;
-    Ok(HookState::Present {
-        path,
-        content,
-        executable,
-    })
+    inspect_location(location)
 }
 
 /// Install or repair the canonical hook at Git's effective path.
 pub fn install(project_dir: &Path) -> Result<Option<HookChange>, HookError> {
-    install_with_git(project_dir, OsStr::new("git"))
+    install_with_authorization(project_dir, None)
 }
 
+/// Install using a trusted-terminal authorization bound to one external
+/// global/system `core.hooksPath`. Project/common paths ignore the token.
+pub fn install_with_authorization(
+    project_dir: &Path,
+    authorization: Option<&ExternalHookAuthorization>,
+) -> Result<Option<HookChange>, HookError> {
+    let Some(plan) = prepare_install_plan(project_dir)? else {
+        return Ok(None);
+    };
+    commit_prepared_install(project_dir, &plan, authorization).map(Some)
+}
+
+/// Snapshot the exact effective hook state and intended canonical update
+/// without retaining a lock across an independently rooted project commit.
+pub fn prepare_install_plan(project_dir: &Path) -> Result<Option<PreparedHookPlan>, HookError> {
+    prepare_install_plan_with_git(project_dir, OsStr::new("git"))
+}
+
+/// Commit one exact hook plan. Any drift after preflight is rejected rather
+/// than silently merged into the independently committed project transaction.
+pub fn commit_prepared_install(
+    project_dir: &Path,
+    plan: &PreparedHookPlan,
+    authorization: Option<&ExternalHookAuthorization>,
+) -> Result<HookChange, HookError> {
+    commit_prepared_with_git_before_commit(
+        project_dir,
+        OsStr::new("git"),
+        plan,
+        authorization,
+        || {},
+    )
+}
+
+#[cfg(test)]
 fn install_with_git(
     project_dir: &Path,
     git_program: &OsStr,
+    authorization: Option<&ExternalHookAuthorization>,
 ) -> Result<Option<HookChange>, HookError> {
-    let state = inspect_with_git(project_dir, git_program)?;
-    let (path, existing, executable, existed) = match state {
-        HookState::NotRepository => return Ok(None),
-        HookState::Missing { path } => (path, String::new(), false, false),
-        HookState::Present {
-            path,
-            content,
-            executable,
-        } => (path, content, executable, true),
+    let Some(plan) = prepare_install_plan_with_git(project_dir, git_program)? else {
+        return Ok(None);
+    };
+    commit_prepared_with_git_before_commit(project_dir, git_program, &plan, authorization, || {})
+        .map(Some)
+}
+
+#[cfg(test)]
+fn install_with_git_before_commit(
+    project_dir: &Path,
+    git_program: &OsStr,
+    authorization: Option<&ExternalHookAuthorization>,
+    before_commit: impl FnOnce(),
+) -> Result<Option<HookChange>, HookError> {
+    let Some(plan) = prepare_install_plan_with_git(project_dir, git_program)? else {
+        return Ok(None);
+    };
+    commit_prepared_with_git_before_commit(
+        project_dir,
+        git_program,
+        &plan,
+        authorization,
+        before_commit,
+    )
+    .map(Some)
+}
+
+fn prepare_install_plan_with_git(
+    project_dir: &Path,
+    git_program: &OsStr,
+) -> Result<Option<PreparedHookPlan>, HookError> {
+    let Some(location) = resolve_location_with_git(project_dir, git_program)? else {
+        return Ok(None);
+    };
+    let before = read_location(&location)?;
+    let (existing, executable, before_image) = match before.as_ref() {
+        Some(read) => {
+            let content = std::str::from_utf8(read.bytes())
+                .map_err(|_| HookError::NonUtf8Content {
+                    path: location.path.clone(),
+                })?
+                .to_string();
+            #[cfg(unix)]
+            let executable = read.permissions().is_executable();
+            #[cfg(not(unix))]
+            let executable = true;
+            (
+                content,
+                executable,
+                Some(HookBeforeImage {
+                    bytes: read.bytes().to_vec(),
+                    identity: read.identity(),
+                    permissions: read.permissions(),
+                }),
+            )
+        }
+        None => (String::new(), false, None),
     };
     let update = ensure(&existing);
-    if update.change != HookChange::Unchanged {
-        let parent = path.parent().ok_or_else(|| HookError::InvalidPath {
-            project: project_dir.to_path_buf(),
-            reason: format!("{} has no parent directory", path.display()),
-        })?;
-        crate::fs::ensure_real_parent(&path).map_err(|source| HookError::CreateDirectory {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-        publish_hook_update(
-            &path,
-            existed.then_some(existing.as_bytes()),
-            update.content.as_bytes(),
-        )?;
-    }
-    #[cfg(unix)]
-    if update.change != HookChange::Unchanged || !executable {
-        make_executable_if_current(&path, update.content.as_bytes())?;
-    }
     let change = if update.change == HookChange::Unchanged && !executable {
         HookChange::Repaired
     } else {
         update.change
     };
-    Ok(Some(change))
+    Ok(Some(PreparedHookPlan {
+        location,
+        before: before_image,
+        content: update.content.into_bytes(),
+        change,
+    }))
 }
 
-fn publish_hook_update(
-    path: &Path,
-    expected: Option<&[u8]>,
-    content: &[u8],
-) -> Result<(), HookError> {
-    crate::fs::atomic_write_if_unchanged(path, expected, content).map_err(|source| {
-        HookError::Write {
-            path: path.to_path_buf(),
-            source,
+fn commit_prepared_with_git_before_commit(
+    project_dir: &Path,
+    git_program: &OsStr,
+    plan: &PreparedHookPlan,
+    authorization: Option<&ExternalHookAuthorization>,
+    before_commit: impl FnOnce(),
+) -> Result<HookChange, HookError> {
+    let current_location = resolve_location_with_git(project_dir, git_program)?;
+    if current_location.as_ref() != Some(&plan.location) {
+        return Err(HookError::ReviewedStateChanged {
+            path: plan.location.path.clone(),
+        });
+    }
+    if !plan.requires_write() {
+        let current = read_location(&plan.location)?;
+        if !matches_before(plan.before.as_ref(), current.as_ref()) {
+            return Err(HookError::ReviewedStateChanged {
+                path: plan.location.path.clone(),
+            });
         }
-    })
+        return Ok(plan.change);
+    }
+
+    let transaction = acquire_hook_transaction(plan.location.clone(), authorization)?;
+    let before = transaction
+        .target
+        .read_regular()
+        .map_err(|source| map_hook_read_error(&transaction.location.path, source))?;
+    if !matches_before(plan.before.as_ref(), before.as_ref()) {
+        return Err(HookError::ReviewedStateChanged {
+            path: plan.location.path.clone(),
+        });
+    }
+    before_commit();
+    let effect = transaction
+        .target
+        .replace_if_exact_with_permissions(
+            before.as_ref(),
+            &plan.content,
+            AnchoredFilePermissions::executable(),
+        )
+        .map_err(|source| HookError::Write {
+            path: transaction.location.path.clone(),
+            source,
+        })?;
+    match effect {
+        AnchoredEffect::Durable(_) => {}
+        AnchoredEffect::CommittedButUncertain { error, .. } => {
+            return Err(HookError::CommittedButUncertain {
+                path: transaction.location.path,
+                source: error,
+            })
+        }
+    }
+    Ok(plan.change)
 }
 
-#[cfg(unix)]
-fn make_executable_if_current(path: &Path, expected: &[u8]) -> Result<(), HookError> {
-    use std::io::Read;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+fn matches_before(expected: Option<&HookBeforeImage>, current: Option<&AnchoredRead>) -> bool {
+    match (expected, current) {
+        (None, None) => true,
+        (Some(expected), Some(current)) => {
+            expected.bytes == current.bytes()
+                && expected.identity == current.identity()
+                && expected.permissions == current.permissions()
+        }
+        _ => false,
+    }
+}
 
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).custom_flags(libc::O_NOFOLLOW);
-    let mut file = options
-        .open(path)
-        .map_err(|source| HookError::Permissions {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    if !file
-        .metadata()
-        .map_err(|source| HookError::Permissions {
-            path: path.to_path_buf(),
-            source,
-        })?
-        .is_file()
-    {
-        return Err(HookError::UnsafeTarget {
-            path: path.to_path_buf(),
+/// Request exact trusted-terminal authority for a global/system configured
+/// hook parent outside both the project and Git common directory.
+///
+/// The returned proof is bound to the resolved path, Git provenance, and the
+/// retained parent identity. Its fields are private and the production
+/// constructor performs this terminal exchange; this is not a sandbox against
+/// a compromised same-user process or terminal.
+pub fn authorize_external_install_from_terminal(
+    project_dir: &Path,
+) -> Result<Option<ExternalHookAuthorization>, HookError> {
+    authorize_external_install_with(
+        project_dir,
+        OsStr::new("git"),
+        std::io::stdin().is_terminal()
+            && std::io::stdout().is_terminal()
+            && std::io::stderr().is_terminal(),
+        &mut std::io::stdin().lock(),
+        &mut std::io::stderr().lock(),
+    )
+}
+
+fn authorize_external_install_with(
+    project_dir: &Path,
+    git_program: &OsStr,
+    attached: bool,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<Option<ExternalHookAuthorization>, HookError> {
+    let Some(location) = resolve_location_with_git(project_dir, git_program)? else {
+        return Ok(None);
+    };
+    match &location.authority {
+        HookAuthority::Project | HookAuthority::GitCommon => return Ok(None),
+        HookAuthority::ExternalDenied { scope, origin } => {
+            return Err(HookError::ExternalWriteDenied {
+                path: location.path.clone(),
+                scope: scope.clone(),
+                origin: origin.clone(),
+            })
+        }
+        HookAuthority::ExternalOperatorConfig { .. } => {}
+    }
+    if !attached {
+        return Err(HookError::TrustedTerminalRequired);
+    }
+    let hook = terminal_safe(&location.path)?;
+    let (scope, origin) = match &location.authority {
+        HookAuthority::ExternalOperatorConfig { scope, origin } => (scope, origin),
+        _ => unreachable!("external authority checked above"),
+    };
+    let origin = terminal_safe(Path::new(origin))?;
+    let challenge = format!("AUTHORIZE PHANTOM PRE-COMMIT HOOK {hook} FROM {scope} {origin}");
+    writeln!(
+        output,
+        "Git resolves its pre-commit hook outside this project and Git common directory.\nHook: {hook}\nConfiguration: {scope} {origin}\nType this exact challenge to authorize this one external hook parent:\n{challenge}"
+    )
+    .map_err(HookError::AuthorizationIo)?;
+    write!(output, "> ").map_err(HookError::AuthorizationIo)?;
+    output.flush().map_err(HookError::AuthorizationIo)?;
+    let mut response = String::new();
+    std::io::Read::take(&mut *input, (challenge.len() + 2) as u64)
+        .read_line(&mut response)
+        .map_err(HookError::AuthorizationIo)?;
+    if response.trim_end_matches(['\r', '\n']) != challenge {
+        return Err(HookError::AuthorizationRejected);
+    }
+    let parent = open_hook_parent(&location)?;
+    Ok(Some(ExternalHookAuthorization {
+        location,
+        parent_identity: parent.identity(),
+    }))
+}
+
+fn terminal_safe(path: &Path) -> Result<String, HookError> {
+    let text = path.to_str().ok_or_else(|| HookError::InvalidPath {
+        project: path.to_path_buf(),
+        reason: "trusted-terminal path was not valid UTF-8".to_string(),
+    })?;
+    if text.chars().any(char::is_control) || text.len() > 4096 {
+        return Err(HookError::InvalidPath {
+            project: path.to_path_buf(),
+            reason: "trusted-terminal path contained control characters or exceeded 4096 bytes"
+                .to_string(),
         });
     }
-    let mut current = Vec::new();
-    file.read_to_end(&mut current)
-        .map_err(|source| HookError::Read {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    if current != expected {
-        return Err(HookError::Write {
-            path: path.to_path_buf(),
-            source: std::io::Error::other(
-                "pre-commit hook changed before executable permissions were applied",
-            ),
-        });
-    }
-    file.set_permissions(std::fs::Permissions::from_mode(0o755))
-        .map_err(|source| HookError::Permissions {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    if crate::fs::read_regular_file(path)
-        .map_err(|source| HookError::Read {
-            path: path.to_path_buf(),
-            source,
-        })?
-        .as_deref()
-        != Some(expected)
-    {
-        return Err(HookError::Write {
-            path: path.to_path_buf(),
-            source: std::io::Error::other(
-                "pre-commit hook changed while executable permissions were applied",
-            ),
-        });
-    }
-    Ok(())
+    Ok(text
+        .chars()
+        .flat_map(char::escape_default)
+        .collect::<String>())
 }
 
 /// A hook is effective only when its canonical block is reachable and Git can
@@ -733,7 +1256,7 @@ mod tests {
             main.canonicalize().unwrap().join(".git/hooks/pre-commit")
         );
         assert_eq!(
-            install_with_git(&linked, clean_git.as_os_str()).unwrap(),
+            install_with_git(&linked, clean_git.as_os_str(), None).unwrap(),
             Some(HookChange::Installed)
         );
         assert!(matches!(
@@ -785,14 +1308,38 @@ mod tests {
     #[test]
     fn hook_publish_refuses_concurrent_owner() {
         let project = tempfile::tempdir().unwrap();
-        let hook = project.path().join("pre-commit");
-        std::fs::write(&hook, b"#!/bin/sh\necho concurrent\n").unwrap();
+        init_git(project.path());
+        let hook = resolve_path(project.path()).unwrap().unwrap();
+        std::fs::write(&hook, b"#!/bin/sh\necho reviewed\n").unwrap();
 
-        assert!(publish_hook_update(&hook, None, b"phantom").is_err());
+        assert!(
+            install_with_git_before_commit(project.path(), OsStr::new("git"), None, || {
+                std::fs::write(&hook, b"#!/bin/sh\necho concurrent\n").unwrap()
+            },)
+            .is_err()
+        );
         assert_eq!(
             std::fs::read(&hook).unwrap(),
             b"#!/bin/sh\necho concurrent\n"
         );
+    }
+
+    #[test]
+    fn prepared_plan_rejects_same_bytes_replacement_identity() {
+        let project = tempfile::tempdir().unwrap();
+        init_git(project.path());
+        let hook = resolve_path(project.path()).unwrap().unwrap();
+        let reviewed = b"#!/bin/sh\necho reviewed\n";
+        std::fs::write(&hook, reviewed).unwrap();
+        let plan = prepare_install_plan(project.path()).unwrap().unwrap();
+        std::fs::remove_file(&hook).unwrap();
+        std::fs::write(&hook, reviewed).unwrap();
+
+        assert!(matches!(
+            commit_prepared_install(project.path(), &plan, None).unwrap_err(),
+            HookError::ReviewedStateChanged { .. }
+        ));
+        assert_eq!(std::fs::read(hook).unwrap(), reviewed);
     }
 
     #[cfg(unix)]
@@ -816,19 +1363,160 @@ mod tests {
         assert!(!outside.path().join("pre-commit").exists());
     }
 
+    #[cfg(unix)]
     #[test]
-    fn install_refuses_hook_path_outside_project_and_git_directory() {
+    fn install_refuses_symlinked_hook_parent_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempfile::tempdir().unwrap();
+        init_git(project.path());
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(outside.path().join("hooks")).unwrap();
+        std::fs::create_dir(project.path().join("configured")).unwrap();
+        symlink(outside.path(), project.path().join("configured/link")).unwrap();
+        git(
+            project.path(),
+            &["config", "core.hooksPath", "configured/link/hooks"],
+        );
+
+        assert!(matches!(
+            install(project.path()).unwrap_err(),
+            HookError::CreateDirectory { .. }
+        ));
+        assert!(!outside.path().join("hooks/pre-commit").exists());
+    }
+
+    #[test]
+    fn repository_config_cannot_authorize_external_hook_write() {
         let project = tempfile::tempdir().unwrap();
         init_git(project.path());
         let outside = tempfile::tempdir().unwrap();
         let outside_text = outside.path().to_string_lossy().into_owned();
         git(project.path(), &["config", "core.hooksPath", &outside_text]);
 
+        assert!(matches!(
+            inspect(project.path()).unwrap_err(),
+            HookError::ExternalWriteDenied { .. }
+        ));
         let error = install(project.path()).unwrap_err();
 
-        assert!(matches!(error, HookError::InvalidPath { .. }));
-        assert!(error.to_string().contains("escapes the project"));
+        assert!(matches!(error, HookError::ExternalWriteDenied { .. }));
         assert!(!outside.path().join("pre-commit").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn global_external_hook_requires_exact_terminal_authorization() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let container = tempfile::tempdir().unwrap();
+        let project = container.path().join("project");
+        let common = project.join(".git");
+        let outside = container.path().join("operator-hooks");
+        std::fs::create_dir_all(&common).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let hook = outside.join("pre-commit");
+        let fake_git = container.path().join("fake-git");
+        let origin = container.path().join("global.gitconfig");
+        std::fs::write(
+            &fake_git,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n  *--is-inside-work-tree*) printf 'true\\n' ;;\n  *'--git-path hooks/pre-commit'*) printf '%s\\n' '{}' ;;\n  *--git-common-dir*) printf '%s\\n' '{}' ;;\n  *'config --null'*) printf 'global\\0file:{}\\0{}\\0' ;;\n  *) exit 2 ;;\nesac\n",
+                hook.display(),
+                common.display(),
+                origin.display(),
+                outside.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(matches!(
+            install_with_git(&project, fake_git.as_os_str(), None).unwrap_err(),
+            HookError::ExternalWriteDenied { .. }
+        ));
+        let location = resolve_location_with_git(&project, fake_git.as_os_str())
+            .unwrap()
+            .unwrap();
+        let challenge = format!(
+            "AUTHORIZE PHANTOM PRE-COMMIT HOOK {} FROM global file:{}",
+            terminal_safe(&hook).unwrap(),
+            terminal_safe(&origin).unwrap()
+        );
+        let mut output = Vec::new();
+        let authorization = authorize_external_install_with(
+            &project,
+            fake_git.as_os_str(),
+            true,
+            &mut std::io::Cursor::new(format!("{challenge}\n")),
+            &mut output,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(authorization.location, location);
+
+        assert_eq!(
+            install_with_git(&project, fake_git.as_os_str(), Some(&authorization)).unwrap(),
+            Some(HookChange::Installed)
+        );
+        assert!(is_current(&std::fs::read_to_string(hook).unwrap()));
+    }
+
+    #[test]
+    fn missing_effective_hook_parent_is_not_created_ambiently() {
+        let project = tempfile::tempdir().unwrap();
+        init_git(project.path());
+        git(
+            project.path(),
+            &["config", "core.hooksPath", "missing-hooks"],
+        );
+
+        let error = install(project.path()).unwrap_err();
+
+        assert!(matches!(error, HookError::CreateDirectory { .. }));
+        assert!(!project.path().join("missing-hooks").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_hook_parent_ignores_rename_replacement_decoy() {
+        let container = tempfile::tempdir().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved-hooks");
+        std::fs::create_dir(&project).unwrap();
+        init_git(&project);
+        git(&project, &["config", "core.hooksPath", "custom-hooks"]);
+        let hooks = project.join("custom-hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, b"#!/bin/sh\necho reviewed\n").unwrap();
+
+        install_with_git_before_commit(&project, OsStr::new("git"), None, || {
+            std::fs::rename(&hooks, &moved).unwrap();
+            std::fs::create_dir(&hooks).unwrap();
+            std::fs::write(hooks.join("pre-commit"), b"#!/bin/sh\necho decoy\n").unwrap();
+        })
+        .unwrap();
+
+        assert!(is_current(
+            &std::fs::read_to_string(moved.join("pre-commit")).unwrap()
+        ));
+        assert_eq!(
+            std::fs::read(hooks.join("pre-commit")).unwrap(),
+            b"#!/bin/sh\necho decoy\n"
+        );
+    }
+
+    #[test]
+    fn retained_hook_transaction_contract_is_cross_platform_visible() {
+        let source = include_str!("precommit_hook.rs");
+        assert!(source.contains("struct HookTransaction"));
+        assert!(source.contains("_parent: TrustedAnchor"));
+        assert!(source.contains("_lock: AnchoredLock"));
+        assert!(source.contains("replace_if_exact_with_permissions"));
+        assert!(source.contains("AnchoredFilePermissions::executable()"));
+        assert!(source.contains("CommittedButUncertain"));
+        assert!(!source.contains(concat!("ensure_real_parent", "(&path)")));
     }
 
     #[cfg(unix)]
