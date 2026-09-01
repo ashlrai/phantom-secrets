@@ -108,8 +108,6 @@ const machineReadableGuides = Object.entries(machineReadableClaims).filter(
 
 const verifiedReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3";
-const gitGuardianReportUrl =
-  "https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/";
 
 function structuredMetadataBlock(source, type) {
   const marker = `"@type": "${type}"`;
@@ -608,7 +606,11 @@ test("public leak statistics use the primary GitGuardian 2026 report accurately"
       /34\s*%[^\n]{0,80}year[- ]over[- ]year|year[- ]over[- ]year[^\n]{0,80}34\s*%/i,
       file,
     );
-    assert.ok(source.includes(gitGuardianReportUrl), file);
+    assert.match(
+      source,
+      /https:\/\/blog\.gitguardian\.com\/the-state-of-secrets-sprawl-2026\//,
+      file,
+    );
 
     for (const line of source.split("\n").filter((value) => /81\s*%/.test(value))) {
       assert.match(
