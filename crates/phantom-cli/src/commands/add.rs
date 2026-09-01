@@ -17,7 +17,6 @@ struct AddPlan {
     mutation: InitSecret,
     files: Vec<InitFile>,
     env_path: PathBuf,
-    replaced_existing: bool,
 }
 
 /// Add one secret through a single exact-before project transaction.
@@ -41,8 +40,13 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
     }
 
     let (config, config_before) = load_config_exact(&config_path)?;
-    let value = read_secret_value(name, from_stdin)?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    ensure_secret_absent(vault.as_ref(), name)?;
+
+    // Existing-name authority is resolved from value-blind vault metadata
+    // before stdin or the hidden prompt is touched. A second check in
+    // `prepare_add_plan` closes the race between this preflight and commit.
+    let value = read_secret_value(name, from_stdin)?;
     let plan = prepare_add_plan(
         &project_dir,
         &config_path,
@@ -63,13 +67,6 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
         "Add transaction failed; exact transaction-owned state was rolled back where verifiable. Inspect the vault and managed dotenv before retrying.",
     )?;
 
-    if plan.replaced_existing {
-        eprintln!(
-            "{} Replaced existing secret {} in one verified transaction",
-            "warn".yellow(),
-            name.bold()
-        );
-    }
     println!(
         "{} Stored {} in vault ({}) and updated {} (value never printed)",
         "ok".green().bold(),
@@ -81,6 +78,16 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
             .unwrap_or("managed dotenv")
             .cyan()
     );
+    Ok(())
+}
+
+fn ensure_secret_absent(vault: &dyn VaultBackend, name: &str) -> Result<()> {
+    let vault_names = vault.list().context("Failed to list protected secrets")?;
+    if vault_names.iter().any(|existing| existing == name) {
+        anyhow::bail!(
+            "Secret '{name}' is already protected. `phantom add` creates new names only and refuses replacement before reading a value. Use the trusted-terminal `phantom remove {name}` ceremony first if you explicitly intend a separate, non-atomic remove-and-add sequence."
+        );
+    }
     Ok(())
 }
 
@@ -123,19 +130,24 @@ fn prepare_add_plan(
     value: &str,
 ) -> Result<AddPlan> {
     let vault_names = vault.list().context("Failed to list protected secrets")?;
+    if vault_names.iter().any(|existing| existing == name) {
+        anyhow::bail!(
+            "Secret '{name}' became protected during add preflight; refusing replacement"
+        );
+    }
     let resolved =
         phantom_core::managed_dotenv::resolve_dotenv(project_dir, &config, &vault_names)?;
     let env_path = resolved.path;
     let env_before = snapshot_regular_file(&env_path)?;
     let env_after = rewrite_dotenv(env_before.as_deref(), name)?;
     let before = snapshot_secret(vault, name)?;
-    let replaced_existing = before.is_some();
+    if before.is_some() {
+        anyhow::bail!(
+            "Secret '{name}' became protected during add preflight; refusing replacement"
+        );
+    }
 
-    let mutation = InitSecret::replace_if_unchanged(
-        name,
-        before.as_ref().map(|current| current.as_str().to_string()),
-        value,
-    );
+    let mutation = InitSecret::replace_if_unchanged(name, None::<String>, value);
     let config_after = if config.phantom.dotenv_path.is_none() && vault_names.is_empty() {
         config.phantom.dotenv_path = Some(
             phantom_core::managed_dotenv::dotenv_basename(project_dir, &env_path)
@@ -159,7 +171,6 @@ fn prepare_add_plan(
         mutation,
         files,
         env_path,
-        replaced_existing,
     })
 }
 
@@ -401,5 +412,34 @@ mod tests {
             vault.retrieve("API_KEY"),
             Err(PhantomError::SecretNotFound(_))
         ));
+    }
+
+    #[test]
+    fn plan_refuses_existing_name_without_rewriting_project_state() {
+        let dir = TempDir::new().unwrap();
+        let (config_path, config, before, vault) = initialized(&dir);
+        let project = dir.path().canonicalize().unwrap();
+        vault.store("API_KEY", "original-value").unwrap();
+        let original_config = std::fs::read(&config_path).unwrap();
+
+        let error = prepare_add_plan(
+            &project,
+            &config_path,
+            config,
+            before,
+            &vault,
+            "API_KEY",
+            "unapproved-replacement",
+        )
+        .err()
+        .expect("existing names must be denied");
+
+        assert!(error.to_string().contains("refusing replacement"));
+        assert_eq!(
+            vault.retrieve("API_KEY").unwrap().as_str(),
+            "original-value"
+        );
+        assert_eq!(std::fs::read(&config_path).unwrap(), original_config);
+        assert!(!project.join(".env").exists());
     }
 }

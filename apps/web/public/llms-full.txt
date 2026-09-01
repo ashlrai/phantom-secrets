@@ -104,10 +104,10 @@ Show secret names stored in vault. Never shows values.
 Options: --json (emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded)
 
 ### phantom add <KEY>
-Transactionally add a secret to an initialized project. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Writes a persistent sensitive `phm_` mapping to the managed dotenv file.
-Prompts silently on the controlling terminal, so the value never enters shell history or `ps aux`. Positional secret values are rejected; use `--stdin` for a pipe.
+Transactionally create a new secret name in an initialized project. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Writes a persistent sensitive `phm_` mapping to the managed dotenv file.
+Prompts silently on the controlling terminal, so the value never enters shell history or `ps aux`. Positional secret values are rejected; use `--stdin` only with a trusted pipe. Existing names are denied before prompt/stdin read and are never replaced.
 Example (interactive, hidden input): phantom add STRIPE_SECRET_KEY
-Options: --stdin (read one line from a piped stdin; CI-friendly: `echo "$VAL" | phantom add KEY --stdin`)
+Options: --stdin (read one line for a new name from a trusted piped producer)
 
 ### phantom remove <KEY>
 From an attached trusted terminal, review and type the exact removal challenge.

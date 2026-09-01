@@ -225,8 +225,10 @@ reject any drift.
 54-tool compatibility catalog as deprecated hard denials. They never create,
 validate, or promote a candidate and never change vault or shadow metadata;
 `phantom_rotate_provider` is also hard-denied before credential or network
-access in 0.7.4; rotate provider credentials through the provider's trusted
-interface and enter the successor with trusted-terminal `phantom add`.
+access in 0.7.4. `phantom add` creates new names only and refuses existing-name
+replacement before reading a value. Replacing a credential therefore requires
+a separately reviewed provider rotation plus an explicit trusted-terminal
+remove-and-add sequence; those are distinct, non-atomic operations.
 
 Workspace setup is deliberately split across trust boundaries. MCP can call
 `phantom_setup_workspace` with `phase=propose`, then `phase=request_apply` using
@@ -341,7 +343,7 @@ Team memberships and member lists are visible in the read-only dashboard at [phm
 | `phantom start` | Run an explicitly supervised foreground proxy; keep its trusted terminal open and press Ctrl-C there to stop |
 | `phantom start --daemon` / `phantom stop` | Detached start fails closed; stop is a TTY-only legacy-state diagnostic that never kills or deletes, not current process control |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
-| `phantom add <KEY>` | Add a secret transactionally to an initialized project through a hidden trusted-terminal prompt; run `phantom init --empty` first in a new project and use `--stdin` only with a trusted producer |
+| `phantom add <KEY>` | Create a new secret name transactionally in an initialized project through a hidden terminal prompt or trusted `--stdin` producer; existing names are denied before any value read and are never replaced |
 | `phantom remove <KEY>` | After exact trusted-terminal confirmation, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping; headless use fails before value access or mutation |
 | `phantom reveal <KEY>` | From an attached trusted terminal, review and type the exact challenge before printing one value or copying it for an auto-cleared 30-second clipboard window |
 | `phantom status` | Show vault/mapping state and whether the machine-local lifecycle lock is held; a held lock does not authenticate or identify a listener |

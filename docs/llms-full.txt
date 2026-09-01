@@ -53,7 +53,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom audit verify` — Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected.
 - `phantom start` — Run a foreground proxy only when stdin/stdout/stderr are terminals; keep the trusted owning terminal open and press Ctrl-C there to stop. `--daemon` and current external control fail closed; `phantom stop` authenticates legacy v0.7.3 state only to report manual migration guidance and never kills or deletes.
 - `phantom list` — Show secret names stored in vault (never shows values). Add `--json` to emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded.
-- `phantom add <KEY>` — Transactionally add a secret to an initialized project through a hidden terminal prompt. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Positional values are rejected; for piped/CI use, pass `--stdin` and provide one line on stdin: `echo "$VAL" | phantom add KEY --stdin`.
+- `phantom add <KEY>` — Transactionally create a new secret name in an initialized project through a hidden terminal prompt. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Positional values are rejected; for a trusted piped producer, pass `--stdin` and provide one line. Existing names are denied before prompt/stdin read and are never replaced.
 - `phantom remove <KEY>` — After exact trusted-terminal consent, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping.
 - `phantom reveal <KEY>` — View a secret value only from attached terminals after exact typed confirmation; there is no non-interactive bypass.
 - `phantom rotate` — Regenerate local phantom mappings without changing provider credentials. `--sync` is rejected for a local-only remap; rotate at the provider, store the successor from a trusted terminal, then run a separately reviewed sync.
@@ -288,6 +288,6 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 7. **Team onboarding**: `phantom env` generates .env.example with placeholders
 8. **CI/CD**: Use `phantom check` as a bounded dotenv/key-prefix gate and pair it with a broader repository scanner; preview selected provider sync targets before applying
 9. **Pre-commit safety**: Add `phantom check --staged` to hooks while remembering hooks can be skipped or bypassed
-10. **Provider rotation and sync**: rotate through the provider's trusted interface, store the successor with trusted-terminal `phantom add`, then run a separately reviewed deployment sync. Local token remaps never authorize sync.
+10. **Provider rotation and sync**: rotate through the provider's trusted interface, then use a separately reviewed trusted-terminal remove-and-add sequence if the protected name already exists. Those operations are non-atomic, and deployment sync requires its own review. Local token remaps never authorize sync.
 11. **Monorepo**: Run `phantom init` in each subdirectory — each gets its own vault and config
 12. **Multi-IDE team**: Same MCP server works across Claude Code, Cursor, Windsurf, and Codex

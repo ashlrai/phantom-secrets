@@ -115,7 +115,7 @@ runtime `tools/list` response from the installed binary is canonical.
 | `phantom init --all <DIR> --dry-run` | Preview bounded multi-project protection without modifying files or vaults |
 | `phantom exec -- <command>` | Run a child process through the local proxy |
 | `phantom list` | List stored names, not values |
-| `phantom add <NAME>` | Prompt for a value in an initialized project; it never auto-creates project state |
+| `phantom add <NAME>` | Create a new protected name in an initialized project; existing names are denied before value input and never replaced |
 | `phantom reveal <NAME>` | Intentionally disclose a stored value to the terminal or clipboard |
 | `phantom check [--staged]` | Scan selected content for unprotected secret candidates |
 | `phantom rotate` | Replace Phantom mappings; it does not rotate provider credentials |

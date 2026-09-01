@@ -121,7 +121,7 @@ Recently-added flags worth knowing:
 - `phantom agent setup --dry-run` previews safe setup changes for agent use; `phantom agent setup --apply` writes them.
 - `phantom sync --dry-run --json` previews deployment sync targets, selected key names, skipped key names, token-env presence, and warnings without decrypting values or calling platform APIs.
 - `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config file per AI tool; `--print` emits the snippet to stdout for any other client.
-- `phantom add KEY --stdin` reads the value from a piped stdin (CI-friendly). Bare `phantom add KEY` (no value) prompts silently on the terminal via `rpassword` so the secret never enters shell history. Add requires an initialized project and does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project.
+- `phantom add KEY --stdin` reads one new-name value from a trusted piped producer. Bare `phantom add KEY` (no value) prompts silently on the terminal via `rpassword` so the secret never enters shell history. Add requires an initialized project and does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Existing names are denied before prompt/stdin read and are never replaced.
 - `phantom list --json` emits a JSON array of `{name, detected_service}` for scripting; values are never included.
 - `phantom sync --only PATTERN` (repeatable; OR-ed) limits which keys get pushed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`.
 - `phantom check --staged` reads from the git index (including staged `.env` files) and is suitable for pre-commit hooks.

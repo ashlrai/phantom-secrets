@@ -848,6 +848,22 @@ test("cloud-signed audit remains an explicit network-free protocol foundation", 
   assert.match(enterprise, /without network I\/O/i);
 });
 
+test("add guidance keeps headless creation separate from replacement authority", () => {
+  const addSource = readRepo("crates/phantom-cli/src/commands/add.rs");
+  const gettingStarted = readRepo("docs/getting-started.md");
+  const machineGuides = [
+    readRepo("docs/llms.txt"),
+    readRepo("docs/llms-full.txt"),
+    readRepo("apps/web/public/llms.txt"),
+    readRepo("apps/web/public/llms-full.txt"),
+  ].join("\n");
+
+  assert.match(addSource, /refuses replacement before reading a value/i);
+  assert.match(gettingStarted, /existing protected name is denied[\s\S]*before Phantom reads/i);
+  assert.match(machineGuides, /existing names are denied before prompt\/stdin read/i);
+  assert.doesNotMatch(machineGuides, /replace(?:s|ment)? an existing (?:protected )?(?:name|secret)/i);
+});
+
 test("contributor templates keep secrets and evidence layers separated", () => {
   const bug = readRepo(".github/ISSUE_TEMPLATE/bug_report.yml");
   assert.match(bug, /placeholder: "phantom 0\.7\.3"/);

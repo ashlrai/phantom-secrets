@@ -198,7 +198,7 @@ enum Commands {
         min_anomaly_score: Option<u8>,
     },
 
-    /// Add a secret transactionally to an initialized project (`phantom init --empty` first)
+    /// Create a new secret name transactionally; existing names are never replaced
     #[command(next_help_heading = "Daily use")]
     Add {
         /// Secret name (e.g., OPENAI_API_KEY)
@@ -206,7 +206,7 @@ enum Commands {
         /// Legacy positional secret value; rejected because argv is observable
         #[arg(hide = true)]
         value: Option<String>,
-        /// Read the secret value from stdin (for piped use: echo "$VAL" | phantom add KEY --stdin)
+        /// Read one new-name value from stdin; existing names are denied before the read
         #[arg(long)]
         stdin: bool,
     },

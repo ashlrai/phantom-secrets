@@ -180,7 +180,15 @@ op read "op://Prod/Stripe/key" | phantom add STRIPE_SECRET_KEY --stdin
 phantom remove STRIPE_SECRET_KEY
 ```
 
-`add` stores the value and writes a phantom token to `.env`. It prompts silently so the secret never enters shell history or the process list. Positional secret values are rejected; use `--stdin` only with a trusted producer. `remove` requires attached stdin/stdout/stderr plus an exact typed challenge, then transactionally removes the vault value, lifecycle config, and exact managed-dotenv mapping.
+`add` creates a new protected name, stores its value, and writes a phantom token
+to `.env`. It prompts silently so the secret never enters shell history or the
+process list. Positional secret values are rejected; use `--stdin` only with a
+trusted producer. An existing protected name is denied from value-blind vault
+metadata before Phantom reads the prompt or stdin. `add` never replaces it.
+`remove` requires attached stdin/stdout/stderr plus an exact typed challenge,
+then transactionally removes the vault value, lifecycle config, and exact
+managed-dotenv mapping. Removing and later re-adding the same name is an
+explicit, non-atomic two-command workflow.
 
 ### `phantom rotate`
 
