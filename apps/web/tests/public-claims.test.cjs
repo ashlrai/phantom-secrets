@@ -410,7 +410,7 @@ test("current-release guidance routes installs through verified GitHub or Homebr
   };
 
   for (const [file, source] of Object.entries(canonicalReleaseGuides)) {
-    assert.match(source, new RegExp(verifiedReleaseUrl.replaceAll(".", "\\.")), file);
+    assert.ok(source.includes(verifiedReleaseUrl), file);
     assert.match(
       source,
       /brew tap ashlrai\/phantom[\s\S]{0,300}brew trust --formula ashlrai\/phantom\/phantom[\s\S]{0,300}brew install ashlrai\/phantom\/phantom/i,
@@ -460,7 +460,7 @@ test("published package READMEs use verified local binaries and bounded claims",
   ];
 
   for (const [file, source] of Object.entries(publishedPackageDocumentationClaims)) {
-    assert.match(source, new RegExp(verifiedReleaseUrl.replaceAll(".", "\\.")), file);
+    assert.ok(source.includes(verifiedReleaseUrl), file);
     assert.match(source, /installed local `phantom`|installed local CLI/i, file);
     assert.match(source, /`phantom mcp serve`/i, file);
     assert.match(source, /Released `v0\.7\.3`[\s\S]{0,500}legacy fallback/i, file);
@@ -608,7 +608,7 @@ test("public leak statistics use the primary GitGuardian 2026 report accurately"
       /34\s*%[^\n]{0,80}year[- ]over[- ]year|year[- ]over[- ]year[^\n]{0,80}34\s*%/i,
       file,
     );
-    assert.match(source, new RegExp(gitGuardianReportUrl.replaceAll(".", "\\.")), file);
+    assert.ok(source.includes(gitGuardianReportUrl), file);
 
     for (const line of source.split("\n").filter((value) => /81\s*%/.test(value))) {
       assert.match(

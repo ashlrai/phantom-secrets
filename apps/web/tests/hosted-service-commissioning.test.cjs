@@ -366,7 +366,7 @@ test("dashboard hosted data clients are guarded by server-only exact gates", () 
     const source = fs.readFileSync(path.join(webDir, relativePath), "utf8");
     assert.match(source, /@\/lib\/commissioning/, relativePath);
     assert.match(source, new RegExp(`isHostedServiceCommissioned\\("${service}"\\)`), relativePath);
-    assert.match(source, new RegExp(clientImport.replace(/[./-]/g, "\\$&")), relativePath);
+    assert.ok(source.includes(clientImport), relativePath);
     assert.doesNotMatch(source, /useSupabaseQuery|getBrowserClient/, relativePath);
   }
 

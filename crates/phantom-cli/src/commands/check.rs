@@ -36,10 +36,9 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
                 }
 
                 eprintln!(
-                    "  {} {} has {} unprotected secret(s):",
+                    "  {} {} has unprotected secret name(s):",
                     "!".red().bold(),
-                    path.display(),
-                    real_secrets.len()
+                    path.display()
                 );
 
                 for entry in &real_secrets {
@@ -79,10 +78,9 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
                     }
 
                     eprintln!(
-                        "  {} staged {} has {} unprotected secret(s):",
+                        "  {} staged {} has unprotected secret name(s):",
                         "!".red().bold(),
-                        file,
-                        real_secrets.len()
+                        file
                     );
 
                     for entry in &real_secrets {
