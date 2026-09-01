@@ -947,6 +947,17 @@ fn drift_error(path: &Path) -> io::Error {
 }
 
 fn open_regular(parent: &Dir, leaf: &OsStr, display: &Path) -> io::Result<File> {
+    // Opening a directory as a file fails with `PermissionDenied` on Windows
+    // before handle metadata can classify it. Inspect the retained directory
+    // entry first so every platform reports the same explicit unsafe-target
+    // error, then keep the no-follow handle check below as the race boundary.
+    let entry = parent.symlink_metadata(leaf)?;
+    if entry.file_type().is_symlink() || !entry.is_file() {
+        return Err(io::Error::other(format!(
+            "refusing non-regular, reparse, or multiply-linked anchored file: {}",
+            display.display()
+        )));
+    }
     let mut options = OpenOptions::new();
     options.read(true);
     configure_no_follow(&mut options);
