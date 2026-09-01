@@ -66,6 +66,62 @@ pub struct PushOutcome {
     pub secret_count: usize,
 }
 
+#[derive(Clone, Copy, serde::Serialize)]
+struct PushStageReceipt {
+    caller_public_key: &'static str,
+    member_key_roster: &'static str,
+    remote_version_read: &'static str,
+    remote_ciphertext_push: &'static str,
+    failure_code: &'static str,
+}
+
+impl PushStageReceipt {
+    fn after_key_publication() -> Self {
+        Self {
+            caller_public_key: "succeeded",
+            member_key_roster: "not_attempted",
+            remote_version_read: "not_attempted",
+            remote_ciphertext_push: "not_attempted",
+            failure_code: "none",
+        }
+    }
+}
+
+fn push_failure_code(error: &PhantomError) -> &'static str {
+    match error {
+        PhantomError::AuthRequired => "authentication_required",
+        PhantomError::PlanRequired => "plan_required",
+        PhantomError::VersionConflict { .. } => "version_conflict",
+        PhantomError::CloudError { status: 0, .. } => "provider_unreachable",
+        PhantomError::CloudError { .. } => "provider_rejected",
+        PhantomError::ConfigNotFound(_)
+        | PhantomError::ConfigParseError(_)
+        | PhantomError::DotenvParseError(_)
+        | PhantomError::DotenvNotFound(_)
+        | PhantomError::SecretNotFound(_)
+        | PhantomError::SecretAlreadyExists(_)
+        | PhantomError::VaultError(_)
+        | PhantomError::ProxyError(_)
+        | PhantomError::AuthError(_)
+        | PhantomError::Io(_)
+        | PhantomError::Other(_) => "local_processing_error",
+    }
+}
+
+fn partial_push_error(
+    failed_stage: &str,
+    receipt: &PushStageReceipt,
+    error: PhantomError,
+) -> PhantomError {
+    let mut receipt = *receipt;
+    receipt.failure_code = push_failure_code(&error);
+    let receipt = serde_json::to_string(&receipt)
+        .unwrap_or_else(|_| "{\"receipt\":\"unavailable\"}".to_string());
+    PhantomError::Other(format!(
+        "Team vault push partially succeeded: caller public-key publication is durable, but {failed_stage} failed. stage_receipt: {receipt}. The remote ciphertext was not confirmed. Do not retry automatically; inspect the registered caller key and remote vault version first."
+    ))
+}
+
 /// Result of a pull.
 pub struct PullOutcome {
     pub version: u64,
@@ -81,7 +137,9 @@ pub struct PullOutcome {
 ///
 /// Always re-registers the caller's public key — cheap, keeps
 /// `team_members.public_key` in sync if it has rotated since the last
-/// push.
+/// push. If a later stage fails, the error contains a fixed-schema,
+/// value-blind stage receipt that makes the durable key publication explicit
+/// and prevents callers from treating the whole operation as effect-free.
 pub async fn push_for_project(
     api_base: &str,
     token: &str,
@@ -116,14 +174,33 @@ async fn push_inner(
     // Auto-register our key — keeps team_members.public_key in sync.
     teams::register_team_key(api_base, token, team_id, &kp.public_b64()).await?;
 
-    let members = teams::list_team_member_keys(api_base, token, team_id).await?;
+    let mut receipt = PushStageReceipt::after_key_publication();
+    let members = match teams::list_team_member_keys(api_base, token, team_id).await {
+        Ok(members) => {
+            receipt.member_key_roster = "succeeded";
+            members
+        }
+        Err(error) => {
+            receipt.member_key_roster = "failed";
+            return Err(partial_push_error(
+                "member public-key roster lookup",
+                &receipt,
+                error,
+            ));
+        }
+    };
     let recipients: Vec<&teams::TeamMemberKey> =
         members.iter().filter(|m| m.public_key.is_some()).collect();
     if recipients.is_empty() {
-        return Err(PhantomError::Other(format!(
-            "No team members have registered public keys yet. \
-             Each member should run `phantom team key-publish {team_id}` first."
-        )));
+        receipt.member_key_roster = "succeeded_no_recipients";
+        return Err(partial_push_error(
+            "recipient selection",
+            &receipt,
+            PhantomError::Other(format!(
+                "No team members have registered public keys yet. \
+                 Each member should run `phantom team key-publish {team_id}` first."
+            )),
+        ));
     }
     let skipped = members.len() - recipients.len();
 
@@ -134,10 +211,13 @@ async fn push_inner(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let plaintext = Zeroizing::new(
-        serde_json::to_string(&plaintext_view)
-            .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?,
-    );
+    let plaintext = Zeroizing::new(serde_json::to_string(&plaintext_view).map_err(|error| {
+        partial_push_error(
+            "local vault serialization",
+            &receipt,
+            PhantomError::Other(format!("Serialize failed: {error}")),
+        )
+    })?);
 
     // Per-push 32-byte symmetric key, never reused.
     let sym_key = team_crypto::generate_sym_key();
@@ -147,7 +227,13 @@ async fn push_inner(
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
-        .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
+        .map_err(|error| {
+            partial_push_error(
+                "local vault encryption",
+                &receipt,
+                PhantomError::Other(format!("Encrypt failed: {error}")),
+            )
+        })?;
 
     let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     framed.extend_from_slice(&nonce_bytes);
@@ -157,17 +243,32 @@ async fn push_inner(
     // Wrap the symmetric key for each recipient.
     let mut shares: HashMap<String, KeyShare> = HashMap::new();
     for m in &recipients {
-        let share = team_crypto::seal_sym_key(&sym_key, m.public_key.as_ref().unwrap())?;
+        let share = team_crypto::seal_sym_key(&sym_key, m.public_key.as_ref().unwrap())
+            .map_err(|error| partial_push_error("recipient key wrapping", &receipt, error))?;
         shares.insert(m.user_id.clone(), share);
     }
 
-    let expected_version =
-        match teams::pull_team_vault(api_base, token, team_id, project_id).await? {
-            Some(vault) => vault.version,
-            None => 0,
-        };
+    let expected_version = match teams::pull_team_vault(api_base, token, team_id, project_id).await
+    {
+        Ok(Some(vault)) => {
+            receipt.remote_version_read = "succeeded";
+            vault.version
+        }
+        Ok(None) => {
+            receipt.remote_version_read = "succeeded_absent";
+            0
+        }
+        Err(error) => {
+            receipt.remote_version_read = "failed";
+            return Err(partial_push_error(
+                "remote vault version lookup",
+                &receipt,
+                error,
+            ));
+        }
+    };
 
-    let new_version = teams::push_team_vault(
+    let new_version = match teams::push_team_vault(
         api_base,
         token,
         team_id,
@@ -176,7 +277,18 @@ async fn push_inner(
         Some(expected_version),
         shares,
     )
-    .await?;
+    .await
+    {
+        Ok(version) => version,
+        Err(error) => {
+            receipt.remote_ciphertext_push = "outcome_unknown";
+            return Err(partial_push_error(
+                "remote ciphertext push",
+                &receipt,
+                error,
+            ));
+        }
+    };
 
     Ok(PushOutcome {
         new_version,
@@ -424,11 +536,91 @@ pub fn decrypt_blob_with_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     #[test]
     fn min_framed_len_matches_chacha_poly_overhead() {
         // 12-byte nonce + 16-byte Poly1305 tag.
         assert_eq!(MIN_FRAMED_LEN, 28);
+    }
+
+    #[tokio::test]
+    async fn push_reports_key_publication_when_later_roster_lookup_fails() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for response in [
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let read = stream.read(&mut request).unwrap();
+                requests.push(String::from_utf8_lossy(&request[..read]).into_owned());
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+            }
+            requests
+        });
+
+        let mut secrets = BTreeMap::new();
+        secrets.insert(
+            "API_KEY".to_string(),
+            Zeroizing::new("must-never-appear-in-receipt".to_string()),
+        );
+        let keypair = team_crypto::MemberKeypair::generate();
+        let result = push_for_project(
+            &format!("http://{address}"),
+            "bearer-must-never-appear-in-receipt",
+            "team-test",
+            "project-test",
+            secrets,
+            &keypair,
+        )
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("roster failure must not produce a push success receipt"),
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("Team vault push partially succeeded"));
+        assert!(message.contains("caller public-key publication is durable"));
+        assert!(message.contains(
+            r#"stage_receipt: {"caller_public_key":"succeeded","member_key_roster":"failed","remote_version_read":"not_attempted","remote_ciphertext_push":"not_attempted","failure_code":"provider_rejected"}"#
+        ));
+        assert!(message.contains("Do not retry automatically"));
+        assert!(!message.contains("must-never-appear-in-receipt"));
+        assert!(!message.contains("bearer-must-never-appear-in-receipt"));
+
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("POST /teams/team-test/key "));
+        assert!(requests[1].starts_with("GET /teams/team-test/key "));
+    }
+
+    #[test]
+    fn partial_push_receipt_classifies_remote_push_as_outcome_unknown() {
+        let mut receipt = PushStageReceipt::after_key_publication();
+        receipt.member_key_roster = "succeeded";
+        receipt.remote_version_read = "succeeded";
+        receipt.remote_ciphertext_push = "outcome_unknown";
+        let error = partial_push_error(
+            "remote ciphertext push",
+            &receipt,
+            PhantomError::VersionConflict {
+                local: 3,
+                remote: 4,
+            },
+        );
+        let message = error.to_string();
+
+        assert!(message.contains(
+            r#""remote_ciphertext_push":"outcome_unknown","failure_code":"version_conflict""#
+        ));
+        assert!(!message.contains("local version 3"));
+        assert!(!message.contains("remote version 4"));
     }
 
     // ── Rotation unit tests (pure crypto, no network) ──────────────────
