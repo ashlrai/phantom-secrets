@@ -9,25 +9,74 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::dotenv::{DotenvFile, SecretClassification};
 use phantom_core::error::PhantomError;
+use phantom_core::fs::{AnchoredRead, FileIdentity, TrustedAnchor};
 use phantom_core::token::TokenMap;
 use phantom_vault::{InitFile, InitReceipt, InitSecret, VaultBackend};
 use std::path::Path;
+#[cfg(test)]
 use zeroize::Zeroizing;
+
+fn read_reviewed_project_file(
+    project: &TrustedAnchor,
+    project_dir: &Path,
+    path: &Path,
+) -> Result<Option<AnchoredRead>> {
+    let relative = path.strip_prefix(project_dir).with_context(|| {
+        format!(
+            "Initialization target {} is outside reviewed project {}",
+            path.display(),
+            project_dir.display()
+        )
+    })?;
+    project
+        .target(relative)
+        .with_context(|| format!("Failed to retain {}", path.display()))?
+        .read_regular()
+        .with_context(|| format!("Failed to safely inspect {}", path.display()))
+}
 
 fn commit_after_vault_provisioning(
     project_dir: &Path,
+    reviewed_project_identity: FileIdentity,
     vault: phantom_core::error::Result<Box<dyn VaultBackend>>,
     secrets: Vec<InitSecret>,
     files: Vec<InitFile>,
     commit_error: &'static str,
+) -> Result<(InitReceipt, String)> {
+    commit_after_vault_provisioning_with(
+        project_dir,
+        reviewed_project_identity,
+        vault,
+        secrets,
+        files,
+        commit_error,
+        || {},
+    )
+}
+
+fn commit_after_vault_provisioning_with(
+    project_dir: &Path,
+    reviewed_project_identity: FileIdentity,
+    vault: phantom_core::error::Result<Box<dyn VaultBackend>>,
+    secrets: Vec<InitSecret>,
+    files: Vec<InitFile>,
+    commit_error: &'static str,
+    before_commit: impl FnOnce(),
 ) -> Result<(InitReceipt, String)> {
     let vault = vault.context(
         "Vault provisioning failed before any project files were changed. Set \
          PHANTOM_VAULT_PASSPHRASE to a durable secret value and retry",
     )?;
     let backend_name = vault.backend_name().to_string();
-    let receipt = phantom_vault::commit_init(project_dir, vault.as_ref(), secrets, files)
-        .with_context(|| commit_error)?;
+    before_commit();
+    let receipt = phantom_vault::commit_init_if_project_identity(
+        project_dir,
+        reviewed_project_identity,
+        vault.as_ref(),
+        secrets,
+        files,
+    )
+    .with_context(|| commit_error)?;
     Ok((receipt, backend_name))
 }
 
@@ -38,9 +87,11 @@ fn commit_after_vault_provisioning(
 /// before any secrets exist — then add secrets one at a time with `phantom add`.
 pub fn run_empty() -> Result<()> {
     let cwd = std::env::current_dir()?.canonicalize()?;
+    let reviewed_project = TrustedAnchor::open(&cwd)
+        .context("Failed to retain the reviewed project root for empty initialization")?;
+    let reviewed_project_identity = reviewed_project.identity();
     let config_path = cwd.join(".phantom.toml");
-    let config_before = phantom_core::fs::read_regular_file(&config_path)
-        .with_context(|| format!("Failed to safely inspect {}", config_path.display()))?;
+    let config_before = read_reviewed_project_file(&reviewed_project, &cwd, &config_path)?;
     if config_before.is_some() {
         println!(
             "{} .phantom.toml already exists — nothing to do.",
@@ -52,9 +103,9 @@ pub fn run_empty() -> Result<()> {
     let project_id = phantom_core::config::PhantomConfig::project_id_from_path(&cwd);
     let phantom_config = phantom_core::config::PhantomConfig::new_with_defaults(project_id.clone());
 
-    let mut files = vec![InitFile::replace_if_unchanged(
+    let mut files = vec![InitFile::replace_if_exact_snapshot(
         &config_path,
-        None::<Vec<u8>>,
+        None,
         toml::to_string_pretty(&phantom_config)?.into_bytes(),
     )];
     if let Some(file) = env::prepare_gitignore(&cwd)? {
@@ -62,6 +113,7 @@ pub fn run_empty() -> Result<()> {
     }
     commit_after_vault_provisioning(
         &cwd,
+        reviewed_project_identity,
         phantom_vault::try_create_vault(&project_id),
         Vec::new(),
         files,
@@ -110,19 +162,19 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     let project_dir = env_path.parent().unwrap_or(&cwd).to_path_buf();
     let project_dir = project_dir
         .canonicalize()
-        .unwrap_or_else(|_| cwd.join(&project_dir));
+        .context("Failed to resolve the initialization project root")?;
+    let reviewed_project = TrustedAnchor::open(&project_dir)
+        .context("Failed to retain the reviewed initialization project root")?;
+    let reviewed_project_identity = reviewed_project.identity();
     let config_path = project_dir.join(".phantom.toml");
 
-    let env_before = Zeroizing::new(
-        phantom_core::fs::read_regular_file(&env_path)
-            .with_context(|| format!("Failed to safely inspect {}", env_path.display()))?
-            .ok_or_else(|| anyhow::anyhow!("Dotenv disappeared during preflight"))?,
-    );
+    let env_before = read_reviewed_project_file(&reviewed_project, &project_dir, &env_path)?
+        .ok_or_else(|| anyhow::anyhow!("Dotenv disappeared during preflight"))?;
     let dotenv_basename = phantom_core::managed_dotenv::dotenv_basename(&project_dir, &env_path)?;
 
     println!("{} Reading {}...", "->".blue().bold(), env_path.display());
     let env_text =
-        std::str::from_utf8(env_before.as_slice()).context("Managed dotenv is not valid UTF-8")?;
+        std::str::from_utf8(env_before.bytes()).context("Managed dotenv is not valid UTF-8")?;
     let dotenv = DotenvFile::parse_str(env_text);
 
     // Classify all entries
@@ -138,15 +190,14 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         .map(|(e, _)| *e)
         .collect();
 
-    let config_before = phantom_core::fs::read_regular_file(&config_path)
-        .with_context(|| format!("Failed to safely inspect {}", config_path.display()))?;
+    let config_before = read_reviewed_project_file(&reviewed_project, &project_dir, &config_path)?;
     let existing_protected_setup =
         config_before.is_some() || dotenv.entries().iter().any(|e| e.is_phantom);
     // Preflight migration of any project-local Claude settings before touching
     // either a new secret or an already-protected project. This keeps reruns
     // useful for removing legacy network-capable MCP entries.
     let claude_setup = if !real_entries.is_empty() || existing_protected_setup {
-        prompts::prepare_auto_setup_claude_code(&project_dir, &cwd)?
+        prompts::prepare_auto_setup_claude_code(&project_dir)?
     } else {
         None
     };
@@ -170,13 +221,16 @@ pub fn run(env_path_arg: &str) -> Result<()> {
 
         if existing_protected_setup {
             let mut files = Vec::new();
-            let mut existing_config =
-                config::load_or_create(&project_dir, &config_path, config_before.as_deref())?;
+            let mut existing_config = config::load_or_create(
+                &project_dir,
+                &config_path,
+                config_before.as_ref().map(AnchoredRead::bytes),
+            )?;
             existing_config.phantom.dotenv_path = Some(dotenv_basename.clone());
             let vault_project_id = existing_config.local_project_id().to_string();
-            files.push(InitFile::replace_if_unchanged(
+            files.push(InitFile::replace_if_exact_snapshot(
                 &config_path,
-                config_before.clone(),
+                config_before.as_ref(),
                 toml::to_string_pretty(&existing_config)?.into_bytes(),
             ));
             if let Some(file) = env::prepare_gitignore(&project_dir)? {
@@ -188,11 +242,12 @@ pub fn run(env_path_arg: &str) -> Result<()> {
                     files.push(file);
                 }
             }
-            let mut guidance = docs::prepare_guidance(&project_dir, &cwd)?;
+            let mut guidance = docs::prepare_guidance(&project_dir)?;
             files.extend(guidance.take_files());
             let vault = phantom_vault::try_create_vault(&vault_project_id);
             commit_after_vault_provisioning(
                 &project_dir,
+                reviewed_project_identity,
                 vault,
                 Vec::new(),
                 files,
@@ -238,8 +293,11 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     }
 
     // Load or create config, then auto-detect services
-    let mut phantom_config =
-        config::load_or_create(&project_dir, &config_path, config_before.as_deref())?;
+    let mut phantom_config = config::load_or_create(
+        &project_dir,
+        &config_path,
+        config_before.as_ref().map(AnchoredRead::bytes),
+    )?;
     phantom_config.phantom.dotenv_path = Some(dotenv_basename);
     config::apply_detected_services(&mut phantom_config, &real_entries);
 
@@ -261,15 +319,15 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     originals.clear();
 
     let mut files = vec![
-        InitFile::replace_if_unchanged(
+        InitFile::replace_if_exact_snapshot(
             &env_path,
-            Some(env_before.as_slice().to_vec()),
+            Some(&env_before),
             phantomized_env.into_bytes(),
         )
         .commit_last(),
-        InitFile::replace_if_unchanged(
+        InitFile::replace_if_exact_snapshot(
             &config_path,
-            config_before.clone(),
+            config_before.as_ref(),
             toml::to_string_pretty(&phantom_config)?.into_bytes(),
         ),
     ];
@@ -292,7 +350,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
             files.push(file);
         }
     }
-    let mut guidance = docs::prepare_guidance(&project_dir, &cwd)?;
+    let mut guidance = docs::prepare_guidance(&project_dir)?;
     files.extend(guidance.take_files());
 
     let vault = phantom_vault::try_create_vault(phantom_config.local_project_id()).context(
@@ -320,6 +378,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     let (receipt, backend_name) = commit_after_vault_provisioning(
         &project_dir,
+        reviewed_project_identity,
         Ok(vault),
         secrets,
         files,
@@ -480,6 +539,41 @@ mod tests {
     }
 
     #[test]
+    fn init_entrypoints_bind_commit_to_the_preopened_project_identity() {
+        let source = include_str!("mod.rs");
+        let empty = source
+            .split("pub fn run_empty()")
+            .nth(1)
+            .unwrap()
+            .split("pub fn run(env_path_arg")
+            .next()
+            .unwrap();
+        assert!(empty.contains("TrustedAnchor::open(&cwd)"));
+        assert!(empty.contains("reviewed_project_identity"));
+
+        let regular = source
+            .split("pub fn run(env_path_arg")
+            .nth(1)
+            .unwrap()
+            .split("/// Print a contextual")
+            .next()
+            .unwrap();
+        assert!(regular.contains("TrustedAnchor::open(&project_dir)"));
+        assert!(regular.contains("prepare_auto_setup_claude_code(&project_dir)"));
+        assert_eq!(
+            regular.matches("prepare_guidance(&project_dir)").count(),
+            2,
+            "both init branches must keep mutating guidance inside the reviewed project"
+        );
+        assert!(!regular.contains("prepare_guidance(&project_dir, &cwd)"));
+        assert_eq!(
+            regular.matches("reviewed_project_identity,").count(),
+            2,
+            "both protected-state refresh and secret-bearing init must bind the reviewed root"
+        );
+    }
+
+    #[test]
     fn vault_provisioning_failure_cannot_commit_tokenized_dotenv() {
         let directory = tempdir().unwrap();
         let env_path = directory.path().join(".env");
@@ -493,6 +587,7 @@ mod tests {
 
         let error = commit_after_vault_provisioning(
             directory.path(),
+            TrustedAnchor::open(directory.path()).unwrap().identity(),
             provisioning_failure,
             vec![InitSecret::new("API_KEY", "real-provider-value")],
             staged_files,
@@ -504,6 +599,172 @@ mod tests {
             .to_string()
             .contains("before any project files were changed"));
         assert_eq!(std::fs::read(&env_path).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_init_rejects_a_same_path_root_replacement_before_create() {
+        let container = tempdir().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        let vault_dir = container.path().join("vault");
+        std::fs::create_dir(&project).unwrap();
+        let reviewed = TrustedAnchor::open(&project).unwrap();
+        let vault = FileVault::new(
+            &vault_dir,
+            "empty-root-replacement",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+
+        let error = commit_after_vault_provisioning_with(
+            &project,
+            reviewed.identity(),
+            Ok(Box::new(vault)),
+            Vec::new(),
+            vec![InitFile::replace_if_unchanged(
+                project.join(".phantom.toml"),
+                None::<Vec<u8>>,
+                b"[phantom]\nproject_id = \"reviewed\"\n".to_vec(),
+            )],
+            "empty init rejected root replacement",
+            || {
+                std::fs::rename(&project, &moved).unwrap();
+                std::fs::create_dir(&project).unwrap();
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("project root identity changed"),
+            "{error:#}"
+        );
+        assert!(!project.join(".phantom.toml").exists());
+        assert!(!moved.join(".phantom.toml").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotenv_init_rejects_a_byte_identical_same_path_root_decoy() {
+        let container = tempdir().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        let vault_dir = container.path().join("vault");
+        std::fs::create_dir(&project).unwrap();
+        let env_path = project.join(".env");
+        let before = b"API_KEY=real-provider-value\n".to_vec();
+        std::fs::write(&env_path, &before).unwrap();
+        let reviewed = TrustedAnchor::open(&project).unwrap();
+        let vault = FileVault::new(
+            &vault_dir,
+            "dotenv-root-replacement",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+
+        let error = commit_after_vault_provisioning_with(
+            &project,
+            reviewed.identity(),
+            Ok(Box::new(vault)),
+            vec![InitSecret::replace_if_unchanged(
+                "API_KEY",
+                None::<String>,
+                "real-provider-value",
+            )],
+            vec![InitFile::replace_if_unchanged(
+                &env_path,
+                Some(before.clone()),
+                b"API_KEY=phm_staged\n".to_vec(),
+            )
+            .commit_last()],
+            "dotenv init rejected root replacement",
+            || {
+                std::fs::rename(&project, &moved).unwrap();
+                std::fs::create_dir(&project).unwrap();
+                std::fs::write(project.join(".env"), &before).unwrap();
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("project root identity changed"),
+            "{error:#}"
+        );
+        assert_eq!(std::fs::read(project.join(".env")).unwrap(), before);
+        assert_eq!(std::fs::read(moved.join(".env")).unwrap(), before);
+        let verify = FileVault::new(
+            &vault_dir,
+            "dotenv-root-replacement",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verify.retrieve("API_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotenv_init_rejects_a_byte_identical_same_root_file_decoy() {
+        let container = tempdir().unwrap();
+        let project = container.path().join("project");
+        let vault_dir = container.path().join("vault");
+        std::fs::create_dir(&project).unwrap();
+        let env_path = project.join(".env");
+        let moved = project.join(".env.reviewed");
+        let before = b"API_KEY=real-provider-value\n";
+        std::fs::write(&env_path, before).unwrap();
+        let reviewed_project = TrustedAnchor::open(&project).unwrap();
+        let reviewed_env = reviewed_project
+            .target(".env")
+            .unwrap()
+            .read_regular()
+            .unwrap()
+            .unwrap();
+        let vault = FileVault::new(
+            &vault_dir,
+            "dotenv-file-replacement",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+
+        let error = commit_after_vault_provisioning_with(
+            &project,
+            reviewed_project.identity(),
+            Ok(Box::new(vault)),
+            vec![InitSecret::replace_if_unchanged(
+                "API_KEY",
+                None::<String>,
+                "real-provider-value",
+            )],
+            vec![InitFile::replace_if_exact_snapshot(
+                &env_path,
+                Some(&reviewed_env),
+                b"API_KEY=phm_staged\n".to_vec(),
+            )
+            .commit_last()],
+            "dotenv init rejected file replacement",
+            || {
+                std::fs::rename(&env_path, &moved).unwrap();
+                std::fs::write(&env_path, before).unwrap();
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("changed concurrently"));
+        assert_eq!(std::fs::read(&env_path).unwrap(), before);
+        assert_eq!(std::fs::read(&moved).unwrap(), before);
+        let verify = FileVault::new(
+            &vault_dir,
+            "dotenv-file-replacement",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verify.retrieve("API_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
     }
 
     #[test]

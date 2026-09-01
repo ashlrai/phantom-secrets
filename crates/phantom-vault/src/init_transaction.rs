@@ -19,7 +19,7 @@ use crate::{
 use phantom_core::error::PhantomError;
 use phantom_core::fs::{
     AnchoredCreatedDirectory, AnchoredDirectoryCreation, AnchoredEffect, AnchoredFilePermissions,
-    AnchoredRead, AnchoredTarget, TrustedAnchor,
+    AnchoredRead, AnchoredTarget, FileIdentity, TrustedAnchor,
 };
 use phantom_core::validator::ValidationMetadata;
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,6 +89,8 @@ pub struct InitFile {
     path: PathBuf,
     content: Zeroizing<Vec<u8>>,
     expected_before: Option<Option<Zeroizing<Vec<u8>>>>,
+    expected_identity: Option<FileIdentity>,
+    expected_permissions: Option<AnchoredFilePermissions>,
     executable: bool,
     commit_last: bool,
 }
@@ -99,6 +101,8 @@ impl InitFile {
             path: path.into(),
             content: Zeroizing::new(content.into()),
             expected_before: None,
+            expected_identity: None,
+            expected_permissions: None,
             executable: false,
             commit_last: false,
         }
@@ -117,6 +121,33 @@ impl InitFile {
             path: path.into(),
             content: Zeroizing::new(content.into()),
             expected_before: Some(expected_before.map(|value| Zeroizing::new(value.into()))),
+            expected_identity: None,
+            expected_permissions: None,
+            executable: false,
+            commit_last: false,
+        }
+    }
+
+    /// Require the target to still be the exact regular-file snapshot retained
+    /// by the caller before writing.
+    ///
+    /// Unlike [`Self::replace_if_unchanged`], an existing before-image binds
+    /// file identity and permissions as well as bytes. A rename followed by a
+    /// byte-identical decoy is therefore concurrent drift, not an admissible
+    /// replacement target. `None` retains the existing exact-absence meaning.
+    pub fn replace_if_exact_snapshot(
+        path: impl Into<PathBuf>,
+        expected_before: Option<&AnchoredRead>,
+        content: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            content: Zeroizing::new(content.into()),
+            expected_before: Some(
+                expected_before.map(|value| Zeroizing::new(value.bytes().to_vec())),
+            ),
+            expected_identity: expected_before.map(AnchoredRead::identity),
+            expected_permissions: expected_before.map(AnchoredRead::permissions),
             executable: false,
             commit_last: false,
         }
@@ -153,6 +184,9 @@ impl fmt::Debug for InitFile {
 pub struct InitReceipt {
     pub secret_names: Vec<String>,
     pub file_paths: Vec<PathBuf>,
+    /// False when every namespace effect was exactly verified but this
+    /// platform could not prove containing-directory crash durability.
+    pub namespace_durability_verified: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -229,8 +263,44 @@ pub fn commit_init(
     commit_init_with(project_dir, vault, secrets, files, &AtomicFileWriter)
 }
 
+/// Commit an initialization plan only if the transaction lock retains the
+/// exact project directory reviewed by the caller.
+///
+/// Vault construction may resolve machine-local authority before the project
+/// lock is acquired. A same-path rename/replacement in that interval must not
+/// redirect the reviewed plan to a byte-identical decoy. Identity is checked
+/// immediately after lock acquisition and before vault or file state is read or
+/// mutated.
+pub fn commit_init_if_project_identity(
+    project_dir: &Path,
+    reviewed_project_identity: FileIdentity,
+    vault: &dyn VaultBackend,
+    secrets: Vec<InitSecret>,
+    files: Vec<InitFile>,
+) -> Result<InitReceipt, InitTransactionError> {
+    commit_init_with_identity(
+        project_dir,
+        Some(reviewed_project_identity),
+        vault,
+        secrets,
+        files,
+        &AtomicFileWriter,
+    )
+}
+
 fn commit_init_with(
     project_dir: &Path,
+    vault: &dyn VaultBackend,
+    secrets: Vec<InitSecret>,
+    files: Vec<InitFile>,
+    writer: &dyn FileWriter,
+) -> Result<InitReceipt, InitTransactionError> {
+    commit_init_with_identity(project_dir, None, vault, secrets, files, writer)
+}
+
+fn commit_init_with_identity(
+    project_dir: &Path,
+    reviewed_project_identity: Option<FileIdentity>,
     vault: &dyn VaultBackend,
     mut secrets: Vec<InitSecret>,
     mut files: Vec<InitFile>,
@@ -242,6 +312,14 @@ fn commit_init_with(
             reason: format!("could not acquire project transaction lock: {error}"),
         }
     })?;
+    if reviewed_project_identity
+        .is_some_and(|identity| transaction_lock.project_identity_at_acquisition() != identity)
+    {
+        return Err(InitTransactionError::Preflight {
+            target: project_dir.display().to_string(),
+            reason: "project root identity changed after initialization review".to_string(),
+        });
+    }
     let mut names = BTreeSet::new();
     for secret in &secrets {
         if secret.name.is_empty() || !names.insert(secret.name.clone()) {
@@ -313,6 +391,7 @@ fn commit_init_with(
 
     let mut created_directories = BTreeMap::new();
     let mut unresolved_directory_effect = false;
+    let mut namespace_durability_verified = true;
     let commit_result = (|| {
         for snapshot in file_snapshots
             .iter_mut()
@@ -323,6 +402,7 @@ fn commit_init_with(
                 &transaction_lock,
                 &mut created_directories,
                 &mut unresolved_directory_effect,
+                &mut namespace_durability_verified,
                 writer,
             )?;
         }
@@ -370,6 +450,7 @@ fn commit_init_with(
                 &transaction_lock,
                 &mut created_directories,
                 &mut unresolved_directory_effect,
+                &mut namespace_durability_verified,
                 writer,
             )?;
         }
@@ -391,7 +472,13 @@ fn commit_init_with(
     let receipt = InitReceipt {
         secret_names: secret_snapshots.iter().map(|s| s.name.clone()).collect(),
         file_paths: file_snapshots.iter().map(|f| f.path.clone()).collect(),
+        namespace_durability_verified,
     };
+    if !receipt.namespace_durability_verified {
+        eprintln!(
+            "warning: transaction namespace effects committed and were verified, but directory crash durability is not provable on this platform"
+        );
+    }
     Ok(receipt)
 }
 
@@ -400,6 +487,7 @@ fn commit_file(
     transaction_lock: &ProjectTransactionLock,
     created_directories: &mut BTreeMap<PathBuf, AnchoredCreatedDirectory>,
     unresolved_directory_effect: &mut bool,
+    namespace_durability_verified: &mut bool,
     writer: &dyn FileWriter,
 ) -> Result<(), (String, String)> {
     create_missing_parents(
@@ -407,6 +495,7 @@ fn commit_file(
         transaction_lock,
         created_directories,
         unresolved_directory_effect,
+        namespace_durability_verified,
     )
     .map_err(|error| (snapshot.path.display().to_string(), error.to_string()))?;
     ensure_file_state(snapshot, false)
@@ -433,6 +522,11 @@ fn commit_file(
         Ok(AnchoredEffect::Durable(committed)) => {
             snapshot.touched = true;
             snapshot.committed = Some(committed);
+        }
+        Ok(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value }) => {
+            snapshot.touched = true;
+            snapshot.committed = Some(value);
+            *namespace_durability_verified = false;
         }
         Ok(AnchoredEffect::CommittedButUncertain { value, error }) => {
             snapshot.touched = true;
@@ -546,6 +640,17 @@ fn snapshot_file(
             });
         }
     }
+    if file
+        .expected_identity
+        .is_some_and(|expected| before.as_ref().map(AnchoredRead::identity) != Some(expected))
+        || file.expected_permissions.as_ref().is_some_and(|expected| {
+            before.as_ref().map(AnchoredRead::permissions).as_ref() != Some(expected)
+        })
+    {
+        return Err(InitTransactionError::ConcurrentChange {
+            target: file.path.display().to_string(),
+        });
+    }
 
     Ok(FileSnapshot {
         path: file.path,
@@ -568,6 +673,7 @@ fn create_missing_parents(
     transaction_lock: &ProjectTransactionLock,
     created_directories: &mut BTreeMap<PathBuf, AnchoredCreatedDirectory>,
     unresolved_directory_effect: &mut bool,
+    namespace_durability_verified: &mut bool,
 ) -> std::io::Result<()> {
     for path in &snapshot.missing_parent_paths {
         if created_directories.contains_key(path) {
@@ -599,6 +705,7 @@ fn create_missing_parents(
             creation,
             created_directories,
             unresolved_directory_effect,
+            namespace_durability_verified,
         )?;
     }
     if snapshot.target.is_none() {
@@ -619,10 +726,16 @@ fn record_directory_creation(
     creation: AnchoredDirectoryCreation,
     created_directories: &mut BTreeMap<PathBuf, AnchoredCreatedDirectory>,
     unresolved_directory_effect: &mut bool,
+    namespace_durability_verified: &mut bool,
 ) -> std::io::Result<()> {
     match creation {
         AnchoredDirectoryCreation::Durable(created) => {
             created_directories.insert(path.to_path_buf(), created);
+            Ok(())
+        }
+        AnchoredDirectoryCreation::CommittedVerifiedButDurabilityUncertain { receipt } => {
+            created_directories.insert(path.to_path_buf(), receipt);
+            *namespace_durability_verified = false;
             Ok(())
         }
         AnchoredDirectoryCreation::CommittedButUncertain { receipt, error } => {
@@ -767,18 +880,30 @@ fn rollback_files(snapshots: &mut [FileSnapshot]) -> bool {
             continue;
         };
         let restored = match &snapshot.before {
-            Some(before) => matches!(
-                target.replace_if_exact_with_permissions(
-                    Some(&committed),
-                    before.bytes(),
-                    before.permissions(),
-                ),
-                Ok(AnchoredEffect::Durable(_))
-            ),
-            None => matches!(
-                target.unlink_if_exact(&committed),
-                Ok(AnchoredEffect::Durable(()))
-            ),
+            Some(before) => match target.replace_if_exact_with_permissions(
+                Some(&committed),
+                before.bytes(),
+                before.permissions(),
+            ) {
+                Ok(AnchoredEffect::Durable(_)) => true,
+                Ok(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. }) => {
+                    eprintln!(
+                        "warning: transaction file rollback committed and was verified, but directory crash durability is not provable on this platform"
+                    );
+                    true
+                }
+                Ok(AnchoredEffect::CommittedButUncertain { .. }) | Err(_) => false,
+            },
+            None => match target.unlink_if_exact(&committed) {
+                Ok(AnchoredEffect::Durable(())) => true,
+                Ok(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value: () }) => {
+                    eprintln!(
+                        "warning: transaction file rollback committed and was verified, but directory crash durability is not provable on this platform"
+                    );
+                    true
+                }
+                Ok(AnchoredEffect::CommittedButUncertain { .. }) | Err(_) => false,
+            },
         };
         if !restored {
             ok = false;
@@ -809,6 +934,11 @@ fn rollback_directories(
     while let Some((_, directory)) = directories.pop() {
         match directory.remove_if_empty_exact() {
             Ok(AnchoredEffect::Durable(())) => {}
+            Ok(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value: () }) => {
+                eprintln!(
+                    "warning: transaction directory rollback committed and was verified, but directory crash durability is not provable on this platform"
+                );
+            }
             Ok(AnchoredEffect::CommittedButUncertain { .. }) | Err(_) => ok = false,
         }
     }
@@ -967,12 +1097,32 @@ mod tests {
             let value =
                 match target.replace_if_exact_with_permissions(expected, content, permissions)? {
                     AnchoredEffect::Durable(value)
+                    | AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value }
                     | AnchoredEffect::CommittedButUncertain { value, .. } => value,
                 };
             Ok(AnchoredEffect::CommittedButUncertain {
                 value,
                 error: std::io::Error::other("ambiguous write result"),
             })
+        }
+    }
+
+    struct VerifiedButDurabilityUncertainWriter;
+    impl FileWriter for VerifiedButDurabilityUncertainWriter {
+        fn write(
+            &self,
+            target: &AnchoredTarget,
+            expected: Option<&AnchoredRead>,
+            content: &[u8],
+            permissions: AnchoredFilePermissions,
+        ) -> std::io::Result<AnchoredEffect<AnchoredRead>> {
+            let value =
+                match target.replace_if_exact_with_permissions(expected, content, permissions)? {
+                    AnchoredEffect::Durable(value)
+                    | AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value }
+                    | AnchoredEffect::CommittedButUncertain { value, .. } => value,
+                };
+            Ok(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value })
         }
     }
 
@@ -1060,6 +1210,7 @@ mod tests {
     fn unreceipted_directory_effect_forces_incomplete_rollback() {
         let mut created = BTreeMap::new();
         let mut unresolved = false;
+        let mut namespace_durability_verified = true;
         let error = record_directory_creation(
             Path::new("nested"),
             AnchoredDirectoryCreation::CommittedButUncertain {
@@ -1068,6 +1219,7 @@ mod tests {
             },
             &mut created,
             &mut unresolved,
+            &mut namespace_durability_verified,
         )
         .unwrap_err();
 
@@ -1075,8 +1227,56 @@ mod tests {
             .to_string()
             .contains("injected post-create uncertainty"));
         assert!(unresolved);
+        assert!(namespace_durability_verified);
         assert!(created.is_empty());
         assert!(!rollback_directories(created, unresolved));
+    }
+
+    #[test]
+    fn verified_durability_uncertainty_is_success_and_is_machine_readable() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("state");
+        let vault = vault(&dir);
+
+        let receipt = commit_init_with(
+            dir.path(),
+            &vault,
+            Vec::new(),
+            vec![InitFile::replace(&target, b"committed".to_vec())],
+            &VerifiedButDurabilityUncertainWriter,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"committed");
+        assert_eq!(receipt.file_paths, vec![target]);
+        assert!(!receipt.namespace_durability_verified);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_init_mutation_succeeds_with_unverified_durability_receipt() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join(".phantom.toml");
+        let vault = vault(&dir);
+
+        let receipt = commit_init(
+            dir.path(),
+            &vault,
+            vec![InitSecret::replace_if_unchanged(
+                "API_KEY",
+                None::<String>,
+                "provider-value",
+            )],
+            vec![InitFile::replace(&target, b"[phantom]\n".to_vec())],
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"[phantom]\n");
+        assert_eq!(
+            vault.retrieve("API_KEY").unwrap().as_str(),
+            "provider-value"
+        );
+        assert!(!receipt.namespace_durability_verified);
     }
 
     #[test]
@@ -1321,6 +1521,21 @@ mod tests {
         assert_eq!(std::fs::read(&file).unwrap(), b"KEY=phm_token\n");
         let debug = format!("{:?}", InitSecret::new("KEY", "plain-secret-value"));
         assert!(!debug.contains("plain-secret-value"));
+
+        let debug_path = dir.path().join("debug.env");
+        std::fs::write(&debug_path, b"KEY=plain-secret-value\n").unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let reviewed = anchor.target("debug.env").unwrap().read_regular().unwrap();
+        let file_debug = format!(
+            "{:?}",
+            InitFile::replace_if_exact_snapshot(
+                &debug_path,
+                reviewed.as_ref(),
+                b"replacement-secret-value".to_vec(),
+            )
+        );
+        assert!(!file_debug.contains("plain-secret-value"));
+        assert!(!file_debug.contains("replacement-secret-value"));
     }
 
     #[test]
@@ -1442,6 +1657,101 @@ mod tests {
         ));
         assert!(!vault.exists("TARGET").unwrap());
         assert_eq!(std::fs::read(&env).unwrap(), b"OWNER=concurrent\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_snapshot_rejects_byte_identical_file_decoy_without_vault_changes() {
+        let dir = TempDir::new().unwrap();
+        let env = dir.path().join(".env");
+        let moved = dir.path().join(".env.reviewed");
+        let plaintext = b"TARGET=provider-value\n";
+        std::fs::write(&env, plaintext).unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let reviewed = anchor
+            .target(".env")
+            .unwrap()
+            .read_regular()
+            .unwrap()
+            .unwrap();
+        let vault = vault(&dir);
+        let file = InitFile::replace_if_exact_snapshot(
+            &env,
+            Some(&reviewed),
+            b"TARGET=phm_token\n".to_vec(),
+        )
+        .commit_last();
+
+        std::fs::rename(&env, &moved).unwrap();
+        std::fs::write(&env, plaintext).unwrap();
+
+        let error = commit_init(
+            dir.path(),
+            &vault,
+            vec![InitSecret::replace_if_unchanged(
+                "TARGET",
+                None::<String>,
+                "provider-value",
+            )],
+            vec![file],
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            InitTransactionError::ConcurrentChange { .. }
+        ));
+        assert!(!vault.exists("TARGET").unwrap());
+        assert_eq!(std::fs::read(&env).unwrap(), plaintext);
+        assert_eq!(std::fs::read(&moved).unwrap(), plaintext);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_snapshot_rejects_permission_drift_without_vault_changes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let env = dir.path().join(".env");
+        std::fs::write(&env, b"TARGET=provider-value\n").unwrap();
+        std::fs::set_permissions(&env, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let reviewed = anchor
+            .target(".env")
+            .unwrap()
+            .read_regular()
+            .unwrap()
+            .unwrap();
+        let vault = vault(&dir);
+        let file = InitFile::replace_if_exact_snapshot(
+            &env,
+            Some(&reviewed),
+            b"TARGET=phm_token\n".to_vec(),
+        );
+
+        std::fs::set_permissions(&env, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let error = commit_init(
+            dir.path(),
+            &vault,
+            vec![InitSecret::replace_if_unchanged(
+                "TARGET",
+                None::<String>,
+                "provider-value",
+            )],
+            vec![file],
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            InitTransactionError::ConcurrentChange { .. }
+        ));
+        assert!(!vault.exists("TARGET").unwrap());
+        assert_eq!(
+            std::fs::metadata(&env).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
     }
 
     #[test]

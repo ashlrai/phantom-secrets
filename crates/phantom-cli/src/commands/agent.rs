@@ -292,6 +292,13 @@ fn replace_agent_target(
         .unwrap_or_else(phantom_core::fs::AnchoredFilePermissions::private);
     match target.replace_if_exact_with_permissions(reviewed, content, permissions)? {
         phantom_core::fs::AnchoredEffect::Durable(_) => Ok(()),
+        phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
+            eprintln!(
+                "warning: {} was replaced and verified, but directory crash durability is not provable on this platform",
+                path.display()
+            );
+            Ok(())
+        }
         phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => {
             anyhow::bail!(
                 "{} was replaced, but durability could not be verified: {error}",

@@ -79,6 +79,12 @@ fn replace_package_json(
 ) -> Result<()> {
     match target.replace_if_exact_with_permissions(Some(before), content, before.permissions())? {
         phantom_core::fs::AnchoredEffect::Durable(_) => Ok(()),
+        phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
+            eprintln!(
+                "warning: package.json replacement committed and was verified, but directory crash durability is not provable on this platform"
+            );
+            Ok(())
+        }
         phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => {
             anyhow::bail!(
                 "package.json was replaced, but durability could not be verified: {error}"

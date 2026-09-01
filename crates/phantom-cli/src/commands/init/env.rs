@@ -16,13 +16,17 @@ const GITIGNORE_PATTERNS: &[&str] = &[
 
 /// Auto-detect .env files — checks current dir first, then immediate subdirectories.
 pub fn find_env_file(project_dir: &Path, user_specified: &str) -> Option<PathBuf> {
-    let names = [
-        user_specified,
+    let project_dir = project_dir.canonicalize().ok()?;
+    let mut names = vec![
         ".env.local",
         ".env",
         ".env.development",
         ".env.development.local",
     ];
+    if phantom_core::managed_dotenv::validate_dotenv_basename(user_specified).is_ok() {
+        names.retain(|name| *name != user_specified);
+        names.insert(0, user_specified);
+    }
 
     // Check current directory first
     for name in &names {
@@ -33,10 +37,19 @@ pub fn find_env_file(project_dir: &Path, user_specified: &str) -> Option<PathBuf
     }
 
     // Scan immediate subdirectories (monorepo support)
-    if let Ok(entries) = std::fs::read_dir(project_dir) {
+    if let Ok(entries) = std::fs::read_dir(&project_dir) {
         for entry in entries.flatten() {
+            // DirEntry::file_type does not follow a symlink. On Windows,
+            // directory symlinks and junction/name-surrogate reparse points
+            // must not widen one-level auto-discovery authority.
+            if !entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+                continue;
+            }
             let sub = entry.path();
-            if !sub.is_dir() {
+            let Ok(sub) = sub.canonicalize() else {
+                continue;
+            };
+            if sub.parent() != Some(project_dir.as_path()) {
                 continue;
             }
             // Skip hidden dirs, node_modules, target, etc.
@@ -91,4 +104,43 @@ pub fn prepare_gitignore(project_dir: &Path) -> Result<Option<phantom_vault::Ini
     Ok((content != original).then(|| {
         phantom_vault::InitFile::replace_if_unchanged(gitignore_path, before, content.into_bytes())
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn auto_discovery_accepts_one_real_immediate_subdirectory() {
+        let root = tempdir().unwrap();
+        let child = root.path().join("api");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(child.join(".env"), "API_KEY=reviewed\n").unwrap();
+
+        assert_eq!(
+            find_env_file(root.path(), ".env"),
+            Some(child.canonicalize().unwrap().join(".env"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_discovery_does_not_follow_an_outside_directory_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join(".env"), "API_KEY=outside\n").unwrap();
+        symlink(outside.path(), root.path().join("linked-api")).unwrap();
+
+        assert_eq!(find_env_file(root.path(), ".env"), None);
+    }
+
+    #[test]
+    fn portable_source_contract_rejects_linked_or_non_child_directories() {
+        let source = include_str!("env.rs");
+        assert!(source.contains("entry.file_type().is_ok_and"));
+        assert!(source.contains("sub.parent() != Some(project_dir.as_path())"));
+    }
 }

@@ -8,7 +8,10 @@ pub mod shadowing;
 pub mod traits;
 pub mod transaction_lock;
 
-pub use init_transaction::{commit_init, InitFile, InitReceipt, InitSecret, InitTransactionError};
+pub use init_transaction::{
+    commit_init, commit_init_if_project_identity, InitFile, InitReceipt, InitSecret,
+    InitTransactionError,
+};
 pub use managed_remove::ManagedRemovePlan;
 pub use metadata::{RotationPolicy, SecretMetadata};
 pub use traits::{MetadataCas, ValidationMetadataCas, VaultBackend};

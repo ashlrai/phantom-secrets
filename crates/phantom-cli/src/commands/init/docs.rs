@@ -21,15 +21,12 @@ impl PreparedGuidance {
 fn prepare_section(
     file_name: &str,
     project_dir: &Path,
-    cwd: &Path,
     skip_markers: &[&str],
     section: &str,
     success_msg: &'static str,
     create_if_missing: bool,
 ) -> anyhow::Result<Option<(phantom_vault::InitFile, &'static str)>> {
-    let file_path = if cwd.join(file_name).exists() {
-        cwd.join(file_name)
-    } else if project_dir.join(file_name).exists() || create_if_missing {
+    let file_path = if project_dir.join(file_name).exists() || create_if_missing {
         project_dir.join(file_name)
     } else {
         return Ok(None);
@@ -62,7 +59,7 @@ fn prepare_section(
     )))
 }
 
-pub fn prepare_guidance(project_dir: &Path, cwd: &Path) -> anyhow::Result<PreparedGuidance> {
+pub fn prepare_guidance(project_dir: &Path) -> anyhow::Result<PreparedGuidance> {
     let mut prepared = PreparedGuidance {
         files: Vec::new(),
         messages: Vec::new(),
@@ -70,7 +67,6 @@ pub fn prepare_guidance(project_dir: &Path, cwd: &Path) -> anyhow::Result<Prepar
     if let Some((file, message)) = prepare_section(
         "CLAUDE.md",
         project_dir,
-        cwd,
         &["## Phantom Secrets"],
         CLAUDE_INSTRUCTIONS,
         "Added Phantom instructions to CLAUDE.md",
@@ -83,7 +79,6 @@ pub fn prepare_guidance(project_dir: &Path, cwd: &Path) -> anyhow::Result<Prepar
     if let Some((file, message)) = prepare_section(
         "README.md",
         project_dir,
-        cwd,
         &["## secrets", "## environment", "phantom"],
         &readme,
         "Added \"Secrets\" section to README.md",
@@ -222,6 +217,24 @@ pub fn auto_add_readme(project_dir: &Path, cwd: &Path) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn child_project_guidance_never_targets_parent_documents() {
+        let parent = TempDir::new().unwrap();
+        std::fs::write(parent.path().join("CLAUDE.md"), "parent instructions\n").unwrap();
+        std::fs::write(parent.path().join("README.md"), "# Parent\n").unwrap();
+        let project = parent.path().join("child");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("README.md"), "# Child\n").unwrap();
+
+        let mut guidance = prepare_guidance(&project).unwrap();
+        let planned = format!("{:?}", guidance.take_files());
+
+        assert!(planned.contains(&format!("{}/CLAUDE.md", project.display())));
+        assert!(planned.contains(&format!("{}/README.md", project.display())));
+        assert!(!planned.contains(&format!("{}/CLAUDE.md", parent.path().display())));
+        assert!(!planned.contains(&format!("{}/README.md", parent.path().display())));
+    }
 
     #[test]
     fn generated_readme_uses_verified_local_binary_and_distinguishes_vaults() {

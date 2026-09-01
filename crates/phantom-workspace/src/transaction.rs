@@ -4,6 +4,7 @@ use crate::{inspect_workspace, Result, SetupAction, SetupActionKind, SetupPlan, 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use phantom_core::config::PhantomConfig;
+use phantom_core::fs::FileIdentity;
 use phantom_core::precommit_hook;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -149,6 +150,13 @@ impl fmt::Debug for ParticipantPreparation {
 /// read exact approved dotenv targets, stage vault state, and return tokenized
 /// file replacements. It must retain enough private state for `rollback`.
 pub trait SetupTransactionParticipant {
+    /// Identity of a project root retained by this participant, when it owns
+    /// project-root-relative authority. The engine compares this to its own
+    /// already-open root descriptor before inspecting or preparing any state.
+    fn retained_root_identity(&self) -> Option<FileIdentity> {
+        None
+    }
+
     fn prepare(
         &mut self,
         plan: &SetupPlan,
@@ -495,6 +503,20 @@ fn apply_setup_plan_inner<P: SetupTransactionParticipant>(
             path: canonical_root.clone(),
             source,
         })?;
+        let engine_root_identity =
+            FileIdentity::from_std_file(&root_directory).map_err(|source| WorkspaceError::Io {
+                path: canonical_root.clone(),
+                source,
+            })?;
+        if participant
+            .retained_root_identity()
+            .is_some_and(|identity| identity != engine_root_identity)
+        {
+            return Err(abort_participant(
+                participant,
+                WorkspaceError::UnsafeTarget(canonical_root.clone()),
+            ));
+        }
         let inspection = inspect_workspace(&canonical_root)?;
         let current_plan = build_setup_plan(&inspection)?;
         validate_sealed_state(

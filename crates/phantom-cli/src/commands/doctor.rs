@@ -633,6 +633,13 @@ fn write_project_file_exact_with(
     before_commit();
     match target.replace_if_exact_with_permissions(reviewed.as_ref(), content, permissions)? {
         phantom_core::fs::AnchoredEffect::Durable(_) => Ok(()),
+        phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
+            eprintln!(
+                "warning: {} was replaced and verified, but directory crash durability is not provable on this platform",
+                path.display()
+            );
+            Ok(())
+        }
         phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => {
             anyhow::bail!(
                 "{} was replaced, but durability could not be verified: {error}",

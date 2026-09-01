@@ -5,7 +5,7 @@
 //! requires a fresh challenge before mutating the pending approval. The terminal
 //! and this command must be outside the requesting agent's authority.
 
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{BufRead, IsTerminal, Read, Write};
 
 use anyhow::{Context, Result};
 use phantom_core::mcp_approval;
@@ -106,7 +106,10 @@ fn run_interactive(
     diagnostic.flush()?;
 
     let mut response = String::new();
-    input.read_line(&mut response)?;
+    (&mut *input)
+        .take((expected.len() + 2) as u64)
+        .read_line(&mut response)
+        .context("Could not read the bounded approval response")?;
     if response.trim_end_matches(['\r', '\n']) != expected {
         anyhow::bail!("Approval cancelled: the fresh confirmation challenge did not match.");
     }
@@ -267,6 +270,35 @@ mod tests {
 
             assert!(error.contains("cancelled"));
             assert!(output.is_empty());
+            assert_eq!(mcp_approval::list_pending_approvals().unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    fn oversized_challenge_response_is_bounded_and_leaves_request_pending() {
+        with_temp_home(|| {
+            let nonce = mcp_approval::generate_pending_approval(
+                "phantom_remove_secret",
+                r#"{"name":"SAFE_NAME","confirm":true}"#,
+                "test-project",
+            )
+            .unwrap();
+            let expected = "approve a1b2c3d4";
+            let mut payload = format!("{expected}{}\n", "X".repeat(64 * 1024)).into_bytes();
+            payload.extend_from_slice(b"unread sentinel");
+            let mut input = Cursor::new(payload);
+            let error = super::run_interactive(
+                &nonce,
+                "a1b2c3d4",
+                &mut input,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap_err()
+            .to_string();
+
+            assert!(error.contains("cancelled"));
+            assert!(input.position() <= (expected.len() + 2) as u64);
             assert_eq!(mcp_approval::list_pending_approvals().unwrap().len(), 1);
         });
     }

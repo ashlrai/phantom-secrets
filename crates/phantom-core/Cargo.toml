@@ -54,7 +54,14 @@ libc = "0.2"
 jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # Generate a throwaway RSA keypair at test runtime so the issuance/JWT tests

@@ -403,6 +403,12 @@ where
 fn require_durable_sidecar_effect<T>(outcome: AnchoredEffect<T>, operation: &str) -> Result<T> {
     match outcome {
         AnchoredEffect::Durable(value) => Ok(value),
+        AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value } => {
+            eprintln!(
+                "warning: {operation} committed and was verified, but directory crash durability is not provable on this platform"
+            );
+            Ok(value)
+        }
         AnchoredEffect::CommittedButUncertain { value: _, error } => Err(PhantomError::VaultError(format!(
             "{operation} committed, but durability or post-effect verification is uncertain: {error}. Do not assume the operation had no effect; reopen and verify the sidecar state before retrying"
         ))),

@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
-use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget, FileIdentity, TrustedAnchor};
+use phantom_core::fs::{
+    AnchoredEffect, AnchoredFilePermissions, AnchoredRead, AnchoredTarget, FileIdentity,
+    TrustedAnchor,
+};
 use phantom_core::token::TokenMap;
 use phantom_vault::VaultBackend;
 use sha2::{Digest, Sha256};
@@ -50,6 +53,8 @@ struct LocalTokenRemapPlan {
     config_digest: String,
     local_project_id: String,
     env_path: PathBuf,
+    env_identity: FileIdentity,
+    env_permissions: AnchoredFilePermissions,
     env_before: Vec<u8>,
     env_digest: String,
     names: Vec<String>,
@@ -124,6 +129,25 @@ impl LocalTokenRemapPlan {
             );
         }
 
+        let env_relative = self
+            .env_path
+            .strip_prefix(&current_project)
+            .context("Cannot revalidate a managed dotenv outside the approved project root")?;
+        let reviewed_env_target = reviewed_project
+            .target(env_relative)
+            .context("Failed to retain the approved managed dotenv target")?;
+        let reviewed_env = reviewed_env_target
+            .read_regular()?
+            .context("Managed dotenv disappeared after approval")?;
+        if reviewed_env.identity() != self.env_identity
+            || reviewed_env.bytes() != self.env_before
+            || reviewed_env.permissions() != self.env_permissions
+        {
+            anyhow::bail!(
+                "Cannot remap Phantom tokens: the managed dotenv identity changed after approval; no vault value was read and no Phantom write was committed."
+            );
+        }
+
         // Vault construction may take PROCESS_ENV_LOCK, so it must complete
         // before the project transaction lock is acquired.
         let vault = phantom_vault::try_create_vault(&current_local_project_id)
@@ -190,7 +214,10 @@ impl LocalTokenRemapPlan {
         let env_current = env_target
             .read_regular()?
             .context("Managed dotenv disappeared after approval")?;
-        if env_current.bytes() != self.env_before {
+        if env_current.identity() != self.env_identity
+            || env_current.bytes() != self.env_before
+            || env_current.permissions() != self.env_permissions
+        {
             anyhow::bail!(
                 "Cannot remap Phantom tokens: the managed dotenv changed after approval; no Phantom write was committed."
             );
@@ -284,13 +311,21 @@ fn prepare_local_token_remap(project_dir: &Path) -> Result<Option<LocalTokenRema
     }
 
     let resolved = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &names)?;
-    let env_before = phantom_core::fs::read_regular_file(&resolved.path)?
-        .context("Managed dotenv does not exist")?;
-    let env_path = resolved
+    let env_relative = resolved
         .path
-        .canonicalize()
-        .context("Failed to resolve managed dotenv")?;
-    validate_protected_placeholders(&env_path, &names, &env_before)?;
+        .strip_prefix(&project_dir)
+        .context("Managed dotenv resolved outside the retained project root")?;
+    let env_target = project_anchor
+        .target(env_relative)
+        .context("Failed to retain managed dotenv for token-remap review")?;
+    let env_review = env_target
+        .read_regular()?
+        .context("Managed dotenv does not exist")?;
+    let env_path = project_dir.join(env_relative);
+    validate_protected_placeholders(&env_path, &names, env_review.bytes())?;
+    let env_identity = env_review.identity();
+    let env_permissions = env_review.permissions();
+    let env_before = env_review.into_bytes();
 
     Ok(Some(LocalTokenRemapPlan {
         project_dir,
@@ -300,6 +335,8 @@ fn prepare_local_token_remap(project_dir: &Path) -> Result<Option<LocalTokenRema
         config_before,
         local_project_id,
         env_path,
+        env_identity,
+        env_permissions,
         env_digest: digest_bytes(b"phantom-local-token-remap-dotenv-v1\0", &env_before),
         env_before,
         names_digest: names_digest(&names),
@@ -590,6 +627,13 @@ fn remap_phantom_tokens_from_snapshot(
         before.permissions(),
     )? {
         AnchoredEffect::Durable(_) => Ok(()),
+        AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
+            eprintln!(
+                "warning: Phantom token remap for {} committed and was verified, but directory crash durability is not provable on this platform",
+                env_path.display()
+            );
+            Ok(())
+        }
         AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
             "Phantom token remap was committed for {}, but durability could not be verified: {error}",
             env_path.display()
@@ -1392,6 +1436,10 @@ mod token_remap_tests {
             config_before,
             local_project_id: "local-project-id".to_string(),
             env_path: project_dir.join(".env"),
+            env_identity: TrustedAnchor::open_canonical(std::env::current_dir().unwrap())
+                .unwrap()
+                .identity(),
+            env_permissions: AnchoredFilePermissions::private(),
             env_digest: digest_bytes(b"phantom-local-token-remap-dotenv-v1\0", &env_before),
             env_before,
             names_digest: names_digest(&names),
@@ -1438,15 +1486,24 @@ mod token_remap_tests {
             format!("A=phm_{}\nB=phm_{}\n", "a".repeat(64), "b".repeat(64)).into_bytes();
         std::fs::write(&env_path, &env_before).unwrap();
         let env_path = env_path.canonicalize().unwrap();
+        let project_anchor = TrustedAnchor::open(&project_dir).unwrap();
+        let env_review = project_anchor
+            .target(".env")
+            .unwrap()
+            .read_regular()
+            .unwrap()
+            .unwrap();
         let names = vec!["A".to_string(), "B".to_string()];
         let plan = LocalTokenRemapPlan {
-            project_identity: TrustedAnchor::open(&project_dir).unwrap().identity(),
+            project_identity: project_anchor.identity(),
             project_dir,
             config_path,
             config_digest: digest_bytes(b"phantom-local-token-remap-config-v1\0", &config_before),
             config_before,
             local_project_id: config.local_project_id().to_string(),
             env_path,
+            env_identity: env_review.identity(),
+            env_permissions: env_review.permissions(),
             env_digest: digest_bytes(b"phantom-local-token-remap-dotenv-v1\0", &env_before),
             env_before,
             names_digest: names_digest(&names),
@@ -1556,6 +1613,52 @@ mod token_remap_tests {
         assert_eq!(std::fs::read(&plan.env_path).unwrap(), concurrent);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_token_remap_accepts_verified_namespace_commit() {
+        let (_dir, plan, config) = filesystem_plan();
+        let before = plan.env_before.clone();
+        let transaction_lock =
+            phantom_vault::acquire_project_transaction_lock(&plan.project_dir).unwrap();
+
+        plan.commit_with_verified_config(
+            &transaction_lock,
+            &config,
+            &ListOnlyVault {
+                names: plan.names.clone(),
+            },
+        )
+        .unwrap();
+
+        let after = std::fs::read(&plan.env_path).unwrap();
+        assert_ne!(after, before);
+        validate_protected_placeholders(&plan.env_path, &plan.names, &after).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approved_plan_rejects_byte_identical_dotenv_decoy() {
+        let (_dir, plan, config) = filesystem_plan();
+        let moved = plan.project_dir.join(".env.reviewed");
+        std::fs::rename(&plan.env_path, &moved).unwrap();
+        std::fs::write(&plan.env_path, &plan.env_before).unwrap();
+        let transaction_lock =
+            phantom_vault::acquire_project_transaction_lock(&plan.project_dir).unwrap();
+        let error = plan
+            .commit_with_verified_config(
+                &transaction_lock,
+                &config,
+                &ListOnlyVault {
+                    names: plan.names.clone(),
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("managed dotenv changed"));
+        assert_eq!(std::fs::read(&plan.env_path).unwrap(), plan.env_before);
+        assert_eq!(std::fs::read(moved).unwrap(), plan.env_before);
+    }
+
     #[cfg(unix)]
     #[test]
     fn reviewed_project_lock_rejects_same_path_replacement() {
@@ -1614,9 +1717,11 @@ mod token_remap_tests {
             .next()
             .unwrap();
         let approved_identity = commit.find("self.project_identity").unwrap();
+        let dotenv_identity = commit.find("self.env_identity").unwrap();
         let vault = commit.find("try_create_vault").unwrap();
         let project_lock = commit.find("acquire_reviewed_project_lock").unwrap();
-        assert!(approved_identity < vault && vault < project_lock);
+        assert!(approved_identity < dotenv_identity);
+        assert!(dotenv_identity < vault && vault < project_lock);
     }
 
     #[test]

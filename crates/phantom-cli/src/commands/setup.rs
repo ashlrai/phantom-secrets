@@ -207,6 +207,12 @@ fn setup_claude_code_in(
     })();
     match operation {
         Ok((plan, None | Some(AnchoredEffect::Durable(_)))) => Ok(plan),
+        Ok((plan, Some(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. }))) => {
+            eprintln!(
+                "warning: Claude settings replacement committed and was verified, but directory crash durability is not provable on this platform"
+            );
+            Ok(plan)
+        }
         Ok((_, Some(AnchoredEffect::CommittedButUncertain { error, .. }))) => anyhow::bail!(
             "{} was replaced, but durability could not be verified: {error}",
             settings_path.display()
@@ -352,6 +358,12 @@ fn apply_claude_settings(plan: &ClaudeSettingsPlan) -> Result<bool> {
     match apply_claude_target(plan, &target, reviewed.as_ref())? {
         None => Ok(false),
         Some(AnchoredEffect::Durable(_)) => Ok(true),
+        Some(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. }) => {
+            eprintln!(
+                "warning: Claude settings replacement committed and was verified, but directory crash durability is not provable on this platform"
+            );
+            Ok(true)
+        }
         Some(AnchoredEffect::CommittedButUncertain { error, .. }) => anyhow::bail!(
             "{} was replaced, but durability could not be verified: {error}",
             plan.settings_path.display()
@@ -409,11 +421,25 @@ fn prepare_project_child(
     label: &str,
 ) -> Result<ProjectDirectoryPreparation> {
     match lock.prepare_private_child(name)? {
+        ProjectDirectoryPreparation::CreatedVerifiedButDurabilityUncertain(receipt) => {
+            eprintln!(
+                "warning: {label} directory creation committed and was verified, but directory crash durability is not provable on this platform"
+            );
+            Ok(ProjectDirectoryPreparation::Created(receipt))
+        }
         ProjectDirectoryPreparation::CommittedButUncertain { receipt, error } => {
             let cleanup = receipt.map(AnchoredCreatedDirectory::remove_if_empty_exact);
             match cleanup {
-                Some(Ok(AnchoredEffect::Durable(()))) => Err(error)
-                    .with_context(|| format!("{label} directory creation was rolled back")),
+                Some(Ok(
+                    AnchoredEffect::Durable(())
+                    | AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value: () },
+                )) => {
+                    eprintln!(
+                        "warning: {label} directory rollback committed and was verified, but directory crash durability is not provable on this platform"
+                    );
+                    Err(error)
+                        .with_context(|| format!("{label} directory creation was rolled back"))
+                }
                 _ => anyhow::bail!(
                     "{label} directory creation may have committed and exact cleanup could not be verified: {error}"
                 ),
@@ -424,11 +450,25 @@ fn prepare_project_child(
 }
 
 fn cleanup_project_child(preparation: ProjectDirectoryPreparation, label: &str) -> Result<()> {
-    let ProjectDirectoryPreparation::Created(receipt) = preparation else {
-        return Ok(());
+    let receipt = match preparation {
+        ProjectDirectoryPreparation::Created(receipt) => receipt,
+        ProjectDirectoryPreparation::CreatedVerifiedButDurabilityUncertain(receipt) => {
+            eprintln!(
+                "warning: {label} directory creation was verified, but directory crash durability is not provable on this platform"
+            );
+            receipt
+        }
+        ProjectDirectoryPreparation::Existing(_)
+        | ProjectDirectoryPreparation::CommittedButUncertain { .. } => return Ok(()),
     };
     match receipt.remove_if_empty_exact()? {
         AnchoredEffect::Durable(()) => Ok(()),
+        AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value: () } => {
+            eprintln!(
+                "warning: {label} directory cleanup committed and was verified, but directory crash durability is not provable on this platform"
+            );
+            Ok(())
+        }
         AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
             "{label} directory was removed, but cleanup durability could not be verified: {error}"
         ),
@@ -779,6 +819,14 @@ fn retain_global_config(
                     Ok(AnchoredDirectoryCreation::Durable(receipt)) => {
                         RetainedConfigDirectory::Created(receipt)
                     }
+                    Ok(AnchoredDirectoryCreation::CommittedVerifiedButDurabilityUncertain {
+                        receipt,
+                    }) => {
+                        eprintln!(
+                            "warning: global client directory creation committed and was verified, but directory crash durability is not provable on this platform"
+                        );
+                        RetainedConfigDirectory::Created(receipt)
+                    }
                     Ok(AnchoredDirectoryCreation::CommittedButUncertain {
                         receipt: None,
                         error,
@@ -879,13 +927,34 @@ fn acquire_global_setup_lock(home: &TrustedAnchor) -> Result<AnchoredLock> {
                 Ok(AnchoredDirectoryCreation::Durable(receipt)) => {
                     RetainedConfigDirectory::Created(receipt)
                 }
+                Ok(
+                    AnchoredDirectoryCreation::CommittedVerifiedButDurabilityUncertain {
+                        receipt,
+                    },
+                ) => {
+                    eprintln!(
+                        "warning: global setup-state directory creation committed and was verified, but directory crash durability is not provable on this platform"
+                    );
+                    RetainedConfigDirectory::Created(receipt)
+                }
                 Ok(AnchoredDirectoryCreation::CommittedButUncertain {
                     receipt: Some(receipt),
                     error,
                 }) => {
                     return match receipt.remove_if_empty_exact() {
-                        Ok(AnchoredEffect::Durable(())) => Err(error)
-                            .context("Global setup-state directory creation was rolled back exactly"),
+                        Ok(
+                            AnchoredEffect::Durable(())
+                            | AnchoredEffect::CommittedVerifiedButDurabilityUncertain {
+                                value: (),
+                            },
+                        ) => {
+                            eprintln!(
+                                "warning: global setup-state directory rollback committed and was verified, but directory crash durability is not provable on this platform"
+                            );
+                            Err(error).context(
+                                "Global setup-state directory creation was rolled back exactly",
+                            )
+                        }
                         _ => anyhow::bail!(
                             "Global setup-state directory creation may have committed and exact cleanup could not be verified: {error}"
                         ),
@@ -917,6 +986,11 @@ fn acquire_global_setup_lock(home: &TrustedAnchor) -> Result<AnchoredLock> {
             if let RetainedConfigDirectory::Created(receipt) = directory {
                 match receipt.remove_if_empty_exact()? {
                     AnchoredEffect::Durable(()) => {}
+                    AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value: () } => {
+                        eprintln!(
+                            "warning: global setup-state cleanup committed and was verified, but directory crash durability is not provable on this platform"
+                        );
+                    }
                     AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
                         "Global setup-state cleanup committed, but durability could not be verified: {error}"
                     ),
@@ -943,6 +1017,11 @@ fn cleanup_global_directories(
     while let Some(receipt) = receipts.pop() {
         match receipt.remove_if_empty_exact()? {
             AnchoredEffect::Durable(()) => {}
+            AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value: () } => {
+                eprintln!(
+                    "warning: global client directory cleanup committed and was verified, but directory crash durability is not provable on this platform"
+                );
+            }
             AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
                 "{} directory cleanup committed, but durability could not be verified: {error}",
                 label.display()
@@ -959,6 +1038,12 @@ fn finish_global_operation<T>(
 ) -> Result<T> {
     match operation {
         Ok((value, AnchoredEffect::Durable(_))) => Ok(value),
+        Ok((value, AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. })) => {
+            eprintln!(
+                "warning: global client configuration replacement committed and was verified, but directory crash durability is not provable on this platform"
+            );
+            Ok(value)
+        }
         Ok((_, AnchoredEffect::CommittedButUncertain { error, .. })) => anyhow::bail!(
             "{} was replaced, but durability could not be verified: {error}",
             path.display()

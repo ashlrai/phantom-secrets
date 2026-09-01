@@ -3,7 +3,7 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::error::PhantomError;
-use phantom_core::fs::TrustedAnchor;
+use phantom_core::fs::{FileIdentity, TrustedAnchor};
 use phantom_core::token::TokenMap;
 use phantom_core::workspace_request::{
     self, SanitizedActionSummary, WorkspaceActionKind, WorkspaceApplyReceipt, WorkspaceRequestState,
@@ -171,11 +171,12 @@ pub fn run_apply(request_id: &str) -> Result<()> {
     print_confirmation(&sealed.plan, request_id)?;
 
     let mut input = std::io::BufReader::new(std::io::stdin().lock());
+    let expected_confirmation = format!("apply {request_id}");
     let mut confirmation = String::new();
-    input
+    std::io::Read::take(&mut input, (expected_confirmation.len() + 2) as u64)
         .read_line(&mut confirmation)
         .context("Could not read typed workspace confirmation")?;
-    if confirmation.trim() != format!("apply {request_id}") {
+    if confirmation.trim() != expected_confirmation {
         bail!("workspace apply cancelled: typed confirmation did not match");
     }
 
@@ -393,6 +394,7 @@ impl Drop for VaultRecoverySnapshot {
 
 struct VaultSetupParticipant {
     workspace_root: PathBuf,
+    project_identity: FileIdentity,
     vault: Box<dyn VaultBackend>,
     snapshots: Vec<VaultSnapshot>,
     project_lock: Option<ProjectTransactionLock>,
@@ -461,6 +463,7 @@ impl VaultSetupParticipant {
         validate_workspace_config(&workspace_root, &project_lock)?;
         Ok(Self {
             workspace_root,
+            project_identity: project_lock.project_identity_at_acquisition(),
             vault,
             snapshots: Vec::new(),
             project_lock: Some(project_lock),
@@ -479,6 +482,7 @@ impl VaultSetupParticipant {
             .expect("test workspace project lock must be acquired");
         Self {
             workspace_root,
+            project_identity: project_lock.project_identity_at_acquisition(),
             vault,
             snapshots: Vec::new(),
             project_lock: Some(project_lock),
@@ -571,6 +575,10 @@ impl VaultSetupParticipant {
 }
 
 impl SetupTransactionParticipant for VaultSetupParticipant {
+    fn retained_root_identity(&self) -> Option<FileIdentity> {
+        Some(self.project_identity)
+    }
+
     fn prepare(
         &mut self,
         _plan: &SetupPlan,
@@ -739,6 +747,7 @@ mod portable_capability_contract_tests {
         assert!(source.contains("project_lock\n                .as_ref()"));
         assert!(source.contains(".target(&path)"));
         assert!(source.contains(".read_regular()"));
+        assert!(source.contains("std::io::Read::take(&mut input"));
         let ambient_parse = ["DotenvFile::parse_", "file(&path)"].concat();
         let ambient_read = ["std::fs::read_to_", "string(&path)"].concat();
         assert!(!source.contains(&ambient_parse));
@@ -1042,6 +1051,48 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(project.join("packages/api/.env")).unwrap(),
             "API_SECRET=sk-decoy-value\n"
+        );
+    }
+
+    #[test]
+    fn workspace_apply_rejects_byte_identical_project_root_replacement() {
+        let container = TempDir::new().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        let plaintext = "API_SECRET=sk-original-retained-value\n";
+        std::fs::create_dir(&project).unwrap();
+        write(project.join(".env"), plaintext);
+
+        let key = seal_key();
+        let sealed = build_sealed_setup_plan(&project, &key).unwrap();
+        let values = Arc::new(Mutex::new(BTreeMap::new()));
+        let vault = FailingStoreVault {
+            values: Arc::clone(&values),
+            fail_name: "NEVER_FAIL".to_string(),
+        };
+        let mut participant = VaultSetupParticipant::with_vault(&project, Box::new(vault), false);
+
+        // Unix permits renaming a directory whose descriptor remains open. A
+        // byte-identical decoy at the approved pathname must not let the
+        // filesystem engine and vault participant operate on different roots.
+        std::fs::rename(&project, &moved).unwrap();
+        std::fs::create_dir(&project).unwrap();
+        write(project.join(".env"), plaintext);
+        let canonical_decoy = project.canonicalize().unwrap();
+
+        let error = apply_setup_plan(&sealed, &key, &mut participant).unwrap_err();
+        assert!(
+            matches!(error, WorkspaceError::UnsafeTarget(ref path) if path == &canonical_decoy),
+            "unexpected split-root rejection: {error:?}"
+        );
+        assert!(values.lock().unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(moved.join(".env")).unwrap(),
+            plaintext
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join(".env")).unwrap(),
+            plaintext
         );
     }
 

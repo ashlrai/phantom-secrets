@@ -37,6 +37,11 @@ fn run_in(project_dir: &std::path::Path, after_lock: impl FnOnce()) -> Result<()
         before.permissions(),
     )? {
         phantom_core::fs::AnchoredEffect::Durable(_) => {}
+        phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
+            eprintln!(
+                "warning: package.json replacement committed and was verified, but directory crash durability is not provable on this platform"
+            );
+        }
         phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => {
             anyhow::bail!(
                 "package.json was replaced, but durability could not be verified: {error}"

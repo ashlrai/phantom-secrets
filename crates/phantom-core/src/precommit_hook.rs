@@ -821,6 +821,9 @@ fn commit_prepared_with_git_before_commit(
         })?;
     match effect {
         AnchoredEffect::Durable(_) => {}
+        AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => eprintln!(
+            "warning: pre-commit hook replacement committed and was verified, but directory crash durability is not provable on this platform"
+        ),
         AnchoredEffect::CommittedButUncertain { error, .. } => {
             return Err(HookError::CommittedButUncertain {
                 path: transaction.location.path,

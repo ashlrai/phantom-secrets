@@ -39,6 +39,7 @@ pub struct ProjectTransactionLock {
 pub enum ProjectDirectoryPreparation {
     Existing(TrustedAnchor),
     Created(AnchoredCreatedDirectory),
+    CreatedVerifiedButDurabilityUncertain(AnchoredCreatedDirectory),
     CommittedButUncertain {
         receipt: Option<AnchoredCreatedDirectory>,
         error: std::io::Error,
@@ -50,7 +51,9 @@ impl ProjectDirectoryPreparation {
     pub fn anchor(&self) -> Option<&TrustedAnchor> {
         match self {
             Self::Existing(anchor) => Some(anchor),
-            Self::Created(created) => Some(created.anchor()),
+            Self::Created(created) | Self::CreatedVerifiedButDurabilityUncertain(created) => {
+                Some(created.anchor())
+            }
             Self::CommittedButUncertain { receipt, .. } => {
                 receipt.as_ref().map(AnchoredCreatedDirectory::anchor)
             }
@@ -279,6 +282,11 @@ impl ProjectTransactionLock {
                     Ok(AnchoredDirectoryCreation::Durable(created)) => {
                         Ok(ProjectDirectoryPreparation::Created(created))
                     }
+                    Ok(AnchoredDirectoryCreation::CommittedVerifiedButDurabilityUncertain {
+                        receipt,
+                    }) => Ok(
+                        ProjectDirectoryPreparation::CreatedVerifiedButDurabilityUncertain(receipt),
+                    ),
                     Ok(AnchoredDirectoryCreation::CommittedButUncertain { receipt, error }) => {
                         Ok(ProjectDirectoryPreparation::CommittedButUncertain { receipt, error })
                     }
@@ -442,23 +450,33 @@ mod tests {
         let lock = acquire_project_transaction_lock_at(paths).unwrap();
 
         let created = match lock.prepare_private_child(".phantom").unwrap() {
-            ProjectDirectoryPreparation::Created(created) => created,
+            ProjectDirectoryPreparation::Created(created)
+            | ProjectDirectoryPreparation::CreatedVerifiedButDurabilityUncertain(created) => {
+                created
+            }
             other => panic!("unexpected preparation: {other:?}"),
         };
         let target = created.anchor().target("active-env").unwrap();
         assert!(matches!(
             target.replace_if_exact(None, b"development").unwrap(),
             phantom_core::fs::AnchoredEffect::Durable(_)
+                | phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. }
         ));
         let current = target.read_regular().unwrap().unwrap();
         assert!(matches!(
             target.unlink_if_exact(&current).unwrap(),
             phantom_core::fs::AnchoredEffect::Durable(())
+                | phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain {
+                    value: ()
+                }
         ));
         drop(target);
         assert!(matches!(
             created.remove_if_empty_exact().unwrap(),
             phantom_core::fs::AnchoredEffect::Durable(())
+                | phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain {
+                    value: ()
+                }
         ));
         assert!(!project.path().join(".phantom").exists());
     }

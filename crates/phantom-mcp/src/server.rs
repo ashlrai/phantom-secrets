@@ -716,6 +716,11 @@ impl PhantomMcpServer {
         }
         output.push_str("\n.env has been rewritten with phantom tokens.\n");
         output.push_str("Real secrets are stored in the vault.\n");
+        if !receipt.namespace_durability_verified {
+            output.push_str(
+                "Warning: namespace effects were committed and verified, but directory crash durability is not provable on this platform.\n",
+            );
+        }
         output.push_str("Use `phantom exec -- <command>` to run code with the proxy.");
 
         text_result(output)
@@ -4810,6 +4815,12 @@ fn write_package_json_anchored_with(
         before.permissions(),
     ) {
         Ok(AnchoredEffect::Durable(_)) => Ok(()),
+        Ok(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. }) => {
+            eprintln!(
+                "warning: package.json replacement committed and was verified, but directory crash durability is not provable on this platform"
+            );
+            Ok(())
+        }
         Ok(AnchoredEffect::CommittedButUncertain { error, .. }) => Err(internal_err(format!(
             "package.json replacement committed, but durability or post-publish verification is uncertain: {error}. Do not assume the write had no effect; reopen package.json before retrying"
         ))),
@@ -4836,6 +4847,12 @@ fn write_new_anchored_output_with(
     before_commit();
     match target.replace_if_exact(None, content) {
         Ok(AnchoredEffect::Durable(_)) => Ok(()),
+        Ok(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. }) => {
+            eprintln!(
+                "warning: generated output committed and was verified, but directory crash durability is not provable on this platform"
+            );
+            Ok(())
+        }
         Ok(AnchoredEffect::CommittedButUncertain { error, .. }) => Err(internal_err(format!(
             "Generated {display_name} was published, but durability or post-publish verification is uncertain: {error}. Do not assume the write had no effect; reopen the output before retrying"
         ))),
@@ -5729,6 +5746,12 @@ fn remap_phantom_tokens_locked_with(
         before.permissions(),
     ) {
         Ok(AnchoredEffect::Durable(_)) => Ok(()),
+        Ok(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. }) => {
+            eprintln!(
+                "warning: managed dotenv replacement committed and was verified, but directory crash durability is not provable on this platform"
+            );
+            Ok(())
+        }
         Ok(AnchoredEffect::CommittedButUncertain { error, .. }) => Err(internal_err(format!(
             "Managed dotenv replacement committed for {}, but durability or post-publish verification is uncertain: {error}. Do not assume the remap had no effect; reopen the dotenv before retrying",
             env_path.display()
