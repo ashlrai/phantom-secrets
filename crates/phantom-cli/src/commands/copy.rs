@@ -39,6 +39,20 @@ pub fn run(name: &str, target_dir: &PathBuf, rename: &Option<String>) -> Result<
     let source_config = PhantomConfig::load(&source_config_path)?;
     let source_vault = phantom_vault::try_create_vault(source_config.local_project_id())?;
 
+    // Resolve and validate the target's managed dotenv before reading the
+    // source value or mutating the target vault.
+    let target_config = PhantomConfig::load(&target_config_path)?;
+    let target_vault = phantom_vault::try_create_vault(target_config.local_project_id())?;
+    let target_vault_names = target_vault
+        .list()
+        .context("Failed to list target vault entries")?;
+    let target_env_path = phantom_core::managed_dotenv::resolve_dotenv(
+        &target_dir,
+        &target_config,
+        &target_vault_names,
+    )?
+    .path;
+
     // Retrieve the secret — Zeroizing<String> auto-zeroizes on drop (all exit paths)
     let secret_value = source_vault
         .retrieve(name)
@@ -54,17 +68,12 @@ pub fn run(name: &str, target_dir: &PathBuf, rename: &Option<String>) -> Result<
         target_dir.display()
     );
 
-    // Load target vault
-    let target_config = PhantomConfig::load(&target_config_path)?;
-    let target_vault = phantom_vault::try_create_vault(target_config.local_project_id())?;
-
     // Store in target vault
     target_vault
         .store(target_name, &secret_value)
         .context("Failed to store secret in target vault")?;
 
     // Update target .env with a new phantom token
-    let target_env_path = target_dir.join(".env");
     if target_env_path.exists() {
         let dotenv = DotenvFile::parse_file(&target_env_path)?;
         let mut token_map = TokenMap::new();
@@ -90,7 +99,11 @@ pub fn run(name: &str, target_dir: &PathBuf, rename: &Option<String>) -> Result<
         println!(
             "   {} Updated {} with phantom token",
             "+".green().bold(),
-            ".env".cyan()
+            target_env_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("managed dotenv")
+                .cyan()
         );
     }
 

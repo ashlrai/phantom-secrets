@@ -35,6 +35,7 @@ zeroize = { workspace = true }
 open = "5"
 which = "6"
 dirs = "5"
+directories = "5"
 arboard = { version = "3", default-features = false }
 indicatif = "0.18"
 base64 = { workspace = true }
@@ -48,6 +49,9 @@ fs2 = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 assert_cmd = "2"

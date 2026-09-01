@@ -148,11 +148,13 @@ fn print_human_table(expiring: &[ExpiryEntry], warn_days: u64) {
 fn run_token_remap(expiring: &[ExpiryEntry], config: &PhantomConfig, json: bool) -> Result<()> {
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let project_dir = std::env::current_dir()?;
-    let env_path = project_dir.join(".env");
     let names = expiring
         .iter()
         .map(|entry| entry.name.clone())
         .collect::<Vec<_>>();
+    let vault_names = vault.list().context("Failed to list protected secrets")?;
+    let env_path =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, config, &vault_names)?.path;
 
     // Read metadata before and after the file transaction to make the invariant
     // explicit and regression-testable: a token remap cannot renew TTL state.
@@ -419,7 +421,9 @@ pub fn run_rotate(key: &str) -> Result<()> {
     let metadata_before = vault
         .get_metadata(key)
         .context("Failed to read vault metadata")?;
-    let env_path = project_dir.join(".env");
+    let vault_names = vault.list().context("Failed to list protected secrets")?;
+    let env_path =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?.path;
     crate::commands::rotate::remap_phantom_tokens(&env_path, &[key.to_string()])?;
     let metadata_after = vault
         .get_metadata(key)

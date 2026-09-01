@@ -370,26 +370,17 @@ fn content_type_multipart_not_replaced() {
     assert_eq!(out, body.as_bytes());
 }
 
-/// `application/x-www-form-urlencoded` is not replaced by scoped_body_replace
-/// (the streaming path handles it).
+/// `application/x-www-form-urlencoded` is replaced only in allowed fields.
 #[test]
-fn content_type_form_urlencoded_not_replaced_by_scoped() {
+fn content_type_form_urlencoded_replaced_by_scoped() {
     let body = format!("client_secret={PHM}&grant_type=client_credentials");
     let (out, did) = scoped_body_replace(
         &interceptor(),
         Some("application/x-www-form-urlencoded"),
         body.as_bytes(),
     );
-    assert!(!did);
-    assert_eq!(out, body.as_bytes());
-}
-
-/// `application/x-www-form-urlencoded` IS replaced by stream path.
-#[test]
-fn content_type_form_urlencoded_replaced_via_stream() {
-    let iceptor = interceptor();
-    let body = format!("client_secret={PHM}&grant_type=client_credentials");
-    let result = stream_frames(&iceptor, &[body.as_bytes()]);
+    assert!(did);
+    let result = std::str::from_utf8(&out).unwrap();
     assert!(result.contains(REAL), "real secret missing: {result}");
     assert!(!result.contains("phm_"), "phantom token present: {result}");
 }
@@ -451,10 +442,10 @@ fn should_stream_replace_text_types() {
     assert!(should_stream_replace(Some("text/plain; charset=utf-8")));
 }
 
-/// `should_stream_replace` returns true for form-urlencoded.
+/// Form-urlencoded bodies are buffered for field-aware replacement.
 #[test]
-fn should_stream_replace_form_urlencoded() {
-    assert!(should_stream_replace(Some(
+fn should_stream_replace_form_urlencoded_false() {
+    assert!(!should_stream_replace(Some(
         "application/x-www-form-urlencoded"
     )));
 }

@@ -6,8 +6,14 @@ use phantom_core::dotenv::{classify, is_public_key, DotenvFile, EnvEntry, Secret
 /// Explain why a specific key is or isn't protected by Phantom.
 pub fn run(key: &str) -> Result<()> {
     let project_dir = std::env::current_dir()?;
-    let env_path = project_dir.join(".env");
     let config_path = project_dir.join(".phantom.toml");
+    let config = PhantomConfig::load(&config_path).ok();
+    let env_path = match config.as_ref() {
+        Some(config) => {
+            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, config, &[])?.path
+        }
+        None => project_dir.join(".env"),
+    };
 
     if !env_path.exists() {
         anyhow::bail!(
@@ -17,8 +23,6 @@ pub fn run(key: &str) -> Result<()> {
     }
 
     let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env")?;
-    let config = PhantomConfig::load(&config_path).ok();
-
     // Find the entry
     let entry = dotenv.entries().into_iter().find(|e| e.key == key);
 

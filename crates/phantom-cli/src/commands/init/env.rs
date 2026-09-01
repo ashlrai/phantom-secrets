@@ -10,6 +10,8 @@ const GITIGNORE_PATTERNS: &[&str] = &[
     ".env.*.local",
     ".env.backup",
     ".phantom.proxy.lock",
+    ".phantom.pid",
+    ".phantom.start.lock",
 ];
 
 /// Auto-detect .env files — checks current dir first, then immediate subdirectories.

@@ -162,7 +162,7 @@ enum Commands {
         daemon: bool,
     },
 
-    /// Reserved compatibility command; external stop is hard denied
+    /// TTY-only authenticated cleanup for legacy v0.7.3 proxy state
     #[command(next_help_heading = "Daily use")]
     Stop,
 

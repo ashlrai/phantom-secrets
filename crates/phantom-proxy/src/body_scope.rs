@@ -9,6 +9,9 @@
 //!   configured header (e.g. `Authorization`, `x-api-key`).
 //! - For `application/json` bodies: a whitelist of known-secret-bearing JSON
 //!   field names, matched at any depth.
+//! - For `application/x-www-form-urlencoded` bodies: the same whitelist,
+//!   applied to exact form-field names without decoding or normalizing the
+//!   rest of the payload.
 //!
 //! Anywhere else, if a phm-token is present, we log a warning and pass the
 //! body through unchanged — so a misconfigured client fails loudly instead
@@ -40,6 +43,7 @@ const DEFAULT_ALLOWED_JSON_FIELDS: &[&str] = &[
     "access_token",
     "auth_token",
     "authorization",
+    "client_secret",
     "secret",
     "password",
 ];
@@ -72,6 +76,13 @@ fn is_json_content_type(ct: &str) -> bool {
     }
 }
 
+fn is_form_content_type(ct: &str) -> bool {
+    ct.split(';')
+        .next()
+        .map(str::trim)
+        .is_some_and(|mime| mime.eq_ignore_ascii_case("application/x-www-form-urlencoded"))
+}
+
 /// Phantom token format: `phm_` prefix + 64 lowercase hex chars = 68 bytes.
 /// When streaming, a token can straddle a frame boundary; we carry at most
 /// `PHM_TOKEN_MAX_PARTIAL` bytes from the tail of one frame into the next.
@@ -83,7 +94,6 @@ pub const PHM_TOKEN_MAX_PARTIAL: usize = PHM_TOKEN_LEN - 1; // 67 bytes
 ///
 /// Streaming is allowed for:
 /// - `text/*`                              (plain text, event-stream, etc.)
-/// - `application/x-www-form-urlencoded`
 ///
 /// `application/json` is intentionally excluded. The JSON path in
 /// `scoped_body_replace` requires a full `serde_json` parse tree to enforce
@@ -92,8 +102,10 @@ pub const PHM_TOKEN_MAX_PARTIAL: usize = PHM_TOKEN_LEN - 1; // 67 bytes
 /// as `prompt` or `content`. We prefer correctness over memory savings for
 /// the JSON case — JSON always uses the buffered path.
 ///
-/// Binary and unknown types also return `false` and remain buffered (passed
-/// through unchanged by `scoped_body_replace`).
+/// Form data is also intentionally excluded: it requires a complete bounded
+/// body so substitution can be restricted to explicitly allowed field names.
+/// Binary and unknown types return `false` and remain buffered (passed through
+/// unchanged by `scoped_body_replace`).
 pub fn should_stream_replace(content_type: Option<&str>) -> bool {
     let ct = match content_type {
         Some(ct) if !ct.is_empty() => ct,
@@ -105,7 +117,7 @@ pub fn should_stream_replace(content_type: Option<&str>) -> bool {
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    mime.starts_with("text/") || mime == "application/x-www-form-urlencoded"
+    mime.starts_with("text/")
 }
 
 /// Perform streaming phantom-token replacement on a single incoming frame.
@@ -161,6 +173,8 @@ pub fn stream_replace_flush(interceptor: &Interceptor, carry: Vec<u8>) -> Vec<u8
 /// - `application/json` (and `*+json`): recursively replaces phm tokens
 ///   inside string values whose parent key is in the allowlist. Tokens
 ///   outside allowed fields are left untouched and a warning is logged.
+/// - `application/x-www-form-urlencoded`: replaces phm tokens only inside
+///   values whose exact field name is in the same auth-field allowlist.
 /// - Any other / absent content-type: body is returned unchanged. If a phm
 ///   token is present a debug log is emitted; no substitution is performed.
 pub fn scoped_body_replace(
@@ -168,11 +182,31 @@ pub fn scoped_body_replace(
     content_type: Option<&str>,
     body: &[u8],
 ) -> (Vec<u8>, bool) {
+    scoped_body_replace_inner(interceptor, None, content_type, body)
+}
+
+/// Route-scoped body substitution used by the network proxy. Only the token
+/// owned by `secret_key` can resolve, even in an otherwise allowed field.
+pub fn scoped_body_replace_for_secret(
+    interceptor: &Interceptor,
+    secret_key: &str,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> (Vec<u8>, bool) {
+    scoped_body_replace_inner(interceptor, Some(secret_key), content_type, body)
+}
+
+fn scoped_body_replace_inner(
+    interceptor: &Interceptor,
+    secret_key: Option<&str>,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> (Vec<u8>, bool) {
     let ct = content_type.unwrap_or("");
     if is_json_content_type(ct) {
         match serde_json::from_slice::<serde_json::Value>(body) {
             Ok(mut v) => {
-                let replaced = replace_in_json(&mut v, interceptor);
+                let replaced = replace_in_json(&mut v, interceptor, secret_key);
                 if replaced {
                     match serde_json::to_vec(&v) {
                         Ok(out) => (out, true),
@@ -188,6 +222,8 @@ pub fn scoped_body_replace(
                 (body.to_vec(), false)
             }
         }
+    } else if is_form_content_type(ct) {
+        replace_in_form(interceptor, secret_key, body)
     } else {
         if !body.is_empty() {
             if let Ok(s) = std::str::from_utf8(body) {
@@ -203,6 +239,55 @@ pub fn scoped_body_replace(
     }
 }
 
+/// Replace credentials in a bounded URL-encoded form without parsing or
+/// reserializing it. Phantom tokens use only unreserved URL characters, so an
+/// exact byte-preserving split is sufficient: encoded or malformed keys fail
+/// closed, and values in non-auth fields are never inspected for replacement.
+fn replace_in_form(
+    interceptor: &Interceptor,
+    secret_key: Option<&str>,
+    body: &[u8],
+) -> (Vec<u8>, bool) {
+    let Ok(form) = std::str::from_utf8(body) else {
+        return (body.to_vec(), false);
+    };
+
+    let mut output = String::with_capacity(form.len());
+    let mut replaced = false;
+    for (index, field) in form.split('&').enumerate() {
+        if index > 0 {
+            output.push('&');
+        }
+
+        let Some((name, value)) = field.split_once('=') else {
+            output.push_str(field);
+            continue;
+        };
+        output.push_str(name);
+        output.push('=');
+
+        if is_allowed_json_field(name) {
+            let (new_value, did_replace) = match secret_key {
+                Some(secret_key) => interceptor.replace_in_str_for_secret(value, secret_key),
+                None => interceptor.replace_in_str(value),
+            };
+            output.push_str(&new_value);
+            replaced |= did_replace;
+        } else {
+            output.push_str(value);
+        }
+    }
+
+    if !replaced {
+        warn_if_phantom_present(
+            interceptor,
+            body,
+            "form body outside allowed fields or route scope",
+        );
+    }
+    (output.into_bytes(), replaced)
+}
+
 fn warn_if_phantom_present(interceptor: &Interceptor, body: &[u8], ctx: &str) {
     if let Ok(s) = std::str::from_utf8(body) {
         if interceptor.contains_phantom_token(s) {
@@ -211,7 +296,11 @@ fn warn_if_phantom_present(interceptor: &Interceptor, body: &[u8], ctx: &str) {
     }
 }
 
-fn replace_in_json(value: &mut serde_json::Value, interceptor: &Interceptor) -> bool {
+fn replace_in_json(
+    value: &mut serde_json::Value,
+    interceptor: &Interceptor,
+    secret_key: Option<&str>,
+) -> bool {
     let mut replaced = false;
     match value {
         serde_json::Value::Object(map) => {
@@ -221,7 +310,12 @@ fn replace_in_json(value: &mut serde_json::Value, interceptor: &Interceptor) -> 
                 if let Some(child) = map.get_mut(&key) {
                     if allowed {
                         if let serde_json::Value::String(s) = child {
-                            let (new_s, did) = interceptor.replace_in_str(s);
+                            let (new_s, did) = match secret_key {
+                                Some(secret_key) => {
+                                    interceptor.replace_in_str_for_secret(s, secret_key)
+                                }
+                                None => interceptor.replace_in_str(s),
+                            };
                             if did {
                                 debug!("Replaced phantom token in JSON field: {}", key);
                                 *s = new_s;
@@ -230,7 +324,7 @@ fn replace_in_json(value: &mut serde_json::Value, interceptor: &Interceptor) -> 
                         }
                     }
                     // Recurse regardless so nested allowed fields are still handled
-                    if replace_in_json(child, interceptor) {
+                    if replace_in_json(child, interceptor, secret_key) {
                         replaced = true;
                     }
                 }
@@ -238,7 +332,7 @@ fn replace_in_json(value: &mut serde_json::Value, interceptor: &Interceptor) -> 
         }
         serde_json::Value::Array(arr) => {
             for item in arr.iter_mut() {
-                if replace_in_json(item, interceptor) {
+                if replace_in_json(item, interceptor, secret_key) {
                     replaced = true;
                 }
             }
@@ -347,19 +441,29 @@ mod tests {
     }
 
     #[test]
-    fn non_json_body_not_replaced() {
-        // scoped_body_replace leaves form-encoded bodies unchanged (no field scoping).
-        // The streaming path handles form-encoded substitution instead.
+    fn form_body_allowed_field_replaced() {
         let body = format!("grant_type=client_credentials&client_secret={PHM}");
         let (out, did) = scoped_body_replace(
             &interceptor(),
             Some("application/x-www-form-urlencoded"),
             body.as_bytes(),
         );
-        assert!(!did);
+        assert!(did);
         let out_str = std::str::from_utf8(&out).unwrap();
-        assert!(out_str.contains(PHM));
-        assert!(!out_str.contains(REAL));
+        assert!(!out_str.contains(PHM));
+        assert!(out_str.contains(REAL));
+    }
+
+    #[test]
+    fn form_body_disallowed_field_not_replaced() {
+        let body = format!("prompt={PHM}&grant_type=client_credentials");
+        let (out, did) = scoped_body_replace(
+            &interceptor(),
+            Some("application/x-www-form-urlencoded"),
+            body.as_bytes(),
+        );
+        assert!(!did);
+        assert_eq!(out, body.as_bytes());
     }
 
     #[test]
@@ -409,8 +513,8 @@ mod tests {
     }
 
     #[test]
-    fn stream_replace_form_encoded() {
-        assert!(should_stream_replace(Some(
+    fn stream_replace_form_encoded_excluded_for_field_scoping() {
+        assert!(!should_stream_replace(Some(
             "application/x-www-form-urlencoded"
         )));
     }

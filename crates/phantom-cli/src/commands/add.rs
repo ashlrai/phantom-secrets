@@ -84,6 +84,9 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
     // ── Store in vault ───────────────────────────────────────────────
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault_names = vault.list().context("Failed to list protected secrets")?;
+    let env_path =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?.path;
 
     // Warn if secret already exists
     if vault
@@ -109,7 +112,6 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
     );
 
     // Also update .env if it exists
-    let env_path = project_dir.join(".env");
     if env_path.exists() {
         let content = std::fs::read_to_string(&env_path)?;
         let token = phantom_core::token::PhantomToken::generate();

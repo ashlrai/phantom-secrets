@@ -112,12 +112,27 @@ the variable is set.
 ### `phantom start --daemon` or `phantom stop` is refused
 
 This is intentional. Phantom does not persist a live proxy bearer, PID, or port
-in the workspace, so detached startup and external process control fail closed.
+in the workspace, so detached startup and current external process control fail closed.
 Use `phantom exec -- <command>` for the normal child-owned lifecycle. For an
 explicitly supervised shared proxy, run `phantom start` in a trusted terminal,
 keep that terminal open, and press Ctrl-C there to stop. `phantom status` can
-report whether the bearerless project lock is currently owned, but it cannot
-recover a port or bearer.
+report whether the private machine-local lifecycle lock is held, but that does
+not authenticate a listener and cannot recover a port or bearer. `phantom start`
+also refuses headless invocation unless stdin, stdout, and stderr are terminals.
+
+During an upgrade only, a v0.7.3 workspace may contain `.phantom.pid` in the
+legacy `PID:port:bearer` format. Run `phantom stop` from a trusted interactive
+terminal: it sends shutdown only after the recorded loopback service proves the
+bearer and expects the old owner to remove its record. Malformed, stale,
+unauthenticated, or symlinked records are left untouched for manual inspection;
+Phantom never creates new `.phantom.pid` or `.phantom.start.lock` state.
+
+### An enterprise HTTP proxy is ignored
+
+The credential-bearing local proxy intentionally disables inherited
+`HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` discovery so an agent-controlled
+environment cannot redirect upstream credentials. Enterprise forward-proxy
+support requires an explicit reviewed trust design and is not supported in this release.
 
 ### An older registry-based install command fails
 

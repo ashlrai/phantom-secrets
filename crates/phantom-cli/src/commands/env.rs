@@ -8,7 +8,14 @@ use phantom_core::dotenv::DotenvFile;
 /// Non-secret values and public keys are preserved as-is.
 pub fn run(output: &str) -> Result<()> {
     let project_dir = std::env::current_dir()?;
-    let env_path = project_dir.join(".env");
+    let config_path = project_dir.join(".phantom.toml");
+    let config = PhantomConfig::load(&config_path).ok();
+    let env_path = match config.as_ref() {
+        Some(config) => {
+            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, config, &[])?.path
+        }
+        None => project_dir.join(".env"),
+    };
     let output_path = project_dir.join(output);
 
     if !env_path.exists() {
@@ -27,9 +34,6 @@ pub fn run(output: &str) -> Result<()> {
     }
 
     // Load config for service info if available
-    let config_path = project_dir.join(".phantom.toml");
-    let config = PhantomConfig::load(&config_path).ok();
-
     // Use shared generation logic from phantom-core
     let content = dotenv.generate_example_content(config.as_ref());
     std::fs::write(&output_path, &content)?;

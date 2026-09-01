@@ -97,12 +97,14 @@ Windows ZIP for your architecture from [Installation](#installation), verify its
 published `.sha256` sidecar, and place both executables on `PATH`. WSL is a
 separate Linux environment with its own filesystem and credential-store context.
 
-For an explicitly supervised foreground proxy, run `phantom start` in a trusted
-terminal. The CLI detects your shell and prints the matching env-var syntax;
+For an explicitly supervised foreground proxy, run `phantom start` with stdin,
+stdout, and stderr each attached to a trusted terminal. Terminal attachment is
+an admission check, not proof of who controls a PTY. The CLI detects your shell and prints the matching env-var syntax;
 copy those exports into the terminal that launches the client, keep the owning
 terminal open, and press Ctrl-C there to stop. Detached `--daemon` mode and
-external `phantom stop` are fail-closed until Phantom has a separately reviewed
-private cross-platform control channel. For reference:
+external process control are fail-closed until Phantom has a separately reviewed
+private cross-platform control channel. `phantom stop` exists only to authenticate
+and migrate a legacy v0.7.3 `.phantom.pid` session. For reference:
 
 **PowerShell:**
 ```powershell
@@ -326,12 +328,12 @@ Team memberships and member lists are visible in the read-only dashboard at [phm
 | `phantom init` | Import `.env` secrets into vault and rewrite with phantom tokens. `--all <DIR>` processes eligible repositories found by the bounded five-level scan; discovery stops below the first matching repository. Use `--dry-run` to inspect the exact set and `--jobs N` / `-j N` to control parallelism. |
 | `phantom exec -- <cmd>` | Start an authenticated proxy and run a command with secret injection |
 | `phantom start` | Run an explicitly supervised foreground proxy; keep its trusted terminal open and press Ctrl-C there to stop |
-| `phantom start --daemon` / `phantom stop` | Compatibility surfaces that fail closed; detached and external lifecycle control are not shipped |
+| `phantom start --daemon` / `phantom stop` | Detached start fails closed; stop is a TTY-only authenticated cleanup path for legacy v0.7.3 state, not current process control |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
 | `phantom add <KEY>` | Add a secret through a hidden trusted-terminal prompt; use `--stdin` only with a trusted producer |
 | `phantom remove <KEY>` | Remove a secret from the vault |
 | `phantom reveal <KEY>` | Print a secret value (or `--clipboard` to copy) |
-| `phantom status` | Show proxy state, vault info, and mapped services |
+| `phantom status` | Show vault/mapping state and whether the machine-local lifecycle lock is held; a held lock does not authenticate or identify a listener |
 | `phantom rotate` | Regenerate all phantom tokens (old ones become invalid). With `--name <KEY>` (and optional `--provider <VENDOR>`): rotate the real credential at the vendor — see [Rotating real provider credentials](#rotating-real-provider-credentials) |
 | `phantom grant add <provider>` | Run a trusted-terminal provider consent flow, vault the issued credential roots, and store renewal metadata without printing values. See [Provider grants](#provider-grants). |
 | `phantom grant list` / `status` | Read provider-grant names, providers, lifecycle state, and expiry metadata without returning credential values. |

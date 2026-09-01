@@ -73,7 +73,8 @@ This starts the Phantom proxy on `127.0.0.1`, sets `*_BASE_URL` environment vari
 For an explicitly supervised shared session, run `phantom start` in a trusted
 terminal and keep it open. Copy the printed exports into the terminal that
 launches Cursor, then press Ctrl-C in the original owning terminal to stop.
-Detached `--daemon` mode and external `phantom stop` fail closed; prefer
+Detached `--daemon` mode and current external process control fail closed;
+`phantom stop` only migrates authenticated v0.7.3 state. Prefer
 `phantom exec -- cursor .` when one child process is sufficient.
 
 ---

@@ -108,18 +108,7 @@ impl ServiceRegistry {
         for (name, route) in &self.routes {
             // Convention: SERVICE_NAME_BASE_URL or SERVICE_NAME_API_BASE
             // We support the most common patterns
-            let env_var = match name.as_str() {
-                "openai" => "OPENAI_BASE_URL".to_string(),
-                "anthropic" => "ANTHROPIC_BASE_URL".to_string(),
-                _ => format!(
-                    "{}_BASE_URL",
-                    route
-                        .secret_key
-                        .trim_end_matches("_API_KEY")
-                        .trim_end_matches("_SECRET_KEY")
-                        .trim_end_matches("_KEY")
-                ),
-            };
+            let env_var = route_override_env_name(name, &route.secret_key);
 
             let local_url = match proxy_token {
                 Some(token) => format!(
@@ -132,6 +121,47 @@ impl ServiceRegistry {
         }
 
         overrides
+    }
+
+    /// Every environment variable used by a built-in route override. Child
+    /// processes must remove these inherited values before selectively adding
+    /// the overrides for the current authenticated proxy session.
+    pub fn known_override_env_names() -> &'static [&'static str] {
+        &[
+            "OPENAI_BASE_URL",
+            "ANTHROPIC_BASE_URL",
+            "STRIPE_BASE_URL",
+            "STRIPE_PUBLISHABLE_BASE_URL",
+            "SUPABASE_SERVICE_ROLE_BASE_URL",
+            "SUPABASE_ANON_BASE_URL",
+            "RESEND_BASE_URL",
+            "SENDGRID_BASE_URL",
+            "TWILIO_AUTH_TOKEN_BASE_URL",
+            "CLOUDFLARE_API_TOKEN_BASE_URL",
+            "GITHUB_TOKEN_BASE_URL",
+            "PINECONE_BASE_URL",
+            "REPLICATE_API_TOKEN_BASE_URL",
+            "XAI_BASE_URL",
+            "MISTRAL_BASE_URL",
+            "PERPLEXITY_BASE_URL",
+            "COHERE_BASE_URL",
+            "HUGGINGFACE_BASE_URL",
+            "GEMINI_BASE_URL",
+        ]
+    }
+}
+
+fn route_override_env_name(name: &str, secret_key: &str) -> String {
+    match name {
+        "openai" => "OPENAI_BASE_URL".to_string(),
+        "anthropic" => "ANTHROPIC_BASE_URL".to_string(),
+        _ => format!(
+            "{}_BASE_URL",
+            secret_key
+                .trim_end_matches("_API_KEY")
+                .trim_end_matches("_SECRET_KEY")
+                .trim_end_matches("_KEY")
+        ),
     }
 }
 

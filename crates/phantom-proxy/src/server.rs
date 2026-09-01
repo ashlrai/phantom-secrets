@@ -85,6 +85,9 @@ impl ProxyServer {
             max_body_size: config.max_body_size,
             http_client: reqwest::Client::builder()
                 .danger_accept_invalid_certs(false)
+                // Credential-bearing upstream requests must never inherit an
+                // agent-controlled HTTP(S)/ALL_PROXY redirect.
+                .no_proxy()
                 // Credential-bearing custom headers survive cross-origin
                 // redirects in some HTTP stacks. Never follow upstream
                 // redirects inside the secret-injecting proxy.
@@ -435,7 +438,9 @@ async fn handle_request(
 
         if let Ok(value_str) = value.to_str() {
             let header_value = if body_scope::is_allowed_header(name_str, &route.header) {
-                let (replaced_value, did_replace) = state.interceptor.replace_in_str(value_str);
+                let (replaced_value, did_replace) = state
+                    .interceptor
+                    .replace_in_str_for_secret(value_str, &route.secret_key);
                 if did_replace {
                     debug!("Replaced phantom token in header: {}", name_str);
                 }
@@ -499,13 +504,17 @@ async fn handle_request(
     if !body_bytes.is_empty() {
         let (replaced_body, did_replace) =
             if body_scope::should_stream_replace(request_content_type.as_deref()) {
-                // Text and form bodies used the streaming replacer before the
-                // atomicity fix. Preserve their substitution semantics after
-                // the complete bounded body has been accepted.
-                state.interceptor.replace_in_bytes(&body_bytes)
+                // Text bodies used the streaming replacer before the atomicity
+                // fix. Preserve those semantics after the complete bounded
+                // body has been accepted. Structured JSON and form bodies use
+                // the field-aware branch below.
+                state
+                    .interceptor
+                    .replace_in_bytes_for_secret(&body_bytes, &route.secret_key)
             } else {
-                body_scope::scoped_body_replace(
+                body_scope::scoped_body_replace_for_secret(
                     &state.interceptor,
+                    &route.secret_key,
                     request_content_type.as_deref(),
                     &body_bytes,
                 )
@@ -765,6 +774,13 @@ mod tests {
         // Both empty is a match; the call site guards this separately by
         // checking `!state.proxy_token.is_empty()` before invoking compare.
         assert!(constant_time_eq("", ""));
+    }
+
+    #[test]
+    fn credential_transport_disables_ambient_forward_proxies() {
+        let source = include_str!("server.rs");
+        assert!(source.contains(".no_proxy()"));
+        assert!(source.contains(".danger_accept_invalid_certs(false)"));
     }
 
     fn test_state() -> (ServiceRegistry, Interceptor) {
@@ -1072,8 +1088,11 @@ mod tests {
         });
 
         let mut mappings = HashMap::new();
-        mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        mappings.insert(
+            phantom_token.to_string(),
+            ("TEST_API_KEY".to_string(), real_secret.to_string()),
+        );
+        let interceptor = Interceptor::new_scoped(mappings, HashMap::new());
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1132,8 +1151,11 @@ mod tests {
         });
 
         let mut mappings = HashMap::new();
-        mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        mappings.insert(
+            phantom_token.to_string(),
+            ("TEST_KEY".to_string(), real_secret.to_string()),
+        );
+        let interceptor = Interceptor::new_scoped(mappings, HashMap::new());
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1180,6 +1202,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cross_route_token_never_reaches_upstream_as_a_secret() {
+        let mock = crate::test_server::MockServer::start().await;
+        let openai_token = "phm_1111111122222222333333334444444455555555666666667777777788888888";
+        let stripe_token = "phm_aaaaaaaa11111111bbbbbbbb22222222cccccccc33333333dddddddd44444444";
+        let stripe_secret = "sk_live_cross_route_must_not_leak";
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "openai".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "OPENAI_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+        let mappings = HashMap::from([
+            (
+                openai_token.to_string(),
+                ("OPENAI_API_KEY".to_string(), "sk-openai-real".to_string()),
+            ),
+            (
+                stripe_token.to_string(),
+                ("STRIPE_SECRET_KEY".to_string(), stripe_secret.to_string()),
+            ),
+        ]);
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_scoped(mappings, HashMap::new()),
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        client
+            .post(format!("http://127.0.0.1:{}/openai/header", proxy.port()))
+            .header("Authorization", format!("Bearer {stripe_token}"))
+            .send()
+            .await
+            .unwrap();
+        client
+            .post(format!("http://127.0.0.1:{}/openai/json", proxy.port()))
+            .header("content-type", "application/json")
+            .body(format!(r#"{{"api_key":"{stripe_token}"}}"#))
+            .send()
+            .await
+            .unwrap();
+        client
+            .post(format!("http://127.0.0.1:{}/openai/text", proxy.port()))
+            .header("content-type", "text/plain")
+            .body(format!("credential={stripe_token}"))
+            .send()
+            .await
+            .unwrap();
+        client
+            .post(format!("http://127.0.0.1:{}/openai/form", proxy.port()))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("client_secret={stripe_token}&grant_type=test"))
+            .send()
+            .await
+            .unwrap();
+
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(
+            requests[0].headers.get("authorization"),
+            Some(&format!("Bearer {stripe_token}"))
+        );
+        assert!(String::from_utf8_lossy(&requests[1].body).contains(stripe_token));
+        assert!(String::from_utf8_lossy(&requests[2].body).contains(stripe_token));
+        assert!(String::from_utf8_lossy(&requests[3].body).contains(stripe_token));
+        for request in requests {
+            assert!(!String::from_utf8_lossy(&request.body).contains(stripe_secret));
+            assert!(request
+                .headers
+                .values()
+                .all(|value| !value.contains(stripe_secret)));
+        }
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_proxy_does_not_replace_phantom_token_in_disallowed_body_field() {
         // F9 regression: a phm token landing in a non-secret JSON field
         // (e.g. "prompt" / message content) must NOT be substituted to the
@@ -1199,8 +1306,11 @@ mod tests {
         });
 
         let mut mappings = HashMap::new();
-        mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        mappings.insert(
+            phantom_token.to_string(),
+            ("TEST_KEY".to_string(), real_secret.to_string()),
+        );
+        let interceptor = Interceptor::new_scoped(mappings, HashMap::new());
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1267,8 +1377,11 @@ mod tests {
         });
 
         let mut mappings = HashMap::new();
-        mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        mappings.insert(
+            phantom_token.to_string(),
+            ("TEST_KEY".to_string(), real_secret.to_string()),
+        );
+        let interceptor = Interceptor::new_scoped(mappings, HashMap::new());
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1577,8 +1690,11 @@ mod tests {
         });
 
         let mut mappings = HashMap::new();
-        mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        mappings.insert(
+            phantom_token.to_string(),
+            ("TEST_KEY".to_string(), real_secret.to_string()),
+        );
+        let interceptor = Interceptor::new_scoped(mappings, HashMap::new());
 
         let proxy = ProxyServer::start(
             ProxyConfig {

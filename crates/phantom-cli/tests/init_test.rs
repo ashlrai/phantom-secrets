@@ -89,8 +89,8 @@ fn init_excludes_the_bearerless_lifecycle_lock_from_git() {
             .any(|line| line.trim() == ".phantom.proxy.lock"),
         "the bearerless foreground lifecycle lock must be ignored"
     );
-    assert!(!gitignore.lines().any(|line| line.trim() == ".phantom.pid"));
-    assert!(!gitignore
+    assert!(gitignore.lines().any(|line| line.trim() == ".phantom.pid"));
+    assert!(gitignore
         .lines()
         .any(|line| line.trim() == ".phantom.start.lock"));
     assert!(

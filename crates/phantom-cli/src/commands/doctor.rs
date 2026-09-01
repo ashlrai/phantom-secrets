@@ -10,7 +10,12 @@ use phantom_core::precommit_hook::{self, HookChange};
 pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let env_path = project_dir.join(".env");
+    let env_path = match PhantomConfig::load(&config_path).ok() {
+        Some(config) => {
+            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?.path
+        }
+        None => project_dir.join(".env"),
+    };
     let mut issues = 0;
     let mut fixed = 0;
 

@@ -76,6 +76,17 @@ pub struct CloudConfig {
     /// Last synced version number (managed by CLI)
     #[serde(default)]
     pub version: u64,
+    /// A prior pull observed remote state that was not fully reconciled into
+    /// the local vault. Push must fail closed until a complete pull clears it.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub reconciliation_required: bool,
+    /// Remote version associated with the incomplete reconciliation marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_remote_version: Option<u64>,
+}
+
+fn bool_is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -88,6 +99,11 @@ pub struct PhantomMeta {
     /// Machine-local vault and state namespacing uses
     /// [`PhantomConfig::local_project_id`] instead.
     pub project_id: String,
+    /// Basename of the dotenv file protected by this config. The config is
+    /// stored beside the dotenv file, so accepting a path here would let
+    /// repository-controlled config redirect security-sensitive rewrites.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dotenv_path: Option<String>,
     /// Global rotation schedule — applies to all secrets unless overridden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation_policy: Option<RotationSchedule>,
@@ -599,6 +615,7 @@ impl PhantomConfig {
             phantom: PhantomMeta {
                 version: "1".to_string(),
                 project_id: project_id.clone(),
+                dotenv_path: None,
                 rotation_policy: None,
                 secrets: BTreeMap::new(),
             },
@@ -1580,5 +1597,37 @@ rotate_every = "30d"
         let ov = parsed.phantom.secrets.get("MY_KEY").unwrap();
         // validation should be absent (None) when not specified
         assert!(ov.validation.is_none());
+    }
+
+    #[test]
+    fn managed_dotenv_and_cloud_reconciliation_fields_are_backward_compatible() {
+        let legacy = r#"
+[phantom]
+version = "1"
+project_id = "abc"
+
+[cloud]
+version = 4
+"#;
+        let parsed: PhantomConfig = toml::from_str(legacy).unwrap();
+        assert!(parsed.phantom.dotenv_path.is_none());
+        let cloud = parsed.cloud.unwrap();
+        assert_eq!(cloud.version, 4);
+        assert!(!cloud.reconciliation_required);
+        assert!(cloud.reconciliation_remote_version.is_none());
+
+        let mut config = PhantomConfig::new_with_defaults("abc".to_string());
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        config.cloud = Some(CloudConfig {
+            version: 4,
+            reconciliation_required: true,
+            reconciliation_remote_version: Some(9),
+        });
+        let encoded = toml::to_string_pretty(&config).unwrap();
+        let roundtrip: PhantomConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(roundtrip.phantom.dotenv_path.as_deref(), Some("custom.env"));
+        let cloud = roundtrip.cloud.unwrap();
+        assert!(cloud.reconciliation_required);
+        assert_eq!(cloud.reconciliation_remote_version, Some(9));
     }
 }

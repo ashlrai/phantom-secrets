@@ -2110,6 +2110,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "colored",
+ "directories",
  "dirs",
  "ed25519-dalek",
  "fs2",
@@ -2134,6 +2135,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "which",
+ "windows-sys 0.61.2",
  "wiremock",
  "zeroize",
 ]

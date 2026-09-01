@@ -76,14 +76,22 @@ customer acceptance exist or are active.
   transactions, compensates partial mutations (including legacy plaintext-name
   migration), exposes a fallible public vault constructor, and propagates
   backend errors instead of replacing missing encryption keys or panicking.
-- Makes standalone proxy lifecycle foreground-only and terminal-owned. The
-  lifetime lock contains no PID, port, or bearer; detached `start --daemon`,
-  the external shutdown endpoint, and `phantom stop` fail closed until a
-  separately reviewed private cross-platform control channel exists.
+- Makes standalone proxy lifecycle foreground-only and three-terminal-gated.
+  Its persistent private machine-local lock is keyed by local project identity,
+  contains no PID, port, or bearer, and is reported as an advisory lock rather
+  than an authenticated listener. Detached `start --daemon` and current external
+  shutdown fail closed; `phantom stop` is limited to authenticated cleanup of
+  legacy v0.7.3 PID/port/bearer records.
 - Removes the file-vault passphrase and ambient protected dotenv values from
   both proxied and direct `phantom exec` child environments, inserts only fresh
-  session tokens for protected keys, and refuses missing vault mappings or
-  configured connection strings before child launch.
+  session tokens for protected keys, scrubs configured service, connection,
+  rotation, sync, proxy-control, and built-in base-URL variables, and refuses
+  missing vault mappings or configured connection strings before child launch.
+- Persists one strictly validated dotenv-like filename beside `.phantom.toml`,
+  migrates conventional legacy dotenv names without path traversal or symlinks,
+  and refuses direct launch when protected state has no token-bearing managed file.
+- Scopes request substitution to the matched service's configured secret and
+  disables ambient forward-proxy discovery for credential-bearing upstream HTTP.
 
 ### Reliability and authority boundaries
 

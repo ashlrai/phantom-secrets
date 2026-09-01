@@ -78,7 +78,8 @@ proxy; arbitrary network clients and unsupported protocols do not.
 For explicitly supervised repeated runs, start `phantom start` in a trusted
 terminal and keep it open. Copy the printed exports into a second terminal,
 launch Codex there, and press Ctrl-C in the original owning terminal to stop.
-Detached `--daemon` mode and external `phantom stop` fail closed.
+Detached `--daemon` mode and current external process control fail closed;
+`phantom stop` is reserved for authenticated v0.7.3 migration cleanup.
 
 ---
 

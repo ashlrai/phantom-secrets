@@ -51,7 +51,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom audit tail` — Follow the audit log live.
 - `phantom audit path` — Print the absolute path to the audit log file.
 - `phantom audit verify` — Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected.
-- `phantom start` — Run a foreground proxy owned by the trusted terminal; keep it open and press Ctrl-C there to stop. `--daemon` and external `phantom stop` fail closed.
+- `phantom start` — Run a foreground proxy only when stdin/stdout/stderr are terminals; keep the trusted owning terminal open and press Ctrl-C there to stop. `--daemon` and current external control fail closed; `phantom stop` only authenticates legacy v0.7.3 migration state.
 - `phantom list` — Show secret names stored in vault (never shows values). Add `--json` to emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded.
 - `phantom add <KEY>` — Add a secret through a hidden terminal prompt. Positional values are rejected; for piped/CI use, pass `--stdin` and provide one line on stdin: `echo "$VAL" | phantom add KEY --stdin`.
 - `phantom remove <KEY>` — Remove a secret from the vault.

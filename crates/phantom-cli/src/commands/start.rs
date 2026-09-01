@@ -1,88 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use colored::Colorize;
-use fs2::FileExt;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::env_scope::DEFAULT_ENV;
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io;
-use std::path::Path;
-
-struct ProjectFileLock(File);
-
-impl ProjectFileLock {
-    fn try_acquire(path: &Path) -> io::Result<Option<Self>> {
-        let file = open_lock_file(path)?;
-        match FileExt::try_lock_exclusive(&file) {
-            Ok(()) => Ok(Some(Self(file))),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-}
-
-impl Drop for ProjectFileLock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.0);
-    }
-}
-
-fn open_lock_file(path: &Path) -> io::Result<File> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if !metadata.file_type().is_file() => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("proxy lock path is not a regular file: {}", path.display()),
-            ));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-
-    let file = options.open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.file_type().is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("proxy lock path is not a regular file: {}", path.display()),
-        ));
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    Ok(file)
-}
-
-pub(crate) fn foreground_proxy_active(project_dir: &Path) -> Result<bool> {
-    let proxy_lock_path = project_dir.join(".phantom.proxy.lock");
-    let lock = ProjectFileLock::try_acquire(&proxy_lock_path)
-        .with_context(|| format!("Failed to inspect {}", proxy_lock_path.display()))?;
-    Ok(lock.is_none())
-}
+use std::io::IsTerminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellSyntax {
@@ -178,6 +102,14 @@ pub fn run(daemon: bool) -> Result<()> {
             "Detached proxy mode is disabled: Phantom will not persist a live proxy bearer or external process-control state in the workspace. Use `phantom exec -- <command>` or run `phantom start` in a trusted terminal and keep that terminal open."
         );
     }
+    if !(std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal())
+    {
+        anyhow::bail!(
+            "Standalone `phantom start` requires stdin, stdout, and stderr to each be attached to a terminal. Headless start is denied before vault access or bearer generation; terminal attachment does not prove who controls a PTY, so use only a trusted terminal. Use `phantom exec -- <command>` for owned automation."
+        );
+    }
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_async())
 }
@@ -185,8 +117,6 @@ pub fn run(daemon: bool) -> Result<()> {
 async fn run_async() -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let env_path = project_dir.join(".env");
-    let proxy_lock_path = project_dir.join(".phantom.proxy.lock");
 
     if !config_path.exists() {
         anyhow::bail!(
@@ -195,11 +125,38 @@ async fn run_async() -> Result<()> {
         );
     }
 
-    // The foreground process owns this lock from preflight through graceful
-    // shutdown. The persistent lock file contains no PID, port, or bearer;
-    // unlinking it would allow a competing process to lock a different inode.
-    let proxy_lock = ProjectFileLock::try_acquire(&proxy_lock_path)
-        .with_context(|| format!("Failed to lock {}", proxy_lock_path.display()))?;
+    let config = PhantomConfig::load(&config_path)?;
+    config.validate_agentic_proxy_routes()?;
+
+    let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
+    let preflight_protected_keys: std::collections::HashSet<&str> = preflight
+        .file
+        .iter()
+        .flat_map(DotenvFile::entries)
+        .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
+        .map(|entry| entry.key.as_str())
+        .collect();
+    let blocked_connection_strings: Vec<&str> = config
+        .connection_string_services()
+        .into_iter()
+        .filter_map(|(_, service)| {
+            (preflight_protected_keys.contains(service.secret_key.as_str())
+                || std::env::var_os(&service.secret_key).is_some())
+            .then_some(service.secret_key.as_str())
+        })
+        .collect();
+    if !blocked_connection_strings.is_empty() {
+        anyhow::bail!(
+            "Refusing standalone proxy start for configured connection-string credential(s): {}. Ambient values and phantom tokens require a protocol-aware broker.",
+            blocked_connection_strings.join(", ")
+        );
+    }
+
+    super::legacy_proxy::refuse_start_with_legacy_state(&project_dir)?;
+
+    // This machine-local stable lock is held from preflight through graceful
+    // shutdown and is never unlinked. It stores no PID, port, or bearer.
+    let proxy_lock = super::proxy_lifecycle::try_acquire(config.local_project_id())?;
     let Some(_proxy_lock) = proxy_lock else {
         anyhow::bail!(
             "Another foreground Phantom proxy session already owns {}. Stop it from its owning terminal with Ctrl-C; external process control is disabled.",
@@ -207,19 +164,24 @@ async fn run_async() -> Result<()> {
         );
     };
 
-    let config = PhantomConfig::load(&config_path)?;
-    config.validate_agentic_proxy_routes()?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault_names = vault.list().map_err(|error| {
+        anyhow::anyhow!("Failed to list protected vault entries before proxy start: {error}")
+    })?;
+    let resolved =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
 
     // Build token mapping
-    let mut token_to_secret: HashMap<String, String> = HashMap::new();
+    let mut token_to_secret: HashMap<String, (String, String)> = HashMap::new();
     let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
-    if env_path.exists() {
-        let dotenv = DotenvFile::parse_file(&env_path)?;
+    if let Some(dotenv) = resolved.file {
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
                 let real_value = retrieve_required_default_secret(vault.as_ref(), &entry.key)?;
-                token_to_secret.insert(entry.value.clone(), String::from(real_value.as_str()));
+                token_to_secret.insert(
+                    entry.value.clone(),
+                    (entry.key.clone(), String::from(real_value.as_str())),
+                );
                 secret_name_to_value.insert(entry.key.clone(), String::from(real_value.as_str()));
             }
         }
@@ -233,7 +195,7 @@ async fn run_async() -> Result<()> {
     }
 
     let registry = ServiceRegistry::from_config(&config.services);
-    let interceptor = Interceptor::new_with_named(token_to_secret.clone(), secret_name_to_value);
+    let interceptor = Interceptor::new_scoped(token_to_secret.clone(), secret_name_to_value);
     let proxy_token = ProxyServer::generate_proxy_token();
 
     let proxy = ProxyServer::start(

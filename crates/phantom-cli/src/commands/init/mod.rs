@@ -109,6 +109,16 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         .unwrap_or_else(|_| cwd.join(&project_dir));
     let config_path = project_dir.join(".phantom.toml");
 
+    let env_metadata = std::fs::symlink_metadata(&env_path)
+        .with_context(|| format!("Failed to inspect {}", env_path.display()))?;
+    if env_metadata.file_type().is_symlink() || !env_metadata.is_file() {
+        anyhow::bail!(
+            "Refusing dotenv target that is not a regular, non-symlink file: {}",
+            env_path.display()
+        );
+    }
+    let dotenv_basename = phantom_core::managed_dotenv::dotenv_basename(&project_dir, &env_path)?;
+
     // Parse .env file
     println!("{} Reading {}...", "->".blue().bold(), env_path.display());
     let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env file")?;
@@ -157,6 +167,12 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         if existing_protected_setup {
             let mut files = Vec::new();
             if config_path.exists() {
+                let mut existing_config = phantom_core::config::PhantomConfig::load(&config_path)?;
+                existing_config.phantom.dotenv_path = Some(dotenv_basename.clone());
+                files.push(InitFile::replace(
+                    &config_path,
+                    toml::to_string_pretty(&existing_config)?.into_bytes(),
+                ));
                 if let Some(file) = env::prepare_gitignore(&project_dir)? {
                     files.push(file);
                 }
@@ -227,6 +243,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
 
     // Load or create config, then auto-detect services
     let mut phantom_config = config::load_or_create(&project_dir, &config_path)?;
+    phantom_config.phantom.dotenv_path = Some(dotenv_basename);
     config::apply_detected_services(&mut phantom_config, &real_entries);
 
     // Persist public key classifications

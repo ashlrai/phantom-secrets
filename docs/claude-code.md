@@ -212,7 +212,8 @@ exact action and keep deployment/provider authority separately constrained.
 **Cannot start or stop the proxy.** There is no MCP tool for proxy lifecycle.
 Use `phantom exec` for a child-owned session, or run foreground `phantom start`
 in a trusted terminal and press Ctrl-C in that same terminal to stop. Detached
-`--daemon` mode and external `phantom stop` fail closed.
+`--daemon` mode and current external process control fail closed; `phantom stop`
+only migrates authenticated v0.7.3 state.
 
 ---
 

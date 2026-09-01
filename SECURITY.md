@@ -112,14 +112,24 @@ Phantom narrows the risk of AI agents seeing real secrets, but it is not a compl
 
 - A compromised operating system, root/admin attacker, malicious debugger, or replaced `phantom` binary can defeat local protections.
 - `PHANTOM_PROXY_TOKEN` is exposed to the `phantom exec` child process by design. A compromised child process can use the local proxy until the session ends.
-- `phantom exec` removes `PHANTOM_VAULT_PASSPHRASE` from both proxied and direct
-  child environments. It also removes ambient values for protected dotenv keys
-  before selectively adding fresh session tokens. A command launched manually
+- `phantom exec` removes `PHANTOM_VAULT_PASSPHRASE`, inherited proxy session
+  controls/base URLs, every configured service credential, rotation bootstrap,
+  sync token, and connection-string variable from both proxied and direct child
+  environments before selectively adding fresh session tokens for protected API
+  keys. A command launched manually
   outside `phantom exec` still inherits whatever its parent shell exports.
-- Standalone proxy lifecycle is foreground-only. `phantom start` persists only
-  a bearerless exclusivity lock, never a PID, port, or proxy bearer. Detached
-  `--daemon` mode, the external shutdown endpoint, and `phantom stop` fail
-  closed; stop the proxy with Ctrl-C in its owning terminal.
+- Standalone proxy lifecycle is foreground-only and requires all three standard
+  streams to be terminals before vault access. The stable exclusivity lock is
+  private machine-local state keyed by the local project identity and contains
+  no PID, port, or bearer. A held advisory lock is not listener authentication.
+  Detached `--daemon` mode and the current proxy's external shutdown endpoint
+  fail closed; `phantom stop` only authenticates and cleans up legacy v0.7.3
+  state. Stop a current proxy with Ctrl-C in its owning terminal.
+- Request token substitution is bound to the matched route's configured secret;
+  an unrelated provider token remains unresolved. Connection-string tokens are
+  never registered. Credential-bearing upstream HTTP ignores inherited
+  `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY`; enterprise forward proxies are
+  intentionally unsupported until a separately reviewed trust configuration exists.
 - Zeroization is a partial defense in depth. Major vault retrieval,
   serialization, and decrypted-file buffers use zeroizing containers, but some
   proxy lookup copies and the file-vault passphrase remain ordinary strings.

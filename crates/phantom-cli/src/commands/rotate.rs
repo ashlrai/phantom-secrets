@@ -25,7 +25,6 @@ pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()>
 
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let env_path = project_dir.join(".env");
 
     if !config_path.exists() {
         anyhow::bail!(
@@ -38,6 +37,8 @@ pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()>
     let vault = phantom_vault::try_create_vault(config.local_project_id())
         .context("Failed to initialize vault")?;
     let names = vault.list().context("Failed to list secrets")?;
+    let env_path =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &names)?.path;
 
     if names.is_empty() {
         println!("{} No Phantom tokens to remap.", "!".yellow().bold());
@@ -70,11 +71,14 @@ pub fn run_with_schedule_strategy(
     )
 }
 
-/// Atomically replace the local `phm_` placeholders for `names`.
+/// Replace local `phm_` placeholders under Phantom's cooperative project lock.
 ///
 /// This deliberately has no access to vault metadata or deployment sync. Every
 /// requested name must already be represented by a Phantom token, otherwise no
-/// file is written.
+/// file is written. Before/after checks detect observable interference, but a
+/// same-user process that ignores the lock can still swap the pathname between
+/// verification and atomic rename; portable filesystems do not provide a true
+/// pathname compare-and-swap.
 pub(crate) fn remap_phantom_tokens(env_path: &std::path::Path, names: &[String]) -> Result<()> {
     remap_phantom_tokens_with(env_path, names, || {})
 }
@@ -241,7 +245,6 @@ pub fn run_with_provider(
 
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let env_path = project_dir.join(".env");
 
     if !config_path.exists() {
         anyhow::bail!(
@@ -253,6 +256,9 @@ pub fn run_with_provider(
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())
         .context("Failed to initialize vault")?;
+    let vault_names = vault.list().context("Failed to list secrets")?;
+    let env_path =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?.path;
 
     // Resolve provider config from .phantom.toml.
     let provider_config = config
@@ -621,7 +627,9 @@ pub fn run_batch(
         .collect();
 
     if !rotated_vendor_names.is_empty() {
-        let env_path = project_dir.join(".env");
+        let vault_names = vault.list().context("Failed to list secrets")?;
+        let env_path =
+            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?.path;
         if env_path.exists() {
             let names = rotated_vendor_names
                 .iter()

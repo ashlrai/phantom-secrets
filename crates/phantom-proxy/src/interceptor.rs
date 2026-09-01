@@ -272,6 +272,10 @@ fn now_unix() -> u64 {
 pub struct Interceptor {
     /// phantom_token_string -> real_secret_value (for outgoing requests)
     token_map: HashMap<String, SecretValue>,
+    /// phantom token -> configured secret key. Request-side substitution is
+    /// route-scoped through this map; tokens without an owner never resolve on
+    /// a proxy route.
+    token_secret_keys: HashMap<String, String>,
     /// env var / secret name -> real_secret_value (for configured header injection)
     named_secrets: HashMap<String, SecretValue>,
     /// real_secret_value -> phantom_token_string (for response scrubbing)
@@ -302,6 +306,43 @@ impl Interceptor {
         mappings: HashMap<String, String>,
         named_mappings: HashMap<String, String>,
     ) -> Self {
+        let token_secret_keys = mappings
+            .iter()
+            .filter_map(|(token, value)| {
+                let mut matches = named_mappings
+                    .iter()
+                    .filter(|(_, named_value)| *named_value == value)
+                    .map(|(name, _)| name.clone());
+                let name = matches.next()?;
+                matches.next().is_none().then_some((token.clone(), name))
+            })
+            .collect();
+        Self::new_scoped_inner(mappings, token_secret_keys, named_mappings)
+    }
+
+    /// Create an interceptor with explicit token ownership. This avoids
+    /// inferring ownership from equal secret values and is the production
+    /// constructor used by CLI sessions.
+    pub fn new_scoped(
+        mappings: HashMap<String, (String, String)>,
+        named_mappings: HashMap<String, String>,
+    ) -> Self {
+        let token_secret_keys = mappings
+            .iter()
+            .map(|(token, (name, _))| (token.clone(), name.clone()))
+            .collect();
+        let values = mappings
+            .into_iter()
+            .map(|(token, (_, value))| (token, value))
+            .collect();
+        Self::new_scoped_inner(values, token_secret_keys, named_mappings)
+    }
+
+    fn new_scoped_inner(
+        mappings: HashMap<String, String>,
+        token_secret_keys: HashMap<String, String>,
+        named_mappings: HashMap<String, String>,
+    ) -> Self {
         let reverse_map: HashMap<String, String> = mappings
             .iter()
             .map(|(token, secret)| (secret.clone(), token.clone()))
@@ -316,6 +357,7 @@ impl Interceptor {
             .collect();
         Self {
             token_map,
+            token_secret_keys,
             named_secrets,
             reverse_map,
         }
@@ -338,6 +380,32 @@ impl Interceptor {
         let pairs: Vec<(&str, &str)> = self
             .token_map
             .iter()
+            .map(|(token, secret)| (token.as_str(), secret.value.as_str()))
+            .collect();
+        find_replace_bytes_via_str(input, &pairs)
+    }
+
+    /// Replace only tokens owned by the matched route's configured secret.
+    pub fn replace_in_str_for_secret(&self, input: &str, secret_key: &str) -> (String, bool) {
+        let pairs: Vec<(&str, &str)> = self
+            .token_map
+            .iter()
+            .filter(|(token, _)| {
+                self.token_secret_keys.get(*token).map(String::as_str) == Some(secret_key)
+            })
+            .map(|(token, secret)| (token.as_str(), secret.value.as_str()))
+            .collect();
+        find_replace_str(input, &pairs)
+    }
+
+    /// Byte-buffer equivalent of [`Self::replace_in_str_for_secret`].
+    pub fn replace_in_bytes_for_secret(&self, input: &[u8], secret_key: &str) -> (Vec<u8>, bool) {
+        let pairs: Vec<(&str, &str)> = self
+            .token_map
+            .iter()
+            .filter(|(token, _)| {
+                self.token_secret_keys.get(*token).map(String::as_str) == Some(secret_key)
+            })
             .map(|(token, secret)| (token.as_str(), secret.value.as_str()))
             .collect();
         find_replace_bytes_via_str(input, &pairs)
@@ -367,6 +435,12 @@ impl Interceptor {
         self.token_map
             .keys()
             .any(|token| value.contains(token.as_str()))
+    }
+
+    pub fn contains_phantom_token_for_secret(&self, value: &str, secret_key: &str) -> bool {
+        self.token_secret_keys
+            .iter()
+            .any(|(token, owner)| owner == secret_key && value.contains(token.as_str()))
     }
 
     /// Number of token mappings.

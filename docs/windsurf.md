@@ -67,7 +67,8 @@ This starts the Phantom proxy, sets `*_BASE_URL` environment variables, then lau
 For an explicitly supervised longer session, run `phantom start` in a trusted
 terminal and keep it open. Copy the printed exports into the terminal that
 launches Windsurf, then press Ctrl-C in the original owning terminal to stop.
-Detached `--daemon` mode and external `phantom stop` fail closed.
+Detached `--daemon` mode and current external process control fail closed;
+`phantom stop` only migrates authenticated v0.7.3 state.
 
 ---
 

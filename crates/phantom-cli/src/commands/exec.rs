@@ -32,7 +32,6 @@ pub fn run(cmd: &[String], env: Option<&str>) -> Result<()> {
 async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let env_path = project_dir.join(".env");
 
     if !config_path.exists() {
         anyhow::bail!(
@@ -46,12 +45,9 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         .validate_agentic_proxy_routes()
         .context("Refusing unapproved repository-controlled proxy routing")?;
 
-    let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
-    let dotenv = env_path
-        .exists()
-        .then(|| DotenvFile::parse_file(&env_path).context("Failed to read .env"))
-        .transpose()?;
-    let protected_env_keys: HashSet<String> = dotenv
+    let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
+    let preflight_protected_keys: HashSet<String> = preflight
+        .file
         .iter()
         .flat_map(DotenvFile::entries)
         .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
@@ -65,9 +61,9 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         .connection_string_services()
         .into_iter()
         .filter_map(|(_, service)| {
-            protected_env_keys
-                .contains(&service.secret_key)
-                .then_some(service.secret_key.as_str())
+            (preflight_protected_keys.contains(&service.secret_key)
+                || std::env::var_os(&service.secret_key).is_some())
+            .then_some(service.secret_key.as_str())
         })
         .collect();
     if !blocked_connection_strings.is_empty() {
@@ -77,22 +73,40 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         );
     }
 
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault_names = vault
+        .list()
+        .context("Failed to list protected vault entries before child launch")?;
+    let resolved =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
+    let env_path = resolved.path.clone();
+
+    let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
+    let dotenv = resolved.file;
+    let protected_env_keys: HashSet<String> = dotenv
+        .iter()
+        .flat_map(DotenvFile::entries)
+        .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
+        .map(|entry| entry.key.clone())
+        .collect();
+
+    let (child_scrub_env, never_reintroduce) =
+        child_environment_policy(&config, &protected_env_keys);
+
     if protected_env_keys.is_empty() {
         eprintln!(
             "{} No phantom tokens found to proxy. Running command directly with Phantom internal credentials removed.",
             "warn".yellow()
         );
-        return run_command_directly(cmd, &protected_env_keys).await;
+        return run_command_directly(cmd, &child_scrub_env).await;
     }
-
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Session-scoped token rotation:
     // Instead of using the persistent phantom tokens from .env directly,
     // we generate FRESH session tokens for this exec session.
     // If a session token leaks (from logs, AI context, etc.), it becomes
     // worthless as soon as this exec session ends.
-    let mut session_token_to_secret: HashMap<String, String> = HashMap::new();
+    let mut session_token_to_secret: HashMap<String, (String, String)> = HashMap::new();
     let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
     let mut env_key_to_session_token: HashMap<String, String> = HashMap::new();
     let mut secret_count = 0;
@@ -111,11 +125,13 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
                 let session_token = PhantomToken::generate();
                 session_token_to_secret.insert(
                     session_token.as_str().to_string(),
-                    String::from(real_value.as_str()),
+                    (entry.key.clone(), String::from(real_value.as_str())),
                 );
                 secret_name_to_value.insert(entry.key.clone(), String::from(real_value.as_str()));
-                env_key_to_session_token
-                    .insert(entry.key.clone(), session_token.as_str().to_string());
+                if !never_reintroduce.contains(&entry.key) {
+                    env_key_to_session_token
+                        .insert(entry.key.clone(), session_token.as_str().to_string());
+                }
                 secret_count += 1;
             }
         }
@@ -123,7 +139,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
 
     // Build service registry from config
     let registry = ServiceRegistry::from_config(&config.services);
-    let interceptor = Interceptor::new_with_named(session_token_to_secret, secret_name_to_value);
+    let interceptor = Interceptor::new_scoped(session_token_to_secret, secret_name_to_value);
 
     println!(
         "{} Starting proxy with {} secret(s) (session-scoped tokens, env: {})...",
@@ -205,6 +221,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
                     for entry in dotenv.entries() {
                         if entry.key.starts_with("NEXT_PUBLIC_")
                             && !PhantomToken::is_phantom_token(&entry.value)
+                            && !never_reintroduce.contains(&entry.key)
                         {
                             framework_env_vars.push((entry.key.clone(), entry.value.clone()));
                         }
@@ -241,7 +258,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     let program = &cmd[0];
     let args = &cmd[1..];
 
-    let mut command = sanitized_child_command(program, args, &protected_env_keys);
+    let mut command = sanitized_child_command(program, args, &child_scrub_env);
     command
         .envs(overrides.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .envs(
@@ -316,14 +333,62 @@ fn retrieve_required_secret(
 fn sanitized_child_command(
     program: &str,
     args: &[String],
-    protected_env_keys: &HashSet<String>,
+    scrub_env_keys: &HashSet<String>,
 ) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(program);
-    command.args(args).env_remove(VAULT_PASSPHRASE_ENV);
-    for key in protected_env_keys {
+    command.args(args);
+    for key in scrub_env_keys {
         command.env_remove(key);
     }
     command
+}
+
+fn child_environment_policy(
+    config: &PhantomConfig,
+    protected_env_keys: &HashSet<String>,
+) -> (HashSet<String>, HashSet<String>) {
+    let mut scrub = protected_env_keys.clone();
+    scrub.extend([
+        VAULT_PASSPHRASE_ENV.to_string(),
+        "PHANTOM_PROXY_TOKEN".to_string(),
+        "PHANTOM_PROXY_PORT".to_string(),
+    ]);
+    scrub.extend(
+        ServiceRegistry::known_override_env_names()
+            .iter()
+            .map(|name| (*name).to_string()),
+    );
+
+    let registry = ServiceRegistry::from_config(&config.services);
+    scrub.extend(
+        registry
+            .base_url_overrides(0)
+            .into_iter()
+            .map(|(name, _)| name),
+    );
+    scrub.extend(
+        config
+            .services
+            .values()
+            .map(|service| service.secret_key.clone()),
+    );
+
+    let mut never_reintroduce = HashSet::new();
+    for (_, service) in config.connection_string_services() {
+        never_reintroduce.insert(service.secret_key.clone());
+    }
+    for secret in config.phantom.secrets.values() {
+        if let Some(name) = secret
+            .rotation_provider
+            .as_ref()
+            .and_then(|provider| provider.api_key_env.as_ref())
+        {
+            never_reintroduce.insert(name.clone());
+        }
+    }
+    never_reintroduce.extend(config.sync.iter().map(|target| target.token_env.clone()));
+    scrub.extend(never_reintroduce.iter().cloned());
+    (scrub, never_reintroduce)
 }
 
 /// Check if `package.json` lists `next` as a dependency or devDependency.
@@ -338,11 +403,11 @@ fn detect_next_dependency(package_json: &Path) -> bool {
     contents.contains("\"next\"")
 }
 
-async fn run_command_directly(cmd: &[String], protected_env_keys: &HashSet<String>) -> Result<()> {
+async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) -> Result<()> {
     let program = &cmd[0];
     let args = &cmd[1..];
 
-    let mut command = sanitized_child_command(program, args, protected_env_keys);
+    let mut command = sanitized_child_command(program, args, scrub_env_keys);
     let status = command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -445,7 +510,30 @@ mod tests {
     #[test]
     fn child_command_removes_vault_passphrase_and_protected_ambient_values() {
         let protected = HashSet::from(["API_KEY".to_string(), "DATABASE_URL".to_string()]);
-        let command = sanitized_child_command("phantom-child", &[], &protected);
+        let mut config = PhantomConfig::new_with_defaults("a".repeat(64));
+        let override_config = phantom_core::config::SecretOverride {
+            rotation_provider: Some(phantom_core::rotation_provider::RotationProviderConfig {
+                provider: "stripe".to_string(),
+                api_key_env: Some("ROTATION_ADMIN_TOKEN".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        config
+            .phantom
+            .secrets
+            .insert("API_KEY".to_string(), override_config);
+        config.sync.push(phantom_core::sync::SyncTarget {
+            platform: phantom_core::sync::Platform::Vercel,
+            token_env: "DEPLOY_TOKEN".to_string(),
+            project_id: "project".to_string(),
+            targets: vec![],
+            service_id: None,
+            environment_id: None,
+            only: vec![],
+        });
+        let (scrub, never) = child_environment_policy(&config, &protected);
+        let command = sanitized_child_command("phantom-child", &[], &scrub);
         let explicit: HashMap<String, Option<String>> = command
             .as_std()
             .get_envs()
@@ -460,5 +548,18 @@ mod tests {
         assert_eq!(explicit.get(VAULT_PASSPHRASE_ENV), Some(&None));
         assert_eq!(explicit.get("API_KEY"), Some(&None));
         assert_eq!(explicit.get("DATABASE_URL"), Some(&None));
+        for name in [
+            "PHANTOM_PROXY_TOKEN",
+            "PHANTOM_PROXY_PORT",
+            "OPENAI_BASE_URL",
+            "OPENAI_API_KEY",
+            "ROTATION_ADMIN_TOKEN",
+            "DEPLOY_TOKEN",
+        ] {
+            assert_eq!(explicit.get(name), Some(&None), "{name} was not scrubbed");
+        }
+        assert!(never.contains("DATABASE_URL"));
+        assert!(never.contains("ROTATION_ADMIN_TOKEN"));
+        assert!(never.contains("DEPLOY_TOKEN"));
     }
 }

@@ -117,8 +117,14 @@ fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> 
     println!("{}", "Applying Phantom agent setup".bold().underline());
     println!();
 
-    let env_path = project_dir.join(".env");
     let config_path = project_dir.join(".phantom.toml");
+    let config = PhantomConfig::load(&config_path).ok();
+    let env_path = match config.as_ref() {
+        Some(config) => {
+            phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])?.path
+        }
+        None => project_dir.join(".env"),
+    };
 
     if env_path.exists()
         && (!config_path.exists()
@@ -131,7 +137,7 @@ fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> 
             "{} Protecting env secrets with phantom tokens",
             "->".blue().bold()
         );
-        crate::commands::init::run(".env")?;
+        crate::commands::init::run(env_path.to_string_lossy().as_ref())?;
     } else {
         println!(
             "{} Env protection already initialized or no .env found",
@@ -178,14 +184,19 @@ fn ensure_gitignore(project_dir: &std::path::Path) -> Result<()> {
 }
 
 fn ensure_env_example(project_dir: &std::path::Path) -> Result<()> {
-    let env_path = project_dir.join(".env");
+    let config = PhantomConfig::load(&project_dir.join(".phantom.toml")).ok();
+    let env_path = match config.as_ref() {
+        Some(config) => {
+            phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])?.path
+        }
+        None => project_dir.join(".env"),
+    };
     let example_path = project_dir.join(".env.example");
     if example_path.exists() || !env_path.exists() {
         return Ok(());
     }
 
     let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env")?;
-    let config = PhantomConfig::load(&project_dir.join(".phantom.toml")).ok();
     let content = dotenv.generate_example_content(config.as_ref());
     std::fs::write(&example_path, content)?;
     println!("{} Generated .env.example", "ok".green().bold());

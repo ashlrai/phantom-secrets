@@ -759,7 +759,7 @@ async fn test_proxy_forces_identity_and_rejects_encoded_upstream_responses() {
 //  - Truncated JSON: proxy forwards body as-is (no panic, no 500).
 //  - Empty JSON body: proxy returns success, upstream receives empty.
 //  - application/octet-stream with phantom token: token NOT substituted (F9).
-//  - application/x-www-form-urlencoded with token: uses streaming path.
+//  - application/x-www-form-urlencoded with token: uses field-aware replacement.
 //  - multipart/form-data: falls through buffered path unchanged.
 //
 // Exercises: body_scope.rs (scoped_body_replace, should_stream_replace),
@@ -774,7 +774,13 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
 
     let mut token_map = HashMap::new();
     token_map.insert(phantom_token.to_string(), real_secret.to_string());
-    let interceptor = Interceptor::new(token_map);
+    let interceptor = Interceptor::new_scoped(
+        token_map
+            .into_iter()
+            .map(|(token, value)| (token, ("API_KEY".to_string(), value)))
+            .collect(),
+        HashMap::new(),
+    );
 
     let mut registry = ServiceRegistry::new();
     registry.add_route(ServiceRoute {
@@ -866,7 +872,7 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
         "phantom token in octet-stream should pass through unchanged: {binary_body_received}"
     );
 
-    // --- 3d: application/x-www-form-urlencoded — streaming path, token replaced ---
+    // --- 3d: application/x-www-form-urlencoded — allowed field replaced ---
     let form_body = format!("client_secret={phantom_token}&grant_type=client_credentials");
     let resp_form = client
         .post(format!("http://127.0.0.1:{proxy_port}/api/v1/token"))
@@ -883,7 +889,7 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
     let reqs_final = mock.recorded();
     let form_req = reqs_final.last().unwrap();
     let form_received = String::from_utf8_lossy(&form_req.body);
-    // Streaming path replaces token anywhere (no field-level scoping for form data).
+    // The bounded form parser replaces only an allowed field owned by this route.
     assert!(
         !form_received.contains(phantom_token),
         "phantom token should be replaced in form-urlencoded body: {form_received}"
