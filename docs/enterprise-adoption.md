@@ -40,8 +40,10 @@ Do not treat the following as available enterprise controls:
   teams and do not make team vaults an offboarding control;
 - audit policy and retention are not centrally enforced by the local CLI;
 - headless Phantom Cloud pull in CI is unsupported;
-- cloud-signed audit delivery must not be an acceptance dependency until the
-  named deployed endpoint and reviewer workflow are separately verified; and
+- cloud-signed audit delivery is protocol-only and hard-disabled: setup refuses
+  it before mutation, legacy settings fall back to encrypted local retention
+  without network I/O, and no central ingest or reviewer workflow is
+  commissioned; and
 - the repository provides no regulatory certification or contractual SLA.
 
 An organization that requires any blocker above should keep the pilot local or

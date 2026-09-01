@@ -5,18 +5,16 @@
 //! - `AuditContext` collection
 //! - `encrypt_context` / `decrypt_context` round-trip
 //! - Concurrent writes with encryption enabled
-//! - Sidecar queue ordering
 //! - ED25519 signing and verification
 //! - `verify_log_with_context` with encrypted events
-//! - `AuditSidecarStatus` state transitions
 //! - Error handling for invalid ciphertext
 //! - HMAC chain still valid with `encrypted_context` field
 //! - `phantom audit verify --with-context` integration
 
 use phantom_core::audit::{
-    decrypt_context, encrypt_context_for_test, enqueue_sidecar_event, log, log_result,
-    sidecar_status, verify_log, verify_log_with_context, verify_sidecar_event, AuditContext,
-    AuditEventEncryption, SidecarEvent,
+    decrypt_context, encrypt_context_for_test, log, log_result, verify_log,
+    verify_log_with_context, verify_sidecar_event, AuditContext, AuditEventEncryption,
+    SidecarEvent,
 };
 use std::sync::{Arc, Barrier, Mutex};
 use tempfile::tempdir;
@@ -148,6 +146,61 @@ fn encryption_is_active_for_non_disabled() {
     assert!(!AuditEventEncryption::Disabled.is_active());
     assert!(AuditEventEncryption::LocalOnly.is_active());
     assert!(AuditEventEncryption::CloudSigned.is_active());
+}
+
+#[test]
+fn cloud_signed_setup_is_a_non_mutating_hard_denial() {
+    use assert_cmd::Command;
+
+    let tmp = tempdir().unwrap();
+    let output = Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .args(["setup", "--audit-mode", "cloud-signed"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cloud-signed audit delivery is not commissioned")
+            && stderr.contains("no key, file, or network state was changed"),
+        "unexpected denial: {stderr}"
+    );
+    assert!(
+        !tmp.path().join(".phantom/audit-ed25519.pub").exists(),
+        "reserved setup must not create public-key state"
+    );
+}
+
+#[test]
+fn legacy_cloud_signed_request_retains_encrypted_event_locally() {
+    with_encrypt_env("cloud-signed", |tmp| {
+        log_result("vault.store", Some("LEGACY_CLOUD_KEY"))
+            .expect("legacy cloud-signed request should retain the event locally");
+
+        let report = verify_log().expect("local HMAC chain should verify");
+        assert_eq!(report.verified, 1);
+        assert!(report.is_clean());
+
+        let (_, events) = verify_log_with_context().expect("local context should decrypt");
+        assert_eq!(events.len(), 1);
+        assert!(events[0].context.is_some());
+
+        let content = std::fs::read_to_string(tmp.join(".phantom/audit.log")).unwrap();
+        let event = content
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|value| value.get("op").is_some())
+            .expect("audit event should follow the signed-era marker");
+        assert_eq!(event["op"], "vault.store");
+        assert_eq!(event["name"], "LEGACY_CLOUD_KEY");
+        assert!(event.get("encrypted_context").is_some());
+        assert!(event.get("signature").is_none());
+        assert!(event.get("pubkey").is_none());
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -440,8 +493,8 @@ fn verify_with_context_returns_correct_line_numbers() {
 #[test]
 fn sidecar_event_ed25519_sign_verify_roundtrip() {
     // Build a sidecar event manually to test sign/verify without keychain.
-    // We use ed25519-dalek directly here since we can't call setup_ed25519_keypair
-    // in tests (it writes to the real OS keychain).
+    // Keep the protocol fixture pure: production binaries do not provision a
+    // signing key or commission a delivery transport.
     use ed25519_dalek::{Signer, SigningKey};
     use std::collections::BTreeMap;
 
@@ -580,56 +633,7 @@ fn sidecar_event_bad_signature_hex_rejected() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 8. Sidecar queue ordering and status
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn sidecar_status_available() {
-    // Just verify the function is callable and returns a valid status.
-    let status = sidecar_status();
-    // pending can be any value (other tests may have enqueued events)
-    let _ = status.uploaded;
-    let _ = status.failures;
-    let _ = status.pending;
-}
-
-#[test]
-fn enqueue_sidecar_event_increments_pending() {
-    use ed25519_dalek::{Signer, SigningKey};
-
-    // We can't easily test the exact count due to flush racing, but we can
-    // verify the function doesn't panic and the signature is correct.
-    let mut csprng = rand::thread_rng();
-    let signing_key = SigningKey::generate(&mut csprng);
-    let verifying_key = signing_key.verifying_key();
-    let pubkey_hex = hex::encode(verifying_key.to_bytes());
-
-    use std::collections::BTreeMap;
-    let mut canonical_map: BTreeMap<&str, String> = BTreeMap::new();
-    canonical_map.insert("seq", "999".to_string());
-    canonical_map.insert("ts", "1700000000".to_string());
-    canonical_map.insert("op", "test.queue".to_string());
-    canonical_map.insert("encrypted_context", "dGVzdA==".to_string());
-    canonical_map.insert("pubkey", pubkey_hex.clone());
-    let payload = serde_json::to_vec(&canonical_map).unwrap();
-    let sig = signing_key.sign(&payload);
-
-    let event = SidecarEvent {
-        seq: 999,
-        ts: 1_700_000_000,
-        op: "test.queue".to_string(),
-        name: None,
-        encrypted_context: "dGVzdA==".to_string(),
-        signature: hex::encode(sig.to_bytes()),
-        pubkey: pubkey_hex,
-    };
-
-    // This should not panic
-    enqueue_sidecar_event(event);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 9. AuditContext collection
+// 8. AuditContext collection
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]

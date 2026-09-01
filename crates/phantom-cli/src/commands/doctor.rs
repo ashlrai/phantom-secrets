@@ -371,6 +371,16 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 12: Audit logging
     {
+        if phantom_core::audit::AuditEventEncryption::from_env()
+            == phantom_core::audit::AuditEventEncryption::CloudSigned
+        {
+            check_warn(
+                "Cloud-signed audit delivery is not commissioned; legacy requests stay encrypted in the local audit log and perform no network I/O",
+            );
+            check_fix("Set PHANTOM_AUDIT_ENCRYPTION=local or unset it");
+            issues += 1;
+        }
+
         if phantom_core::audit::enabled() {
             match phantom_core::audit::log_path() {
                 Ok(path) => match std::fs::metadata(&path) {

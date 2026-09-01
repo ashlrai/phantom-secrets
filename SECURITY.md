@@ -102,8 +102,8 @@ Phantom does not operate a paid bug bounty program at this time. We may acknowle
 Phantom's security boundary is that secret values should not enter AI context, logs, telemetry, or cloud services in plaintext. Metadata may still be created by the product:
 
 - CLI audit logging is off by default. When `PHANTOM_AUDIT=1` or `PHANTOM_AUDIT=required` is set, Phantom writes JSONL audit events under `~/.phantom/` with operation names, timestamps, sequence/HMAC data, process metadata, PID, and secret names when an operation is tied to a specific secret. Audit events must never contain secret values.
-- `PHANTOM_AUDIT_ENCRYPTION=local` encrypts selected context metadata locally. `PHANTOM_AUDIT_ENCRYPTION=cloud-signed` signs audit events and attempts asynchronous upload to `phm.dev`; do not enable it unless you are comfortable sending that audit metadata to Phantom Cloud.
-- Audit analytics, anomaly detection, rate-limit events, and response-leak incidents are derived from the local audit log unless cloud-signed audit upload is explicitly enabled.
+- `PHANTOM_AUDIT_ENCRYPTION=local` encrypts selected context metadata locally. `cloud-signed` remains a protocol-only reserved value: setup refuses it before mutation, and legacy shell settings retain events with local encryption while making no audit-delivery network request.
+- Audit analytics, anomaly detection, rate-limit events, and response-leak incidents are derived from the local audit log. Central audit collection, retention, signer enrollment, and independent reviewer workflows are not commissioned in this release.
 - Phantom Cloud receives account, device, team, billing, project, encrypted-vault, and sync metadata needed to operate the service. Vault contents are intended to be encrypted client-side before upload; the server should not receive plaintext secret values.
 - The web application may send browser analytics events through PostHog when `NEXT_PUBLIC_POSTHOG_KEY` is configured. Current events include page views and high-level UI actions such as copied install commands or pricing/device-auth button clicks. These events should not include secret values or vault contents.
 

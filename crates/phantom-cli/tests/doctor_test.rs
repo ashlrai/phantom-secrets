@@ -72,6 +72,25 @@ fn doctor_passes_service_routes_for_default_config() {
 }
 
 #[test]
+fn doctor_warns_that_cloud_signed_audit_is_not_commissioned() {
+    let dir = TempDir::new().unwrap();
+
+    let output = phantom(&dir)
+        .env("PHANTOM_AUDIT", "1")
+        .env("PHANTOM_AUDIT_ENCRYPTION", "cloud-signed")
+        .arg("doctor")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(
+        stdout.contains("Cloud-signed audit delivery is not commissioned")
+            && stdout.contains("perform no network I/O")
+            && stdout.contains("PHANTOM_AUDIT_ENCRYPTION=local"),
+        "doctor must surface the reserved local-only fallback: {stdout}"
+    );
+}
+
+#[test]
 fn doctor_rejects_legacy_npx_mcp_entry() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join(".claude")).unwrap();

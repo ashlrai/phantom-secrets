@@ -77,7 +77,7 @@ enum Commands {
         /// Print the config snippet to stdout instead of writing files
         #[arg(long)]
         print: bool,
-        /// Configure audit event encryption mode: none, local, or cloud-signed
+        /// Configure audit encryption: none/local; cloud-signed is reserved and refused
         #[arg(long, value_enum, value_name = "MODE")]
         audit_mode: Option<commands::setup::AuditMode>,
     },

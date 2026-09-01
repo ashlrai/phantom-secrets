@@ -10,7 +10,7 @@ pub enum AuditMode {
     None,
     /// Encrypt context with local file-vault key (AES-256-GCM).
     Local,
-    /// Sign events with ED25519 + upload to phm.dev asynchronously.
+    /// Reserved protocol mode. Hosted delivery is not commissioned.
     #[value(name = "cloud-signed")]
     CloudSigned,
 }
@@ -637,56 +637,9 @@ fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
             println!("   Use `phantom audit verify --with-context` to decrypt event metadata.");
         }
         AuditMode::CloudSigned => {
-            println!(
-                "{} Setting up {} audit mode...",
-                "->".blue().bold(),
-                "cloud-signed".cyan().bold()
+            anyhow::bail!(
+                "cloud-signed audit delivery is not commissioned in this release; no key, file, or network state was changed. Use `phantom setup --audit-mode local` for supported local audit encryption"
             );
-
-            match phantom_core::audit::setup_ed25519_keypair() {
-                Ok((_, pubkey_hash)) => {
-                    println!("   {} ED25519 keypair generated.", "+".green().bold());
-                    println!(
-                        "   {} Private key stored in OS keychain.",
-                        "+".green().bold()
-                    );
-                    println!(
-                        "   {} Public key written to ~/.phantom/audit-ed25519.pub",
-                        "+".green().bold()
-                    );
-                    println!();
-                    println!(
-                        "   {} Public key hash (SHA-256): {}",
-                        "->".blue().bold(),
-                        pubkey_hash.cyan().bold()
-                    );
-                    println!(
-                        "   Register this hash with your compliance auditor at {}",
-                        "https://phm.dev/compliance".dimmed()
-                    );
-                    println!();
-                    println!(
-                        "   Add to your shell profile: {}",
-                        "export PHANTOM_AUDIT_ENCRYPTION=cloud-signed".cyan()
-                    );
-                    println!(
-                        "   Audit events will be signed and uploaded to phm.dev asynchronously."
-                    );
-                    println!(
-                        "\n{} Cloud-signed audit mode configured!",
-                        "ok".green().bold()
-                    );
-                }
-                Err(e) => {
-                    eprintln!(
-                        "{} Failed to generate ED25519 keypair: {}",
-                        "error".red().bold(),
-                        e
-                    );
-                    eprintln!("   Ensure your OS keychain is accessible and try again.");
-                    return Err(anyhow::anyhow!("ED25519 keypair setup failed: {e}"));
-                }
-            }
         }
     }
     Ok(())

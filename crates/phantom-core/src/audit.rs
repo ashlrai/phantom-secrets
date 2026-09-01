@@ -38,16 +38,17 @@
 //! ## Audit Event Encryption
 //!
 //! Sensitive metadata (process name, hostname, parent PID) is encrypted and
-//! stored in the `encrypted_context` field. Three modes are supported:
+//! stored in the `encrypted_context` field. Two runtime modes are supported:
 //!
 //! - `Disabled`: no encryption, no `encrypted_context` field (default).
 //! - `LocalOnly`: AES-256-GCM with the file-vault HMAC key as the encryption key.
-//! - `CloudSigned`: ED25519-signed events are buffered and pushed asynchronously
-//!   to phm.dev for compliance-grade tamper-proof audit delivery.
+//! - `CloudSigned`: a legacy, reserved request retained locally using
+//!   `LocalOnly`. Hosted delivery is not commissioned and no network request is
+//!   made. ED25519 envelopes remain available for pure protocol tests.
 //!
-//! Set `PHANTOM_AUDIT_ENCRYPTION=local` or `PHANTOM_AUDIT_ENCRYPTION=cloud-signed`
-//! to activate. Use `phantom audit verify --with-context` to decrypt and display
-//! the stored context metadata.
+//! Set `PHANTOM_AUDIT_ENCRYPTION=local` to activate local encryption. Use
+//! `phantom audit verify --with-context` to decrypt and display the stored
+//! context metadata.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use fs2::FileExt;
@@ -58,7 +59,7 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Once;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -72,7 +73,8 @@ type HmacSha256 = Hmac<Sha256>;
 /// Set via `PHANTOM_AUDIT_ENCRYPTION` environment variable:
 /// - unset / `none`: `Disabled` (default)
 /// - `local`:  `LocalOnly` — AES-256-GCM keyed from the HMAC key
-/// - `cloud-signed`: `CloudSigned` — ED25519-signed + async cloud upload
+/// - `cloud-signed`: legacy reserved request; runtime falls back to `LocalOnly`
+///   without network I/O
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEventEncryption {
     /// No encryption. `encrypted_context` field is omitted. (default)
@@ -80,8 +82,8 @@ pub enum AuditEventEncryption {
     /// Encrypt context with the per-machine HMAC key (AES-256-GCM).
     /// Context is decryptable locally via `phantom audit verify --with-context`.
     LocalOnly,
-    /// Sign events with an ED25519 keypair stored in the OS keychain and
-    /// upload them asynchronously to phm.dev for compliance-grade delivery.
+    /// Legacy reserved request. Runtime events are encrypted and retained
+    /// locally; hosted delivery is not commissioned.
     CloudSigned,
 }
 
@@ -99,6 +101,24 @@ impl AuditEventEncryption {
     pub fn is_active(self) -> bool {
         self != Self::Disabled
     }
+
+    /// Resolve a request to the runtime mode supported by this release.
+    fn effective_local_mode(self) -> Self {
+        match self {
+            Self::CloudSigned => Self::LocalOnly,
+            mode => mode,
+        }
+    }
+}
+
+static CLOUD_SIGNED_WARNING: Once = Once::new();
+
+fn warn_cloud_signed_unavailable() {
+    CLOUD_SIGNED_WARNING.call_once(|| {
+        eprintln!(
+            "warning: cloud-signed audit delivery is not commissioned; retaining encrypted audit events locally without network I/O (use PHANTOM_AUDIT_ENCRYPTION=local)"
+        );
+    });
 }
 
 /// Sensitive metadata serialized into `encrypted_context`.
@@ -128,24 +148,10 @@ impl AuditContext {
     }
 }
 
-/// Status of the async sidecar upload queue (for compliance dashboards).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AuditSidecarStatus {
-    /// Number of events currently buffered locally, not yet uploaded.
-    pub pending: usize,
-    /// Number of events successfully uploaded in this session.
-    pub uploaded: usize,
-    /// Number of upload failures in this session.
-    pub failures: usize,
-    /// Unix timestamp of the last successful upload (0 if none).
-    pub last_uploaded_ts: u64,
-    /// Unix timestamp of the last failure (0 if none).
-    pub last_failure_ts: u64,
-    /// Whether the sidecar uploader is currently running.
-    pub running: bool,
-}
-
-/// An event buffered for cloud-signed sidecar upload.
+/// Protocol envelope for a future externally retained signed audit event.
+///
+/// Current Phantom binaries never upload this structure. It remains as a pure
+/// serialization and signature-verification foundation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidecarEvent {
     /// Monotonic sequence number.
@@ -163,142 +169,6 @@ pub struct SidecarEvent {
     pub signature: String,
     /// Hex-encoded public key (for auditor verification).
     pub pubkey: String,
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Global sidecar upload queue (fire-and-forget, no blocking)
-// ──────────────────────────────────────────────────────────────────────────────
-
-lazy_static::lazy_static! {
-    static ref SIDECAR_QUEUE: Arc<Mutex<SidecarQueue>> =
-        Arc::new(Mutex::new(SidecarQueue::new()));
-}
-
-struct SidecarQueue {
-    events: std::collections::VecDeque<SidecarEvent>,
-    status: AuditSidecarStatus,
-}
-
-impl SidecarQueue {
-    fn new() -> Self {
-        Self {
-            events: std::collections::VecDeque::new(),
-            status: AuditSidecarStatus::default(),
-        }
-    }
-
-    fn push(&mut self, event: SidecarEvent) {
-        self.events.push_back(event);
-        self.status.pending += 1;
-        self.status.running = true;
-    }
-
-    fn drain(&mut self) -> Vec<SidecarEvent> {
-        let drained: Vec<_> = self.events.drain(..).collect();
-        self.status.pending = self.status.pending.saturating_sub(drained.len());
-        drained
-    }
-
-    /// Re-enqueue previously-drained events at the FRONT of the queue so they
-    /// are retried (in original order) ahead of newer events on the next flush.
-    /// Used when an upload POST fails — prevents permanent audit data loss.
-    fn requeue_front(&mut self, events: Vec<SidecarEvent>) {
-        let count = events.len();
-        // Insert in reverse so the first drained event ends up frontmost.
-        for event in events.into_iter().rev() {
-            self.events.push_front(event);
-        }
-        self.status.pending += count;
-        // Events are still outstanding, so the queue is logically running.
-        self.status.running = true;
-    }
-
-    fn record_upload_success(&mut self, count: usize) {
-        self.status.uploaded += count;
-        self.status.last_uploaded_ts = now_unix();
-        if self.status.pending == 0 {
-            self.status.running = false;
-        }
-    }
-
-    fn record_failure(&mut self, count: usize) {
-        self.status.failures += count;
-        self.status.last_failure_ts = now_unix();
-        // Only mark stopped if nothing is left to retry. Requeued events keep
-        // the queue logically running so a later flush picks them up.
-        self.status.running = self.status.pending > 0;
-    }
-}
-
-/// Enqueue a `SidecarEvent` for async cloud upload (fire-and-forget).
-/// This function returns immediately; upload is attempted in a background thread.
-pub fn enqueue_sidecar_event(event: SidecarEvent) {
-    if let Ok(mut q) = SIDECAR_QUEUE.lock() {
-        q.push(event);
-    }
-    // Spawn a best-effort background flush.
-    std::thread::spawn(flush_sidecar_queue);
-}
-
-/// Return the current sidecar upload queue status snapshot.
-pub fn sidecar_status() -> AuditSidecarStatus {
-    SIDECAR_QUEUE
-        .lock()
-        .map(|q| q.status.clone())
-        .unwrap_or_default()
-}
-
-/// Flush the sidecar queue by attempting HTTP POST to phm.dev.
-/// Best-effort: failures are recorded but never propagated.
-fn flush_sidecar_queue() {
-    let events = {
-        let Ok(mut q) = SIDECAR_QUEUE.lock() else {
-            return;
-        };
-        q.drain()
-    };
-    if events.is_empty() {
-        return;
-    }
-    // Fire-and-forget HTTP POST (non-blocking Tokio handle not available here;
-    // we use reqwest's blocking client so this background thread handles it).
-    let count = events.len();
-    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .https_only(true)
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
-        let body = serde_json::to_vec(&events)?;
-        let resp = client
-            .post("https://phm.dev/api/audit/ingest")
-            .header("Content-Type", "application/json")
-            .header("X-Phantom-Version", env!("CARGO_PKG_VERSION"))
-            .body(body)
-            .send()?;
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("HTTP {}", resp.status()).into())
-        }
-    })();
-    match result {
-        Ok(()) => {
-            if let Ok(mut q) = SIDECAR_QUEUE.lock() {
-                q.record_upload_success(count);
-            }
-        }
-        Err(_) => {
-            // Data-loss fix: the POST failed, so the drained events were never
-            // persisted upstream. Push them back onto the queue so a later
-            // flush retries them instead of dropping them permanently.
-            if let Ok(mut q) = SIDECAR_QUEUE.lock() {
-                q.requeue_front(events);
-                q.record_failure(count);
-            }
-        }
-    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -610,7 +480,11 @@ fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<
         1
     };
 
-    let enc_mode = AuditEventEncryption::from_env();
+    let requested_enc_mode = AuditEventEncryption::from_env();
+    if requested_enc_mode == AuditEventEncryption::CloudSigned {
+        warn_cloud_signed_unavailable();
+    }
+    let enc_mode = requested_enc_mode.effective_local_mode();
     let encrypted_context = if enc_mode.is_active() {
         key.as_ref().and_then(|k| encrypt_context(k, enc_mode).ok())
     } else {
@@ -635,15 +509,6 @@ fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<
         hmac: hmac_val.clone(),
         ..event
     };
-
-    // Enqueue for cloud sidecar if CloudSigned mode is active.
-    if enc_mode == AuditEventEncryption::CloudSigned {
-        if let Some(ec) = &encrypted_context {
-            if let Ok(sidecar) = build_sidecar_event(&event, ec) {
-                enqueue_sidecar_event(sidecar);
-            }
-        }
-    }
 
     let mut line = serde_json::to_vec(&event)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -1242,146 +1107,6 @@ fn derive_encryption_key(hmac_key: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// ED25519 key management + cloud-signed sidecar event builder
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Path to the ED25519 public key file used for cloud-signed audit events.
-pub fn ed25519_pubkey_path(log_path: &Path) -> PathBuf {
-    log_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("audit-ed25519.pub")
-}
-
-fn ed25519_privkey_keychain_service() -> &'static str {
-    "phantom-audit-ed25519-privkey"
-}
-
-/// Generate an ED25519 keypair, store the private key in the OS keychain,
-/// write the public key to `~/.phantom/audit-ed25519.pub`, and return the
-/// public key bytes and a hex-encoded SHA-256 hash of the public key (for
-/// compliance auditor registration).
-///
-/// Returns `(pubkey_bytes, pubkey_hash_hex)`.
-pub fn setup_ed25519_keypair() -> std::io::Result<([u8; 32], String)> {
-    use ed25519_dalek::SigningKey;
-
-    let mut csprng = rand::thread_rng();
-    let signing_key = SigningKey::generate(&mut csprng);
-    let verifying_key = signing_key.verifying_key();
-    let pubkey_bytes = verifying_key.to_bytes();
-
-    // Store private key in OS keychain.
-    let privkey_hex = hex::encode(signing_key.to_bytes());
-    let kr = keyring::Entry::new(ed25519_privkey_keychain_service(), &whoami_username())
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-    kr.set_password(&privkey_hex)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-
-    // Write public key to disk.
-    let log_p = log_path()?;
-    if let Some(parent) = log_p.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let pubkey_b64 = BASE64.encode(pubkey_bytes);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o644)
-            .open(ed25519_pubkey_path(&log_p))?;
-        f.write_all(pubkey_b64.as_bytes())?;
-    }
-    #[cfg(not(unix))]
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(ed25519_pubkey_path(&log_p))?;
-        f.write_all(pubkey_b64.as_bytes())?;
-    }
-
-    // Compute SHA-256 hash of the public key for auditor registration.
-    let mut hasher = Sha256::new();
-    hasher.update(pubkey_bytes);
-    let hash = hex::encode(hasher.finalize());
-
-    Ok((pubkey_bytes, hash))
-}
-
-/// Load the ED25519 signing key from the OS keychain, if present.
-fn load_signing_key() -> Option<ed25519_dalek::SigningKey> {
-    let kr = keyring::Entry::new(ed25519_privkey_keychain_service(), &whoami_username()).ok()?;
-    let privkey_hex = kr.get_password().ok()?;
-    let privkey_bytes = hex::decode(privkey_hex.trim()).ok()?;
-    let bytes: [u8; 32] = privkey_bytes.try_into().ok()?;
-    Some(ed25519_dalek::SigningKey::from_bytes(&bytes))
-}
-
-/// Load the ED25519 public key bytes from `~/.phantom/audit-ed25519.pub`.
-pub fn load_ed25519_pubkey() -> std::io::Result<Option<[u8; 32]>> {
-    let log_p = log_path()?;
-    let path = ed25519_pubkey_path(&log_p);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let b64 = std::fs::read_to_string(&path)?;
-    let bytes = BASE64
-        .decode(b64.trim())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "bad ED25519 pubkey length")
-    })?;
-    Ok(Some(arr))
-}
-
-/// Build a `SidecarEvent` from an `AuditEvent` + encrypted context, signing it
-/// with the ED25519 key from the OS keychain.
-fn build_sidecar_event(
-    event: &AuditEvent,
-    encrypted_context: &str,
-) -> std::io::Result<SidecarEvent> {
-    use ed25519_dalek::Signer;
-
-    let signing_key = load_signing_key().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "ED25519 signing key not found in keychain; run `phantom setup --audit-mode cloud-signed`",
-        )
-    })?;
-    let verifying_key = signing_key.verifying_key();
-    let pubkey_hex = hex::encode(verifying_key.to_bytes());
-
-    // Canonical payload to sign: BTreeMap JSON of event fields + encrypted_context.
-    let mut canonical_map: BTreeMap<&str, String> = BTreeMap::new();
-    canonical_map.insert("seq", event.seq.to_string());
-    canonical_map.insert("ts", event.ts.to_string());
-    canonical_map.insert("op", event.op.clone());
-    canonical_map.insert("encrypted_context", encrypted_context.to_string());
-    canonical_map.insert("pubkey", pubkey_hex.clone());
-    if let Some(ref n) = event.name {
-        canonical_map.insert("name", n.clone());
-    }
-    let payload = serde_json::to_vec(&canonical_map).expect("BTreeMap serialization is infallible");
-    let signature = signing_key.sign(&payload);
-    let sig_hex = hex::encode(signature.to_bytes());
-
-    Ok(SidecarEvent {
-        seq: event.seq,
-        ts: event.ts,
-        op: event.op.clone(),
-        name: event.name.clone(),
-        encrypted_context: encrypted_context.to_string(),
-        signature: sig_hex,
-        pubkey: pubkey_hex,
-    })
-}
-
 /// Verify an ED25519 signature on a `SidecarEvent`.
 /// Returns `true` if the signature is valid, `false` otherwise.
 pub fn verify_sidecar_event(event: &SidecarEvent) -> bool {
@@ -1713,12 +1438,6 @@ fn parent_pid() -> u32 {
     {
         0
     }
-}
-
-fn whoami_username() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "phantom".to_string())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

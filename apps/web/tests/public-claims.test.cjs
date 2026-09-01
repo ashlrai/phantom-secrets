@@ -831,6 +831,23 @@ test("community health metadata preserves release and support boundaries", () =>
   assert.match(citation, /^date-released: 2026-08-31$/m);
 });
 
+test("cloud-signed audit remains an explicit network-free protocol foundation", () => {
+  const coreAudit = readRepo("crates/phantom-core/src/audit.rs");
+  const setup = readRepo("crates/phantom-cli/src/commands/setup.rs");
+  const security = readRepo("SECURITY.md");
+  const enterprise = readRepo("docs/enterprise-adoption.md");
+
+  assert.doesNotMatch(coreAudit, /https:\/\/phm\.dev\/api\/audit\/ingest/i);
+  assert.doesNotMatch(setup, /https:\/\/phm\.dev\/compliance/i);
+  assert.doesNotMatch(setup, /will be signed and uploaded/i);
+  assert.doesNotMatch(coreAudit, /compliance-grade tamper-proof audit delivery/i);
+  assert.match(setup, /cloud-signed audit delivery is not commissioned/i);
+  assert.match(security, /legacy shell settings retain events with local encryption/i);
+  assert.match(security, /making no audit-delivery network request/i);
+  assert.match(enterprise, /protocol-only and hard-disabled/i);
+  assert.match(enterprise, /without network I\/O/i);
+});
+
 test("contributor templates keep secrets and evidence layers separated", () => {
   const bug = readRepo(".github/ISSUE_TEMPLATE/bug_report.yml");
   assert.match(bug, /placeholder: "phantom 0\.7\.3"/);
