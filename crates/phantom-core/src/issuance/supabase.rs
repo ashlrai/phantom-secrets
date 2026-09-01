@@ -414,7 +414,7 @@ mod tests {
 
     /// Serialize any test that touches process-wide env or the ambient audit log
     /// (mock guards emit audit events). Poison-tolerant per the repo convention.
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    fn env_guard() -> crate::ProcessEnvGuard {
         crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner())

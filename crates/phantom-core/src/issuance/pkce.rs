@@ -307,7 +307,7 @@ mod tests {
     /// lands in the audit test's log and corrupts its event count. Hold the
     /// crate-wide `ENV_LOCK` for the duration so these never overlap — the same
     /// serialization idiom used by the audit/rotation/validator tests.
-    fn issue_audit_guard() -> std::sync::MutexGuard<'static, ()> {
+    fn issue_audit_guard() -> crate::ProcessEnvGuard {
         crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner())

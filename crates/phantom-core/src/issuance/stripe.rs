@@ -396,7 +396,7 @@ mod tests {
     /// that repointed `HOME`/`PHANTOM_AUDIT` would otherwise miscount. Same idiom
     /// the pkce/device/vercel/audit tests use; poison-tolerant so one panicking
     /// test never cascades into the rest of the suite.
-    fn issue_audit_guard() -> std::sync::MutexGuard<'static, ()> {
+    fn issue_audit_guard() -> crate::ProcessEnvGuard {
         crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner())
