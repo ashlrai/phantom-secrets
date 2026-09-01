@@ -15,36 +15,42 @@ A `v*` tag starts `.github/workflows/release.yml`. The current workflow:
    schema/stdio smoke;
 3. builds six targets: macOS, GNU Linux, and Windows on `arm64`/`x64`;
 4. creates an archive containing exactly `phantom` and `phantom-mcp`;
-5. downloads the host-specific Syft 1.42.3 release archive, verifies its exact
+5. downloads each named build artifact onto a matching standard GitHub runner
+   (`macos-15-intel`, `macos-15`, `ubuntu-22.04`, `ubuntu-22.04-arm`,
+   `windows-latest`, or `windows-11-vs2026-arm`), re-verifies the closed archive
+   and extracted file set, asserts both the runner and Node runtime OS/architecture,
+   checks both binaries' exact tag-bound `--version`, and runs the MCP stdio
+   schema smoke against the extracted `phantom-mcp`;
+6. downloads the host-specific Syft 1.42.3 release archive, verifies its exact
    SHA-256 from Anchore's official checksum manifest, and invokes that verified
    binary to scan each exact archive into an SPDX 2.3 JSON SBOM;
-6. generates a SHA-256 sidecar for every archive plus an aggregate
+7. generates a SHA-256 sidecar for every archive plus an aggregate
    `SHA256SUMS`;
-7. verifies the exact archive, sidecar, SBOM, aggregate-checksum, member-name,
+8. verifies the exact archive, sidecar, SBOM, aggregate-checksum, member-name,
    and member-type contract;
-8. requests one GitHub build-provenance attestation covering the six exact
+9. requests one GitHub build-provenance attestation covering the six exact
    archive digests and one SBOM attestation binding each archive to its matching
    SPDX document; and
-9. re-verifies the preserved bundle before creating a non-overwriting GitHub
+10. re-verifies the preserved bundle before creating a non-overwriting GitHub
    release.
 
 Third-party actions are pinned. Build jobs use read-only repository permissions;
 only the attestation job receives `id-token: write` and `attestations: write`,
 and only the release job receives `contents: write`.
 
-Six matrix rows are packaging coverage, not six-target native acceptance. With
-GitHub's current hosted-runner mappings, macOS x64 and Linux arm64 are
-cross-target builds; the other four rows use a matching host architecture. None
-of the rows executes the exact packaged archive after creation.
+The build matrix may cross-compile, but it cannot authorize attestation directly.
+A separate six-row native-acceptance matrix downloads each exact build artifact
+onto the matching OS and architecture and must complete before attestation.
 
 The workflow source only requests SBOM and provenance attestations when a tag
-run executes successfully. This repository state does **not** prove an
-attestation exists, and attestations are not independent publisher signatures.
-The release workflow does not prove the web build, execute each packaged archive
-on its native target, perform macOS notarization or Windows Authenticode signing,
-or establish native acceptance. Those remain separate gates. Repository settings
-must also allow Actions OIDC/attestation writes and should protect the tag path;
-workflow source cannot activate those controls.
+run executes successfully. This repository state does **not** prove the native
+matrix ran or that an attestation exists, and attestations are not independent
+publisher signatures. A successful exact tag workflow supplies the native
+archive-execution receipt; source review alone does not. The release workflow
+does not perform macOS notarization or Windows Authenticode signing. Those remain
+separate gates. Repository settings must also allow Actions OIDC/attestation
+writes and should protect the tag path; workflow source cannot activate those
+controls.
 
 ## Source-candidate gates
 
@@ -170,10 +176,10 @@ syntax, digest, exact member names and types, and absence of traversal, links,
 reparse points, nesting, and extras. For every SBOM, verify the exact name,
 bounded size, JSON parsing, SPDX
 2.3 identity, namespace, creation metadata, and packages-array shape. The
-workflow's source smoke verifies locally built binary versions and the MCP
-schema; native execution of every exact packaged archive is still a separate
-acceptance gate. Run packaged npm and MCP stdio smoke against staged local
-artifacts without downloading or publishing.
+source smoke verifies locally built binary versions and the MCP schema. The
+native matrix repeats those checks against the extracted binaries from every
+exact build archive and gates attestation on all six rows. Run packaged npm and
+MCP stdio smoke against staged local artifacts without downloading or publishing.
 
 ## Supply-chain and native blockers
 
@@ -185,7 +191,8 @@ do not identify a publisher. Before a high-assurance release claim, verify:
 - independently verifiable signatures;
 - macOS code signing and notarization;
 - Windows Authenticode signing; and
-- exact-archive native acceptance for each supported OS and architecture.
+- a successful exact-tag native-acceptance matrix receipt for every supported OS
+  and architecture (workflow source alone is not an execution receipt).
 
 Linux package-repository metadata, Homebrew formula updates, npm publication,
 MCP Registry publication, and website deployment are separate distribution

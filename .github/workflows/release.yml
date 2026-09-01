@@ -68,7 +68,7 @@ jobs:
           node scripts/release/extract-release-notes.mjs "$GITHUB_REF_NAME" > /tmp/phantom-release-notes.md
 
       - name: Test fail-closed publication and release receipts
-        run: node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/compare-release-artifacts.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs scripts/release/verify-github-tag-binding.test.mjs
+        run: node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/compare-release-artifacts.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/native-release-smoke.test.mjs scripts/release/release-receipts.test.mjs scripts/release/verify-github-tag-binding.test.mjs
 
       - name: Install verified cargo-deny
         env:
@@ -300,9 +300,70 @@ jobs:
             ${{ matrix.archive }}.spdx.json
           if-no-files-found: error
 
+  native-acceptance:
+    name: Native acceptance (${{ matrix.target }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            artifact: phantom-x86_64-apple-darwin
+            archive: phantom-x86_64-apple-darwin.tar.gz
+            runner_os: macOS
+            runner_arch: X64
+          - target: aarch64-apple-darwin
+            os: macos-15
+            artifact: phantom-aarch64-apple-darwin
+            archive: phantom-aarch64-apple-darwin.tar.gz
+            runner_os: macOS
+            runner_arch: ARM64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            artifact: phantom-x86_64-unknown-linux-gnu
+            archive: phantom-x86_64-unknown-linux-gnu.tar.gz
+            runner_os: Linux
+            runner_arch: X64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            artifact: phantom-aarch64-unknown-linux-gnu
+            archive: phantom-aarch64-unknown-linux-gnu.tar.gz
+            runner_os: Linux
+            runner_arch: ARM64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: phantom-x86_64-pc-windows-msvc
+            archive: phantom-x86_64-pc-windows-msvc.zip
+            runner_os: Windows
+            runner_arch: X64
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-vs2026-arm
+            artifact: phantom-aarch64-pc-windows-msvc
+            archive: phantom-aarch64-pc-windows-msvc.zip
+            runner_os: Windows
+            runner_arch: ARM64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: native-artifact
+
+      - name: Verify and execute the exact archive on its native runner
+        env:
+          PHANTOM_NATIVE_ARCHIVE: native-artifact/${{ matrix.archive }}
+          PHANTOM_NATIVE_TARGET: ${{ matrix.target }}
+          PHANTOM_RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/release/native-release-smoke.mjs
+
   attest:
     name: Verify and request artifact attestations
-    needs: build
+    needs: [build, native-acceptance]
     runs-on: ubuntu-latest
     permissions:
       contents: read
