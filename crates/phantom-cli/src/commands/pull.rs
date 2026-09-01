@@ -1,8 +1,13 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use phantom_core::error::PhantomError;
 use phantom_core::sync::{self, Platform};
 use phantom_core::token::TokenMap;
+use phantom_vault::{InitFile, InitSecret, VaultBackend};
+use std::collections::BTreeMap;
+use std::path::Path;
+use zeroize::Zeroizing;
 
 pub fn run(
     from: &str,
@@ -78,57 +83,106 @@ async fn run_async(
     };
 
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let existing_names = list_existing_secret_names(vault.as_ref())?;
+    let counts = apply_platform_pull_transaction(
+        &project_dir,
+        &config_path,
+        &env_path,
+        vault.as_ref(),
+        &config,
+        &pulled,
+        force,
+    )?;
 
+    for key in &counts.skipped_names {
+        println!(
+            "   {} {} (exists, use --force to overwrite)",
+            "-".dimmed(),
+            key
+        );
+    }
+    for key in &counts.updated_names {
+        println!("   {} {} (overwritten)", "~".blue(), key.bold());
+    }
+    for key in &counts.new_names {
+        println!("   {} {} (new)", "+".green().bold(), key.bold());
+    }
+
+    let new_count = counts.new_names.len();
+    let updated_count = counts.updated_names.len();
+    let skipped_count = counts.skipped_names.len();
+
+    println!();
+    println!(
+        "{} Pull complete: {} new, {} updated, {} skipped",
+        "ok".green().bold(),
+        new_count,
+        updated_count,
+        skipped_count
+    );
+
+    if new_count > 0 || updated_count > 0 {
+        println!(
+            "{} .env updated with phantom tokens. Real values in vault.",
+            "ok".green().bold()
+        );
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct PullCounts {
+    new_names: Vec<String>,
+    updated_names: Vec<String>,
+    skipped_names: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_platform_pull_transaction(
+    project_dir: &Path,
+    config_path: &Path,
+    env_path: &Path,
+    vault: &dyn VaultBackend,
+    config: &PhantomConfig,
+    pulled: &BTreeMap<String, String>,
+    force: bool,
+) -> Result<PullCounts> {
+    let mut counts = PullCounts::default();
     let mut token_map = TokenMap::new();
-    let mut new_count = 0;
-    let mut updated_count = 0;
-    let mut skipped_count = 0;
+    let mut mutations = Vec::new();
 
-    for (key, value) in &pulled {
-        let exists = existing_names.contains(key);
-
-        if exists && !force {
-            println!(
-                "   {} {} (exists, use --force to overwrite)",
-                "-".dimmed(),
-                key
-            );
-            skipped_count += 1;
+    for (key, value) in pulled {
+        let before = snapshot_secret(vault, key)?;
+        if before.is_some() && !force {
+            counts.skipped_names.push(key.clone());
             continue;
         }
-
-        // Store in vault
-        vault
-            .store(key, value)
-            .context(format!("Failed to store {key}"))?;
-
-        // Generate phantom token for .env
+        mutations.push(InitSecret::replace_if_unchanged(
+            key,
+            before.as_ref().map(|value| value.as_str().to_string()),
+            value,
+        ));
         token_map.insert(key.clone());
-
-        if exists {
-            println!("   {} {} (overwritten)", "~".blue(), key.bold());
-            updated_count += 1;
+        if before.is_some() {
+            counts.updated_names.push(key.clone());
         } else {
-            println!("   {} {} (new)", "+".green().bold(), key.bold());
-            new_count += 1;
+            counts.new_names.push(key.clone());
         }
     }
 
-    // Update .env file with phantom tokens for new/updated secrets
-    if new_count > 0 || updated_count > 0 {
-        let mut env_content = if env_path.exists() {
-            std::fs::read_to_string(&env_path)?
-        } else {
-            String::new()
+    let mut files = Vec::new();
+    if !mutations.is_empty() {
+        let env_before = snapshot_regular_file(env_path)?;
+        let mut env_content = match env_before.as_ref() {
+            Some(bytes) => String::from_utf8(bytes.clone())
+                .context("Existing .env is not valid UTF-8; refusing to rewrite it")?,
+            None => String::new(),
         };
 
-        for key in pulled.keys() {
+        for key in counts.new_names.iter().chain(counts.updated_names.iter()) {
             if let Some(token) = token_map.get_token(key) {
-                // Check if key already exists in .env
                 let key_prefix = format!("{key}=");
                 if env_content.lines().any(|l| l.starts_with(&key_prefix)) {
-                    // Update existing line
                     env_content = env_content
                         .lines()
                         .map(|line| {
@@ -150,36 +204,56 @@ async fn run_async(
                 }
             }
         }
-
-        std::fs::write(&env_path, &env_content)?;
-    }
-
-    // Save config
-    config.save(&config_path)?;
-
-    println!();
-    println!(
-        "{} Pull complete: {} new, {} updated, {} skipped",
-        "ok".green().bold(),
-        new_count,
-        updated_count,
-        skipped_count
-    );
-
-    if new_count > 0 || updated_count > 0 {
-        println!(
-            "{} .env updated with phantom tokens. Real values in vault.",
-            "ok".green().bold()
+        files.push(
+            InitFile::replace_if_unchanged(env_path, env_before, env_content.into_bytes())
+                .commit_last(),
         );
     }
 
-    Ok(())
+    if !mutations.is_empty() {
+        let config_before = snapshot_regular_file(config_path)?;
+        let config_after = match config_before.as_ref() {
+            Some(bytes) => bytes.clone(),
+            None => toml::to_string_pretty(config)
+                .context("Failed to serialize .phantom.toml")?
+                .into_bytes(),
+        };
+        files.push(InitFile::replace_if_unchanged(
+            config_path,
+            config_before,
+            config_after,
+        ));
+    }
+
+    phantom_vault::commit_init(project_dir, vault, mutations, files)
+        .context("Platform pull transaction failed")?;
+    Ok(counts)
 }
 
-fn list_existing_secret_names(vault: &dyn phantom_vault::VaultBackend) -> Result<Vec<String>> {
-    vault.list().map_err(|error| {
-        anyhow::anyhow!("Failed to list existing vault secrets before platform pull: {error}")
-    })
+fn snapshot_secret(vault: &dyn VaultBackend, name: &str) -> Result<Option<Zeroizing<String>>> {
+    match vault.retrieve(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(PhantomError::SecretNotFound(_)) => Ok(None),
+        Err(error) => Err(anyhow::anyhow!(
+            "Failed to inspect destination secret '{name}' before platform pull: {error}"
+        )),
+    }
+}
+
+fn snapshot_regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            anyhow::bail!(
+                "Refusing to rewrite {}: target must be a regular file or absent",
+                path.display()
+            )
+        }
+        Ok(_) => Ok(Some(std::fs::read(path).with_context(|| {
+            format!("Failed to snapshot {}", path.display())
+        })?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("Failed to inspect {}", path.display())),
+    }
 }
 
 #[cfg(test)]
@@ -188,15 +262,17 @@ mod tests {
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use zeroize::Zeroizing;
 
-    struct ListFailingVault;
+    struct ReadFailingVault;
 
-    impl phantom_vault::VaultBackend for ListFailingVault {
+    impl phantom_vault::VaultBackend for ReadFailingVault {
         fn store(&self, _name: &str, _value: &str) -> PhantomResult<()> {
             panic!("store must not run after destination listing fails")
         }
 
-        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
-            Err(PhantomError::SecretNotFound(name.to_string()))
+        fn retrieve(&self, _name: &str) -> PhantomResult<Zeroizing<String>> {
+            Err(PhantomError::VaultError(
+                "injected platform-pull read failure".to_string(),
+            ))
         }
 
         fn delete(&self, _name: &str) -> PhantomResult<()> {
@@ -204,25 +280,57 @@ mod tests {
         }
 
         fn list(&self) -> PhantomResult<Vec<String>> {
-            Err(PhantomError::VaultError(
-                "injected platform-pull listing failure".to_string(),
-            ))
+            Ok(Vec::new())
         }
 
         fn backend_name(&self) -> &str {
-            "list-failing"
+            "read-failing"
         }
     }
 
     #[test]
-    fn platform_pull_propagates_destination_listing_errors() {
-        let error = list_existing_secret_names(&ListFailingVault)
-            .expect_err("backend failure must not be interpreted as an empty vault");
+    fn platform_pull_propagates_destination_read_errors() {
+        let error = snapshot_secret(&ReadFailingVault, "TARGET")
+            .expect_err("backend failure must not be interpreted as an absent secret");
         assert!(error
             .to_string()
-            .contains("Failed to list existing vault secrets before platform pull"));
+            .contains("Failed to inspect destination secret 'TARGET'"));
         assert!(error
             .to_string()
-            .contains("injected platform-pull listing failure"));
+            .contains("injected platform-pull read failure"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn platform_pull_rejects_dotenv_symlink_before_vault_mutation() {
+        use phantom_vault::file::FileVault;
+        use std::os::unix::fs::symlink;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let outside = dir.path().join("outside.env");
+        std::fs::write(&outside, b"OWNER=unchanged\n").unwrap();
+        let env_path = dir.path().join(".env");
+        symlink(&outside, &env_path).unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = PhantomConfig::new_with_defaults("pull-symlink-test".to_string());
+        let vault =
+            FileVault::new(dir.path(), "pull-symlink-test", "passphrase".to_string()).unwrap();
+        let pulled = BTreeMap::from([("NEW_SECRET".to_string(), "provider-value".to_string())]);
+
+        let error = apply_platform_pull_transaction(
+            dir.path(),
+            &config_path,
+            &env_path,
+            &vault,
+            &config,
+            &pulled,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("target must be a regular file"));
+        assert!(!vault.exists("NEW_SECRET").unwrap());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"OWNER=unchanged\n");
     }
 }

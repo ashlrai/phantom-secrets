@@ -18,6 +18,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub struct InitSecret {
     name: String,
     value: Zeroizing<String>,
+    expected_before: Option<Option<Zeroizing<String>>>,
 }
 
 impl InitSecret {
@@ -25,6 +26,24 @@ impl InitSecret {
         Self {
             name: name.into(),
             value: Zeroizing::new(value.into()),
+            expected_before: None,
+        }
+    }
+
+    /// Require the destination to still match an exact before-image.
+    ///
+    /// `None` means the secret must still be absent. This is used by import
+    /// and pull transactions so an uncooperative concurrent writer cannot turn
+    /// a previously reviewed create into an overwrite.
+    pub fn replace_if_unchanged(
+        name: impl Into<String>,
+        expected_before: Option<impl Into<String>>,
+        value: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            value: Zeroizing::new(value.into()),
+            expected_before: Some(expected_before.map(|value| Zeroizing::new(value.into()))),
         }
     }
 }
@@ -42,6 +61,7 @@ impl fmt::Debug for InitSecret {
 pub struct InitFile {
     path: PathBuf,
     content: Zeroizing<Vec<u8>>,
+    expected_before: Option<Option<Zeroizing<Vec<u8>>>>,
     executable: bool,
     commit_last: bool,
 }
@@ -51,6 +71,25 @@ impl InitFile {
         Self {
             path: path.into(),
             content: Zeroizing::new(content.into()),
+            expected_before: None,
+            executable: false,
+            commit_last: false,
+        }
+    }
+
+    /// Require the file to still match an exact before-image before writing.
+    ///
+    /// `None` means the path must still be absent. Symlinks and non-regular
+    /// files are rejected independently by the transaction preflight.
+    pub fn replace_if_unchanged(
+        path: impl Into<PathBuf>,
+        expected_before: Option<impl Into<Vec<u8>>>,
+        content: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            content: Zeroizing::new(content.into()),
+            expected_before: Some(expected_before.map(|value| Zeroizing::new(value.into()))),
             executable: false,
             commit_last: false,
         }
@@ -192,6 +231,15 @@ fn commit_init_with(
         } else {
             None
         };
+        if let Some(expected_before) = secret.expected_before.as_ref() {
+            let matches = before.as_ref().map(|value| value.as_str())
+                == expected_before.as_ref().map(|value| value.as_str());
+            if !matches {
+                return Err(InitTransactionError::ConcurrentChange {
+                    target: secret.name,
+                });
+            }
+        }
         let metadata = vault
             .get_metadata(&secret.name)
             .map_err(|error| preflight_vault(&secret.name, error))?;
@@ -229,6 +277,15 @@ fn commit_init_with(
                 });
             }
         };
+        if let Some(expected_before) = file.expected_before.as_ref() {
+            let matches = before.as_ref().map(|value| value.as_slice())
+                == expected_before.as_ref().map(|value| value.as_slice());
+            if !matches {
+                return Err(InitTransactionError::ConcurrentChange {
+                    target: file.path.display().to_string(),
+                });
+            }
+        }
         file_snapshots.push(FileSnapshot {
             path: file.path,
             before,
@@ -796,6 +853,127 @@ mod tests {
         assert_eq!(std::fs::read(&file).unwrap(), b"KEY=phm_token\n");
         let debug = format!("{:?}", InitSecret::new("KEY", "plain-secret-value"));
         assert!(!debug.contains("plain-secret-value"));
+    }
+
+    #[test]
+    fn exact_absent_before_image_never_overwrites_a_concurrent_create() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        // The caller reviewed an absent destination, then another writer
+        // created it before this transaction acquired the project lock.
+        vault.store("TARGET", "concurrent-owner").unwrap();
+
+        let error = commit_init(
+            dir.path(),
+            &vault,
+            vec![InitSecret::replace_if_unchanged(
+                "TARGET",
+                None::<String>,
+                "imported-value",
+            )],
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            InitTransactionError::ConcurrentChange { .. }
+        ));
+        assert_eq!(
+            vault.retrieve("TARGET").unwrap().as_str(),
+            "concurrent-owner"
+        );
+    }
+
+    #[test]
+    fn exact_transactions_roll_back_prior_creates_when_a_later_cas_fails() {
+        let dir = TempDir::new().unwrap();
+        let failing = FailingVault {
+            inner: vault(&dir),
+            stores: AtomicUsize::new(0),
+            fail_store: 2,
+        };
+
+        let error = commit_init(
+            dir.path(),
+            &failing,
+            vec![
+                InitSecret::replace_if_unchanged("A", None::<String>, "one"),
+                InitSecret::replace_if_unchanged("B", None::<String>, "two"),
+            ],
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, InitTransactionError::Commit { .. }));
+        assert!(!failing.exists("A").unwrap());
+        assert!(!failing.exists("B").unwrap());
+    }
+
+    #[test]
+    fn exact_transaction_rolls_back_vault_when_final_file_write_fails() {
+        let dir = TempDir::new().unwrap();
+        let env = dir.path().join(".env");
+        std::fs::write(&env, b"BEFORE=reviewed\n").unwrap();
+        let vault = vault(&dir);
+        let writer = FailingWriter {
+            calls: AtomicUsize::new(0),
+            fail: 1,
+        };
+
+        let error = commit_init_with(
+            dir.path(),
+            &vault,
+            vec![InitSecret::replace_if_unchanged(
+                "TARGET",
+                None::<String>,
+                "provider-value",
+            )],
+            vec![InitFile::replace_if_unchanged(
+                &env,
+                Some(b"BEFORE=reviewed\n".to_vec()),
+                b"TARGET=phm_token\n".to_vec(),
+            )
+            .commit_last()],
+            &writer,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, InitTransactionError::Commit { .. }));
+        assert!(!vault.exists("TARGET").unwrap());
+        assert_eq!(std::fs::read(&env).unwrap(), b"BEFORE=reviewed\n");
+    }
+
+    #[test]
+    fn exact_file_before_image_rejects_concurrent_replacement_without_vault_changes() {
+        let dir = TempDir::new().unwrap();
+        let env = dir.path().join(".env");
+        std::fs::write(&env, b"BEFORE=reviewed\n").unwrap();
+        let vault = vault(&dir);
+        std::fs::write(&env, b"OWNER=concurrent\n").unwrap();
+
+        let error = commit_init(
+            dir.path(),
+            &vault,
+            vec![InitSecret::replace_if_unchanged(
+                "TARGET",
+                None::<String>,
+                "imported-value",
+            )],
+            vec![InitFile::replace_if_unchanged(
+                &env,
+                Some(b"BEFORE=reviewed\n".to_vec()),
+                b"TARGET=phm_token\n".to_vec(),
+            )],
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            InitTransactionError::ConcurrentChange { .. }
+        ));
+        assert!(!vault.exists("TARGET").unwrap());
+        assert_eq!(std::fs::read(&env).unwrap(), b"OWNER=concurrent\n");
     }
 
     #[test]

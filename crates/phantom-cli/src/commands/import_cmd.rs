@@ -50,59 +50,27 @@ pub fn run(
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
-    let mut imported = 0usize;
     let mut skipped = 0usize;
-    let mut failed = Vec::new();
-
+    let mut mutations = Vec::new();
     for (name, value) in &secrets.0 {
-        if !force {
-            match vault.exists(name) {
-                Ok(true) => {
-                    skipped += 1;
-                    continue;
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    failed.push(format!("{name}: failed to inspect destination: {error}"));
-                    continue;
-                }
-            }
+        let before = snapshot_destination_secret(vault.as_ref(), name)?;
+        if before.is_some() && !force {
+            skipped += 1;
+            continue;
         }
-
-        match vault.store(name, value) {
-            Ok(()) => imported += 1,
-            Err(e) => {
-                failed.push(format!("{name}: {e}"));
-            }
-        }
+        mutations.push(secret_mutation(name, value, before.as_ref()));
     }
-
-    if !failed.is_empty() {
-        for f in &failed {
-            println!("  {} {}", "FAIL".red().bold(), f);
-        }
-    }
+    let imported = mutations.len();
+    phantom_vault::commit_init(&project_dir, vault.as_ref(), mutations, Vec::new())
+        .context("Encrypted restore transaction failed")?;
 
     println!(
         "{} Imported {} secret(s) ({} skipped, {} failed)",
-        if failed.is_empty() {
-            "ok".green().bold()
-        } else {
-            "warn".yellow().bold()
-        },
+        "ok".green().bold(),
         imported,
         skipped,
-        failed.len()
+        0
     );
-
-    if !failed.is_empty() {
-        anyhow::bail!(
-            "Encrypted restore was only partially applied: {} imported, {} skipped, {} failed. Fix the reported destination errors and retry with --force only if overwriting successfully restored entries is intended.",
-            imported,
-            skipped,
-            failed.len()
-        );
-    }
 
     Ok(())
 }
@@ -250,17 +218,18 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
-    // Check for existing secrets and prompt unless --force
+    // Snapshot exact destination before-images before presenting overwrite
+    // consent. The transaction rejects any change after this review.
+    let mut before_images = BTreeMap::new();
     let mut existing = Vec::new();
-    if !force {
-        for name in secrets.keys() {
-            if destination_secret_exists(vault.as_ref(), name)? {
-                existing.push(name.clone());
-            }
+    for name in secrets.keys() {
+        let before = snapshot_destination_secret(vault.as_ref(), name)?;
+        if before.is_some() {
+            existing.push(name.clone());
         }
+        before_images.insert(name.clone(), before);
     }
 
-    let mut approved_existing = std::collections::BTreeSet::new();
     if !existing.is_empty() && !force {
         println!(
             "{} {} secret(s) already exist in the vault:",
@@ -280,47 +249,26 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
             println!("{} Import cancelled.", "!".yellow().bold());
             return Ok(());
         }
-        approved_existing.extend(existing);
     }
 
-    let mut imported = 0usize;
-    let mut skipped = 0usize;
-    let mut failed: Vec<String> = Vec::new();
-
+    let mut mutations = Vec::with_capacity(secrets.len());
     for (name, value) in &secrets {
-        let exists_now = !force && destination_secret_exists(vault.as_ref(), name)?;
-        if !competitor_import_store_allowed(force, &approved_existing, name, exists_now) {
-            // A duplicate that appeared after the reviewed preflight was not
-            // part of the operator's approval and must not be overwritten.
-            skipped += 1;
-            continue;
-        }
-
-        match vault.store(name, value.as_ref()) {
-            Ok(()) => imported += 1,
-            Err(e) => {
-                failed.push(format!("{name}: {e}"));
-            }
-        }
+        let before = before_images
+            .get(name)
+            .expect("every parsed secret has a destination snapshot");
+        mutations.push(secret_mutation(name, value.as_ref(), before.as_ref()));
     }
-
-    if !failed.is_empty() {
-        for f in &failed {
-            println!("  {} {}", "FAIL".red().bold(), f);
-        }
-    }
+    let imported = mutations.len();
+    phantom_vault::commit_init(&project_dir, vault.as_ref(), mutations, Vec::new())
+        .context("Competitor import transaction failed")?;
 
     println!(
         "{} Imported {} secret(s) from {} ({} skipped, {} failed)",
-        if failed.is_empty() {
-            "ok".green().bold()
-        } else {
-            "warn".yellow().bold()
-        },
+        "ok".green().bold(),
         imported,
         source,
-        skipped,
-        failed.len()
+        0,
+        0
     );
 
     // Suggest phantom init if a .env with plaintext secrets exists nearby
@@ -355,19 +303,29 @@ fn prompt_confirm(prompt: &str) -> Result<bool> {
     Ok(answer == "y" || answer == "yes")
 }
 
-fn destination_secret_exists(vault: &dyn phantom_vault::VaultBackend, name: &str) -> Result<bool> {
-    vault.exists(name).map_err(|error| {
-        anyhow::anyhow!("Failed to inspect destination secret '{name}' before import: {error}")
-    })
+fn snapshot_destination_secret(
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+) -> Result<Option<Zeroizing<String>>> {
+    match vault.retrieve(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => Ok(None),
+        Err(error) => Err(anyhow::anyhow!(
+            "Failed to inspect destination secret '{name}' before import: {error}"
+        )),
+    }
 }
 
-fn competitor_import_store_allowed(
-    force: bool,
-    approved_existing: &std::collections::BTreeSet<String>,
+fn secret_mutation(
     name: &str,
-    exists_now: bool,
-) -> bool {
-    force || !exists_now || approved_existing.contains(name)
+    value: &str,
+    before: Option<&Zeroizing<String>>,
+) -> phantom_vault::InitSecret {
+    phantom_vault::InitSecret::replace_if_unchanged(
+        name,
+        before.map(|value| value.as_str().to_string()),
+        value,
+    )
 }
 
 #[cfg(test)]
@@ -383,8 +341,10 @@ mod fail_closed_tests {
             panic!("store must not run after destination inspection fails")
         }
 
-        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
-            Err(PhantomError::SecretNotFound(name.to_string()))
+        fn retrieve(&self, _name: &str) -> PhantomResult<Zeroizing<String>> {
+            Err(PhantomError::VaultError(
+                "injected destination read failure".to_string(),
+            ))
         }
 
         fn delete(&self, _name: &str) -> PhantomResult<()> {
@@ -392,9 +352,7 @@ mod fail_closed_tests {
         }
 
         fn list(&self) -> PhantomResult<Vec<String>> {
-            Err(PhantomError::VaultError(
-                "injected destination listing failure".to_string(),
-            ))
+            Ok(Vec::new())
         }
 
         fn backend_name(&self) -> &str {
@@ -404,41 +362,21 @@ mod fail_closed_tests {
 
     #[test]
     fn competitor_import_propagates_destination_inspection_errors() {
-        let error = destination_secret_exists(&ListFailingVault, "EXISTING")
+        let error = snapshot_destination_secret(&ListFailingVault, "EXISTING")
             .expect_err("backend failure must not be interpreted as an absent secret");
         assert!(error
             .to_string()
             .contains("Failed to inspect destination secret 'EXISTING'"));
         assert!(error
             .to_string()
-            .contains("injected destination listing failure"));
+            .contains("injected destination read failure"));
     }
 
     #[test]
-    fn affirmative_import_approval_is_scoped_to_reviewed_existing_names() {
-        let approved_existing = std::collections::BTreeSet::from(["REVIEWED".to_string()]);
-
-        assert!(competitor_import_store_allowed(
-            false,
-            &approved_existing,
-            "REVIEWED",
-            true,
-        ));
-        assert!(
-            !competitor_import_store_allowed(false, &approved_existing, "NEW_DUPLICATE", true),
-            "a concurrently introduced duplicate was never reviewed"
-        );
-        assert!(competitor_import_store_allowed(
-            false,
-            &approved_existing,
-            "NEW_VALUE",
-            false,
-        ));
-        assert!(competitor_import_store_allowed(
-            true,
-            &std::collections::BTreeSet::new(),
-            "FORCED",
-            true,
-        ));
+    fn import_mutation_debug_never_contains_secret_values() {
+        let mutation = secret_mutation("NEW_VALUE", "plaintext-never-print", None);
+        let debug = format!("{mutation:?}");
+        assert!(debug.contains("NEW_VALUE"));
+        assert!(!debug.contains("plaintext-never-print"));
     }
 }

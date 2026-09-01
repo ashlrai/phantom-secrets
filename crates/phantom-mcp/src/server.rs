@@ -781,10 +781,15 @@ impl PhantomMcpServer {
 
         match new_value {
             Some(secret) => {
-                // Store the new value in vault — secret is zeroized after this.
-                vault
-                    .store(&params.name, secret.as_str())
-                    .map_err(|e| internal_err(format!("Failed to store rotated secret: {e}")))?;
+                // Bind local persistence to the exact value reviewed before the
+                // provider call. A concurrent local writer must never be
+                // overwritten after the provider has already issued a value.
+                persist_issued_provider_credential(
+                    vault.as_ref(),
+                    &params.name,
+                    old_value.as_ref(),
+                    secret.as_str(),
+                )?;
 
                 phantom_core::audit::log("vault.rotation.provider.stored", Some(&params.name));
 
@@ -794,7 +799,15 @@ impl PhantomMcpServer {
                 let env_path = self.env_path();
                 let mut env_token_refreshed = false;
                 if env_path.exists() {
-                    remap_phantom_tokens(&env_path, std::slice::from_ref(&params.name))?;
+                    remap_phantom_tokens(&env_path, std::slice::from_ref(&params.name)).map_err(
+                        |error| {
+                            provider_rotation_partial_error(
+                                &params.name,
+                                "local Phantom-token remap",
+                                &error.message,
+                            )
+                        },
+                    )?;
                     env_token_refreshed = true;
                 }
 
@@ -955,6 +968,11 @@ impl PhantomMcpServer {
             .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
 
         let (config, vault) = self.load_config_and_vault()?;
+        let config_before = std::fs::read(self.config_path()).map_err(|error| {
+            internal_err(format!(
+                "Failed to snapshot .phantom.toml before cloud pull: {error}"
+            ))
+        })?;
 
         let api_base = phantom_core::auth::api_base_url()
             .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
@@ -991,7 +1009,20 @@ impl PhantomMcpServer {
         // Run the store loop without `?` so a mid-loop error can't bypass the
         // zeroize sweep below — serde produced fresh String allocations the
         // Zeroizing<plaintext> wrapper does not reach.
-        let store_result = apply_cloud_pull_secrets(vault.as_ref(), &secrets, params.force);
+        let mut updated_config = config;
+        updated_config.cloud.get_or_insert_default().version = pull_data.version;
+        let config_after = toml::to_string_pretty(&updated_config)
+            .map_err(|error| internal_err(format!("Failed to serialize cloud version: {error}")))?
+            .into_bytes();
+        let store_result = apply_cloud_pull_transaction(
+            &self.project_dir,
+            &self.config_path(),
+            vault.as_ref(),
+            &secrets,
+            params.force,
+            config_before,
+            config_after,
+        );
 
         for value in secrets.values_mut() {
             zeroize::Zeroize::zeroize(value);
@@ -999,9 +1030,6 @@ impl PhantomMcpServer {
         drop(secrets);
 
         let (added, skipped) = store_result?;
-
-        let mut config = config;
-        self.save_cloud_version(&mut config, pull_data.version);
 
         let msg = if skipped > 0 {
             format!("Pulled {added} secret(s), {skipped} skipped (already exist, use force=true to overwrite).")
@@ -4191,44 +4219,93 @@ fn persist_provider_rotation_metadata(
     vault
         .record_provider_rotation(name, expires_override)
         .map_err(|error| {
-            internal_err(format!(
-                "Provider issued and Phantom stored a new credential for '{name}', but rotation metadata could not be persisted; provider cleanup was not attempted: {error}"
-            ))
+            provider_rotation_partial_error(name, "rotation metadata persistence", error)
         })
 }
 
-fn apply_cloud_pull_secrets(
+fn provider_rotation_partial_error(
+    name: &str,
+    failed_stage: &str,
+    error: impl std::fmt::Display,
+) -> McpError {
+    internal_err(format!(
+        "Provider rotation for '{name}' partially succeeded: the provider issued a new credential and Phantom stored it in the local vault, but {failed_stage} failed. Provider cleanup was not attempted. Do not retry automatically: first reconcile the provider credential, local vault, Phantom token, and rotation metadata. Cause: {error}"
+    ))
+}
+
+fn persist_issued_provider_credential(
     vault: &dyn phantom_vault::VaultBackend,
-    secrets: &std::collections::BTreeMap<String, String>,
-    force: bool,
-) -> Result<(usize, usize), McpError> {
-    let mut pending = Vec::new();
-    let mut skipped = 0;
-    for (name, value) in secrets {
-        if force {
-            pending.push((name, value));
-        } else {
-            match vault.exists(name) {
-                Ok(true) => {
-                    skipped += 1;
-                }
-                Ok(false) => pending.push((name, value)),
-                Err(error) => {
-                    return Err(internal_err(format!(
-                        "Failed to inspect local secret '{name}' before cloud pull: {error}"
-                    )));
-                }
-            }
+    name: &str,
+    expected_before: Option<&zeroize::Zeroizing<String>>,
+    issued_value: &str,
+) -> Result<(), McpError> {
+    let expected = expected_before.map(|value| value.as_str());
+    match vault.compare_and_swap(name, expected, Some(issued_value)) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(provider_rotation_partial_error(
+                name,
+                "local vault persistence because the credential changed concurrently",
+                "exact before-image no longer matched",
+            ));
+        }
+        Err(error) => {
+            return Err(provider_rotation_partial_error(
+                name,
+                "local vault persistence",
+                error,
+            ));
         }
     }
 
-    let mut added = 0;
-    for (name, value) in pending {
-        vault.store(name, value).map_err(|error| {
-            internal_err(format!("Failed to store pulled secret '{name}': {error}"))
-        })?;
-        added += 1;
+    match vault.retrieve(name) {
+        Ok(stored) if stored.as_str() == issued_value => Ok(()),
+        Ok(_) => Err(provider_rotation_partial_error(
+            name,
+            "local vault persistence verification",
+            "stored value did not match the provider-issued credential",
+        )),
+        Err(error) => Err(provider_rotation_partial_error(
+            name,
+            "local vault persistence verification",
+            error,
+        )),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_cloud_pull_transaction(
+    project_dir: &Path,
+    config_path: &Path,
+    vault: &dyn phantom_vault::VaultBackend,
+    secrets: &std::collections::BTreeMap<String, String>,
+    force: bool,
+    config_before: Vec<u8>,
+    config_after: Vec<u8>,
+) -> Result<(usize, usize), McpError> {
+    let mut mutations = Vec::new();
+    let mut skipped = 0;
+    for (name, value) in secrets {
+        let before = retrieve_optional_secret(vault, name, "local cloud-pull destination")?;
+        if before.is_some() && !force {
+            skipped += 1;
+            continue;
+        }
+        mutations.push(phantom_vault::InitSecret::replace_if_unchanged(
+            name,
+            before.as_ref().map(|value| value.as_str().to_string()),
+            value,
+        ));
+    }
+
+    let added = mutations.len();
+    let config_file = phantom_vault::InitFile::replace_if_unchanged(
+        config_path,
+        Some(config_before),
+        config_after,
+    );
+    phantom_vault::commit_init(project_dir, vault, mutations, vec![config_file])
+        .map_err(|error| internal_err(format!("Cloud pull transaction failed: {error}")))?;
     Ok((added, skipped))
 }
 
@@ -4386,9 +4463,9 @@ mod tests {
         store_calls: AtomicUsize,
     }
 
-    struct SecondInspectionFailureVault {
-        inspection_calls: AtomicUsize,
-        store_calls: AtomicUsize,
+    struct ConcurrentCreateVault {
+        inner: phantom_vault::file::FileVault,
+        injected: std::sync::atomic::AtomicBool,
     }
 
     impl BackendFailureVault {
@@ -4436,35 +4513,70 @@ mod tests {
         }
     }
 
-    impl phantom_vault::VaultBackend for SecondInspectionFailureVault {
-        fn store(&self, _name: &str, _value: &str) -> phantom_core::error::Result<()> {
-            self.store_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+    impl phantom_vault::VaultBackend for ConcurrentCreateVault {
+        fn store(&self, name: &str, value: &str) -> phantom_core::error::Result<()> {
+            self.inner.store(name, value)
         }
 
         fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
-            Err(phantom_core::error::PhantomError::SecretNotFound(
-                name.to_string(),
-            ))
+            self.inner.retrieve(name)
         }
 
-        fn delete(&self, _name: &str) -> phantom_core::error::Result<()> {
-            Ok(())
+        fn delete(&self, name: &str) -> phantom_core::error::Result<()> {
+            self.inner.delete(name)
+        }
+
+        fn compare_and_swap(
+            &self,
+            name: &str,
+            expected: Option<&str>,
+            replacement: Option<&str>,
+        ) -> phantom_core::error::Result<bool> {
+            if !self
+                .injected
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                self.inner.store(name, "concurrent-owner")?;
+            }
+            self.inner.compare_and_swap(name, expected, replacement)
         }
 
         fn list(&self) -> phantom_core::error::Result<Vec<String>> {
-            let inspection = self.inspection_calls.fetch_add(1, Ordering::SeqCst);
-            if inspection == 0 {
-                Ok(Vec::new())
-            } else {
-                Err(phantom_core::error::PhantomError::VaultError(
-                    "injected second inspection failure".to_string(),
-                ))
-            }
+            self.inner.list()
         }
 
         fn backend_name(&self) -> &str {
-            "second-inspection-failure"
+            "concurrent-create"
+        }
+
+        fn get_metadata(
+            &self,
+            name: &str,
+        ) -> phantom_core::error::Result<Option<phantom_vault::SecretMetadata>> {
+            self.inner.get_metadata(name)
+        }
+
+        fn set_metadata(
+            &self,
+            name: &str,
+            metadata: phantom_vault::SecretMetadata,
+        ) -> phantom_core::error::Result<()> {
+            self.inner.set_metadata(name, metadata)
+        }
+
+        fn get_validation_metadata(
+            &self,
+            name: &str,
+        ) -> phantom_core::error::Result<phantom_core::validator::ValidationMetadata> {
+            self.inner.get_validation_metadata(name)
+        }
+
+        fn set_validation_metadata(
+            &self,
+            name: &str,
+            metadata: phantom_core::validator::ValidationMetadata,
+        ) -> phantom_core::error::Result<()> {
+            self.inner.set_validation_metadata(name, metadata)
         }
     }
 
@@ -4501,48 +4613,165 @@ mod tests {
             .expect_err("metadata persistence errors must prevent a success response");
         assert!(metadata_error
             .message
-            .contains("rotation metadata could not be persisted"));
+            .contains("rotation metadata persistence failed"));
+        assert!(metadata_error.message.contains("partially succeeded"));
+        assert!(metadata_error
+            .message
+            .contains("Do not retry automatically"));
         assert!(metadata_error
             .message
             .contains("injected metadata write failure"));
+
+        let remap_error = provider_rotation_partial_error(
+            "TARGET",
+            "local Phantom-token remap",
+            "injected remap failure",
+        );
+        assert!(remap_error.message.contains("partially succeeded"));
+        assert!(remap_error.message.contains("Do not retry automatically"));
+        assert!(remap_error.message.contains("injected remap failure"));
     }
 
     #[test]
-    fn cloud_pull_never_stores_when_overwrite_inspection_fails() {
+    fn provider_issued_value_uses_exact_cas_and_verifies_storage() {
+        let dir = TempDir::new().unwrap();
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "provider-cas-success",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        phantom_vault::VaultBackend::store(&vault, "TARGET", "reviewed-old").unwrap();
+        let expected = zeroize::Zeroizing::new("reviewed-old".to_string());
+
+        persist_issued_provider_credential(
+            &vault,
+            "TARGET",
+            Some(&expected),
+            "provider-issued-new",
+        )
+        .unwrap();
+
+        assert_eq!(
+            phantom_vault::VaultBackend::retrieve(&vault, "TARGET")
+                .unwrap()
+                .as_str(),
+            "provider-issued-new"
+        );
+    }
+
+    #[test]
+    fn provider_issued_value_never_overwrites_a_concurrent_local_change() {
+        let dir = TempDir::new().unwrap();
+        let inner = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "provider-cas-race",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        phantom_vault::VaultBackend::store(&inner, "TARGET", "reviewed-old").unwrap();
+        let vault = ConcurrentCreateVault {
+            inner,
+            injected: std::sync::atomic::AtomicBool::new(false),
+        };
+        let expected = zeroize::Zeroizing::new("reviewed-old".to_string());
+
+        let error = persist_issued_provider_credential(
+            &vault,
+            "TARGET",
+            Some(&expected),
+            "provider-issued-new",
+        )
+        .expect_err("a concurrent local owner must defeat the exact CAS");
+
+        assert!(error.message.contains("partially succeeded"));
+        assert!(error.message.contains("changed concurrently"));
+        assert!(error.message.contains("Do not retry automatically"));
+        assert!(!error.message.contains("provider-issued-new"));
+        assert_eq!(
+            phantom_vault::VaultBackend::retrieve(&vault, "TARGET")
+                .unwrap()
+                .as_str(),
+            "concurrent-owner"
+        );
+    }
+
+    #[test]
+    fn provider_issued_value_reports_backend_cas_failure_as_partial_success() {
         let vault = BackendFailureVault::new();
-        let secrets =
-            std::collections::BTreeMap::from([("EXISTING".to_string(), "replacement".to_string())]);
+        let error =
+            persist_issued_provider_credential(&vault, "TARGET", None, "provider-issued-new")
+                .expect_err("a backend CAS failure follows provider issuance");
 
-        let error = apply_cloud_pull_secrets(&vault, &secrets, false)
-            .expect_err("force=false must fail closed when existence cannot be checked");
-
-        assert!(error.message.contains("Failed to inspect local secret"));
-        assert!(error.message.contains("injected vault listing failure"));
+        assert!(error.message.contains("partially succeeded"));
+        assert!(error.message.contains("local vault persistence"));
+        assert!(error.message.contains("Do not retry automatically"));
+        assert!(!error.message.contains("provider-issued-new"));
         assert_eq!(vault.store_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn cloud_pull_preflights_every_non_overwrite_check_before_first_store() {
-        let vault = SecondInspectionFailureVault {
-            inspection_calls: AtomicUsize::new(0),
-            store_calls: AtomicUsize::new(0),
+    fn cloud_pull_never_stores_when_overwrite_inspection_fails() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        std::fs::write(&config_path, b"before").unwrap();
+        let vault = BackendFailureVault::new();
+        let secrets =
+            std::collections::BTreeMap::from([("EXISTING".to_string(), "replacement".to_string())]);
+
+        let error = apply_cloud_pull_transaction(
+            dir.path(),
+            &config_path,
+            &vault,
+            &secrets,
+            false,
+            b"before".to_vec(),
+            b"after".to_vec(),
+        )
+        .expect_err("force=false must fail closed when existence cannot be checked");
+
+        assert!(error.message.contains("local cloud-pull destination"));
+        assert!(error.message.contains("injected credential read failure"));
+        assert_eq!(vault.store_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(&config_path).unwrap(), b"before");
+    }
+
+    #[test]
+    fn cloud_pull_never_overwrites_a_concurrent_force_false_create() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        std::fs::write(&config_path, b"before").unwrap();
+        let vault = ConcurrentCreateVault {
+            inner: phantom_vault::file::FileVault::new(
+                dir.path(),
+                "cloud-pull-race",
+                "passphrase".to_string(),
+            )
+            .unwrap(),
+            injected: std::sync::atomic::AtomicBool::new(false),
         };
-        let secrets = std::collections::BTreeMap::from([
-            ("A_FIRST".to_string(), "first-value".to_string()),
-            ("B_SECOND".to_string(), "second-value".to_string()),
-        ]);
+        let secrets =
+            std::collections::BTreeMap::from([("RACE".to_string(), "cloud-value".to_string())]);
 
-        let error = apply_cloud_pull_secrets(&vault, &secrets, false)
-            .expect_err("the second inspection failure must abort the whole preflight");
+        let error = apply_cloud_pull_transaction(
+            dir.path(),
+            &config_path,
+            &vault,
+            &secrets,
+            false,
+            b"before".to_vec(),
+            b"after".to_vec(),
+        )
+        .expect_err("a concurrent create must make the exact CAS fail");
 
-        assert!(error.message.contains("B_SECOND"));
-        assert!(error.message.contains("injected second inspection failure"));
-        assert_eq!(vault.inspection_calls.load(Ordering::SeqCst), 2);
+        assert!(error.message.contains("state changed concurrently"));
         assert_eq!(
-            vault.store_calls.load(Ordering::SeqCst),
-            0,
-            "no store may start until every force=false inspection succeeds"
+            phantom_vault::VaultBackend::retrieve(&vault, "RACE")
+                .unwrap()
+                .as_str(),
+            "concurrent-owner"
         );
+        assert_eq!(std::fs::read(&config_path).unwrap(), b"before");
     }
 
     struct TestHome {
