@@ -251,11 +251,14 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Check for existing secrets and prompt unless --force
-    let existing: Vec<String> = secrets
-        .keys()
-        .filter(|k: &&String| vault.exists(k.as_str()).unwrap_or(false))
-        .cloned()
-        .collect();
+    let mut existing = Vec::new();
+    if !force {
+        for name in secrets.keys() {
+            if destination_secret_exists(vault.as_ref(), name)? {
+                existing.push(name.clone());
+            }
+        }
+    }
 
     if !existing.is_empty() && !force {
         println!(
@@ -283,7 +286,7 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
     let mut failed: Vec<String> = Vec::new();
 
     for (name, value) in &secrets {
-        if vault.exists(name).unwrap_or(false) && !force {
+        if !force && destination_secret_exists(vault.as_ref(), name)? {
             // This branch is only reached if the user declined the interactive prompt above
             // or if a new duplicate appears mid-iteration (shouldn't happen, but be safe).
             skipped += 1;
@@ -347,4 +350,55 @@ fn prompt_confirm(prompt: &str) -> Result<bool> {
     io::stdin().read_line(&mut buf)?;
     let answer = buf.trim().to_ascii_lowercase();
     Ok(answer == "y" || answer == "yes")
+}
+
+fn destination_secret_exists(vault: &dyn phantom_vault::VaultBackend, name: &str) -> Result<bool> {
+    vault.exists(name).map_err(|error| {
+        anyhow::anyhow!("Failed to inspect destination secret '{name}' before import: {error}")
+    })
+}
+
+#[cfg(test)]
+mod fail_closed_tests {
+    use super::*;
+    use phantom_core::error::{PhantomError, Result as PhantomResult};
+    use zeroize::Zeroizing;
+
+    struct ListFailingVault;
+
+    impl phantom_vault::VaultBackend for ListFailingVault {
+        fn store(&self, _name: &str, _value: &str) -> PhantomResult<()> {
+            panic!("store must not run after destination inspection fails")
+        }
+
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            Err(PhantomError::SecretNotFound(name.to_string()))
+        }
+
+        fn delete(&self, _name: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            Err(PhantomError::VaultError(
+                "injected destination listing failure".to_string(),
+            ))
+        }
+
+        fn backend_name(&self) -> &str {
+            "list-failing"
+        }
+    }
+
+    #[test]
+    fn competitor_import_propagates_destination_inspection_errors() {
+        let error = destination_secret_exists(&ListFailingVault, "EXISTING")
+            .expect_err("backend failure must not be interpreted as an absent secret");
+        assert!(error
+            .to_string()
+            .contains("Failed to inspect destination secret 'EXISTING'"));
+        assert!(error
+            .to_string()
+            .contains("injected destination listing failure"));
+    }
 }

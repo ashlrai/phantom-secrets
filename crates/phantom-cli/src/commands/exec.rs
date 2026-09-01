@@ -62,14 +62,22 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
 
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
-                // Build the vault key for this env: try namespaced first, then bare (legacy)
+                // Build the vault key for this env: try namespaced first, then bare (legacy).
+                // Backend errors are distinct from a missing key and must abort
+                // before a partially mapped proxy session can start.
                 let namespaced = phantom_core::env_scope::namespaced_key(&active_env, &entry.key);
-                let real_value = if vault.exists(&namespaced).unwrap_or(false) {
-                    vault.retrieve(&namespaced).ok()
-                } else if active_env == DEFAULT_ENV {
-                    vault.retrieve(&entry.key).ok()
-                } else {
-                    None
+                let real_value = match retrieve_optional_secret(
+                    vault.as_ref(),
+                    &namespaced,
+                    "namespaced session secret",
+                )? {
+                    Some(value) => Some(value),
+                    None if active_env == DEFAULT_ENV => retrieve_optional_secret(
+                        vault.as_ref(),
+                        &entry.key,
+                        "legacy session secret",
+                    )?,
+                    None => None,
                 };
 
                 match real_value {
@@ -281,6 +289,20 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn retrieve_optional_secret(
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+    purpose: &str,
+) -> Result<Option<zeroize::Zeroizing<String>>> {
+    match vault.retrieve(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => Ok(None),
+        Err(error) => Err(anyhow::anyhow!(
+            "Failed to read {purpose} '{name}' from the vault: {error}"
+        )),
+    }
+}
+
 /// Check if `package.json` lists `next` as a dependency or devDependency.
 /// Uses a lightweight string search to avoid pulling in a JSON parser.
 fn detect_next_dependency(package_json: &Path) -> bool {
@@ -311,4 +333,54 @@ async fn run_command_directly(cmd: &[String]) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phantom_core::error::{PhantomError, Result as PhantomResult};
+    use zeroize::Zeroizing;
+
+    struct ReadFailingVault;
+
+    impl phantom_vault::VaultBackend for ReadFailingVault {
+        fn store(&self, _name: &str, _value: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+
+        fn retrieve(&self, _name: &str) -> PhantomResult<Zeroizing<String>> {
+            Err(PhantomError::VaultError(
+                "injected session credential read failure".to_string(),
+            ))
+        }
+
+        fn delete(&self, _name: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn backend_name(&self) -> &str {
+            "read-failing"
+        }
+    }
+
+    #[test]
+    fn exec_propagates_vault_read_errors_before_starting_a_session() {
+        let error = retrieve_optional_secret(
+            &ReadFailingVault,
+            "production::API_KEY",
+            "namespaced session secret",
+        )
+        .expect_err("backend error must not be treated as an absent mapping");
+
+        assert!(error
+            .to_string()
+            .contains("Failed to read namespaced session secret"));
+        assert!(error
+            .to_string()
+            .contains("injected session credential read failure"));
+    }
 }

@@ -6,7 +6,7 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::tools::helpers::{
     internal_err, invalid_params_err, require_approval_token, require_confirm, text_result,
@@ -412,7 +412,9 @@ impl PhantomMcpServer {
         }
 
         let (config, vault) = self.load_config_and_vault()?;
-        let names = vault.list().unwrap_or_default();
+        let names = vault
+            .list()
+            .map_err(|error| internal_err(format!("Failed to list vault secrets: {error}")))?;
 
         let mut output = String::new();
         output.push_str(&format!("Project ID: {}\n", config.portable_project_id()));
@@ -634,18 +636,9 @@ impl PhantomMcpServer {
             return text_result("No secrets to rotate.");
         }
 
-        let mut token_map = TokenMap::new();
-        for name in &names {
-            token_map.insert(name.clone());
-        }
-
         let env_path = self.env_path();
         if env_path.exists() {
-            let dotenv = DotenvFile::parse_file(&env_path)
-                .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
-            dotenv
-                .write_phantomized(&token_map, &env_path)
-                .map_err(|e| internal_err(format!("Failed to rewrite .env: {e}")))?;
+            remap_phantom_tokens(&env_path, &names)?;
         }
 
         text_result(format!(
@@ -759,10 +752,15 @@ impl PhantomMcpServer {
 
         // Bootstrap credential: environment variable first, then the vault
         // under the same name. Zeroized after the call; never in the response.
-        let bootstrap = provider_config
+        let bootstrap = match provider_config
             .and_then(|cfg| cfg.api_key_env.as_deref())
             .filter(|env_name| std::env::var(env_name).is_err())
-            .and_then(|env_name| vault.retrieve(env_name).ok());
+        {
+            Some(env_name) => {
+                retrieve_optional_secret(vault.as_ref(), env_name, "provider bootstrap credential")?
+            }
+            None => None,
+        };
 
         // Build the provider list and attempt vendor rotation.
         let providers = phantom_core::rotation_provider::default_rotation_providers();
@@ -770,7 +768,8 @@ impl PhantomMcpServer {
         // Capture the outgoing value BEFORE overwriting it: providers that
         // revoke the old credential (Vercel) do so only after the new value is
         // durably stored, authenticating with the old value itself.
-        let old_value = vault.retrieve(&params.name).ok();
+        let old_value =
+            retrieve_optional_secret(vault.as_ref(), &params.name, "outgoing provider credential")?;
 
         let new_value = phantom_core::rotation_provider::auto_sync_rotation_with_bootstrap(
             &params.name,
@@ -795,13 +794,7 @@ impl PhantomMcpServer {
                 let env_path = self.env_path();
                 let mut env_token_refreshed = false;
                 if env_path.exists() {
-                    let mut token_map = TokenMap::new();
-                    token_map.insert(params.name.clone());
-                    let dotenv = DotenvFile::parse_file(&env_path)
-                        .map_err(|e| internal_err(format!("Failed to parse .env: {e}")))?;
-                    dotenv
-                        .write_phantomized(&token_map, &env_path)
-                        .map_err(|e| internal_err(format!("Failed to rewrite .env: {e}")))?;
+                    remap_phantom_tokens(&env_path, std::slice::from_ref(&params.name))?;
                     env_token_refreshed = true;
                 }
 
@@ -816,11 +809,13 @@ impl PhantomMcpServer {
                 } else {
                     None
                 };
-                let expires_line = vault
-                    .record_provider_rotation(&params.name, expires_override)
-                    .unwrap_or(None)
-                    .map(|ts| format!("expires_at: {ts}\n"))
-                    .unwrap_or_default();
+                let expires_line = persist_provider_rotation_metadata(
+                    vault.as_ref(),
+                    &params.name,
+                    expires_override,
+                )?
+                .map(|ts| format!("expires_at: {ts}\n"))
+                .unwrap_or_default();
 
                 // New value is durably stored — best-effort revoke of the old
                 // credential at the vendor (audited, fail-open).
@@ -996,31 +991,14 @@ impl PhantomMcpServer {
         // Run the store loop without `?` so a mid-loop error can't bypass the
         // zeroize sweep below — serde produced fresh String allocations the
         // Zeroizing<plaintext> wrapper does not reach.
-        let mut added = 0;
-        let mut skipped = 0;
-        let mut store_err: Option<McpError> = None;
-        for (name, value) in &secrets {
-            if !params.force && vault.exists(name).unwrap_or(false) {
-                skipped += 1;
-                continue;
-            }
-            match vault.store(name, value) {
-                Ok(()) => added += 1,
-                Err(e) => {
-                    store_err = Some(internal_err(format!("Failed to store secret: {e}")));
-                    break;
-                }
-            }
-        }
+        let store_result = apply_cloud_pull_secrets(vault.as_ref(), &secrets, params.force);
 
         for value in secrets.values_mut() {
             zeroize::Zeroize::zeroize(value);
         }
         drop(secrets);
 
-        if let Some(err) = store_err {
-            return Err(err);
-        }
+        let (added, skipped) = store_result?;
 
         let mut config = config;
         self.save_cloud_version(&mut config, pull_data.version);
@@ -2310,14 +2288,7 @@ impl PhantomMcpServer {
             }
         }
 
-        use phantom_core::token::TokenMap;
-        let mut token_map = TokenMap::new();
-        for name in &names {
-            token_map.insert(name.clone());
-        }
-        dotenv
-            .write_phantomized(&token_map, &env_path)
-            .map_err(|e| internal_err(format!("Failed to atomically rewrite .env: {e}")))?;
+        remap_phantom_tokens(&env_path, &names)?;
         for name in &names {
             phantom_core::audit::log("secret.token_remapped", Some(name));
         }
@@ -3939,17 +3910,7 @@ impl PhantomMcpServer {
             )));
         }
 
-        use phantom_core::token::TokenMap;
-        let mut token_map = TokenMap::new();
-        token_map.insert(params.name.clone());
-        dotenv
-            .write_phantomized(&token_map, &env_path)
-            .map_err(|e| {
-                internal_err(format!(
-                    "Failed to atomically rewrite {}: {e}",
-                    env_path.display()
-                ))
-            })?;
+        remap_phantom_tokens(&env_path, std::slice::from_ref(&params.name))?;
 
         phantom_core::audit::log("secret.token_remapped", Some(&params.name));
 
@@ -4208,6 +4169,154 @@ fn wrapped_script_command(original: &str) -> String {
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
+fn retrieve_optional_secret(
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+    purpose: &str,
+) -> Result<Option<zeroize::Zeroizing<String>>, McpError> {
+    match vault.retrieve(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => Ok(None),
+        Err(error) => Err(internal_err(format!(
+            "Failed to read {purpose} '{name}' from the vault: {error}"
+        ))),
+    }
+}
+
+fn persist_provider_rotation_metadata(
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+    expires_override: Option<u64>,
+) -> Result<Option<u64>, McpError> {
+    vault
+        .record_provider_rotation(name, expires_override)
+        .map_err(|error| {
+            internal_err(format!(
+                "Provider issued and Phantom stored a new credential for '{name}', but rotation metadata could not be persisted; provider cleanup was not attempted: {error}"
+            ))
+        })
+}
+
+fn apply_cloud_pull_secrets(
+    vault: &dyn phantom_vault::VaultBackend,
+    secrets: &std::collections::BTreeMap<String, String>,
+    force: bool,
+) -> Result<(usize, usize), McpError> {
+    let mut added = 0;
+    let mut skipped = 0;
+    for (name, value) in secrets {
+        if !force {
+            match vault.exists(name) {
+                Ok(true) => {
+                    skipped += 1;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    return Err(internal_err(format!(
+                        "Failed to inspect local secret '{name}' before cloud pull: {error}"
+                    )));
+                }
+            }
+        }
+        vault.store(name, value).map_err(|error| {
+            internal_err(format!("Failed to store pulled secret '{name}': {error}"))
+        })?;
+        added += 1;
+    }
+    Ok((added, skipped))
+}
+
+/// Replace protected placeholders while holding Phantom's per-project
+/// transaction lock. The before-image check also refuses an uncooperative
+/// writer that changes `.env` without taking the lock.
+fn remap_phantom_tokens(env_path: &Path, names: &[String]) -> Result<(), McpError> {
+    remap_phantom_tokens_with(env_path, names, || {})
+}
+
+fn remap_phantom_tokens_with(
+    env_path: &Path,
+    names: &[String],
+    before_commit: impl FnOnce(),
+) -> Result<(), McpError> {
+    let project_dir = env_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let _transaction_lock =
+        phantom_vault::acquire_project_transaction_lock(project_dir).map_err(|error| {
+            internal_err(format!(
+                "Failed to acquire transaction lock for {}: {error}",
+                project_dir.display()
+            ))
+        })?;
+    if !env_path.exists() {
+        return Err(invalid_params_err(format!(
+            "Cannot remap Phantom tokens: {} does not exist.",
+            env_path.display()
+        )));
+    }
+
+    let before = std::fs::read(env_path).map_err(|error| {
+        internal_err(format!(
+            "Failed to snapshot {}: {error}",
+            env_path.display()
+        ))
+    })?;
+    let dotenv = DotenvFile::parse_file(env_path).map_err(|error| {
+        internal_err(format!("Failed to parse {}: {error}", env_path.display()))
+    })?;
+    for name in names {
+        let entry = dotenv
+            .entries()
+            .into_iter()
+            .find(|entry| entry.key == *name)
+            .ok_or_else(|| {
+                invalid_params_err(format!(
+                    "Cannot remap '{name}': it is not present in {}.",
+                    env_path.display()
+                ))
+            })?;
+        if !entry.is_phantom {
+            return Err(invalid_params_err(format!(
+                "Cannot remap '{name}': its value in {} is not a protected phm_ token.",
+                env_path.display()
+            )));
+        }
+    }
+
+    let mut token_map = TokenMap::new();
+    for name in names {
+        token_map.insert(name.clone());
+    }
+    let (rewritten, mut originals) = dotenv.rewrite_with_phantoms(&token_map);
+    for value in originals.values_mut() {
+        zeroize::Zeroize::zeroize(value);
+    }
+    originals.clear();
+
+    before_commit();
+    let current = std::fs::read(env_path).map_err(|error| {
+        internal_err(format!(
+            "Failed to verify {} before commit: {error}",
+            env_path.display()
+        ))
+    })?;
+    if current != before {
+        return Err(internal_err(format!(
+            "Cannot remap Phantom tokens: {} changed after it was read; no Phantom write was committed.",
+            env_path.display()
+        )));
+    }
+    phantom_core::fs::atomic_write(env_path, rewritten.as_bytes()).map_err(|error| {
+        internal_err(format!(
+            "Failed to atomically rewrite {}: {error}",
+            env_path.display()
+        ))
+    })?;
+    Ok(())
+}
+
 /// Convert a Unix timestamp to a minimal ISO-8601 string (UTC, no external deps).
 fn iso8601(secs: u64) -> String {
     let days = secs / 86400;
@@ -4261,11 +4370,114 @@ impl ServerHandler for PhantomMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use tempfile::TempDir;
 
     /// Shared lock so that tests mutating HOME do not race each other.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct BackendFailureVault {
+        store_calls: AtomicUsize,
+    }
+
+    impl BackendFailureVault {
+        fn new() -> Self {
+            Self {
+                store_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl phantom_vault::VaultBackend for BackendFailureVault {
+        fn store(&self, _name: &str, _value: &str) -> phantom_core::error::Result<()> {
+            self.store_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn retrieve(&self, _name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "injected credential read failure".to_string(),
+            ))
+        }
+
+        fn delete(&self, _name: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "injected vault listing failure".to_string(),
+            ))
+        }
+
+        fn backend_name(&self) -> &str {
+            "backend-failure"
+        }
+
+        fn set_metadata(
+            &self,
+            _name: &str,
+            _meta: phantom_vault::SecretMetadata,
+        ) -> phantom_core::error::Result<()> {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "injected metadata write failure".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn mcp_remap_rejects_a_concurrent_env_change_without_overwriting_it() {
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        let old = format!("phm_{}", "a".repeat(64));
+        std::fs::write(&env_path, format!("TARGET={old}\n")).unwrap();
+
+        let error = remap_phantom_tokens_with(&env_path, &["TARGET".to_string()], || {
+            std::fs::write(&env_path, b"TARGET=concurrent-owner\n").unwrap();
+        })
+        .unwrap_err();
+
+        assert!(error.message.contains("changed after it was read"));
+        assert_eq!(
+            std::fs::read(&env_path).unwrap(),
+            b"TARGET=concurrent-owner\n"
+        );
+    }
+
+    #[test]
+    fn provider_rotation_backend_failures_are_not_rendered_as_success() {
+        let vault = BackendFailureVault::new();
+
+        let read_error = retrieve_optional_secret(&vault, "TARGET", "outgoing credential")
+            .expect_err("backend read errors must not be treated as a missing secret");
+        assert!(read_error
+            .message
+            .contains("injected credential read failure"));
+
+        let metadata_error = persist_provider_rotation_metadata(&vault, "TARGET", None)
+            .expect_err("metadata persistence errors must prevent a success response");
+        assert!(metadata_error
+            .message
+            .contains("rotation metadata could not be persisted"));
+        assert!(metadata_error
+            .message
+            .contains("injected metadata write failure"));
+    }
+
+    #[test]
+    fn cloud_pull_never_stores_when_overwrite_inspection_fails() {
+        let vault = BackendFailureVault::new();
+        let secrets =
+            std::collections::BTreeMap::from([("EXISTING".to_string(), "replacement".to_string())]);
+
+        let error = apply_cloud_pull_secrets(&vault, &secrets, false)
+            .expect_err("force=false must fail closed when existence cannot be checked");
+
+        assert!(error.message.contains("Failed to inspect local secret"));
+        assert!(error.message.contains("injected vault listing failure"));
+        assert_eq!(vault.store_calls.load(Ordering::SeqCst), 0);
+    }
 
     struct TestHome {
         _dir: TempDir,

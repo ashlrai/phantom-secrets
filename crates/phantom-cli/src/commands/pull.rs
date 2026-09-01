@@ -78,7 +78,7 @@ async fn run_async(
     };
 
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let existing_names = vault.list().unwrap_or_default();
+    let existing_names = list_existing_secret_names(vault.as_ref())?;
 
     let mut token_map = TokenMap::new();
     let mut new_count = 0;
@@ -174,4 +174,55 @@ async fn run_async(
     }
 
     Ok(())
+}
+
+fn list_existing_secret_names(vault: &dyn phantom_vault::VaultBackend) -> Result<Vec<String>> {
+    vault.list().map_err(|error| {
+        anyhow::anyhow!("Failed to list existing vault secrets before platform pull: {error}")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phantom_core::error::{PhantomError, Result as PhantomResult};
+    use zeroize::Zeroizing;
+
+    struct ListFailingVault;
+
+    impl phantom_vault::VaultBackend for ListFailingVault {
+        fn store(&self, _name: &str, _value: &str) -> PhantomResult<()> {
+            panic!("store must not run after destination listing fails")
+        }
+
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            Err(PhantomError::SecretNotFound(name.to_string()))
+        }
+
+        fn delete(&self, _name: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            Err(PhantomError::VaultError(
+                "injected platform-pull listing failure".to_string(),
+            ))
+        }
+
+        fn backend_name(&self) -> &str {
+            "list-failing"
+        }
+    }
+
+    #[test]
+    fn platform_pull_propagates_destination_listing_errors() {
+        let error = list_existing_secret_names(&ListFailingVault)
+            .expect_err("backend failure must not be interpreted as an empty vault");
+        assert!(error
+            .to_string()
+            .contains("Failed to list existing vault secrets before platform pull"));
+        assert!(error
+            .to_string()
+            .contains("injected platform-pull listing failure"));
+    }
 }
