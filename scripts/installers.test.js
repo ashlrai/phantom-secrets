@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -179,6 +179,50 @@ test('Unix installer uses bounded HTTPS downloads and promotes both exact binari
   assert.equal(readdirSync(dirname(install)).filter((name) => name.includes('.bin.install.')).length, 0);
 });
 
+test('Unix installer rejects unsafe install-directory syntax before download', () => {
+  for (const install of [
+    'relative/bin',
+    '/tmp/phantom"; touch injected; #',
+    '/tmp/phantom\ncontrol',
+  ]) {
+    const { log, result } = runInstaller({ install });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /PHANTOM_INSTALL_DIR/);
+    assert.equal(existsSync(log), false, 'unsafe path must fail before any download');
+  }
+});
+
+test('Unix installer refuses a linked shell rc without mutating its target', () => {
+  const root = mkdtempSync(join(tmpdir(), 'phantom-installer-linked-rc-'));
+  const home = join(root, 'home');
+  const victim = join(root, 'victim');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(victim, 'preserve-me\n');
+  symlinkSync(victim, join(home, '.bashrc'));
+  const { result } = runInstaller({ root, home, install: join(root, 'live', 'bin') });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(victim, 'utf8'), 'preserve-me\n');
+  assert.match(result.stderr, /could not update your shell PATH/);
+});
+
+test('Unix installer atomically preserves an existing regular shell rc', () => {
+  const root = mkdtempSync(join(tmpdir(), 'phantom-installer-regular-rc-'));
+  const home = join(root, 'home');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, '.bashrc'), '# existing\n', { mode: 0o600 });
+  const { install, result } = runInstaller({ root, home, install: join(root, 'live', 'bin') });
+  assert.equal(result.status, 0, result.stderr);
+  const rc = readFileSync(join(home, '.bashrc'), 'utf8');
+  assert.match(rc, /^# existing\n/);
+  assert.match(rc, /# phantom-secrets PATH/);
+  const canonicalInstall = realpathSync(install);
+  assert.match(rc, new RegExp(`export PATH="${canonicalInstall.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\$PATH"`));
+  assert.deepEqual(
+    readdirSync(home).filter((name) => name.startsWith('.phantom-path.')),
+    [],
+  );
+});
+
 test('Unix installer serializes concurrent versions under one owner lock', async () => {
   const root = mkdtempSync(join(tmpdir(), 'phantom-installer-concurrent-'));
   const shims = makeShims(root);
@@ -322,6 +366,10 @@ test('PowerShell installer has a strict offline-verifiable security contract', (
   assert.match(source, /Assert-ExactVersion[\s\S]+phantom-mcp/);
   assert.match(source, /Move-Item[\s\S]+backupPath[\s\S]+failed-live/);
   assert.match(source, /FileMode\]::CreateNew/);
+  assert.match(source, /Assert-NoReparsePathComponents/);
+  assert.match(source, /MoveFileEx/);
+  assert.match(source, /StructuralEqualityComparer/);
+  assert.match(source, /PHANTOM_INSTALL_DIR must be a local absolute path/);
   assert.match(source, /install source receipt failed final validation/);
   assert.ok(source.indexOf('archive identity verified') < source.indexOf('run Unblock-File manually'));
 });

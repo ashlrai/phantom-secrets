@@ -16,6 +16,58 @@ function Write-PhSay  { param([string]$Message) Write-Host "  -> phantom: $Messa
 function Write-PhWarn { param([string]$Message) Write-Host "  !  phantom: $Message" -ForegroundColor Yellow }
 function Write-PhDie  { param([string]$Message) Write-Host "  X  phantom: $Message" -ForegroundColor Red; exit 1 }
 
+if (-not ([System.Management.Automation.PSTypeName]'PhantomInstallerFileSystem').Type) {
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class PhantomInstallerFileSystem {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool MoveFileEx(
+        string existingFileName,
+        string newFileName,
+        int flags
+    );
+}
+'@
+}
+
+function Assert-NoReparsePathComponents {
+    param([Parameter(Mandatory)][string]$Path)
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($fullPath)
+    if (-not $root -or $root.StartsWith('\\')) {
+        throw 'install paths must use a local rooted drive'
+    }
+    $cursor = $root
+    $relative = $fullPath.Substring($root.Length)
+    $missing = $false
+    foreach ($component in $relative.Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)) {
+        $cursor = Join-Path $cursor $component
+        if ($missing) { continue }
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+        if (-not $item) {
+            $missing = $true
+            continue
+        }
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "refusing reparse-point path component: $cursor"
+        }
+        if ($cursor -ne $fullPath -and -not $item.PSIsContainer) {
+            throw "install path ancestor is not a directory: $cursor"
+        }
+    }
+    return $fullPath
+}
+
+function Assert-SafeInstallDirectoryOverride {
+    param([Parameter(Mandatory)][string]$Path)
+    if ($Path -notmatch '^[A-Za-z]:[\\/][A-Za-z0-9_. \\/-]+$' -or
+        $Path.Split([char[]]@('\', '/')) -contains '..') {
+        throw 'PHANTOM_INSTALL_DIR must be a local absolute path without control or shell-significant characters'
+    }
+}
+
 function ConvertTo-BashPath {
     param([Parameter(Mandatory)][string]$WinPath)
     $path = $WinPath -replace '\\', '/'
@@ -34,18 +86,85 @@ function Add-ToBashrcPath {
         Write-PhWarn 'could not safely add the install directory to Git Bash PATH'
         return
     }
-    $bashrc = Join-Path $homeDir '.bashrc'
+    $bashrc = Join-Path ([System.IO.Path]::GetFullPath($homeDir)) '.bashrc'
     $marker = "# phantom-secrets PATH ($bashPath)"
+    $tempPath = $null
     try {
-        if ((Test-Path -LiteralPath $bashrc) -and
-            (Select-String -LiteralPath $bashrc -SimpleMatch $marker -Quiet -ErrorAction SilentlyContinue)) {
+        $parent = Split-Path -Parent $bashrc
+        [void](Assert-NoReparsePathComponents -Path $parent)
+        [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+        [void](Assert-NoReparsePathComponents -Path $parent)
+        $before = [byte[]]@()
+        $existingAcl = $null
+        $existing = Get-Item -LiteralPath $bashrc -Force -ErrorAction SilentlyContinue
+        if ($existing) {
+            if ($existing.PSIsContainer -or
+                (($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw 'Git Bash rc must be one regular non-reparse file'
+            }
+            if ($existing.Length -gt 1048576) { throw 'Git Bash rc exceeds the 1 MiB safety limit' }
+            $before = [System.IO.File]::ReadAllBytes($bashrc)
+            $existingAcl = Get-Acl -LiteralPath $bashrc
+        }
+        $beforeText = [System.Text.Encoding]::UTF8.GetString($before)
+        if ($beforeText.Contains($marker)) {
             return
         }
-        $quoted = "'$bashPath'"
-        Add-Content -LiteralPath $bashrc -Value "`n$marker`nexport PATH=${quoted}:`$PATH`n" -Encoding UTF8
+        $suffix = [System.Text.Encoding]::UTF8.GetBytes("`n$marker`nexport PATH='$bashPath':`$PATH`n")
+        $candidate = New-Object byte[] ($before.Length + $suffix.Length)
+        [Array]::Copy($before, 0, $candidate, 0, $before.Length)
+        [Array]::Copy($suffix, 0, $candidate, $before.Length, $suffix.Length)
+        $tempPath = Join-Path $parent ".bashrc.phantom.$([Guid]::NewGuid().ToString('N')).tmp"
+        $stream = [System.IO.File]::Open(
+            $tempPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        try {
+            $stream.Write($candidate, 0, $candidate.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        if ($existingAcl) { Set-Acl -LiteralPath $tempPath -AclObject $existingAcl }
+
+        [void](Assert-NoReparsePathComponents -Path $parent)
+        $current = Get-Item -LiteralPath $bashrc -Force -ErrorAction SilentlyContinue
+        if ($existing) {
+            if (-not $current -or $current.PSIsContainer -or
+                (($current.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) -or
+                -not [System.Collections.StructuralComparisons]::StructuralEqualityComparer.Equals(
+                    $before,
+                    [System.IO.File]::ReadAllBytes($bashrc)
+                )) {
+                throw 'Git Bash rc changed while it was being updated'
+            }
+        } elseif ($current) {
+            throw 'Git Bash rc appeared while it was being updated'
+        }
+        $moveReplaceExisting = 0x1
+        $moveWriteThrough = 0x8
+        if (-not [PhantomInstallerFileSystem]::MoveFileEx(
+            $tempPath,
+            $bashrc,
+            ($moveReplaceExisting -bor $moveWriteThrough)
+        )) {
+            throw [System.ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+        }
+        $tempPath = $null
+        $final = Get-Item -LiteralPath $bashrc -Force
+        if ($final.PSIsContainer -or
+            (($final.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Git Bash rc final path is not a regular file'
+        }
         Write-PhSay "wired $bashPath into $bashrc (for Git Bash / Claude Code)"
     } catch {
         Write-PhWarn "could not update $bashrc; add the install directory manually"
+    } finally {
+        if ($tempPath -and (Test-Path -LiteralPath $tempPath)) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -119,7 +238,9 @@ function Invoke-PhDownload {
 
 function New-PrivateDirectory {
     param([Parameter(Mandatory)][string]$Path)
+    [void](Assert-NoReparsePathComponents -Path $Path)
     [System.IO.Directory]::CreateDirectory($Path) | Out-Null
+    [void](Assert-NoReparsePathComponents -Path $Path)
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
     $acl = New-Object System.Security.AccessControl.DirectorySecurity
     $acl.SetOwner($identity)
@@ -283,6 +404,7 @@ function Assert-ExactVersion {
 $Repo = if ($env:PHANTOM_REPO) { $env:PHANTOM_REPO } else { 'ashlrai/phantom-secrets' }
 if ($Repo -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { Write-PhDie 'invalid PHANTOM_REPO' }
 $InstallDir = if ($env:PHANTOM_INSTALL_DIR) {
+    Assert-SafeInstallDirectoryOverride -Path $env:PHANTOM_INSTALL_DIR
     $env:PHANTOM_INSTALL_DIR
 } else {
     Join-Path $env:USERPROFILE '.phantom-secrets\bin'
@@ -303,7 +425,9 @@ if ($InstallDir.TrimEnd('\') -eq $root) { Write-PhDie 'refusing to install into 
 $installParent = Split-Path -Parent $InstallDir
 $installName = Split-Path -Leaf $InstallDir
 if (-not $installName) { Write-PhDie 'invalid install directory' }
+[void](Assert-NoReparsePathComponents -Path $installParent)
 [System.IO.Directory]::CreateDirectory($installParent) | Out-Null
+[void](Assert-NoReparsePathComponents -Path $installParent)
 if (Test-Path -LiteralPath $InstallDir) {
     $liveItem = Get-Item -LiteralPath $InstallDir
     if (-not $liveItem.PSIsContainer -or

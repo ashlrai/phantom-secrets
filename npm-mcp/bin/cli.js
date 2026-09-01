@@ -14,6 +14,7 @@ const {
   mkdtempSync,
   openSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   unlinkSync,
@@ -103,6 +104,7 @@ function sleep(ms) {
 }
 
 function validateOwnedPath(path, kind, platform = process.platform) {
+  validateWindowsPathAncestors(path, platform);
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) throw new Error(`${path} must not be a symbolic link`);
   if (kind === "directory" && !stat.isDirectory()) throw new Error(`${path} must be a directory`);
@@ -118,8 +120,54 @@ function validateOwnedPath(path, kind, platform = process.platform) {
   return stat;
 }
 
+function validateWindowsPathAncestors(path, platform = process.platform) {
+  if (platform !== "win32") return;
+  const target = resolve(path);
+  const ancestors = [];
+  for (let cursor = target; ; cursor = dirname(cursor)) {
+    ancestors.push(cursor);
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+  }
+  ancestors.reverse();
+  let missing = false;
+  for (const ancestor of ancestors) {
+    let stat;
+    try {
+      stat = lstatSync(ancestor);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      missing = true;
+      continue;
+    }
+    if (missing) throw new Error(`${ancestor} appeared below a missing path ancestor`);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`${ancestor} must not be a Windows reparse point`);
+    }
+    if (ancestor !== target && !stat.isDirectory()) {
+      throw new Error(`${ancestor} must be a directory path ancestor`);
+    }
+    // On Windows, realpath resolves junctions and other name-surrogate reparse
+    // points that Node may not classify as symbolic links.
+    if (process.platform === "win32") {
+      const normalize = (value) => resolve(value)
+        .replace(/^\\\\\?\\/, "")
+        .replaceAll("/", "\\")
+        .replace(/\\+$/, "")
+        .toLowerCase();
+      const expected = normalize(ancestor);
+      const actual = normalize(realpathSync.native(ancestor));
+      if (actual !== expected) {
+        throw new Error(`${ancestor} must not resolve through a Windows reparse point`);
+      }
+    }
+  }
+}
+
 function ensurePrivateCacheDir(cacheDir, platform = process.platform) {
+  validateWindowsPathAncestors(cacheDir, platform);
   mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  validateWindowsPathAncestors(cacheDir, platform);
   const stat = lstatSync(cacheDir);
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     throw new Error(`${cacheDir} must be a real directory`);
@@ -397,6 +445,14 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
         "$expected = @('phantom.exe','phantom-mcp.exe');",
         "if ($names.Count -ne 2 -or (@($names | Sort-Object) -join ',') -ne (@($expected | Sort-Object) -join ',')) { throw 'unexpected ZIP content' };",
         "$entry = $zip.GetEntry('phantom-mcp.exe');",
+        "foreach ($candidate in $zip.Entries) {",
+        "if ($candidate.Name -cne $candidate.FullName -or -not $candidate.Name) { throw 'ZIP contains a path or directory entry' };",
+        "$unixType = (($candidate.ExternalAttributes -shr 16) -band 0xF000);",
+        "$dosAttributes = ($candidate.ExternalAttributes -band 0xFFFF);",
+        "$isDirectory = (($dosAttributes -band [int][IO.FileAttributes]::Directory) -ne 0);",
+        "$isReparsePoint = (($dosAttributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0);",
+        "if (($unixType -ne 0 -and $unixType -ne 0x8000) -or $isDirectory -or $isReparsePoint) { throw 'ZIP contains a link or non-regular entry' };",
+        "}",
         "[IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $output, $false);",
         "} finally { $zip.Dispose() }",
         "}",
@@ -754,5 +810,6 @@ module.exports = {
   recoverInterruptedInstall,
   replaceCachedBinary,
   validateCachedBinary,
+  validateWindowsPathAncestors,
   writePrivateFile,
 };

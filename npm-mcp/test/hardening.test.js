@@ -9,6 +9,7 @@ const {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -88,6 +89,15 @@ function fakeHttps(sequence) {
 
   const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-mcp-hardening-"));
   try {
+    const windowsReal = join(realpathSync(fixtureDir), "windows-real");
+    const windowsLink = join(realpathSync(fixtureDir), "windows-link");
+    mkdirSync(windowsReal, { mode: 0o700 });
+    symlinkSync(windowsReal, windowsLink, "junction");
+    assert.throws(
+      () => ensurePrivateCacheDir(join(windowsLink, "bin"), "win32"),
+      /Windows reparse point/
+    );
+
     ensurePrivateCacheDir(fixtureDir);
     const paths = pathSet(fixtureDir);
     const release = await acquireInstallLock(paths.lockPath, {
@@ -197,6 +207,26 @@ function fakeHttps(sequence) {
     assert.strictEqual(runtime.killed, true);
     propagateChildFailure({ status: 7 }, runtime);
     assert.strictEqual(runtime.exitCode, 7);
+
+    const windowsFixtureDir = realpathSync(fixtureDir);
+    const windowsArchive = join(windowsFixtureDir, "valid.zip");
+    writePrivateFile(windowsArchive, "zip-fixture", 0o600);
+    const windowsOutput = join(windowsFixtureDir, "phantom-mcp-windows.exe");
+    extractBinaryFromArchive(windowsArchive, windowsOutput, {
+      cacheDir: windowsFixtureDir,
+      platform: "win32",
+      execFileSyncImpl: (executable, args, options) => {
+        assert.strictEqual(executable, "powershell");
+        assert.ok(options.timeout > 0 && options.timeout < 120_000);
+        assert.match(args[3], /phantom\.exe','phantom-mcp\.exe/);
+        assert.match(args[3], /GetEntry\('phantom-mcp\.exe'\)/);
+        assert.match(args[3], /ExternalAttributes/);
+        assert.match(args[3], /ReparsePoint/);
+        assert.match(args[3], /non-regular entry/);
+        writePrivateFile(args[args.length - 1], "mcp-windows", 0o700, "win32");
+      },
+    });
+    assert.strictEqual(readFileSync(windowsOutput, "utf8"), "mcp-windows");
 
     if (process.platform !== "win32") {
       const source = join(fixtureDir, "archive-source");

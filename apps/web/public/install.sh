@@ -31,6 +31,22 @@ lock_token=""
 lock_owned=0
 lock_heartbeat_pid=""
 
+validate_install_dir_override() {
+  local value="$1"
+  [ -n "$value" ] && [ "${value#/}" != "$value" ] \
+    || die "PHANTOM_INSTALL_DIR must be a non-empty absolute path"
+  # The directory is later persisted into shell startup syntax. Keep the
+  # override deliberately narrower than the host filesystem grammar so control
+  # bytes, quotes, substitutions, and command separators cannot become code.
+  [[ "$value" =~ ^[A-Za-z0-9_./\ -]+$ ]] \
+    || die "PHANTOM_INSTALL_DIR contains unsafe or shell-significant characters"
+}
+
+file_identity() {
+  stat -f '%d:%i:%l:%p' "$1" 2>/dev/null \
+    || stat -c '%d:%i:%h:%f' "$1" 2>/dev/null
+}
+
 release_install_lock() {
   local current=""
   if [ -n "$lock_heartbeat_pid" ]; then
@@ -198,23 +214,101 @@ acquire_install_lock() {
 }
 
 add_to_user_path() {
-  local bin="$1" marker="# phantom-secrets PATH" shell_name rc
+  local bin="$1" marker="# phantom-secrets PATH" shell_name rc rc_parent
+  local before_tmp candidate_tmp before_identity after_identity candidate_identity
+  [[ "$bin" =~ ^[A-Za-z0-9_./\ -]+$ ]] || return 1
   shell_name="$(basename "${SHELL:-bash}")"
   case "$shell_name" in
     zsh)  rc="$HOME/.zshrc" ;;
     fish) rc="$HOME/.config/fish/config.fish" ;;
     *)    rc="$HOME/.bashrc" ;;
   esac
-  mkdir -p "$(dirname "$rc")" || return 1
-  touch "$rc" || return 1
-  if grep -qF "$marker" "$rc" 2>/dev/null; then
-    say "$bin already wired into $rc"
-    return 0
+  rc_parent="$(dirname "$rc")"
+  mkdir -p "$rc_parent" || return 1
+  rc_parent="$(cd "$rc_parent" && pwd -P)" || return 1
+  rc="$rc_parent/$(basename "$rc")"
+  before_tmp="$(mktemp "$rc_parent/.phantom-path.before.XXXXXX")" || return 1
+  candidate_tmp="$(mktemp "$rc_parent/.phantom-path.candidate.XXXXXX")" \
+    || { rm -f -- "$before_tmp"; return 1; }
+  if [ -e "$rc" ] || [ -L "$rc" ]; then
+    [ -f "$rc" ] && [ ! -L "$rc" ] || {
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      return 1
+    }
+    [ "$(stat -f '%l' "$rc" 2>/dev/null || stat -c '%h' "$rc" 2>/dev/null)" = "1" ] || {
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      return 1
+    }
+    before_identity="$(file_identity "$rc")" || {
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      return 1
+    }
+    cp -p "$rc" "$before_tmp" || {
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      return 1
+    }
+    after_identity="$(file_identity "$rc")" || after_identity=""
+    [ "$after_identity" = "$before_identity" ] || {
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      return 1
+    }
+    if grep -qF "$marker" "$before_tmp" 2>/dev/null; then
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      say "$bin already wired into $rc"
+      return 0
+    fi
+    cp -p "$before_tmp" "$candidate_tmp" || {
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      return 1
+    }
+  else
+    : > "$before_tmp"
+    : > "$candidate_tmp"
+    chmod 600 "$before_tmp" "$candidate_tmp" || {
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      return 1
+    }
+    before_identity="absent"
   fi
   if [ "$shell_name" = "fish" ]; then
-    printf '\n%s\nset -gx PATH %s $PATH\n' "$marker" "$bin" >> "$rc" || return 1
+    printf '\n%s\nset -gx PATH "%s" $PATH\n' "$marker" "$bin" >> "$candidate_tmp" || {
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      return 1
+    }
   else
-    printf '\n%s\nexport PATH="%s:$PATH"\n' "$marker" "$bin" >> "$rc" || return 1
+    printf '\n%s\nexport PATH="%s:$PATH"\n' "$marker" "$bin" >> "$candidate_tmp" || {
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      return 1
+    }
+  fi
+  if [ "$before_identity" = "absent" ]; then
+    [ ! -e "$rc" ] && [ ! -L "$rc" ] || {
+      rm -f -- "$before_tmp" "$candidate_tmp"
+      return 1
+    }
+  else
+    after_identity="$(file_identity "$rc")" || after_identity=""
+    [ "$after_identity" = "$before_identity" ] \
+      && [ -f "$rc" ] && [ ! -L "$rc" ] \
+      && cmp -s "$before_tmp" "$rc" || {
+        rm -f -- "$before_tmp" "$candidate_tmp"
+        return 1
+      }
+  fi
+  candidate_identity="$(file_identity "$candidate_tmp")" || {
+    rm -f -- "$before_tmp" "$candidate_tmp"
+    return 1
+  }
+  mv -f "$candidate_tmp" "$rc" || {
+    rm -f -- "$before_tmp" "$candidate_tmp"
+    return 1
+  }
+  rm -f -- "$before_tmp"
+  after_identity="$(file_identity "$rc")" || after_identity=""
+  if [ "$after_identity" != "$candidate_identity" ] \
+    || [ ! -f "$rc" ] || [ -L "$rc" ] \
+    || ! grep -qF "$marker" "$rc" 2>/dev/null; then
+    return 1
   fi
   say "added $bin to PATH in $rc (open a new shell or run: source $rc)"
 }
@@ -222,6 +316,9 @@ add_to_user_path() {
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar >/dev/null 2>&1 || die "tar is required"
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid PHANTOM_REPO"
+if [ "${PHANTOM_INSTALL_DIR+x}" = x ]; then
+  validate_install_dir_override "$PHANTOM_INSTALL_DIR"
+fi
 
 case "$(uname -s)" in
   Darwin) os="apple-darwin" ;;
