@@ -400,6 +400,30 @@ struct VaultSetupParticipant {
     fail_commit: bool,
 }
 
+fn validate_workspace_config(
+    workspace_root: &Path,
+    project_lock: &ProjectTransactionLock,
+) -> Result<()> {
+    let config_path = workspace_root.join(".phantom.toml");
+    let config_target = project_lock
+        .target(&config_path)
+        .context("Existing .phantom.toml could not be retained safely")?;
+    let config_before = config_target
+        .read_regular()
+        .context("Existing .phantom.toml could not be read safely")?;
+    if let Some(config_before) = config_before {
+        // The bytes are bound to the retained root, so do not pass the live
+        // `.phantom.toml` pathname to the parser: that loader deliberately
+        // canonicalizes its parent to derive a local vault namespace. The
+        // participant derives that namespace separately from the root spelling
+        // captured by this capability; this parse is validation-only.
+        let snapshot_label = workspace_root.join("phantom-config.snapshot");
+        PhantomConfig::load_from_bytes(&snapshot_label, config_before.bytes())
+            .context("Existing .phantom.toml could not be loaded safely")?;
+    }
+    Ok(())
+}
+
 impl VaultSetupParticipant {
     fn new(workspace_root: &Path) -> Result<Self> {
         let workspace_root = workspace_root
@@ -408,25 +432,16 @@ impl VaultSetupParticipant {
         if !workspace_root.is_dir() {
             bail!("workspace root is not a directory");
         }
-        let config_path = workspace_root.join(".phantom.toml");
-        let project_id = if config_path.exists() {
-            let metadata = std::fs::symlink_metadata(&config_path)
-                .context("Existing .phantom.toml could not be inspected safely")?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                bail!("existing .phantom.toml is not a regular file");
-            }
-            PhantomConfig::load(&config_path)
-                .context("Existing .phantom.toml could not be loaded safely")?
-                .local_project_id()
-                .to_string()
-        } else {
-            PhantomConfig::project_id_from_path(&workspace_root)
-        };
+        let project_lock = phantom_vault::acquire_project_transaction_lock(&workspace_root)
+            .context("Workspace project lock could not be acquired")?;
+        let project_id =
+            PhantomConfig::project_id_from_path(project_lock.project_root_at_acquisition());
+        validate_workspace_config(&workspace_root, &project_lock)?;
         Ok(Self {
             workspace_root,
             vault: phantom_vault::try_create_vault(&project_id)?,
             snapshots: Vec::new(),
-            project_lock: None,
+            project_lock: Some(project_lock),
             commit_started: false,
             #[cfg(test)]
             fail_commit: false,
@@ -435,13 +450,16 @@ impl VaultSetupParticipant {
 
     #[cfg(test)]
     fn with_vault(workspace_root: &Path, vault: Box<dyn VaultBackend>, fail_commit: bool) -> Self {
+        let workspace_root = workspace_root
+            .canonicalize()
+            .expect("test workspace root must resolve");
+        let project_lock = phantom_vault::acquire_project_transaction_lock(&workspace_root)
+            .expect("test workspace project lock must be acquired");
         Self {
-            workspace_root: workspace_root
-                .canonicalize()
-                .expect("test workspace root must resolve"),
+            workspace_root,
             vault,
             snapshots: Vec::new(),
-            project_lock: None,
+            project_lock: Some(project_lock),
             commit_started: false,
             fail_commit,
         }
@@ -549,8 +567,19 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
         let mut values = BTreeMap::<String, Zeroizing<String>>::new();
         for action in &protect_actions {
             let path = self.approved_path(&action.target)?;
-            let dotenv = DotenvFile::parse_file(&path)
-                .map_err(|_| ParticipantError::new("approved_env_parse_failed"))?;
+            let target = self
+                .project_lock
+                .as_ref()
+                .ok_or_else(|| ParticipantError::new("project_lock_missing"))?
+                .target(&path)
+                .map_err(|_| ParticipantError::new("approved_env_outside_project"))?;
+            let before = target
+                .read_regular()
+                .map_err(|_| ParticipantError::new("approved_env_read_failed"))?
+                .ok_or_else(|| ParticipantError::new("approved_env_missing"))?;
+            let text = std::str::from_utf8(before.bytes())
+                .map_err(|_| ParticipantError::new("approved_env_invalid_utf8"))?;
+            let dotenv = DotenvFile::parse_str(text);
             let approved_names = action.key_names.iter().collect::<BTreeSet<_>>();
             let mut found = BTreeSet::new();
             for entry in dotenv.entries() {
@@ -675,6 +704,22 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
             .collect();
         self.commit_started = true;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod portable_capability_contract_tests {
+    #[test]
+    fn windows_source_contract_keeps_effect_inputs_behind_retained_targets() {
+        let source = include_str!("workspace.rs");
+        assert!(source.contains("acquire_project_transaction_lock(&workspace_root)"));
+        assert!(source.contains("project_lock\n                .as_ref()"));
+        assert!(source.contains(".target(&path)"));
+        assert!(source.contains(".read_regular()"));
+        let ambient_parse = ["DotenvFile::parse_", "file(&path)"].concat();
+        let ambient_read = ["std::fs::read_to_", "string(&path)"].concat();
+        assert!(!source.contains(&ambient_parse));
+        assert!(!source.contains(&ambient_read));
     }
 }
 
@@ -927,6 +972,127 @@ mod tests {
             sentinel
         );
         assert_eq!(verify.list().unwrap(), vec!["OPENAI_API_KEY"]);
+    }
+
+    #[test]
+    fn participant_reads_nested_env_through_the_retained_project_root() {
+        let container = TempDir::new().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        let nested = project.join("packages/api");
+        std::fs::create_dir_all(&nested).unwrap();
+        write(
+            nested.join(".env"),
+            "API_SECRET=sk-original-retained-value\n",
+        );
+        let key = seal_key();
+        let sealed = build_sealed_setup_plan(&project, &key).unwrap();
+        let external = sealed
+            .plan
+            .actions
+            .iter()
+            .filter(|action| action.kind == SetupActionKind::ProtectEnvFile)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(external.len(), 1);
+        assert_eq!(external[0].target, "packages/api/.env");
+        let values = Arc::new(Mutex::new(BTreeMap::new()));
+        let vault = FailingStoreVault {
+            values: Arc::clone(&values),
+            fail_name: "NEVER_FAIL".to_string(),
+        };
+        let mut participant = VaultSetupParticipant::with_vault(&project, Box::new(vault), false);
+
+        std::fs::rename(&project, &moved).unwrap();
+        std::fs::create_dir_all(project.join("packages/api")).unwrap();
+        write(
+            project.join("packages/api/.env"),
+            "API_SECRET=sk-decoy-value\n",
+        );
+
+        participant.prepare(&sealed.plan, &external).unwrap();
+        participant.commit().unwrap();
+        assert_eq!(
+            values.lock().unwrap().get("API_SECRET").map(String::as_str),
+            Some("sk-original-retained-value")
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("packages/api/.env")).unwrap(),
+            "API_SECRET=sk-decoy-value\n"
+        );
+    }
+
+    #[test]
+    fn participant_config_validation_follows_the_retained_root_not_a_decoy() {
+        let container = TempDir::new().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        let original = PhantomConfig::new_with_defaults("a".repeat(64));
+        write(
+            project.join(".phantom.toml"),
+            &toml::to_string_pretty(&original).unwrap(),
+        );
+        let project_lock = phantom_vault::acquire_project_transaction_lock(&project).unwrap();
+
+        std::fs::rename(&project, &moved).unwrap();
+        std::fs::create_dir(&project).unwrap();
+        write(project.join(".phantom.toml"), "not valid phantom toml\n");
+
+        validate_workspace_config(&project, &project_lock).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(project.join(".phantom.toml")).unwrap(),
+            "not valid phantom toml\n"
+        );
+    }
+
+    #[test]
+    fn participant_rejects_outside_root_and_symlinked_approved_envs() {
+        use std::os::unix::fs::symlink;
+
+        let container = TempDir::new().unwrap();
+        let project = container.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let outside = container.path().join("outside.env");
+        write(&outside, "API_SECRET=sk-outside-owner\n");
+        let key = seal_key();
+        let sealed = build_sealed_setup_plan(&project, &key).unwrap();
+        let values = Arc::new(Mutex::new(BTreeMap::new()));
+        let vault = FailingStoreVault {
+            values: Arc::clone(&values),
+            fail_name: "NEVER_FAIL".to_string(),
+        };
+        let mut participant = VaultSetupParticipant::with_vault(&project, Box::new(vault), false);
+        let action = |target: &str| SetupAction {
+            id: format!("protect:{target}"),
+            kind: SetupActionKind::ProtectEnvFile,
+            target: target.to_string(),
+            key_names: vec!["API_SECRET".to_string()],
+            requires_out_of_band_approval: true,
+            reason: "test approved environment".to_string(),
+        };
+
+        let outside_error = participant
+            .prepare(&sealed.plan, &[action("../outside.env")])
+            .unwrap_err();
+        assert_eq!(
+            outside_error,
+            ParticipantError::new("invalid_approved_env_path")
+        );
+
+        symlink(&outside, project.join(".env")).unwrap();
+        let symlink_error = participant
+            .prepare(&sealed.plan, &[action(".env")])
+            .unwrap_err();
+        assert_eq!(
+            symlink_error,
+            ParticipantError::new("approved_env_read_failed")
+        );
+        assert!(values.lock().unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "API_SECRET=sk-outside-owner\n"
+        );
     }
 
     #[test]
