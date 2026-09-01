@@ -611,8 +611,9 @@ impl AnchoredTarget {
 
     /// Atomically publish `contents` only when the target still has the exact
     /// reviewed identity and bytes (or is still absent when `expected` is
-    /// `None`). The staging file is random, same-directory, mode 0600, synced,
-    /// and renamed through the retained directory capability.
+    /// `None`). The staging file is random, same-directory, assigned the
+    /// requested permissions before caller bytes are written, synced, and
+    /// renamed through the retained directory capability.
     pub fn replace_if_exact(
         &self,
         expected: Option<&AnchoredRead>,
@@ -642,7 +643,7 @@ impl AnchoredTarget {
             let effective_permissions = file_permissions(staging)?;
             // Windows staging files inherit their parent ACL at create time.
             // Establish and verify the requested DACL while the file is still
-            // empty so secret bytes are never visible under inherited access.
+            // empty so caller bytes are never visible under unreviewed access.
             staging.write_all(contents)?;
             staging.sync_all()?;
             ensure_regular_single_link(staging, &self.relative)?;
@@ -2288,10 +2289,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let anchor = TrustedAnchor::open(dir.path()).unwrap();
         let lock = anchor.acquire_lock("locks/state.lock").unwrap();
+        let locked_identity = lock.identity();
+        // LockFileEx can deny reads through an independent handle on Windows.
+        // Release the lock before reopening the file; the identity comparison
+        // still proves the stable anchored name resolves to the locked object.
+        lock.unlock().unwrap();
         let target = anchor.target("locks/state.lock").unwrap();
         let current = target.read_regular().unwrap().unwrap();
-        assert_eq!(current.identity(), lock.identity());
-        lock.unlock().unwrap();
+        assert_eq!(current.identity(), locked_identity);
     }
 
     #[test]
