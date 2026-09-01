@@ -45,8 +45,8 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom cloud push` — Push encrypted vault to Phantom Cloud (end-to-end encrypted).
 - `phantom cloud pull` — Restore a personal-vault snapshot on the machine that holds the original OS-keychain cloud encryption key; login without that key is insufficient.
 - `phantom cloud status` — Check cloud auth and sync status.
-- `phantom export --output <file>` — Export the vault to a new encrypted backup using a hidden terminal prompt. For bounded automation, use `--passphrase-file <private-file>`; plaintext export and argv passphrases are disabled.
-- `phantom import <file>` — Restore an encrypted backup using a hidden terminal prompt, or use `--passphrase-file <private-file>`. `--from doppler|infisical|dotenvx|1password|env --file <path>` imports from another format; add `--force` to overwrite existing entries.
+- `phantom export --output <file>` — Export the vault to a new encrypted backup using a hidden terminal prompt. On non-Windows platforms, bounded automation may use `--passphrase-file <private-file>`; Windows hard-denies that option until Phantom can verify a no-reparse handle and effective private ACL safely. Plaintext export and argv passphrases are disabled.
+- `phantom import <file>` — Restore an encrypted backup using a hidden terminal prompt. On non-Windows platforms, bounded automation may instead use `--passphrase-file <private-file>`; Windows hard-denies it. `--from doppler|infisical|dotenvx|1password|env --file <path>` imports from another format; add `--force` to overwrite existing entries.
 - `phantom audit show [--last N] [--op OP] [--name NAME] [--json]` — Print recent audit events. Requires `PHANTOM_AUDIT=1`.
 - `phantom audit tail` — Follow the audit log live.
 - `phantom audit path` — Print the absolute path to the audit log file.
@@ -271,7 +271,7 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 3. **Same-keychain-machine backup**: `phantom login`, `phantom cloud push`, then `phantom cloud pull` where the original cloud encryption key remains available
 4. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
 5. **Provider-backed machine setup**: `phantom pull --from vercel --project prj_xxx` (requires Vercel credentials)
-6. **Vault backup**: `phantom export --output backup.enc` then `phantom import backup.enc`; both use hidden terminal prompts. Automation may use the same private `--passphrase-file` for both commands.
+6. **Vault backup**: `phantom export --output backup.enc` then `phantom import backup.enc`; both use hidden terminal prompts. Non-Windows automation may use the same private `--passphrase-file` for both commands; Windows hard-denies that option until safe no-reparse/ACL verification is implemented.
 6b. **Migrate from Doppler/Infisical/dotenvx/1Password**: `phantom import --from doppler --file dump.json`
 6c. **Audit trail**: `PHANTOM_AUDIT=1` + `phantom audit show/tail/verify` for compliance and forensics
 7. **Team onboarding**: `phantom env` generates .env.example with placeholders

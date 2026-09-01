@@ -11,7 +11,7 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::proxy_state::{cleanup_if_stale_or_malformed, read_proxy_state, ProxyState};
+use super::proxy_state::{cleanup_if_stale_or_malformed, read_proxy_state, ProxyPid, ProxyState};
 
 const DAEMON_CHILD_ENV: &str = "PHANTOM_INTERNAL_DAEMON_CHILD";
 
@@ -191,6 +191,40 @@ fn remove_owned_pid_file(pid_path: &std::path::Path, expected: &[u8]) -> std::io
     }
 }
 
+fn wait_for_authenticated_daemon(
+    pid_path: &Path,
+    timeout: std::time::Duration,
+) -> Result<ProxyPid> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match read_proxy_state(pid_path) {
+            ProxyState::Running(pid) => return Ok(pid),
+            ProxyState::Missing | ProxyState::Unknown(_)
+                if std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            ProxyState::Missing => {
+                anyhow::bail!(
+                    "Timed out waiting for daemon to publish an authenticated PID record"
+                );
+            }
+            ProxyState::Unknown(pid) => {
+                anyhow::bail!(
+                    "Daemon PID {} did not pass the authenticated Phantom health check",
+                    pid.pid
+                );
+            }
+            ProxyState::Stale(pid) => {
+                anyhow::bail!("Daemon process {} exited before becoming ready", pid.pid);
+            }
+            ProxyState::Malformed(error) => {
+                anyhow::bail!("Daemon published an invalid PID record: {error}");
+            }
+        }
+    }
+}
+
 pub fn run(daemon: bool) -> Result<()> {
     if daemon {
         return run_daemon();
@@ -265,29 +299,12 @@ fn run_daemon() -> Result<()> {
     cmd.spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn daemon process: {e}"))?;
 
-    // Wait for the child to write the PID file (up to 5 seconds).
-    let mut attempts = 0;
-    while !pid_path.exists() {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        attempts += 1;
-        if attempts > 50 {
-            anyhow::bail!("Timed out waiting for daemon to start (no PID file after 5s)");
-        }
-    }
-
-    // Small extra delay to let the child finish writing.
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-    let pid_info = std::fs::read_to_string(&pid_path)?;
-    let parts: Vec<&str> = pid_info.trim().split(':').collect();
-    if parts.len() < 3 {
-        anyhow::bail!("PID file has unexpected format: {}", pid_info.trim());
-    }
-    let pid = parts[0];
-    let port: u16 = parts[1]
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid port in PID file"))?;
-    let proxy_token = parts[2];
+    // A PID record is only a bearer credential and process hint. Do not print
+    // success or export it until the child proves ownership by answering the
+    // authenticated loopback health request with the exact Phantom body.
+    let pid = wait_for_authenticated_daemon(&pid_path, std::time::Duration::from_secs(5))?;
+    let port = pid.port;
+    let proxy_token = pid.token.as_str();
 
     // Load config to build the export commands.
     let config = PhantomConfig::load(&config_path)?;
@@ -298,7 +315,7 @@ fn run_daemon() -> Result<()> {
         "{} Proxy started on {} (PID {})",
         "ok".green().bold(),
         format!("127.0.0.1:{port}").cyan(),
-        pid,
+        pid.pid,
     );
 
     // Print export commands
@@ -583,5 +600,39 @@ mod shell_tests {
         std::fs::write(&pid_path, b"replacement").unwrap();
         assert!(!remove_owned_pid_file(&pid_path, b"owned").unwrap());
         assert_eq!(std::fs::read(&pid_path).unwrap(), b"replacement");
+    }
+
+    #[test]
+    fn daemon_parent_rejects_an_unauthenticated_pid_record() {
+        use std::net::{Ipv4Addr, TcpListener};
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let responder = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let _ = std::io::Read::read(&mut stream, &mut request).unwrap();
+            std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 24\r\nConnection: close\r\n\r\n{\"error\":\"not_phantom\"}",
+            )
+            .unwrap();
+        });
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let pid_path = temp.path().join(".phantom.pid");
+        std::fs::write(
+            &pid_path,
+            format!("{}:{port}:{}", std::process::id(), "a".repeat(64)),
+        )
+        .unwrap();
+
+        let error = wait_for_authenticated_daemon(&pid_path, std::time::Duration::from_millis(150))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("did not pass the authenticated Phantom health check"));
+        assert!(!error.contains(&"a".repeat(64)));
+        responder.join().unwrap();
     }
 }
