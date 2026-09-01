@@ -45,6 +45,7 @@ self_update = { version = "1.2", default-features = false, features = ["reqwest"
 toml = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
+sha2 = "0.10"
 fs2 = "0.4"
 
 [target.'cfg(unix)'.dependencies]

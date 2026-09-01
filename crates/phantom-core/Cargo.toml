@@ -51,6 +51,9 @@ libc = "0.2"
 # (issuance → rotation bootstrap). No key generation here — signing only.
 jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 # Generate a throwaway RSA keypair at test runtime so the issuance/JWT tests
 # stay hermetic and offline WITHOUT committing any private-key material. See the
