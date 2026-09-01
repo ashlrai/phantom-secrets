@@ -42,6 +42,8 @@ rand = "0.8"
 hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
+cap-std = "=3.4.6"
+cap-fs-ext = "=3.4.6"
 
 # Internal crates — version + path is required so crates.io publishes
 # work (path is used during local dev, version is what crates.io resolves).

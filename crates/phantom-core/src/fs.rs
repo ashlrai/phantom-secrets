@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 
 use tempfile::NamedTempFile;
 
+pub mod anchored;
+pub use anchored::{AnchoredLock, AnchoredRead, AnchoredTarget, FileIdentity, TrustedAnchor};
+
 /// Atomically write `contents` to `path`.
 ///
 /// Writes to a same-directory temp file, fsyncs, then renames over the target.
