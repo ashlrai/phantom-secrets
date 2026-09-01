@@ -180,11 +180,72 @@ fn resolve_path_with_git(
             reason: format!("unexpected filename in {}", path.display()),
         });
     }
-    Ok(Some(if path.is_absolute() {
+    let path = if path.is_absolute() {
         path
     } else {
         absolute_project.join(path)
-    }))
+    };
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(HookError::InvalidPath {
+            project: absolute_project,
+            reason: format!("hook path contains parent traversal: {}", path.display()),
+        });
+    }
+    let canonical_project =
+        absolute_project
+            .canonicalize()
+            .map_err(|source| HookError::InvalidPath {
+                project: absolute_project.clone(),
+                reason: format!("could not canonicalize project root: {source}"),
+            })?;
+    let common_output = Command::new(git_program)
+        .arg("-C")
+        .arg(&absolute_project)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .map_err(|source| HookError::GitUnavailable {
+            project: absolute_project.clone(),
+            source,
+        })?;
+    if !common_output.status.success() {
+        return Err(HookError::GitResolution {
+            project: absolute_project,
+            message: stderr_message(&common_output.stderr),
+        });
+    }
+    let common_raw =
+        trim_git_line(&common_output.stdout).ok_or_else(|| HookError::InvalidPath {
+            project: absolute_project.clone(),
+            reason: "Git returned an invalid common-directory path".to_string(),
+        })?;
+    let common_text = std::str::from_utf8(common_raw).map_err(|_| HookError::InvalidPath {
+        project: absolute_project.clone(),
+        reason: "Git common-directory path was not valid UTF-8".to_string(),
+    })?;
+    let common_path = PathBuf::from(common_text);
+    let common_dir = common_path
+        .canonicalize()
+        .map_err(|source| HookError::InvalidPath {
+            project: absolute_project.clone(),
+            reason: format!("could not canonicalize Git common directory: {source}"),
+        })?;
+    if !path.starts_with(&absolute_project)
+        && !path.starts_with(&canonical_project)
+        && !path.starts_with(&common_path)
+        && !path.starts_with(&common_dir)
+    {
+        return Err(HookError::InvalidPath {
+            project: absolute_project,
+            reason: format!(
+                "effective hook path escapes the project and Git common directory: {}",
+                path.display()
+            ),
+        });
+    }
+    Ok(Some(path))
 }
 
 /// Read the effective hook without silently treating unreadable or non-UTF-8
@@ -197,25 +258,26 @@ fn inspect_with_git(project_dir: &Path, git_program: &OsStr) -> Result<HookState
     let Some(path) = resolve_path_with_git(project_dir, git_program)? else {
         return Ok(HookState::NotRepository);
     };
-    let metadata = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(HookState::Missing { path });
+    let bytes = match crate::fs::read_regular_file(&path) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Ok(HookState::Missing { path }),
+        Err(source) if source.to_string().contains("symlink") => {
+            return Err(HookError::UnsafeTarget { path })
         }
         Err(source) => return Err(HookError::Read { path, source }),
     };
-    if !metadata.file_type().is_file() {
-        return Err(HookError::UnsafeTarget { path });
-    }
-    let bytes = std::fs::read(&path).map_err(|source| HookError::Read {
-        path: path.clone(),
-        source,
-    })?;
     let content =
         String::from_utf8(bytes).map_err(|_| HookError::NonUtf8Content { path: path.clone() })?;
     #[cfg(unix)]
     let executable = {
         use std::os::unix::fs::PermissionsExt;
+        let metadata = std::fs::symlink_metadata(&path).map_err(|source| HookError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(HookError::UnsafeTarget { path });
+        }
         metadata.permissions().mode() & 0o111 != 0
     };
     #[cfg(not(unix))]
@@ -237,14 +299,14 @@ fn install_with_git(
     git_program: &OsStr,
 ) -> Result<Option<HookChange>, HookError> {
     let state = inspect_with_git(project_dir, git_program)?;
-    let (path, existing, executable) = match state {
+    let (path, existing, executable, existed) = match state {
         HookState::NotRepository => return Ok(None),
-        HookState::Missing { path } => (path, String::new(), false),
+        HookState::Missing { path } => (path, String::new(), false, false),
         HookState::Present {
             path,
             content,
             executable,
-        } => (path, content, executable),
+        } => (path, content, executable, true),
     };
     let update = ensure(&existing);
     if update.change != HookChange::Unchanged {
@@ -252,24 +314,19 @@ fn install_with_git(
             project: project_dir.to_path_buf(),
             reason: format!("{} has no parent directory", path.display()),
         })?;
-        std::fs::create_dir_all(parent).map_err(|source| HookError::CreateDirectory {
+        crate::fs::ensure_real_parent(&path).map_err(|source| HookError::CreateDirectory {
             path: parent.to_path_buf(),
             source,
         })?;
-        std::fs::write(&path, update.content).map_err(|source| HookError::Write {
-            path: path.clone(),
-            source,
-        })?;
+        publish_hook_update(
+            &path,
+            existed.then_some(existing.as_bytes()),
+            update.content.as_bytes(),
+        )?;
     }
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).map_err(
-            |source| HookError::Permissions {
-                path: path.clone(),
-                source,
-            },
-        )?;
+    if update.change != HookChange::Unchanged || !executable {
+        make_executable_if_current(&path, update.content.as_bytes())?;
     }
     let change = if update.change == HookChange::Unchanged && !executable {
         HookChange::Repaired
@@ -277,6 +334,81 @@ fn install_with_git(
         update.change
     };
     Ok(Some(change))
+}
+
+fn publish_hook_update(
+    path: &Path,
+    expected: Option<&[u8]>,
+    content: &[u8],
+) -> Result<(), HookError> {
+    crate::fs::atomic_write_if_unchanged(path, expected, content).map_err(|source| {
+        HookError::Write {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
+}
+
+#[cfg(unix)]
+fn make_executable_if_current(path: &Path, expected: &[u8]) -> Result<(), HookError> {
+    use std::io::Read;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    let mut file = options
+        .open(path)
+        .map_err(|source| HookError::Permissions {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if !file
+        .metadata()
+        .map_err(|source| HookError::Permissions {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .is_file()
+    {
+        return Err(HookError::UnsafeTarget {
+            path: path.to_path_buf(),
+        });
+    }
+    let mut current = Vec::new();
+    file.read_to_end(&mut current)
+        .map_err(|source| HookError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if current != expected {
+        return Err(HookError::Write {
+            path: path.to_path_buf(),
+            source: std::io::Error::other(
+                "pre-commit hook changed before executable permissions were applied",
+            ),
+        });
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(0o755))
+        .map_err(|source| HookError::Permissions {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if crate::fs::read_regular_file(path)
+        .map_err(|source| HookError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .as_deref()
+        != Some(expected)
+    {
+        return Err(HookError::Write {
+            path: path.to_path_buf(),
+            source: std::io::Error::other(
+                "pre-commit hook changed while executable permissions were applied",
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// A hook is effective only when its canonical block is reachable and Git can
@@ -648,6 +780,55 @@ mod tests {
             HookError::UnsafeTarget { .. }
         ));
         assert!(hook.is_dir());
+    }
+
+    #[test]
+    fn hook_publish_refuses_concurrent_owner() {
+        let project = tempfile::tempdir().unwrap();
+        let hook = project.path().join("pre-commit");
+        std::fs::write(&hook, b"#!/bin/sh\necho concurrent\n").unwrap();
+
+        assert!(publish_hook_update(&hook, None, b"phantom").is_err());
+        assert_eq!(
+            std::fs::read(&hook).unwrap(),
+            b"#!/bin/sh\necho concurrent\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_refuses_symlink_hook_parent() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempfile::tempdir().unwrap();
+        init_git(project.path());
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), project.path().join("custom-hooks")).unwrap();
+        git(
+            project.path(),
+            &["config", "core.hooksPath", "custom-hooks"],
+        );
+
+        assert!(matches!(
+            install(project.path()).unwrap_err(),
+            HookError::CreateDirectory { .. }
+        ));
+        assert!(!outside.path().join("pre-commit").exists());
+    }
+
+    #[test]
+    fn install_refuses_hook_path_outside_project_and_git_directory() {
+        let project = tempfile::tempdir().unwrap();
+        init_git(project.path());
+        let outside = tempfile::tempdir().unwrap();
+        let outside_text = outside.path().to_string_lossy().into_owned();
+        git(project.path(), &["config", "core.hooksPath", &outside_text]);
+
+        let error = install(project.path()).unwrap_err();
+
+        assert!(matches!(error, HookError::InvalidPath { .. }));
+        assert!(error.to_string().contains("escapes the project"));
+        assert!(!outside.path().join("pre-commit").exists());
     }
 
     #[cfg(unix)]

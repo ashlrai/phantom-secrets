@@ -23,8 +23,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 use std::path::Path;
+
+const MAX_AUDIT_ANALYTICS_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_AUDIT_ANALYTICS_EVENTS: usize = 1_000_000;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Per-secret audit threshold configuration
@@ -309,12 +312,50 @@ pub fn compute_analytics(period: Period) -> std::io::Result<AnalyticsReport> {
 /// Read all access events from `path` that are at or after `cutoff_ts`.
 /// Skips marker lines, malformed JSON, and lines without `op`.
 fn read_events_from_path(path: &Path, cutoff_ts: u64) -> std::io::Result<Vec<RawEvent>> {
-    let file = std::fs::File::open(path)?;
-    let reader = std::io::BufReader::new(file);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::other(format!(
+            "refusing non-regular audit analytics source: {}",
+            path.display()
+        )));
+    }
+    if metadata.len() > MAX_AUDIT_ANALYTICS_BYTES {
+        return Err(std::io::Error::other(format!(
+            "audit log exceeds the {} byte analytics limit",
+            MAX_AUDIT_ANALYTICS_BYTES
+        )));
+    }
+    let limited = file.take(MAX_AUDIT_ANALYTICS_BYTES + 1);
+    let mut reader = std::io::BufReader::new(limited);
     let mut events = Vec::new();
+    let mut bytes_read = 0_u64;
+    let mut line = String::new();
 
-    for line in reader.lines() {
-        let line = line?;
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            break;
+        }
+        bytes_read = bytes_read.saturating_add(read as u64);
+        if bytes_read > MAX_AUDIT_ANALYTICS_BYTES {
+            return Err(std::io::Error::other(
+                "audit log grew beyond the analytics byte limit while being read",
+            ));
+        }
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -345,6 +386,12 @@ fn read_events_from_path(path: &Path, cutoff_ts: u64) -> std::io::Result<Vec<Raw
             .unwrap_or("phantom")
             .to_string();
 
+        if events.len() >= MAX_AUDIT_ANALYTICS_EVENTS {
+            return Err(std::io::Error::other(format!(
+                "audit log exceeds the {} event analytics limit",
+                MAX_AUDIT_ANALYTICS_EVENTS
+            )));
+        }
         events.push(RawEvent {
             ts,
             op,
@@ -661,6 +708,36 @@ mod tests {
             };
             writeln!(f, "{}", line).unwrap();
         }
+    }
+
+    #[test]
+    fn analytics_refuses_oversized_audit_log_before_allocation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audit.log");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_AUDIT_ANALYTICS_BYTES + 1).unwrap();
+
+        let error = match read_events_from_path(&path, 0) {
+            Ok(_) => panic!("oversized audit log was accepted"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("byte analytics limit"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn analytics_refuses_symlink_audit_log() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let owner = directory.path().join("owner.log");
+        let path = directory.path().join("audit.log");
+        std::fs::write(&owner, b"{}\n").unwrap();
+        symlink(&owner, &path).unwrap();
+
+        assert!(read_events_from_path(&path, 0).is_err());
+        assert_eq!(std::fs::read(owner).unwrap(), b"{}\n");
     }
 
     // ── Period ────────────────────────────────────────────────────────────────

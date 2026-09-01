@@ -5,8 +5,11 @@ use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::precommit_hook::{self, HookChange};
 
-fn doctor_can_open_vault(fix: bool) -> bool {
-    fix
+fn doctor_can_open_vault(_fix: bool) -> bool {
+    // Diagnostics and repository-local repairs must not provision keychain or
+    // vault state merely because --fix was supplied. Commands that explicitly
+    // operate on the vault perform their own authenticated preflight.
+    false
 }
 
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
@@ -22,6 +25,10 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     };
     let mut issues = 0;
     let mut fixed = 0;
+    // A doctor invocation publishes at most one local repair. This prevents a
+    // later failure from stranding an earlier unrelated file mutation without
+    // a cross-file rollback contract. Re-running --fix advances the next item.
+    let mut mutation_applied = false;
 
     println!("{}", "Phantom Doctor".bold().underline());
     println!();
@@ -129,35 +136,47 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 4: .gitignore
     let gitignore_path = project_dir.join(".gitignore");
-    if gitignore_path.exists() {
-        let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+    let gitignore_before = phantom_core::fs::read_regular_file(&gitignore_path)
+        .map_err(|error| anyhow::anyhow!("Refusing unsafe .gitignore target: {error}"))?;
+    if let Some(bytes) = gitignore_before.as_deref() {
+        let content = String::from_utf8(bytes.to_vec())
+            .map_err(|_| anyhow::anyhow!("Refusing to rewrite non-UTF-8 .gitignore"))?;
         if content.lines().any(|l| l.trim() == ".env") {
             check_pass(".env is in .gitignore");
         } else {
             check_warn(".env is NOT in .gitignore — secrets could be committed!");
             check_fix("Run: echo '.env' >> .gitignore");
-            if fix {
+            if fix && !mutation_applied {
                 let mut c = content;
                 if !c.ends_with('\n') {
                     c.push('\n');
                 }
                 c.push_str(".env\n");
-                std::fs::write(&gitignore_path, c)?;
+                write_project_file_exact(
+                    &project_dir,
+                    &gitignore_path,
+                    gitignore_before.as_deref(),
+                    c.as_bytes(),
+                )?;
                 check_fixed("Added .env to .gitignore");
                 fixed += 1;
+                mutation_applied = true;
             } else {
                 issues += 1;
             }
         }
     } else {
         check_warn("No .gitignore — consider adding one");
-        if doctor_can_open_vault(fix) {
-            std::fs::write(
+        if fix && !mutation_applied {
+            write_project_file_exact(
+                &project_dir,
                 &gitignore_path,
-                ".env\n.env.local\n.env.*.local\n.env.backup\n",
+                None,
+                b".env\n.env.local\n.env.*.local\n.env.backup\n",
             )?;
             check_fixed("Created .gitignore with .env patterns");
             fixed += 1;
+            mutation_applied = true;
         } else {
             issues += 1;
         }
@@ -165,18 +184,26 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 5: .env.example exists
     let example_path = project_dir.join(".env.example");
-    if example_path.exists() {
+    let example_before = phantom_core::fs::read_regular_file(&example_path)
+        .map_err(|error| anyhow::anyhow!("Refusing unsafe .env.example target: {error}"))?;
+    if example_before.is_some() {
         check_pass(".env.example found (team onboarding ready)");
     } else {
         check_warn("No .env.example — team onboarding may be difficult");
         check_fix("Run: phantom env");
-        if fix && env_path.exists() {
+        if fix && !mutation_applied && env_path.exists() {
             if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
                 let config = PhantomConfig::load(&config_path).ok();
                 let content = dotenv.generate_example_content(config.as_ref());
-                std::fs::write(&example_path, content)?;
+                write_project_file_exact(
+                    &project_dir,
+                    &example_path,
+                    example_before.as_deref(),
+                    content.as_bytes(),
+                )?;
                 check_fixed("Generated .env.example");
                 fixed += 1;
+                mutation_applied = true;
             }
         } else if fix {
             issues += 1; // Can't fix without .env
@@ -263,7 +290,8 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 check_warn("Git pre-commit hook exists but no phantom check");
                 check_fix("Run: phantom init (will add a local Phantom check to the hook)");
             }
-            if fix {
+            if fix && !mutation_applied {
+                let _lock = phantom_vault::acquire_project_transaction_lock(&project_dir)?;
                 let change = precommit_hook::install(&project_dir)?
                     .expect("Git hook state already established a repository");
                 let message = match change {
@@ -282,7 +310,8 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         precommit_hook::HookState::Missing { .. } => {
             check_warn("No pre-commit hook installed");
             check_fix("Run: phantom init (will install a local Phantom check)");
-            if fix {
+            if fix && !mutation_applied {
+                let _lock = phantom_vault::acquire_project_transaction_lock(&project_dir)?;
                 precommit_hook::install(&project_dir)?;
                 check_fixed("Installed pre-commit hook");
                 fixed += 1;
@@ -387,7 +416,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 14 (optional): Validation metadata — surface invalid credentials
     {
-        if fix {
+        if doctor_can_open_vault(fix) {
             if let Ok(config) = PhantomConfig::load(&config_path) {
                 let vault = phantom_vault::try_create_vault(config.local_project_id())?;
                 if let Ok(names) = vault.list() {
@@ -525,6 +554,12 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     println!();
     if fix && fixed > 0 {
         println!("{} Auto-fixed {} issue(s)", "ok".green().bold(), fixed);
+        if issues > 0 {
+            println!(
+                "{} Re-run `phantom doctor --fix` to apply the next isolated repair",
+                "next".blue().bold()
+            );
+        }
     }
     if issues == 0 {
         println!("{} All checks passed!", "ok".green().bold());
@@ -542,6 +577,17 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn write_project_file_exact(
+    project_dir: &std::path::Path,
+    path: &std::path::Path,
+    before: Option<&[u8]>,
+    content: &[u8],
+) -> Result<()> {
+    let _lock = phantom_vault::acquire_project_transaction_lock(project_dir)?;
+    phantom_core::fs::ensure_real_parent(path)?;
+    phantom_core::fs::atomic_write_if_unchanged(path, before, content).map_err(Into::into)
 }
 
 /// Check whether a known MCP client config has a canonical local executable.
@@ -680,6 +726,43 @@ mod tests {
     #[test]
     fn read_only_doctor_never_opens_a_vault_backend() {
         assert!(!super::doctor_can_open_vault(false));
-        assert!(super::doctor_can_open_vault(true));
+        assert!(!super::doctor_can_open_vault(true));
+    }
+
+    #[test]
+    fn exact_doctor_write_preserves_concurrent_owner() {
+        let project = tempfile::tempdir().unwrap();
+        let target = project.path().join(".gitignore");
+        std::fs::write(&target, b"before\n").unwrap();
+        let before = phantom_core::fs::read_regular_file(&target)
+            .unwrap()
+            .unwrap();
+        std::fs::write(&target, b"concurrent\n").unwrap();
+
+        assert!(super::write_project_file_exact(
+            project.path(),
+            &target,
+            Some(&before),
+            b"phantom\n"
+        )
+        .is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"concurrent\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_doctor_write_refuses_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempfile::tempdir().unwrap();
+        let owner = project.path().join("owner");
+        let target = project.path().join(".gitignore");
+        std::fs::write(&owner, b"owner").unwrap();
+        symlink(&owner, &target).unwrap();
+
+        assert!(
+            super::write_project_file_exact(project.path(), &target, None, b"phantom").is_err()
+        );
+        assert_eq!(std::fs::read(owner).unwrap(), b"owner");
     }
 }

@@ -8,9 +8,9 @@
 //!   phantom audit stats      [--json] [--top N] [--analytics] [--min-anomaly-score F]
 //!   phantom audit export     [--format csv|json] [--period 7d|30d] [--min-anomaly-score F]
 //!   phantom audit analytics  [--window DAYS] [--min-anomaly-score F] [--format json|csv]
-//!                            [--export PATH] [--auto-alert-on-anomaly]
+//!                            [--export FILE] [--auto-alert-on-anomaly]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
 use serde_json::Value;
@@ -97,8 +97,8 @@ pub enum AuditAction {
         /// Output format: json (default) or csv
         #[arg(long, default_value = "json")]
         format: String,
-        /// Write output to this file path instead of stdout
-        #[arg(long, value_name = "PATH")]
+        /// Create one new file in the current project (never overwrites)
+        #[arg(long, value_name = "FILE")]
         export: Option<String>,
         /// Exit with non-zero status if any secret exceeds the anomaly threshold (CI gate)
         #[arg(long)]
@@ -817,6 +817,11 @@ pub fn run_analytics(
         ));
     }
 
+    // Bind an absent, project-local destination before reading the audit log.
+    // A path that appears while analytics are computed is then rejected by the
+    // exact-before publication below instead of being overwritten.
+    let export_plan = export.map(prepare_analytics_export).transpose()?;
+
     let period = match window {
         0 => Period::All,
         1..=7 => Period::Days7,
@@ -874,14 +879,22 @@ pub fn run_analytics(
         serde_json::to_string_pretty(&out)?
     };
 
+    const MAX_ANALYTICS_EXPORT_BYTES: usize = 64 * 1024 * 1024;
+    if output.len() > MAX_ANALYTICS_EXPORT_BYTES {
+        anyhow::bail!(
+            "Analytics export is {} bytes; refusing output larger than {} bytes",
+            output.len(),
+            MAX_ANALYTICS_EXPORT_BYTES
+        );
+    }
+
     // Write output.
-    if let Some(path) = export {
-        std::fs::write(path, &output)
-            .map_err(|e| anyhow::anyhow!("Failed to write export file '{path}': {e}"))?;
+    if let Some(plan) = export_plan {
+        plan.commit(output.as_bytes())?;
         eprintln!(
             "{}  Analytics exported to {}",
             "->".blue().bold(),
-            path.cyan()
+            plan.path.display().to_string().cyan()
         );
     } else {
         print!("{}", output);
@@ -912,6 +925,45 @@ pub fn run_analytics(
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct AnalyticsExportPlan {
+    path: std::path::PathBuf,
+}
+
+impl AnalyticsExportPlan {
+    fn commit(&self, output: &[u8]) -> Result<()> {
+        phantom_core::fs::atomic_write_if_unchanged(&self.path, None, output).with_context(|| {
+            format!(
+                "Refusing to overwrite analytics export destination {}",
+                self.path.display()
+            )
+        })
+    }
+}
+
+fn prepare_analytics_export(filename: &str) -> Result<AnalyticsExportPlan> {
+    let project_dir = std::env::current_dir().context("Failed to resolve the current project")?;
+    prepare_analytics_export_in(&project_dir, filename)
+}
+
+fn prepare_analytics_export_in(
+    project_dir: &std::path::Path,
+    filename: &str,
+) -> Result<AnalyticsExportPlan> {
+    phantom_core::fs::validate_project_filename(filename).context("Invalid --export filename")?;
+    let path = project_dir.join(filename);
+    if phantom_core::fs::read_regular_file(&path)
+        .with_context(|| format!("Refusing unsafe analytics export target {}", path.display()))?
+        .is_some()
+    {
+        anyhow::bail!(
+            "Analytics export destination already exists; refusing to overwrite {}",
+            path.display()
+        );
+    }
+    Ok(AnalyticsExportPlan { path })
 }
 
 /// `phantom audit anomalies [--realtime] [--threshold F]`
@@ -1681,6 +1733,47 @@ mod tests {
         assert!(error
             .to_string()
             .contains("does not rotate the leaked provider credential"));
+    }
+
+    #[test]
+    fn analytics_export_refuses_paths_outside_project_root() {
+        let project = tempdir().unwrap();
+        for filename in [
+            "../report.json",
+            "/tmp/report.json",
+            "nested/report.json",
+            "a..b",
+        ] {
+            assert!(prepare_analytics_export_in(project.path(), filename).is_err());
+        }
+        assert!(!project.path().join("report.json").exists());
+    }
+
+    #[test]
+    fn analytics_export_refuses_concurrent_destination_without_overwrite() {
+        let project = tempdir().unwrap();
+        let plan = prepare_analytics_export_in(project.path(), "audit.json").unwrap();
+        std::fs::write(&plan.path, b"concurrent owner").unwrap();
+
+        let error = plan.commit(b"phantom report").unwrap_err();
+
+        assert!(error.to_string().contains("Refusing to overwrite"));
+        assert_eq!(std::fs::read(&plan.path).unwrap(), b"concurrent owner");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn analytics_export_refuses_symlink_destination() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempdir().unwrap();
+        let owner = project.path().join("owner.json");
+        let target = project.path().join("audit.json");
+        std::fs::write(&owner, b"owner").unwrap();
+        symlink(&owner, &target).unwrap();
+
+        assert!(prepare_analytics_export_in(project.path(), "audit.json").is_err());
+        assert_eq!(std::fs::read(owner).unwrap(), b"owner");
     }
 
     #[test]
