@@ -34,6 +34,14 @@ fn process_lock_for(identity: &Path) -> MutexGuard<'static, ()> {
 }
 
 fn lock_root() -> PathBuf {
+    // ProjectDirs and home_dir consult process-wide environment state. Tests in
+    // other Phantom crates temporarily override HOME, so take the same shared
+    // mutex they use while resolving the complete root. The guard is released
+    // before any filesystem or transaction lock is acquired, avoiding lock
+    // order inversions with callers that later enter a project transaction.
+    let _environment = phantom_core::PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
         .map(|dirs| dirs.data_dir().join("transaction-locks"))
         .unwrap_or_else(|| {

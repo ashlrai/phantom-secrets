@@ -26,12 +26,19 @@ pub mod validation_scheduler;
 pub mod validator;
 pub mod workspace_request;
 
+/// Process-wide serialization for code that reads or mutates environment
+/// variables which influence Phantom's filesystem roots.
+///
+/// This is public only so Phantom workspace crates and their test suites share
+/// one lock instead of accidentally coordinating on crate-local mutexes.
+#[doc(hidden)]
+pub static PROCESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Crate-wide test helpers: a single `ENV_LOCK` shared by all modules whose
 /// tests mutate process-wide env vars (`HOME`, `PHANTOM_AUDIT`, etc.).
 /// Using separate per-module statics causes data-races when cargo runs tests
 /// from different modules in parallel within the same test binary.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::sync::Mutex;
-    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) use crate::PROCESS_ENV_LOCK as ENV_LOCK;
 }

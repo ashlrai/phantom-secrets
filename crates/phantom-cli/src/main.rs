@@ -3,9 +3,7 @@ mod util;
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::sync::Mutex;
-
-    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) use phantom_core::PROCESS_ENV_LOCK as ENV_LOCK;
 }
 
 use clap::{Parser, Subcommand};
