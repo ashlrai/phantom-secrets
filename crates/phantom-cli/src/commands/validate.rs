@@ -182,10 +182,6 @@ fn run_watch_loop(
     json: bool,
 ) -> Result<()> {
     let report_path = watch_report_path();
-    if let Some(parent) = report_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let n_jobs = jobs.unwrap_or(DEFAULT_JOBS).clamp(1, 16);
     let initial_vault = phantom_vault::try_create_vault(project_id)?;
     let mut authorized_names = initial_vault.list()?;
@@ -212,6 +208,7 @@ fn run_watch_loop(
         watch_timeout_secs,
         true,
     )?;
+    phantom_core::fs::ensure_real_parent(&report_path)?;
 
     if !json {
         println!(

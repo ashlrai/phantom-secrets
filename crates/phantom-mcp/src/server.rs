@@ -4469,7 +4469,6 @@ impl PhantomMcpServer {
         let params_json = serde_json::to_string(&serde_json::json!({
             "request": &params,
             "local_project_id": config.local_project_id(),
-            "scan_time": now,
             "entry_count": entry_names.len(),
             "entry_names_sha256": names_digest,
             "entry_name_sample": names_sample,
