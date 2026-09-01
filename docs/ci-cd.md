@@ -56,6 +56,35 @@ phantom sync --platform vercel --project prj_xxxxx
 
 After configuring, `phantom sync` pushes vault secrets to Vercel environment variables. Your GitHub Actions workflow can then trigger a Vercel deploy using Vercel's standard GitHub integration or CLI.
 
+### Observe the hosted deployment
+
+The staged web application exposes two no-store, provider-free operational
+routes:
+
+- `GET /api/v1/health` returns process liveness and an all-or-nothing build
+  identity. It returns `200` even when deployment identity is unavailable so a
+  monitor can distinguish a running process from an identified build.
+- `GET /api/v1/ready` returns `200` only when immutable Vercel build identity,
+  core auth configuration, and every explicitly commissioned hosted service
+  are structurally configured. Otherwise it returns `503`.
+
+Readiness is deliberately `configuration_only`. Its response records provider
+acceptance as `not_checked` and customer acceptance as `not_established`; it
+does not call Supabase, Stripe, Vercel, or a customer workflow. Responses expose
+only deterministic states and validated build metadata, never credential or
+environment-variable values.
+
+Vercel must supply `VERCEL_GIT_COMMIT_SHA`, `VERCEL_DEPLOYMENT_ID`, and
+`VERCEL_ENV`. Core configuration also requires the three Supabase variables in
+`apps/web/.env.local.example`. Exact `true` feature gates add their documented
+service-specific configuration requirements. A successful source build does
+not prove those variables exist in the deployed environment.
+
+After an authorized deployment, record both endpoint responses together with
+the immutable deployment identifier and source SHA. Then verify provider and
+authenticated user flows separately. Do not promote a `200` readiness response
+into a provider-activation or customer-acceptance claim.
+
 ## Railway
 
 ```bash

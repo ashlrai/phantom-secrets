@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Exact v-prefixed SemVer to rehearse against the checked-out source
+        required: true
+        type: string
 
 # Default GITHUB_TOKEN to read-only; each job that needs write must opt in.
 permissions:
@@ -12,6 +18,11 @@ permissions:
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  # Tag pushes keep using github.ref_name. Reusable, non-publishing rehearsals
+  # supply the exact candidate tag explicitly from their read-only caller.
+  PHANTOM_RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   verify-source:
@@ -29,6 +40,7 @@ jobs:
         run: git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
 
       - name: Verify immutable annotated release tag binding
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |
           test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
           node scripts/release/verify-github-tag-binding.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
@@ -76,11 +88,11 @@ jobs:
 
       - name: Verify release version parity
         run: |
-          node scripts/release/check-version-parity.mjs "$GITHUB_REF_NAME"
-          node scripts/release/extract-release-notes.mjs "$GITHUB_REF_NAME" > /tmp/phantom-release-notes.md
+          node scripts/release/check-version-parity.mjs "$PHANTOM_RELEASE_TAG"
+          node scripts/release/extract-release-notes.mjs "$PHANTOM_RELEASE_TAG" > /tmp/phantom-release-notes.md
 
       - name: Test fail-closed publication and release receipts
-        run: node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/compare-release-artifacts.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/native-release-smoke.test.mjs scripts/release/release-receipts.test.mjs scripts/release/verify-github-tag-binding.test.mjs
+        run: node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/compare-release-artifacts.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/native-installer-acceptance.test.mjs scripts/release/native-release-smoke.test.mjs scripts/release/release-receipts.test.mjs scripts/release/release-rehearsal-contract.test.mjs scripts/release/verify-github-tag-binding.test.mjs
 
       - name: Install checksum-verified MCP Registry publisher
         run: bash scripts/release/install-mcp-publisher.sh
@@ -120,7 +132,7 @@ jobs:
       - name: Verify platform and direct installer contracts
         run: |
           node scripts/check-platform-installers.mjs
-          node --test scripts/installers.test.js
+          node --test scripts/installers.test.js scripts/release/native-installer-acceptance.test.mjs
 
       - name: Test and inspect primary npm wrapper
         working-directory: npm
@@ -157,7 +169,7 @@ jobs:
         run: node scripts/release/mcp-stdio-smoke.mjs ./target/release/phantom-mcp 54
 
       - name: Package every crates.io crate in dependency order
-        run: ./scripts/publish-crates.sh --verify-only --version "${GITHUB_REF_NAME#v}"
+        run: ./scripts/publish-crates.sh --verify-only --version "${PHANTOM_RELEASE_TAG#v}"
 
   build:
     name: Build (${{ matrix.target }})
@@ -376,17 +388,22 @@ jobs:
         env:
           PHANTOM_NATIVE_ARCHIVE: native-artifact/${{ matrix.archive }}
           PHANTOM_NATIVE_TARGET: ${{ matrix.target }}
-          PHANTOM_RELEASE_TAG: ${{ github.ref_name }}
+          PHANTOM_RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: node scripts/release/native-release-smoke.mjs
 
-  attest:
-    name: Verify and request artifact attestations
+      - name: Install the exact archive and prove transaction rollback
+        env:
+          PHANTOM_NATIVE_ARCHIVE: native-artifact/${{ matrix.archive }}
+          PHANTOM_NATIVE_TARGET: ${{ matrix.target }}
+          PHANTOM_RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: node scripts/release/native-installer-acceptance.mjs
+
+  verify-artifacts:
+    name: Verify checksums, artifacts, and SBOMs
     needs: [build, native-acceptance]
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -409,6 +426,28 @@ jobs:
 
       - name: Verify exact release artifact and SBOM set
         run: node scripts/release/verify-release-artifacts.mjs artifacts
+
+      - name: Preserve the verified release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-release-bundle
+          path: artifacts
+          if-no-files-found: error
+
+  attest:
+    name: Request artifact attestations
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify-artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-release-bundle
+          path: artifacts
 
       - name: Request build provenance for the six exact archives
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -451,15 +490,9 @@ jobs:
           subject-path: artifacts/phantom-x86_64-pc-windows-msvc/phantom-x86_64-pc-windows-msvc.zip
           sbom-path: artifacts/phantom-x86_64-pc-windows-msvc/phantom-x86_64-pc-windows-msvc.zip.spdx.json
 
-      - name: Preserve the verified release bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: verified-release-bundle
-          path: artifacts
-          if-no-files-found: error
-
   release:
     name: Create Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: attest
     runs-on: ubuntu-latest
     # Configure this environment in GitHub with a required human reviewer.

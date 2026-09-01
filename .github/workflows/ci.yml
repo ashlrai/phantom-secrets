@@ -44,7 +44,7 @@ jobs:
           node npm-mcp/test/platform-matrix.test.js
       - name: Run direct installer offline tests
         if: runner.os == 'Linux'
-        run: node --test scripts/installers.test.js
+        run: node --test scripts/installers.test.js scripts/release/native-installer-acceptance.test.mjs
       - name: Parse PowerShell installer and verify mirror
         if: runner.os == 'Windows'
         shell: pwsh
@@ -254,7 +254,9 @@ jobs:
         with:
           node-version: 22
       - name: Test fail-closed publication and release receipts
-        run: node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs
+        run: |
+          node scripts/release/check-version-parity.mjs
+          node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs scripts/release/release-rehearsal-contract.test.mjs
       - name: Install checksum-verified MCP Registry publisher
         run: bash scripts/release/install-mcp-publisher.sh
       - name: Validate the staged MCP Registry manifest

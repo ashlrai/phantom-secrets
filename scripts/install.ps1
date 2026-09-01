@@ -185,6 +185,21 @@ function Invoke-PhDownload {
         [Parameter(Mandatory)][long]$MaxBytes
     )
     Update-InstallLockHeartbeat
+    if ($script:TestLocalReleaseDir) {
+        if (-not (Test-AllowedDownloadUri -Uri $Uri)) {
+            throw 'refusing non-HTTPS or untrusted download URL'
+        }
+        $fileName = [System.IO.Path]::GetFileName($Uri.AbsolutePath)
+        $source = Join-Path $script:TestLocalReleaseDir $fileName
+        $sourceItem = Get-Item -LiteralPath $source -ErrorAction Stop
+        if ($sourceItem.PSIsContainer -or
+            (($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) -or
+            $sourceItem.Length -lt 1 -or $sourceItem.Length -gt $MaxBytes) {
+            throw 'offline installer fixture is missing, unsafe, or exceeded its size limit'
+        }
+        [System.IO.File]::Copy($sourceItem.FullName, $OutFile, $false)
+        return
+    }
     $current = $Uri
     for ($redirects = 0; $redirects -le 3; $redirects++) {
         if (-not (Test-AllowedDownloadUri -Uri $current)) {
@@ -404,11 +419,26 @@ $CanonicalRepo = 'ashlrai/phantom-secrets'
 $CandidateTag = 'v0.7.4'
 $Repo = $CanonicalRepo
 $PinTag = $CandidateTag
+$script:TestLocalReleaseDir = $null
+$disablePathPersistence = $false
 if ($env:PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1') {
     if ($env:PHANTOM_REPO) { $Repo = $env:PHANTOM_REPO }
     if ($env:PHANTOM_TAG) { $PinTag = $env:PHANTOM_TAG }
-} elseif ($env:PHANTOM_REPO -or $env:PHANTOM_TAG) {
-    Write-PhDie 'PHANTOM_REPO and PHANTOM_TAG are test-only overrides'
+    if ($env:PHANTOM_TEST_LOCAL_RELEASE_DIR) {
+        if (-not [System.IO.Path]::IsPathFullyQualified($env:PHANTOM_TEST_LOCAL_RELEASE_DIR)) {
+            Write-PhDie 'PHANTOM_TEST_LOCAL_RELEASE_DIR must be an absolute regular directory'
+        }
+        $fixtureItem = Get-Item -LiteralPath $env:PHANTOM_TEST_LOCAL_RELEASE_DIR -ErrorAction Stop
+        if (-not $fixtureItem.PSIsContainer -or
+            (($fixtureItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            Write-PhDie 'PHANTOM_TEST_LOCAL_RELEASE_DIR must be an absolute regular directory'
+        }
+        $script:TestLocalReleaseDir = $fixtureItem.FullName
+    }
+    $disablePathPersistence = $env:PHANTOM_TEST_DISABLE_PATH_PERSISTENCE -ceq '1'
+} elseif ($env:PHANTOM_REPO -or $env:PHANTOM_TAG -or
+    $env:PHANTOM_TEST_LOCAL_RELEASE_DIR -or $env:PHANTOM_TEST_DISABLE_PATH_PERSISTENCE) {
+    Write-PhDie 'installer test overrides require PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES=1'
 }
 if ($Repo -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { Write-PhDie 'invalid PHANTOM_REPO' }
 $InstallDir = if ($env:PHANTOM_INSTALL_DIR) {
@@ -454,12 +484,14 @@ $script:HttpClient = $null
 
 try {
     Acquire-InstallLock -Parent $installParent -Name $installName
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $handler = New-Object System.Net.Http.HttpClientHandler
-    $handler.AllowAutoRedirect = $false
-    $script:HttpClient = New-Object -TypeName System.Net.Http.HttpClient -ArgumentList @($handler)
-    $script:HttpClient.Timeout = [TimeSpan]::FromSeconds(120)
-    $script:HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('phantom-installer/1')
+    if (-not $script:TestLocalReleaseDir) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $handler = New-Object System.Net.Http.HttpClientHandler
+        $handler.AllowAutoRedirect = $false
+        $script:HttpClient = New-Object -TypeName System.Net.Http.HttpClient -ArgumentList @($handler)
+        $script:HttpClient.Timeout = [TimeSpan]::FromSeconds(120)
+        $script:HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('phantom-installer/1')
+    }
 
     New-PrivateDirectory -Path $stageRoot
     $downloadDir = Join-Path $stageRoot 'download'
@@ -593,18 +625,22 @@ try {
 }
 
 if (-not $installed) { exit 1 }
-try {
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $userPathDirs = if ($userPath) { @($userPath -split ';' | Where-Object { $_ }) } else { @() }
-    if ($userPathDirs -notcontains $InstallDir) {
-        $newUserPath = if ($userPath) { "$InstallDir;$userPath" } else { $InstallDir }
-        [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
-        $env:Path = "$InstallDir;$env:Path"
-        Write-PhSay "added $InstallDir to user PATH"
+if ($disablePathPersistence) {
+    Write-PhSay 'test mode: persistent PATH mutation skipped'
+} else {
+    try {
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        $userPathDirs = if ($userPath) { @($userPath -split ';' | Where-Object { $_ }) } else { @() }
+        if ($userPathDirs -notcontains $InstallDir) {
+            $newUserPath = if ($userPath) { "$InstallDir;$userPath" } else { $InstallDir }
+            [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+            $env:Path = "$InstallDir;$env:Path"
+            Write-PhSay "added $InstallDir to user PATH"
+        }
+        Add-ToBashrcPath -WinBinDir $InstallDir
+    } catch {
+        Write-PhWarn "could not update PATH; add $InstallDir manually"
     }
-    Add-ToBashrcPath -WinBinDir $InstallDir
-} catch {
-    Write-PhWarn "could not update PATH; add $InstallDir manually"
 }
 
 Write-PhSay "done. phantom $expectedVersion and phantom-mcp $expectedVersion"

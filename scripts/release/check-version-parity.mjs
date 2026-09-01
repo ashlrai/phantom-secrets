@@ -39,6 +39,7 @@ if (!semverPattern.test(workspaceVersion)) {
 }
 const npmCliVersion = json("npm/package.json").version;
 const npmMcpVersion = json("npm-mcp/package.json").version;
+const webVersion = json("apps/web/package.json").version;
 const registry = json("mcp-registry/server.json");
 const registryPackage = registry.packages.find(
   (entry) => entry.identifier === "phantom-secrets-mcp"
@@ -67,14 +68,21 @@ const powershellInstallerVersion = requireMatch(
   /^\$CandidateTag\s*=\s*'v([^']+)'$/m,
   "PowerShell installer candidate tag"
 );
+const rehearsalDefaultVersion = requireMatch(
+  read(".github/workflows/release-rehearsal.yml"),
+  /^        default:\s*v([^\s]+)$/m,
+  "release rehearsal default tag"
+);
 const versions = new Map([
   ["Cargo workspace", workspaceVersion],
   ["npm CLI package", npmCliVersion],
   ["npm MCP package", npmMcpVersion],
+  ["Hosted web application", webVersion],
   ["npm CLI wrapper", cliWrapperVersion],
   ["npm MCP wrapper", wrapperVersion],
   ["Unix direct installer", shellInstallerVersion],
   ["PowerShell direct installer", powershellInstallerVersion],
+  ["Release rehearsal default", rehearsalDefaultVersion],
   ["MCP registry server", registry.version],
   ["MCP registry npm package", registryPackage.version],
 ]);

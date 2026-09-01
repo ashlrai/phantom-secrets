@@ -34,7 +34,12 @@ The `native-acceptance` matrix is configured to download each exact build
 artifact on its matching runner, reject extra or unsafe archive members, verify
 archive integrity through extraction, assert the runner OS and architecture,
 run both binaries' exact tagged `--version`, and complete the MCP stdio schema
-smoke. Attestation cannot begin until all six jobs succeed. That workflow
+smoke. It then runs the real direct installer from that exact local archive in
+an isolated home/profile, validates both installed binaries and the source
+receipt, injects a controlled checksum failure, and verifies rollback/no-residue
+behavior. Windows acceptance suppresses persistent user-PATH mutation on the CI
+account; it does not claim shell-profile acceptance. Attestation cannot begin
+until all six jobs succeed. That workflow
 definition is not evidence that a corresponding release artifact exists, is
 signed, or passed a particular run: no exact v0.7.4 candidate receipt is
 recorded yet.
@@ -132,12 +137,14 @@ that target:
 6. exercise supported shells and editor setup; and
 7. record code-signing, notarization, or platform trust results separately.
 
-The release workflow automates steps 1 and 2 plus MCP schema initialization from
-step 5 on all six native runners. Installer and upgrade behavior, credential
-stores, an authenticated proxy request, shells and editors, and platform trust
-still require separately retained evidence. No repository-local source test or
-workflow definition is a substitute for a successful exact-candidate run and
-those additional receipts.
+The release workflow automates steps 1 and 2, a bounded portion of step 3
+(fresh direct install, receipt validation, and checksum-failure preservation),
+and MCP schema initialization from step 5 on all six native runners. Upgrade,
+interruption, cache recovery, persistent PATH/shell behavior, credential stores,
+an authenticated proxy request, editors, and platform trust still require
+separately retained evidence. No repository-local source test or workflow
+definition is a substitute for a successful exact-candidate run and those
+additional receipts.
 
 ## External benchmark
 

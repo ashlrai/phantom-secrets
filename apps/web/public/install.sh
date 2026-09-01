@@ -21,6 +21,7 @@ REPO="$CANONICAL_REPO"
 RELEASES_URL="https://github.com/ashlrai/phantom-secrets/releases"
 INSTALL_DIR="${PHANTOM_INSTALL_DIR:-$HOME/.phantom-secrets/bin}"
 PIN_TAG="$CANDIDATE_TAG"
+TEST_LOCAL_RELEASE_DIR=""
 MAX_CHECKSUM_BYTES=1024
 MAX_ARCHIVE_BYTES=104857600
 stage_root=""
@@ -39,8 +40,10 @@ lock_heartbeat_pid=""
 if [ "${PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES:-}" = "1" ]; then
   REPO="${PHANTOM_REPO:-$CANONICAL_REPO}"
   PIN_TAG="${PHANTOM_TAG:-$CANDIDATE_TAG}"
-elif [ -n "${PHANTOM_REPO:-}" ] || [ -n "${PHANTOM_TAG:-}" ]; then
-  die "PHANTOM_REPO and PHANTOM_TAG are test-only overrides"
+  TEST_LOCAL_RELEASE_DIR="${PHANTOM_TEST_LOCAL_RELEASE_DIR:-}"
+elif [ -n "${PHANTOM_REPO:-}" ] || [ -n "${PHANTOM_TAG:-}" ] \
+  || [ -n "${PHANTOM_TEST_LOCAL_RELEASE_DIR:-}" ]; then
+  die "PHANTOM_REPO, PHANTOM_TAG, and PHANTOM_TEST_LOCAL_RELEASE_DIR are test-only overrides"
 fi
 
 validate_install_dir_override() {
@@ -139,13 +142,26 @@ allowed_download_url() {
 }
 
 download_file() {
-  local url="$1" destination="$2" max_bytes="$3" effective size
+  local url="$1" destination="$2" max_bytes="$3" effective size source
   local -a curl_args=(
     --silent --show-error --fail --location
     --proto '=https' --proto-redir '=https'
     --max-redirs 3 --connect-timeout 10 --max-time 120
   )
   allowed_download_url "$url" || die "refusing non-HTTPS or untrusted download URL"
+  if [ -n "$TEST_LOCAL_RELEASE_DIR" ]; then
+    [ "${TEST_LOCAL_RELEASE_DIR#/}" != "$TEST_LOCAL_RELEASE_DIR" ] \
+      && [ -d "$TEST_LOCAL_RELEASE_DIR" ] && [ ! -L "$TEST_LOCAL_RELEASE_DIR" ] \
+      || die "PHANTOM_TEST_LOCAL_RELEASE_DIR must be an absolute regular directory"
+    source="$TEST_LOCAL_RELEASE_DIR/${url##*/}"
+    [ -f "$source" ] && [ ! -L "$source" ] \
+      || die "offline installer fixture is missing or not a regular file"
+    size="$(wc -c < "$source" | tr -d '[:space:]')"
+    [ "$size" -gt 0 ] && [ "$size" -le "$max_bytes" ] \
+      || die "offline installer fixture exceeded its size limit"
+    cp -- "$source" "$destination"
+    return 0
+  fi
   if curl --help all 2>/dev/null | grep -q -- '--max-filesize'; then
     curl_args+=(--max-filesize "$max_bytes")
   fi

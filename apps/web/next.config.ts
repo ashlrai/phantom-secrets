@@ -35,6 +35,34 @@ const SECURITY_HEADERS = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  async redirects() {
+    return [
+      {
+        source: "/docs",
+        destination:
+          "https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md",
+        permanent: false,
+      },
+      {
+        source: "/docs/getting-started",
+        destination:
+          "https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md",
+        permanent: false,
+      },
+      {
+        source: "/docs/login",
+        destination:
+          "https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md",
+        permanent: false,
+      },
+      {
+        source: "/docs/sync",
+        destination:
+          "https://github.com/ashlrai/phantom-secrets/blob/main/docs/sync.md",
+        permanent: false,
+      },
+    ];
+  },
   async headers() {
     return [
       {

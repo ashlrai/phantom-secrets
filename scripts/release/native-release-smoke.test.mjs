@@ -324,7 +324,7 @@ test("native archive smoke propagates MCP schema failure after exact versions pa
 });
 
 test("release workflow binds every exact artifact to one native runner", () => {
-  const nativeJob = job("native-acceptance", "attest");
+  const nativeJob = job("native-acceptance", "verify-artifacts");
   assert.match(nativeJob, /\n    needs: build\n/);
   assert.match(nativeJob, /\n    runs-on: \$\{\{ matrix\.os \}\}\n/);
   assert.match(nativeJob, /actions\/download-artifact@[0-9a-f]{40}/);
@@ -332,7 +332,7 @@ test("release workflow binds every exact artifact to one native runner", () => {
   assert.match(nativeJob, /native-release-smoke\.mjs/);
   assert.match(nativeJob, /PHANTOM_NATIVE_ARCHIVE: native-artifact\/\$\{\{ matrix\.archive \}\}/);
   assert.match(nativeJob, /PHANTOM_NATIVE_TARGET: \$\{\{ matrix\.target \}\}/);
-  assert.match(nativeJob, /PHANTOM_RELEASE_TAG: \$\{\{ github\.ref_name \}\}/);
+  assert.match(nativeJob, /PHANTOM_RELEASE_TAG: \$\{\{ inputs\.release_tag \|\| github\.ref_name \}\}/);
 
   const rows = matrixRows(nativeJob);
   assert.deepEqual([...rows.keys()].sort(), Object.keys(expected).sort());
@@ -353,10 +353,13 @@ test("release workflow binds every exact artifact to one native runner", () => {
 });
 
 test("attestation cannot begin before every build and native acceptance succeeds", () => {
+  const verificationJob = job("verify-artifacts", "attest");
   const attestJob = job("attest", "release");
-  assert.match(attestJob, /\n    needs: \[build, native-acceptance\]\n/);
+  assert.match(verificationJob, /\n    needs: \[build, native-acceptance\]\n/);
+  assert.match(attestJob, /\n    needs: verify-artifacts\n/);
+  assert.doesNotMatch(verificationJob, /continue-on-error:/);
   assert.doesNotMatch(attestJob, /continue-on-error:/);
-  assert.doesNotMatch(job("native-acceptance", "attest"), /continue-on-error:/);
+  assert.doesNotMatch(job("native-acceptance", "verify-artifacts"), /continue-on-error:/);
 });
 
 test("platform documentation distinguishes configured native gates from candidate evidence", () => {

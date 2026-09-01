@@ -21,17 +21,22 @@ A `v*` tag starts `.github/workflows/release.yml`. The current workflow:
    and extracted file set, asserts both the runner and Node runtime OS/architecture,
    checks both binaries' exact tag-bound `--version`, and runs the MCP stdio
    schema smoke against the extracted `phantom-mcp`;
-6. downloads the host-specific Syft 1.42.3 release archive, verifies its exact
+6. runs the real direct installer against that same local archive on every
+   matching runner, verifies the installed pair and source receipt, injects a
+   controlled checksum failure, and proves the accepted installation is
+   unchanged with no transaction residue; Windows acceptance explicitly skips
+   persistent user-PATH mutation while preserving the install transaction;
+7. downloads the host-specific Syft 1.42.3 release archive, verifies its exact
    SHA-256 from Anchore's official checksum manifest, and invokes that verified
    binary to scan each exact archive into an SPDX 2.3 JSON SBOM;
-7. generates a SHA-256 sidecar for every archive plus an aggregate
+8. generates a SHA-256 sidecar for every archive plus an aggregate
    `SHA256SUMS`;
-8. verifies the exact archive, sidecar, SBOM, aggregate-checksum, member-name,
+9. verifies the exact archive, sidecar, SBOM, aggregate-checksum, member-name,
    and member-type contract;
-9. requests one GitHub build-provenance attestation covering the six exact
+10. requests one GitHub build-provenance attestation covering the six exact
    archive digests and one SBOM attestation binding each archive to its matching
    SPDX document; and
-10. re-verifies the preserved bundle before creating a non-overwriting GitHub
+11. re-verifies the preserved bundle before creating a non-overwriting GitHub
    release.
 
 Third-party actions are pinned. Build jobs use read-only repository permissions;
@@ -44,7 +49,30 @@ rule by itself.
 
 The build matrix may cross-compile, but it cannot authorize attestation directly.
 A separate six-row native-acceptance matrix downloads each exact build artifact
-onto the matching OS and architecture and must complete before attestation.
+onto the matching OS and architecture and must complete both archive execution
+and the isolated direct-installer transaction before attestation.
+
+## Rehearse the release without a tag
+
+`.github/workflows/release-rehearsal.yml` calls the same source verification,
+six-target build, native acceptance, checksum, archive, and SBOM graph without
+creating a tag. The caller and reusable graph retain `contents: read`; the
+tag-only attestation and immutable-release jobs are skipped. This is the
+preferred way to find release-only platform failures before requesting a
+consequential tag.
+
+Starting a hosted rehearsal consumes GitHub Actions capacity and therefore
+requires repository authorization. For an approved exact candidate, run:
+
+```bash
+gh workflow run release-rehearsal.yml -f release_tag=v0.7.4
+```
+
+Retain the workflow URL, source SHA, resolved runner images, six native job
+results, and verified-bundle job result. A green rehearsal proves those
+candidate build and native checks only. It does not create attestations,
+publish a release or package, sign binaries, deploy the website, apply a
+migration, activate a provider, or establish customer acceptance.
 
 The workflow source only requests SBOM and provenance attestations when a tag
 run executes successfully. This repository state does **not** prove the native
@@ -102,8 +130,11 @@ npm --prefix apps/web audit --omit=dev --audit-level=moderate
 npm --prefix apps/web test
 npm --prefix apps/web run build
 node --test scripts/installers.test.js
+node --test scripts/release/native-installer-acceptance.test.mjs
+node --test scripts/release/release-rehearsal-contract.test.mjs
 node --test scripts/publish-crates.test.js
 node scripts/check-platform-installers.mjs
+node scripts/release/check-version-parity.mjs v0.7.4
 git diff --check
 ```
 
@@ -219,7 +250,10 @@ bounded size, JSON parsing, SPDX
 `verify-source` job locally builds and schema-smokes `phantom-mcp`; it does not
 build `phantom` or execute either binary's `--version`. Exact tag-bound version
 execution for both binaries occurs in the native matrix after extraction from
-every build archive, and all six rows gate attestation. Run packaged npm and MCP
+every build archive. The same rows then run the direct installer against the
+exact local archive, validate the installed source receipt, and prove a
+checksum failure preserves the accepted installation without residue. All six
+rows gate attestation. Run packaged npm and MCP
 stdio smoke against staged local artifacts without downloading or publishing.
 
 ## Supply-chain and native blockers
@@ -282,7 +316,7 @@ Keep these claims separate:
 1. source implemented;
 2. source gates passed on an exact SHA;
 3. archives built and locally verified;
-4. exact artifacts passed native acceptance;
+4. exact artifacts passed native archive and installer acceptance;
 5. provenance and SBOM attestations verified for the exact archive digests;
 6. GitHub/npm/Homebrew/MCP packages published;
 7. provider configuration or deployment activated; and

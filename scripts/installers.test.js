@@ -147,6 +147,9 @@ function runInstaller(options = {}) {
       env.PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES = '1';
     }
   }
+  if (options.directLocalRelease) {
+    env.PHANTOM_TEST_LOCAL_RELEASE_DIR = fixture;
+  }
   const result = spawnSync('/bin/bash', [shellInstaller], {
     encoding: 'utf8',
     env,
@@ -215,6 +218,21 @@ test('Unix installer rejects repository and tag overrides without the explicit t
     assert.match(result.stderr, /test-only overrides/);
     assert.equal(existsSync(log), false, 'override rejection must happen before download');
   }
+});
+
+test('offline release fixtures require the explicit test opt-in and bypass curl only in test mode', () => {
+  const denied = runInstaller({ directLocalRelease: true, testOverrideOptIn: false });
+  assert.notEqual(denied.result.status, 0);
+  assert.match(denied.result.stderr, /test-only overrides/);
+  assert.equal(existsSync(denied.log), false);
+
+  const accepted = runInstaller({ directLocalRelease: true });
+  assert.equal(accepted.result.status, 0, accepted.result.stderr);
+  assert.equal(existsSync(accepted.log), false, 'offline test mode must not invoke curl');
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(accepted.install, '.phantom-install-source.json'), 'utf8')),
+    { schema_version: 1, source: 'direct', version: '1.2.3', target: 'x86_64-apple-darwin' },
+  );
 });
 
 test('Unix unsupported-target failures point to reviewed release assets', () => {
@@ -444,7 +462,9 @@ test('PowerShell installer has a strict offline-verifiable security contract', (
   assert.match(source, /\$CanonicalRepo = 'ashlrai\/phantom-secrets'/);
   assert.match(source, /\$CandidateTag = 'v0\.7\.4'/);
   assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1'/);
-  assert.match(source, /PHANTOM_REPO and PHANTOM_TAG are test-only overrides/);
+  assert.match(source, /PHANTOM_TEST_LOCAL_RELEASE_DIR/);
+  assert.match(source, /PHANTOM_TEST_DISABLE_PATH_PERSISTENCE/);
+  assert.match(source, /installer test overrides require PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES=1/);
   assert.doesNotMatch(source, /releases\/latest|api\.github\.com/);
   assert.ok(source.indexOf('archive identity verified') < source.indexOf('run Unblock-File manually'));
 });
