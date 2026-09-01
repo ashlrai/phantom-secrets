@@ -353,13 +353,27 @@ fn migrate_legacy_transaction(
 
     if index_changed {
         if let Err(error) = backend.save_index(&after_index) {
-            // The legacy entry is still authoritative. Restore the index and
-            // remove the new entry even when the failed save may have applied.
-            return Err(compensated_error(
-                "legacy keychain migration",
-                error,
-                [backend.save_index(&before_index), backend.remove_hashed()],
-            ));
+            // The legacy entry is still authoritative. Remove the hashed copy
+            // only after restoring the index is proven successful. If that
+            // restoration fails before applying, the after-index may still
+            // point at the hashed entry and removing it would create a dangling
+            // index record.
+            match backend.save_index(&before_index) {
+                Ok(()) => {
+                    return Err(compensated_error(
+                        "legacy keychain migration",
+                        error,
+                        [Ok(()), backend.remove_hashed()],
+                    ));
+                }
+                Err(restore_error) => {
+                    return Err(compensated_error(
+                        "legacy keychain migration",
+                        error,
+                        [Err(restore_error)],
+                    ));
+                }
+            }
         }
     }
 
@@ -827,7 +841,8 @@ mod tests {
         IndexCommit,
         LegacyDelete,
         LegacyRestore,
-        IndexRestore,
+        IndexRestoreBeforeMutation,
+        IndexRestoreAfterMutation,
         HashedRemove,
     }
 
@@ -890,11 +905,22 @@ mod tests {
         }
 
         fn save_index(&self, names: &[String]) -> Result<()> {
+            let is_commit = names.iter().any(|name| name == MIGRATION_NAME);
+            if !is_commit
+                && self
+                    .faults
+                    .borrow_mut()
+                    .remove(&MigrationFault::IndexRestoreBeforeMutation)
+            {
+                return Err(PhantomError::VaultError(
+                    "injected IndexRestoreBeforeMutation failure before mutation".to_string(),
+                ));
+            }
             self.state.borrow_mut().index = names.to_vec();
-            let fault = if names.iter().any(|name| name == MIGRATION_NAME) {
+            let fault = if is_commit {
                 MigrationFault::IndexCommit
             } else {
-                MigrationFault::IndexRestore
+                MigrationFault::IndexRestoreAfterMutation
             };
             self.trip(fault)
         }
@@ -976,6 +1002,32 @@ mod tests {
             .to_string()
             .contains("prior keychain state was restored"));
         assert_eq!(backend.snapshot(), before);
+    }
+
+    #[test]
+    fn legacy_migration_retains_hashed_copy_when_index_restore_is_uncertain() {
+        for restore_fault in [
+            MigrationFault::IndexRestoreBeforeMutation,
+            MigrationFault::IndexRestoreAfterMutation,
+        ] {
+            let backend = ScriptedMigration::new([MigrationFault::IndexCommit, restore_fault]);
+
+            let error = migrate_legacy_transaction(&backend, MIGRATION_NAME).unwrap_err();
+            let after = backend.snapshot();
+
+            assert!(error.to_string().contains("rollback was incomplete"));
+            assert_eq!(after.hashed.as_deref(), Some(MIGRATION_VALUE));
+            assert_eq!(after.legacy.as_deref(), Some(MIGRATION_VALUE));
+            match restore_fault {
+                MigrationFault::IndexRestoreBeforeMutation => {
+                    assert!(after.index.iter().any(|name| name == MIGRATION_NAME));
+                }
+                MigrationFault::IndexRestoreAfterMutation => {
+                    assert_eq!(after.index, vec!["EXISTING_KEY".to_string()]);
+                }
+                _ => unreachable!("test supplies only index restoration faults"),
+            }
+        }
     }
 
     #[test]
