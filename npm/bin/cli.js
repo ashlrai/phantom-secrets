@@ -122,6 +122,7 @@ function validateOwnedPath(path, kind, platform = process.platform) {
 
 function validateWindowsPathAncestors(path, platform = process.platform) {
   if (platform !== "win32") return;
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- resolving the candidate is the first step in checking every ancestor for reparse points before any filesystem mutation.
   const target = resolve(path);
   const ancestors = [];
   for (let cursor = target; ; cursor = dirname(cursor)) {
