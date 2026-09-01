@@ -15,11 +15,12 @@ say()  { printf "  \033[1;35m▲\033[0m phantom: %s\n" "$1"; }
 warn() { printf "  \033[1;33m!\033[0m phantom: %s\n" "$1" >&2; }
 die()  { printf "  \033[1;31m✗\033[0m phantom: %s\n" "$1" >&2; exit 1; }
 
-REPO="${PHANTOM_REPO:-ashlrai/phantom-secrets}"
+CANONICAL_REPO="ashlrai/phantom-secrets"
+CANDIDATE_TAG="v0.7.4"
+REPO="$CANONICAL_REPO"
 RELEASES_URL="https://github.com/ashlrai/phantom-secrets/releases"
 INSTALL_DIR="${PHANTOM_INSTALL_DIR:-$HOME/.phantom-secrets/bin}"
-PIN_TAG="${PHANTOM_TAG:-}"
-MAX_API_BYTES=1048576
+PIN_TAG="$CANDIDATE_TAG"
 MAX_CHECKSUM_BYTES=1024
 MAX_ARCHIVE_BYTES=104857600
 stage_root=""
@@ -30,6 +31,17 @@ lock_path=""
 lock_token=""
 lock_owned=0
 lock_heartbeat_pid=""
+
+# Production installers are bound to one reviewed repository and release. The
+# override seam exists only for the offline installer test harness; accepting a
+# caller-controlled repository or mutable release selector in normal use would
+# defeat review of this exact script.
+if [ "${PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES:-}" = "1" ]; then
+  REPO="${PHANTOM_REPO:-$CANONICAL_REPO}"
+  PIN_TAG="${PHANTOM_TAG:-$CANDIDATE_TAG}"
+elif [ -n "${PHANTOM_REPO:-}" ] || [ -n "${PHANTOM_TAG:-}" ]; then
+  die "PHANTOM_REPO and PHANTOM_TAG are test-only overrides"
+fi
 
 validate_install_dir_override() {
   local value="$1"
@@ -103,7 +115,7 @@ allowed_download_url() {
   [[ "$url" =~ ^https://([^/]+)/ ]] || return 1
   host="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
   case "$host" in
-    api.github.com|github.com|release-assets.githubusercontent.com|objects.githubusercontent.com)
+    github.com|release-assets.githubusercontent.com|objects.githubusercontent.com)
       return 0 ;;
     *) return 1 ;;
   esac
@@ -351,17 +363,7 @@ download_dir="$stage_root/download"
 candidate_dir="$stage_root/candidate"
 mkdir -m 700 "$download_dir" "$candidate_dir"
 
-if [ -n "$PIN_TAG" ]; then
-  tag="$PIN_TAG"
-else
-  say "resolving latest release..."
-  release_json="$download_dir/latest.json"
-  download_file "https://api.github.com/repos/${REPO}/releases/latest" \
-    "$release_json" "$MAX_API_BYTES"
-  tag="$(sed -nE 's/^[[:space:]]*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)"[,]?[[:space:]]*$/\1/p' \
-    "$release_json" | head -n 1)"
-  [ -n "$tag" ] || die "could not determine latest release tag from GitHub API"
-fi
+tag="$PIN_TAG"
 validate_tag "$tag" || die "release tag is not strict semantic version syntax"
 expected_version="${tag#v}"
 say "release: $tag"

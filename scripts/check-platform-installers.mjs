@@ -39,6 +39,9 @@ for (const [pattern, label] of [
   [/arm64\|aarch64\)\s+arch="aarch64"/, "Unix ARM64 mapping"],
   [/SHA-256 mismatch/, "Unix checksum enforcement"],
   [/phantom-mcp/, "Unix two-binary installation"],
+  [/CANONICAL_REPO="ashlrai\/phantom-secrets"/, "Unix canonical repository binding"],
+  [/CANDIDATE_TAG="v0\.7\.4"/, "Unix exact candidate tag binding"],
+  [/PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/, "Unix test-only override gate"],
 ]) {
   requires(shellInstaller, pattern, label);
 }
@@ -49,6 +52,9 @@ for (const [pattern, label] of [
   [/Get-FileHash -Algorithm SHA256/, "Windows checksum calculation"],
   [/SHA-256 mismatch/, "Windows checksum enforcement"],
   [/phantom-mcp\.exe/, "Windows two-binary installation"],
+  [/\$CanonicalRepo = 'ashlrai\/phantom-secrets'/, "Windows canonical repository binding"],
+  [/\$CandidateTag = 'v0\.7\.4'/, "Windows exact candidate tag binding"],
+  [/PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/, "Windows test-only override gate"],
 ]) {
   requires(powershellInstaller, pattern, label);
 }
@@ -61,6 +67,11 @@ for (const [source, label] of [
     source,
     /signed release binary/i,
     `${label} must not claim unsigned artifacts are signed`,
+  );
+  assert.doesNotMatch(
+    source,
+    /releases\/latest|api\.github\.com/,
+    `${label} must not resolve or trust a mutable latest-release API`,
   );
 }
 

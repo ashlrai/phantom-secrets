@@ -172,7 +172,6 @@ function Test-AllowedDownloadUri {
     param([Parameter(Mandatory)][Uri]$Uri)
     if ($Uri.Scheme -ne 'https') { return $false }
     return @(
-        'api.github.com',
         'github.com',
         'release-assets.githubusercontent.com',
         'objects.githubusercontent.com'
@@ -401,7 +400,16 @@ function Assert-ExactVersion {
     }
 }
 
-$Repo = if ($env:PHANTOM_REPO) { $env:PHANTOM_REPO } else { 'ashlrai/phantom-secrets' }
+$CanonicalRepo = 'ashlrai/phantom-secrets'
+$CandidateTag = 'v0.7.4'
+$Repo = $CanonicalRepo
+$PinTag = $CandidateTag
+if ($env:PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1') {
+    if ($env:PHANTOM_REPO) { $Repo = $env:PHANTOM_REPO }
+    if ($env:PHANTOM_TAG) { $PinTag = $env:PHANTOM_TAG }
+} elseif ($env:PHANTOM_REPO -or $env:PHANTOM_TAG) {
+    Write-PhDie 'PHANTOM_REPO and PHANTOM_TAG are test-only overrides'
+}
 if ($Repo -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { Write-PhDie 'invalid PHANTOM_REPO' }
 $InstallDir = if ($env:PHANTOM_INSTALL_DIR) {
     Assert-SafeInstallDirectoryOverride -Path $env:PHANTOM_INSTALL_DIR
@@ -409,7 +417,6 @@ $InstallDir = if ($env:PHANTOM_INSTALL_DIR) {
 } else {
     Join-Path $env:USERPROFILE '.phantom-secrets\bin'
 }
-$PinTag = $env:PHANTOM_TAG
 
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 switch ($architecture) {
@@ -460,16 +467,7 @@ try {
     New-PrivateDirectory -Path $downloadDir
     New-PrivateDirectory -Path $candidateDir
 
-    if ($PinTag) {
-        $tag = $PinTag
-    } else {
-        Write-PhSay 'resolving latest release...'
-        $releaseJson = Join-Path $downloadDir 'latest.json'
-        Invoke-PhDownload -Uri ([Uri]"https://api.github.com/repos/$Repo/releases/latest") `
-            -OutFile $releaseJson -MaxBytes 1048576
-        $release = Get-Content -LiteralPath $releaseJson -Raw | ConvertFrom-Json
-        $tag = $release.tag_name
-    }
+    $tag = $PinTag
     if (-not $tag -or
         $tag -cnotmatch '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$') {
         throw 'release tag is not strict semantic version syntax'

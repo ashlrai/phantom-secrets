@@ -94,24 +94,34 @@ function runInstaller(options = {}) {
     writeFileSync(join(install, 'old-install'), 'preserve-me');
   }
   const log = join(root, 'curl.log');
+  const env = {
+    ...process.env,
+    HOME: home,
+    SHELL: '/bin/bash',
+    PATH: `${shims}:${process.env.PATH}`,
+    PHANTOM_INSTALL_DIR: install,
+    PHANTOM_TEST_FIXTURE_DIR: fixture,
+    PHANTOM_TEST_CURL_LOG: log,
+    PHANTOM_TEST_UNAME_S: options.unameS ?? 'Darwin',
+    PHANTOM_TEST_UNAME_M: options.unameM ?? 'x86_64',
+    PHANTOM_TEST_CURL_DELAY_SECONDS: options.curlDelaySeconds ?? '',
+    PHANTOM_INSTALL_LOCK_WAIT_SECONDS: options.lockWaitSeconds ?? '30',
+    PHANTOM_INSTALL_LOCK_STALE_SECONDS: options.lockStaleSeconds ?? '300',
+    PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS: options.lockHeartbeatSeconds ?? '5',
+  };
+  delete env.PHANTOM_REPO;
+  delete env.PHANTOM_TAG;
+  delete env.PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES;
+  if (!options.useCandidateDefaults) {
+    env.PHANTOM_TAG = `v${options.version ?? version}`;
+    if (options.repo) env.PHANTOM_REPO = options.repo;
+    if (options.testOverrideOptIn !== false) {
+      env.PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES = '1';
+    }
+  }
   const result = spawnSync('/bin/bash', [shellInstaller], {
     encoding: 'utf8',
-    env: {
-      ...process.env,
-      HOME: home,
-      SHELL: '/bin/bash',
-      PATH: `${shims}:${process.env.PATH}`,
-      PHANTOM_TAG: `v${options.version ?? version}`,
-      PHANTOM_INSTALL_DIR: install,
-      PHANTOM_TEST_FIXTURE_DIR: fixture,
-      PHANTOM_TEST_CURL_LOG: log,
-      PHANTOM_TEST_UNAME_S: options.unameS ?? 'Darwin',
-      PHANTOM_TEST_UNAME_M: options.unameM ?? 'x86_64',
-      PHANTOM_TEST_CURL_DELAY_SECONDS: options.curlDelaySeconds ?? '',
-      PHANTOM_INSTALL_LOCK_WAIT_SECONDS: options.lockWaitSeconds ?? '30',
-      PHANTOM_INSTALL_LOCK_STALE_SECONDS: options.lockStaleSeconds ?? '300',
-      PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS: options.lockHeartbeatSeconds ?? '5',
-    },
+    env,
   });
   return { root, install, log, result };
 }
@@ -148,6 +158,35 @@ test('Unix installer guidance never emits pipe-to-shell or older-registry fallba
   assert.doesNotMatch(source, /cargo install|npm (?:i|install)|npx /i);
   assert.match(source, /checksum-verifiable asset from \$RELEASES_URL/);
   assert.match(source, /Do not pipe a network response directly into a shell/);
+});
+
+test('direct installers bind normal use to the canonical repository and exact candidate tag', () => {
+  const shell = readFileSync(shellInstaller, 'utf8');
+  const powerShell = readFileSync(psInstaller, 'utf8');
+  for (const source of [shell, powerShell]) {
+    assert.match(source, /ashlrai\/phantom-secrets/);
+    assert.match(source, /v0\.7\.4/);
+    assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/);
+    assert.doesNotMatch(source, /releases\/latest|api\.github\.com/);
+  }
+
+  const { log, result } = runInstaller({ version: '0.7.4', useCandidateDefaults: true });
+  assert.equal(result.status, 0, result.stderr);
+  const curlLog = readFileSync(log, 'utf8');
+  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.7\.4\//);
+  assert.doesNotMatch(curlLog, /releases\/latest|api\.github\.com/);
+});
+
+test('Unix installer rejects repository and tag overrides without the explicit test-only opt-in', () => {
+  for (const options of [
+    { version: '1.2.3', testOverrideOptIn: false },
+    { version: '1.2.3', repo: 'example/decoy', testOverrideOptIn: false },
+  ]) {
+    const { log, result } = runInstaller(options);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /test-only overrides/);
+    assert.equal(existsSync(log), false, 'override rejection must happen before download');
+  }
 });
 
 test('Unix unsupported-target failures point to reviewed release assets', () => {
@@ -248,6 +287,7 @@ test('Unix installer serializes concurrent versions under one owner lock', async
     PHANTOM_INSTALL_LOCK_WAIT_SECONDS: '15',
     PHANTOM_INSTALL_LOCK_STALE_SECONDS: '3',
     PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS: '1',
+    PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES: '1',
   };
 
   const first = spawn('/bin/bash', [shellInstaller], {
@@ -371,6 +411,11 @@ test('PowerShell installer has a strict offline-verifiable security contract', (
   assert.match(source, /StructuralEqualityComparer/);
   assert.match(source, /PHANTOM_INSTALL_DIR must be a local absolute path/);
   assert.match(source, /install source receipt failed final validation/);
+  assert.match(source, /\$CanonicalRepo = 'ashlrai\/phantom-secrets'/);
+  assert.match(source, /\$CandidateTag = 'v0\.7\.4'/);
+  assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1'/);
+  assert.match(source, /PHANTOM_REPO and PHANTOM_TAG are test-only overrides/);
+  assert.doesNotMatch(source, /releases\/latest|api\.github\.com/);
   assert.ok(source.indexOf('archive identity verified') < source.indexOf('run Unblock-File manually'));
 });
 
