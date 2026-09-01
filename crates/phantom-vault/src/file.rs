@@ -2,7 +2,7 @@ use crate::crypto;
 use crate::metadata::SecretMetadata;
 use crate::traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
 use phantom_core::error::{PhantomError, Result};
-use phantom_core::fs::{AnchoredLock, AnchoredRead, AnchoredTarget, TrustedAnchor};
+use phantom_core::fs::{AnchoredEffect, AnchoredLock, AnchoredRead, AnchoredTarget, TrustedAnchor};
 use phantom_core::validator::ValidationMetadata;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -111,7 +111,8 @@ impl FileVault {
                         .into(),
                 ));
             }
-            locked.legacy_json.unlink_if_exact(&legacy)?;
+            let removal = locked.legacy_json.unlink_if_exact(&legacy)?;
+            require_durable_effect(removal, "verified duplicate legacy plaintext vault removal")?;
             eprintln!(
                 "phantom: removed verified duplicate legacy plaintext vault ({})",
                 self.vault_path.with_extension("json").display()
@@ -120,17 +121,36 @@ impl FileVault {
         }
 
         let encrypted = self.encrypt(&legacy_data)?;
-        let published = locked.encrypted.replace_if_exact(None, &encrypted)?;
-        if let Err(unlink_error) = locked.legacy_json.unlink_if_exact(&legacy) {
-            let rollback = locked.encrypted.unlink_if_exact(&published);
-            return Err(PhantomError::VaultError(match rollback {
-                Ok(()) => format!(
-                    "Legacy vault changed before exact removal; encrypted migration was rolled back: {unlink_error}"
-                ),
-                Err(rollback_error) => format!(
-                    "Legacy vault changed before exact removal and encrypted migration rollback failed: {unlink_error}; rollback: {rollback_error}"
-                ),
-            }));
+        let published = require_durable_effect(
+            locked.encrypted.replace_if_exact(None, &encrypted)?,
+            "encrypted legacy-vault replacement publication; the legacy plaintext copy was preserved",
+        )?;
+        match locked.legacy_json.unlink_if_exact(&legacy) {
+            Err(unlink_error) => {
+                let rollback = locked
+                    .encrypted
+                    .unlink_if_exact(&published)
+                    .map_err(PhantomError::from)
+                    .and_then(|outcome| {
+                        require_durable_effect(
+                            outcome,
+                            "encrypted legacy-vault migration rollback; the legacy plaintext copy remains authoritative",
+                        )
+                    });
+                return Err(PhantomError::VaultError(match rollback {
+                    Ok(()) => format!(
+                        "Legacy vault changed before exact removal; encrypted migration was rolled back: {unlink_error}"
+                    ),
+                    Err(rollback_error) => format!(
+                        "Legacy vault changed before exact removal and encrypted migration rollback failed: {unlink_error}; rollback: {rollback_error}"
+                    ),
+                }));
+            }
+            Ok(outcome) => {
+                // A committed-but-uncertain unlink may already have removed
+                // the legacy copy. Preserve the published encrypted copy.
+                require_durable_effect(outcome, "legacy plaintext vault removal")?;
+            }
         }
 
         eprintln!(
@@ -215,8 +235,8 @@ impl FileVault {
         expected: Option<&AnchoredRead>,
     ) -> Result<()> {
         let encrypted = self.encrypt(data)?;
-        locked.encrypted.replace_if_exact(expected, &encrypted)?;
-        Ok(())
+        let outcome = locked.encrypted.replace_if_exact(expected, &encrypted)?;
+        require_durable_effect(outcome, "encrypted vault update").map(|_| ())
     }
 }
 
@@ -263,12 +283,32 @@ fn validate_project_id(project_id: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
 
-    if valid {
+    if valid && !is_windows_reserved_basename(project_id) {
         Ok(())
     } else {
         Err(PhantomError::VaultError(
             "Invalid project ID for encrypted file vault".to_string(),
         ))
+    }
+}
+
+fn is_windows_reserved_basename(project_id: &str) -> bool {
+    let upper = project_id.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || upper.strip_prefix("COM").is_some_and(|suffix| {
+            matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
+        || upper.strip_prefix("LPT").is_some_and(|suffix| {
+            matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
+}
+
+fn require_durable_effect<T>(outcome: AnchoredEffect<T>, operation: &str) -> Result<T> {
+    match outcome {
+        AnchoredEffect::Durable(value) => Ok(value),
+        AnchoredEffect::CommittedButUncertain { value: _, error } => Err(PhantomError::VaultError(format!(
+            "{operation} committed, but durability or post-effect verification is uncertain: {error}. Do not assume the operation had no effect; reopen and verify the vault before retrying"
+        ))),
     }
 }
 
@@ -560,6 +600,37 @@ mod tests {
             )
             .expect("portable project ID should be accepted");
         }
+    }
+
+    #[test]
+    fn project_id_rejects_windows_device_basenames_on_every_platform() {
+        for project_id in [
+            "CON", "con", "PrN", "AUX", "nul", "COM1", "com9", "LPT1", "lPt9",
+        ] {
+            let dir = TempDir::new().unwrap();
+            let result = FileVault::new(dir.path(), project_id, "passphrase".to_string());
+            assert!(
+                result.is_err(),
+                "Windows device basename accepted: {project_id:?}"
+            );
+            assert!(!dir.path().join("vaults").exists());
+        }
+    }
+
+    #[test]
+    fn committed_effect_receipt_is_not_treated_as_no_effect() {
+        let error = require_durable_effect(
+            AnchoredEffect::CommittedButUncertain {
+                value: (),
+                error: std::io::Error::other("injected parent sync failure"),
+            },
+            "encrypted vault update",
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("committed"));
+        assert!(message.contains("Do not assume the operation had no effect"));
     }
 
     #[cfg(unix)]

@@ -1,7 +1,7 @@
 use crate::metadata::SecretMetadata;
 use crate::traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
 use phantom_core::error::{PhantomError, Result};
-use phantom_core::fs::{AnchoredLock, AnchoredRead, AnchoredTarget, TrustedAnchor};
+use phantom_core::fs::{AnchoredEffect, AnchoredLock, AnchoredRead, AnchoredTarget, TrustedAnchor};
 use phantom_core::validator::ValidationMetadata;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -66,6 +66,13 @@ fn safe_project_component(project_id: &str) -> String {
             }
         })
         .collect()
+}
+
+fn legacy_project_name_is_unambiguous(project_id: &str) -> bool {
+    !project_id.is_empty()
+        && project_id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
 }
 
 fn project_digest(project_id: &str) -> String {
@@ -176,7 +183,10 @@ impl KeychainSidecars {
             validation: metadata.target(format!("{digest}.validation.json"))?,
             legacy_metadata: metadata.target(format!("{legacy}.meta.json"))?,
             legacy_validation: metadata.target(format!("{legacy}.validation.json"))?,
-            legacy_name_is_ambiguous: legacy != project_id,
+            // Older sidecars used the project identifier directly after a
+            // lossy sanitizer. Even unchanged uppercase or Unicode spellings
+            // are ambiguous on case-folding/normalizing filesystems.
+            legacy_name_is_ambiguous: !legacy_project_name_is_unambiguous(project_id),
             _app_data: app_data,
             _metadata: metadata,
         })
@@ -279,19 +289,47 @@ fn reconcile_sidecar_pair(
 ) -> Result<()> {
     match (pair.stable, pair.legacy) {
         (None, Some(legacy)) => {
-            let published = stable_target.replace_if_exact(None, legacy.bytes())?;
-            if let Err(error) = legacy_target.unlink_if_exact(&legacy) {
-                return Err(compensated_error(
-                    &format!("keychain {label} sidecar migration"),
-                    error.into(),
-                    [stable_target
-                        .unlink_if_exact(&published)
-                        .map_err(Into::into)],
-                ));
+            let published = require_durable_sidecar_effect(
+                stable_target.replace_if_exact(None, legacy.bytes())?,
+                &format!(
+                    "keychain {label} stable sidecar publication; the legacy sidecar was preserved"
+                ),
+            )?;
+            match legacy_target.unlink_if_exact(&legacy) {
+                Err(error) => {
+                    return Err(compensated_error(
+                        &format!("keychain {label} sidecar migration"),
+                        error.into(),
+                        [stable_target
+                            .unlink_if_exact(&published)
+                            .map_err(PhantomError::from)
+                            .and_then(|outcome| {
+                                require_durable_sidecar_effect(
+                                    outcome,
+                                    &format!("keychain {label} stable sidecar rollback; the legacy sidecar remains authoritative"),
+                                )
+                            })],
+                    ));
+                }
+                Ok(outcome) => {
+                    // The legacy unlink committed. Never compensate by
+                    // deleting the new authoritative sidecar merely because
+                    // its parent sync was uncertain.
+                    require_durable_sidecar_effect(
+                        outcome,
+                        &format!("keychain {label} legacy sidecar removal"),
+                    )?;
+                }
             }
             Ok(())
         }
-        (Some(_), Some(legacy)) => legacy_target.unlink_if_exact(&legacy).map_err(Into::into),
+        (Some(_), Some(legacy)) => {
+            let outcome = legacy_target.unlink_if_exact(&legacy)?;
+            require_durable_sidecar_effect(
+                outcome,
+                &format!("duplicate keychain {label} legacy sidecar removal"),
+            )
+        }
         (Some(_), None) | (None, None) => Ok(()),
     }
 }
@@ -342,8 +380,8 @@ where
     let json = serde_json::to_vec_pretty(map).map_err(|error| {
         PhantomError::VaultError(format!("Keychain {label} serialize error: {error}"))
     })?;
-    target.replace_if_exact(before.as_ref(), &json)?;
-    Ok(())
+    let outcome = target.replace_if_exact(before.as_ref(), &json)?;
+    require_durable_sidecar_effect(outcome, &format!("keychain {label} sidecar update")).map(|_| ())
 }
 
 fn save_sidecar_map_if_unchanged<T>(
@@ -358,8 +396,17 @@ where
     let json = serde_json::to_vec_pretty(map).map_err(|error| {
         PhantomError::VaultError(format!("Keychain {label} serialize error: {error}"))
     })?;
-    target.replace_if_exact(expected_before, &json)?;
-    Ok(())
+    let outcome = target.replace_if_exact(expected_before, &json)?;
+    require_durable_sidecar_effect(outcome, &format!("keychain {label} sidecar update")).map(|_| ())
+}
+
+fn require_durable_sidecar_effect<T>(outcome: AnchoredEffect<T>, operation: &str) -> Result<T> {
+    match outcome {
+        AnchoredEffect::Durable(value) => Ok(value),
+        AnchoredEffect::CommittedButUncertain { value: _, error } => Err(PhantomError::VaultError(format!(
+            "{operation} committed, but durability or post-effect verification is uncertain: {error}. Do not assume the operation had no effect; reopen and verify the sidecar state before retrying"
+        ))),
+    }
 }
 
 // ── Validation metadata sidecar ──────────────────────────────────────────────
@@ -1500,7 +1547,7 @@ mod tests {
             second.stable_lock.relative_path()
         );
 
-        first
+        let _outcome = first
             .legacy_metadata
             .replace_if_exact(None, br#"{"AMBIGUOUS":1}"#)
             .unwrap();
@@ -1520,6 +1567,90 @@ mod tests {
     }
 
     #[test]
+    fn case_folded_legacy_sidecar_is_never_auto_claimed() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let upper = KeychainSidecars::from_anchor(
+            TrustedAnchor::open_canonical_private(&root).unwrap(),
+            "Project",
+        )
+        .unwrap();
+        let lower = KeychainSidecars::from_anchor(
+            TrustedAnchor::open_canonical_private(&root).unwrap(),
+            "project",
+        )
+        .unwrap();
+
+        assert!(upper.legacy_name_is_ambiguous);
+        assert!(!lower.legacy_name_is_ambiguous);
+        assert_ne!(
+            upper.metadata.relative_path(),
+            lower.metadata.relative_path()
+        );
+        let _outcome = upper
+            .legacy_metadata
+            .replace_if_exact(None, br#"{"OWNER":1}"#)
+            .unwrap();
+
+        let _lock = upper.acquire_project_lock("Project").unwrap();
+        let error = upper.reconcile_legacy().unwrap_err();
+        assert!(error.to_string().contains("ambiguous sanitized"));
+        assert!(upper.metadata.read_regular().unwrap().is_none());
+        assert_eq!(
+            upper
+                .legacy_metadata
+                .read_regular()
+                .unwrap()
+                .unwrap()
+                .bytes(),
+            br#"{"OWNER":1}"#
+        );
+    }
+
+    #[test]
+    fn unicode_legacy_sidecars_are_always_ambiguous() {
+        for project_id in ["caf\u{e9}", "cafe\u{301}"] {
+            let directory = tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let sidecars = KeychainSidecars::from_anchor(
+                TrustedAnchor::open_canonical_private(&root).unwrap(),
+                project_id,
+            )
+            .unwrap();
+            assert!(sidecars.legacy_name_is_ambiguous);
+            let _outcome = sidecars
+                .legacy_metadata
+                .replace_if_exact(None, br#"{"OWNER":1}"#)
+                .unwrap();
+
+            let _lock = sidecars.acquire_project_lock(project_id).unwrap();
+            assert!(sidecars
+                .reconcile_legacy()
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous sanitized"));
+            assert!(sidecars.metadata.read_regular().unwrap().is_none());
+            assert!(sidecars.legacy_metadata.read_regular().unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn committed_sidecar_effect_receipt_is_not_treated_as_no_effect() {
+        let error = require_durable_sidecar_effect(
+            AnchoredEffect::CommittedButUncertain {
+                value: (),
+                error: std::io::Error::other("injected parent sync failure"),
+            },
+            "keychain metadata sidecar update",
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("committed"));
+        assert!(message.contains("Do not assume the operation had no effect"));
+    }
+
+    #[test]
     fn legacy_sidecar_migrates_exactly_under_bridge_locks() {
         let directory = tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
@@ -1528,7 +1659,7 @@ mod tests {
             "legacy-project",
         )
         .unwrap();
-        sidecars
+        let _outcome = sidecars
             .legacy_metadata
             .replace_if_exact(None, br#"{"API_KEY":1}"#)
             .unwrap();
@@ -1552,11 +1683,11 @@ mod tests {
             "legacy-project",
         )
         .unwrap();
-        sidecars
+        let _outcome = sidecars
             .metadata
             .replace_if_exact(None, br#"{"NEW":1}"#)
             .unwrap();
-        sidecars
+        let _outcome = sidecars
             .legacy_metadata
             .replace_if_exact(None, br#"{"OLD":2}"#)
             .unwrap();

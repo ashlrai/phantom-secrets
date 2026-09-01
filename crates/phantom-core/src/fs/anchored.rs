@@ -18,9 +18,10 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, File, OpenOptions};
+use cap_std::fs::{Dir, DirBuilder, File, OpenOptions};
 use fs2::FileExt as _;
 use rand::RngCore;
+use zeroize::Zeroize;
 
 #[cfg(unix)]
 const PRIVATE_FILE_MODE: u32 = 0o600;
@@ -35,14 +36,87 @@ pub struct FileIdentity {
     object: u128,
 }
 
+/// Permission intent captured from and applied to file handles.
+///
+/// Unix retains exact permission bits. Other supported platforms carry a
+/// no-op token because their ACLs cannot be represented safely as a POSIX
+/// mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AnchoredFilePermissions {
+    unix_mode: Option<u32>,
+}
+
+impl AnchoredFilePermissions {
+    pub const fn private() -> Self {
+        Self {
+            #[cfg(unix)]
+            unix_mode: Some(0o600),
+            #[cfg(not(unix))]
+            unix_mode: None,
+        }
+    }
+
+    pub const fn executable() -> Self {
+        Self {
+            #[cfg(unix)]
+            unix_mode: Some(0o755),
+            #[cfg(not(unix))]
+            unix_mode: None,
+        }
+    }
+}
+
 /// An exact, value-bearing before-image read through an anchored handle.
 ///
 /// The identity is intentionally part of equality: replacing a file with a
 /// byte-for-byte decoy is still drift and is rejected.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct AnchoredRead {
     bytes: Vec<u8>,
     identity: FileIdentity,
+    permissions: AnchoredFilePermissions,
+}
+
+impl fmt::Debug for AnchoredRead {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AnchoredRead")
+            .field("byte_len", &self.bytes.len())
+            .field("identity", &self.identity)
+            .field("permissions", &self.permissions)
+            .finish()
+    }
+}
+
+/// Result of an anchored namespace mutation.
+///
+/// The outer [`io::Result`] returned by mutation methods is reserved for
+/// failures known to have happened before the rename or unlink took effect.
+/// Once the namespace mutation succeeds, later durability or verification
+/// failures are represented explicitly here so callers cannot mistake a
+/// committed effect for a no-effect error and attempt unsafe compensation.
+#[derive(Debug)]
+#[must_use = "anchored mutation outcomes distinguish durable and uncertain commits"]
+pub enum AnchoredEffect<T> {
+    /// The namespace effect, parent-directory sync, and any required
+    /// post-publish verification all completed.
+    Durable(T),
+    /// The namespace effect completed, but its durability or post-publish
+    /// verification could not be established.
+    CommittedButUncertain { value: T, error: io::Error },
+}
+
+/// Outcome of creating a directory when post-create retention or durability
+/// can fail. A missing receipt means creation/cleanup reached an uncertain
+/// namespace state and the caller must stop rather than guessing by path.
+#[derive(Debug)]
+#[must_use = "directory creation may have a committed or uncertain namespace effect"]
+pub enum AnchoredDirectoryCreation {
+    Durable(AnchoredCreatedDirectory),
+    CommittedButUncertain {
+        receipt: Option<AnchoredCreatedDirectory>,
+        error: io::Error,
+    },
 }
 
 impl AnchoredRead {
@@ -54,8 +128,18 @@ impl AnchoredRead {
         self.identity
     }
 
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.bytes
+    pub fn permissions(&self) -> AnchoredFilePermissions {
+        self.permissions
+    }
+
+    pub fn into_bytes(mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
+    }
+}
+
+impl Drop for AnchoredRead {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
     }
 }
 
@@ -64,6 +148,67 @@ pub struct TrustedAnchor {
     directories: Vec<Dir>,
     identity: FileIdentity,
     display_path: PathBuf,
+}
+
+/// Exact capability receipt for a directory created beneath an anchor.
+pub struct AnchoredCreatedDirectory {
+    parent: Dir,
+    anchor: TrustedAnchor,
+    leaf: OsString,
+    identity: FileIdentity,
+    relative: PathBuf,
+}
+
+impl fmt::Debug for AnchoredCreatedDirectory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AnchoredCreatedDirectory")
+            .field("identity", &self.identity)
+            .field("relative", &self.relative)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AnchoredCreatedDirectory {
+    pub fn anchor(&self) -> &TrustedAnchor {
+        &self.anchor
+    }
+
+    pub fn identity(&self) -> FileIdentity {
+        self.identity
+    }
+
+    /// Remove this operation's empty directory only if the retained parent
+    /// still names the exact created identity. A successful namespace removal
+    /// with an uncertain parent sync is returned as an explicit receipt.
+    pub fn remove_if_empty_exact(self) -> io::Result<AnchoredEffect<()>> {
+        let current = self.parent.open_dir_nofollow(&self.leaf)?;
+        if directory_identity(&current)? != self.identity || self.anchor.identity() != self.identity
+        {
+            return Err(drift_error(&self.relative));
+        }
+        drop(current);
+
+        // cap-std intentionally denies FILE_SHARE_DELETE for retained Windows
+        // directory handles. Consume and close the child handle after exact
+        // validation, while retaining the parent capability for relative
+        // removal.
+        let AnchoredCreatedDirectory {
+            parent,
+            anchor,
+            leaf,
+            identity: _,
+            relative: _,
+        } = self;
+        drop(anchor);
+        parent.remove_dir(&leaf)?;
+        let durability = maybe_inject_failure(TestFailurePoint::RemoveDirectoryParentSync)
+            .and_then(|()| sync_directory(&parent));
+        Ok(match durability {
+            Ok(()) => AnchoredEffect::Durable(()),
+            Err(error) => AnchoredEffect::CommittedButUncertain { value: (), error },
+        })
+    }
 }
 
 impl fmt::Debug for TrustedAnchor {
@@ -177,6 +322,98 @@ impl TrustedAnchor {
         })
     }
 
+    /// Open an existing real descendant directory and retain its complete
+    /// no-follow handle chain without creating any component.
+    pub fn open_subdirectory(&self, relative: impl AsRef<Path>) -> io::Result<TrustedAnchor> {
+        let relative = relative.as_ref();
+        let components = normal_components(relative)?;
+        let directories = self.walk_directories(&components, false)?;
+        let identity = directory_identity(
+            directories
+                .last()
+                .expect("opened subdirectory retains its directory"),
+        )?;
+        Ok(TrustedAnchor {
+            directories,
+            identity,
+            display_path: self.display_path.join(relative),
+        })
+    }
+
+    /// Create one private child directory and return an identity-bound receipt.
+    /// Existing children are rejected; callers can use [`Self::open_subdirectory`]
+    /// when they deliberately accept a pre-existing directory.
+    pub fn create_private_child(
+        &self,
+        name: impl AsRef<Path>,
+    ) -> io::Result<AnchoredDirectoryCreation> {
+        let name = name.as_ref();
+        let components = normal_components(name)?;
+        if components.len() != 1 {
+            return Err(invalid_relative(name));
+        }
+        let leaf = components[0].clone();
+        // Allocate every retained ancestor before the create commit point so
+        // a clone failure is unambiguously no-effect.
+        let mut directories = self
+            .directories
+            .iter()
+            .map(Dir::try_clone)
+            .collect::<io::Result<Vec<_>>>()?;
+        let parent = directories
+            .last()
+            .expect("anchor directory is retained")
+            .try_clone()?;
+        create_private_directory(&parent, &leaf)?;
+
+        let child = match maybe_inject_failure(TestFailurePoint::CreateDirectoryOpen)
+            .and_then(|()| parent.open_dir_nofollow(&leaf))
+        {
+            Ok(child) => child,
+            Err(open_error) => {
+                return rollback_unretained_directory(&parent, &leaf, open_error);
+            }
+        };
+        let identity = match maybe_inject_failure(TestFailurePoint::CreateDirectoryIdentity)
+            .and_then(|()| directory_identity(&child))
+        {
+            Ok(identity) => identity,
+            Err(identity_error) => {
+                drop(child);
+                return rollback_unretained_directory(&parent, &leaf, identity_error);
+            }
+        };
+        directories.push(child);
+        let created = AnchoredCreatedDirectory {
+            parent,
+            anchor: TrustedAnchor {
+                directories,
+                identity,
+                display_path: self.display_path.join(name),
+            },
+            leaf,
+            identity,
+            relative: name.to_path_buf(),
+        };
+
+        let durability = repair_private_directory(
+            created
+                .anchor
+                .directories
+                .last()
+                .expect("created directory handle is retained"),
+        )
+        .and_then(|()| maybe_inject_failure(TestFailurePoint::CreateDirectoryParentSync))
+        .and_then(|()| sync_directory(&created.parent));
+        Ok(match durability {
+            Ok(()) => AnchoredDirectoryCreation::Durable(created),
+            Err(error) => AnchoredDirectoryCreation::CommittedButUncertain {
+                receipt: Some(created),
+                error,
+            },
+        })
+    }
+
     /// Acquire an exclusive lock file through this anchor. Missing parents are
     /// created privately; the lock itself is required to be a single-link,
     /// non-reparse regular file and is repaired to POSIX mode 0600 by handle.
@@ -200,7 +437,7 @@ impl TrustedAnchor {
             let next = match current.open_dir_nofollow(component) {
                 Ok(directory) => directory,
                 Err(error) if error.kind() == io::ErrorKind::NotFound && create_private => {
-                    match current.create_dir(component) {
+                    match create_private_directory(current, component) {
                         Ok(()) => sync_directory(current)?,
                         Err(create_error)
                             if create_error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -263,14 +500,29 @@ impl AnchoredTarget {
         &self,
         expected: Option<&AnchoredRead>,
         contents: &[u8],
-    ) -> io::Result<AnchoredRead> {
+    ) -> io::Result<AnchoredEffect<AnchoredRead>> {
+        self.replace_if_exact_with_permissions(
+            expected,
+            contents,
+            AnchoredFilePermissions::private(),
+        )
+    }
+
+    /// Exact replacement variant that applies explicit permissions through
+    /// the staging handle before publication.
+    pub fn replace_if_exact_with_permissions(
+        &self,
+        expected: Option<&AnchoredRead>,
+        contents: &[u8],
+        permissions: AnchoredFilePermissions,
+    ) -> io::Result<AnchoredEffect<AnchoredRead>> {
         self.require_exact(expected)?;
         let (temp_name, temp, temp_identity) = self.create_private_temp()?;
         let mut temp = Some(temp);
         let result = (|| {
             let staging = temp.as_mut().expect("staging handle is live");
             staging.write_all(contents)?;
-            repair_private_file(staging)?;
+            apply_file_permissions(staging, permissions)?;
             staging.sync_all()?;
             ensure_regular_single_link(staging, &self.relative)?;
             if file_identity(staging)? != temp_identity {
@@ -289,6 +541,7 @@ impl AnchoredTarget {
                 &temp_name,
                 temp_identity,
                 contents,
+                permissions,
                 &self.relative,
             )?;
             // cap-std Dir::rename is specified to replace an existing file;
@@ -296,14 +549,30 @@ impl AnchoredTarget {
             // delegates to std::fs::rename (MoveFileExW replacement semantics).
             self.parent()
                 .rename(&temp_name, self.parent(), &self.leaf)?;
-            sync_directory(self.parent())?;
-            let published = self
-                .read_regular()?
-                .ok_or_else(|| drift_error(&self.relative))?;
-            if published.bytes != contents {
-                return Err(drift_error(&self.relative));
-            }
-            Ok(published)
+            let committed = AnchoredRead {
+                bytes: contents.to_vec(),
+                identity: temp_identity,
+                permissions,
+            };
+            let verification = (|| {
+                maybe_inject_failure(TestFailurePoint::ReplaceParentSync)?;
+                sync_directory(self.parent())?;
+                maybe_inject_failure(TestFailurePoint::ReplaceVerification)?;
+                let published = self
+                    .read_regular()?
+                    .ok_or_else(|| drift_error(&self.relative))?;
+                if published != committed {
+                    return Err(drift_error(&self.relative));
+                }
+                Ok(published)
+            })();
+            Ok(match verification {
+                Ok(published) => AnchoredEffect::Durable(published),
+                Err(error) => AnchoredEffect::CommittedButUncertain {
+                    value: committed,
+                    error,
+                },
+            })
         })();
 
         drop(temp.take());
@@ -315,13 +584,18 @@ impl AnchoredTarget {
 
     /// Remove the target only when it still has the exact reviewed identity
     /// and bytes. Missing, replaced, linked, or modified targets are rejected.
-    pub fn unlink_if_exact(&self, expected: &AnchoredRead) -> io::Result<()> {
+    pub fn unlink_if_exact(&self, expected: &AnchoredRead) -> io::Result<AnchoredEffect<()>> {
         self.require_exact(Some(expected))?;
         // One last independent handle-bound comparison immediately before the
         // relative unlink. Domain callers must hold their transaction lock.
         self.require_exact(Some(expected))?;
         self.parent().remove_file(&self.leaf)?;
-        sync_directory(self.parent())
+        let durability = maybe_inject_failure(TestFailurePoint::UnlinkParentSync)
+            .and_then(|()| sync_directory(self.parent()));
+        Ok(match durability {
+            Ok(()) => AnchoredEffect::Durable(()),
+            Err(error) => AnchoredEffect::CommittedButUncertain { value: (), error },
+        })
     }
 
     /// Acquire an exclusive lock at this exact anchored target.
@@ -405,6 +679,86 @@ impl AnchoredTarget {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TestFailurePoint {
+    ReplaceParentSync,
+    ReplaceVerification,
+    UnlinkParentSync,
+    CreateDirectoryParentSync,
+    CreateDirectoryOpen,
+    CreateDirectoryIdentity,
+    CreateDirectoryRollbackRemove,
+    CreateDirectoryRollbackSync,
+    RemoveDirectoryParentSync,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_FAILURE_POINTS: std::cell::RefCell<std::collections::VecDeque<TestFailurePoint>> = const {
+        std::cell::RefCell::new(std::collections::VecDeque::new())
+    };
+}
+
+#[cfg(test)]
+fn inject_failure_once(point: TestFailurePoint) {
+    TEST_FAILURE_POINTS.with(|points| points.borrow_mut().push_back(point));
+}
+
+#[cfg(test)]
+fn maybe_inject_failure(point: TestFailurePoint) -> io::Result<()> {
+    TEST_FAILURE_POINTS.with(|points| {
+        let mut points = points.borrow_mut();
+        if points.front().copied() == Some(point) {
+            points.pop_front();
+            Err(io::Error::other(format!(
+                "injected anchored post-effect failure: {point:?}"
+            )))
+        } else {
+            Ok(())
+        }
+    })
+}
+
+#[cfg(not(test))]
+#[derive(Clone, Copy)]
+enum TestFailurePoint {
+    ReplaceParentSync,
+    ReplaceVerification,
+    UnlinkParentSync,
+    CreateDirectoryParentSync,
+    CreateDirectoryOpen,
+    CreateDirectoryIdentity,
+    CreateDirectoryRollbackRemove,
+    CreateDirectoryRollbackSync,
+    RemoveDirectoryParentSync,
+}
+
+#[cfg(not(test))]
+fn maybe_inject_failure(_point: TestFailurePoint) -> io::Result<()> {
+    Ok(())
+}
+
+fn rollback_unretained_directory(
+    parent: &Dir,
+    leaf: &OsStr,
+    original_error: io::Error,
+) -> io::Result<AnchoredDirectoryCreation> {
+    let cleanup = maybe_inject_failure(TestFailurePoint::CreateDirectoryRollbackRemove)
+        .and_then(|()| parent.remove_dir(leaf))
+        .and_then(|()| maybe_inject_failure(TestFailurePoint::CreateDirectoryRollbackSync))
+        .and_then(|()| sync_directory(parent));
+    match cleanup {
+        Ok(()) => Err(original_error),
+        Err(cleanup_error) => Ok(AnchoredDirectoryCreation::CommittedButUncertain {
+            receipt: None,
+            error: io::Error::other(format!(
+                "directory creation could not be retained ({original_error}) and exact durable cleanup is uncertain ({cleanup_error})"
+            )),
+        }),
+    }
+}
+
 /// Exclusive lock guard. Dropping it releases the OS lock and the open handle.
 #[derive(Debug)]
 pub struct AnchoredLock {
@@ -473,11 +827,15 @@ fn read_regular_at(parent: &Dir, leaf: &OsStr, display: &Path) -> io::Result<Opt
         Err(error) => return Err(error),
     };
     let first_identity = file_identity(&first)?;
+    let first_permissions = file_permissions(&first)?;
     let mut first_bytes = Vec::new();
     first.read_to_end(&mut first_bytes)?;
 
     let mut second = open_regular(parent, leaf, display)?;
     if file_identity(&second)? != first_identity {
+        return Err(drift_error(display));
+    }
+    if file_permissions(&second)? != first_permissions {
         return Err(drift_error(display));
     }
     let mut second_bytes = Vec::new();
@@ -488,6 +846,7 @@ fn read_regular_at(parent: &Dir, leaf: &OsStr, display: &Path) -> io::Result<Opt
     Ok(Some(AnchoredRead {
         bytes: first_bytes,
         identity: first_identity,
+        permissions: first_permissions,
     }))
 }
 
@@ -518,11 +877,15 @@ fn require_temp_exact(
     name: &OsStr,
     identity: FileIdentity,
     contents: &[u8],
+    permissions: AnchoredFilePermissions,
     display: &Path,
 ) -> io::Result<()> {
     let current = read_regular_at(parent, name, display)?
         .ok_or_else(|| io::Error::other("anchored staging file disappeared before commit"))?;
-    if current.identity != identity || current.bytes != contents {
+    if current.identity != identity
+        || current.bytes != contents
+        || current.permissions != permissions
+    {
         return Err(drift_error(display));
     }
     Ok(())
@@ -544,6 +907,24 @@ fn configure_private_create(_options: &mut OpenOptions) {
     {
         use cap_std::fs::OpenOptionsExt;
         _options.mode(PRIVATE_FILE_MODE);
+    }
+}
+
+fn create_private_directory(parent: &Dir, name: &OsStr) -> io::Result<()> {
+    let mut builder = DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use cap_std::fs::DirBuilderExt;
+        builder.mode(PRIVATE_DIRECTORY_MODE);
+    }
+    #[cfg(not(target_os = "wasi"))]
+    {
+        parent.create_dir_with(name, &builder)
+    }
+    #[cfg(target_os = "wasi")]
+    {
+        let _ = builder;
+        parent.create_dir(name)
     }
 }
 
@@ -600,8 +981,14 @@ fn open_anchor_directory(_path: &Path) -> io::Result<std::fs::File> {
 
 #[cfg(unix)]
 fn repair_private_file(file: &File) -> io::Result<()> {
+    apply_file_permissions(file, AnchoredFilePermissions::private())
+}
+
+#[cfg(unix)]
+fn apply_file_permissions(file: &File, permissions: AnchoredFilePermissions) -> io::Result<()> {
     use std::os::fd::AsRawFd;
-    if unsafe { libc::fchmod(file.as_raw_fd(), PRIVATE_FILE_MODE as libc::mode_t) } == 0 {
+    let mode = permissions.unix_mode.unwrap_or(PRIVATE_FILE_MODE);
+    if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
@@ -611,6 +998,24 @@ fn repair_private_file(file: &File) -> io::Result<()> {
 #[cfg(not(unix))]
 fn repair_private_file(_file: &File) -> io::Result<()> {
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn apply_file_permissions(_file: &File, _permissions: AnchoredFilePermissions) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn file_permissions(file: &File) -> io::Result<AnchoredFilePermissions> {
+    use cap_std::fs::MetadataExt;
+    Ok(AnchoredFilePermissions {
+        unix_mode: Some(file.metadata()?.mode() & 0o7777),
+    })
+}
+
+#[cfg(not(unix))]
+fn file_permissions(_file: &File) -> io::Result<AnchoredFilePermissions> {
+    Ok(AnchoredFilePermissions { unix_mode: None })
 }
 
 #[cfg(unix)]
@@ -817,6 +1222,216 @@ mod tests {
         );
     }
 
+    #[test]
+    fn replace_sync_failure_returns_committed_receipt() {
+        let dir = TempDir::new().unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let target = anchor.target("state").unwrap();
+        inject_failure_once(TestFailurePoint::ReplaceParentSync);
+
+        let outcome = target.replace_if_exact(None, b"published").unwrap();
+        match outcome {
+            AnchoredEffect::CommittedButUncertain { value, error } => {
+                assert_eq!(value.bytes(), b"published");
+                assert!(error.to_string().contains("ReplaceParentSync"));
+            }
+            AnchoredEffect::Durable(_) => panic!("injected sync failure reported durable"),
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join("state")).unwrap(),
+            b"published"
+        );
+        assert!(std::fs::read_dir(dir.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".phantom-tmp-")));
+    }
+
+    #[test]
+    fn anchored_read_and_effect_debug_are_value_redacted() {
+        let dir = TempDir::new().unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let target = anchor.target("state").unwrap();
+        let sentinel = b"super-secret-sentinel";
+        let read = match target.replace_if_exact(None, sentinel).unwrap() {
+            AnchoredEffect::Durable(read) => read,
+            AnchoredEffect::CommittedButUncertain { .. } => panic!("unexpected uncertainty"),
+        };
+        let read_debug = format!("{read:?}");
+        assert!(!read_debug.contains("super-secret-sentinel"));
+
+        inject_failure_once(TestFailurePoint::ReplaceVerification);
+        let effect = target.replace_if_exact(Some(&read), sentinel).unwrap();
+        let effect_debug = format!("{effect:?}");
+        assert!(!effect_debug.contains("super-secret-sentinel"));
+    }
+
+    #[test]
+    fn replace_verification_failure_returns_committed_receipt() {
+        let dir = TempDir::new().unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let target = anchor.target("state").unwrap();
+        inject_failure_once(TestFailurePoint::ReplaceVerification);
+
+        let outcome = target.replace_if_exact(None, b"published").unwrap();
+        assert!(matches!(
+            outcome,
+            AnchoredEffect::CommittedButUncertain { .. }
+        ));
+        assert_eq!(
+            std::fs::read(dir.path().join("state")).unwrap(),
+            b"published"
+        );
+    }
+
+    #[test]
+    fn unlink_sync_failure_returns_committed_receipt() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("state"), b"reviewed").unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let target = anchor.target("state").unwrap();
+        let reviewed = target.read_regular().unwrap().unwrap();
+        inject_failure_once(TestFailurePoint::UnlinkParentSync);
+
+        let outcome = target.unlink_if_exact(&reviewed).unwrap();
+        assert!(matches!(
+            outcome,
+            AnchoredEffect::CommittedButUncertain { value: (), .. }
+        ));
+        assert!(!dir.path().join("state").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_replace_preserves_or_sets_permissions_by_handle() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let state = dir.path().join("state");
+        std::fs::write(&state, b"reviewed").unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o751)).unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let target = anchor.target("state").unwrap();
+        let reviewed = target.read_regular().unwrap().unwrap();
+        let preserved = reviewed.permissions();
+        assert!(matches!(
+            target
+                .replace_if_exact_with_permissions(Some(&reviewed), b"updated", preserved)
+                .unwrap(),
+            AnchoredEffect::Durable(_)
+        ));
+        assert_eq!(
+            std::fs::metadata(&state).unwrap().permissions().mode() & 0o7777,
+            0o751
+        );
+
+        let executable = anchor.target("script").unwrap();
+        assert!(matches!(
+            executable
+                .replace_if_exact_with_permissions(
+                    None,
+                    b"#!/bin/sh\n",
+                    AnchoredFilePermissions::executable(),
+                )
+                .unwrap(),
+            AnchoredEffect::Durable(_)
+        ));
+        assert_eq!(
+            std::fs::metadata(dir.path().join("script"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o755
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_directory_removal_rejects_decoy_identity() {
+        let dir = TempDir::new().unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let created = match anchor.create_private_child("created").unwrap() {
+            AnchoredDirectoryCreation::Durable(created) => created,
+            AnchoredDirectoryCreation::CommittedButUncertain { .. } => {
+                panic!("unexpected uncertainty")
+            }
+        };
+        std::fs::rename(dir.path().join("created"), dir.path().join("owner")).unwrap();
+        std::fs::create_dir(dir.path().join("created")).unwrap();
+
+        created.remove_if_empty_exact().unwrap_err();
+        assert!(dir.path().join("created").is_dir());
+        assert!(dir.path().join("owner").is_dir());
+    }
+
+    #[test]
+    fn created_directory_sync_failures_return_effect_receipts() {
+        let dir = TempDir::new().unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        inject_failure_once(TestFailurePoint::CreateDirectoryParentSync);
+        let created = match anchor.create_private_child("created").unwrap() {
+            AnchoredDirectoryCreation::CommittedButUncertain {
+                receipt: Some(value),
+                error,
+            } => {
+                assert!(error.to_string().contains("CreateDirectoryParentSync"));
+                value
+            }
+            AnchoredDirectoryCreation::CommittedButUncertain { receipt: None, .. } => {
+                panic!("created directory receipt was lost")
+            }
+            AnchoredDirectoryCreation::Durable(_) => {
+                panic!("injected create sync failure reported durable")
+            }
+        };
+        assert!(dir.path().join("created").is_dir());
+
+        inject_failure_once(TestFailurePoint::RemoveDirectoryParentSync);
+        let removed = created.remove_if_empty_exact().unwrap();
+        assert!(matches!(
+            removed,
+            AnchoredEffect::CommittedButUncertain { value: (), .. }
+        ));
+        assert!(!dir.path().join("created").exists());
+    }
+
+    #[test]
+    fn post_create_retention_failure_is_rolled_back_before_error() {
+        for point in [
+            TestFailurePoint::CreateDirectoryOpen,
+            TestFailurePoint::CreateDirectoryIdentity,
+        ] {
+            let dir = TempDir::new().unwrap();
+            let anchor = TrustedAnchor::open(dir.path()).unwrap();
+            inject_failure_once(point);
+            anchor.create_private_child("created").unwrap_err();
+            assert!(
+                !dir.path().join("created").exists(),
+                "outer error left a namespace effect for {point:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn uncertain_post_create_cleanup_has_typed_unknown_receipt() {
+        let dir = TempDir::new().unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        inject_failure_once(TestFailurePoint::CreateDirectoryOpen);
+        inject_failure_once(TestFailurePoint::CreateDirectoryRollbackRemove);
+
+        let outcome = anchor.create_private_child("created").unwrap();
+        match outcome {
+            AnchoredDirectoryCreation::CommittedButUncertain {
+                receipt: None,
+                error,
+            } => assert!(error.to_string().contains("cleanup is uncertain")),
+            other => panic!("unexpected directory creation outcome: {other:?}"),
+        }
+        assert!(dir.path().join("created").is_dir());
+    }
+
     #[cfg(unix)]
     #[test]
     fn canonical_open_is_explicit_for_a_trusted_ambient_alias() {
@@ -828,7 +1443,7 @@ mod tests {
 
         assert!(TrustedAnchor::open(dir.path().join("alias")).is_err());
         let anchor = TrustedAnchor::open_canonical(dir.path().join("alias")).unwrap();
-        anchor
+        let _outcome = anchor
             .target("state")
             .unwrap()
             .replace_if_exact(None, b"anchored")
@@ -852,7 +1467,7 @@ mod tests {
         std::fs::rename(dir.path().join("owned"), dir.path().join("moved")).unwrap();
         std::fs::create_dir(dir.path().join("owned")).unwrap();
         std::fs::write(dir.path().join("owned/state"), b"decoy").unwrap();
-        target
+        let _outcome = target
             .replace_if_exact(Some(&reviewed), b"published")
             .unwrap();
 
@@ -879,7 +1494,7 @@ mod tests {
         std::fs::rename(dir.path().join("vaults"), dir.path().join("moved")).unwrap();
         std::fs::create_dir(dir.path().join("vaults")).unwrap();
         std::fs::write(dir.path().join("vaults/state"), b"decoy").unwrap();
-        state
+        let _outcome = state
             .replace_if_exact(Some(&reviewed), b"published")
             .unwrap();
 
@@ -951,7 +1566,7 @@ mod tests {
         let target = anchor
             .target_with_private_parents("private/nested/state")
             .unwrap();
-        target.replace_if_exact(None, b"secret").unwrap();
+        let _outcome = target.replace_if_exact(None, b"secret").unwrap();
 
         for path in ["private", "private/nested"] {
             let mode = std::fs::metadata(dir.path().join(path))
@@ -997,6 +1612,12 @@ mod tests {
         assert!(source.contains("open_dir_nofollow"));
         assert!(source.contains("GetFileInformationByHandle"));
         assert!(source.contains("Dir::rename is specified to replace an existing file"));
+        assert!(source.contains("create_dir_with(name, &builder)"));
+        assert!(source.contains("builder.mode(PRIVATE_DIRECTORY_MODE)"));
+        assert!(
+            source.contains("#[cfg(not(unix))]\n            unix_mode: None"),
+            "non-Unix permission intents must compare equal to handle reads"
+        );
 
         let close = source
             .find("drop(temp.take().expect(\"staging handle is live\"))")
@@ -1014,5 +1635,22 @@ mod tests {
             close < recheck && recheck < rename,
             "staging identity and bytes must be revalidated at commit edge"
         );
+        assert!(
+            source[recheck..rename].contains("permissions,"),
+            "staging permissions must be part of the pre-publish exact check"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_normal_replace_can_report_durable() {
+        let dir = TempDir::new().unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let outcome = anchor
+            .target("state")
+            .unwrap()
+            .replace_if_exact(None, b"published")
+            .unwrap();
+        assert!(matches!(outcome, AnchoredEffect::Durable(_)));
     }
 }
