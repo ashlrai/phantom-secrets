@@ -6,6 +6,31 @@ use regex::Regex;
 
 use phantom_core::audit::{LeakEvent, LeakLocation, LeakSeverity};
 
+/// A secret-bearing string whose owned allocation is erased before release.
+/// Deliberately does not implement `Debug` or `Display`.
+#[derive(Clone)]
+struct SecretValue {
+    value: String,
+}
+
+impl SecretValue {
+    fn new(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        &self.value
+    }
+}
+
+impl Drop for SecretValue {
+    fn drop(&mut self) {
+        self.value.zeroize();
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Known secret format patterns (regex pool)
 // Each entry: (pattern_label, Regex)
@@ -56,7 +81,7 @@ lazy_static! {
 #[derive(Clone)]
 pub struct ResponseLeakAnalyzer {
     /// real_secret_value -> secret_key_name (from vault injection map).
-    vault_values: HashMap<String, String>,
+    vault_values: Vec<(SecretValue, String)>,
 }
 
 impl ResponseLeakAnalyzer {
@@ -66,7 +91,7 @@ impl ResponseLeakAnalyzer {
         // Invert: value → name
         let vault_values = named_mappings
             .iter()
-            .map(|(name, value)| (value.clone(), name.clone()))
+            .map(|(name, value)| (SecretValue::new(value.clone()), name.clone()))
             .collect();
         Self { vault_values }
     }
@@ -76,10 +101,21 @@ impl ResponseLeakAnalyzer {
     /// the named mapping isn't available in this form. Prefer [`new`] with named
     /// mappings for human-readable key names.
     pub fn from_token_map(token_to_secret: &HashMap<String, String>) -> Self {
-        // Here keys are phantom tokens — invert to secret→token.
-        let vault_values = token_to_secret
-            .iter()
-            .map(|(token, secret)| (secret.clone(), token.clone()))
+        Self::from_token_secret_pairs(
+            token_to_secret
+                .iter()
+                .map(|(token, secret)| (token.as_str(), secret.as_str())),
+        )
+    }
+
+    pub(crate) fn from_token_secret_pairs<'a>(
+        pairs: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Self {
+        // Here keys are phantom tokens — invert to secret→token while ensuring
+        // the one required owned analyzer copy is zeroized on drop.
+        let vault_values = pairs
+            .into_iter()
+            .map(|(token, secret)| (SecretValue::new(secret), token.to_string()))
             .collect();
         Self { vault_values }
     }
@@ -119,14 +155,17 @@ impl ResponseLeakAnalyzer {
 
         // 1. Vault-value match (highest priority — confirmed live credential).
         for (secret_val, secret_name) in &self.vault_values {
+            let secret_val = secret_val.as_str();
             if secret_val.is_empty() {
                 continue;
             }
-            let count = result.matches(secret_val.as_str()).count();
+            let count = result.matches(secret_val).count();
             if count > 0 {
                 // Determine a sensible pattern label from the value prefix.
                 let pattern = format_pattern_label(secret_val);
-                result = result.replace(secret_val.as_str(), &format!("[REDACTED:{}]", pattern));
+                let next = result.replace(secret_val, &format!("[REDACTED:{}]", pattern));
+                result.zeroize();
+                result = next;
                 events.push(LeakEvent {
                     ts: now,
                     location: location.clone(),
@@ -149,9 +188,11 @@ impl ResponseLeakAnalyzer {
             // Check whether any of the remaining matches are vault values
             // (they would already have been replaced in step 1; if they're still
             // here they're unrecognised format-only hits → MEDIUM severity).
-            let is_vault_confirmed = matches
-                .iter()
-                .any(|m| self.vault_values.contains_key(m.as_str()));
+            let is_vault_confirmed = matches.iter().any(|m| {
+                self.vault_values
+                    .iter()
+                    .any(|(secret, _)| secret.as_str() == m.as_str())
+            });
             let severity = if is_vault_confirmed {
                 LeakSeverity::High
             } else {
@@ -161,6 +202,7 @@ impl ResponseLeakAnalyzer {
             let replacement = format!("[REDACTED:{}]", label);
             let scrubbed = re.replace_all(&result, replacement.as_str()).into_owned();
             if scrubbed != result {
+                result.zeroize();
                 result = scrubbed;
                 // Avoid duplicate events if vault-match already fired for this pattern.
                 let already_reported = events.iter().any(|e| e.pattern == *label);
@@ -191,6 +233,7 @@ impl ResponseLeakAnalyzer {
         let now = now_unix();
 
         for (secret_val, secret_name) in &self.vault_values {
+            let secret_val = secret_val.as_str();
             if secret_val.is_empty() {
                 continue;
             }
@@ -199,7 +242,9 @@ impl ResponseLeakAnalyzer {
             if count > 0 {
                 let pattern = format_pattern_label(secret_val);
                 let replacement = format!("[REDACTED:{}]", pattern);
-                result = replace_bytes(&result, needle, replacement.as_bytes());
+                let next = replace_bytes(&result, needle, replacement.as_bytes());
+                result.zeroize();
+                result = next;
                 events.push(LeakEvent {
                     ts: now,
                     location: location.clone(),
@@ -278,20 +323,6 @@ pub struct Interceptor {
     token_secret_keys: HashMap<String, String>,
     /// env var / secret name -> real_secret_value (for configured header injection)
     named_secrets: HashMap<String, SecretValue>,
-    /// real_secret_value -> phantom_token_string (for response scrubbing)
-    reverse_map: HashMap<String, String>,
-}
-
-/// A secret value that zeroizes itself when dropped.
-#[derive(Clone)]
-struct SecretValue {
-    value: String,
-}
-
-impl Drop for SecretValue {
-    fn drop(&mut self) {
-        self.value.zeroize();
-    }
 }
 
 impl Interceptor {
@@ -343,23 +374,18 @@ impl Interceptor {
         token_secret_keys: HashMap<String, String>,
         named_mappings: HashMap<String, String>,
     ) -> Self {
-        let reverse_map: HashMap<String, String> = mappings
-            .iter()
-            .map(|(token, secret)| (secret.clone(), token.clone()))
-            .collect();
         let token_map = mappings
             .into_iter()
-            .map(|(token, secret)| (token, SecretValue { value: secret }))
+            .map(|(token, secret)| (token, SecretValue::new(secret)))
             .collect();
         let named_secrets = named_mappings
             .into_iter()
-            .map(|(name, secret)| (name, SecretValue { value: secret }))
+            .map(|(name, secret)| (name, SecretValue::new(secret)))
             .collect();
         Self {
             token_map,
             token_secret_keys,
             named_secrets,
-            reverse_map,
         }
     }
 
@@ -419,19 +445,23 @@ impl Interceptor {
         self.token_map.is_empty()
     }
 
-    /// Maximum length of any real secret in the reverse map.
+    /// Maximum length of any real secret in the zeroizing token map.
     /// Used to size the overlap window for streaming response scrubbing.
     pub fn max_secret_len(&self) -> usize {
-        self.reverse_map.keys().map(|k| k.len()).max().unwrap_or(0)
+        self.token_map
+            .values()
+            .map(|secret| secret.as_str().len())
+            .max()
+            .unwrap_or(0)
     }
 
     /// Scrub real secrets from a response string, replacing them with phantom tokens.
     /// Prevents API responses from leaking real credentials back to AI agents.
     pub fn scrub_response_str(&self, input: &str) -> (String, bool) {
         let pairs: Vec<(&str, &str)> = self
-            .reverse_map
+            .token_map
             .iter()
-            .map(|(secret, token)| (secret.as_str(), token.as_str()))
+            .map(|(token, secret)| (secret.as_str(), token.as_str()))
             .collect();
         find_replace_str(input, &pairs)
     }
@@ -439,9 +469,9 @@ impl Interceptor {
     /// Scrub real secrets from response bytes.
     pub fn scrub_response_bytes(&self, input: &[u8]) -> (Vec<u8>, bool) {
         let pairs: Vec<(&str, &str)> = self
-            .reverse_map
+            .token_map
             .iter()
-            .map(|(secret, token)| (secret.as_str(), token.as_str()))
+            .map(|(token, secret)| (secret.as_str(), token.as_str()))
             .collect();
         find_replace_bytes_via_str(input, &pairs)
     }
@@ -450,13 +480,11 @@ impl Interceptor {
     /// token→secret mapping.  The scrubber adds audit logging and stderr warnings on
     /// top of the basic byte-replacement already performed by [`scrub_response_bytes`].
     pub fn to_response_scrubber(&self) -> crate::response_scrubber::ResponseScrubber {
-        // reverse_map is secret→token; we need token→secret for ResponseScrubber.
-        let token_to_secret: std::collections::HashMap<String, String> = self
-            .reverse_map
-            .iter()
-            .map(|(secret, token)| (token.clone(), secret.clone()))
-            .collect();
-        crate::response_scrubber::ResponseScrubber::from_token_map(&token_to_secret)
+        crate::response_scrubber::ResponseScrubber::from_token_secret_pairs(
+            self.token_map
+                .iter()
+                .map(|(token, secret)| (token.as_str(), secret.as_str())),
+        )
     }
 }
 
@@ -466,7 +494,9 @@ fn find_replace_str(input: &str, pairs: &[(&str, &str)]) -> (String, bool) {
     let mut replaced = false;
     for &(needle, replacement) in pairs {
         if result.contains(needle) {
-            result = result.replace(needle, replacement);
+            let next = result.replace(needle, replacement);
+            result.zeroize();
+            result = next;
             replaced = true;
         }
     }
@@ -500,6 +530,7 @@ fn find_replace_bytes_via_str(input: &[u8], pairs: &[(&str, &str)]) -> (Vec<u8>,
                 i += 1;
             }
         }
+        result.zeroize();
         result = new_result;
     }
     (result, replaced)

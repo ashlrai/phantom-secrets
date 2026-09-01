@@ -52,7 +52,7 @@ fn lock_root() -> PathBuf {
         })
 }
 
-fn lock_path(project_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+fn lock_path_at(project_dir: &Path, root: &Path) -> Result<(PathBuf, PathBuf)> {
     let canonical = project_dir.canonicalize().map_err(|error| {
         PhantomError::VaultError(format!(
             "Cannot resolve project directory {} for transaction locking: {error}",
@@ -68,17 +68,82 @@ fn lock_path(project_dir: &Path) -> Result<(PathBuf, PathBuf)> {
     let mut digest = Sha256::new();
     digest.update(canonical.as_os_str().to_string_lossy().as_bytes());
     let name = hex::encode(digest.finalize());
-    Ok((canonical, lock_root().join(format!("{name}.lock"))))
+    Ok((canonical, root.join(format!("{name}.lock"))))
+}
+
+fn lock_path(project_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+    lock_path_at(project_dir, &lock_root())
+}
+
+fn directory_is_unsafe(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Create only missing lock-root components, refusing every existing unsafe
+/// ancestor. This deliberately avoids `create_dir_all`: that API follows an
+/// attacker-controlled symlink/junction before Phantom can inspect it.
+fn ensure_lock_parent(parent: &Path) -> Result<()> {
+    let mut components = parent.ancestors().collect::<Vec<_>>();
+    components.reverse();
+    for component in components {
+        match std::fs::symlink_metadata(component) {
+            Ok(metadata) => {
+                if directory_is_unsafe(&metadata) {
+                    return Err(PhantomError::VaultError(format!(
+                        "Project transaction lock ancestor is not a real directory: {}",
+                        component.display()
+                    )));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::create_dir(component) {
+                    Ok(()) => {}
+                    Err(create_error)
+                        if create_error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(create_error) => return Err(create_error.into()),
+                }
+                let metadata = std::fs::symlink_metadata(component)?;
+                if directory_is_unsafe(&metadata) {
+                    return Err(PhantomError::VaultError(format!(
+                        "Project transaction lock ancestor became unsafe: {}",
+                        component.display()
+                    )));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Acquire the process-local and cross-process lock for one canonical project.
 pub fn acquire_project_transaction_lock(project_dir: &Path) -> Result<ProjectTransactionLock> {
     let (identity, path) = lock_path(project_dir)?;
+    acquire_project_transaction_lock_at(identity, path)
+}
+
+fn acquire_project_transaction_lock_at(
+    identity: PathBuf,
+    path: PathBuf,
+) -> Result<ProjectTransactionLock> {
     let process = process_lock_for(&identity);
     let parent = path.parent().expect("transaction lock path has a parent");
-    std::fs::create_dir_all(parent)?;
+    ensure_lock_parent(parent)?;
     let parent_metadata = std::fs::symlink_metadata(parent)?;
-    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+    if directory_is_unsafe(&parent_metadata) {
         return Err(PhantomError::VaultError(format!(
             "Project transaction lock directory is not a real directory: {}",
             parent.display()
@@ -116,7 +181,14 @@ pub fn acquire_project_transaction_lock(project_dir: &Path) -> Result<ProjectTra
     }
     #[cfg(unix)]
     {
+        use std::os::unix::fs::MetadataExt;
         use std::os::unix::fs::PermissionsExt;
+        if file.metadata()?.nlink() != 1 {
+            return Err(PhantomError::VaultError(format!(
+                "Project transaction lock is not a single-link owner file: {}",
+                path.display()
+            )));
+        }
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     file.lock_exclusive().map_err(|error| {
@@ -167,6 +239,12 @@ fn ensure_windows_lock_identity(file: &std::fs::File, path: &Path) -> Result<()>
     {
         return Err(PhantomError::VaultError(format!(
             "Transaction lock is a Windows reparse point: {}",
+            path.display()
+        )));
+    }
+    if original.nNumberOfLinks != 1 {
+        return Err(PhantomError::VaultError(format!(
+            "Transaction lock is not a single-link owner file: {}",
             path.display()
         )));
     }
@@ -239,6 +317,68 @@ mod tests {
         assert!(source.contains("dwVolumeSerialNumber"));
         assert!(source.contains("nFileIndexHigh"));
         assert!(source.contains("nFileIndexLow"));
+        assert!(source.contains("nNumberOfLinks"));
+        assert!(source.contains("file_attributes"));
         assert!(source.contains("does not claim that\n//! the ACL is user-only"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_lock_root_symlink_is_rejected_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempdir().unwrap();
+        let container = tempdir().unwrap();
+        let owner = container.path().join("owner-state");
+        std::fs::create_dir(&owner).unwrap();
+        let sentinel = owner.join("sentinel");
+        std::fs::write(&sentinel, b"owner-state").unwrap();
+        let redirected = container.path().join("transaction-locks");
+        symlink(&owner, &redirected).unwrap();
+        let (identity, path) = lock_path_at(project.path(), &redirected).unwrap();
+
+        let error = acquire_project_transaction_lock_at(identity, path)
+            .err()
+            .expect("symlinked lock root must be rejected");
+        assert!(error.to_string().contains("ancestor"));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"owner-state");
+        assert_eq!(std::fs::read_dir(&owner).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_file_symlink_is_rejected_without_overwriting_owner_state() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempdir().unwrap();
+        let lock_root = tempdir().unwrap();
+        let victim = lock_root.path().join("owner-state");
+        std::fs::write(&victim, b"preserve").unwrap();
+        let (identity, path) = lock_path_at(project.path(), lock_root.path()).unwrap();
+        symlink(&victim, &path).unwrap();
+
+        assert!(acquire_project_transaction_lock_at(identity, path).is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"preserve");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlinked_lock_file_is_rejected_without_chmod_or_overwrite() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let project = tempdir().unwrap();
+        let lock_root = tempdir().unwrap();
+        let victim = lock_root.path().join("owner-state");
+        std::fs::write(&victim, b"preserve").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let (identity, path) = lock_path_at(project.path(), lock_root.path()).unwrap();
+        std::fs::hard_link(&victim, &path).unwrap();
+
+        assert!(acquire_project_transaction_lock_at(identity, path).is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"preserve");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
     }
 }

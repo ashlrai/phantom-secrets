@@ -24,6 +24,20 @@ struct EnvironmentCopyPlan {
 }
 
 #[derive(Debug)]
+struct EnvironmentCopyReview {
+    project_dir: PathBuf,
+    config_path: PathBuf,
+    config_before: Vec<u8>,
+    selector_path: PathBuf,
+    selector_before: Option<Vec<u8>>,
+    vault_id: String,
+    from: String,
+    to: String,
+    effect: String,
+    challenge: String,
+}
+
+#[derive(Debug)]
 struct EnvironmentUsePlan {
     project_dir: PathBuf,
     config_path: PathBuf,
@@ -233,35 +247,42 @@ pub fn run_new(name: &str) -> Result<()> {
 
 /// `phantom env copy --from <src> --to <dst>` — copy all secrets from one env to another.
 pub fn run_copy(from: &str, to: &str) -> Result<()> {
-    validate_env_name(from).map_err(|e| anyhow::anyhow!("{e}"))?;
-    validate_env_name(to).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let review = prepare_environment_copy_review(&std::env::current_dir()?, from, to)?;
+    let attached = std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal();
+    let mut input = std::io::BufReader::new(std::io::stdin().lock());
+    let mut output = std::io::stderr().lock();
+    confirm_environment_copy(&review, attached, &mut input, &mut output)?;
 
-    if from == to {
-        anyhow::bail!("--from and --to must be different environments.");
-    }
-
-    let project_dir = std::env::current_dir()?.canonicalize()?;
-    let config_path = project_dir.join(".phantom.toml");
-    let config_before = phantom_core::fs::read_regular_file(&config_path)
-        .context("Failed to safely snapshot .phantom.toml")?
-        .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run phantom init first."))?;
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    if phantom_core::fs::read_regular_file(&config_path)?.as_deref()
-        != Some(config_before.as_slice())
-    {
-        anyhow::bail!(".phantom.toml changed during environment-copy preflight");
-    }
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    // Vault creation, listing, and especially value retrieval are deliberately
+    // after the fresh trusted-terminal ceremony and exact local-state recheck.
+    let vault = phantom_vault::try_create_vault(&review.vault_id)?;
     let all_keys = vault.list().context("Failed to list vault keys")?;
-    let plan = prepare_environment_copy(vault.as_ref(), &all_keys, from, to)?;
+    let plan = prepare_environment_copy(
+        vault.as_ref(),
+        &all_keys,
+        review.from.as_str(),
+        review.to.as_str(),
+    )?;
     let copied = plan.copied_names.len();
-    let config_guard =
-        InitFile::replace_if_unchanged(&config_path, Some(config_before.clone()), config_before);
+    let mut file_guards = vec![InitFile::replace_if_unchanged(
+        &review.config_path,
+        Some(review.config_before.clone()),
+        review.config_before.clone(),
+    )];
+    if let Some(selector_before) = &review.selector_before {
+        file_guards.push(InitFile::replace_if_unchanged(
+            &review.selector_path,
+            Some(selector_before.clone()),
+            selector_before.clone(),
+        ));
+    }
     phantom_vault::commit_init(
-        &project_dir,
+        &review.project_dir,
         vault.as_ref(),
         plan.mutations,
-        vec![config_guard],
+        file_guards,
     )
     .context(
         "Environment copy transaction failed; exact transaction-owned writes were rolled back where verifiable. Inspect both environments before retrying.",
@@ -272,7 +293,7 @@ pub fn run_copy(from: &str, to: &str) -> Result<()> {
             "   {} {} -> {}/{}",
             "+".green().bold(),
             name.bold(),
-            to.cyan(),
+            review.to.as_str().cyan(),
             name
         );
     }
@@ -281,14 +302,105 @@ pub fn run_copy(from: &str, to: &str) -> Result<()> {
         "\n{} Copied {} secret(s) to environment '{}'.",
         "ok".green().bold(),
         copied,
-        to.cyan().bold()
+        review.to.as_str().cyan().bold()
     );
     println!(
         "{} Switch to it with: {}",
         "->".blue().bold(),
-        format!("phantom env use {to}").cyan()
+        format!("phantom env use {}", review.to).cyan()
     );
 
+    Ok(())
+}
+
+fn prepare_environment_copy_review(
+    project_dir: &std::path::Path,
+    from: &str,
+    to: &str,
+) -> Result<EnvironmentCopyReview> {
+    validate_env_name(from).map_err(|error| anyhow::anyhow!("{error}"))?;
+    validate_env_name(to).map_err(|error| anyhow::anyhow!("{error}"))?;
+    if from == to {
+        anyhow::bail!("--from and --to must be different environments.");
+    }
+
+    let project_dir = project_dir
+        .canonicalize()
+        .context("Failed to resolve the canonical project directory")?;
+    let config_path = project_dir.join(".phantom.toml");
+    let config_before = phantom_core::fs::read_regular_file(&config_path)
+        .context("Failed to safely snapshot .phantom.toml")?
+        .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run phantom init first."))?;
+    let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+        .context("Failed to load the exact .phantom.toml snapshot")?;
+    let selector_path = project_dir.join(".phantom").join("env");
+    let selector_before = phantom_core::fs::read_regular_file(&selector_path)
+        .context("Failed to safely snapshot the active environment selector")?;
+    let project_digest = super::export_cmd::digest_path(&project_dir);
+    let config_digest = super::export_cmd::digest_bytes(&config_before);
+    let selector_digest = selector_before
+        .as_deref()
+        .map(super::export_cmd::digest_bytes)
+        .unwrap_or_else(|| "absent".to_string());
+    let effect = format!(
+        "Copy every non-colliding secret owned by Phantom environment '{from}' into '{to}' for project SHA-256 {project_digest} and local vault {} (config SHA-256 {config_digest}; active-selector {selector_digest}); source values remain unchanged and existing destinations are never overwritten",
+        config.local_project_id()
+    );
+    let challenge = format!(
+        "COPY PHANTOM ENV {from} TO {to} PROJECT {project_digest} VAULT {} CONFIG {config_digest} SELECTOR {selector_digest}",
+        config.local_project_id()
+    );
+    Ok(EnvironmentCopyReview {
+        project_dir,
+        config_path,
+        config_before,
+        selector_path,
+        selector_before,
+        vault_id: config.local_project_id().to_string(),
+        from: from.to_string(),
+        to: to.to_string(),
+        effect,
+        challenge,
+    })
+}
+
+fn confirm_environment_copy(
+    review: &EnvironmentCopyReview,
+    attached: bool,
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+) -> Result<()> {
+    if !attached {
+        anyhow::bail!(
+            "`phantom env copy` requires attached stdin, stdout, and stderr terminals; no vault values were retrieved and no destination was written"
+        );
+    }
+    writeln!(writer, "Secret-bearing environment copy: {}", review.effect)?;
+    writeln!(writer, "Approve only if this terminal is outside the requesting agent's authority; a same-user shell or agent-controlled PTY can automate this ceremony.")?;
+    write!(writer, "Type `{}` to continue: ", review.challenge)?;
+    writer.flush()?;
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    if response.trim_end_matches(['\r', '\n']) != review.challenge {
+        anyhow::bail!(
+            "Environment copy confirmation did not match exactly; no vault values were retrieved and no destination was written"
+        );
+    }
+
+    let current_config = phantom_core::fs::read_regular_file(&review.config_path)
+        .context("Failed to verify the .phantom.toml before environment copy")?;
+    if current_config.as_deref() != Some(review.config_before.as_slice()) {
+        anyhow::bail!(
+            ".phantom.toml changed after environment copy was reviewed; no vault values were retrieved and no destination was written"
+        );
+    }
+    let current_selector = phantom_core::fs::read_regular_file(&review.selector_path)
+        .context("Failed to verify the active environment selector before environment copy")?;
+    if current_selector.as_deref() != review.selector_before.as_deref() {
+        anyhow::bail!(
+            "The active environment selector changed after environment copy was reviewed; no vault values were retrieved and no destination was written"
+        );
+    }
     Ok(())
 }
 
@@ -407,6 +519,97 @@ mod tests {
             .unwrap();
         let plan = prepare_environment_use(dir.path(), name).unwrap();
         (dir, plan)
+    }
+
+    fn environment_copy_review() -> (tempfile::TempDir, EnvironmentCopyReview) {
+        let dir = tempfile::tempdir().unwrap();
+        PhantomConfig::new_with_defaults("portable-env-copy".to_string())
+            .save(&dir.path().join(".phantom.toml"))
+            .unwrap();
+        let review = prepare_environment_copy_review(dir.path(), "dev", "prod").unwrap();
+        (dir, review)
+    }
+
+    #[test]
+    fn environment_copy_headless_denial_precedes_vault_access() {
+        let (_dir, review) = environment_copy_review();
+        let error = confirm_environment_copy(
+            &review,
+            false,
+            &mut std::io::Cursor::new(Vec::<u8>::new()),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("no vault values were retrieved"));
+    }
+
+    #[test]
+    fn environment_copy_mismatched_challenge_precedes_vault_access() {
+        let (_dir, review) = environment_copy_review();
+        let error = confirm_environment_copy(
+            &review,
+            true,
+            &mut std::io::Cursor::new(b"COPY SOMETHING ELSE\n"),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("did not match exactly"));
+        assert!(error.to_string().contains("no vault values were retrieved"));
+    }
+
+    #[test]
+    fn environment_copy_challenge_binds_project_vault_config_and_selector() {
+        let (_dir, review) = environment_copy_review();
+        assert!(review
+            .challenge
+            .starts_with("COPY PHANTOM ENV dev TO prod PROJECT "));
+        assert!(!review.vault_id.is_empty());
+        assert!(review
+            .challenge
+            .contains(&format!(" VAULT {} ", review.vault_id)));
+        assert!(review.challenge.contains(" CONFIG "));
+        assert!(review.challenge.ends_with(" SELECTOR absent"));
+        assert!(!review.challenge.contains("source-value"));
+    }
+
+    #[test]
+    fn environment_copy_rejects_config_drift_after_confirmation() {
+        let (dir, review) = environment_copy_review();
+        std::fs::write(
+            dir.path().join(".phantom.toml"),
+            b"[phantom]\nversion = \"1\"\nproject_id = \"changed\"\n",
+        )
+        .unwrap();
+        let response = format!("{}\n", review.challenge);
+        let error = confirm_environment_copy(
+            &review,
+            true,
+            &mut std::io::Cursor::new(response.as_bytes()),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed after"));
+        assert!(error.to_string().contains("no vault values were retrieved"));
+    }
+
+    #[test]
+    fn environment_copy_rejects_selector_drift_after_confirmation() {
+        let (dir, review) = environment_copy_review();
+        write_active_env_if_unchanged(dir.path(), None, "concurrent").unwrap();
+        let response = format!("{}\n", review.challenge);
+        let error = confirm_environment_copy(
+            &review,
+            true,
+            &mut std::io::Cursor::new(response.as_bytes()),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("selector changed"));
+        assert!(error.to_string().contains("no vault values were retrieved"));
     }
 
     #[test]
