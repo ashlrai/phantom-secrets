@@ -92,7 +92,10 @@ fn cloud_push_fails_closed_at_terminal_authority_before_api_origin_or_network() 
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(combined.contains("terminal"), "unexpected authority failure: {combined}");
+    assert!(
+        combined.contains("terminal"),
+        "unexpected authority failure: {combined}"
+    );
     assert!(!combined.contains("PHANTOM_API_URL overrides are disabled"));
     assert!(!combined.contains("Connection refused"));
 }

@@ -14,7 +14,8 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use sha2::{Digest, Sha256};
+use std::io::{BufRead, BufReader, IsTerminal, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1282,6 +1283,31 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
     let alerts_path = home.join(".phantom").join("leak-alerts.jsonl");
 
     if backfill {
+        let (config_path, config_before, alerting_config) =
+            load_alerting_config_from_project_exact()?;
+        let backend_kinds = alerting_config
+            .backends
+            .iter()
+            .map(|backend| match backend {
+                phantom_core::leak_correlation::AlertBackendConfig::Webhook { .. } => "webhook",
+                phantom_core::leak_correlation::AlertBackendConfig::Slack { .. } => "slack",
+                phantom_core::leak_correlation::AlertBackendConfig::PagerDuty { .. } => "pagerduty",
+            })
+            .collect::<Vec<_>>();
+        let config_sha256 = exact_bytes_digest(config_before.as_deref());
+        let plan = serde_json::json!({
+            "action": "audit-alerts-backfill",
+            "project": std::env::current_dir()?.canonicalize().unwrap_or(std::env::current_dir()?),
+            "config_path": &config_path,
+            "config_sha256": config_sha256,
+            "alerting_enabled": alerting_config.enabled,
+            "backend_kinds": backend_kinds,
+            "alerts_path": &alerts_path,
+            "effect": "correlate audit events, dispatch value-free incident metadata to configured backends, and persist alert records",
+        });
+        require_trusted_terminal_audit_effect(&plan)?;
+        recheck_optional_regular_file(&config_path, config_before.as_deref())?;
+
         // Re-run correlation to pick up any new incidents.
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| anyhow::anyhow!("Cannot initialise leak correlation engine: {e}"))?;
@@ -1290,8 +1316,7 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("Correlation engine failed: {e}"))?;
 
         if !incidents.is_empty() {
-            // Load alerting config from .phantom.toml if present, else use defaults.
-            let alerting_config = load_alerting_config_from_project();
+            recheck_optional_regular_file(&config_path, config_before.as_deref())?;
             let alerter = LeakIncidentAlerter::with_path(
                 alerting_config,
                 alerts_path.clone(),
@@ -1383,17 +1408,86 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
 
 /// Load alerting config from the nearest `.phantom.toml`, falling back to
 /// a disabled default if no config file is found or it fails to parse.
-fn load_alerting_config_from_project() -> phantom_core::leak_correlation::AlertingConfig {
-    // Walk up from cwd looking for .phantom.toml
-    if let Ok(cwd) = std::env::current_dir() {
-        let config_path = cwd.join(".phantom.toml");
-        if config_path.exists() {
-            if let Ok(cfg) = phantom_core::config::PhantomConfig::load(&config_path) {
-                return cfg.alerting;
-            }
+fn load_alerting_config_from_project_exact() -> Result<(
+    PathBuf,
+    Option<Vec<u8>>,
+    phantom_core::leak_correlation::AlertingConfig,
+)> {
+    let config_path = std::env::current_dir()?.join(".phantom.toml");
+    let before = phantom_core::fs::read_regular_file(&config_path)
+        .context("Failed to safely read alerting configuration")?;
+    let alerting = match before.as_deref() {
+        Some(bytes) => {
+            let text = std::str::from_utf8(bytes).context(".phantom.toml is not valid UTF-8")?;
+            toml::from_str::<phantom_core::config::PhantomConfig>(text)
+                .context("Failed to parse .phantom.toml")?
+                .alerting
         }
+        None => phantom_core::leak_correlation::AlertingConfig::default(),
+    };
+    Ok((config_path, before, alerting))
+}
+
+fn recheck_optional_regular_file(path: &std::path::Path, expected: Option<&[u8]>) -> Result<()> {
+    if phantom_core::fs::read_regular_file(path)
+        .context("Failed to recheck alerting configuration")?
+        .as_deref()
+        != expected
+    {
+        anyhow::bail!(
+            "Alerting configuration changed after terminal review; no alert dispatch was attempted"
+        );
     }
-    phantom_core::leak_correlation::AlertingConfig::default()
+    Ok(())
+}
+
+fn exact_bytes_digest(bytes: Option<&[u8]>) -> String {
+    let mut hasher = Sha256::new();
+    match bytes {
+        Some(bytes) => {
+            hasher.update(b"present\0");
+            hasher.update(bytes);
+        }
+        None => hasher.update(b"absent\0"),
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn require_trusted_terminal_audit_effect(plan: &serde_json::Value) -> Result<()> {
+    let attached = std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal();
+    let stdin = std::io::stdin();
+    let stderr = std::io::stderr();
+    confirm_audit_effect(plan, attached, &mut stdin.lock(), &mut stderr.lock())
+}
+
+fn confirm_audit_effect(
+    plan: &serde_json::Value,
+    attached: bool,
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+) -> Result<()> {
+    if !attached {
+        anyhow::bail!(
+            "Audit network or persistence effects require stdin, stdout, and stderr attached to a trusted terminal; no network request was sent and no report or alert record was written"
+        );
+    }
+    let plan_json = serde_json::to_string_pretty(plan)?;
+    let challenge = format!(
+        "phantom audit authorize {:x}",
+        Sha256::digest(plan_json.as_bytes())
+    );
+    writeln!(writer, "Audit effect plan:\n{plan_json}")?;
+    writeln!(writer, "Approve only if this terminal is outside the requesting agent's authority; a same-user shell or agent-controlled PTY can automate this ceremony.")?;
+    write!(writer, "Type `{challenge}` to continue: ")?;
+    writer.flush()?;
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    if response.trim_end_matches(['\r', '\n']) != challenge {
+        anyhow::bail!("Audit effect cancelled: typed confirmation did not match");
+    }
+    Ok(())
 }
 
 /// A no-op alert dispatcher for read-only operations.
@@ -1516,6 +1610,20 @@ pub fn run_report(
     println!("{}", json);
 
     if save {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .map_err(|_| anyhow::anyhow!("Cannot resolve home directory"))?;
+        let plan = serde_json::json!({
+            "action": "audit-report-save",
+            "report_type": report_type,
+            "from": from,
+            "to": to,
+            "compact_stdout": compact,
+            "reports_directory": home.join(".phantom").join("reports"),
+            "effect": "create one new local compliance report; never overwrite and never perform network I/O",
+        });
+        require_trusted_terminal_audit_effect(&plan)?;
         let path = exporter
             .save_report(&report)
             .map_err(|e| anyhow::anyhow!("Failed to save report: {e}"))?;
@@ -1873,6 +1981,39 @@ mod tests {
     #[test]
     fn matches_filters_name_miss() {
         assert!(!matches_filters(LINE_STORE, None, Some("STRIPE_KEY")));
+    }
+
+    #[test]
+    fn audit_effect_refuses_headless_execution_before_prompt() {
+        let plan = serde_json::json!({"action": "audit-report-save"});
+        let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+        let mut writer = Vec::new();
+
+        let error = confirm_audit_effect(&plan, false, &mut reader, &mut writer).unwrap_err();
+
+        assert!(error.to_string().contains("trusted terminal"));
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    fn audit_effect_requires_exact_plan_bound_challenge() {
+        let plan = serde_json::json!({
+            "action": "audit-alerts-backfill",
+            "config_sha256": "abc",
+        });
+        let plan_json = serde_json::to_string_pretty(&plan).unwrap();
+        let challenge = format!(
+            "phantom audit authorize {:x}",
+            Sha256::digest(plan_json.as_bytes())
+        );
+        let mut reader = std::io::Cursor::new(format!("{challenge}\n").into_bytes());
+        let mut writer = Vec::new();
+
+        confirm_audit_effect(&plan, true, &mut reader, &mut writer).unwrap();
+
+        let prompt = String::from_utf8(writer).unwrap();
+        assert!(prompt.contains(&challenge));
+        assert!(prompt.contains("config_sha256"));
     }
 
     // ── run_analytics integration tests ───────────────────────────────
