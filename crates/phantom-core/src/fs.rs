@@ -9,8 +9,8 @@
 //! survive a crash / `kill -9` mid-write (e.g. `.env`, `.phantom.toml`, and
 //! the vault file).
 
-use std::io::{self, Write};
-use std::path::Path;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 use tempfile::NamedTempFile;
 
@@ -24,6 +24,167 @@ use tempfile::NamedTempFile;
 /// On POSIX the temp file is created with mode 0o600 by `tempfile`, so secrets
 /// are never visible to group/other during the write window.
 pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
+    atomic_write_with_permissions(path, contents, None)
+}
+
+/// Read a regular file without following a symlink at the final path.
+///
+/// An absent path returns `Ok(None)`. Directories, device files, FIFOs, and
+/// symlinks are rejected so callers can safely bind an exact before-image to a
+/// later [`atomic_write_if_unchanged`] call.
+pub fn read_regular_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(io::Error::other(format!(
+                "refusing non-regular or symlink file target: {}",
+                path.display()
+            )))
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other(format!(
+            "refusing non-regular file target: {}",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+
+    // Re-inspect the pathname after reading. Atomic replacement by an
+    // uncooperative same-user process cannot be made impossible with portable
+    // pathname APIs, but an observable swap is rejected before these bytes are
+    // accepted as the reviewed before-image.
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => Ok(Some(bytes)),
+        Ok(_) => Err(io::Error::other(format!(
+            "file target changed to an unsafe object while being read: {}",
+            path.display()
+        ))),
+        Err(error) => Err(error),
+    }
+}
+
+/// Atomically replace `path` only if its bytes still equal `expected_before`.
+///
+/// Callers should hold the appropriate Phantom transaction lock from their
+/// initial read through this commit. The exact re-check also rejects edits by
+/// cooperative writers that occurred before the lock was acquired. Existing
+/// permissions are applied to the staging file before it is published.
+pub fn atomic_write_if_unchanged(
+    path: &Path,
+    expected_before: Option<&[u8]>,
+    contents: &[u8],
+) -> io::Result<()> {
+    let current = read_regular_file(path)?;
+    if current.as_deref() != expected_before {
+        return Err(io::Error::other(format!(
+            "file changed after it was read; refusing to overwrite {}",
+            path.display()
+        )));
+    }
+    let permissions = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    atomic_write_with_permissions(path, contents, permissions)
+}
+
+/// Create missing parent directories one component at a time while rejecting
+/// symlinks or non-directory objects at every path that is inspected.
+pub fn ensure_real_parent(path: &Path) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "safe file target has no parent directory",
+        )
+    })?;
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let mut missing: Vec<PathBuf> = Vec::new();
+    let mut cursor = parent;
+    loop {
+        match std::fs::symlink_metadata(cursor) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(io::Error::other(format!(
+                    "file target parent is not a real directory: {}",
+                    cursor.display()
+                )))
+            }
+            Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing.push(cursor.to_path_buf());
+                cursor = cursor.parent().ok_or_else(|| {
+                    io::Error::other("could not find an existing parent directory")
+                })?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    missing.reverse();
+    for directory in missing {
+        match std::fs::create_dir(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let metadata = std::fs::symlink_metadata(&directory)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(io::Error::other(format!(
+                        "file target parent became unsafe: {}",
+                        directory.display()
+                    )));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Validate a user-supplied output as one project-relative filename.
+///
+/// This deliberately excludes directory separators and `..` anywhere in the
+/// value. It is intended for narrow generated artifacts such as `.env.example`,
+/// not for general path selection.
+pub fn validate_project_filename(value: &str) -> io::Result<()> {
+    if value.is_empty()
+        || value == "."
+        || value.contains("..")
+        || value.contains('/')
+        || value.contains('\\')
+        || Path::new(value).is_absolute()
+        || !matches!(
+            Path::new(value).components().collect::<Vec<_>>().as_slice(),
+            [std::path::Component::Normal(_)]
+        )
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "output must be one safe project-relative filename without separators or `..`",
+        ));
+    }
+    Ok(())
+}
+
+fn atomic_write_with_permissions(
+    path: &Path,
+    contents: &[u8],
+    permissions: Option<std::fs::Permissions>,
+) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -43,6 +204,9 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
     // target, which is required for rename() to be atomic on POSIX.
     let mut tmp = NamedTempFile::new_in(dir)?;
     tmp.write_all(contents)?;
+    if let Some(permissions) = permissions {
+        tmp.as_file().set_permissions(permissions)?;
+    }
     tmp.as_file_mut().sync_all()?;
 
     // persist consumes the NamedTempFile and renames into place; on error we
@@ -138,5 +302,75 @@ mod tests {
         // tempfile creates with 0o600; persist preserves mode. Strip file-type
         // bits and compare the permission bits only.
         assert_eq!(mode & 0o777, 0o600, "got mode {:o}", mode & 0o777);
+    }
+
+    #[test]
+    fn exact_write_rejects_concurrent_change() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("package.json");
+        std::fs::write(&target, b"before").unwrap();
+        let before = read_regular_file(&target).unwrap().unwrap();
+        std::fs::write(&target, b"concurrent-owner").unwrap();
+
+        let error = atomic_write_if_unchanged(&target, Some(&before), b"phantom").unwrap_err();
+        assert!(error.to_string().contains("changed after it was read"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"concurrent-owner");
+    }
+
+    #[test]
+    fn exact_write_rejects_target_that_appeared() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join(".env.example");
+        assert!(read_regular_file(&target).unwrap().is_none());
+        std::fs::write(&target, b"concurrent-owner").unwrap();
+
+        atomic_write_if_unchanged(&target, None, b"phantom").unwrap_err();
+        assert_eq!(std::fs::read(&target).unwrap(), b"concurrent-owner");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_write_rejects_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let owner = dir.path().join("owner");
+        let target = dir.path().join("package.json");
+        std::fs::write(&owner, b"owner").unwrap();
+        symlink(&owner, &target).unwrap();
+
+        let error = read_regular_file(&target).unwrap_err();
+        assert!(error.to_string().contains("symlink"));
+        assert_eq!(std::fs::read(&owner).unwrap(), b"owner");
+    }
+
+    #[test]
+    fn ensure_real_parent_rejects_non_directory_component() {
+        let dir = TempDir::new().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not-a-directory").unwrap();
+        let error = ensure_real_parent(&blocker.join("target")).unwrap_err();
+        assert!(error.to_string().contains("not a real directory"));
+    }
+
+    #[test]
+    fn project_filename_rejects_escape_forms() {
+        for invalid in [
+            "",
+            ".",
+            "..",
+            "../owner",
+            "nested/file",
+            "nested\\file",
+            "owner..backup",
+            "/tmp/owner",
+        ] {
+            assert!(
+                validate_project_filename(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+        validate_project_filename(".env.example").unwrap();
+        validate_project_filename("env-example").unwrap();
     }
 }

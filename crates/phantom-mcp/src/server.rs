@@ -1719,85 +1719,19 @@ impl PhantomMcpServer {
             &self.project_id(),
         )?;
         let pkg_path = self.project_dir.join("package.json");
-        if !pkg_path.exists() {
-            return Err(internal_err("No package.json found in project directory."));
-        }
+        let _transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .map_err(|error| internal_err(format!("Failed to acquire project lock: {error}")))?;
+        let (mut pkg, before) = read_package_scripts(&pkg_path)?;
+        let wrapped = wrap_package_scripts(&mut pkg, &params.only, &params.skip)
+            .map_err(invalid_params_err)?;
 
-        let (mut pkg, scripts) = read_package_scripts(&pkg_path)?;
-        if scripts.is_empty() {
-            return text_result("No \"scripts\" field found in package.json.");
-        }
-
-        // We need a mutable reference for modifications below
-        let scripts = pkg.get_mut("scripts").unwrap().as_object_mut().unwrap();
-
-        // Heuristic keywords
-        let wrap_keywords = ["dev", "start", "build", "serve", "deploy"];
-        let skip_keywords = [
-            "lint",
-            "test",
-            "format",
-            "check",
-            "typecheck",
-            "prettier",
-            "eslint",
-            "clean",
-            "prepare",
-            "postinstall",
-        ];
-
-        // Collect script names to wrap (avoid mutating while iterating)
-        let candidates: Vec<(String, String)> = scripts
-            .iter()
-            .filter_map(|(name, val)| {
-                let value = val.as_str()?;
-                // Skip :raw variants
-                if name.ends_with(":raw") {
-                    return None;
-                }
-                // Skip already wrapped
-                if value.contains("phantom-secrets") || value.contains("phantom exec") {
-                    return None;
-                }
-                // Apply skip list from params
-                if params.skip.iter().any(|s| s == name) {
-                    return None;
-                }
-                // If "only" is specified, use that; otherwise use heuristic
-                let should_wrap = if !params.only.is_empty() {
-                    params.only.iter().any(|o| o == name)
-                } else {
-                    let lower = name.to_lowercase();
-                    let matches_wrap = wrap_keywords.iter().any(|kw| lower.contains(kw));
-                    let matches_skip = skip_keywords.iter().any(|kw| lower.contains(kw));
-                    matches_wrap && !matches_skip
-                };
-                if should_wrap {
-                    Some((name.clone(), value.to_string()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if candidates.is_empty() {
+        if wrapped.is_empty() {
             return text_result("No scripts matched for wrapping.");
         }
+        write_package_json(&pkg_path, &pkg, &before)?;
 
-        // Apply wrapping
-        for (name, original) in &candidates {
-            let raw_key = format!("{name}:raw");
-            scripts.insert(raw_key, serde_json::Value::String(original.clone()));
-            scripts.insert(
-                name.clone(),
-                serde_json::Value::String(wrapped_script_command(original)),
-            );
-        }
-
-        write_package_json(&pkg_path, &pkg)?;
-
-        let mut output = format!("Wrapped {} script(s):\n", candidates.len());
-        for (name, _) in &candidates {
+        let mut output = format!("Wrapped {} script(s):\n", wrapped.len());
+        for name in &wrapped {
             output.push_str(&format!("  - {name}\n"));
         }
         output.push_str("\nOriginals saved as `script:raw` variants.");
@@ -1822,45 +1756,17 @@ impl PhantomMcpServer {
             &self.project_id(),
         )?;
         let pkg_path = self.project_dir.join("package.json");
-        if !pkg_path.exists() {
-            return Err(internal_err("No package.json found in project directory."));
-        }
-
-        let (mut pkg, scripts) = read_package_scripts(&pkg_path)?;
-        if scripts.is_empty() {
-            return text_result("No \"scripts\" field found in package.json.");
-        }
-
-        // Find all :raw variants from the read-only copy
-        let raw_entries: Vec<(String, String)> = scripts
-            .iter()
-            .filter_map(|(name, val)| {
-                if name.ends_with(":raw") {
-                    Some((name.clone(), val.as_str()?.to_string()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if raw_entries.is_empty() {
-            return text_result("No wrapped scripts found (no `:raw` variants).");
-        }
-
-        // Get mutable reference to apply changes
-        let scripts = pkg.get_mut("scripts").unwrap().as_object_mut().unwrap();
-        let mut restored = Vec::new();
-        for (raw_key, original_value) in &raw_entries {
-            let base_name = raw_key.trim_end_matches(":raw");
-            scripts.insert(
-                base_name.to_string(),
-                serde_json::Value::String(original_value.clone()),
+        let _transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .map_err(|error| internal_err(format!("Failed to acquire project lock: {error}")))?;
+        let (mut pkg, before) = read_package_scripts(&pkg_path)?;
+        let restored = unwrap_package_scripts(&mut pkg);
+        if restored.is_empty() {
+            return text_result(
+                "No Phantom-owned wrapped script pairs found. User-owned `*:raw` scripts were preserved.",
             );
-            scripts.remove(raw_key);
-            restored.push(base_name.to_string());
         }
 
-        write_package_json(&pkg_path, &pkg)?;
+        write_package_json(&pkg_path, &pkg, &before)?;
 
         let mut output = format!("Unwrapped {} script(s):\n", restored.len());
         for name in &restored {
@@ -1982,7 +1888,6 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<EnvParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_env", params.confirm)?;
-        let env_path = self.env_path()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_env",
@@ -1990,6 +1895,21 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        phantom_core::fs::validate_project_filename(&params.output)
+            .map_err(|error| invalid_params_err(error.to_string()))?;
+        let output_path = self.project_dir.join(&params.output);
+        let _transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .map_err(|error| internal_err(format!("Failed to acquire project lock: {error}")))?;
+        if phantom_core::fs::read_regular_file(&output_path)
+            .map_err(|error| internal_err(format!("Refusing unsafe output target: {error}")))?
+            .is_some()
+        {
+            return Err(invalid_params_err(format!(
+                "Refusing to overwrite existing output {}. This tool has no overwrite policy; choose a new filename.",
+                params.output
+            )));
+        }
+        let env_path = self.env_path()?;
 
         let dotenv = DotenvFile::parse_file(&env_path)
             .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
@@ -1998,9 +1918,13 @@ impl PhantomMcpServer {
 
         let content = dotenv.generate_example_content(config.as_ref());
 
-        let output_path = self.project_dir.join(&params.output);
-        std::fs::write(&output_path, &content)
-            .map_err(|e| internal_err(format!("Failed to write {}: {e}", params.output)))?;
+        phantom_core::fs::atomic_write_if_unchanged(&output_path, None, content.as_bytes())
+            .map_err(|error| {
+                internal_err(format!(
+                    "Output target changed while generating {}; no file was overwritten: {error}",
+                    params.output
+                ))
+            })?;
 
         let entry_count = dotenv.entries().len();
         let secret_count = dotenv.real_secret_entries().len()
@@ -4349,6 +4273,109 @@ fn wrapped_script_command(original: &str) -> String {
     format!("phantom exec -- {original}")
 }
 
+fn wrap_package_scripts(
+    pkg: &mut serde_json::Value,
+    only: &[String],
+    skip: &[String],
+) -> Result<Vec<String>, String> {
+    let Some(scripts) = pkg
+        .get_mut("scripts")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Ok(Vec::new());
+    };
+    let wrap_keywords = ["dev", "start", "build", "serve", "deploy"];
+    let skip_keywords = [
+        "lint",
+        "test",
+        "format",
+        "check",
+        "typecheck",
+        "prettier",
+        "eslint",
+        "clean",
+        "prepare",
+        "postinstall",
+    ];
+    let mut candidates = Vec::new();
+    for (name, value) in scripts.iter() {
+        let Some(original) = value.as_str() else {
+            continue;
+        };
+        if name.ends_with(":raw")
+            || original.contains("phantom-secrets")
+            || original.contains("phantom exec")
+            || skip.iter().any(|skip_name| skip_name == name)
+        {
+            continue;
+        }
+        let should_wrap = if only.is_empty() {
+            let lower = name.to_lowercase();
+            wrap_keywords.iter().any(|keyword| lower.contains(keyword))
+                && !skip_keywords.iter().any(|keyword| lower.contains(keyword))
+        } else {
+            only.iter().any(|only_name| only_name == name)
+        };
+        if should_wrap {
+            let raw_name = format!("{name}:raw");
+            if scripts.contains_key(&raw_name) {
+                return Err(format!(
+                    "Refusing to wrap '{name}': package.json already contains user-owned script '{raw_name}'. No scripts were changed."
+                ));
+            }
+            candidates.push((name.clone(), raw_name, original.to_string()));
+        }
+    }
+    for (name, raw_name, original) in &candidates {
+        scripts.insert(
+            raw_name.clone(),
+            serde_json::Value::String(original.clone()),
+        );
+        scripts.insert(
+            name.clone(),
+            serde_json::Value::String(wrapped_script_command(original)),
+        );
+    }
+    Ok(candidates.into_iter().map(|(name, _, _)| name).collect())
+}
+
+fn unwrap_package_scripts(pkg: &mut serde_json::Value) -> Vec<String> {
+    let Some(scripts) = pkg
+        .get_mut("scripts")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Vec::new();
+    };
+    let owned = scripts
+        .iter()
+        .filter_map(|(raw_name, raw_value)| {
+            let base_name = raw_name.strip_suffix(":raw")?;
+            let original = raw_value.as_str()?;
+            let expected = wrapped_script_command(original);
+            (scripts.get(base_name).and_then(serde_json::Value::as_str) == Some(&expected)).then(
+                || {
+                    (
+                        base_name.to_string(),
+                        raw_name.clone(),
+                        original.to_string(),
+                    )
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    for (base_name, raw_name, original) in &owned {
+        scripts.insert(
+            base_name.clone(),
+            serde_json::Value::String(original.clone()),
+        );
+        scripts.remove(raw_name);
+    }
+    owned
+        .into_iter()
+        .map(|(base_name, _, _)| base_name)
+        .collect()
+}
+
 struct SensitiveSecretMap(std::collections::BTreeMap<String, zeroize::Zeroizing<String>>);
 
 #[derive(serde::Deserialize)]
@@ -4811,6 +4838,39 @@ mod tests {
 
     /// Shared lock so that tests mutating HOME do not race each other.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn mcp_wrap_collision_preserves_entire_package() {
+        let mut package = serde_json::json!({
+            "scripts": {
+                "build": "next build",
+                "dev": "next dev",
+                "dev:raw": "user-owned"
+            }
+        });
+        let before = package.clone();
+
+        let error = wrap_package_scripts(&mut package, &[], &[]).unwrap_err();
+        assert!(error.contains("user-owned script 'dev:raw'"));
+        assert_eq!(package, before);
+    }
+
+    #[test]
+    fn mcp_unwrap_preserves_unmatched_user_raw_script() {
+        let mut package = serde_json::json!({
+            "scripts": {
+                "build": "phantom exec -- next build",
+                "build:raw": "next build",
+                "dev": "next dev",
+                "dev:raw": "user-owned"
+            }
+        });
+
+        assert_eq!(unwrap_package_scripts(&mut package), vec!["build"]);
+        assert_eq!(package["scripts"]["build"], "next build");
+        assert!(package["scripts"].get("build:raw").is_none());
+        assert_eq!(package["scripts"]["dev:raw"], "user-owned");
+    }
 
     fn cloud_test_config(version: u64) -> PhantomConfig {
         let mut config = PhantomConfig::new_with_defaults("cloud-test-project".to_string());

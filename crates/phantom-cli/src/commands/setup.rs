@@ -191,6 +191,7 @@ enum McpEntryChange {
 /// callers such as `phantom init` can fail before rewriting the vault or .env.
 pub(crate) struct ClaudeSettingsPlan {
     settings_path: PathBuf,
+    before: Option<Vec<u8>>,
     content: String,
     mcp_change: McpEntryChange,
     removed_legacy_grants: bool,
@@ -201,7 +202,11 @@ pub(crate) struct ClaudeSettingsPlan {
 impl ClaudeSettingsPlan {
     pub(crate) fn transaction_file(&self) -> Option<phantom_vault::InitFile> {
         self.changed.then(|| {
-            phantom_vault::InitFile::replace(&self.settings_path, self.content.as_bytes().to_vec())
+            phantom_vault::InitFile::replace_if_unchanged(
+                &self.settings_path,
+                self.before.clone(),
+                self.content.as_bytes().to_vec(),
+            )
         })
     }
 }
@@ -210,11 +215,11 @@ pub(crate) fn prepare_claude_settings(
     settings_path: &Path,
     mcp: &McpCommand,
 ) -> Result<ClaudeSettingsPlan> {
-    let existed = settings_path.exists();
-    let mut settings: serde_json::Value = if existed {
-        let content = std::fs::read_to_string(settings_path)
-            .with_context(|| format!("Failed to read {}", settings_path.display()))?;
-        serde_json::from_str(&content)
+    let before = phantom_core::fs::read_regular_file(settings_path)
+        .with_context(|| format!("Failed to safely read {}", settings_path.display()))?;
+    let existed = before.is_some();
+    let mut settings: serde_json::Value = if let Some(content) = before.as_deref() {
+        serde_json::from_slice(content)
             .with_context(|| format!("Failed to parse {}", settings_path.display()))?
     } else {
         serde_json::json!({})
@@ -269,6 +274,7 @@ pub(crate) fn prepare_claude_settings(
         serde_json::to_string_pretty(&settings).context("Failed to serialize Claude settings")?;
     Ok(ClaudeSettingsPlan {
         settings_path: settings_path.to_path_buf(),
+        before,
         content,
         mcp_change,
         removed_legacy_grants,
@@ -281,12 +287,18 @@ pub(crate) fn apply_claude_settings(plan: &ClaudeSettingsPlan) -> Result<bool> {
     if !plan.changed {
         return Ok(false);
     }
-    if let Some(parent) = plan.settings_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    std::fs::write(&plan.settings_path, &plan.content)
-        .with_context(|| format!("Failed to write {}", plan.settings_path.display()))?;
+    let _transaction_lock = lock_file_parent(&plan.settings_path)?;
+    phantom_core::fs::atomic_write_if_unchanged(
+        &plan.settings_path,
+        plan.before.as_deref(),
+        plan.content.as_bytes(),
+    )
+    .with_context(|| {
+        format!(
+            "{} changed after setup read it; refusing to overwrite the concurrent edit",
+            plan.settings_path.display()
+        )
+    })?;
     Ok(true)
 }
 
@@ -362,9 +374,13 @@ fn setup_windsurf(mcp: &McpCommand) -> Result<()> {
 
 fn setup_codex(mcp: &McpCommand) -> Result<()> {
     let path = home_path(".codex/config.toml")?;
-    let mut doc: toml::Table = if path.exists() {
-        let content = std::fs::read_to_string(&path)?;
-        toml::from_str(&content).context("Failed to parse ~/.codex/config.toml")?
+    let _transaction_lock = lock_file_parent(&path)?;
+    let before = phantom_core::fs::read_regular_file(&path)
+        .with_context(|| format!("Failed to safely read {}", path.display()))?;
+    let mut doc: toml::Table = if let Some(content) = before.as_deref() {
+        let content =
+            std::str::from_utf8(content).context("~/.codex/config.toml is not valid UTF-8")?;
+        toml::from_str(content).context("Failed to parse ~/.codex/config.toml")?
     } else {
         toml::Table::new()
     };
@@ -395,10 +411,13 @@ fn setup_codex(mcp: &McpCommand) -> Result<()> {
     servers.insert("phantom".to_string(), toml::Value::Table(entry));
 
     let serialized = toml::to_string_pretty(&doc).context("Failed to serialize codex config")?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, serialized)?;
+    phantom_core::fs::atomic_write_if_unchanged(&path, before.as_deref(), serialized.as_bytes())
+        .with_context(|| {
+            format!(
+                "{} changed during setup; refusing to overwrite the concurrent edit",
+                path.display()
+            )
+        })?;
 
     if already {
         println!(
@@ -433,9 +452,11 @@ fn setup_codex(mcp: &McpCommand) -> Result<()> {
 /// Read-or-create a JSON file with `mcpServers.phantom = {command, args}`.
 /// Used by Cursor and Windsurf, which share the same MCP config schema.
 fn upsert_mcp_servers_json(path: &Path, mcp: &McpCommand) -> Result<()> {
-    let mut value: serde_json::Value = if path.exists() {
-        let content = std::fs::read_to_string(path)?;
-        serde_json::from_str(&content)
+    let _transaction_lock = lock_file_parent(path)?;
+    let before = phantom_core::fs::read_regular_file(path)
+        .with_context(|| format!("Failed to safely read {}", path.display()))?;
+    let mut value: serde_json::Value = if let Some(content) = before.as_deref() {
+        serde_json::from_slice(content)
             .with_context(|| format!("Failed to parse {}", path.display()))?
     } else {
         serde_json::json!({})
@@ -462,10 +483,13 @@ fn upsert_mcp_servers_json(path: &Path, mcp: &McpCommand) -> Result<()> {
     );
 
     let content = serde_json::to_string_pretty(&value).context("Failed to serialize MCP config")?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, content)?;
+    phantom_core::fs::atomic_write_if_unchanged(path, before.as_deref(), content.as_bytes())
+        .with_context(|| {
+            format!(
+                "{} changed during setup; refusing to overwrite the concurrent edit",
+                path.display()
+            )
+        })?;
 
     println!(
         "   {} MCP server: {} -> {}",
@@ -479,6 +503,20 @@ fn upsert_mcp_servers_json(path: &Path, mcp: &McpCommand) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn lock_file_parent(path: &Path) -> Result<phantom_vault::ProjectTransactionLock> {
+    phantom_core::fs::ensure_real_parent(path)
+        .with_context(|| format!("Refusing unsafe config parent for {}", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Configuration path has no parent: {}", path.display()))?;
+    phantom_vault::acquire_project_transaction_lock(parent).with_context(|| {
+        format!(
+            "Failed to acquire the config transaction lock for {}",
+            path.display()
+        )
+    })
 }
 
 // ──────────────────────────── --print ──────────────────────────
@@ -771,6 +809,36 @@ mod tests {
         assert_eq!(value["mcpServers"]["other"]["command"], "other-server");
         assert_eq!(value["theme"], "dark");
         assert!(!value.to_string().contains("npx"));
+    }
+
+    #[test]
+    fn claude_writer_rejects_concurrent_edit() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("settings.local.json");
+        std::fs::write(&path, r#"{"theme":"before"}"#).unwrap();
+        let plan = prepare_claude_settings(&path, &fake_mcp()).unwrap();
+        let concurrent = br#"{"theme":"concurrent-owner"}"#;
+        std::fs::write(&path, concurrent).unwrap();
+
+        let error = apply_claude_settings(&plan).unwrap_err();
+        assert!(error.to_string().contains("changed after setup read it"));
+        assert_eq!(std::fs::read(&path).unwrap(), concurrent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cursor_writer_rejects_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempdir().unwrap();
+        let owner = tmp.path().join("owner.json");
+        let path = tmp.path().join("mcp.json");
+        std::fs::write(&owner, br#"{"owner":true}"#).unwrap();
+        symlink(&owner, &path).unwrap();
+
+        let error = upsert_mcp_servers_json(&path, &fake_mcp()).unwrap_err();
+        assert!(error.to_string().contains("safely read"));
+        assert_eq!(std::fs::read(&owner).unwrap(), br#"{"owner":true}"#);
     }
 
     #[test]

@@ -6,32 +6,77 @@ use colored::Colorize;
 pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let pkg_path = project_dir.join("package.json");
+    let _transaction_lock = phantom_vault::acquire_project_transaction_lock(&project_dir)
+        .context("Failed to acquire the project transaction lock")?;
+    let before = phantom_core::fs::read_regular_file(&pkg_path)
+        .context("Failed to inspect package.json")?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No package.json found in current directory.\n\
+                 Run this command from your project root."
+            )
+        })?;
+    let content = std::str::from_utf8(&before).context("package.json is not valid UTF-8")?;
+    let mut pkg: serde_json::Value =
+        serde_json::from_str(content).context("Failed to parse package.json")?;
+    let wrapped = apply_wrap(&mut pkg, only, skip)?;
 
-    if !pkg_path.exists() {
-        anyhow::bail!(
-            "No package.json found in current directory.\n\
-             Run this command from your project root."
+    if wrapped.is_empty() {
+        println!(
+            "{} No scripts to wrap (already wrapped or no matching scripts).",
+            "!".yellow().bold()
+        );
+        return Ok(());
+    }
+
+    let output = serde_json::to_string_pretty(&pkg).context("Failed to serialize package.json")?;
+    phantom_core::fs::atomic_write_if_unchanged(
+        &pkg_path,
+        Some(&before),
+        format!("{output}\n").as_bytes(),
+    )
+    .context("package.json changed after it was read; no scripts were wrapped")?;
+
+    for name in &wrapped {
+        println!(
+            "   {} {} -> wrapped with phantom exec",
+            "+".green().bold(),
+            name.bold()
         );
     }
 
-    let content = std::fs::read_to_string(&pkg_path).context("Failed to read package.json")?;
-    let mut pkg: serde_json::Value =
-        serde_json::from_str(&content).context("Failed to parse package.json")?;
+    println!(
+        "\n{} Wrapped {} script(s) in package.json",
+        "ok".green().bold(),
+        wrapped.len()
+    );
+    println!(
+        "{} Original scripts saved as {}",
+        "->".blue().bold(),
+        "*:raw".cyan()
+    );
+    println!(
+        "{} Run {} to undo.",
+        "->".blue().bold(),
+        "phantom unwrap".cyan().bold()
+    );
 
+    Ok(())
+}
+
+fn apply_wrap(
+    pkg: &mut serde_json::Value,
+    only: &Option<Vec<String>>,
+    skip: &Option<Vec<String>>,
+) -> Result<Vec<String>> {
     let scripts = match pkg.get_mut("scripts").and_then(|s| s.as_object_mut()) {
         Some(s) => s,
-        None => {
-            println!(
-                "{} No \"scripts\" section found in package.json.",
-                "!".yellow().bold()
-            );
-            return Ok(());
-        }
+        None => return Ok(Vec::new()),
     };
 
     // Collect script names to wrap
     let script_names: Vec<String> = scripts.keys().cloned().collect();
-    let mut wrapped_count = 0;
+    let mut candidates = Vec::new();
 
     for name in &script_names {
         // Skip :raw variants
@@ -68,51 +113,26 @@ pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>) -> Result<()>
             continue;
         }
 
-        // Save original as :raw variant
         let raw_name = format!("{}:raw", name);
-        scripts.insert(raw_name, serde_json::Value::String(value.clone()));
-
-        // Wrap the script
-        let wrapped = wrapped_script_command(&value);
-        scripts.insert(name.clone(), serde_json::Value::String(wrapped));
-
-        println!(
-            "   {} {} -> wrapped with phantom exec",
-            "+".green().bold(),
-            name.bold()
-        );
-        wrapped_count += 1;
+        if scripts.contains_key(&raw_name) {
+            anyhow::bail!(
+                "Refusing to wrap '{name}': package.json already contains user-owned script '{raw_name}'. Rename or remove that script explicitly before retrying. No scripts were changed."
+            );
+        }
+        candidates.push((name.clone(), raw_name, value));
     }
 
-    if wrapped_count == 0 {
-        println!(
-            "{} No scripts to wrap (already wrapped or no matching scripts).",
-            "!".yellow().bold()
+    for (name, raw_name, original) in &candidates {
+        scripts.insert(
+            raw_name.clone(),
+            serde_json::Value::String(original.clone()),
         );
-        return Ok(());
+        scripts.insert(
+            name.clone(),
+            serde_json::Value::String(wrapped_script_command(original)),
+        );
     }
-
-    // Write back
-    let output = serde_json::to_string_pretty(&pkg).context("Failed to serialize package.json")?;
-    std::fs::write(&pkg_path, format!("{}\n", output)).context("Failed to write package.json")?;
-
-    println!(
-        "\n{} Wrapped {} script(s) in package.json",
-        "ok".green().bold(),
-        wrapped_count
-    );
-    println!(
-        "{} Original scripts saved as {}",
-        "->".blue().bold(),
-        "*:raw".cyan()
-    );
-    println!(
-        "{} Run {} to undo.",
-        "->".blue().bold(),
-        "phantom unwrap".cyan().bold()
-    );
-
-    Ok(())
+    Ok(candidates.into_iter().map(|(name, _, _)| name).collect())
 }
 
 fn wrapped_script_command(original: &str) -> String {
@@ -179,5 +199,35 @@ mod tests {
         assert!(!should_wrap_script("typecheck"));
         assert!(!should_wrap_script("test:unit"));
         assert!(!should_wrap_script("lint:fix"));
+    }
+
+    #[test]
+    fn existing_raw_script_aborts_without_mutating_package() {
+        let mut pkg = serde_json::json!({
+            "scripts": {
+                "dev": "next dev",
+                "dev:raw": "user-owned"
+            }
+        });
+        let before = pkg.clone();
+
+        let error = apply_wrap(&mut pkg, &None, &None).unwrap_err();
+        assert!(error.to_string().contains("user-owned script 'dev:raw'"));
+        assert_eq!(pkg, before);
+    }
+
+    #[test]
+    fn one_collision_prevents_all_candidate_mutations() {
+        let mut pkg = serde_json::json!({
+            "scripts": {
+                "build": "next build",
+                "dev": "next dev",
+                "dev:raw": "user-owned"
+            }
+        });
+        let before = pkg.clone();
+
+        apply_wrap(&mut pkg, &None, &None).unwrap_err();
+        assert_eq!(pkg, before);
     }
 }
