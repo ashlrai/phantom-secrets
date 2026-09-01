@@ -505,7 +505,7 @@ The Rust workspace is organized as product crates plus fail-closed execution-ker
 | Product | `phantom-cli` | Operator CLI for initialization, proxy lifecycle, readiness, audit, import/export, sync, team, and workspace workflows. |
 | Product | `phantom-mcp` | Stdio MCP server. The governed conversation facade is narrow; the advanced compatibility catalog uses separate legacy gates. |
 | Product | `phantom-core/src/issuance`, CLI `grant` | Provider protocol/design foundations and value-free grant metadata. All live provider issuance/enrollment execution is hard-denied before credential or network access in 0.7.4. |
-| Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained project/config directory capabilities, exact identity-and-content before-images, no-follow targets, single-link checks, effect receipts, and explicit `CommittedButUncertain` (**Partial**) results for governed local writes. |
+| Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained project/config directory capabilities, exact identity/content/permission before-images, no-follow targets, single-link checks, and typed durable, committed-verified-with-durability-warning, or `CommittedButUncertain` (**Partial**) effects. |
 | Setup kernel | `phantom-workspace` | Value-blind discovery, sealed planning, and recoverable trusted-terminal setup transactions. Non-Unix durable mutation fails closed. |
 | Inactive foundation | `phantom-authority` | Closed authority contracts and deny-all production verification boundary. No live Locus verifier. |
 | Inactive foundation | `phantom-locus-contract` | Value-free compatibility contract describing requirements for a future Phantom/Locus integration. |
@@ -522,6 +522,20 @@ same-user sandbox: local locks coordinate Phantom writers, and another process
 with equivalent user authority remains inside the threat model. See the
 [architecture](docs/architecture.md), [threat model](THREAT_MODEL.md), and
 [platform evidence matrix](docs/platform-support.md).
+
+Initialization retains the reviewed project-root identity and exact
+dotenv/config leaf snapshots before vault provisioning, then revalidates root
+and leaf identity, bytes, and permissions under the project lock before
+mutation. On Windows, new private anchored files/directories establish a
+protected current-user DACL before content bytes, while replacements preserve
+the reviewed exact DACL and inheritance state before writing. Those Windows
+properties are source contracts; protected native Windows CI acceptance remains
+pending.
+
+`CommittedVerifiedButDurabilityUncertain` is committed, exactly verified
+success with a value-free warning/receipt and must not be rolled back or
+retried. `CommittedButUncertain` is the distinct **Partial** case requiring
+operator reconciliation because verification or durability remains unresolved.
 
 Vault-backed mutations resolve machine-local vault/application authority before
 the project transaction lock, then compare the acquired root identity and

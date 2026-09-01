@@ -51,21 +51,22 @@ provider, or customer attestation.
 |---|---|
 | Repository | `ashlrai/phantom-secrets` |
 | Branch | `codex/public-claim-truth` |
-| Implementation `HEAD` before final documentation validation | `1e6ce2fb7bfa1ce9c430f8d0bf704e159ed50834` |
+| Implementation-security SHA | `5a3edad60634c78af3079f588bf51fefa0b69586` |
 | Documentation commit | The later commit containing this file; it records prose/manifest descriptions and must not be substituted for the implementation SHA above |
-| Dirty state at final source review | Dirty only with this documentation and package-description tranche; no implementation file had an uncommitted diff |
-| Reviewed implementation | Retained anchored effects, project transaction/init, CLI/MCP governed mutation paths, vault-before-project lock order, stable root-identity revalidation, Git-hook authorization, and project/global editor setup |
+| Working-tree boundary during reconciliation | `5a3edad60634c78af3079f588bf51fefa0b69586` is the implementation-security identity. Other concurrent uncommitted implementation, release-workflow/readiness, and documentation edits in the shared working tree are not part of that SHA or this source-review identity |
+| Reviewed implementation | Retained anchored effects, exact init root/leaf admission, Windows pre-byte ACL establishment/preservation, typed effect outcomes, CLI/MCP governed mutation paths, vault-before-project lock order, Git-hook authorization, and project/global editor setup |
 | Excluded evidence | No exact `0.7.4` archive, native Windows/macOS/Linux run, publication, deployment, provider activation, enterprise commissioning, or customer acceptance receipt was inspected |
 
 Primary source paths for this review:
 
 - [`anchored.rs`](../crates/phantom-core/src/fs/anchored.rs) — retained
   directories/targets, identity-bound reads, single-link checks, exact writes
-  and unlinks, directory receipts, and durable/committed-but-uncertain effects;
+  and unlinks, Windows ACL enforcement before content bytes, directory receipts,
+  and the three typed effect outcomes;
 - [`transaction_lock.rs`](../crates/phantom-vault/src/transaction_lock.rs) and
   [`init_transaction.rs`](../crates/phantom-vault/src/init_transaction.rs) —
-  acquisition-time project-root authority, project-relative targets, and exact
-  rollback;
+  acquisition-time project-root authority, project-relative targets, exact
+  init leaf snapshots, and identity-bound rollback;
 - [`precommit_hook.rs`](../crates/phantom-core/src/precommit_hook.rs) — effective
   Git hook authority and fail-closed external-root handling; and
 - [`setup.rs`](../crates/phantom-cli/src/commands/setup.rs) — separate project
@@ -80,18 +81,32 @@ Primary source paths for this review:
   noninteractive terminal denial before approval inspection, challenge
   generation, or stdin reads.
 
-Unix rename-and-decoy tests exercise path-swap behavior. Windows implementation
-and contract tests were inspected in source, but no exact Windows binary was
-run in this documentation review. Credential Manager remains mapped source, not
-native acceptance.
+Unix rename-and-decoy tests exercise path-swap behavior, including exact init
+root/leaf admission and byte-identical replacement leaves. Windows
+implementation and contract tests for protected current-user DACL
+establishment/preservation before bytes were inspected in source, but no exact
+Windows archive was run in protected native CI. Credential Manager and ACL
+behavior remain source contracts, not native acceptance.
 
-Bounded local verification of implementation SHA
+The earlier implementation SHA
 `1e6ce2fb7bfa1ce9c430f8d0bf704e159ed50834` reported 490/490 `phantom-cli`
 tests in the PTY harness, strict `phantom-cli` Clippy, workspace formatting, and
-diff checks passing. No immutable CI or native-archive log is embedded in this
-documentation commit, so this is focused local evidence only; it does not move
-the candidate into publication, native acceptance, deployment, provider, or
-customer evidence layers.
+diff checks passing. That result must not be relabeled as validation of the later
+security SHA `5a3edad60634c78af3079f588bf51fefa0b69586`. No immutable CI or
+native-archive log for `5a3edad` is embedded in this documentation, so source
+inspection and documentation gates remain distinct from publication, native
+acceptance, deployment, provider, and customer evidence.
+
+### Live repository-governance observation — 2026-09-01
+
+As separately inspected on 2026-09-01, the GitHub `release` environment had a
+required reviewer and a deployment policy limited to `v*` tags. Immutable tag
+ruleset `21903888` covered update, deletion, and non-fast-forward changes with
+no bypass. Separate creation ruleset `21997435` covered tag creation with a
+Mason-only bypass. Creation authority therefore cannot bypass the independent
+no-bypass immutability ruleset. This dated live-setting observation is not part
+of implementation SHA `5a3edad60634c78af3079f588bf51fefa0b69586`, does not
+authorize a release, and must be reverified before a tag is created.
 
 ## 2026-08-30 local documentation-review identity
 
@@ -129,7 +144,8 @@ Use the narrowest accurate claim in an audit report:
 | Design document | Proposed behavior and intended boundary. |
 | Source inspection | Behavior implemented in the inspected tree. |
 | Focused automated test | The named behavior passed in that harness and environment. |
-| Partial effect receipt | The namespace effect may have committed, but durability or final verification was uncertain. It requires reconciliation and is not proof of rollback or safe retry. |
+| Committed verified durability warning | `CommittedVerifiedButDurabilityUncertain` means the live namespace effect committed and exact post-publish verification succeeded, but directory crash durability is not provable. It is success with a value-free warning/receipt, not a rollback or retry signal. |
+| Partial effect receipt | `CommittedButUncertain` means the namespace effect may have committed, but durability or final verification remains unresolved. It requires reconciliation and is not proof of rollback or safe retry. |
 | Full locked CI | The configured suite passed for the recorded commit and runners. |
 | Built archive plus digest | The bytes were produced and integrity metadata matches. |
 | Native acceptance | The exact archive passed the named checks on one OS/architecture environment. |
@@ -152,8 +168,10 @@ Reviewers should pay particular attention to these unresolved boundaries:
   account and does not create externally trusted receipts;
 - retained path capabilities protect governed operations from ambient
   rename/decoy redirection but do not sandbox a process with equivalent
-  same-user filesystem or terminal authority; `CommittedButUncertain` effects
-  require explicit reconciliation;
+  same-user filesystem or terminal authority;
+- verified effects without provable directory crash durability are committed
+  successes with explicit warnings, while `CommittedButUncertain` effects
+  require reconciliation;
 - provider enrollment, issuance, refresh, renewal, rotation, and remote
   revocation are not active; shipped paths fail before credential or network
   access, while exact test mocks prove local scaffolding only; and

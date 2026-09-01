@@ -239,9 +239,13 @@ Phantom Cloud's implemented client encrypts vault payloads before upload:
   regular single-link sensitive files, and compare stable identity plus bytes.
   A renamed ambient root and replacement decoy do not redirect an in-progress
   anchored effect in the source-tested cases.
-- `CommittedButUncertain` means the namespace effect may have committed but its
-  final durability/verification is uncertain. This is **Partial** and requires
-  operator reconciliation before retry; it is not proof of rollback.
+- Init retains the reviewed root and exact dotenv/config leaf identity, bytes,
+  and permissions before vault provisioning, then revalidates them under the
+  project lock before mutation. Byte-identical replacement leaves are drift.
+- `CommittedVerifiedButDurabilityUncertain` is committed, exactly verified
+  success with a value-free warning/receipt and no rollback or retry.
+  `CommittedButUncertain` means verification or durability remains unresolved;
+  it is **Partial**, requires reconciliation, and is not proof of rollback.
 - Vault/application authority is resolved before the project transaction lock;
   the acquired root identity and exact config are then revalidated. This avoids
   the process-environment/project-lock inversion and rejects same-path root
@@ -249,9 +253,17 @@ Phantom Cloud's implemented client encrypts vault payloads before upload:
 - Retained roots and cooperative locks are not a same-user sandbox. An
   equivalent same-user process or agent-controlled terminal remains in the
   threat model.
-- Windows reparse/handle ordering and Credential Manager integration are
-  source contracts in this review, not an exact native Windows acceptance
-  receipt.
+- Windows source establishes a protected current-user DACL on new private
+  files/directories before bytes and preserves the reviewed exact DACL and
+  inheritance state on replacement staging files before writing. Reparse,
+  handle, ACL, and Credential Manager behavior still await protected native
+  Windows CI acceptance.
+- Implementation-security identity:
+  `5a3edad60634c78af3079f588bf51fefa0b69586`. Live GitHub governance observed
+  2026-09-01: the `release` environment required review and accepted only `v*`
+  tags; no-bypass immutability ruleset `21903888` was separate from creation
+  ruleset `21997435` with Mason-only bypass. Creation authority cannot bypass
+  the separate immutability policy; reverify before release.
 
 ## Platform Sync
 

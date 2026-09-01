@@ -173,9 +173,13 @@ Detection and runtime injection are different capabilities. Database connection 
   reject outside-root and symlink/reparse traversal, require regular single-link
   sensitive files, and compare exact identity plus bytes. Rename-decoy tests
   verify that a swapped ambient path is not the in-progress effect target.
-- `CommittedButUncertain` is a **Partial** result: a namespace effect may have
-  committed before durability/verification failed. Inspect and reconcile the
-  intended target before retrying; do not infer rollback or a safe no-op.
+- Init retains the reviewed root and exact dotenv/config leaf identity, bytes,
+  and permissions before vault provisioning, then revalidates them under the
+  project lock before mutation. Byte-identical replacement leaves are drift.
+- `CommittedVerifiedButDurabilityUncertain` is committed, exactly verified
+  success with a value-free warning/receipt and no rollback or retry.
+  `CommittedButUncertain` is the distinct **Partial** result; reconcile before
+  retrying and do not infer rollback or a safe no-op.
 - Vault/application authority is resolved before the project transaction lock;
   the acquired root identity and exact config are then revalidated. This avoids
   the process-environment/project-lock inversion and rejects a same-path root
@@ -183,9 +187,17 @@ Detection and runtime injection are different capabilities. Database connection 
 - This is path-integrity for governed effects, not a same-user sandbox.
   Cooperative locks do not exclude an equivalent same-user process or an
   agent-controlled terminal.
-- Windows reparse/handle behavior and Credential Manager integration have
-  source contracts, not exact native Windows acceptance evidence in this
-  review. Current main does not prove `v0.7.4` publication or deployment.
+- Windows source establishes a protected current-user DACL on new private
+  files/directories before bytes and preserves the reviewed exact DACL and
+  inheritance state on replacement staging files before writing. Reparse,
+  handle, ACL, and Credential Manager behavior still await protected native
+  Windows CI acceptance. Current main does not prove `v0.7.4` publication or
+  deployment.
+- Implementation-security identity:
+  `5a3edad60634c78af3079f588bf51fefa0b69586`. Live GitHub governance observed
+  2026-09-01: the `release` environment required review and accepted only `v*`
+  tags; no-bypass immutability ruleset `21903888` was separate from creation
+  ruleset `21997435` with Mason-only bypass. Reverify before release.
 - Locus and the execution-kernel crates remain inactive and fail closed.
   Enterprise capabilities require separate commissioning and acceptance.
 - Rama upstream main snapshot

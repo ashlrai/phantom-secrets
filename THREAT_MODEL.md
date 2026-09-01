@@ -101,8 +101,10 @@ which project or client configuration is mutated.
 
 **Sensitivity:** High for integrity and moderate for confidentiality. Managed
 dotenv mappings and route/config metadata remain sensitive even when they are
-not plaintext provider credentials. A **Partial** effect receipt signals that
-the namespace may already have changed and must be reconciled.
+not plaintext provider credentials. A
+`CommittedVerifiedButDurabilityUncertain` receipt is committed success with a
+value-free durability warning; a **Partial** `CommittedButUncertain` receipt
+signals that the namespace may already have changed and must be reconciled.
 
 ---
 
@@ -181,8 +183,10 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 | Real secret values | Cloud server compromised — server reads plaintext | Vault is encrypted client-side before upload; server stores only ciphertext; encryption key never transmitted | Covered | `crates/phantom-core/src/cloud.rs`, `crates/phantom-vault/src/crypto.rs` |
 | Real secret values | Supply-chain attack injects `.env` real secrets | `phantom check` (including `--staged`) scans for real secret patterns and warns before commit; `pre-commit` hook integration | Covered | `crates/phantom-cli/src/commands/check.rs` (invoked by `phantom check --staged`) |
 | Project and client configuration | Attacker swaps a project root, parent directory, or target after review so Phantom mutates a decoy | Governed writers retain an acquisition-time directory capability, resolve targets relative to it, reject outside-root and symlink/reparse components, and compare the target's stable identity plus bytes before replacement or unlink. Sensitive files must be regular and single-linked. Exact directory-creation receipts constrain rollback | Partial — protects the governed Phantom operation, not the namespace from a process with equivalent same-user authority before or after it | `crates/phantom-core/src/fs/anchored.rs`, `crates/phantom-vault/src/transaction_lock.rs`, `crates/phantom-vault/src/init_transaction.rs`, rename-decoy and hard-link tests |
-| Project and client configuration | Rename or unlink commits, but post-effect durability verification fails | Effect APIs return `CommittedButUncertain` and callers report a **Partial** outcome. They do not claim rollback, absence of effect, or safe automatic retry; an exact receipt is returned only when Phantom can identify the committed object | Partial — operator reconciliation is required | `crates/phantom-core/src/fs/anchored.rs`, anchored effect-injection tests |
-| Project and vault state | A cross-domain lock inversion stalls a writer, or a project root is replaced while vault authority is resolved | Vault/application authority is resolved before the project transaction lock. The reviewed root is retained first; after lock acquisition Phantom compares stable directory identity and rereads exact config identity, bytes, and permissions before use | Partial — coordinates Phantom paths, not an uncooperative same-user process | CLI workspace/rotation and MCP anchored-loader lock-order and same-path-decoy tests |
+| Project and client configuration | A namespace effect commits but directory crash durability is unavailable | Exact post-publish verification returns `CommittedVerifiedButDurabilityUncertain`; callers treat the effect as committed success, emit a value-free warning/receipt, and do not roll back or retry | Covered for the live effect; directory crash durability remains unproven on that platform | `crates/phantom-core/src/fs/anchored.rs`, verified-but-durability-uncertain effect tests |
+| Project and client configuration | A namespace effect commits, but post-publish verification or durability is unresolved | Effect APIs return `CommittedButUncertain` and callers report a **Partial** outcome. They do not claim rollback, absence of effect, or safe automatic retry; an exact receipt is returned only when Phantom can identify the committed object | Partial — operator reconciliation is required | `crates/phantom-core/src/fs/anchored.rs`, anchored effect-injection tests |
+| Project and vault state | A cross-domain lock inversion stalls a writer, or an init root/leaf is replaced while vault authority is resolved | Vault/application authority is resolved before the project transaction lock. The reviewed root is retained first; after lock acquisition Phantom compares stable directory identity and rereads exact config identity, bytes, and permissions. Initialization additionally binds the reviewed dotenv/config leaf identity, bytes, and permissions before vault provisioning and rejects byte-identical replacement leaves | Partial — coordinates Phantom paths, not an uncooperative same-user process | CLI init/workspace/rotation and MCP anchored-loader lock-order, same-path-decoy, and exact-leaf tests |
+| Project and client configuration | Windows replacement weakens file ACLs or writes secret bytes before protection exists | New private files/directories establish and verify a protected current-user DACL before bytes; replacement staging files receive and verify the reviewed exact DACL, inheritance state, and read-only state before content is written. NULL/nonrestrictive DACLs fail closed | Partial — source-contract tests exist; protected native Windows CI acceptance remains pending | `crates/phantom-core/src/fs/anchored.rs`, Windows ACL source-contract tests |
 | Provider issuance roots | Agent or operator attempts live issuance/renewal | Every production provider path is hard-denied before provider credential access and network I/O in 0.7.4; exact `cfg(test)` mocks are local transaction evidence only | Covered for the 0.7.4 denial boundary | `crates/phantom-core/src/rotation_provider.rs`, CLI/MCP provider-denial tests |
 | Provider consent | User assumes protocol source or enrollment metadata commissions a provider | Grant/issuance source remains design scaffolding; production enrollment exchange, issuance, refresh, renewal, and revocation execution is disabled | Covered as a denial, not provider functionality | `crates/phantom-core/src/issuance`, CLI grant dispatch |
 | Provider-grant lifecycle | User assumes local deletion remotely revokes a provider credential | `phantom grant revoke` fails closed before local mutation because remote revocation is not wired | Partial — credential must be revoked at the provider | `crates/phantom-cli/src/commands/grant/revoke.rs` |
@@ -426,7 +430,7 @@ In this document, a **provider grant** is vaulted credential and renewal state.
 It is not an **authority grant** from the inactive execution kernel and cannot
 be used as a Locus credential, broker lease, or execution permit.
 
-### 7.10 Local filesystem effects can be Partial
+### 7.10 Local filesystem durability warnings and Partial effects
 
 Project and setup writers bind reads and writes to retained directory
 capabilities, reject symlink/reparse traversal and multiply linked sensitive
@@ -440,18 +444,29 @@ acquired directory identity and rereads exact config state. This prevents an
 environment-guard/project-lock inversion while rejecting replacement at the
 same canonical path during vault resolution.
 
+Initialization goes further at the vault-provisioning boundary: it retains the
+reviewed root and exact dotenv/config leaf snapshots, then rechecks root identity
+after the lock and leaf identity, bytes, and permissions before mutation. A
+byte-identical replacement leaf is concurrent drift, not an admissible target.
+
 A rename, unlink, or directory create can still have changed the namespace
-before a subsequent directory-sync or verification error. That state is
-reported as `CommittedButUncertain`, with an exact receipt only when Phantom can
-identify the affected object. Treat this as **Partial**: stop, inspect the
-intended retained target and the current ambient path, and reconcile before
-retrying. Phantom must not describe it as rolled back or automatically repeat
-the operation.
+before its result is classified. When exact post-publish verification succeeds
+but the platform cannot prove directory crash durability, Phantom returns
+`CommittedVerifiedButDurabilityUncertain`. That is committed success with a
+value-free warning/receipt; callers must not roll it back or retry it.
+
+When post-publish verification or durability remains unresolved, Phantom
+returns `CommittedButUncertain`, with an exact receipt only when it can identify
+the affected object. Treat this as **Partial**: stop, inspect the intended
+retained target and the current ambient path, and reconcile before retrying.
+Phantom must not describe it as rolled back or automatically repeat it.
 
 The Windows implementation has source-contract tests for no-follow reparse
-handling, shared-handle ordering, identity checks, and uncertainty reporting.
-This documentation review did not execute the exact binaries on native Windows,
-so it does not establish Windows filesystem or Credential Manager acceptance.
+handling, shared-handle ordering, identity checks, effect classification, and
+protected current-user DACL establishment/preservation before bytes. This
+documentation review did not execute the exact binaries in protected native
+Windows CI, so it does not establish Windows filesystem or Credential Manager
+acceptance.
 
 ---
 

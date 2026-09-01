@@ -99,9 +99,13 @@ https://phm.dev/dashboard: local/pilot access state and available cloud-backed p
   reject outside-root and symlink/reparse traversal, require regular single-link
   sensitive files, and compare exact identity plus bytes before replacement or
   unlink. Rename-decoy tests verify that a swapped ambient path is not mutated.
-- Effect receipts distinguish durable completion from
-  `CommittedButUncertain` (**Partial**). After Partial, inspect and reconcile the
-  intended target before retrying; do not infer rollback or a safe no-op.
+- Init retains the reviewed root and exact dotenv/config leaf identity, bytes,
+  and permissions before vault provisioning, then revalidates them under the
+  project lock before mutation. Byte-identical replacement leaves are drift.
+- `CommittedVerifiedButDurabilityUncertain` is committed, exactly verified
+  success with a value-free warning/receipt and no rollback or retry.
+  `CommittedButUncertain` is the distinct **Partial** result; reconcile before
+  retrying and do not infer rollback or a safe no-op.
 - Operations needing both vault and project authority resolve the
   process-environment-dependent vault first, then acquire the project transaction lock,
   compare the retained root identity, and reread exact config state. This
@@ -109,9 +113,17 @@ https://phm.dev/dashboard: local/pilot access state and available cloud-backed p
 - These controls are not a same-user sandbox. They coordinate Phantom writers
   and preserve path identity while handles are retained; an equivalent
   same-user process or agent-controlled terminal remains in the threat model.
-- Windows reparse/handle behavior and Credential Manager integration have
-  source contracts, not an exact native Windows acceptance receipt in this
-  review. Current main is not evidence that `v0.7.4` is published or deployed.
+- Windows source establishes a protected current-user DACL on new private
+  files/directories before bytes and preserves the reviewed exact DACL and
+  inheritance state on replacement staging files before writing. Reparse,
+  handle, ACL, and Credential Manager behavior still await protected native
+  Windows CI acceptance. Current main is not evidence that `v0.7.4` is
+  published or deployed.
+- Implementation-security identity:
+  `5a3edad60634c78af3079f588bf51fefa0b69586`. Live GitHub governance observed
+  2026-09-01: the `release` environment required review and accepted only `v*`
+  tags; no-bypass immutability ruleset `21903888` was separate from creation
+  ruleset `21997435` with Mason-only bypass. Reverify before release.
 - Locus, broker, runtime, session, and externally trusted evidence remain
   inactive and fail closed. Enterprise packaging is planned/commissioned only
   through separate written and acceptance evidence.

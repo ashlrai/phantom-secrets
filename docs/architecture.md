@@ -146,9 +146,11 @@ effects relative to that retained directory identity:
 ```text
 acquire retained root + stable lock
   -> resolve no-follow relative target
-  -> read identity + bytes before-image
+  -> read identity + bytes + permissions before-image
   -> compare-and-swap atomic replace or exact unlink
-  -> Durable | CommittedButUncertain (Partial)
+  -> Durable
+     | CommittedVerifiedButDurabilityUncertain (committed success + warning)
+     | CommittedButUncertain (Partial; reconcile)
 ```
 
 When an operation needs both project state and a machine-local vault, Phantom
@@ -169,6 +171,11 @@ the project with a different directory at the same canonical spelling is
 rejected. Resolving vault authority before the project lock also avoids an
 environment-guard/project-lock inversion with other Phantom threads.
 
+`phantom init` additionally binds the exact dotenv/config leaf identity, bytes,
+and permissions during review before vault provisioning. The transaction
+revalidates the retained root after lock acquisition and every reviewed leaf
+before mutation, so a byte-identical replacement inode/file identity is drift.
+
 - Symlink and Windows reparse-point components are rejected. Sensitive file
   effects require a regular, single-link target, so a hard link cannot silently
   redirect a governed update to a second name.
@@ -180,9 +187,18 @@ environment-guard/project-lock inversion with other Phantom threads.
 - Newly created private directories carry identity-bound receipts. Cleanup
   removes only an empty directory with the exact created identity, after
   descendant handles have been released.
-- A rename, unlink, or create may commit before a later durability check fails.
-  `CommittedButUncertain` is therefore a **Partial** outcome: callers report it
-  and require reconciliation rather than claiming rollback or retry safety.
+- A verified rename, unlink, or create can commit on a platform that cannot
+  prove directory crash durability. `CommittedVerifiedButDurabilityUncertain`
+  is committed success with a value-free warning/receipt; callers do not roll
+  it back or retry it.
+- If post-publish verification or durability remains unresolved,
+  `CommittedButUncertain` is a **Partial** outcome: callers require
+  reconciliation rather than claiming rollback or retry safety.
+- On Windows, a new private file or directory receives and verifies a protected
+  current-user DACL before content bytes. A replacement staging file receives
+  and verifies the reviewed target's exact DACL, inheritance state, and
+  read-only state before content is copied; NULL/nonrestrictive DACLs fail
+  closed.
 
 Authorities remain intentionally separate:
 
@@ -199,8 +215,8 @@ Locks serialize cooperating Phantom writers. A process with equivalent user
 filesystem or terminal authority can still mutate state before acquisition or
 after handles are released, race ungoverned tools, or defeat a terminal
 ceremony. The Windows implementation has source-contract tests for reparse,
-identity, handle-ordering, and uncertainty behavior; this source review is not
-native Windows acceptance.
+identity, handle ordering, exact ACL establishment/preservation, and both
+uncertainty outcomes; protected native Windows CI acceptance remains pending.
 
 Read-only check, status, audit, and proposal discovery is intentionally distinct
 from a governed effect. Those paths may resolve ambient state for observation;

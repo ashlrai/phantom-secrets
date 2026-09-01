@@ -163,12 +163,21 @@ sandboxed principal.
   then compare the acquired directory identity and reread exact config state.
   This avoids the inverse lock order and rejects a same-path root replacement
   during vault resolution.
-- A namespace effect followed by a durability or verification failure is
-  reported as `CommittedButUncertain`, a **Partial** outcome. Operators must stop
-  and reconcile the intended retained target and current path before retrying;
-  it is not evidence of rollback or of a safe no-op. Windows no-follow and
-  shared-handle behavior is source-contract tested, but no exact native Windows
-  filesystem or Credential Manager acceptance is claimed by this source review.
+- Initialization binds both the reviewed project-root identity and exact leaf
+  identity, bytes, and permissions before vault provisioning, then revalidates
+  them after acquiring the project lock and before mutation. A byte-identical
+  replacement leaf or same-path replacement root is rejected as drift.
+- `CommittedVerifiedButDurabilityUncertain` is a committed and exactly verified
+  success with a value-free warning/receipt; callers must not roll it back or
+  retry it. It is distinct from `CommittedButUncertain`, a **Partial** outcome
+  where post-publish verification or durability is unresolved and the operator
+  must reconcile before retrying.
+- On Windows, new private anchored files/directories establish and verify a
+  protected current-user DACL before bytes are written; replacements preserve
+  and verify the reviewed exact DACL, inheritance state, and read-only state
+  before writing. Windows no-follow, ACL, and shared-handle behavior is
+  source-contract tested, but protected native Windows filesystem and
+  Credential Manager acceptance remains pending.
 - Audit logging is opt-in and local by default. It cannot prove deletion of both the audit log and its local checkpoint without external evidence.
 - Team member removal does not retroactively revoke access to vault pushes that were encrypted to that member before removal. Rotate affected secrets after offboarding.
 - All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.4. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.

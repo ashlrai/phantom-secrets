@@ -88,14 +88,17 @@ remaining operating-system integrations below.
 | Symlink and reparse denial | No-follow traversal rejects symlink/reparse ancestors and leaf targets; Windows implementation has source-contract checks | Windows tests in source are not a native Windows run |
 | Hard-link denial | Sensitive anchored files must be regular and have one link before read/effect | Platform filesystem behavior still needs exact native acceptance |
 | Exact compare-and-swap | Before-images bind stable file identity and bytes; same-content replacement identities are rejected | Covers cooperating Phantom operations, not arbitrary same-user writers |
+| Init review admission | Before vault provisioning, init retains the reviewed project root and exact dotenv/config leaf identity, bytes, and permissions; after locking it revalidates root and leaf snapshots before mutation | Source and deterministic decoy-test evidence, not a native credential-store run |
 | Vault/project lock order | Vault/application authority is resolved before the project lock; stable root identity and exact config are revalidated afterward | Source and concurrency-test evidence, not native scheduler or credential-store acceptance |
-| Effect status | Durable completion is distinct from `CommittedButUncertain` (**Partial**) after a namespace effect but failed durability/verification | Partial outcomes require operator reconciliation and are not safe blind retries |
+| Effect status | `CommittedVerifiedButDurabilityUncertain` is committed and exactly verified, with a value-free warning/receipt and no rollback or retry; `CommittedButUncertain` is **Partial** when verification or durability remains unresolved | Partial outcomes require operator reconciliation and are not safe blind retries |
+| Windows permissions before bytes | New private files/directories establish and verify a protected current-user DACL before content; replacements preserve and verify the reviewed exact DACL, inheritance state, and read-only state before bytes | Source-contract tests only; protected native Windows CI acceptance remains pending |
 | Created-parent rollback | Identity-bound receipts remove only exact, empty transaction-created directories after descendant handles are dropped | Unknown creation state without a receipt remains explicitly unresolved |
 
-Native credential-store source is likewise not acceptance. In particular,
-mapping the `keyring` backend to Windows Credential Manager does not prove that
-an exact Windows binary stored, read, prompted for, or removed a credential
-under a real user policy.
+Native credential-store and ACL source are likewise not acceptance. In
+particular, mapping the `keyring` backend to Windows Credential Manager and
+source-testing protected current-user DACL behavior do not prove that an exact
+Windows archive passed those operations under a real user policy. That evidence
+still requires protected native Windows CI against the exact candidate.
 
 Provider-grant support in source does not prove that a provider application is
 configured, consent completed, a credential accepted, renewal succeeded, or a

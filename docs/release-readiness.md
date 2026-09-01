@@ -36,7 +36,11 @@ A `v*` tag starts `.github/workflows/release.yml`. The current workflow:
 
 Third-party actions are pinned. Build jobs use read-only repository permissions;
 only the attestation job receives `id-token: write` and `attestations: write`,
-and only the release job receives `contents: write`.
+and only the release job receives `contents: write`. That write-capable job
+targets the GitHub `release` environment. Repository administrators must
+configure that environment with a required human reviewer before creating a
+release tag; naming an environment in workflow source does not create a review
+rule by itself.
 
 The build matrix may cross-compile, but it cannot authorize attestation directly.
 A separate six-row native-acceptance matrix downloads each exact build artifact
@@ -51,6 +55,31 @@ does not perform macOS notarization or Windows Authenticode signing. Those remai
 separate gates. Repository settings must also allow Actions OIDC/attestation
 writes and should protect the tag path; workflow source cannot activate those
 controls.
+
+Before creating a `v*` tag, verify both external controls directly: the
+`release` environment has a required reviewer and the tag ruleset restricts
+creation as well as update and deletion. A ruleset that protects only existing
+tags does not govern who may start a new release run. If either control is
+missing, the candidate is not publication-ready even when every source gate is
+green.
+
+### Live GitHub governance snapshot — 2026-09-01
+
+The repository settings were inspected separately from workflow source on
+2026-09-01. At that point:
+
+- the `release` environment required a reviewer and limited deployments to
+  tags matching `v*`;
+- immutable tag ruleset `21903888` denied update, deletion, and non-fast-forward
+  changes with no bypass actor; and
+- separate creation ruleset `21997435` governed tag creation with a Mason-only
+  bypass.
+
+The creation bypass cannot bypass immutability: update, deletion, and
+non-fast-forward operations are evaluated by the separate no-bypass ruleset.
+This is a dated operator observation of live repository settings, not a source
+guarantee, authorization to create a tag, or evidence that a tag/release exists.
+Requery both rulesets and the environment immediately before any release.
 
 ## Source-candidate gates
 
@@ -84,6 +113,11 @@ The tag path always runs the web gates, not only when `apps/web` changed. The
 workflow downloads cargo-deny and Gitleaks at fixed versions and verifies their
 release-archive hashes before use. Record ignored, skipped, unavailable, and
 externally blocked checks rather than treating them as passed.
+
+Protected native Windows CI must exercise the exact candidate's no-follow,
+identity, current-user DACL establishment/preservation, pre-byte permission
+ordering, and both anchored effect outcomes. Source-contract tests and workflow
+configuration do not establish that native acceptance.
 
 Provider-grant changes must preserve the 0.7.4 universal denial before provider
 credential lookup and network access. Exact `cfg(test)` mocks prove only local
