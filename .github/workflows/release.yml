@@ -450,6 +450,10 @@ jobs:
     name: Create Release
     needs: attest
     runs-on: ubuntu-latest
+    # Configure this environment in GitHub with a required human reviewer.
+    # Tags may build and attest, but publication keeps a separate approval gate.
+    environment:
+      name: release
     # Release job needs write to publish the Release and upload assets.
     permissions:
       contents: write
