@@ -45,22 +45,30 @@ fn safe_project_component(project_id: &str) -> String {
         .collect()
 }
 
-fn project_lock_path(project_id: &str) -> PathBuf {
-    metadata_dir()
+fn project_lock_relative_path(project_id: &str) -> PathBuf {
+    Path::new("metadata")
         .join("locks")
         .join(format!("{}.lock", safe_project_component(project_id)))
 }
 
-fn acquire_project_lock_at(project_id: &str, path: &Path) -> Result<ProjectLock> {
+fn acquire_project_lock_at(
+    project_id: &str,
+    trusted_anchor: &Path,
+    relative_path: &Path,
+) -> Result<ProjectLock> {
     let process = process_lock_for(project_id);
-    let file =
-        crate::lock_file::acquire_exclusive_lock_file(path, "per-project keychain lock", true)
-            .map_err(|error| {
-                PhantomError::VaultError(format!(
-                    "Cannot acquire per-project keychain lock {}: {error}",
-                    path.display()
-                ))
-            })?;
+    let file = crate::lock_file::acquire_exclusive_lock_file(
+        trusted_anchor,
+        relative_path,
+        "per-project keychain lock",
+        true,
+    )
+    .map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Cannot acquire per-project keychain lock {}: {error}",
+            trusted_anchor.join(relative_path).display()
+        ))
+    })?;
     Ok(ProjectLock {
         _process: process,
         _file: file,
@@ -68,7 +76,11 @@ fn acquire_project_lock_at(project_id: &str, path: &Path) -> Result<ProjectLock>
 }
 
 pub(crate) fn acquire_project_lock(project_id: &str) -> Result<ProjectLock> {
-    acquire_project_lock_at(project_id, &project_lock_path(project_id))
+    acquire_project_lock_at(
+        project_id,
+        &app_data_dir(),
+        &project_lock_relative_path(project_id),
+    )
 }
 
 /// 16-hex-char (64-bit) SHA-256 digest of `{project_id}:{name}`. Used as the
@@ -101,15 +113,18 @@ pub struct KeychainVault {
 // timestamps and policy config — no secret values — so it is safe to store
 // as plaintext on disk (it is no more sensitive than a .phantom.toml).
 
-fn metadata_dir() -> PathBuf {
+fn app_data_dir() -> PathBuf {
     directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
-        .map(|d| d.data_dir().join("metadata"))
+        .map(|d| d.data_dir().to_path_buf())
         .unwrap_or_else(|| {
             dirs::home_dir()
                 .unwrap_or_else(std::env::temp_dir)
                 .join(".phantom")
-                .join("metadata")
         })
+}
+
+fn metadata_dir() -> PathBuf {
+    app_data_dir().join("metadata")
 }
 
 fn metadata_path(project_id: &str) -> PathBuf {
@@ -1162,18 +1177,20 @@ mod tests {
         const WRITERS: usize = 24;
         let directory = tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
-        let lock_path = root.join("locks").join("project.lock");
+        let lock_relative = PathBuf::from("locks/project.lock");
         let sidecar_path = root.join("project.meta.json");
         let barrier = Arc::new(Barrier::new(WRITERS));
         let mut workers = Vec::new();
 
         for writer in 0..WRITERS {
             let barrier = Arc::clone(&barrier);
-            let lock_path = lock_path.clone();
+            let root = root.clone();
+            let lock_relative = lock_relative.clone();
             let sidecar_path = sidecar_path.clone();
             workers.push(std::thread::spawn(move || {
                 barrier.wait();
-                let _lock = acquire_project_lock_at("concurrent-project", &lock_path).unwrap();
+                let _lock =
+                    acquire_project_lock_at("concurrent-project", &root, &lock_relative).unwrap();
                 let mut map: BTreeMap<String, usize> =
                     load_sidecar_map(&sidecar_path, "test metadata").unwrap();
                 // Enlarge the unprotected race window. With the production
@@ -1212,13 +1229,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempdir().unwrap();
-        let path = directory
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("locks")
-            .join("owner-only.lock");
-        let _lock = acquire_project_lock_at("owner-only", &path).unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("locks").join("owner-only.lock");
+        let _lock =
+            acquire_project_lock_at("owner-only", &root, Path::new("locks/owner-only.lock"))
+                .unwrap();
         let lock_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         let parent_mode = std::fs::metadata(path.parent().unwrap())
             .unwrap()
@@ -1231,20 +1246,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn project_lock_rejects_permissive_existing_parent_without_chmod() {
+    fn project_lock_repairs_permissive_legacy_parent_through_handle() {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempdir().unwrap();
-        let parent = directory.path().canonicalize().unwrap().join("locks");
+        let root = directory.path().canonicalize().unwrap();
+        let parent = root.join("locks");
         std::fs::create_dir(&parent).unwrap();
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = parent.join("owner-only.lock");
 
-        assert!(acquire_project_lock_at("owner-only", &path).is_err());
-        assert!(!path.exists());
+        let _lock =
+            acquire_project_lock_at("owner-only", &root, Path::new("locks/owner-only.lock"))
+                .unwrap();
+        assert!(path.exists());
         assert_eq!(
             std::fs::metadata(parent).unwrap().permissions().mode() & 0o777,
-            0o755
+            0o700
         );
     }
 

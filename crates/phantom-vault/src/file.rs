@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 /// ChaCha20-Poly1305 encrypted file vault backend.
 /// Uses shared crypto module for encryption/decryption.
 pub struct FileVault {
+    base_anchor: PathBuf,
     vault_path: PathBuf,
     passphrase: String,
 }
@@ -28,13 +29,29 @@ struct VaultData {
 }
 
 impl FileVault {
-    /// Create a new encrypted file vault.
+    /// Create a new encrypted file vault beneath an explicitly authorized base.
+    ///
+    /// `base_dir` is a trust boundary, not untrusted project input. Phantom may
+    /// create it and resolves configured symlinks/junctions in it so OS-managed
+    /// aliases and XDG/home redirections work. All Phantom-owned descendants
+    /// below the resolved base (including `vaults`) are checked separately and
+    /// may not be links or reparse points. This constructor does not pin a
+    /// caller-controlled anchor against later replacement or make vault payload
+    /// I/O descriptor-relative; callers must retain authority over `base_dir`.
     pub fn new(base_dir: &Path, project_id: &str, passphrase: String) -> Result<Self> {
         validate_project_id(project_id)?;
-        let vault_dir = base_dir.join("vaults");
-        crate::lock_file::ensure_safe_directory(&vault_dir, "encrypted vault directory", false)?;
+        let vault_dir = crate::lock_file::ensure_safe_directory(
+            base_dir,
+            Path::new("vaults"),
+            "encrypted vault directory",
+            false,
+        )?;
+        let base_anchor = vault_dir.parent().ok_or_else(|| {
+            PhantomError::VaultError("Encrypted vault directory has no trusted anchor".into())
+        })?;
 
         let vault = Self {
+            base_anchor: base_anchor.to_path_buf(),
             vault_path: vault_dir.join(format!("{project_id}.vault")),
             passphrase,
         };
@@ -104,9 +121,19 @@ impl FileVault {
     /// advisory lock on it.  The returned `File` MUST be kept alive for the
     /// duration of the critical section — dropping it releases the lock.
     fn lock_file(&self) -> Result<std::fs::File> {
-        let lock_path = self.vault_path.with_extension("lock");
-        crate::lock_file::acquire_exclusive_lock_file(&lock_path, "encrypted vault lock", false)
-            .map_err(|e| PhantomError::VaultError(format!("Cannot acquire vault lock: {e}")))
+        let lock_name = self
+            .vault_path
+            .with_extension("lock")
+            .file_name()
+            .ok_or_else(|| PhantomError::VaultError("Vault lock path has no file name".into()))?
+            .to_owned();
+        crate::lock_file::acquire_exclusive_lock_file(
+            &self.base_anchor,
+            &Path::new("vaults").join(lock_name),
+            "encrypted vault lock",
+            false,
+        )
+        .map_err(|e| PhantomError::VaultError(format!("Cannot acquire vault lock: {e}")))
     }
 
     fn save(&self, data: &VaultData) -> Result<()> {
@@ -450,7 +477,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn constructor_rejects_symlinked_base_without_creating_in_target() {
+    fn constructor_accepts_explicit_symlinked_base_anchor() {
         use std::os::unix::fs::symlink;
 
         let directory = TempDir::new().unwrap();
@@ -460,8 +487,24 @@ mod tests {
         let redirected = root.join("redirected");
         symlink(&target, &redirected).unwrap();
 
-        assert!(FileVault::new(&redirected, "test-project", "passphrase".into()).is_err());
-        assert!(!target.join("vaults").exists());
+        FileVault::new(&redirected, "test-project", "passphrase".into())
+            .expect("configured base aliases are trusted anchors");
+        assert!(target.join("vaults").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn constructor_rejects_symlinked_owned_vault_directory() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TempDir::new().unwrap();
+        let root = canonical_temp_root(&directory);
+        let target = root.join("owner-state");
+        std::fs::create_dir(&target).unwrap();
+        symlink(&target, root.join("vaults")).unwrap();
+
+        assert!(FileVault::new(&root, "test-project", "passphrase".into()).is_err());
+        assert!(std::fs::read_dir(&target).unwrap().next().is_none());
     }
 
     #[cfg(unix)]

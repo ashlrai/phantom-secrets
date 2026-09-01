@@ -1,9 +1,16 @@
 //! Safe acquisition for predictable vault lock paths.
 //!
 //! Lock files are attacker-interesting because their names are stable and the
-//! caller may repair their permissions. This module validates every existing
-//! directory component, refuses link aliases, and verifies that the pathname
-//! still identifies the locked handle before returning it.
+//! caller may repair their permissions. A caller supplies the trusted base
+//! directory selected by the OS or explicit configuration. Phantom resolves
+//! that anchor once (so supported aliases such as macOS `/var` work), then
+//! validates every Phantom-owned component beneath it, refuses link aliases,
+//! and verifies that the pathname still identifies the locked handle before
+//! returning it.
+//!
+//! This helper does not pin a configured/OS anchor against later replacement,
+//! and it does not make vault payload or keychain-sidecar I/O descriptor
+//! relative. Those broader descendant-path races require an anchored I/O API.
 
 use fs2::FileExt;
 use phantom_core::error::{PhantomError, Result};
@@ -13,12 +20,33 @@ fn vault_error(message: impl Into<String>) -> PhantomError {
     PhantomError::VaultError(message.into())
 }
 
-fn absolute_without_canonicalizing(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
+fn trusted_canonical_anchor(path: &Path, label: &str) -> Result<PathBuf> {
+    // The anchor is an explicit authority boundary: ProjectDirs, HOME/XDG, or
+    // a caller-selected vault base. It may itself be an OS-managed alias or a
+    // configured symlink/junction, so do not apply Phantom-owned no-follow
+    // rules until after it has been resolved. This is not an ancestor-swap
+    // defense: callers must never derive the anchor from untrusted project
+    // input. Descriptor-relative data I/O is a separate boundary.
+    std::fs::create_dir_all(path).map_err(|error| {
+        vault_error(format!(
+            "Cannot create trusted {label} anchor {}: {error}",
+            path.display()
+        ))
+    })?;
+    let canonical = path.canonicalize().map_err(|error| {
+        vault_error(format!(
+            "Cannot resolve trusted {label} anchor {}: {error}",
+            path.display()
+        ))
+    })?;
+    let metadata = std::fs::metadata(&canonical)?;
+    if !metadata.is_dir() {
+        return Err(vault_error(format!(
+            "Trusted {label} anchor is not a directory: {}",
+            canonical.display()
+        )));
     }
+    Ok(canonical)
 }
 
 fn directory_is_unsafe(metadata: &std::fs::Metadata) -> bool {
@@ -48,21 +76,149 @@ fn create_directory_component(path: &Path) -> std::io::Result<()> {
     builder.create(path)
 }
 
-/// Create missing components one at a time and reject every unsafe existing
-/// ancestor. Existing directories are never chmodded: a permissive keychain
-/// lock directory is an authority/configuration error, not something Phantom
-/// may silently mutate through a pathname.
+fn validate_owned_relative_path(path: &Path, label: &str) -> Result<()> {
+    use std::path::Component;
+
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(vault_error(format!(
+            "{label} must be a non-empty relative path without traversal: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn normalize_private_directory(path: &Path, label: &str) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    let before = std::fs::symlink_metadata(path)?;
+    if directory_is_unsafe(&before) {
+        return Err(vault_error(format!(
+            "{label} private directory is not a real directory: {}",
+            path.display()
+        )));
+    }
+
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| {
+            vault_error(format!(
+                "Cannot open {label} private directory {}: {error}",
+                path.display()
+            ))
+        })?;
+    let opened = directory.metadata()?;
+    if !opened.is_dir() || before.dev() != opened.dev() || before.ino() != opened.ino() {
+        return Err(vault_error(format!(
+            "{label} private directory changed before it could be secured: {}",
+            path.display()
+        )));
+    }
+
+    // Repair legacy 0755 directories through the already-validated handle.
+    // Pathname chmod is deliberately forbidden here because a concurrent
+    // rename could otherwise redirect the permission change to unrelated data.
+    directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+    let secured = directory.metadata()?;
+    if !secured.is_dir() || secured.permissions().mode() & 0o777 != 0o700 {
+        return Err(vault_error(format!(
+            "{label} private directory permissions could not be secured: {}",
+            path.display()
+        )));
+    }
+
+    let current = std::fs::symlink_metadata(path)?;
+    if directory_is_unsafe(&current)
+        || current.dev() != secured.dev()
+        || current.ino() != secured.ino()
+    {
+        return Err(vault_error(format!(
+            "{label} private directory changed while it was secured: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn normalize_private_directory(path: &Path, label: &str) -> Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let open_directory = || {
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        options.open(path)
+    };
+    let directory = open_directory().map_err(|error| {
+        vault_error(format!(
+            "Cannot open {label} private directory {}: {error}",
+            path.display()
+        ))
+    })?;
+    let opened = windows_file_information(&directory, label)?;
+    if opened.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(vault_error(format!(
+            "{label} private directory is not a real directory: {}",
+            path.display()
+        )));
+    }
+
+    let current = open_directory()?;
+    let current = windows_file_information(&current, label)?;
+    if opened.dwVolumeSerialNumber != current.dwVolumeSerialNumber
+        || opened.nFileIndexHigh != current.nFileIndexHigh
+        || opened.nFileIndexLow != current.nFileIndexLow
+    {
+        return Err(vault_error(format!(
+            "{label} private directory changed while it was verified: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn normalize_private_directory(path: &Path, label: &str) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if directory_is_unsafe(&metadata) {
+        return Err(vault_error(format!(
+            "{label} private directory is not a real directory: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Resolve the trusted base once, then create missing Phantom-owned components
+/// one at a time and reject every unsafe existing component below that anchor.
 pub(crate) fn ensure_safe_directory(
-    path: &Path,
+    trusted_anchor: &Path,
+    owned_relative: &Path,
     label: &str,
     require_private_directory: bool,
 ) -> Result<PathBuf> {
-    let absolute = absolute_without_canonicalizing(path)?;
-    let mut components = absolute.ancestors().collect::<Vec<_>>();
-    components.reverse();
+    validate_owned_relative_path(owned_relative, label)?;
+    let anchor = trusted_canonical_anchor(trusted_anchor, label)?;
+    let absolute = anchor.join(owned_relative);
+    let mut component = anchor;
 
-    for component in components {
-        match std::fs::symlink_metadata(component) {
+    for owned_component in owned_relative.components() {
+        component.push(owned_component.as_os_str());
+        match std::fs::symlink_metadata(&component) {
             Ok(metadata) => {
                 if directory_is_unsafe(&metadata) {
                     return Err(vault_error(format!(
@@ -72,13 +228,13 @@ pub(crate) fn ensure_safe_directory(
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match create_directory_component(component) {
+                match create_directory_component(&component) {
                     Ok(()) => {}
                     Err(create_error)
                         if create_error.kind() == std::io::ErrorKind::AlreadyExists => {}
                     Err(create_error) => return Err(create_error.into()),
                 }
-                let metadata = std::fs::symlink_metadata(component)?;
+                let metadata = std::fs::symlink_metadata(&component)?;
                 if directory_is_unsafe(&metadata) {
                     return Err(vault_error(format!(
                         "{label} ancestor became unsafe while it was created: {}",
@@ -91,17 +247,7 @@ pub(crate) fn ensure_safe_directory(
     }
 
     if require_private_directory {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::symlink_metadata(&absolute)?.permissions().mode() & 0o777;
-            if mode & 0o077 != 0 {
-                return Err(vault_error(format!(
-                    "{label} directory is accessible by group or other users: {}",
-                    absolute.display()
-                )));
-            }
-        }
+        normalize_private_directory(&absolute, label)?;
     }
 
     Ok(absolute)
@@ -266,15 +412,30 @@ fn ensure_path_identity(file: &std::fs::File, path: &Path, label: &str) -> Resul
 }
 
 pub(crate) fn acquire_exclusive_lock_file(
-    path: &Path,
+    trusted_anchor: &Path,
+    owned_relative_path: &Path,
     label: &str,
     require_private_parent: bool,
 ) -> Result<std::fs::File> {
-    let absolute = absolute_without_canonicalizing(path)?;
-    let parent = absolute
+    validate_owned_relative_path(owned_relative_path, label)?;
+    let relative_parent = owned_relative_path
         .parent()
         .ok_or_else(|| vault_error(format!("{label} path has no parent")))?;
-    ensure_safe_directory(parent, label, require_private_parent)?;
+    if relative_parent.as_os_str().is_empty() {
+        return Err(vault_error(format!(
+            "{label} must live in a Phantom-owned directory"
+        )));
+    }
+    let parent = ensure_safe_directory(
+        trusted_anchor,
+        relative_parent,
+        label,
+        require_private_parent,
+    )?;
+    let file_name = owned_relative_path
+        .file_name()
+        .ok_or_else(|| vault_error(format!("{label} path has no file name")))?;
+    let absolute = parent.join(file_name);
 
     match std::fs::symlink_metadata(&absolute) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
@@ -308,7 +469,17 @@ pub(crate) fn acquire_exclusive_lock_file(
     // Detect path or ancestor substitution observable after the lock was
     // acquired. The locked handle remains alive on every error path until the
     // function returns, preventing a cooperating writer from entering midway.
-    ensure_safe_directory(parent, label, require_private_parent)?;
+    let verified_parent = ensure_safe_directory(
+        trusted_anchor,
+        relative_parent,
+        label,
+        require_private_parent,
+    )?;
+    if verified_parent != parent {
+        return Err(vault_error(format!(
+            "{label} trusted anchor changed while the lock was acquired"
+        )));
+    }
     ensure_regular_single_link(&file, &absolute, label)?;
     ensure_path_identity(&file, &absolute, label)?;
     Ok(file)
@@ -326,6 +497,10 @@ mod tests {
     #[test]
     fn windows_contract_checks_reparse_links_and_handle_identity() {
         let source = include_str!("lock_file.rs");
+        assert!(source.contains("trusted_canonical_anchor"));
+        assert!(source.contains("FILE_FLAG_BACKUP_SEMANTICS"));
+        assert!(source.contains("FILE_READ_ATTRIBUTES"));
+        assert!(source.contains("FILE_SHARE_DELETE"));
         assert!(source.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
         assert!(source.contains("FILE_ATTRIBUTE_REPARSE_POINT"));
         assert!(source.contains("GetFileInformationByHandle"));
@@ -333,6 +508,15 @@ mod tests {
         assert!(source.contains("nFileIndexHigh"));
         assert!(source.contains("nFileIndexLow"));
         assert!(source.contains("nNumberOfLinks"));
+    }
+
+    #[test]
+    fn owned_path_cannot_escape_the_trusted_anchor() {
+        let directory = tempdir().unwrap();
+        let root = canonical_temp_root(&directory);
+        for relative in [Path::new("../owner.lock"), Path::new("/owner.lock")] {
+            assert!(acquire_exclusive_lock_file(&root, relative, "test lock", true).is_err());
+        }
     }
 
     #[cfg(unix)]
@@ -347,9 +531,51 @@ mod tests {
         let redirected = root.join("redirected");
         symlink(&target, &redirected).unwrap();
 
-        let lock = redirected.join("nested").join("owner.lock");
-        assert!(acquire_exclusive_lock_file(&lock, "test lock", false).is_err());
+        let relative = Path::new("redirected").join("nested").join("owner.lock");
+        assert!(acquire_exclusive_lock_file(&root, &relative, "test lock", false).is_err());
         assert!(!target.join("nested").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trusted_symlink_anchor_is_resolved_before_owned_checks() {
+        use std::os::unix::fs::symlink;
+
+        let container = tempdir().unwrap();
+        let root = canonical_temp_root(&container);
+        let target = root.join("configured-data");
+        std::fs::create_dir(&target).unwrap();
+        let configured_anchor = root.join("xdg-data");
+        symlink(&target, &configured_anchor).unwrap();
+
+        let _guard = acquire_exclusive_lock_file(
+            &configured_anchor,
+            Path::new("transaction-locks/owner.lock"),
+            "test lock",
+            true,
+        )
+        .unwrap();
+        assert!(target.join("transaction-locks/owner.lock").is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_var_alias_is_a_supported_trusted_anchor() {
+        let directory = tempdir().unwrap();
+        let canonical = directory.path().canonicalize().unwrap();
+        let canonical_text = canonical.to_string_lossy();
+        let Some(alias_suffix) = canonical_text.strip_prefix("/private/var/") else {
+            return;
+        };
+        let var_alias = Path::new("/var").join(alias_suffix);
+        let _guard = acquire_exclusive_lock_file(
+            &var_alias,
+            Path::new("phantom-owned/owner.lock"),
+            "test lock",
+            true,
+        )
+        .unwrap();
+        assert!(canonical.join("phantom-owned/owner.lock").is_file());
     }
 
     #[cfg(unix)]
@@ -362,10 +588,18 @@ mod tests {
         let target = root.join("owner-state");
         std::fs::write(&target, b"preserve").unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let lock = root.join("owner.lock");
+        let locks = root.join("locks");
+        std::fs::create_dir(&locks).unwrap();
+        let lock = locks.join("owner.lock");
         symlink(&target, &lock).unwrap();
 
-        assert!(acquire_exclusive_lock_file(&lock, "test lock", false).is_err());
+        assert!(acquire_exclusive_lock_file(
+            &root,
+            Path::new("locks/owner.lock"),
+            "test lock",
+            false
+        )
+        .is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"preserve");
         assert_eq!(
             std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
@@ -383,10 +617,18 @@ mod tests {
         let target = root.join("owner-state");
         std::fs::write(&target, b"preserve").unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let lock = root.join("owner.lock");
+        let locks = root.join("locks");
+        std::fs::create_dir(&locks).unwrap();
+        let lock = locks.join("owner.lock");
         std::fs::hard_link(&target, &lock).unwrap();
 
-        assert!(acquire_exclusive_lock_file(&lock, "test lock", false).is_err());
+        assert!(acquire_exclusive_lock_file(
+            &root,
+            Path::new("locks/owner.lock"),
+            "test lock",
+            false
+        )
+        .is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"preserve");
         assert_eq!(
             std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
@@ -400,11 +642,16 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempdir().unwrap();
-        let lock = canonical_temp_root(&dir).join("owner.lock");
+        let root = canonical_temp_root(&dir);
+        let locks = root.join("locks");
+        std::fs::create_dir(&locks).unwrap();
+        let lock = locks.join("owner.lock");
         std::fs::write(&lock, b"").unwrap();
         std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        let _guard = acquire_exclusive_lock_file(&lock, "test lock", false).unwrap();
+        let _guard =
+            acquire_exclusive_lock_file(&root, Path::new("locks/owner.lock"), "test lock", false)
+                .unwrap();
         assert_eq!(
             std::fs::metadata(&lock).unwrap().permissions().mode() & 0o777,
             0o600
@@ -415,16 +662,25 @@ mod tests {
     #[test]
     fn non_regular_lock_target_is_rejected() {
         let dir = tempdir().unwrap();
-        let lock = canonical_temp_root(&dir).join("owner.lock");
+        let root = canonical_temp_root(&dir);
+        let locks = root.join("locks");
+        std::fs::create_dir(&locks).unwrap();
+        let lock = locks.join("owner.lock");
         std::fs::create_dir(&lock).unwrap();
 
-        assert!(acquire_exclusive_lock_file(&lock, "test lock", false).is_err());
+        assert!(acquire_exclusive_lock_file(
+            &root,
+            Path::new("locks/owner.lock"),
+            "test lock",
+            false
+        )
+        .is_err());
         assert!(lock.is_dir());
     }
 
     #[cfg(unix)]
     #[test]
-    fn permissive_private_parent_is_rejected_without_mutation() {
+    fn permissive_legacy_private_parent_is_repaired_through_handle() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempdir().unwrap();
@@ -433,11 +689,17 @@ mod tests {
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
         let lock = parent.join("owner.lock");
 
-        assert!(acquire_exclusive_lock_file(&lock, "test lock", true).is_err());
-        assert!(!lock.exists());
+        let _guard = acquire_exclusive_lock_file(
+            &canonical_temp_root(&dir),
+            Path::new("locks/owner.lock"),
+            "test lock",
+            true,
+        )
+        .unwrap();
+        assert!(lock.exists());
         assert_eq!(
             std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
-            0o755
+            0o700
         );
     }
 
@@ -449,7 +711,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let parent = canonical_temp_root(&dir).join("metadata").join("locks");
         let lock = parent.join("owner.lock");
-        let _guard = acquire_exclusive_lock_file(&lock, "test lock", true).unwrap();
+        let _guard = acquire_exclusive_lock_file(
+            &canonical_temp_root(&dir),
+            Path::new("metadata/locks/owner.lock"),
+            "test lock",
+            true,
+        )
+        .unwrap();
 
         assert_eq!(
             std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777,

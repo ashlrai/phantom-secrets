@@ -32,7 +32,7 @@ fn process_lock_for(identity: &Path) -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn lock_root() -> PathBuf {
+fn lock_anchor() -> PathBuf {
     // ProjectDirs and home_dir consult process-wide environment state. Tests in
     // other Phantom crates temporarily override HOME, so take the same shared
     // mutex they use while resolving the complete root. The guard is released
@@ -42,16 +42,15 @@ fn lock_root() -> PathBuf {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
-        .map(|dirs| dirs.data_dir().join("transaction-locks"))
+        .map(|dirs| dirs.data_dir().to_path_buf())
         .unwrap_or_else(|| {
             dirs::home_dir()
                 .unwrap_or_else(std::env::temp_dir)
                 .join(".phantom")
-                .join("transaction-locks")
         })
 }
 
-fn lock_path_at(project_dir: &Path, root: &Path) -> Result<(PathBuf, PathBuf)> {
+fn lock_path_at(project_dir: &Path, anchor: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
     let canonical = project_dir.canonicalize().map_err(|error| {
         PhantomError::VaultError(format!(
             "Cannot resolve project directory {} for transaction locking: {error}",
@@ -67,26 +66,35 @@ fn lock_path_at(project_dir: &Path, root: &Path) -> Result<(PathBuf, PathBuf)> {
     let mut digest = Sha256::new();
     digest.update(canonical.as_os_str().to_string_lossy().as_bytes());
     let name = hex::encode(digest.finalize());
-    Ok((canonical, root.join(format!("{name}.lock"))))
+    Ok((
+        canonical,
+        anchor.to_path_buf(),
+        Path::new("transaction-locks").join(format!("{name}.lock")),
+    ))
 }
 
-fn lock_path(project_dir: &Path) -> Result<(PathBuf, PathBuf)> {
-    lock_path_at(project_dir, &lock_root())
+fn lock_path(project_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    lock_path_at(project_dir, &lock_anchor())
 }
 
 /// Acquire the process-local and cross-process lock for one canonical project.
 pub fn acquire_project_transaction_lock(project_dir: &Path) -> Result<ProjectTransactionLock> {
-    let (identity, path) = lock_path(project_dir)?;
-    acquire_project_transaction_lock_at(identity, path)
+    let (identity, anchor, relative_path) = lock_path(project_dir)?;
+    acquire_project_transaction_lock_at(identity, anchor, relative_path)
 }
 
 fn acquire_project_transaction_lock_at(
     identity: PathBuf,
-    path: PathBuf,
+    anchor: PathBuf,
+    relative_path: PathBuf,
 ) -> Result<ProjectTransactionLock> {
     let process = process_lock_for(&identity);
-    let file =
-        crate::lock_file::acquire_exclusive_lock_file(&path, "project transaction lock", true)?;
+    let file = crate::lock_file::acquire_exclusive_lock_file(
+        &anchor,
+        &relative_path,
+        "project transaction lock",
+        true,
+    )?;
     Ok(ProjectTransactionLock {
         _process: process,
         _file: file,
@@ -156,15 +164,12 @@ mod tests {
         std::fs::create_dir(&owner).unwrap();
         let sentinel = owner.join("sentinel");
         std::fs::write(&sentinel, b"owner-state").unwrap();
-        let redirected = container
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("transaction-locks");
+        let anchor = container.path().canonicalize().unwrap();
+        let redirected = anchor.join("transaction-locks");
         symlink(&owner, &redirected).unwrap();
-        let (identity, path) = lock_path_at(project.path(), &redirected).unwrap();
+        let (identity, anchor, relative_path) = lock_path_at(project.path(), &anchor).unwrap();
 
-        let error = acquire_project_transaction_lock_at(identity, path)
+        let error = acquire_project_transaction_lock_at(identity, anchor, relative_path)
             .err()
             .expect("symlinked lock root must be rejected");
         assert!(error.to_string().contains("ancestor"));
@@ -182,10 +187,12 @@ mod tests {
         let root = lock_root.path().canonicalize().unwrap();
         let victim = root.join("owner-state");
         std::fs::write(&victim, b"preserve").unwrap();
-        let (identity, path) = lock_path_at(project.path(), &root).unwrap();
+        let (identity, anchor, relative_path) = lock_path_at(project.path(), &root).unwrap();
+        std::fs::create_dir(root.join("transaction-locks")).unwrap();
+        let path = root.join(&relative_path);
         symlink(&victim, &path).unwrap();
 
-        assert!(acquire_project_transaction_lock_at(identity, path).is_err());
+        assert!(acquire_project_transaction_lock_at(identity, anchor, relative_path).is_err());
         assert_eq!(std::fs::read(&victim).unwrap(), b"preserve");
     }
 
@@ -200,10 +207,12 @@ mod tests {
         let victim = root.join("owner-state");
         std::fs::write(&victim, b"preserve").unwrap();
         std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let (identity, path) = lock_path_at(project.path(), &root).unwrap();
+        let (identity, anchor, relative_path) = lock_path_at(project.path(), &root).unwrap();
+        std::fs::create_dir(root.join("transaction-locks")).unwrap();
+        let path = root.join(&relative_path);
         std::fs::hard_link(&victim, &path).unwrap();
 
-        assert!(acquire_project_transaction_lock_at(identity, path).is_err());
+        assert!(acquire_project_transaction_lock_at(identity, anchor, relative_path).is_err());
         assert_eq!(std::fs::read(&victim).unwrap(), b"preserve");
         assert_eq!(
             std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
