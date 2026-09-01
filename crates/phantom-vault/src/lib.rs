@@ -2,14 +2,16 @@ pub mod crypto;
 pub mod file;
 pub mod init_transaction;
 pub mod keychain;
+pub mod managed_remove;
 pub mod metadata;
 pub mod shadowing;
 pub mod traits;
 pub mod transaction_lock;
 
 pub use init_transaction::{commit_init, InitFile, InitReceipt, InitSecret, InitTransactionError};
+pub use managed_remove::ManagedRemovePlan;
 pub use metadata::{RotationPolicy, SecretMetadata};
-pub use traits::VaultBackend;
+pub use traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
 pub use transaction_lock::{acquire_project_transaction_lock, ProjectTransactionLock};
 
 use phantom_core::error::{PhantomError, Result};

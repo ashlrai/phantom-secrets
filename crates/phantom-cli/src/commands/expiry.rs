@@ -1,7 +1,7 @@
 //! `phantom secrets-expiring-soon` and `phantom expiry` — TTL-based expiry enforcement.
 //!
 //! `phantom secrets-expiring-soon` returns a table/JSON of secrets near expiry (default 7d).
-//! `phantom expiry set <KEY> <DAYS>` — store `expires_at` in `.phantom.toml`.
+//! `phantom expiry set <KEY> <DAYS>` — store lifecycle policy in vault metadata.
 //! `phantom expiry enforce [--fail-closed]` — exit 1 if any secret is expired.
 //! `phantom expiry rotate <KEY>` — deprecated compatibility token remap.
 
@@ -9,6 +9,8 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::io::{IsTerminal, Write};
 
 /// One entry in the expiry report.
 #[derive(Debug, Serialize)]
@@ -209,13 +211,10 @@ fn run_token_remap(expiring: &[ExpiryEntry], config: &PhantomConfig, json: bool)
 
 /// `phantom expiry set <KEY> <DAYS>` — mark a secret as expiring in N days from now.
 ///
-/// Stores `expires_at` (Unix timestamp) and `rotation_window` in the
-/// per-secret `[phantom.secrets.{name}]` section of `.phantom.toml`.
+/// Stores `expires_at` and the rotation policy atomically with the secret's
+/// existing lifecycle metadata.
 pub fn run_set(key: &str, days: u64) -> Result<()> {
-    use phantom_core::rotation_strategy::compute_new_expires_at;
-    use phantom_vault::metadata::now_secs;
-
-    let project_dir = std::env::current_dir()?;
+    let project_dir = std::env::current_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -225,32 +224,45 @@ pub fn run_set(key: &str, days: u64) -> Result<()> {
         );
     }
 
-    let mut config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-
-    let now = now_secs();
-    let expires_at = compute_new_expires_at(days, now);
-
-    // Ensure the secret exists in the vault (advisory; don't block if vault unavailable).
+    let config_before =
+        phantom_core::fs::read_regular_file(&config_path)?.context("Project is not initialized")?;
+    let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+        .context("Failed to load exact .phantom.toml snapshot")?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    match vault.list() {
-        Ok(names) if !names.contains(&key.to_string()) => {
-            eprintln!(
-                "{} Secret '{}' is not in the vault — storing expiry config anyway.",
-                "warn:".yellow().bold(),
-                key
-            );
-        }
-        _ => {}
+    if !vault
+        .exists(key)
+        .with_context(|| format!("Failed to check whether '{key}' exists in the vault"))?
+    {
+        anyhow::bail!(
+            "Secret '{}' not found in vault; no policy was written.",
+            key
+        );
     }
-
-    // Upsert the per-secret override.
-    let entry = config.phantom.secrets.entry(key.to_string()).or_default();
-    entry.expires_at = Some(expires_at);
-    entry.rotation_window = Some(days);
-
-    config
-        .save(&config_path)
-        .context("Failed to save .phantom.toml")?;
+    let before = vault
+        .get_metadata(key)
+        .context("Failed to snapshot expiry metadata")?;
+    require_trusted_terminal_expiry_set(
+        &project_dir,
+        config.local_project_id(),
+        &config_before,
+        key,
+        days,
+        before.as_ref(),
+    )?;
+    let mut after = before.clone().unwrap_or_default();
+    after.rotation_policy = Some(phantom_vault::RotationPolicy {
+        days_ttl: days,
+        auto_rotate: false,
+    });
+    let expires_at =
+        phantom_vault::metadata::now_secs().saturating_add(days.saturating_mul(86_400));
+    after.expires_at = Some(expires_at);
+    if !vault
+        .compare_and_swap_metadata(key, before.as_ref(), Some(after))
+        .context("Failed to atomically persist expiry policy")?
+    {
+        anyhow::bail!("Expiry metadata changed concurrently; no policy was written.");
+    }
 
     println!(
         "{} Set expiry for '{}': expires in {} day(s) (at Unix timestamp {}).",
@@ -261,6 +273,43 @@ pub fn run_set(key: &str, days: u64) -> Result<()> {
     );
     println!("  Run {} to check status.", "phantom expiry enforce".cyan());
 
+    Ok(())
+}
+
+fn require_trusted_terminal_expiry_set(
+    project_dir: &std::path::Path,
+    project_id: &str,
+    config_before: &[u8],
+    key: &str,
+    days: u64,
+    metadata_before: Option<&phantom_vault::SecretMetadata>,
+) -> Result<()> {
+    if !std::io::stdin().is_terminal()
+        || !std::io::stdout().is_terminal()
+        || !std::io::stderr().is_terminal()
+    {
+        anyhow::bail!("`phantom expiry set` requires attached stdin, stdout, and stderr terminals; no expiry policy was written");
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"phantom-expiry-set-v1\0");
+    digest.update(config_before);
+    digest.update(serde_json::to_vec(&metadata_before)?);
+    let challenge = format!(
+        "SET EXPIRY {} DAYS {} IN {} ID {} DIGEST {}",
+        key,
+        days,
+        project_dir.display(),
+        project_id,
+        hex::encode(digest.finalize())
+    );
+    eprintln!("This changes persistent local credential lifecycle policy.\nType this exact challenge to continue:\n{challenge}");
+    eprint!("> ");
+    std::io::stderr().flush()?;
+    let mut response = String::new();
+    std::io::stdin().read_line(&mut response)?;
+    if response.trim_end_matches(['\r', '\n']) != challenge {
+        anyhow::bail!("Expiry confirmation did not match exactly; no policy was written");
+    }
     Ok(())
 }
 
@@ -277,7 +326,7 @@ pub struct EnforceEntry {
 
 /// `phantom expiry enforce [--fail-closed]`
 ///
-/// Scans `.phantom.toml` per-secret `expires_at` fields and exits with status 1
+/// Scans vault lifecycle metadata and exits with status 1
 /// if ANY secret has passed its expiry timestamp. Intended for pre-commit hooks
 /// and CI pipelines to block deployments.
 ///
@@ -299,14 +348,18 @@ pub fn run_enforce(fail_closed: bool, json: bool) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let now = now_secs();
 
     let mut expired: Vec<EnforceEntry> = Vec::new();
     let mut ok_count: usize = 0;
     let mut no_expiry_count: usize = 0;
 
-    for (name, override_cfg) in &config.phantom.secrets {
-        match override_cfg.expires_at {
+    for (name, metadata) in vault
+        .list_with_metadata()
+        .context("Failed to read vault lifecycle metadata")?
+    {
+        match metadata.and_then(|metadata| metadata.expires_at) {
             None => {
                 no_expiry_count += 1;
             }
@@ -320,7 +373,7 @@ pub fn run_enforce(fail_closed: bool, json: bool) -> Result<()> {
                         _ => 0,
                     };
                     expired.push(EnforceEntry {
-                        name: name.clone(),
+                        name,
                         expires_at,
                         secs_overdue,
                         status: status.label(),
@@ -440,4 +493,29 @@ pub fn run_rotate(key: &str) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headless_expiry_consent_denies_without_write_authority() {
+        if !std::io::stdin().is_terminal()
+            || !std::io::stdout().is_terminal()
+            || !std::io::stderr().is_terminal()
+        {
+            let error = require_trusted_terminal_expiry_set(
+                std::path::Path::new("/tmp/project"),
+                "local-id",
+                b"config",
+                "API_KEY",
+                30,
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("no expiry policy was written"));
+        }
+    }
 }

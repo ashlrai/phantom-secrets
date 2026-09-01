@@ -6,6 +6,7 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use crate::tools::helpers::{
@@ -650,19 +651,52 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<RemoveSecretParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_remove_secret", params.confirm)?;
-        let (_config, vault) = self.load_config_and_vault()?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        let canonical_project = self.project_dir.canonicalize().map_err(|error| {
+            internal_err(format!("Failed to resolve project directory: {error}"))
+        })?;
+        let config_path = canonical_project.join(".phantom.toml");
+        let config_before = phantom_core::fs::read_regular_file(&config_path)
+            .map_err(|error| internal_err(format!("Failed to read config safely: {error}")))?
+            .ok_or_else(|| internal_err("Project is not initialized"))?;
+        let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+            .map_err(|error| internal_err(format!("Failed to parse exact config: {error}")))?;
+        let vault = phantom_vault::try_create_vault(config.local_project_id())
+            .map_err(|error| internal_err(format!("Failed to open vault: {error}")))?;
+        let plan = phantom_vault::ManagedRemovePlan::prepare(
+            &canonical_project,
+            config_before,
+            vault.as_ref(),
+            &params.name,
+        )
+        .map_err(|error| {
+            internal_err(format!(
+                "Removal preflight failed; no secret value was read and no state changed: {error}"
+            ))
+        })?;
+        let params_json = serde_json::to_string(&serde_json::json!({
+            "request": &params,
+            "canonical_project": plan.project_dir(),
+            "local_project_id": plan.local_project_id(),
+            "managed_dotenv": plan.dotenv_path(),
+            "before_digest": plan.before_digest(),
+        }))
+        .map_err(|error| internal_err(format!("Failed to bind removal approval: {error}")))?;
         require_approval_token(
             "phantom_remove_secret",
             params.approval_token.as_deref(),
             &params_json,
             &self.project_id(),
         )?;
-        vault
-            .delete(&params.name)
-            .map_err(|e| internal_err(format!("Failed to remove secret: {e}")))?;
+        plan.commit(vault.as_ref()).map_err(|error| {
+            internal_err(format!(
+                "Remove transaction failed; exact transaction-owned state was rolled back where verifiable: {error}"
+            ))
+        })?;
 
-        text_result(format!("Secret '{}' removed from vault.", params.name))
+        text_result(format!(
+            "Secret '{}' removed from vault, lifecycle config, and its exact managed-dotenv mapping in one transaction.",
+            params.name
+        ))
     }
 
     /// Rotate all phantom tokens.
@@ -3794,19 +3828,54 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<ValidateAllParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_validate_all", params.confirm)?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        let canonical_project = self.project_dir.canonicalize().map_err(|error| {
+            internal_err(format!("Failed to resolve project directory: {error}"))
+        })?;
+        let config_path = canonical_project.join(".phantom.toml");
+        let config_before = phantom_core::fs::read_regular_file(&config_path)
+            .map_err(|error| internal_err(format!("Failed to read config safely: {error}")))?
+            .ok_or_else(|| internal_err("Project is not initialized"))?;
+        let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+            .map_err(|error| internal_err(format!("Failed to parse exact config: {error}")))?;
+        let vault = phantom_vault::try_create_vault(config.local_project_id())
+            .map_err(|error| internal_err(format!("Failed to open vault: {error}")))?;
+        let mut names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+        names.sort();
+        let (names_digest, names_sample) = bounded_validation_name_plan(&names)?;
+        let mut metadata_before = std::collections::BTreeMap::new();
+        for name in &names {
+            metadata_before.insert(
+                name.clone(),
+                vault.get_validation_metadata_exact(name).map_err(|error| {
+                    internal_err(format!(
+                        "Failed to snapshot validation metadata for '{name}': {error}"
+                    ))
+                })?,
+            );
+        }
+        let jobs = params.jobs.clamp(1, 16);
+        let timeout_secs = 10_u64;
+        let config_digest = hex::encode(Sha256::digest(&config_before));
+        let params_json = serde_json::to_string(&serde_json::json!({
+            "request": &params,
+            "canonical_project": canonical_project,
+            "local_project_id": config.local_project_id(),
+            "config_sha256": config_digest,
+            "selected_name_count": names.len(),
+            "selected_names_sha256": names_digest,
+            "selected_name_sample": names_sample,
+            "jobs": jobs,
+            "timeout_secs": timeout_secs,
+        }))
+        .map_err(|error| internal_err(format!("Failed to bind validation approval: {error}")))?;
         require_approval_token(
             "phantom_validate_all",
             params.approval_token.as_deref(),
             &params_json,
             &self.project_id(),
         )?;
-        let (_config, vault) = self.load_config_and_vault()?;
-
-        let names = vault
-            .list()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
-
         if names.is_empty() {
             let out = serde_json::json!({
                 "total": 0,
@@ -3835,8 +3904,7 @@ impl PhantomMcpServer {
             ));
         }
 
-        let jobs = params.jobs.clamp(1, 16);
-        let timeout = std::time::Duration::from_secs(10);
+        let timeout = std::time::Duration::from_secs(timeout_secs);
         let validators = phantom_core::validator::default_validators();
 
         let report =
@@ -3844,8 +3912,9 @@ impl PhantomMcpServer {
 
         // Persist ValidationMetadata for each result so phantom_validate_secret
         // can answer status queries without re-running HTTP checks.
+        let mut metadata_changes = Vec::new();
         for entry in &report.entries {
-            let meta = match entry.status {
+            let replacement = match entry.status {
                 phantom_core::validator::ValidationStatus::Valid => {
                     phantom_core::validator::ValidationMetadata::mark_valid(&entry.validator)
                 }
@@ -3863,14 +3932,29 @@ impl PhantomMcpServer {
                 }
                 _ => continue,
             };
-            vault
-                .set_validation_metadata(&entry.name, meta)
-                .map_err(|e| {
+            metadata_changes.push(phantom_vault::ValidationMetadataCas {
+                name: entry.name.clone(),
+                expected: metadata_before.get(&entry.name).cloned().ok_or_else(|| {
                     internal_err(format!(
-                        "Validation completed but metadata persistence failed for '{}': {e}",
+                        "Validation completed without a metadata before-image for '{}'",
                         entry.name
                     ))
-                })?;
+                })?,
+                replacement: Some(replacement),
+            });
+        }
+        if !metadata_changes.is_empty()
+            && !vault
+                .compare_and_swap_validation_metadata_batch(&metadata_changes)
+                .map_err(|error| {
+                    internal_err(format!(
+                        "Validation completed but metadata did not persist atomically: {error}"
+                    ))
+                })?
+        {
+            return Err(internal_err(
+                "Validation completed but metadata changed concurrently; no validation metadata was committed",
+            ));
         }
 
         let out = serde_json::to_string_pretty(&report)
@@ -3896,27 +3980,45 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::validation_scheduler::{state_file_path, Schedule, SchedulerState};
 
-        let (config, _vault) = self.load_config_and_vault()?;
+        let canonical_project = self.project_dir.canonicalize().map_err(|error| {
+            internal_err(format!("Failed to resolve project directory: {error}"))
+        })?;
+        let config_path = canonical_project.join(".phantom.toml");
+        let config_before = phantom_core::fs::read_regular_file(&config_path)
+            .map_err(|error| internal_err(format!("Failed to read config safely: {error}")))?
+            .ok_or_else(|| internal_err("Project is not initialized"))?;
+        let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+            .map_err(|error| internal_err(format!("Failed to parse exact config: {error}")))?;
         let state_path = state_file_path(config.local_project_id());
-        let mut state = SchedulerState::load(&state_path).unwrap_or_default();
+        let (mut state, before) = SchedulerState::load_exact(&state_path)
+            .map_err(|e| internal_err(format!("Failed to read scheduler state safely: {e}")))?;
 
         // If an interval was provided, update the schedule.
         if let Some(ref interval_str) = params.interval {
             require_confirm("phantom_validation_schedule", params.confirm)?;
-            let params_json = serde_json::to_string(&params).unwrap_or_default();
+            let sched = Schedule::parse(interval_str).map_err(|e| {
+                crate::tools::helpers::invalid_params_err(format!("Invalid schedule interval: {e}"))
+            })?;
+            let params_json = serde_json::to_string(&serde_json::json!({
+                "request": &params,
+                "canonical_project": canonical_project,
+                "local_project_id": config.local_project_id(),
+                "config_sha256": hex::encode(Sha256::digest(&config_before)),
+                "state_path": state_path,
+                "state_before_sha256": before.as_ref().map(|bytes| hex::encode(Sha256::digest(bytes))),
+                "parsed_schedule": &sched,
+            }))
+            .map_err(|error| internal_err(format!("Failed to bind schedule approval: {error}")))?;
             require_approval_token(
                 "phantom_validation_schedule",
                 params.approval_token.as_deref(),
                 &params_json,
                 &self.project_id(),
             )?;
-            let sched = Schedule::parse(interval_str).map_err(|e| {
-                crate::tools::helpers::invalid_params_err(format!("Invalid schedule interval: {e}"))
-            })?;
             let description = sched.description();
             state.schedule = Some(sched);
             state
-                .save(&state_path)
+                .save_if_unchanged(&state_path, before.as_deref())
                 .map_err(|e| internal_err(format!("Failed to persist schedule: {e}")))?;
 
             return text_result(format!(
@@ -3956,9 +4058,18 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::validation_scheduler::{state_file_path, SchedulerState, MAX_HISTORY};
 
-        let (config, _vault) = self.load_config_and_vault()?;
+        let canonical_project = self.project_dir.canonicalize().map_err(|error| {
+            internal_err(format!("Failed to resolve project directory: {error}"))
+        })?;
+        let config_path = canonical_project.join(".phantom.toml");
+        let config_before = phantom_core::fs::read_regular_file(&config_path)
+            .map_err(|error| internal_err(format!("Failed to read config safely: {error}")))?
+            .ok_or_else(|| internal_err("Project is not initialized"))?;
+        let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+            .map_err(|error| internal_err(format!("Failed to parse exact config: {error}")))?;
         let state_path = state_file_path(config.local_project_id());
-        let state = SchedulerState::load(&state_path).unwrap_or_default();
+        let state = SchedulerState::load(&state_path)
+            .map_err(|error| internal_err(format!("Failed to read scheduler state: {error}")))?;
 
         let limit = params.limit.min(MAX_HISTORY);
         let entries: Vec<_> = state.history.iter().rev().take(limit).collect();
@@ -4275,17 +4386,9 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<ApplyExpiryPolicyParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_apply_expiry_policy", params.confirm)?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token(
-            "phantom_apply_expiry_policy",
-            params.approval_token.as_deref(),
-            &params_json,
-            &self.project_id(),
-        )?;
-
         use phantom_vault::metadata::VaultMode;
 
-        let (_config, vault) = self.load_config_and_vault()?;
+        let (config, vault) = self.load_config_and_vault()?;
         let now = phantom_vault::metadata::now_secs();
 
         let entries = vault
@@ -4295,6 +4398,7 @@ impl PhantomMcpServer {
         let mut demoted: Vec<serde_json::Value> = Vec::new();
         let mut promoted: Vec<serde_json::Value> = Vec::new();
         let mut skipped_count: usize = 0;
+        let mut changes = Vec::new();
 
         for (name, meta_opt) in &entries {
             let Some(meta) = meta_opt else {
@@ -4311,10 +4415,11 @@ impl PhantomMcpServer {
                 if rotated_after_expiry {
                     let mut new_meta = meta.clone();
                     new_meta.vault_mode = VaultMode::ReadWrite;
-                    vault
-                        .set_metadata(name, new_meta)
-                        .map_err(|e| internal_err(format!("Failed to promote {name}: {e}")))?;
-                    phantom_core::audit::log("secret.expiry_policy.promoted", Some(name));
+                    changes.push(phantom_vault::MetadataCas {
+                        name: name.clone(),
+                        expected: Some(meta.clone()),
+                        replacement: Some(new_meta),
+                    });
                     promoted.push(serde_json::json!({ "name": name }));
                     continue;
                 }
@@ -4327,10 +4432,11 @@ impl PhantomMcpServer {
                         let secs_overdue = now - exp;
                         let mut new_meta = meta.clone();
                         new_meta.vault_mode = VaultMode::ReadOnly;
-                        vault
-                            .set_metadata(name, new_meta)
-                            .map_err(|e| internal_err(format!("Failed to demote {name}: {e}")))?;
-                        phantom_core::audit::log("secret.expiry_policy.demoted", Some(name));
+                        changes.push(phantom_vault::MetadataCas {
+                            name: name.clone(),
+                            expected: Some(meta.clone()),
+                            replacement: Some(new_meta),
+                        });
                         demoted.push(serde_json::json!({
                             "name": name,
                             "expires_at": exp,
@@ -4342,6 +4448,61 @@ impl PhantomMcpServer {
             }
 
             skipped_count += 1;
+        }
+
+        let mut entry_names = entries
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        entry_names.sort();
+        let (names_digest, names_sample) = bounded_validation_name_plan(&entry_names)?;
+        let change_plan = changes
+            .iter()
+            .map(|change| {
+                serde_json::json!({
+                    "name": change.name,
+                    "expected": change.expected,
+                    "replacement": change.replacement,
+                })
+            })
+            .collect::<Vec<_>>();
+        let params_json = serde_json::to_string(&serde_json::json!({
+            "request": &params,
+            "local_project_id": config.local_project_id(),
+            "scan_time": now,
+            "entry_count": entry_names.len(),
+            "entry_names_sha256": names_digest,
+            "entry_name_sample": names_sample,
+            "changes": change_plan,
+        }))
+        .map_err(|error| internal_err(format!("Failed to bind expiry approval: {error}")))?;
+        require_approval_token(
+            "phantom_apply_expiry_policy",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
+
+        if !changes.is_empty()
+            && !vault
+                .compare_and_swap_metadata_batch(&changes)
+                .map_err(|error| {
+                    internal_err(format!("Expiry policy did not commit atomically: {error}"))
+                })?
+        {
+            return Err(internal_err(
+                "Expiry metadata changed concurrently; no promotion or demotion was committed",
+            ));
+        }
+        for entry in &demoted {
+            if let Some(name) = entry.get("name").and_then(|value| value.as_str()) {
+                phantom_core::audit::log("secret.expiry_policy.demoted", Some(name));
+            }
+        }
+        for entry in &promoted {
+            if let Some(name) = entry.get("name").and_then(|value| value.as_str()) {
+                phantom_core::audit::log("secret.expiry_policy.promoted", Some(name));
+            }
         }
 
         let total_scanned = entries.len();
@@ -4605,6 +4766,40 @@ fn copy_approval_params_json(
         }
     }))
     .map_err(|error| internal_err(format!("Failed to bind copy approval: {error}")))
+}
+
+fn bounded_validation_name_plan(names: &[String]) -> Result<(String, Vec<String>), McpError> {
+    const MAX_NAMES: usize = 4096;
+    const MAX_NAME_BYTES: usize = 128;
+    const MAX_TOTAL_BYTES: usize = MAX_NAMES * MAX_NAME_BYTES;
+    if names.len() > MAX_NAMES || names.iter().map(String::len).sum::<usize>() > MAX_TOTAL_BYTES {
+        return Err(invalid_params_err(
+            "validation name set is too large to authorize safely",
+        ));
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"phantom-validation-names-v1\0");
+    let mut previous: Option<&str> = None;
+    for name in names {
+        let mut bytes = name.bytes();
+        if name.is_empty()
+            || name.len() > MAX_NAME_BYTES
+            || !matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+            || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            || previous == Some(name.as_str())
+        {
+            return Err(invalid_params_err(
+                "vault contains a duplicate or unsafe name that cannot be authorized",
+            ));
+        }
+        digest.update((name.len() as u64).to_le_bytes());
+        digest.update(name.as_bytes());
+        previous = Some(name);
+    }
+    Ok((
+        hex::encode(digest.finalize()),
+        names.iter().take(10).cloned().collect(),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5063,6 +5258,16 @@ mod tests {
 
     /// Shared lock so that tests mutating HOME do not race each other.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn validation_name_plan_rejects_spoofing_and_unbounded_sets() {
+        assert!(bounded_validation_name_plan(&["SAFE\nSPOOF".into()]).is_err());
+        assert!(bounded_validation_name_plan(&["A".repeat(129)]).is_err());
+        assert!(bounded_validation_name_plan(&vec!["A".into(); 4097]).is_err());
+        let (digest, sample) = bounded_validation_name_plan(&["A".into(), "B".into()]).unwrap();
+        assert_eq!(digest.len(), 64);
+        assert_eq!(sample, vec!["A", "B"]);
+    }
 
     #[test]
     fn mcp_wrap_collision_preserves_entire_package() {

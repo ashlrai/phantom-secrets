@@ -21,7 +21,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub struct InitSecret {
     name: String,
-    value: Zeroizing<String>,
+    replacement: Option<Zeroizing<String>>,
     expected_before: Option<Option<Zeroizing<String>>>,
 }
 
@@ -29,7 +29,7 @@ impl InitSecret {
     pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            value: Zeroizing::new(value.into()),
+            replacement: Some(Zeroizing::new(value.into())),
             expected_before: None,
         }
     }
@@ -46,8 +46,22 @@ impl InitSecret {
     ) -> Self {
         Self {
             name: name.into(),
-            value: Zeroizing::new(value.into()),
+            replacement: Some(Zeroizing::new(value.into())),
             expected_before: Some(expected_before.map(|value| Zeroizing::new(value.into()))),
+        }
+    }
+
+    /// Delete an existing entry only while its value still equals the exact
+    /// before-image. The backend CAS also removes its lifecycle and validation
+    /// metadata in the same encrypted-vault/keychain transaction.
+    pub fn delete_if_unchanged(
+        name: impl Into<String>,
+        expected_before: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            replacement: None,
+            expected_before: Some(Some(Zeroizing::new(expected_before.into()))),
         }
     }
 }
@@ -57,7 +71,7 @@ impl fmt::Debug for InitSecret {
         formatter
             .debug_struct("InitSecret")
             .field("name", &self.name)
-            .field("value", &"[REDACTED]")
+            .field("replacement", &"[REDACTED]")
             .finish()
     }
 }
@@ -148,8 +162,8 @@ struct SecretSnapshot {
     name: String,
     before: Option<Zeroizing<String>>,
     metadata: Option<SecretMetadata>,
-    validation: ValidationMetadata,
-    after: Zeroizing<String>,
+    validation: Option<ValidationMetadata>,
+    after: Option<Zeroizing<String>>,
     touched: bool,
 }
 
@@ -248,14 +262,14 @@ fn commit_init_with(
             .get_metadata(&secret.name)
             .map_err(|error| preflight_vault(&secret.name, error))?;
         let validation = vault
-            .get_validation_metadata(&secret.name)
+            .get_validation_metadata_exact(&secret.name)
             .map_err(|error| preflight_vault(&secret.name, error))?;
         secret_snapshots.push(SecretSnapshot {
             name: secret.name,
             before,
             metadata,
             validation,
-            after: secret.value,
+            after: secret.replacement,
             touched: false,
         });
     }
@@ -263,17 +277,15 @@ fn commit_init_with(
     let mut file_snapshots = Vec::with_capacity(files.len());
     for mut file in files.drain(..) {
         let created_parents = preflight_path(&file.path)?;
-        let (before, permissions) = match std::fs::symlink_metadata(&file.path) {
-            Ok(metadata) => (
-                Some(Zeroizing::new(std::fs::read(&file.path).map_err(
-                    |error| InitTransactionError::Preflight {
-                        target: file.path.display().to_string(),
-                        reason: error.to_string(),
-                    },
-                )?)),
-                Some(metadata.permissions()),
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, None),
+        let before = phantom_core::fs::read_regular_file(&file.path)
+            .map_err(|error| InitTransactionError::Preflight {
+                target: file.path.display().to_string(),
+                reason: error.to_string(),
+            })?
+            .map(Zeroizing::new);
+        let permissions = match std::fs::symlink_metadata(&file.path) {
+            Ok(metadata) => Some(metadata.permissions()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
                 return Err(InitTransactionError::Preflight {
                     target: file.path.display().to_string(),
@@ -312,7 +324,8 @@ fn commit_init_with(
 
         for snapshot in &mut secret_snapshots {
             let expected = snapshot.before.as_ref().map(|value| value.as_str());
-            match vault.compare_and_swap(&snapshot.name, expected, Some(snapshot.after.as_str())) {
+            let replacement = snapshot.after.as_ref().map(|value| value.as_str());
+            match vault.compare_and_swap(&snapshot.name, expected, replacement) {
                 Ok(true) => snapshot.touched = true,
                 Ok(false) => {
                     return Err((
@@ -324,10 +337,7 @@ fn commit_init_with(
                     ));
                 }
                 Err(_error) => {
-                    let current_is_after = vault
-                        .retrieve(&snapshot.name)
-                        .map(|current| current.as_str() == snapshot.after.as_str())
-                        .unwrap_or(false);
+                    let current_is_after = ensure_secret_state(vault, snapshot, true).is_ok();
                     let current_is_before = ensure_secret_state(vault, snapshot, false).is_ok();
                     // A backend may report failure after mutating, or another
                     // writer may race the operation. Mark ambiguous state as
@@ -487,7 +497,7 @@ fn ensure_secret_state(
     after: bool,
 ) -> Result<(), InitTransactionError> {
     let expected = if after {
-        Some(snapshot.after.as_str())
+        snapshot.after.as_ref().map(|value| value.as_str())
     } else {
         snapshot.before.as_ref().map(|value| value.as_str())
     };
@@ -514,6 +524,29 @@ fn ensure_secret_metadata(
     vault: &dyn VaultBackend,
     snapshot: &SecretSnapshot,
 ) -> Result<(), InitTransactionError> {
+    if snapshot.after.is_none() {
+        let metadata_absent = vault
+            .get_metadata(&snapshot.name)
+            .map_err(|_| InitTransactionError::Preflight {
+                target: snapshot.name.clone(),
+                reason: "vault metadata verification failed".to_string(),
+            })?
+            .is_none();
+        let validation_absent = vault
+            .get_validation_metadata_exact(&snapshot.name)
+            .map_err(|_| InitTransactionError::Preflight {
+                target: snapshot.name.clone(),
+                reason: "vault validation metadata verification failed".to_string(),
+            })?
+            .is_none();
+        return if metadata_absent && validation_absent {
+            Ok(())
+        } else {
+            Err(InitTransactionError::ConcurrentChange {
+                target: snapshot.name.clone(),
+            })
+        };
+    }
     // New entries intentionally receive backend-generated creation metadata.
     // Deleting the entry during rollback also deletes that metadata.
     if snapshot.before.is_none() {
@@ -527,12 +560,13 @@ fn ensure_secret_metadata(
                 reason: "vault metadata verification failed".to_string(),
             })?
             == snapshot.metadata;
-    let validation_matches = vault.get_validation_metadata(&snapshot.name).map_err(|_| {
-        InitTransactionError::Preflight {
+    let validation_matches = vault
+        .get_validation_metadata_exact(&snapshot.name)
+        .map_err(|_| InitTransactionError::Preflight {
             target: snapshot.name.clone(),
             reason: "vault validation metadata verification failed".to_string(),
-        }
-    })? == snapshot.validation;
+        })?
+        == snapshot.validation;
     if metadata_matches && validation_matches {
         Ok(())
     } else {
@@ -558,9 +592,9 @@ fn ensure_file_state(snapshot: &FileSnapshot, after: bool) -> Result<(), InitTra
 }
 
 fn file_matches(path: &Path, expected: Option<&[u8]>) -> bool {
-    match (std::fs::read(path), expected) {
-        (Ok(current), Some(expected)) => current == expected,
-        (Err(error), None) if error.kind() == std::io::ErrorKind::NotFound => true,
+    match (phantom_core::fs::read_regular_file(path), expected) {
+        (Ok(Some(current)), Some(expected)) => current == expected,
+        (Ok(None), None) => true,
         _ => false,
     }
 }
@@ -648,9 +682,14 @@ fn rollback_secrets(vault: &dyn VaultBackend, snapshots: &mut [SecretSnapshot]) 
         .filter(|snapshot| snapshot.touched)
     {
         let replacement = snapshot.before.as_ref().map(|before| before.as_str());
-        let result =
-            vault.compare_and_swap(&snapshot.name, Some(snapshot.after.as_str()), replacement);
-        if !matches!(result, Ok(true))
+        let expected_after = snapshot.after.as_ref().map(|after| after.as_str());
+        let result = vault.compare_and_swap(&snapshot.name, expected_after, replacement);
+        let metadata_restored = if matches!(result, Ok(true)) && snapshot.after.is_none() {
+            restore_deleted_metadata(vault, snapshot)
+        } else {
+            matches!(result, Ok(true))
+        };
+        if !metadata_restored
             || (snapshot.before.is_some() && ensure_secret_metadata(vault, snapshot).is_err())
         {
             ok = false;
@@ -659,6 +698,35 @@ fn rollback_secrets(vault: &dyn VaultBackend, snapshots: &mut [SecretSnapshot]) 
         }
     }
     ok
+}
+
+fn restore_deleted_metadata(vault: &dyn VaultBackend, snapshot: &SecretSnapshot) -> bool {
+    let current_metadata = match vault.get_metadata(&snapshot.name) {
+        Ok(metadata) => metadata,
+        Err(_) => return false,
+    };
+    if !matches!(
+        vault.compare_and_swap_metadata(
+            &snapshot.name,
+            current_metadata.as_ref(),
+            snapshot.metadata.clone()
+        ),
+        Ok(true)
+    ) {
+        return false;
+    }
+    let current_validation = match vault.get_validation_metadata_exact(&snapshot.name) {
+        Ok(metadata) => metadata,
+        Err(_) => return false,
+    };
+    matches!(
+        vault.compare_and_swap_validation_metadata(
+            &snapshot.name,
+            current_validation.as_ref(),
+            snapshot.validation.clone()
+        ),
+        Ok(true)
+    )
 }
 
 #[cfg(test)]
@@ -781,7 +849,10 @@ mod tests {
             vec![InitFile::replace(&env, b"A=phm_a\nB=phm_b\n".to_vec())],
         )
         .unwrap_err();
-        assert!(matches!(error, InitTransactionError::Commit { .. }));
+        assert!(
+            matches!(error, InitTransactionError::Commit { .. }),
+            "unexpected error: {error:?}"
+        );
         assert_eq!(failing.retrieve("A").unwrap().as_str(), "prior");
         assert_eq!(failing.get_metadata("A").unwrap(), prior_metadata);
         assert_eq!(
@@ -978,6 +1049,54 @@ mod tests {
         ));
         assert!(!vault.exists("TARGET").unwrap());
         assert_eq!(std::fs::read(&env).unwrap(), b"OWNER=concurrent\n");
+    }
+
+    #[test]
+    fn delete_rollback_restores_value_and_exact_metadata_after_late_file_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = vault(&dir);
+        vault.store("A", "one").unwrap();
+        let mut metadata = vault.get_metadata("A").unwrap().unwrap();
+        metadata.expires_at = Some(42);
+        vault.set_metadata("A", metadata.clone()).unwrap();
+        let validation = ValidationMetadata::mark_valid("test");
+        vault
+            .set_validation_metadata("A", validation.clone())
+            .unwrap();
+        let target = dir.path().join("managed.env");
+        phantom_core::fs::atomic_write(&target, b"A=phm_before\n").unwrap();
+
+        let error = commit_init_with(
+            dir.path(),
+            &vault,
+            vec![InitSecret::delete_if_unchanged("A", "one")],
+            vec![InitFile::replace_if_unchanged(
+                &target,
+                Some(b"A=phm_before\n".to_vec()),
+                b"".to_vec(),
+            )
+            .commit_last()],
+            &FailingWriter {
+                calls: AtomicUsize::new(0),
+                fail: 1,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                InitTransactionError::Commit { .. }
+                    | InitTransactionError::RollbackIncomplete { .. }
+            ),
+            "unexpected delete rollback error: {error:?}"
+        );
+        assert_eq!(vault.retrieve("A").unwrap().as_str(), "one");
+        assert_eq!(vault.get_metadata("A").unwrap(), Some(metadata));
+        assert_eq!(
+            vault.get_validation_metadata_exact("A").unwrap(),
+            Some(validation)
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"A=phm_before\n");
     }
 
     #[test]

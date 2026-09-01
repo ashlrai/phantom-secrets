@@ -1,6 +1,6 @@
 use crate::crypto;
 use crate::metadata::SecretMetadata;
-use crate::traits::VaultBackend;
+use crate::traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
 use fs2::FileExt;
 use phantom_core::error::{PhantomError, Result};
 use phantom_core::validator::ValidationMetadata;
@@ -72,9 +72,9 @@ impl FileVault {
     }
 
     fn load(&self) -> Result<VaultData> {
-        if !self.vault_path.exists() {
+        let Some(encrypted) = phantom_core::fs::read_regular_file(&self.vault_path)? else {
             return Ok(VaultData::default());
-        }
+        };
 
         // Warn if file permissions are too open
         #[cfg(unix)]
@@ -92,7 +92,6 @@ impl FileVault {
             }
         }
 
-        let encrypted = std::fs::read(&self.vault_path)?;
         // Wrap the decrypted JSON in Zeroizing so the heap buffer is overwritten
         // with zeros when it drops — whether that's on success or on an early
         // return from the serde_json error path below.
@@ -129,10 +128,8 @@ impl FileVault {
 
         let encrypted = crypto::encrypt(plaintext.as_bytes(), &self.passphrase)?;
 
-        // Write atomically via temp file
-        let tmp_path = self.vault_path.with_extension("tmp");
-        std::fs::write(&tmp_path, &encrypted)?;
-        std::fs::rename(&tmp_path, &self.vault_path)?;
+        phantom_core::fs::ensure_real_parent(&self.vault_path)?;
+        phantom_core::fs::atomic_write(&self.vault_path, &encrypted)?;
 
         // Set restrictive permissions (owner read/write only)
         #[cfg(unix)]
@@ -147,10 +144,10 @@ impl FileVault {
 
 pub(crate) fn encrypted_vault_exists(base_dir: &Path, project_id: &str) -> Result<bool> {
     validate_project_id(project_id)?;
-    Ok(base_dir
-        .join("vaults")
-        .join(format!("{project_id}.vault"))
-        .exists())
+    Ok(phantom_core::fs::read_regular_file(
+        &base_dir.join("vaults").join(format!("{project_id}.vault")),
+    )?
+    .is_some())
 }
 
 /// Validate the identifier before it is ever interpolated into a filesystem
@@ -273,6 +270,39 @@ impl VaultBackend for FileVault {
         self.save(&data)
     }
 
+    fn compare_and_swap_metadata_batch(&self, changes: &[MetadataCas]) -> Result<bool> {
+        let _lock = self.lock_file()?;
+        let mut data = self.load()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for change in changes {
+            if !seen.insert(change.name.as_str()) {
+                return Err(PhantomError::VaultError(
+                    "metadata CAS batch contains a duplicate secret name".to_string(),
+                ));
+            }
+            if !data.secrets.contains_key(&change.name) {
+                return Err(PhantomError::SecretNotFound(change.name.clone()));
+            }
+            if data.metadata.get(&change.name) != change.expected.as_ref() {
+                return Ok(false);
+            }
+        }
+        for change in changes {
+            match &change.replacement {
+                Some(metadata) => {
+                    data.metadata.insert(change.name.clone(), metadata.clone());
+                }
+                None => {
+                    data.metadata.remove(&change.name);
+                }
+            }
+        }
+        if !changes.is_empty() {
+            self.save(&data)?;
+        }
+        Ok(true)
+    }
+
     fn get_validation_metadata(
         &self,
         name: &str,
@@ -283,6 +313,11 @@ impl VaultBackend for FileVault {
             .get(name)
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn get_validation_metadata_exact(&self, name: &str) -> Result<Option<ValidationMetadata>> {
+        let data = self.load()?;
+        Ok(data.validation_metadata.get(name).cloned())
     }
 
     fn set_validation_metadata(
@@ -298,6 +333,54 @@ impl VaultBackend for FileVault {
         }
         data.validation_metadata.insert(name.to_string(), meta);
         self.save(&data)
+    }
+
+    fn compare_and_swap_validation_metadata_batch(
+        &self,
+        changes: &[ValidationMetadataCas],
+    ) -> Result<bool> {
+        let _lock = self.lock_file()?;
+        let mut data = self.load()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for change in changes {
+            if !seen.insert(change.name.as_str()) {
+                return Err(PhantomError::VaultError(
+                    "validation metadata CAS batch contains a duplicate secret name".to_string(),
+                ));
+            }
+            if !data.secrets.contains_key(&change.name) {
+                return Err(PhantomError::SecretNotFound(change.name.clone()));
+            }
+            if data.validation_metadata.get(&change.name) != change.expected.as_ref() {
+                return Ok(false);
+            }
+        }
+        for change in changes {
+            match &change.replacement {
+                Some(metadata) => {
+                    data.validation_metadata
+                        .insert(change.name.clone(), metadata.clone());
+                }
+                None => {
+                    data.validation_metadata.remove(&change.name);
+                }
+            }
+        }
+        if !changes.is_empty() {
+            self.save(&data)?;
+        }
+        Ok(true)
+    }
+
+    fn store_with_expiry(&self, name: &str, value: &str, days_ttl: u64) -> Result<()> {
+        let _lock = self.lock_file()?;
+        let mut data = self.load()?;
+        data.secrets.insert(name.to_string(), value.to_string());
+        data.metadata
+            .insert(name.to_string(), SecretMetadata::with_expiry(days_ttl));
+        self.save(&data)?;
+        phantom_core::audit::log("vault.store", Some(name));
+        Ok(())
     }
 }
 
@@ -426,6 +509,83 @@ mod tests {
         assert!(vault.compare_and_swap("KEY", Some("value"), None).unwrap());
         assert!(!vault.exists("KEY").unwrap());
         assert!(vault.get_metadata("KEY").unwrap().is_none());
+    }
+
+    #[test]
+    fn metadata_batch_cas_is_all_or_nothing() {
+        let (vault, _dir) = test_vault();
+        vault.store("A", "one").unwrap();
+        vault.store("B", "two").unwrap();
+        let before_a = vault.get_metadata("A").unwrap();
+        let before_b = vault.get_metadata("B").unwrap();
+        let mut after_a = before_a.clone().unwrap();
+        after_a.expires_at = Some(111);
+        let mut after_b = before_b.clone().unwrap();
+        after_b.expires_at = Some(222);
+        let stale_b = SecretMetadata::default();
+
+        assert!(!vault
+            .compare_and_swap_metadata_batch(&[
+                MetadataCas {
+                    name: "A".into(),
+                    expected: before_a.clone(),
+                    replacement: Some(after_a.clone()),
+                },
+                MetadataCas {
+                    name: "B".into(),
+                    expected: Some(stale_b),
+                    replacement: Some(after_b.clone()),
+                },
+            ])
+            .unwrap());
+        assert_eq!(vault.get_metadata("A").unwrap(), before_a);
+        assert_eq!(vault.get_metadata("B").unwrap(), before_b);
+
+        assert!(vault
+            .compare_and_swap_metadata_batch(&[
+                MetadataCas {
+                    name: "A".into(),
+                    expected: before_a,
+                    replacement: Some(after_a.clone()),
+                },
+                MetadataCas {
+                    name: "B".into(),
+                    expected: before_b,
+                    replacement: Some(after_b.clone()),
+                },
+            ])
+            .unwrap());
+        assert_eq!(vault.get_metadata("A").unwrap(), Some(after_a));
+        assert_eq!(vault.get_metadata("B").unwrap(), Some(after_b));
+    }
+
+    #[test]
+    fn validation_metadata_batch_rejects_stale_before_image() {
+        let (vault, _dir) = test_vault();
+        vault.store("A", "one").unwrap();
+        vault.store("B", "two").unwrap();
+        let valid = ValidationMetadata::mark_valid("test");
+        vault.set_validation_metadata("B", valid.clone()).unwrap();
+        let proposed = ValidationMetadata::mark_invalid("test", "rejected");
+        assert!(!vault
+            .compare_and_swap_validation_metadata_batch(&[
+                ValidationMetadataCas {
+                    name: "A".into(),
+                    expected: None,
+                    replacement: Some(proposed.clone()),
+                },
+                ValidationMetadataCas {
+                    name: "B".into(),
+                    expected: None,
+                    replacement: Some(proposed),
+                },
+            ])
+            .unwrap());
+        assert_eq!(vault.get_validation_metadata_exact("A").unwrap(), None);
+        assert_eq!(
+            vault.get_validation_metadata_exact("B").unwrap(),
+            Some(valid)
+        );
     }
 
     #[test]

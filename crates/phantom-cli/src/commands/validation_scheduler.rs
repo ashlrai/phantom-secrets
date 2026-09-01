@@ -9,10 +9,12 @@ use anyhow::Result;
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::validation_scheduler::{state_file_path, Schedule, SchedulerState, MAX_HISTORY};
+use sha2::{Digest, Sha256};
+use std::io::{IsTerminal, Write};
 
 /// Run `phantom validate schedule [interval] [--status] [--disable]`.
 pub fn run_schedule(interval: Option<&str>, status: bool, disable: bool, json: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
+    let project_dir = std::env::current_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -22,14 +24,24 @@ pub fn run_schedule(interval: Option<&str>, status: bool, disable: bool, json: b
         );
     }
 
-    let config = PhantomConfig::load(&config_path)?;
+    let config_before = phantom_core::fs::read_regular_file(&config_path)?
+        .ok_or_else(|| anyhow::anyhow!("Project is not initialized"))?;
+    let config = PhantomConfig::load_from_bytes(&config_path, &config_before)?;
     let state_path = state_file_path(config.local_project_id());
-    let mut state = SchedulerState::load(&state_path).unwrap_or_default();
+    let (mut state, before) = SchedulerState::load_exact(&state_path)?;
 
     // --disable
     if disable {
+        require_trusted_terminal_schedule(
+            &project_dir,
+            config.local_project_id(),
+            &config_before,
+            &state_path,
+            before.as_deref(),
+            &Schedule::Disabled,
+        )?;
         state.schedule = Some(Schedule::Disabled);
-        state.save(&state_path)?;
+        state.save_if_unchanged(&state_path, before.as_deref())?;
         if json {
             println!("{{\"schedule\":\"disabled\"}}");
         } else {
@@ -48,8 +60,16 @@ pub fn run_schedule(interval: Option<&str>, status: bool, disable: bool, json: b
     let sched = Schedule::parse(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let description = sched.description();
+    require_trusted_terminal_schedule(
+        &project_dir,
+        config.local_project_id(),
+        &config_before,
+        &state_path,
+        before.as_deref(),
+        &sched,
+    )?;
     state.schedule = Some(sched);
-    state.save(&state_path)?;
+    state.save_if_unchanged(&state_path, before.as_deref())?;
 
     if json {
         println!(
@@ -71,9 +91,50 @@ pub fn run_schedule(interval: Option<&str>, status: bool, disable: bool, json: b
     Ok(())
 }
 
+fn require_trusted_terminal_schedule(
+    project_dir: &std::path::Path,
+    project_id: &str,
+    config_before: &[u8],
+    state_path: &std::path::Path,
+    state_before: Option<&[u8]>,
+    schedule: &Schedule,
+) -> Result<()> {
+    if !std::io::stdin().is_terminal()
+        || !std::io::stdout().is_terminal()
+        || !std::io::stderr().is_terminal()
+    {
+        anyhow::bail!("validation schedule changes require attached stdin, stdout, and stderr terminals; scheduler state was not written");
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"phantom-validation-schedule-v1\0");
+    digest.update(config_before);
+    if let Some(before) = state_before {
+        digest.update(before);
+    }
+    let challenge = format!(
+        "SET VALIDATION SCHEDULE {} IN {} ID {} STATE {} DIGEST {}",
+        schedule.description(),
+        project_dir.display(),
+        project_id,
+        state_path.display(),
+        hex::encode(digest.finalize())
+    );
+    eprintln!("This changes persistent validation scheduler policy.\nType this exact challenge to continue:\n{challenge}");
+    eprint!("> ");
+    std::io::stderr().flush()?;
+    let mut response = String::new();
+    std::io::stdin().read_line(&mut response)?;
+    if response.trim_end_matches(['\r', '\n']) != challenge {
+        anyhow::bail!(
+            "Schedule confirmation did not match exactly; scheduler state was not written"
+        );
+    }
+    Ok(())
+}
+
 /// Run `phantom validate history [--last N] [--json]`.
 pub fn run_history(last: Option<usize>, json: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
+    let project_dir = std::env::current_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -83,9 +144,11 @@ pub fn run_history(last: Option<usize>, json: bool) -> Result<()> {
         );
     }
 
-    let config = PhantomConfig::load(&config_path)?;
+    let config_before = phantom_core::fs::read_regular_file(&config_path)?
+        .ok_or_else(|| anyhow::anyhow!("Project is not initialized"))?;
+    let config = PhantomConfig::load_from_bytes(&config_path, &config_before)?;
     let state_path = state_file_path(config.local_project_id());
-    let state = SchedulerState::load(&state_path).unwrap_or_default();
+    let state = SchedulerState::load(&state_path)?;
 
     if state.history.is_empty() {
         if json {
@@ -219,5 +282,30 @@ fn format_timestamp(ts: u64) -> String {
         format!("{}h ago", age / 3600)
     } else {
         format!("{}d ago", age / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headless_schedule_consent_denies_without_write_authority() {
+        if !std::io::stdin().is_terminal()
+            || !std::io::stdout().is_terminal()
+            || !std::io::stderr().is_terminal()
+        {
+            let error = require_trusted_terminal_schedule(
+                std::path::Path::new("/tmp/project"),
+                "local-id",
+                b"config",
+                std::path::Path::new("/tmp/state"),
+                None,
+                &Schedule::Disabled,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("scheduler state was not written"));
+        }
     }
 }

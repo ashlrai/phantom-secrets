@@ -204,21 +204,37 @@ pub const MAX_HISTORY: usize = 100;
 impl SchedulerState {
     /// Load state from `path`, returning a default if the file doesn't exist.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let raw = std::fs::read_to_string(path)?;
-        let state: Self = serde_json::from_str(&raw)?;
-        Ok(state)
+        Ok(Self::load_exact(path)?.0)
+    }
+
+    /// Load state together with the exact regular-file before-image used to
+    /// parse it. Symlinks and path swaps are rejected by the shared reader.
+    pub fn load_exact(path: &Path) -> anyhow::Result<(Self, Option<Vec<u8>>)> {
+        let before = crate::fs::read_regular_file(path)?;
+        let state = match before.as_deref() {
+            Some(raw) => serde_json::from_slice(raw)?,
+            None => Self::default(),
+        };
+        Ok((state, before))
     }
 
     /// Persist state to `path` using an atomic write.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        crate::fs::ensure_real_parent(path)?;
         let json = serde_json::to_vec_pretty(self)?;
         crate::fs::atomic_write(path, &json)?;
+        Ok(())
+    }
+
+    /// Persist only while the state file still matches `expected_before`.
+    pub fn save_if_unchanged(
+        &self,
+        path: &Path,
+        expected_before: Option<&[u8]>,
+    ) -> anyhow::Result<()> {
+        crate::fs::ensure_real_parent(path)?;
+        let json = serde_json::to_vec_pretty(self)?;
+        crate::fs::atomic_write_if_unchanged(path, expected_before, &json)?;
         Ok(())
     }
 
@@ -352,15 +368,21 @@ fn run_one_tick_sync(project_id: &str, tick_fn: &TickFn) {
     let started_at = now_secs();
     let state_path = state_file_path(project_id);
 
-    // Load existing state (ignore load error — we'll write a fresh one).
-    let mut state = SchedulerState::load(&state_path).unwrap_or_default();
+    // A corrupt/unsafe state path must never be overwritten by a fresh state.
+    let (mut state, before) = match SchedulerState::load_exact(&state_path) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            tracing::warn!("validation scheduler: refused unsafe/corrupt state: {error}");
+            return;
+        }
+    };
 
     // Run the validation synchronously via the injected callback.
     let record = tick_fn(started_at);
     state.push_run(record);
 
     // Best-effort persist; log but don't crash on failure.
-    if let Err(e) = state.save(&state_path) {
+    if let Err(e) = state.save_if_unchanged(&state_path, before.as_deref()) {
         tracing::warn!("validation scheduler: failed to persist state: {e}");
     }
 }
@@ -499,6 +521,43 @@ mod tests {
         let state = SchedulerState::default();
         // last_run_at == 0 → always stale
         assert!(state.is_stale(3600));
+    }
+
+    #[test]
+    fn exact_state_save_rejects_concurrent_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("validation-state.json");
+        let initial = SchedulerState {
+            schedule: Some(Schedule::Interval(60)),
+            ..Default::default()
+        };
+        initial.save(&path).unwrap();
+        let (mut proposed, before) = SchedulerState::load_exact(&path).unwrap();
+        proposed.schedule = Some(Schedule::Disabled);
+        let concurrent = SchedulerState {
+            schedule: Some(Schedule::Interval(120)),
+            ..Default::default()
+        };
+        concurrent.save(&path).unwrap();
+        assert!(proposed
+            .save_if_unchanged(&path, before.as_deref())
+            .is_err());
+        assert_eq!(
+            SchedulerState::load(&path).unwrap().schedule,
+            concurrent.schedule
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_load_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.json");
+        SchedulerState::default().save(&target).unwrap();
+        let link = dir.path().join("validation-state.json");
+        symlink(&target, &link).unwrap();
+        assert!(SchedulerState::load_exact(&link).is_err());
     }
 
     #[test]

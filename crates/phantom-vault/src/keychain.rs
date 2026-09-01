@@ -1,5 +1,5 @@
 use crate::metadata::SecretMetadata;
-use crate::traits::VaultBackend;
+use crate::traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
 use phantom_core::error::{PhantomError, Result};
 use phantom_core::validator::ValidationMetadata;
 use sha2::{Digest, Sha256};
@@ -146,11 +146,10 @@ fn load_sidecar_map<T>(path: &Path, label: &str) -> Result<BTreeMap<String, T>>
 where
     T: serde::de::DeserializeOwned,
 {
-    if !path.exists() {
+    let Some(contents) = phantom_core::fs::read_regular_file(path)? else {
         return Ok(BTreeMap::new());
-    }
-    let contents = std::fs::read_to_string(path)?;
-    serde_json::from_str(&contents).map_err(|error| {
+    };
+    serde_json::from_slice(&contents).map_err(|error| {
         PhantomError::VaultError(format!(
             "Corrupt keychain {label} sidecar {}: {error}",
             path.display()
@@ -158,13 +157,31 @@ where
     })
 }
 
+type SidecarSnapshot<T> = (BTreeMap<String, T>, Option<Vec<u8>>);
+
+fn load_sidecar_snapshot<T>(path: &Path, label: &str) -> Result<SidecarSnapshot<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let before = phantom_core::fs::read_regular_file(path)?;
+    let map = match before.as_deref() {
+        Some(contents) => serde_json::from_slice(contents).map_err(|error| {
+            PhantomError::VaultError(format!(
+                "Corrupt keychain {label} sidecar {}: {error}",
+                path.display()
+            ))
+        })?,
+        None => BTreeMap::new(),
+    };
+    Ok((map, before))
+}
+
 fn save_sidecar_map<T>(path: &Path, label: &str, map: &BTreeMap<String, T>) -> Result<()>
 where
     T: serde::Serialize,
 {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    phantom_core::fs::ensure_real_parent(path)?;
+    let _ = phantom_core::fs::read_regular_file(path)?;
     let json = serde_json::to_string_pretty(map).map_err(|error| {
         PhantomError::VaultError(format!("Keychain {label} serialize error: {error}"))
     })?;
@@ -172,6 +189,23 @@ where
     // then persists it with an atomic rename. Concurrent writers therefore
     // cannot collide on a shared `.tmp` path.
     phantom_core::fs::atomic_write(path, json.as_bytes())?;
+    Ok(())
+}
+
+fn save_sidecar_map_if_unchanged<T>(
+    path: &Path,
+    label: &str,
+    expected_before: Option<&[u8]>,
+    map: &BTreeMap<String, T>,
+) -> Result<()>
+where
+    T: serde::Serialize,
+{
+    phantom_core::fs::ensure_real_parent(path)?;
+    let json = serde_json::to_vec_pretty(map).map_err(|error| {
+        PhantomError::VaultError(format!("Keychain {label} serialize error: {error}"))
+    })?;
+    phantom_core::fs::atomic_write_if_unchanged(path, expected_before, &json)?;
     Ok(())
 }
 
@@ -744,6 +778,41 @@ impl VaultBackend for KeychainVault {
         save_meta_map(&self.project_id, &map)
     }
 
+    fn compare_and_swap_metadata_batch(&self, changes: &[MetadataCas]) -> Result<bool> {
+        let _lock = acquire_project_lock(&self.project_id)?;
+        let index = self.load_index()?;
+        let path = metadata_path(&self.project_id);
+        let (mut map, before) = load_sidecar_snapshot(&path, "metadata")?;
+        let mut seen = std::collections::BTreeSet::new();
+        for change in changes {
+            if !seen.insert(change.name.as_str()) {
+                return Err(PhantomError::VaultError(
+                    "metadata CAS batch contains a duplicate secret name".to_string(),
+                ));
+            }
+            if !index.iter().any(|indexed| indexed == &change.name) {
+                return Err(PhantomError::SecretNotFound(change.name.clone()));
+            }
+            if map.get(&change.name) != change.expected.as_ref() {
+                return Ok(false);
+            }
+        }
+        for change in changes {
+            match &change.replacement {
+                Some(metadata) => {
+                    map.insert(change.name.clone(), metadata.clone());
+                }
+                None => {
+                    map.remove(&change.name);
+                }
+            }
+        }
+        if !changes.is_empty() {
+            save_sidecar_map_if_unchanged(&path, "metadata", before.as_deref(), &map)?;
+        }
+        Ok(true)
+    }
+
     fn list_with_metadata(&self) -> Result<Vec<(String, Option<SecretMetadata>)>> {
         let _lock = acquire_project_lock(&self.project_id)?;
         let names = self.load_index()?;
@@ -764,52 +833,16 @@ impl VaultBackend for KeychainVault {
         Ok(())
     }
 
-    fn set_rotation_policy(&self, name: &str, days_ttl: u64) -> Result<()> {
-        let _lock = acquire_project_lock(&self.project_id)?;
-        let index = self.load_index()?;
-        if !index.iter().any(|indexed| indexed == name) {
-            return Err(PhantomError::SecretNotFound(name.to_string()));
-        }
-        let mut map = load_meta_map(&self.project_id)?;
-        let meta = map.entry(name.to_string()).or_default();
-        meta.rotation_policy = Some(crate::metadata::RotationPolicy {
-            days_ttl,
-            auto_rotate: false,
-        });
-        meta.expires_at = Some(crate::metadata::now_secs() + days_ttl * 86_400);
-        save_meta_map(&self.project_id, &map)
-    }
-
-    fn record_provider_rotation(
-        &self,
-        name: &str,
-        expires_override: Option<u64>,
-    ) -> Result<Option<u64>> {
-        const DEFAULT_ROTATION_TTL_DAYS: u64 = 30;
-        let _lock = acquire_project_lock(&self.project_id)?;
-        let index = self.load_index()?;
-        if !index.iter().any(|indexed| indexed == name) {
-            return Err(PhantomError::SecretNotFound(name.to_string()));
-        }
-        let mut map = load_meta_map(&self.project_id)?;
-        let meta = map.entry(name.to_string()).or_default();
-        let had_expiry = meta.expires_at.is_some();
-        meta.record_rotation();
-        if let Some(expires_at) = expires_override {
-            meta.expires_at = Some(expires_at);
-        } else if meta.rotation_policy.is_none() && had_expiry {
-            meta.expires_at =
-                Some(crate::metadata::now_secs() + DEFAULT_ROTATION_TTL_DAYS * 86_400);
-        }
-        let expires_at = meta.expires_at;
-        save_meta_map(&self.project_id, &map)?;
-        Ok(expires_at)
-    }
-
     fn get_validation_metadata(&self, name: &str) -> Result<ValidationMetadata> {
         let _lock = acquire_project_lock(&self.project_id)?;
         let map = load_validation_meta_map(&self.project_id)?;
         Ok(map.get(name).cloned().unwrap_or_default())
+    }
+
+    fn get_validation_metadata_exact(&self, name: &str) -> Result<Option<ValidationMetadata>> {
+        let _lock = acquire_project_lock(&self.project_id)?;
+        let map = load_validation_meta_map(&self.project_id)?;
+        Ok(map.get(name).cloned())
     }
 
     fn set_validation_metadata(&self, name: &str, meta: ValidationMetadata) -> Result<()> {
@@ -821,6 +854,44 @@ impl VaultBackend for KeychainVault {
         let mut map = load_validation_meta_map(&self.project_id)?;
         map.insert(name.to_string(), meta);
         save_validation_meta_map(&self.project_id, &map)
+    }
+
+    fn compare_and_swap_validation_metadata_batch(
+        &self,
+        changes: &[ValidationMetadataCas],
+    ) -> Result<bool> {
+        let _lock = acquire_project_lock(&self.project_id)?;
+        let index = self.load_index()?;
+        let path = validation_meta_path(&self.project_id);
+        let (mut map, before) = load_sidecar_snapshot(&path, "validation metadata")?;
+        let mut seen = std::collections::BTreeSet::new();
+        for change in changes {
+            if !seen.insert(change.name.as_str()) {
+                return Err(PhantomError::VaultError(
+                    "validation metadata CAS batch contains a duplicate secret name".to_string(),
+                ));
+            }
+            if !index.iter().any(|indexed| indexed == &change.name) {
+                return Err(PhantomError::SecretNotFound(change.name.clone()));
+            }
+            if map.get(&change.name) != change.expected.as_ref() {
+                return Ok(false);
+            }
+        }
+        for change in changes {
+            match &change.replacement {
+                Some(metadata) => {
+                    map.insert(change.name.clone(), metadata.clone());
+                }
+                None => {
+                    map.remove(&change.name);
+                }
+            }
+        }
+        if !changes.is_empty() {
+            save_sidecar_map_if_unchanged(&path, "validation metadata", before.as_deref(), &map)?;
+        }
+        Ok(true)
     }
 }
 
@@ -1172,6 +1243,26 @@ mod tests {
             .to_string()
             .contains("Corrupt keychain metadata sidecar"));
         assert_eq!(std::fs::read(&path).unwrap(), b"not-json");
+    }
+
+    #[test]
+    fn exact_sidecar_save_rejects_concurrent_owner() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("metadata.json");
+        let (mut proposed, before) = load_sidecar_snapshot::<usize>(&path, "metadata").unwrap();
+        proposed.insert("PHANTOM".into(), 1);
+        std::fs::write(&path, br#"{"OWNER":2}"#).unwrap();
+        assert!(
+            save_sidecar_map_if_unchanged(&path, "metadata", before.as_deref(), &proposed).is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), br#"{"OWNER":2}"#);
+    }
+
+    #[test]
+    fn sidecar_contract_uses_shared_windows_safe_exact_reader() {
+        let source = include_str!("keychain.rs");
+        assert!(source.contains("read_regular_file"));
+        assert!(source.contains("atomic_write_if_unchanged"));
     }
 
     /// End-to-end round-trip against the real OS keychain. Ignored by

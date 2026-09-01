@@ -52,10 +52,25 @@ pub fn read_regular_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let mut file = options.open(path)?;
     if !file.metadata()?.is_file() {
         return Err(io::Error::other(format!(
             "refusing non-regular file target: {}",
+            path.display()
+        )));
+    }
+    #[cfg(windows)]
+    if windows_file_information(&file)?.dwFileAttributes
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+    {
+        return Err(io::Error::other(format!(
+            "refusing Windows reparse-point file target: {}",
             path.display()
         )));
     }
@@ -66,14 +81,83 @@ pub fn read_regular_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
     // uncooperative same-user process cannot be made impossible with portable
     // pathname APIs, but an observable swap is rejected before these bytes are
     // accepted as the reviewed before-image.
+    ensure_path_still_names_open_file(path, &file)?;
+    Ok(Some(bytes))
+}
+
+#[cfg(unix)]
+fn ensure_path_still_names_open_file(path: &Path, opened: &std::fs::File) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let original = opened.metadata()?;
+    let mut options = std::fs::OpenOptions::new();
+    use std::os::unix::fs::OpenOptionsExt;
+    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    let current = options.open(path)?.metadata()?;
+    if original.dev() != current.dev() || original.ino() != current.ino() {
+        return Err(io::Error::other(format!(
+            "file target changed while it was being read: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_path_still_names_open_file(path: &Path, opened: &std::fs::File) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let original = windows_file_information(opened)?;
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    let current = options.open(path)?;
+    let current = windows_file_information(&current)?;
+    if current.dwFileAttributes
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+        || original.dwVolumeSerialNumber != current.dwVolumeSerialNumber
+        || original.nFileIndexHigh != current.nFileIndexHigh
+        || original.nFileIndexLow != current.nFileIndexLow
+    {
+        return Err(io::Error::other(format!(
+            "file target changed while it was being read: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn ensure_path_still_names_open_file(path: &Path, _opened: &std::fs::File) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => Ok(Some(bytes)),
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => Ok(()),
         Ok(_) => Err(io::Error::other(format!(
             "file target changed to an unsafe object while being read: {}",
             path.display()
         ))),
         Err(error) => Err(error),
     }
+}
+
+#[cfg(windows)]
+fn windows_file_information(
+    file: &std::fs::File,
+) -> io::Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
+    use std::os::windows::io::AsRawHandle;
+
+    let mut information = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle(
+            file.as_raw_handle(),
+            &mut information,
+        )
+    };
+    if result == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(information)
 }
 
 /// Atomically replace `path` only if its bytes still equal `expected_before`.
@@ -372,5 +456,16 @@ mod tests {
         }
         validate_project_filename(".env.example").unwrap();
         validate_project_filename("env-example").unwrap();
+    }
+
+    #[test]
+    fn windows_reader_contract_is_handle_bound_and_reparse_safe() {
+        let source = include_str!("fs.rs");
+        assert!(source.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
+        assert!(source.contains("FILE_ATTRIBUTE_REPARSE_POINT"));
+        assert!(source.contains("GetFileInformationByHandle"));
+        assert!(source.contains("dwVolumeSerialNumber"));
+        assert!(source.contains("nFileIndexHigh"));
+        assert!(source.contains("nFileIndexLow"));
     }
 }

@@ -265,6 +265,48 @@ impl DotenvFile {
             .collect()
     }
 
+    /// Remove exactly one Phantom-owned mapping while preserving every other
+    /// safely round-trippable source line byte-for-byte. Plaintext entries,
+    /// duplicate keys, and unrelated entries whose raw representation cannot
+    /// be preserved are rejected rather than rewritten ambiguously.
+    pub fn remove_phantom_mapping(&self, name: &str, had_trailing_newline: bool) -> Result<String> {
+        let matches = self
+            .lines
+            .iter()
+            .filter(|line| matches!(line, DotenvLine::Entry(entry, _) if entry.key == name))
+            .count();
+        if matches != 1 {
+            return Err(PhantomError::DotenvParseError(format!(
+                "expected exactly one managed mapping for '{name}', found {matches}"
+            )));
+        }
+        let mut output = Vec::with_capacity(self.lines.len().saturating_sub(1));
+        for line in &self.lines {
+            match line {
+                DotenvLine::Entry(entry, _) if entry.key == name => {
+                    if !entry.is_phantom {
+                        return Err(PhantomError::DotenvParseError(format!(
+                            "refusing to remove plaintext or non-Phantom mapping '{name}'"
+                        )));
+                    }
+                }
+                DotenvLine::Entry(_, Some(format)) => output.push(format.raw.clone()),
+                DotenvLine::Entry(entry, None) => {
+                    return Err(PhantomError::DotenvParseError(format!(
+                        "cannot preserve the exact source representation of '{}'; no mapping was removed",
+                        entry.key
+                    )))
+                }
+                DotenvLine::Other(raw) => output.push(raw.clone()),
+            }
+        }
+        let mut content = output.join("\n");
+        if had_trailing_newline && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        Ok(content)
+    }
+
     /// Get entries that contain real secrets (not already phantom tokens).
     /// Uses heuristics to distinguish secrets from non-secret config values.
     pub fn real_secret_entries(&self) -> Vec<&EnvEntry> {

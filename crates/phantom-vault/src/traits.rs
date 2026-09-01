@@ -3,6 +3,20 @@ use phantom_core::error::Result;
 use phantom_core::validator::ValidationMetadata;
 use zeroize::Zeroizing;
 
+#[derive(Clone)]
+pub struct MetadataCas {
+    pub name: String,
+    pub expected: Option<SecretMetadata>,
+    pub replacement: Option<SecretMetadata>,
+}
+
+#[derive(Clone)]
+pub struct ValidationMetadataCas {
+    pub name: String,
+    pub expected: Option<ValidationMetadata>,
+    pub replacement: Option<ValidationMetadata>,
+}
+
 /// Trait for secret storage backends.
 pub trait VaultBackend: Send + Sync {
     /// Store a secret value under a given name.
@@ -51,12 +65,37 @@ pub trait VaultBackend: Send + Sync {
         Ok(None)
     }
 
-    /// Persist metadata for a secret. No-op on backends that do not support
-    /// metadata storage (e.g. OS keychain — metadata lives in the file vault
-    /// sidecar when the keychain is the primary backend).
+    /// Persist metadata for a secret. Unsupported backends fail closed so a
+    /// caller can never report lifecycle policy success without persistence.
     fn set_metadata(&self, name: &str, meta: SecretMetadata) -> Result<()> {
         let _ = (name, meta);
-        Ok(())
+        Err(phantom_core::error::PhantomError::VaultError(
+            "vault backend does not support lifecycle metadata persistence".to_string(),
+        ))
+    }
+
+    /// Atomically apply an exact-before batch of lifecycle metadata changes.
+    /// Every named secret must exist, every before-image must match, and either
+    /// the whole batch commits or no metadata changes. Unsupported backends
+    /// fail closed.
+    fn compare_and_swap_metadata_batch(&self, changes: &[MetadataCas]) -> Result<bool> {
+        let _ = changes;
+        Err(phantom_core::error::PhantomError::VaultError(
+            "vault backend does not support atomic metadata compare-and-swap".to_string(),
+        ))
+    }
+
+    fn compare_and_swap_metadata(
+        &self,
+        name: &str,
+        expected: Option<&SecretMetadata>,
+        replacement: Option<SecretMetadata>,
+    ) -> Result<bool> {
+        self.compare_and_swap_metadata_batch(&[MetadataCas {
+            name: name.to_string(),
+            expected: expected.cloned(),
+            replacement,
+        }])
     }
 
     /// List all secret names together with their metadata (if any).
@@ -83,7 +122,8 @@ pub trait VaultBackend: Send + Sync {
     /// This deliberately leaves `rotated_at` unchanged: policy configuration is
     /// not evidence that a provider issued a successor credential.
     fn set_rotation_policy(&self, name: &str, days_ttl: u64) -> Result<()> {
-        let mut meta = self.get_metadata(name)?.unwrap_or_default();
+        let before = self.get_metadata(name)?;
+        let mut meta = before.clone().unwrap_or_default();
         meta.rotation_policy = Some(crate::metadata::RotationPolicy {
             days_ttl,
             auto_rotate: false,
@@ -91,7 +131,13 @@ pub trait VaultBackend: Send + Sync {
         // Starts a local enforcement deadline; this is not a provider TTL.
         let now = crate::metadata::now_secs();
         meta.expires_at = Some(now + days_ttl * 86_400);
-        self.set_metadata(name, meta)
+        if self.compare_and_swap_metadata(name, before.as_ref(), Some(meta))? {
+            Ok(())
+        } else {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "secret metadata changed concurrently; rotation policy was not applied".to_string(),
+            ))
+        }
     }
 
     /// Record that a vendor-provider rotation replaced this secret's value,
@@ -112,7 +158,8 @@ pub trait VaultBackend: Send + Sync {
         expires_override: Option<u64>,
     ) -> Result<Option<u64>> {
         const DEFAULT_ROTATION_TTL_DAYS: u64 = 30;
-        let mut meta = self.get_metadata(name)?.unwrap_or_default();
+        let before = self.get_metadata(name)?;
+        let mut meta = before.clone().unwrap_or_default();
         let had_expiry = meta.expires_at.is_some();
         // record_rotation() stamps rotated_at and recomputes expires_at when a
         // rotation policy exists.
@@ -124,8 +171,14 @@ pub trait VaultBackend: Send + Sync {
                 Some(crate::metadata::now_secs() + DEFAULT_ROTATION_TTL_DAYS * 86_400);
         }
         let expires_at = meta.expires_at;
-        self.set_metadata(name, meta)?;
-        Ok(expires_at)
+        if self.compare_and_swap_metadata(name, before.as_ref(), Some(meta))? {
+            Ok(expires_at)
+        } else {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "secret metadata changed concurrently; provider rotation metadata was not applied"
+                    .to_string(),
+            ))
+        }
     }
 
     // ── Validation metadata ──────────────────────────────────────────────
@@ -142,6 +195,39 @@ pub trait VaultBackend: Send + Sync {
     /// No-op on backends that do not support metadata (graceful degradation).
     fn set_validation_metadata(&self, name: &str, meta: ValidationMetadata) -> Result<()> {
         let _ = (name, meta);
-        Ok(())
+        Err(phantom_core::error::PhantomError::VaultError(
+            "vault backend does not support validation metadata persistence".to_string(),
+        ))
+    }
+
+    /// Retrieve the exact optional validation metadata before-image.
+    fn get_validation_metadata_exact(&self, name: &str) -> Result<Option<ValidationMetadata>> {
+        let metadata = self.get_validation_metadata(name)?;
+        Ok((!metadata.never_checked()).then_some(metadata))
+    }
+
+    /// Atomically apply a batch of exact-before validation metadata changes.
+    fn compare_and_swap_validation_metadata_batch(
+        &self,
+        changes: &[ValidationMetadataCas],
+    ) -> Result<bool> {
+        let _ = changes;
+        Err(phantom_core::error::PhantomError::VaultError(
+            "vault backend does not support atomic validation metadata compare-and-swap"
+                .to_string(),
+        ))
+    }
+
+    fn compare_and_swap_validation_metadata(
+        &self,
+        name: &str,
+        expected: Option<&ValidationMetadata>,
+        replacement: Option<ValidationMetadata>,
+    ) -> Result<bool> {
+        self.compare_and_swap_validation_metadata_batch(&[ValidationMetadataCas {
+            name: name.to_string(),
+            expected: expected.cloned(),
+            replacement,
+        }])
     }
 }
