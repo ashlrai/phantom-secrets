@@ -55,7 +55,7 @@ fn add_then_list_shows_key() {
 }
 
 #[test]
-fn remove_makes_key_disappear_from_list() {
+fn headless_remove_is_denied_and_preserves_the_key() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
 
@@ -66,16 +66,24 @@ fn remove_makes_key_disappear_from_list() {
         .assert()
         .success();
 
-    // Remove it
-    phantom(&dir).args(["remove", "MY_KEY"]).assert().success();
+    // Destructive removal requires a separately controlled attached terminal.
+    // A headless agent or script must fail before changing vault or dotenv state.
+    let denied = phantom(&dir)
+        .args(["remove", "MY_KEY"])
+        .assert()
+        .failure();
+    assert!(String::from_utf8_lossy(&denied.get_output().stderr)
+        .contains("requires attached stdin, stdout, and stderr terminals"));
 
-    // List should no longer contain the key
-    let output = phantom(&dir).arg("list").assert();
+    // The key must remain after the denied headless attempt.
+    let output = phantom(&dir).arg("list").assert().success();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     assert!(
-        !stdout.contains("MY_KEY"),
-        "MY_KEY should not appear after removal, got: {stdout}"
+        stdout.contains("MY_KEY"),
+        "MY_KEY should remain after denied headless removal, got: {stdout}"
     );
+    let dotenv = fs::read_to_string(dir.path().join(".env")).unwrap();
+    assert!(dotenv.contains("MY_KEY=phm_"), "{dotenv}");
 }
 
 #[test]
