@@ -643,14 +643,18 @@ fn validate_upgrade_terminals(stdin: bool, stdout: bool, stderr: bool) -> anyhow
 }
 
 fn require_trusted_terminal_upgrade(plan: &UpgradePlan, phase: &str) -> anyhow::Result<()> {
-    let mut nonce_bytes = [0_u8; 8];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = hex::encode(nonce_bytes);
+    let nonce = fresh_confirmation_nonce();
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     prompt_upgrade(plan, phase, &nonce, &mut reader, &mut stdout, &mut stderr)
+}
+
+fn fresh_confirmation_nonce() -> String {
+    let mut nonce_bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    hex::encode(nonce_bytes)
 }
 
 fn prompt_upgrade(
@@ -781,11 +785,11 @@ mod tests {
             InstallSource::Unknown,
         )
         .unwrap();
-        let nonce = "0011223344556677";
+        let nonce = fresh_confirmation_nonce();
         let reviewed_json = serde_json::to_string_pretty(&reviewed).unwrap();
         let input = format!(
             "{}\n",
-            upgrade_challenge(&reviewed_json, "verified-replacement", nonce)
+            upgrade_challenge(&reviewed_json, "verified-replacement", &nonce)
         );
         let mut reader = std::io::Cursor::new(input);
         let mut prompt = Vec::new();
@@ -794,7 +798,7 @@ mod tests {
         prompt_upgrade(
             &reviewed,
             "verified-replacement",
-            nonce,
+            &nonce,
             &mut reader,
             &mut prompt,
             &mut diagnostic,
@@ -811,12 +815,12 @@ mod tests {
         .unwrap();
         let replay = format!(
             "{}\n",
-            upgrade_challenge(&reviewed_json, "verified-replacement", nonce)
+            upgrade_challenge(&reviewed_json, "verified-replacement", &nonce)
         );
         assert!(prompt_upgrade(
             &changed,
             "verified-replacement",
-            nonce,
+            &nonce,
             &mut std::io::Cursor::new(replay),
             &mut Vec::new(),
             &mut Vec::new()

@@ -194,20 +194,6 @@ async fn run_async(
         }
     };
 
-    for key in &counts.skipped_names {
-        println!(
-            "   {} {} (exists, use --force to overwrite)",
-            "-".dimmed(),
-            key
-        );
-    }
-    for key in &counts.updated_names {
-        println!("   {} {} (overwritten)", "~".blue(), key.bold());
-    }
-    for key in &counts.new_names {
-        println!("   {} {} (new)", "+".green().bold(), key.bold());
-    }
-
     let new_count = counts.new_names.len();
     let updated_count = counts.updated_names.len();
     let skipped_count = counts.skipped_names.len();
@@ -247,11 +233,12 @@ async fn run_async(
         );
     }
     println!();
+    // The value-blind stage receipt above records reviewed key outcomes. Keep
+    // this additional human-readable completion line constant rather than
+    // duplicating snapshot-derived classifications or counts.
     println!(
-        "{} Pull complete: {} new, {} updated, 0 skipped",
-        "ok".green().bold(),
-        new_count,
-        updated_count
+        "{} Pull transaction complete; value-blind key outcomes are in stage_receipt.",
+        "ok".green().bold()
     );
     Ok(())
 }
@@ -277,12 +264,16 @@ fn require_trusted_terminal_pull(plan: &PullPlan) -> Result<()> {
             "Live `phantom pull` requires attached stdin, stdout, and stderr terminals and cannot run headlessly. Only value-blind local destination state was inspected; no provider credential, provider plaintext, local mutation, or network endpoint was accessed."
         );
     }
-    let mut nonce_bytes = [0_u8; 4];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = hex::encode(nonce_bytes);
+    let nonce = fresh_confirmation_nonce();
     let mut input = std::io::BufReader::new(std::io::stdin().lock());
     let mut diagnostic = std::io::stderr();
     run_pull_confirmation(plan, &nonce, &mut input, &mut diagnostic)
+}
+
+fn fresh_confirmation_nonce() -> String {
+    let mut nonce_bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    hex::encode(nonce_bytes)
 }
 
 fn run_pull_confirmation(
@@ -437,6 +428,18 @@ mod tests {
     use std::io::Cursor;
     use zeroize::Zeroizing;
 
+    #[test]
+    fn pull_source_omits_prior_per_key_and_count_summary_formats() {
+        let source = include_str!("pull.rs");
+        let prior_skipped = ["(exists, use --force", " to overwrite)"].concat();
+        let prior_updated = ["(over", "written)"].concat();
+        let prior_summary = ["Pull complete: {} new", ", {} updated"].concat();
+        assert!(source.contains("Pull transaction complete; value-blind key outcomes"));
+        assert!(!source.contains(&prior_skipped));
+        assert!(!source.contains(&prior_updated));
+        assert!(!source.contains(&prior_summary));
+    }
+
     fn plan() -> PullPlan {
         PullPlan {
             platform: "vercel".into(),
@@ -497,17 +500,19 @@ mod tests {
     fn pull_requires_exact_digest_and_nonce() {
         let plan = plan();
         let digest = pull_plan_digest(&plan).unwrap();
+        let nonce = fresh_confirmation_nonce();
         run_pull_confirmation(
             &plan,
-            "fresh",
-            &mut Cursor::new(format!("PULL {digest} fresh\n")),
+            &nonce,
+            &mut Cursor::new(format!("PULL {digest} {nonce}\n")),
             &mut Vec::new(),
         )
         .unwrap();
+        let stale_nonce = format!("{nonce}00");
         let error = run_pull_confirmation(
             &plan,
-            "fresh",
-            &mut Cursor::new(format!("PULL {digest} stale\n")),
+            &nonce,
+            &mut Cursor::new(format!("PULL {digest} {stale_nonce}\n")),
             &mut Vec::new(),
         )
         .unwrap_err();

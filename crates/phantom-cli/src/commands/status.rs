@@ -126,18 +126,17 @@ pub fn run(oneline: bool) -> Result<()> {
     println!("  {}", "Service mappings:".dimmed());
     for (name, svc) in &proxy_services {
         println!(
-            "    {} {} -> {} ({})",
+            "    {} {} -> {}",
             "-".dimmed(),
-            svc.secret_key,
-            svc.pattern.as_deref().unwrap_or("n/a"),
-            name.cyan()
+            name.cyan(),
+            svc.pattern.as_deref().unwrap_or("n/a")
         );
     }
-    for (_name, svc) in &conn_services {
+    for (name, _svc) in &conn_services {
         println!(
             "    {} {} ({})",
             "-".dimmed(),
-            svc.secret_key,
+            name.cyan(),
             "blocked for agentic execution; protocol-aware broker required".yellow()
         );
     }
@@ -155,5 +154,13 @@ mod tests {
         assert!(!source.contains(&constructor));
         assert!(!source.contains(&listing));
         assert!(source.contains("not opened by read-only status"));
+    }
+
+    #[test]
+    fn status_mapping_source_does_not_format_the_secret_key_field() {
+        let source = include_str!("status.rs");
+        let mappings = source.split("Service mappings:").nth(1).unwrap();
+        let implementation = mappings.split("#[cfg(test)]").next().unwrap();
+        assert!(!implementation.contains("svc.secret_key"));
     }
 }

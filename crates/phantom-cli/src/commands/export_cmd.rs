@@ -419,12 +419,11 @@ fn run_encrypted(plan: &ExportPlan, passphrase: &str) -> Result<()> {
         )
     })?;
 
-    println!(
-        "{} Exported {} secret(s) to {}",
-        "ok".green().bold(),
-        plan.names.len(),
-        plan.output_path.display().to_string().bold()
-    );
+    // The reviewed destination and secret-name set were shown before the
+    // trusted-terminal challenge. Keep the post-decryption completion line
+    // constant so neither sensitive values nor metadata derived from the
+    // vault can enter captured stdout.
+    println!("{} Encrypted backup export complete.", "ok".green().bold());
 
     Ok(())
 }
@@ -724,6 +723,14 @@ fn sync_directory(_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn encrypted_export_source_uses_a_constant_completion_line() {
+        let source = include_str!("export_cmd.rs");
+        let previous = ["Exported {}", " secret(s) to {}"].concat();
+        assert!(source.contains("Encrypted backup export complete."));
+        assert!(!source.contains(&previous));
+    }
 
     #[test]
     fn legacy_argv_passphrase_is_rejected() {

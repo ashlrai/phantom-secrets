@@ -251,14 +251,18 @@ fn validate_device_flow(flow: &auth::DeviceFlowResponse) -> Result<PollSchedule>
 }
 
 fn require_trusted_terminal_login(plan: &impl Serialize, phase: &str) -> Result<()> {
-    let mut nonce_bytes = [0_u8; 8];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = hex::encode(nonce_bytes);
+    let nonce = fresh_confirmation_nonce();
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     prompt_login(plan, phase, &nonce, &mut reader, &mut stdout, &mut stderr)
+}
+
+fn fresh_confirmation_nonce() -> String {
+    let mut nonce_bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    hex::encode(nonce_bytes)
 }
 
 fn prompt_login(
@@ -407,7 +411,7 @@ mod tests {
             normalized_https_destination: "https://evil.invalid/device",
             ..reviewed.clone()
         };
-        let nonce = "0011223344556677";
+        let nonce = fresh_confirmation_nonce();
         let reviewed_json = serde_json::to_string_pretty(&reviewed).unwrap();
         let expected = format!(
             "login open-and-poll {nonce} {}",
@@ -417,7 +421,7 @@ mod tests {
         assert!(prompt_login(
             &changed,
             "open-and-poll",
-            nonce,
+            &nonce,
             &mut std::io::Cursor::new(format!("{expected}\n")),
             &mut Vec::new(),
             &mut Vec::new()

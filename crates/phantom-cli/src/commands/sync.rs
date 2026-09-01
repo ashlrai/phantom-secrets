@@ -294,9 +294,8 @@ async fn run_async(
             .collect();
 
         println!(
-            "\n{} Syncing {} secret(s) to {} (project: {})...",
+            "\n{} Syncing reviewed secret selection to {} (project: {})...",
             "->".blue().bold(),
-            filtered_secrets.len(),
             target.platform.to_string().cyan().bold(),
             target.project_id.dimmed()
         );
@@ -476,12 +475,16 @@ fn require_trusted_terminal_sync(plans: &[LiveTargetPlan]) -> Result<()> {
             "Live `phantom sync` requires attached stdin, stdout, and stderr terminals and cannot run headlessly. No vault plaintext was read and no provider request was sent. Use --dry-run for a value-blind headless preview."
         );
     }
-    let mut nonce_bytes = [0_u8; 4];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = hex::encode(nonce_bytes);
+    let nonce = fresh_confirmation_nonce();
     let mut reader = std::io::BufReader::new(std::io::stdin().lock());
     let mut diagnostic = std::io::stderr();
     run_sync_confirmation(plans, &nonce, &mut reader, &mut diagnostic)
+}
+
+fn fresh_confirmation_nonce() -> String {
+    let mut nonce_bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    hex::encode(nonce_bytes)
 }
 
 fn run_sync_confirmation(
@@ -670,6 +673,14 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn live_sync_source_omits_decrypted_map_size_from_progress() {
+        let source = include_str!("sync.rs");
+        let prior_progress = ["Syncing {} secret(s)", " to"].concat();
+        assert!(source.contains("Syncing reviewed secret selection to"));
+        assert!(!source.contains(&prior_progress));
+    }
+
+    #[test]
     fn filter_key_names_without_patterns_selects_all() {
         let names = vec!["B".to_string(), "A".to_string()];
         let (selected, skipped) = filter_key_names(&names, &[]);
@@ -743,15 +754,16 @@ mod tests {
     fn exact_digest_and_fresh_nonce_are_required() {
         let plans = vec![plan()];
         let digest = sync_plan_digest(&plans).unwrap();
-        let expected = format!("SYNC {digest} fresh1234\n");
+        let nonce = fresh_confirmation_nonce();
+        let expected = format!("SYNC {digest} {nonce}\n");
         let mut output = Vec::new();
-        run_sync_confirmation(&plans, "fresh1234", &mut Cursor::new(expected), &mut output)
-            .unwrap();
+        run_sync_confirmation(&plans, &nonce, &mut Cursor::new(expected), &mut output).unwrap();
 
+        let wrong_nonce = format!("{nonce}00");
         let error = run_sync_confirmation(
             &plans,
-            "fresh1234",
-            &mut Cursor::new(format!("SYNC {digest} wrongnonce\n")),
+            &nonce,
+            &mut Cursor::new(format!("SYNC {digest} {wrong_nonce}\n")),
             &mut Vec::new(),
         )
         .unwrap_err();
