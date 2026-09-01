@@ -7,13 +7,19 @@ use hyper::body::{Frame, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
+use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
+
+const MAX_CONCURRENT_CONNECTIONS: usize = 256;
+const REQUEST_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const MAX_HTTP1_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Configuration for the proxy server.
 #[derive(Clone)]
@@ -145,25 +151,58 @@ async fn run_server(
     state: Arc<ProxyState>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    let connection_slots = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+    let mut connections = JoinSet::new();
     loop {
         tokio::select! {
+            Some(result) = connections.join_next(), if !connections.is_empty() => {
+                if let Err(error) = result {
+                    warn!("Proxy connection task ended unexpectedly: {error}");
+                }
+            }
             result = listener.accept() => {
                 match result {
                     Ok((stream, addr)) => {
+                        let Ok(permit) = connection_slots.clone().try_acquire_owned() else {
+                            warn!(
+                                "Rejected loopback connection from {} because the {}-connection limit is active",
+                                addr,
+                                MAX_CONCURRENT_CONNECTIONS
+                            );
+                            drop(stream);
+                            continue;
+                        };
                         debug!("Connection from {}", addr);
                         let state = state.clone();
-                        tokio::spawn(async move {
+                        let mut connection_shutdown = shutdown_rx.clone();
+                        connections.spawn(async move {
+                            let _permit = permit;
                             let io = TokioIo::new(stream);
-                            if let Err(e) = http1::Builder::new()
-                                .serve_connection(
-                                    io,
-                                    service_fn(move |req| {
-                                        handle_request(req, state.clone())
-                                    }),
-                                )
-                                .await
-                            {
-                                debug!("Connection error: {}", e);
+                            let mut builder = http1::Builder::new();
+                            builder
+                                .timer(TokioTimer::new())
+                                .header_read_timeout(REQUEST_HEADER_TIMEOUT)
+                                .max_buf_size(MAX_HTTP1_BUFFER_BYTES);
+                            let mut connection = std::pin::pin!(builder.serve_connection(
+                                io,
+                                service_fn(move |req| handle_request(req, state.clone())),
+                            ));
+                            tokio::select! {
+                                result = &mut connection => {
+                                    if let Err(error) = result {
+                                        debug!("Connection error: {error}");
+                                    }
+                                }
+                                changed = connection_shutdown.changed() => {
+                                    if changed.is_ok() && *connection_shutdown.borrow() {
+                                        connection.as_mut().graceful_shutdown();
+                                        match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, &mut connection).await {
+                                            Ok(Err(error)) => debug!("Connection drain error: {error}"),
+                                            Err(_) => debug!("Connection drain timed out"),
+                                            Ok(Ok(())) => {}
+                                        }
+                                    }
+                                }
                             }
                         });
                     }
@@ -179,6 +218,26 @@ async fn run_server(
                 }
             }
         }
+    }
+
+    let drain_deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN_TIMEOUT;
+    while !connections.is_empty() {
+        let remaining = drain_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero()
+            || tokio::time::timeout(remaining, connections.join_next())
+                .await
+                .is_err()
+        {
+            break;
+        }
+    }
+    if !connections.is_empty() {
+        warn!(
+            "Aborting {} proxy connection(s) that exceeded the shutdown drain deadline",
+            connections.len()
+        );
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
     }
 }
 
