@@ -634,7 +634,7 @@ impl AnchoredTarget {
         permissions: AnchoredFilePermissions,
     ) -> io::Result<AnchoredEffect<AnchoredRead>> {
         self.require_exact(expected)?;
-        let (temp_name, temp, temp_identity) = self.create_private_temp()?;
+        let (temp_name, temp, temp_identity) = self.create_staging_temp(&permissions)?;
         let mut temp = Some(temp);
         let result = (|| {
             let staging = temp.as_mut().expect("staging handle is live");
@@ -783,7 +783,10 @@ impl AnchoredTarget {
         Ok(())
     }
 
-    fn create_private_temp(&self) -> io::Result<(OsString, File, FileIdentity)> {
+    fn create_staging_temp(
+        &self,
+        permissions: &AnchoredFilePermissions,
+    ) -> io::Result<(OsString, File, FileIdentity)> {
         for _ in 0..TEMP_CREATE_ATTEMPTS {
             let mut random = [0_u8; 16];
             rand::rngs::OsRng.fill_bytes(&mut random);
@@ -795,7 +798,7 @@ impl AnchoredTarget {
             match self.parent().open_with(&name, &options) {
                 Ok(file) => {
                     ensure_regular_single_link(&file, &self.relative)?;
-                    repair_private_file(&file)?;
+                    prepare_staging_permissions(&file, permissions)?;
                     let identity = file_identity(&file)?;
                     return Ok((name, file, identity));
                 }
@@ -1175,6 +1178,14 @@ fn repair_private_file(file: &File) -> io::Result<()> {
 }
 
 #[cfg(unix)]
+fn prepare_staging_permissions(
+    file: &File,
+    _permissions: &AnchoredFilePermissions,
+) -> io::Result<()> {
+    repair_private_file(file)
+}
+
+#[cfg(unix)]
 fn apply_file_permissions(file: &File, permissions: AnchoredFilePermissions) -> io::Result<()> {
     use std::os::fd::AsRawFd;
     let mode = permissions.unix_mode.unwrap_or(PRIVATE_FILE_MODE);
@@ -1188,6 +1199,36 @@ fn apply_file_permissions(file: &File, permissions: AnchoredFilePermissions) -> 
 #[cfg(windows)]
 fn repair_private_file(file: &File) -> io::Result<()> {
     apply_file_permissions(file, AnchoredFilePermissions::private())
+}
+
+#[cfg(windows)]
+fn prepare_staging_permissions(
+    file: &File,
+    permissions: &AnchoredFilePermissions,
+) -> io::Result<()> {
+    match &permissions.windows_dacl {
+        // An unprotected DACL can only be reproduced exactly when a fresh file
+        // inherits the same ACL from this retained parent. Keep that inherited
+        // state intact until `apply_file_permissions` verifies it, before any
+        // caller bytes are written. Making the staging file private first
+        // would protect its DACL and Windows cannot losslessly turn that ACL
+        // back into the reviewed inherited form.
+        WindowsDaclIntent::Captured(dacl) if !dacl.protected => Ok(()),
+        WindowsDaclIntent::PrivateUser | WindowsDaclIntent::Captured(_) => {
+            repair_private_file(file)
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn prepare_staging_permissions(
+    _file: &File,
+    _permissions: &AnchoredFilePermissions,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "private staging permissions require Unix or Windows support",
+    ))
 }
 
 #[cfg(windows)]
