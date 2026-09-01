@@ -399,7 +399,7 @@ async fn run_async() -> Result<()> {
 
     let config = PhantomConfig::load(&config_path)?;
     config.validate_agentic_proxy_routes()?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Build token mapping
     let mut token_to_secret: HashMap<String, String> = HashMap::new();
