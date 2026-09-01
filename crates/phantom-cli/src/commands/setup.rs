@@ -1182,11 +1182,28 @@ fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
 }
 
 fn home_dir() -> Result<PathBuf> {
-    dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not resolve home dir"))
+    select_home_dir(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+        dirs::home_dir(),
+    )
+    .ok_or_else(|| anyhow::anyhow!("Could not resolve home dir"))
+}
+
+fn select_home_dir(
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+    platform_fallback: Option<PathBuf>,
+) -> Option<PathBuf> {
+    home.into_iter()
+        .chain(user_profile)
+        .map(PathBuf::from)
+        .chain(platform_fallback)
+        .find(|path| !path.as_os_str().is_empty() && path.is_absolute())
 }
 
 fn display(path: &Path) -> String {
-    if let Some(home) = dirs::home_dir() {
+    if let Ok(home) = home_dir() {
         if let Ok(suffix) = path.strip_prefix(&home) {
             return format!("~/{}", suffix.display());
         }
@@ -1597,6 +1614,32 @@ mod tests {
         assert!(error.contains(&format!("releases/tag/v{}", env!("CARGO_PKG_VERSION"))));
         assert!(error.contains("will not download"));
         assert!(!error.contains("npx"));
+    }
+
+    #[test]
+    fn home_resolution_honors_absolute_overrides_cross_platform() {
+        let home = tempdir().unwrap();
+        let user_profile = tempdir().unwrap();
+        let platform = tempdir().unwrap();
+
+        assert_eq!(
+            select_home_dir(
+                Some(home.path().as_os_str().to_owned()),
+                Some(user_profile.path().as_os_str().to_owned()),
+                Some(platform.path().to_path_buf()),
+            )
+            .unwrap(),
+            home.path()
+        );
+        assert_eq!(
+            select_home_dir(
+                Some(std::ffi::OsString::from("relative-home")),
+                Some(user_profile.path().as_os_str().to_owned()),
+                None,
+            )
+            .unwrap(),
+            user_profile.path()
+        );
     }
 
     #[test]
