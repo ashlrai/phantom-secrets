@@ -73,10 +73,12 @@ customer acceptance exist or are active.
   executable before readiness passes.
 - Makes fallback vault provisioning fail closed unless a generated passphrase
   is durably persisted and verified, serializes keychain index/metadata
-  transactions, compensates partial mutations, and propagates backend errors
-  instead of replacing missing encryption keys or panicking.
+  transactions, compensates partial mutations (including legacy plaintext-name
+  migration), exposes a fallible public vault constructor, and propagates
+  backend errors instead of replacing missing encryption keys or panicking.
 - Replaces ambient `kill`/`tasklist` process checks with native OS liveness,
   authenticates graceful proxy shutdown, serializes per-project proxy starts,
+  requires authenticated daemon readiness before exporting its bearer token,
   and keeps session PID/bearer state out of Git.
 
 ### Reliability and authority boundaries
@@ -86,7 +88,16 @@ customer acceptance exist or are active.
   and rollback that never stores plaintext secret backups or journals.
 - Spans initialization and token-remap compare-and-swap checks with
   cross-process project locks so concurrent writers cannot overwrite a newer
-  dotenv or vault state between verification and commit.
+  dotenv or vault state between verification and commit. All MCP token-remap
+  paths use the same locked before-image discipline.
+- Propagates vault inspection, credential-read, and provider-rotation metadata
+  failures across MCP and CLI flows instead of rendering an empty vault,
+  starting a partially mapped session, overwriting on an unknown destination
+  state, or reporting a false rotation success. Non-forced cloud pulls preflight
+  every overwrite decision before their first store.
+- Scopes competitor-import overwrite approval to the exact existing names the
+  user reviewed; a newly appearing duplicate remains untouched unless
+  `--force` is explicit.
 - Normalizes Pro access from an exact lowercase plan plus a strictly valid,
   timezone-qualified future expiry. Billing lookup exhausts bounded Stripe
   subscription pagination and fails closed on malformed or non-progressing
