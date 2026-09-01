@@ -17,7 +17,9 @@ use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 256;
+const MAX_CONCURRENT_REQUESTS: usize = 32;
 const REQUEST_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const REQUEST_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_HTTP1_BUFFER_BYTES: usize = 64 * 1024;
 
@@ -85,6 +87,7 @@ impl ProxyServer {
             registry,
             interceptor,
             rate_limiter: RateLimiter::new(config.rate_limit),
+            request_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
             proxy_token: config.proxy_token,
             allow_query_token_auth: config.allow_query_token_auth,
             max_body_size: config.max_body_size,
@@ -140,6 +143,7 @@ struct ProxyState {
     registry: ServiceRegistry,
     interceptor: Interceptor,
     rate_limiter: RateLimiter,
+    request_slots: Arc<Semaphore>,
     proxy_token: String,
     allow_query_token_auth: bool,
     max_body_size: usize,
@@ -311,7 +315,7 @@ async fn handle_request(
         })
         .unwrap_or_default();
 
-    debug!("{} {}{}", method, path, query);
+    debug!("{} {} query_present={}", method, path, !query.is_empty());
 
     // Verify proxy token (defense-in-depth — prevents other local processes from using the proxy)
     // Token check runs before ALL endpoints, including health check.
@@ -339,10 +343,7 @@ async fn handle_request(
                 .unwrap_or("");
 
             if !state.allow_query_token_auth || !constant_time_eq(query_token, &state.proxy_token) {
-                warn!(
-                    "Rejected request without valid proxy token from {}",
-                    original_path
-                );
+                warn!("Rejected request without a valid proxy session token");
                 return Ok(error_response(
                     StatusCode::UNAUTHORIZED,
                     r#"{"error":"missing or invalid proxy token"}"#,
@@ -375,7 +376,22 @@ async fn handle_request(
     };
 
     let target_url = format!("{}{}{}", route.target_base, remainder, query);
-    debug!("Proxying to: {}", target_url);
+    debug!("Proxying reviewed route for service {}", route.name);
+
+    let Ok(_request_permit) = state.request_slots.clone().try_acquire_owned() else {
+        warn!(
+            "Rejected request because the {}-request work limit is active",
+            MAX_CONCURRENT_REQUESTS
+        );
+        let mut response = error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"proxy request capacity is temporarily exhausted"}"#,
+        );
+        response
+            .headers_mut()
+            .insert("retry-after", hyper::header::HeaderValue::from_static("1"));
+        return Ok(response);
+    };
 
     // ── Rate-limit / anomaly detection ──────────────────────────────────────
     // Record the access against the matched route's secret key and classify.
@@ -512,10 +528,11 @@ async fn handle_request(
     // that the body exceeds the cap can cause an upstream mutation to execute
     // on truncated input. The buffer remains strictly bounded.
     let limited_body = http_body_util::Limited::new(req.into_body(), state.max_body_size);
-    let body_bytes = match limited_body.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            let err_str = e.to_string();
+    let body_bytes = match tokio::time::timeout(REQUEST_BODY_TIMEOUT, limited_body.collect()).await
+    {
+        Ok(Ok(collected)) => collected.to_bytes(),
+        Ok(Err(error)) => {
+            let err_str = error.to_string();
             if err_str.contains("length limit exceeded") {
                 warn!(
                     "Request body too large (limit: {} bytes)",
@@ -529,10 +546,17 @@ async fn handle_request(
                     ),
                 ));
             }
-            error!("Failed to read request body: {}", e);
+            error!("Failed to read request body");
             return Ok(error_response(
                 StatusCode::BAD_REQUEST,
                 r#"{"error":"failed to read request body"}"#,
+            ));
+        }
+        Err(_) => {
+            warn!("Request body deadline exceeded");
+            return Ok(error_response(
+                StatusCode::REQUEST_TIMEOUT,
+                r#"{"error":"request body deadline exceeded"}"#,
             ));
         }
     };
@@ -546,8 +570,7 @@ async fn handle_request(
     let response = match outgoing.send().await {
         Ok(resp) => resp,
         Err(e) => {
-            // Log full error for debugging, but sanitize response to avoid leaking internal details
-            error!("Upstream request failed for {}: {}", route.name, e);
+            error!("Upstream request failed for service {}", route.name);
             let user_msg = if e.is_timeout() {
                 "upstream request timed out"
             } else if e.is_connect() {
