@@ -156,8 +156,8 @@ async fn run_server(
     loop {
         tokio::select! {
             Some(result) = connections.join_next(), if !connections.is_empty() => {
-                if let Err(error) = result {
-                    warn!("Proxy connection task ended unexpectedly: {error}");
+                if result.is_err() {
+                    warn!("Proxy connection task ended unexpectedly");
                 }
             }
             result = listener.accept() => {
