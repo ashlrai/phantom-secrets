@@ -1,6 +1,11 @@
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use colored::Colorize;
+use phantom_core::fs::{
+    AnchoredCreatedDirectory, AnchoredDirectoryCreation, AnchoredEffect, AnchoredFilePermissions,
+    AnchoredLock, AnchoredRead, AnchoredTarget, TrustedAnchor,
+};
+use phantom_vault::{ProjectDirectoryPreparation, ProjectTransactionLock};
 use std::path::{Path, PathBuf};
 
 /// Audit mode to configure via `phantom setup --audit-mode`.
@@ -164,9 +169,7 @@ fn resolve_mcp_command(
 
 fn setup_claude_code(mcp: &McpCommand) -> Result<()> {
     let project_dir = std::env::current_dir()?;
-    let settings_path = project_dir.join(".claude/settings.local.json");
-    let plan = prepare_claude_settings(&settings_path, mcp)?;
-    apply_claude_settings(&plan)?;
+    let plan = setup_claude_code_in(&project_dir, mcp, || {})?;
     print_claude_changes(&plan, mcp);
 
     println!("\n{} Claude Code configured!", "ok".green().bold());
@@ -177,6 +180,42 @@ fn setup_claude_code(mcp: &McpCommand) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn setup_claude_code_in(
+    project_dir: &Path,
+    mcp: &McpCommand,
+    after_lock: impl FnOnce(),
+) -> Result<ClaudeSettingsPlan> {
+    let lock = phantom_vault::acquire_project_transaction_lock(project_dir)
+        .context("Failed to acquire the project transaction lock")?;
+    after_lock();
+    let preparation = prepare_project_child(&lock, ".claude", "Claude settings")?;
+    let settings_path = project_dir.join(".claude/settings.local.json");
+    let operation = (|| {
+        let target = preparation
+            .anchor()
+            .expect("known Claude directory preparation retains its anchor")
+            .target("settings.local.json")?;
+        let reviewed = target
+            .read_regular()
+            .with_context(|| format!("Failed to safely read {}", settings_path.display()))?;
+        let before = reviewed.as_ref().map(|read| read.bytes().to_vec());
+        let plan = build_claude_settings_plan(&settings_path, before, mcp)?;
+        let effect = apply_claude_target(&plan, &target, reviewed.as_ref())?;
+        Ok::<_, anyhow::Error>((plan, effect))
+    })();
+    match operation {
+        Ok((plan, None | Some(AnchoredEffect::Durable(_)))) => Ok(plan),
+        Ok((_, Some(AnchoredEffect::CommittedButUncertain { error, .. }))) => anyhow::bail!(
+            "{} was replaced, but durability could not be verified: {error}",
+            settings_path.display()
+        ),
+        Err(error) => {
+            cleanup_project_child(preparation, "Claude settings")?;
+            Err(error)
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -215,8 +254,25 @@ pub(crate) fn prepare_claude_settings(
     settings_path: &Path,
     mcp: &McpCommand,
 ) -> Result<ClaudeSettingsPlan> {
-    let before = phantom_core::fs::read_regular_file(settings_path)
+    let project_root = claude_project_root(settings_path)?;
+    let lock = phantom_vault::acquire_project_transaction_lock(project_root)
+        .context("Failed to acquire the project transaction lock")?;
+    let before = lock
+        .target(settings_path)?
+        .read_regular()
         .with_context(|| format!("Failed to safely read {}", settings_path.display()))?;
+    build_claude_settings_plan(
+        settings_path,
+        before.map(phantom_core::fs::AnchoredRead::into_bytes),
+        mcp,
+    )
+}
+
+fn build_claude_settings_plan(
+    settings_path: &Path,
+    before: Option<Vec<u8>>,
+    mcp: &McpCommand,
+) -> Result<ClaudeSettingsPlan> {
     let existed = before.is_some();
     let mut settings: serde_json::Value = if let Some(content) = before.as_deref() {
         serde_json::from_slice(content)
@@ -283,23 +339,100 @@ pub(crate) fn prepare_claude_settings(
     })
 }
 
-pub(crate) fn apply_claude_settings(plan: &ClaudeSettingsPlan) -> Result<bool> {
+#[cfg(test)]
+fn apply_claude_settings(plan: &ClaudeSettingsPlan) -> Result<bool> {
     if !plan.changed {
         return Ok(false);
     }
-    let _transaction_lock = lock_file_parent(&plan.settings_path)?;
-    phantom_core::fs::atomic_write_if_unchanged(
-        &plan.settings_path,
-        plan.before.as_deref(),
-        plan.content.as_bytes(),
-    )
-    .with_context(|| {
-        format!(
+    let project_root = claude_project_root(&plan.settings_path)?;
+    let lock = phantom_vault::acquire_project_transaction_lock(project_root)
+        .context("Failed to acquire the project transaction lock")?;
+    let target = lock.target(&plan.settings_path)?;
+    let reviewed = target.read_regular()?;
+    match apply_claude_target(plan, &target, reviewed.as_ref())? {
+        None => Ok(false),
+        Some(AnchoredEffect::Durable(_)) => Ok(true),
+        Some(AnchoredEffect::CommittedButUncertain { error, .. }) => anyhow::bail!(
+            "{} was replaced, but durability could not be verified: {error}",
+            plan.settings_path.display()
+        ),
+    }
+}
+
+fn apply_claude_target(
+    plan: &ClaudeSettingsPlan,
+    target: &AnchoredTarget,
+    reviewed: Option<&AnchoredRead>,
+) -> Result<Option<AnchoredEffect<AnchoredRead>>> {
+    if reviewed.map(AnchoredRead::bytes) != plan.before.as_deref() {
+        anyhow::bail!(
             "{} changed after setup read it; refusing to overwrite the concurrent edit",
             plan.settings_path.display()
-        )
-    })?;
-    Ok(true)
+        );
+    }
+    if !plan.changed {
+        return Ok(None);
+    }
+    let permissions = reviewed
+        .map(AnchoredRead::permissions)
+        .unwrap_or_else(AnchoredFilePermissions::private);
+    target
+        .replace_if_exact_with_permissions(reviewed, plan.content.as_bytes(), permissions)
+        .map(Some)
+        .map_err(Into::into)
+}
+
+fn claude_project_root(settings_path: &Path) -> Result<&Path> {
+    if settings_path.file_name().and_then(|name| name.to_str()) != Some("settings.local.json") {
+        anyhow::bail!(
+            "Claude project settings must be named settings.local.json: {}",
+            settings_path.display()
+        );
+    }
+    let claude_dir = settings_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Claude settings path has no parent"))?;
+    if claude_dir.file_name().and_then(|name| name.to_str()) != Some(".claude") {
+        anyhow::bail!(
+            "Claude project settings must be inside a direct .claude directory: {}",
+            settings_path.display()
+        );
+    }
+    claude_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Claude settings path has no project root"))
+}
+
+fn prepare_project_child(
+    lock: &ProjectTransactionLock,
+    name: &str,
+    label: &str,
+) -> Result<ProjectDirectoryPreparation> {
+    match lock.prepare_private_child(name)? {
+        ProjectDirectoryPreparation::CommittedButUncertain { receipt, error } => {
+            let cleanup = receipt.map(AnchoredCreatedDirectory::remove_if_empty_exact);
+            match cleanup {
+                Some(Ok(AnchoredEffect::Durable(()))) => Err(error)
+                    .with_context(|| format!("{label} directory creation was rolled back")),
+                _ => anyhow::bail!(
+                    "{label} directory creation may have committed and exact cleanup could not be verified: {error}"
+                ),
+            }
+        }
+        preparation => Ok(preparation),
+    }
+}
+
+fn cleanup_project_child(preparation: ProjectDirectoryPreparation, label: &str) -> Result<()> {
+    let ProjectDirectoryPreparation::Created(receipt) = preparation else {
+        return Ok(());
+    };
+    match receipt.remove_if_empty_exact()? {
+        AnchoredEffect::Durable(()) => Ok(()),
+        AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
+            "{label} directory was removed, but cleanup durability could not be verified: {error}"
+        ),
+    }
 }
 
 pub(crate) fn print_claude_changes(plan: &ClaudeSettingsPlan, mcp: &McpCommand) {
@@ -337,8 +470,9 @@ pub(crate) fn print_claude_changes(plan: &ClaudeSettingsPlan, mcp: &McpCommand) 
 // ─────────────────────────── Cursor ────────────────────────────
 
 fn setup_cursor(mcp: &McpCommand) -> Result<()> {
-    let path = home_path(".cursor/mcp.json")?;
-    upsert_mcp_servers_json(&path, mcp)?;
+    let home = home_dir()?;
+    let path = home.join(".cursor/mcp.json");
+    upsert_global_mcp_servers_json(&home, Path::new(".cursor/mcp.json"), mcp, || {})?;
     println!(
         "\n{} Cursor configured at {}",
         "ok".green().bold(),
@@ -355,8 +489,14 @@ fn setup_cursor(mcp: &McpCommand) -> Result<()> {
 // ─────────────────────────── Windsurf ──────────────────────────
 
 fn setup_windsurf(mcp: &McpCommand) -> Result<()> {
-    let path = home_path(".codeium/windsurf/mcp_config.json")?;
-    upsert_mcp_servers_json(&path, mcp)?;
+    let home = home_dir()?;
+    let path = home.join(".codeium/windsurf/mcp_config.json");
+    upsert_global_mcp_servers_json(
+        &home,
+        Path::new(".codeium/windsurf/mcp_config.json"),
+        mcp,
+        || {},
+    )?;
     println!(
         "\n{} Windsurf configured at {}",
         "ok".green().bold(),
@@ -373,51 +513,70 @@ fn setup_windsurf(mcp: &McpCommand) -> Result<()> {
 // ──────────────────────────── Codex ────────────────────────────
 
 fn setup_codex(mcp: &McpCommand) -> Result<()> {
-    let path = home_path(".codex/config.toml")?;
-    let _transaction_lock = lock_file_parent(&path)?;
-    let before = phantom_core::fs::read_regular_file(&path)
-        .with_context(|| format!("Failed to safely read {}", path.display()))?;
-    let mut doc: toml::Table = if let Some(content) = before.as_deref() {
-        let content =
-            std::str::from_utf8(content).context("~/.codex/config.toml is not valid UTF-8")?;
-        toml::from_str(content).context("Failed to parse ~/.codex/config.toml")?
-    } else {
-        toml::Table::new()
-    };
+    let home = home_dir()?;
+    setup_codex_at(&home, Path::new(".codex/config.toml"), mcp, || {})
+}
 
-    // Get-or-create [mcp_servers]
-    let mcp_servers = doc
-        .entry("mcp_servers".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-    let servers = mcp_servers
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("[mcp_servers] is not a table in ~/.codex/config.toml"))?;
+fn setup_codex_at(
+    home: &Path,
+    relative: &Path,
+    mcp: &McpCommand,
+    after_lock: impl FnOnce(),
+) -> Result<()> {
+    let path = home.join(relative);
+    let capability = retain_global_config(home, relative, after_lock)?;
+    let operation = (|| {
+        let before = capability
+            .target
+            .read_regular()
+            .with_context(|| format!("Failed to safely read {}", path.display()))?;
+        let mut doc: toml::Table = if let Some(content) = before.as_ref() {
+            let content = std::str::from_utf8(content.bytes())
+                .context("~/.codex/config.toml is not valid UTF-8")?;
+            toml::from_str(content).context("Failed to parse ~/.codex/config.toml")?
+        } else {
+            toml::Table::new()
+        };
 
-    let already = servers.contains_key("phantom");
-    let mut entry = toml::Table::new();
-    entry.insert(
-        "command".to_string(),
-        toml::Value::String(mcp.command.clone()),
-    );
-    entry.insert(
-        "args".to_string(),
-        toml::Value::Array(
-            mcp.args
-                .iter()
-                .map(|a| toml::Value::String(a.clone()))
-                .collect(),
-        ),
-    );
-    servers.insert("phantom".to_string(), toml::Value::Table(entry));
-
-    let serialized = toml::to_string_pretty(&doc).context("Failed to serialize codex config")?;
-    phantom_core::fs::atomic_write_if_unchanged(&path, before.as_deref(), serialized.as_bytes())
-        .with_context(|| {
-            format!(
-                "{} changed during setup; refusing to overwrite the concurrent edit",
-                path.display()
-            )
+        // Get-or-create [mcp_servers]
+        let mcp_servers = doc
+            .entry("mcp_servers".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        let servers = mcp_servers.as_table_mut().ok_or_else(|| {
+            anyhow::anyhow!("[mcp_servers] is not a table in ~/.codex/config.toml")
         })?;
+
+        let already = servers.contains_key("phantom");
+        let mut entry = toml::Table::new();
+        entry.insert(
+            "command".to_string(),
+            toml::Value::String(mcp.command.clone()),
+        );
+        entry.insert(
+            "args".to_string(),
+            toml::Value::Array(
+                mcp.args
+                    .iter()
+                    .map(|a| toml::Value::String(a.clone()))
+                    .collect(),
+            ),
+        );
+        servers.insert("phantom".to_string(), toml::Value::Table(entry));
+
+        let serialized =
+            toml::to_string_pretty(&doc).context("Failed to serialize codex config")?;
+        let permissions = before
+            .as_ref()
+            .map(AnchoredRead::permissions)
+            .unwrap_or_else(AnchoredFilePermissions::private);
+        let effect = capability.target.replace_if_exact_with_permissions(
+            before.as_ref(),
+            serialized.as_bytes(),
+            permissions,
+        )?;
+        Ok::<_, anyhow::Error>((already, effect))
+    })();
+    let already = finish_global_operation(capability, operation, &path)?;
 
     if already {
         println!(
@@ -451,45 +610,71 @@ fn setup_codex(mcp: &McpCommand) -> Result<()> {
 
 /// Read-or-create a JSON file with `mcpServers.phantom = {command, args}`.
 /// Used by Cursor and Windsurf, which share the same MCP config schema.
+#[cfg(test)]
 fn upsert_mcp_servers_json(path: &Path, mcp: &McpCommand) -> Result<()> {
-    let _transaction_lock = lock_file_parent(path)?;
-    let before = phantom_core::fs::read_regular_file(path)
-        .with_context(|| format!("Failed to safely read {}", path.display()))?;
-    let mut value: serde_json::Value = if let Some(content) = before.as_deref() {
-        serde_json::from_slice(content)
-            .with_context(|| format!("Failed to parse {}", path.display()))?
-    } else {
-        serde_json::json!({})
-    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Configuration path has no parent: {}", path.display()))?;
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Configuration path has no filename: {}", path.display()))?;
+    upsert_global_mcp_servers_json(parent, Path::new(leaf), mcp, || {})
+}
 
-    let obj = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("{} is not a JSON object", path.display()))?;
+fn upsert_global_mcp_servers_json(
+    home: &Path,
+    relative: &Path,
+    mcp: &McpCommand,
+    after_lock: impl FnOnce(),
+) -> Result<()> {
+    let path = home.join(relative);
+    let capability = retain_global_config(home, relative, after_lock)?;
+    let operation = (|| {
+        let before = capability
+            .target
+            .read_regular()
+            .with_context(|| format!("Failed to safely read {}", path.display()))?;
+        let mut value: serde_json::Value = if let Some(content) = before.as_ref() {
+            serde_json::from_slice(content.bytes())
+                .with_context(|| format!("Failed to parse {}", path.display()))?
+        } else {
+            serde_json::json!({})
+        };
 
-    let servers = obj
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}));
-    let servers_obj = servers
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object in {}", path.display()))?;
+        let obj = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("{} is not a JSON object", path.display()))?;
 
-    let already = servers_obj.contains_key("phantom");
-    servers_obj.insert(
-        "phantom".to_string(),
-        serde_json::json!({
-            "command": mcp.command,
-            "args": mcp.args_json(),
-        }),
-    );
+        let servers = obj
+            .entry("mcpServers")
+            .or_insert_with(|| serde_json::json!({}));
+        let servers_obj = servers
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object in {}", path.display()))?;
 
-    let content = serde_json::to_string_pretty(&value).context("Failed to serialize MCP config")?;
-    phantom_core::fs::atomic_write_if_unchanged(path, before.as_deref(), content.as_bytes())
-        .with_context(|| {
-            format!(
-                "{} changed during setup; refusing to overwrite the concurrent edit",
-                path.display()
-            )
-        })?;
+        let already = servers_obj.contains_key("phantom");
+        servers_obj.insert(
+            "phantom".to_string(),
+            serde_json::json!({
+                "command": mcp.command,
+                "args": mcp.args_json(),
+            }),
+        );
+
+        let content =
+            serde_json::to_string_pretty(&value).context("Failed to serialize MCP config")?;
+        let permissions = before
+            .as_ref()
+            .map(AnchoredRead::permissions)
+            .unwrap_or_else(AnchoredFilePermissions::private);
+        let effect = capability.target.replace_if_exact_with_permissions(
+            before.as_ref(),
+            content.as_bytes(),
+            permissions,
+        )?;
+        Ok::<_, anyhow::Error>((already, effect))
+    })();
+    let already = finish_global_operation(capability, operation, &path)?;
 
     println!(
         "   {} MCP server: {} -> {}",
@@ -505,18 +690,284 @@ fn upsert_mcp_servers_json(path: &Path, mcp: &McpCommand) -> Result<()> {
     Ok(())
 }
 
-fn lock_file_parent(path: &Path) -> Result<phantom_vault::ProjectTransactionLock> {
-    phantom_core::fs::ensure_real_parent(path)
-        .with_context(|| format!("Refusing unsafe config parent for {}", path.display()))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Configuration path has no parent: {}", path.display()))?;
-    phantom_vault::acquire_project_transaction_lock(parent).with_context(|| {
-        format!(
-            "Failed to acquire the config transaction lock for {}",
-            path.display()
+enum RetainedConfigDirectory {
+    Existing(TrustedAnchor),
+    Created(AnchoredCreatedDirectory),
+}
+
+impl RetainedConfigDirectory {
+    fn anchor(&self) -> &TrustedAnchor {
+        match self {
+            Self::Existing(anchor) => anchor,
+            Self::Created(receipt) => receipt.anchor(),
+        }
+    }
+}
+
+struct GlobalConfigCapability {
+    _lock: AnchoredLock,
+    target: AnchoredTarget,
+    created_directories: Vec<AnchoredCreatedDirectory>,
+}
+
+impl GlobalConfigCapability {
+    fn cleanup(self, label: &Path) -> Result<()> {
+        let Self {
+            _lock,
+            target,
+            created_directories,
+        } = self;
+        drop(target);
+        drop(_lock);
+        cleanup_global_directories(created_directories, label)
+    }
+}
+
+fn retain_global_config(
+    home: &Path,
+    relative: &Path,
+    after_lock: impl FnOnce(),
+) -> Result<GlobalConfigCapability> {
+    let portable = relative.to_str().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Global client config path must be valid UTF-8 beneath the authorized home root: {}",
+            relative.display()
         )
+    })?;
+    if portable.contains('\\') || portable.contains(':') {
+        anyhow::bail!(
+            "Global client config must use a portable relative path beneath the authorized home root: {}",
+            relative.display()
+        );
+    }
+    let mut components = Vec::new();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(component) => components.push(component.to_os_string()),
+            _ => anyhow::bail!(
+                "Global client config must be one normal relative path beneath the authorized home root: {}",
+                relative.display()
+            ),
+        }
+    }
+    let leaf = components.pop().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Global client config path has no filename: {}",
+            relative.display()
+        )
+    })?;
+
+    let lock_home = TrustedAnchor::open_canonical(home)
+        .with_context(|| format!("Failed to retain authorized home root {}", home.display()))?;
+    let traversal_home = TrustedAnchor::open_canonical(home)
+        .with_context(|| format!("Failed to retain authorized home root {}", home.display()))?;
+    if lock_home.identity() != traversal_home.identity() {
+        anyhow::bail!(
+            "Authorized home root changed while it was retained: {}",
+            home.display()
+        );
+    }
+    let lock = acquire_global_setup_lock(&lock_home)?;
+
+    let mut current = RetainedConfigDirectory::Existing(traversal_home);
+    let mut created = Vec::new();
+    for component in components {
+        let next = match current.anchor().open_subdirectory(Path::new(&component)) {
+            Ok(anchor) => RetainedConfigDirectory::Existing(anchor),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match current.anchor().create_private_child(Path::new(&component)) {
+                    Ok(AnchoredDirectoryCreation::Durable(receipt)) => {
+                        RetainedConfigDirectory::Created(receipt)
+                    }
+                    Ok(AnchoredDirectoryCreation::CommittedButUncertain {
+                        receipt: None,
+                        error,
+                    }) => {
+                        append_created_directory(&mut created, current);
+                        let prior_cleanup = cleanup_global_directories(created, relative);
+                        anyhow::bail!(
+                            "Global client directory creation may have committed without an exact receipt; the attempted directory cannot be cleaned up safely: {error}; prior cleanup: {}",
+                            prior_cleanup
+                                .err()
+                                .map_or_else(|| "complete".to_string(), |cleanup| cleanup.to_string())
+                        );
+                    }
+                    Ok(AnchoredDirectoryCreation::CommittedButUncertain {
+                        receipt: Some(receipt),
+                        error,
+                    }) => {
+                        append_created_directory(&mut created, current);
+                        created.push(receipt);
+                        return match cleanup_global_directories(created, relative) {
+                            Ok(()) => Err(error)
+                                .context("Global client directory creation was rolled back exactly"),
+                            Err(cleanup) => anyhow::bail!(
+                                "Global client directory creation may have committed and exact cleanup could not be verified: {error}; cleanup: {cleanup}"
+                            ),
+                        };
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        match current.anchor().open_subdirectory(Path::new(&component)) {
+                            Ok(anchor) => RetainedConfigDirectory::Existing(anchor),
+                            Err(open_error) => {
+                                append_created_directory(&mut created, current);
+                                cleanup_global_directories(created, relative)?;
+                                return Err(open_error).with_context(|| {
+                                    format!(
+                                        "Global client config directory raced with another owner beneath {}",
+                                        home.display()
+                                    )
+                                });
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        append_created_directory(&mut created, current);
+                        cleanup_global_directories(created, relative)?;
+                        return Err(error).with_context(|| {
+                            format!(
+                                "Failed to create global client config directory beneath {}",
+                                home.display()
+                            )
+                        });
+                    }
+                }
+            }
+            Err(error) => {
+                append_created_directory(&mut created, current);
+                cleanup_global_directories(created, relative)?;
+                return Err(error).with_context(|| {
+                    format!(
+                        "Refusing unsafe global client config directory beneath {}",
+                        home.display()
+                    )
+                });
+            }
+        };
+        append_created_directory(&mut created, current);
+        current = next;
+    }
+
+    after_lock();
+    let target = match current.anchor().target(Path::new(&leaf)) {
+        Ok(target) => target,
+        Err(error) => {
+            drop(lock);
+            append_created_directory(&mut created, current);
+            cleanup_global_directories(created, relative)?;
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to retain global client config {}",
+                    relative.display()
+                )
+            });
+        }
+    };
+    append_created_directory(&mut created, current);
+    Ok(GlobalConfigCapability {
+        _lock: lock,
+        target,
+        created_directories: created,
     })
+}
+
+fn acquire_global_setup_lock(home: &TrustedAnchor) -> Result<AnchoredLock> {
+    let directory = match home.open_subdirectory(".phantom") {
+        Ok(anchor) => RetainedConfigDirectory::Existing(anchor),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match home.create_private_child(".phantom") {
+                Ok(AnchoredDirectoryCreation::Durable(receipt)) => {
+                    RetainedConfigDirectory::Created(receipt)
+                }
+                Ok(AnchoredDirectoryCreation::CommittedButUncertain {
+                    receipt: Some(receipt),
+                    error,
+                }) => {
+                    return match receipt.remove_if_empty_exact() {
+                        Ok(AnchoredEffect::Durable(())) => Err(error)
+                            .context("Global setup-state directory creation was rolled back exactly"),
+                        _ => anyhow::bail!(
+                            "Global setup-state directory creation may have committed and exact cleanup could not be verified: {error}"
+                        ),
+                    };
+                }
+                Ok(AnchoredDirectoryCreation::CommittedButUncertain {
+                    receipt: None,
+                    error,
+                }) => anyhow::bail!(
+                    "Global setup-state directory creation may have committed without an exact receipt and cannot be cleaned up safely: {error}"
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    RetainedConfigDirectory::Existing(
+                        home.open_subdirectory(".phantom").with_context(|| {
+                            "Global setup-state directory raced with another owner"
+                        })?,
+                    )
+                }
+                Err(error) => {
+                    return Err(error).context("Failed to create global setup-state directory")
+                }
+            }
+        }
+        Err(error) => return Err(error).context("Refusing unsafe global setup-state directory"),
+    };
+    match directory.anchor().acquire_lock("client-setup.lock") {
+        Ok(lock) => Ok(lock),
+        Err(error) => {
+            if let RetainedConfigDirectory::Created(receipt) = directory {
+                match receipt.remove_if_empty_exact()? {
+                    AnchoredEffect::Durable(()) => {}
+                    AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
+                        "Global setup-state cleanup committed, but durability could not be verified: {error}"
+                    ),
+                }
+            }
+            Err(error).context("Failed to acquire the global client setup lock")
+        }
+    }
+}
+
+fn append_created_directory(
+    receipts: &mut Vec<AnchoredCreatedDirectory>,
+    directory: RetainedConfigDirectory,
+) {
+    if let RetainedConfigDirectory::Created(receipt) = directory {
+        receipts.push(receipt);
+    }
+}
+
+fn cleanup_global_directories(
+    mut receipts: Vec<AnchoredCreatedDirectory>,
+    label: &Path,
+) -> Result<()> {
+    while let Some(receipt) = receipts.pop() {
+        match receipt.remove_if_empty_exact()? {
+            AnchoredEffect::Durable(()) => {}
+            AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
+                "{} directory cleanup committed, but durability could not be verified: {error}",
+                label.display()
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn finish_global_operation<T>(
+    capability: GlobalConfigCapability,
+    operation: Result<(T, AnchoredEffect<AnchoredRead>)>,
+    path: &Path,
+) -> Result<T> {
+    match operation {
+        Ok((value, AnchoredEffect::Durable(_))) => Ok(value),
+        Ok((_, AnchoredEffect::CommittedButUncertain { error, .. })) => anyhow::bail!(
+            "{} was replaced, but durability could not be verified: {error}",
+            path.display()
+        ),
+        Err(error) => {
+            capability.cleanup(path)?;
+            Err(error)
+        }
+    }
 }
 
 // ──────────────────────────── --print ──────────────────────────
@@ -645,9 +1096,8 @@ fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
     Ok(())
 }
 
-fn home_path(rel: &str) -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not resolve home dir"))?;
-    Ok(home.join(rel))
+fn home_dir() -> Result<PathBuf> {
+    dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not resolve home dir"))
 }
 
 fn display(path: &Path) -> String {
@@ -731,7 +1181,8 @@ mod tests {
     #[test]
     fn claude_writer_migrates_stale_registry_entry_and_preserves_settings() {
         let tmp = tempdir().unwrap();
-        let path = tmp.path().join("settings.local.json");
+        let path = tmp.path().join(".claude/settings.local.json");
+        std::fs::create_dir(tmp.path().join(".claude")).unwrap();
         std::fs::write(
             &path,
             r#"{
@@ -767,7 +1218,8 @@ mod tests {
     #[test]
     fn claude_writer_rejects_concurrent_edit() {
         let tmp = tempdir().unwrap();
-        let path = tmp.path().join("settings.local.json");
+        let path = tmp.path().join(".claude/settings.local.json");
+        std::fs::create_dir(tmp.path().join(".claude")).unwrap();
         std::fs::write(&path, r#"{"theme":"before"}"#).unwrap();
         let plan = prepare_claude_settings(&path, &fake_mcp()).unwrap();
         let concurrent = br#"{"theme":"concurrent-owner"}"#;
@@ -776,6 +1228,178 @@ mod tests {
         let error = apply_claude_settings(&plan).unwrap_err();
         assert!(error.to_string().contains("changed after setup read it"));
         assert_eq!(std::fs::read(&path).unwrap(), concurrent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_setup_uses_retained_project_after_rename() {
+        let container = tempdir().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+
+        setup_claude_code_in(&project, &fake_mcp(), || {
+            std::fs::rename(&project, &moved).unwrap();
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(project.join("owner"), b"decoy").unwrap();
+        })
+        .unwrap();
+
+        assert!(moved.join(".claude/settings.local.json").exists());
+        assert!(!project.join(".claude/settings.local.json").exists());
+        assert_eq!(std::fs::read(project.join("owner")).unwrap(), b"decoy");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn global_json_setup_uses_retained_config_root_after_rename() {
+        let home = tempdir().unwrap();
+        let cursor = home.path().join(".cursor");
+        let moved = home.path().join("cursor-moved");
+        std::fs::create_dir(&cursor).unwrap();
+        std::fs::write(cursor.join("mcp.json"), br#"{"owner":"original"}"#).unwrap();
+
+        upsert_global_mcp_servers_json(
+            home.path(),
+            Path::new(".cursor/mcp.json"),
+            &fake_mcp(),
+            || {
+                std::fs::rename(&cursor, &moved).unwrap();
+                std::fs::create_dir(&cursor).unwrap();
+                std::fs::write(cursor.join("mcp.json"), br#"{"owner":"decoy"}"#).unwrap();
+            },
+        )
+        .unwrap();
+
+        let actual: Value =
+            serde_json::from_slice(&std::fs::read(moved.join("mcp.json")).unwrap()).unwrap();
+        assert_eq!(actual["owner"], "original");
+        assert_eq!(
+            actual["mcpServers"]["phantom"]["command"],
+            fake_mcp().command
+        );
+        assert_eq!(
+            std::fs::read(cursor.join("mcp.json")).unwrap(),
+            br#"{"owner":"decoy"}"#
+        );
+    }
+
+    #[test]
+    fn global_nested_root_is_created_capability_relatively() {
+        let home = tempdir().unwrap();
+        upsert_global_mcp_servers_json(
+            home.path(),
+            Path::new(".codeium/windsurf/mcp_config.json"),
+            &fake_mcp(),
+            || {},
+        )
+        .unwrap();
+
+        assert!(home
+            .path()
+            .join(".codeium/windsurf/mcp_config.json")
+            .is_file());
+        assert!(!home.path().join(".phantom-client-setup.lock").exists());
+        assert!(home.path().join(".phantom/client-setup.lock").is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(home.path().join(".codeium/windsurf"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(home.path().join(".codeium/windsurf/mcp_config.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn codex_global_config_preserves_existing_tables() {
+        let home = tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".codex")).unwrap();
+        std::fs::write(
+            home.path().join(".codex/config.toml"),
+            "[features]\nreview = true\n",
+        )
+        .unwrap();
+
+        setup_codex_at(
+            home.path(),
+            Path::new(".codex/config.toml"),
+            &fake_mcp(),
+            || {},
+        )
+        .unwrap();
+
+        let doc: toml::Table = toml::from_str(
+            &std::fs::read_to_string(home.path().join(".codex/config.toml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["features"]["review"].as_bool(), Some(true));
+        assert_eq!(
+            doc["mcp_servers"]["phantom"]["command"].as_str(),
+            Some("/usr/local/bin/phantom-mcp")
+        );
+    }
+
+    #[test]
+    fn global_config_refuses_paths_outside_authorized_root() {
+        let container = tempdir().unwrap();
+        let home = container.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let outside = container.path().join("outside.json");
+
+        for path in [
+            "../outside.json",
+            "/tmp/outside.json",
+            r"C:\outside.json",
+            r"\\server\share\outside.json",
+        ] {
+            assert!(
+                upsert_global_mcp_servers_json(&home, Path::new(path), &fake_mcp(), || {}).is_err()
+            );
+        }
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn unresolved_global_directory_effect_never_claims_exact_rollback() {
+        let source = include_str!("setup.rs");
+        assert!(source.contains("receipt: None"));
+        assert!(source.contains("may have committed without an exact receipt"));
+        assert!(source.contains("attempted directory cannot be cleaned up safely"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn global_config_refuses_symlinked_parent_component() {
+        use std::os::unix::fs::symlink;
+
+        let container = tempdir().unwrap();
+        let home = container.path().join("home");
+        let outside = container.path().join("outside");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        symlink(&outside, home.join(".cursor")).unwrap();
+
+        assert!(upsert_global_mcp_servers_json(
+            &home,
+            Path::new(".cursor/mcp.json"),
+            &fake_mcp(),
+            || {},
+        )
+        .is_err());
+        assert!(!outside.join("mcp.json").exists());
     }
 
     #[cfg(unix)]
