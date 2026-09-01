@@ -1,12 +1,13 @@
 use crate::metadata::SecretMetadata;
 use crate::traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
 use phantom_core::error::{PhantomError, Result};
+use phantom_core::fs::{AnchoredLock, AnchoredRead, AnchoredTarget, TrustedAnchor};
 use phantom_core::validator::ValidationMetadata;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use zeroize::Zeroizing;
 
 const SERVICE_PREFIX: &str = "phantom-secrets";
@@ -16,20 +17,42 @@ const PROCESS_LOCK_SHARDS: usize = 64;
 /// APIs treat locks from one process as mutually compatible even when they use
 /// different file descriptors; the shard keeps threads honest while fs2
 /// provides the cross-process boundary.
-fn process_lock_for(project_id: &str) -> MutexGuard<'static, ()> {
+fn process_locks() -> &'static [Mutex<()>] {
     static LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
-    let locks = LOCKS.get_or_init(|| (0..PROCESS_LOCK_SHARDS).map(|_| Mutex::new(())).collect());
+    LOCKS.get_or_init(|| (0..PROCESS_LOCK_SHARDS).map(|_| Mutex::new(())).collect())
+}
+
+fn process_lock_index(identity: &str) -> usize {
+    let locks = process_locks();
     let mut hasher = DefaultHasher::new();
-    project_id.hash(&mut hasher);
-    let index = hasher.finish() as usize % locks.len();
-    locks[index]
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
+    identity.hash(&mut hasher);
+    hasher.finish() as usize % locks.len()
+}
+
+fn process_locks_for(project_id: &str) -> Vec<MutexGuard<'static, ()>> {
+    let locks = process_locks();
+    let stable = format!("stable:{}", project_digest(project_id));
+    let legacy = format!("legacy:{}", safe_project_component(project_id));
+    let mut indices = [process_lock_index(&stable), process_lock_index(&legacy)];
+    indices.sort_unstable();
+    let count = if indices[0] == indices[1] { 1 } else { 2 };
+    indices[..count]
+        .iter()
+        .map(|index| {
+            locks[*index]
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        })
+        .collect()
 }
 
 pub(crate) struct ProjectLock {
-    _process: MutexGuard<'static, ()>,
-    _file: std::fs::File,
+    // Fields drop in declaration order. Release the compatibility lock, then
+    // the stable filesystem lock, and only then the in-process guards so no
+    // same-process caller can enter while an fs2 handle is still live.
+    _legacy_file: AnchoredLock,
+    _stable_file: AnchoredLock,
+    _process: Vec<MutexGuard<'static, ()>>,
 }
 
 fn safe_project_component(project_id: &str) -> String {
@@ -45,42 +68,18 @@ fn safe_project_component(project_id: &str) -> String {
         .collect()
 }
 
-fn project_lock_relative_path(project_id: &str) -> PathBuf {
+fn project_digest(project_id: &str) -> String {
+    hex::encode(Sha256::digest(project_id.as_bytes()))
+}
+
+fn stable_lock_name(project_id: &str) -> String {
+    format!("project-{}.lock", project_digest(project_id))
+}
+
+fn legacy_lock_path(project_id: &str) -> PathBuf {
     Path::new("metadata")
         .join("locks")
         .join(format!("{}.lock", safe_project_component(project_id)))
-}
-
-fn acquire_project_lock_at(
-    project_id: &str,
-    trusted_anchor: &Path,
-    relative_path: &Path,
-) -> Result<ProjectLock> {
-    let process = process_lock_for(project_id);
-    let file = crate::lock_file::acquire_exclusive_lock_file(
-        trusted_anchor,
-        relative_path,
-        "per-project keychain lock",
-        true,
-    )
-    .map_err(|error| {
-        PhantomError::VaultError(format!(
-            "Cannot acquire per-project keychain lock {}: {error}",
-            trusted_anchor.join(relative_path).display()
-        ))
-    })?;
-    Ok(ProjectLock {
-        _process: process,
-        _file: file,
-    })
-}
-
-pub(crate) fn acquire_project_lock(project_id: &str) -> Result<ProjectLock> {
-    acquire_project_lock_at(
-        project_id,
-        &app_data_dir(),
-        &project_lock_relative_path(project_id),
-    )
 }
 
 /// 16-hex-char (64-bit) SHA-256 digest of `{project_id}:{name}`. Used as the
@@ -103,6 +102,7 @@ pub struct KeychainVault {
     /// We track stored keys in a special keychain entry since keychain APIs
     /// don't support listing by prefix on all platforms.
     index_key: String,
+    sidecars: KeychainSidecars,
 }
 
 // ── Metadata sidecar helpers ─────────────────────────────────────────────────
@@ -113,52 +113,216 @@ pub struct KeychainVault {
 // timestamps and policy config — no secret values — so it is safe to store
 // as plaintext on disk (it is no more sensitive than a .phantom.toml).
 
-fn app_data_dir() -> PathBuf {
-    directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
-        .map(|d| d.data_dir().to_path_buf())
+struct KeychainSidecars {
+    _app_data: Arc<TrustedAnchor>,
+    _metadata: Arc<TrustedAnchor>,
+    stable_lock: AnchoredTarget,
+    legacy_lock: AnchoredTarget,
+    metadata: AnchoredTarget,
+    validation: AnchoredTarget,
+    legacy_metadata: AnchoredTarget,
+    legacy_validation: AnchoredTarget,
+    legacy_name_is_ambiguous: bool,
+}
+
+fn open_app_data_anchor() -> Result<TrustedAnchor> {
+    // ProjectDirs, BaseDirs, home_dir, and temp_dir all consult process-global
+    // environment. Resolve the authority once under Phantom's shared lock,
+    // then retain descriptors for every later filesystem operation.
+    let _environment = phantom_core::PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let project = directories::ProjectDirs::from("ai", "phantom", "phantom-secrets");
+    let target = project
+        .as_ref()
+        .map(|dirs| dirs.data_dir().to_path_buf())
         .unwrap_or_else(|| {
             dirs::home_dir()
                 .unwrap_or_else(std::env::temp_dir)
                 .join(".phantom")
+        });
+
+    open_configured_app_data_anchor(&target)
+}
+
+fn open_configured_app_data_anchor(target: &Path) -> Result<TrustedAnchor> {
+    // The OS/configured app-data path is the explicit ambient authority. It may
+    // legitimately traverse aliases (macOS `/var`, redirected HOME/XDG roots),
+    // so create it as configured, canonicalize once, then retain the resulting
+    // directory capability. Only the final Phantom directory is chmod-repaired.
+    std::fs::create_dir_all(target).map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Cannot create Phantom app-data directory {}: {error}",
+            target.display()
+        ))
+    })?;
+    TrustedAnchor::open_canonical_private(target).map_err(Into::into)
+}
+
+impl KeychainSidecars {
+    fn open(project_id: &str) -> Result<Self> {
+        Self::from_anchor(open_app_data_anchor()?, project_id)
+    }
+
+    fn from_anchor(app_data: TrustedAnchor, project_id: &str) -> Result<Self> {
+        let app_data = Arc::new(app_data);
+        let metadata = Arc::new(app_data.private_subdirectory("metadata")?);
+        let digest = project_digest(project_id);
+        let legacy = safe_project_component(project_id);
+        Ok(Self {
+            stable_lock: app_data.target(stable_lock_name(project_id))?,
+            legacy_lock: app_data.target_with_private_parents(legacy_lock_path(project_id))?,
+            metadata: metadata.target(format!("{digest}.meta.json"))?,
+            validation: metadata.target(format!("{digest}.validation.json"))?,
+            legacy_metadata: metadata.target(format!("{legacy}.meta.json"))?,
+            legacy_validation: metadata.target(format!("{legacy}.validation.json"))?,
+            legacy_name_is_ambiguous: legacy != project_id,
+            _app_data: app_data,
+            _metadata: metadata,
         })
+    }
+
+    fn acquire_project_lock(&self, project_id: &str) -> Result<ProjectLock> {
+        let process = process_locks_for(project_id);
+        // Stable digest authority is always acquired first. The sanitized lock
+        // is a one-release rolling-version bridge for older Phantom processes;
+        // remove it only after the minimum supported version no longer writes
+        // sanitized sidecars.
+        let stable_file = self.stable_lock.acquire_exclusive_lock().map_err(|error| {
+            PhantomError::VaultError(format!(
+                "Cannot acquire stable per-project keychain lock: {error}"
+            ))
+        })?;
+        let legacy_file = self.legacy_lock.acquire_exclusive_lock().map_err(|error| {
+            PhantomError::VaultError(format!(
+                "Cannot acquire legacy compatibility keychain lock: {error}"
+            ))
+        })?;
+        Ok(ProjectLock {
+            _legacy_file: legacy_file,
+            _stable_file: stable_file,
+            _process: process,
+        })
+    }
+
+    fn reconcile_legacy(&self) -> Result<()> {
+        let metadata = read_sidecar_pair(&self.metadata, &self.legacy_metadata)?;
+        let validation = read_sidecar_pair(&self.validation, &self.legacy_validation)?;
+        if self.legacy_name_is_ambiguous
+            && (metadata.legacy.is_some() || validation.legacy.is_some())
+        {
+            return Err(PhantomError::VaultError(
+                "Legacy keychain sidecar uses an ambiguous sanitized project identifier; close older Phantom processes, upgrade them to the current release, and manually attribute the value-free sidecar before retrying"
+                    .to_string(),
+            ));
+        }
+        ensure_sidecar_pair_compatible("metadata", &metadata)?;
+        ensure_sidecar_pair_compatible("validation metadata", &validation)?;
+        repair_sidecar_pair(&self.metadata, &self.legacy_metadata, &metadata)?;
+        repair_sidecar_pair(&self.validation, &self.legacy_validation, &validation)?;
+        reconcile_sidecar_pair("metadata", &self.metadata, &self.legacy_metadata, metadata)?;
+        reconcile_sidecar_pair(
+            "validation metadata",
+            &self.validation,
+            &self.legacy_validation,
+            validation,
+        )
+    }
 }
 
-fn metadata_dir() -> PathBuf {
-    app_data_dir().join("metadata")
+pub(crate) fn acquire_project_lock(project_id: &str) -> Result<ProjectLock> {
+    KeychainSidecars::open(project_id)?.acquire_project_lock(project_id)
 }
 
-fn metadata_path(project_id: &str) -> PathBuf {
-    let safe = safe_project_component(project_id);
-    metadata_dir().join(format!("{safe}.meta.json"))
+struct SidecarPair {
+    stable: Option<AnchoredRead>,
+    legacy: Option<AnchoredRead>,
 }
 
-fn load_sidecar_map<T>(path: &Path, label: &str) -> Result<BTreeMap<String, T>>
+fn read_sidecar_pair(stable: &AnchoredTarget, legacy: &AnchoredTarget) -> Result<SidecarPair> {
+    Ok(SidecarPair {
+        stable: stable.read_regular()?,
+        legacy: legacy.read_regular()?,
+    })
+}
+
+fn repair_sidecar_pair(
+    stable_target: &AnchoredTarget,
+    legacy_target: &AnchoredTarget,
+    pair: &SidecarPair,
+) -> Result<()> {
+    if pair.stable.is_some() {
+        stable_target.repair_private_regular()?;
+    }
+    if pair.legacy.is_some() {
+        legacy_target.repair_private_regular()?;
+    }
+    Ok(())
+}
+
+fn ensure_sidecar_pair_compatible(label: &str, pair: &SidecarPair) -> Result<()> {
+    if let (Some(stable), Some(legacy)) = (&pair.stable, &pair.legacy) {
+        if stable.bytes() != legacy.bytes() {
+            return Err(PhantomError::VaultError(format!(
+                "Stable and legacy keychain {label} sidecars diverged; close older Phantom processes, upgrade them to the current release, and retry after reconciling the two value-free sidecar files"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_sidecar_pair(
+    label: &str,
+    stable_target: &AnchoredTarget,
+    legacy_target: &AnchoredTarget,
+    pair: SidecarPair,
+) -> Result<()> {
+    match (pair.stable, pair.legacy) {
+        (None, Some(legacy)) => {
+            let published = stable_target.replace_if_exact(None, legacy.bytes())?;
+            if let Err(error) = legacy_target.unlink_if_exact(&legacy) {
+                return Err(compensated_error(
+                    &format!("keychain {label} sidecar migration"),
+                    error.into(),
+                    [stable_target
+                        .unlink_if_exact(&published)
+                        .map_err(Into::into)],
+                ));
+            }
+            Ok(())
+        }
+        (Some(_), Some(legacy)) => legacy_target.unlink_if_exact(&legacy).map_err(Into::into),
+        (Some(_), None) | (None, None) => Ok(()),
+    }
+}
+
+fn load_sidecar_map<T>(target: &AnchoredTarget, label: &str) -> Result<BTreeMap<String, T>>
 where
     T: serde::de::DeserializeOwned,
 {
-    let Some(contents) = phantom_core::fs::read_regular_file(path)? else {
+    let Some(contents) = target.read_regular()? else {
         return Ok(BTreeMap::new());
     };
-    serde_json::from_slice(&contents).map_err(|error| {
+    serde_json::from_slice(contents.bytes()).map_err(|error| {
         PhantomError::VaultError(format!(
             "Corrupt keychain {label} sidecar {}: {error}",
-            path.display()
+            target.relative_path().display()
         ))
     })
 }
 
-type SidecarSnapshot<T> = (BTreeMap<String, T>, Option<Vec<u8>>);
+type SidecarSnapshot<T> = (BTreeMap<String, T>, Option<AnchoredRead>);
 
-fn load_sidecar_snapshot<T>(path: &Path, label: &str) -> Result<SidecarSnapshot<T>>
+fn load_sidecar_snapshot<T>(target: &AnchoredTarget, label: &str) -> Result<SidecarSnapshot<T>>
 where
     T: serde::de::DeserializeOwned,
 {
-    let before = phantom_core::fs::read_regular_file(path)?;
-    let map = match before.as_deref() {
-        Some(contents) => serde_json::from_slice(contents).map_err(|error| {
+    let before = target.read_regular()?;
+    let map = match before.as_ref() {
+        Some(contents) => serde_json::from_slice(contents.bytes()).map_err(|error| {
             PhantomError::VaultError(format!(
                 "Corrupt keychain {label} sidecar {}: {error}",
-                path.display()
+                target.relative_path().display()
             ))
         })?,
         None => BTreeMap::new(),
@@ -166,47 +330,36 @@ where
     Ok((map, before))
 }
 
-fn save_sidecar_map<T>(path: &Path, label: &str, map: &BTreeMap<String, T>) -> Result<()>
-where
-    T: serde::Serialize,
-{
-    phantom_core::fs::ensure_real_parent(path)?;
-    let _ = phantom_core::fs::read_regular_file(path)?;
-    let json = serde_json::to_string_pretty(map).map_err(|error| {
-        PhantomError::VaultError(format!("Keychain {label} serialize error: {error}"))
-    })?;
-    // `atomic_write` uses a unique temporary file in the target directory,
-    // then persists it with an atomic rename. Concurrent writers therefore
-    // cannot collide on a shared `.tmp` path.
-    phantom_core::fs::atomic_write(path, json.as_bytes())?;
-    Ok(())
-}
-
-fn save_sidecar_map_if_unchanged<T>(
-    path: &Path,
+fn save_sidecar_map<T>(
+    target: &AnchoredTarget,
     label: &str,
-    expected_before: Option<&[u8]>,
     map: &BTreeMap<String, T>,
 ) -> Result<()>
 where
     T: serde::Serialize,
 {
-    phantom_core::fs::ensure_real_parent(path)?;
+    let before = target.read_regular()?;
     let json = serde_json::to_vec_pretty(map).map_err(|error| {
         PhantomError::VaultError(format!("Keychain {label} serialize error: {error}"))
     })?;
-    phantom_core::fs::atomic_write_if_unchanged(path, expected_before, &json)?;
+    target.replace_if_exact(before.as_ref(), &json)?;
     Ok(())
 }
 
-/// Load the full per-project metadata map from the sidecar file.
-fn load_meta_map(project_id: &str) -> Result<BTreeMap<String, SecretMetadata>> {
-    load_sidecar_map(&metadata_path(project_id), "metadata")
-}
-
-/// Persist the full per-project metadata map to the sidecar file.
-fn save_meta_map(project_id: &str, map: &BTreeMap<String, SecretMetadata>) -> Result<()> {
-    save_sidecar_map(&metadata_path(project_id), "metadata", map)
+fn save_sidecar_map_if_unchanged<T>(
+    target: &AnchoredTarget,
+    label: &str,
+    expected_before: Option<&AnchoredRead>,
+    map: &BTreeMap<String, T>,
+) -> Result<()>
+where
+    T: serde::Serialize,
+{
+    let json = serde_json::to_vec_pretty(map).map_err(|error| {
+        PhantomError::VaultError(format!("Keychain {label} serialize error: {error}"))
+    })?;
+    target.replace_if_exact(expected_before, &json)?;
+    Ok(())
 }
 
 // ── Validation metadata sidecar ──────────────────────────────────────────────
@@ -214,22 +367,6 @@ fn save_meta_map(project_id: &str, map: &BTreeMap<String, SecretMetadata>) -> Re
 // Mirrors the TTL metadata sidecar: a separate JSON file stores per-secret
 // validation state (last_check_ts, is_valid, failure_reason). No secret
 // values are ever written here.
-
-fn validation_meta_path(project_id: &str) -> std::path::PathBuf {
-    let safe = safe_project_component(project_id);
-    metadata_dir().join(format!("{safe}.validation.json"))
-}
-
-fn load_validation_meta_map(project_id: &str) -> Result<BTreeMap<String, ValidationMetadata>> {
-    load_sidecar_map(&validation_meta_path(project_id), "validation")
-}
-
-fn save_validation_meta_map(
-    project_id: &str,
-    map: &BTreeMap<String, ValidationMetadata>,
-) -> Result<()> {
-    save_sidecar_map(&validation_meta_path(project_id), "validation", map)
-}
 
 fn read_credential(entry: &keyring::Entry, label: &str) -> Result<Option<Zeroizing<String>>> {
     match entry.get_password() {
@@ -463,10 +600,37 @@ impl KeychainVault {
             }
         }
 
-        Ok(Self {
+        let vault = Self {
             index_key: format!("{SERVICE_PREFIX}:{project_id}:__index__"),
             project_id: project_id.to_string(),
-        })
+            sidecars: KeychainSidecars::open(project_id)?,
+        };
+        // Reconcile value-free sidecars while both the stable lock and the
+        // rolling legacy bridge are held. No ambient pathname is consulted.
+        let _lock = vault.lock_sidecars()?;
+        Ok(vault)
+    }
+
+    fn lock_sidecars(&self) -> Result<ProjectLock> {
+        let lock = self.sidecars.acquire_project_lock(&self.project_id)?;
+        self.sidecars.reconcile_legacy()?;
+        Ok(lock)
+    }
+
+    fn load_meta_map(&self) -> Result<BTreeMap<String, SecretMetadata>> {
+        load_sidecar_map(&self.sidecars.metadata, "metadata")
+    }
+
+    fn save_meta_map(&self, map: &BTreeMap<String, SecretMetadata>) -> Result<()> {
+        save_sidecar_map(&self.sidecars.metadata, "metadata", map)
+    }
+
+    fn load_validation_meta_map(&self) -> Result<BTreeMap<String, ValidationMetadata>> {
+        load_sidecar_map(&self.sidecars.validation, "validation")
+    }
+
+    fn save_validation_meta_map(&self, map: &BTreeMap<String, ValidationMetadata>) -> Result<()> {
+        save_sidecar_map(&self.sidecars.validation, "validation", map)
     }
 
     fn hash_name(&self, name: &str) -> String {
@@ -559,7 +723,7 @@ impl KeychainVault {
         let entry = self.entry_for(name)?;
         let before_credential = read_credential(&entry, "secret before-image")?;
         let before_index = self.load_index()?;
-        let before_metadata = load_meta_map(&self.project_id)?;
+        let before_metadata = self.load_meta_map()?;
         let mut after_index = before_index.clone();
         if !after_index.iter().any(|indexed| indexed == name) {
             after_index.push(name.to_string());
@@ -585,7 +749,7 @@ impl KeychainVault {
                 self.save_index(&after_index)?;
             }
             if after_metadata != before_metadata {
-                save_meta_map(&self.project_id, &after_metadata)?;
+                self.save_meta_map(&after_metadata)?;
             }
             Ok(())
         })();
@@ -596,7 +760,7 @@ impl KeychainVault {
                 [
                     restore_credential(&entry, before_credential.as_ref(), "secret before-image"),
                     self.save_index(&before_index),
-                    save_meta_map(&self.project_id, &before_metadata),
+                    self.save_meta_map(&before_metadata),
                 ],
             ));
         }
@@ -624,8 +788,8 @@ impl KeychainVault {
             None => None,
         };
         let before_index = self.load_index()?;
-        let before_metadata = load_meta_map(&self.project_id)?;
-        let before_validation = load_validation_meta_map(&self.project_id)?;
+        let before_metadata = self.load_meta_map()?;
+        let before_validation = self.load_validation_meta_map()?;
         let was_indexed = before_index.iter().any(|indexed| indexed == name);
         if before_credential.is_none() && before_legacy.is_none() && !was_indexed {
             return Err(PhantomError::SecretNotFound(name.to_string()));
@@ -640,10 +804,10 @@ impl KeychainVault {
 
         let commit = (|| {
             if after_metadata != before_metadata {
-                save_meta_map(&self.project_id, &after_metadata)?;
+                self.save_meta_map(&after_metadata)?;
             }
             if after_validation != before_validation {
-                save_validation_meta_map(&self.project_id, &after_validation)?;
+                self.save_validation_meta_map(&after_validation)?;
             }
             if after_index != before_index {
                 self.save_index(&after_index)?;
@@ -658,8 +822,8 @@ impl KeychainVault {
             let mut compensations = vec![
                 restore_credential(&entry, before_credential.as_ref(), "secret before-image"),
                 self.save_index(&before_index),
-                save_meta_map(&self.project_id, &before_metadata),
-                save_validation_meta_map(&self.project_id, &before_validation),
+                self.save_meta_map(&before_metadata),
+                self.save_validation_meta_map(&before_validation),
             ];
             if let Some(legacy) = &legacy {
                 compensations.push(restore_credential(
@@ -676,7 +840,7 @@ impl KeychainVault {
 
 impl VaultBackend for KeychainVault {
     fn store(&self, name: &str, value: &str) -> Result<()> {
-        let _lock = acquire_project_lock(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
         self.store_locked(name, value, None)?;
         phantom_core::audit::log("vault.store", Some(name));
         Ok(())
@@ -690,7 +854,7 @@ impl VaultBackend for KeychainVault {
                 Ok(zeroize::Zeroizing::new(value))
             }
             Err(keyring::Error::NoEntry) => {
-                let _lock = acquire_project_lock(&self.project_id)?;
+                let _lock = self.lock_sidecars()?;
                 // F13 migration: older phantom versions stored entries under
                 // the plaintext name. The migration spans the hashed entry,
                 // index, and legacy deletion as one compensated transaction.
@@ -713,8 +877,8 @@ impl VaultBackend for KeychainVault {
     }
 
     fn retrieve_for_injection(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
-        let _lock = acquire_project_lock(&self.project_id)?;
-        let metadata = load_meta_map(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
+        let metadata = self.load_meta_map()?;
         crate::traits::ensure_secret_injectable(name, metadata.get(name))?;
         let value = self
             .current_value_locked(name)?
@@ -724,7 +888,7 @@ impl VaultBackend for KeychainVault {
     }
 
     fn delete(&self, name: &str) -> Result<()> {
-        let _lock = acquire_project_lock(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
         self.delete_locked(name)?;
         phantom_core::audit::log("vault.delete", Some(name));
         Ok(())
@@ -736,7 +900,7 @@ impl VaultBackend for KeychainVault {
         expected: Option<&str>,
         replacement: Option<&str>,
     ) -> Result<bool> {
-        let _lock = acquire_project_lock(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
         let current = self.current_value_locked(name)?;
         if current.as_ref().map(|value| value.as_str()) != expected {
             return Ok(false);
@@ -753,7 +917,7 @@ impl VaultBackend for KeychainVault {
     }
 
     fn list(&self) -> Result<Vec<String>> {
-        let _lock = acquire_project_lock(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
         self.load_index()
     }
 
@@ -762,28 +926,28 @@ impl VaultBackend for KeychainVault {
     }
 
     fn get_metadata(&self, name: &str) -> Result<Option<SecretMetadata>> {
-        let _lock = acquire_project_lock(&self.project_id)?;
-        let map = load_meta_map(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
+        let map = self.load_meta_map()?;
         Ok(map.get(name).cloned())
     }
 
     fn set_metadata(&self, name: &str, meta: SecretMetadata) -> Result<()> {
-        let _lock = acquire_project_lock(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
         // Only allow metadata on keys that actually exist in the vault index.
         let index = self.load_index()?;
         if !index.contains(&name.to_string()) {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
-        let mut map = load_meta_map(&self.project_id)?;
+        let mut map = self.load_meta_map()?;
         map.insert(name.to_string(), meta);
-        save_meta_map(&self.project_id, &map)
+        self.save_meta_map(&map)
     }
 
     fn compare_and_swap_metadata_batch(&self, changes: &[MetadataCas]) -> Result<bool> {
-        let _lock = acquire_project_lock(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
         let index = self.load_index()?;
-        let path = metadata_path(&self.project_id);
-        let (mut map, before) = load_sidecar_snapshot(&path, "metadata")?;
+        let target = &self.sidecars.metadata;
+        let (mut map, before) = load_sidecar_snapshot(target, "metadata")?;
         let mut seen = std::collections::BTreeSet::new();
         for change in changes {
             if !seen.insert(change.name.as_str()) {
@@ -809,15 +973,15 @@ impl VaultBackend for KeychainVault {
             }
         }
         if !changes.is_empty() {
-            save_sidecar_map_if_unchanged(&path, "metadata", before.as_deref(), &map)?;
+            save_sidecar_map_if_unchanged(target, "metadata", before.as_ref(), &map)?;
         }
         Ok(true)
     }
 
     fn list_with_metadata(&self) -> Result<Vec<(String, Option<SecretMetadata>)>> {
-        let _lock = acquire_project_lock(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
         let names = self.load_index()?;
-        let metadata = load_meta_map(&self.project_id)?;
+        let metadata = self.load_meta_map()?;
         Ok(names
             .into_iter()
             .map(|name| {
@@ -828,43 +992,43 @@ impl VaultBackend for KeychainVault {
     }
 
     fn store_with_expiry(&self, name: &str, value: &str, days_ttl: u64) -> Result<()> {
-        let _lock = acquire_project_lock(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
         self.store_locked(name, value, Some(SecretMetadata::with_expiry(days_ttl)))?;
         phantom_core::audit::log("vault.store", Some(name));
         Ok(())
     }
 
     fn get_validation_metadata(&self, name: &str) -> Result<ValidationMetadata> {
-        let _lock = acquire_project_lock(&self.project_id)?;
-        let map = load_validation_meta_map(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
+        let map = self.load_validation_meta_map()?;
         Ok(map.get(name).cloned().unwrap_or_default())
     }
 
     fn get_validation_metadata_exact(&self, name: &str) -> Result<Option<ValidationMetadata>> {
-        let _lock = acquire_project_lock(&self.project_id)?;
-        let map = load_validation_meta_map(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
+        let map = self.load_validation_meta_map()?;
         Ok(map.get(name).cloned())
     }
 
     fn set_validation_metadata(&self, name: &str, meta: ValidationMetadata) -> Result<()> {
-        let _lock = acquire_project_lock(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
         let index = self.load_index()?;
         if !index.contains(&name.to_string()) {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
-        let mut map = load_validation_meta_map(&self.project_id)?;
+        let mut map = self.load_validation_meta_map()?;
         map.insert(name.to_string(), meta);
-        save_validation_meta_map(&self.project_id, &map)
+        self.save_validation_meta_map(&map)
     }
 
     fn compare_and_swap_validation_metadata_batch(
         &self,
         changes: &[ValidationMetadataCas],
     ) -> Result<bool> {
-        let _lock = acquire_project_lock(&self.project_id)?;
+        let _lock = self.lock_sidecars()?;
         let index = self.load_index()?;
-        let path = validation_meta_path(&self.project_id);
-        let (mut map, before) = load_sidecar_snapshot(&path, "validation metadata")?;
+        let target = &self.sidecars.validation;
+        let (mut map, before) = load_sidecar_snapshot(target, "validation metadata")?;
         let mut seen = std::collections::BTreeSet::new();
         for change in changes {
             if !seen.insert(change.name.as_str()) {
@@ -890,7 +1054,7 @@ impl VaultBackend for KeychainVault {
             }
         }
         if !changes.is_empty() {
-            save_sidecar_map_if_unchanged(&path, "validation metadata", before.as_deref(), &map)?;
+            save_sidecar_map_if_unchanged(target, "validation metadata", before.as_ref(), &map)?;
         }
         Ok(true)
     }
@@ -1177,28 +1341,31 @@ mod tests {
         const WRITERS: usize = 24;
         let directory = tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
-        let lock_relative = PathBuf::from("locks/project.lock");
-        let sidecar_path = root.join("project.meta.json");
+        let sidecars = Arc::new(
+            KeychainSidecars::from_anchor(
+                TrustedAnchor::open_canonical_private(&root).unwrap(),
+                "concurrent-project",
+            )
+            .unwrap(),
+        );
         let barrier = Arc::new(Barrier::new(WRITERS));
         let mut workers = Vec::new();
 
         for writer in 0..WRITERS {
             let barrier = Arc::clone(&barrier);
-            let root = root.clone();
-            let lock_relative = lock_relative.clone();
-            let sidecar_path = sidecar_path.clone();
+            let sidecars = Arc::clone(&sidecars);
             workers.push(std::thread::spawn(move || {
                 barrier.wait();
-                let _lock =
-                    acquire_project_lock_at("concurrent-project", &root, &lock_relative).unwrap();
+                let _lock = sidecars.acquire_project_lock("concurrent-project").unwrap();
+                sidecars.reconcile_legacy().unwrap();
                 let mut map: BTreeMap<String, usize> =
-                    load_sidecar_map(&sidecar_path, "test metadata").unwrap();
+                    load_sidecar_map(&sidecars.metadata, "test metadata").unwrap();
                 // Enlarge the unprotected race window. With the production
                 // lock held, every process-equivalent writer still observes
                 // and preserves every prior name.
                 std::thread::yield_now();
                 map.insert(format!("KEY_{writer:02}"), writer);
-                save_sidecar_map(&sidecar_path, "test metadata", &map).unwrap();
+                save_sidecar_map(&sidecars.metadata, "test metadata", &map).unwrap();
             }));
         }
         for worker in workers {
@@ -1206,21 +1373,19 @@ mod tests {
         }
 
         let map: BTreeMap<String, usize> =
-            load_sidecar_map(&sidecar_path, "test metadata").unwrap();
+            load_sidecar_map(&sidecars.metadata, "test metadata").unwrap();
         assert_eq!(map.len(), WRITERS);
         for writer in 0..WRITERS {
             assert_eq!(map.get(&format!("KEY_{writer:02}")), Some(&writer));
         }
 
-        let artifacts = std::fs::read_dir(directory.path())
+        let metadata_artifacts = std::fs::read_dir(root.join("metadata"))
             .unwrap()
-            .map(|entry| entry.unwrap().file_name())
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert_eq!(
-            artifacts.len(),
-            2,
-            "atomic writes must not leave temp files"
-        );
+        assert!(metadata_artifacts
+            .iter()
+            .all(|name| !name.starts_with(".phantom-tmp-")));
     }
 
     #[cfg(unix)]
@@ -1230,18 +1395,26 @@ mod tests {
 
         let directory = tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
-        let path = root.join("locks").join("owner-only.lock");
-        let _lock =
-            acquire_project_lock_at("owner-only", &root, Path::new("locks/owner-only.lock"))
-                .unwrap();
-        let lock_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        let parent_mode = std::fs::metadata(path.parent().unwrap())
+        let sidecars = KeychainSidecars::from_anchor(
+            TrustedAnchor::open_canonical_private(&root).unwrap(),
+            "owner-only",
+        )
+        .unwrap();
+        let _lock = sidecars.acquire_project_lock("owner-only").unwrap();
+        let stable_path = root.join(stable_lock_name("owner-only"));
+        let legacy_path = root.join(legacy_lock_path("owner-only"));
+        let stable_mode = std::fs::metadata(&stable_path)
             .unwrap()
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(lock_mode, 0o600);
-        assert_eq!(parent_mode, 0o700);
+        let legacy_mode = std::fs::metadata(&legacy_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(stable_mode, 0o600);
+        assert_eq!(legacy_mode, 0o600);
     }
 
     #[cfg(unix)]
@@ -1251,15 +1424,15 @@ mod tests {
 
         let directory = tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
-        let parent = root.join("locks");
-        std::fs::create_dir(&parent).unwrap();
+        let parent = root.join("metadata").join("locks");
+        std::fs::create_dir_all(&parent).unwrap();
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let path = parent.join("owner-only.lock");
-
-        let _lock =
-            acquire_project_lock_at("owner-only", &root, Path::new("locks/owner-only.lock"))
-                .unwrap();
-        assert!(path.exists());
+        let sidecars = KeychainSidecars::from_anchor(
+            TrustedAnchor::open_canonical_private(&root).unwrap(),
+            "owner-only",
+        )
+        .unwrap();
+        let _lock = sidecars.acquire_project_lock("owner-only").unwrap();
         assert_eq!(
             std::fs::metadata(parent).unwrap().permissions().mode() & 0o777,
             0o700
@@ -1269,10 +1442,13 @@ mod tests {
     #[test]
     fn corrupt_sidecar_is_not_silently_replaced() {
         let directory = tempdir().unwrap();
-        let path = directory.path().join("corrupt.meta.json");
+        let root = directory.path().canonicalize().unwrap();
+        let anchor = TrustedAnchor::open_canonical_private(&root).unwrap();
+        let target = anchor.target("corrupt.meta.json").unwrap();
+        let path = root.join("corrupt.meta.json");
         std::fs::write(&path, b"not-json").unwrap();
 
-        let error = load_sidecar_map::<usize>(&path, "metadata").unwrap_err();
+        let error = load_sidecar_map::<usize>(&target, "metadata").unwrap_err();
 
         assert!(error
             .to_string()
@@ -1283,21 +1459,227 @@ mod tests {
     #[test]
     fn exact_sidecar_save_rejects_concurrent_owner() {
         let directory = tempdir().unwrap();
-        let path = directory.path().join("metadata.json");
-        let (mut proposed, before) = load_sidecar_snapshot::<usize>(&path, "metadata").unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let anchor = TrustedAnchor::open_canonical_private(&root).unwrap();
+        let target = anchor.target("metadata.json").unwrap();
+        let path = root.join("metadata.json");
+        let (mut proposed, before) = load_sidecar_snapshot::<usize>(&target, "metadata").unwrap();
         proposed.insert("PHANTOM".into(), 1);
         std::fs::write(&path, br#"{"OWNER":2}"#).unwrap();
         assert!(
-            save_sidecar_map_if_unchanged(&path, "metadata", before.as_deref(), &proposed).is_err()
+            save_sidecar_map_if_unchanged(&target, "metadata", before.as_ref(), &proposed).is_err()
         );
         assert_eq!(std::fs::read(&path).unwrap(), br#"{"OWNER":2}"#);
     }
 
     #[test]
-    fn sidecar_contract_uses_shared_windows_safe_exact_reader() {
-        let source = include_str!("keychain.rs");
-        assert!(source.contains("read_regular_file"));
-        assert!(source.contains("atomic_write_if_unchanged"));
+    fn sanitized_project_collision_has_distinct_stable_authority() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let first = KeychainSidecars::from_anchor(
+            TrustedAnchor::open_canonical_private(&root).unwrap(),
+            "project/a",
+        )
+        .unwrap();
+        let second = KeychainSidecars::from_anchor(
+            TrustedAnchor::open_canonical_private(&root).unwrap(),
+            "project?a",
+        )
+        .unwrap();
+
+        assert_eq!(
+            first.legacy_metadata.relative_path(),
+            second.legacy_metadata.relative_path()
+        );
+        assert_ne!(
+            first.metadata.relative_path(),
+            second.metadata.relative_path()
+        );
+        assert_ne!(
+            first.stable_lock.relative_path(),
+            second.stable_lock.relative_path()
+        );
+
+        first
+            .legacy_metadata
+            .replace_if_exact(None, br#"{"AMBIGUOUS":1}"#)
+            .unwrap();
+        let _lock = first.acquire_project_lock("project/a").unwrap();
+        let error = first.reconcile_legacy().unwrap_err();
+        assert!(error.to_string().contains("ambiguous sanitized"));
+        assert!(first.metadata.read_regular().unwrap().is_none());
+        assert_eq!(
+            first
+                .legacy_metadata
+                .read_regular()
+                .unwrap()
+                .unwrap()
+                .bytes(),
+            br#"{"AMBIGUOUS":1}"#
+        );
+    }
+
+    #[test]
+    fn legacy_sidecar_migrates_exactly_under_bridge_locks() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let sidecars = KeychainSidecars::from_anchor(
+            TrustedAnchor::open_canonical_private(&root).unwrap(),
+            "legacy-project",
+        )
+        .unwrap();
+        sidecars
+            .legacy_metadata
+            .replace_if_exact(None, br#"{"API_KEY":1}"#)
+            .unwrap();
+
+        let _lock = sidecars.acquire_project_lock("legacy-project").unwrap();
+        sidecars.reconcile_legacy().unwrap();
+
+        assert_eq!(
+            sidecars.metadata.read_regular().unwrap().unwrap().bytes(),
+            br#"{"API_KEY":1}"#
+        );
+        assert!(sidecars.legacy_metadata.read_regular().unwrap().is_none());
+    }
+
+    #[test]
+    fn divergent_sequential_legacy_write_fails_closed_without_effect() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let sidecars = KeychainSidecars::from_anchor(
+            TrustedAnchor::open_canonical_private(&root).unwrap(),
+            "legacy-project",
+        )
+        .unwrap();
+        sidecars
+            .metadata
+            .replace_if_exact(None, br#"{"NEW":1}"#)
+            .unwrap();
+        sidecars
+            .legacy_metadata
+            .replace_if_exact(None, br#"{"OLD":2}"#)
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let metadata_dir = root.join("metadata");
+            std::fs::set_permissions(
+                metadata_dir.join(format!("{}.meta.json", project_digest("legacy-project"))),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+            std::fs::set_permissions(
+                metadata_dir.join("legacy-project.meta.json"),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+        }
+
+        let _lock = sidecars.acquire_project_lock("legacy-project").unwrap();
+        let error = sidecars.reconcile_legacy().unwrap_err();
+
+        assert!(error.to_string().contains("sidecars diverged"));
+        assert_eq!(
+            sidecars.metadata.read_regular().unwrap().unwrap().bytes(),
+            br#"{"NEW":1}"#
+        );
+        assert_eq!(
+            sidecars
+                .legacy_metadata
+                .read_regular()
+                .unwrap()
+                .unwrap()
+                .bytes(),
+            br#"{"OLD":2}"#
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let metadata_dir = root.join("metadata");
+            let stable_mode = std::fs::metadata(
+                metadata_dir.join(format!("{}.meta.json", project_digest("legacy-project"))),
+            )
+            .unwrap()
+            .permissions()
+            .mode()
+                & 0o777;
+            let legacy_mode = std::fs::metadata(metadata_dir.join("legacy-project.meta.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!((stable_mode, legacy_mode), (0o644, 0o644));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_app_data_symlink_is_canonicalized_once() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let real = directory.path().join("real-app-data");
+        let alias = directory.path().join("configured-app-data");
+        std::fs::create_dir(&real).unwrap();
+        symlink(&real, &alias).unwrap();
+
+        let anchor = open_configured_app_data_anchor(&alias).unwrap();
+        let sidecars = KeychainSidecars::from_anchor(anchor, "alias-project").unwrap();
+        save_sidecar_map(
+            &sidecars.metadata,
+            "metadata",
+            &BTreeMap::from([("OWNER".to_string(), 1_usize)]),
+        )
+        .unwrap();
+
+        assert!(real
+            .join("metadata")
+            .join(format!("{}.meta.json", project_digest("alias-project")))
+            .is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_metadata_capability_ignores_ancestor_swap_decoy() {
+        let directory = tempdir().unwrap();
+        let app = directory.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        let sidecars = KeychainSidecars::from_anchor(
+            TrustedAnchor::open_canonical_private(&app).unwrap(),
+            "swap-project",
+        )
+        .unwrap();
+        save_sidecar_map(
+            &sidecars.metadata,
+            "metadata",
+            &BTreeMap::from([("OWNER".to_string(), 1_usize)]),
+        )
+        .unwrap();
+
+        let owned = directory.path().join("owned");
+        std::fs::rename(&app, &owned).unwrap();
+        std::fs::create_dir_all(app.join("metadata")).unwrap();
+        let decoy = app
+            .join("metadata")
+            .join(format!("{}.meta.json", project_digest("swap-project")));
+        std::fs::write(&decoy, br#"{"DECOY":9}"#).unwrap();
+
+        let _lock = sidecars.acquire_project_lock("swap-project").unwrap();
+        sidecars.reconcile_legacy().unwrap();
+        save_sidecar_map(
+            &sidecars.metadata,
+            "metadata",
+            &BTreeMap::from([("OWNER".to_string(), 2_usize)]),
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&decoy).unwrap(), br#"{"DECOY":9}"#);
+        let anchored: BTreeMap<String, usize> =
+            load_sidecar_map(&sidecars.metadata, "metadata").unwrap();
+        assert_eq!(anchored.get("OWNER"), Some(&2));
     }
 
     /// End-to-end round-trip against the real OS keychain. Ignored by
