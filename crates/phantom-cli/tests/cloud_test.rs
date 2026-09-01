@@ -1,8 +1,8 @@
 /// Integration tests for `phantom cloud push` and `phantom cloud pull`.
 ///
 /// What *is* tested unconditionally:
-///   - `phantom cloud push` / `pull` exit non-zero and print a helpful message
-///     when no token is stored (the most important safety net).
+///   - `phantom cloud push` / `pull` exit non-zero before authentication or
+///     network access when the exact terminal ceremony cannot be completed.
 ///   - `phantom cloud status` succeeds and reports "not logged in" when no
 ///     token is present.
 ///   - Lower-level HTTP client tests cover explicit mock origins with
@@ -76,7 +76,7 @@ fn cloud_status_succeeds_and_reports_not_logged_in() {
 }
 
 #[test]
-fn cloud_api_origin_override_fails_closed_before_network_access() {
+fn cloud_push_fails_closed_at_terminal_authority_before_api_origin_or_network() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
 
@@ -92,9 +92,7 @@ fn cloud_api_origin_override_fails_closed_before_network_access() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        combined.contains("PHANTOM_API_URL overrides are disabled"),
-        "unexpected cloud override failure: {combined}"
-    );
+    assert!(combined.contains("terminal"), "unexpected authority failure: {combined}");
+    assert!(!combined.contains("PHANTOM_API_URL overrides are disabled"));
     assert!(!combined.contains("Connection refused"));
 }
