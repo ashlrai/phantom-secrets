@@ -21,7 +21,7 @@ use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, DirBuilder, File, OpenOptions};
 use fs2::FileExt as _;
 use rand::RngCore;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(unix)]
 const PRIVATE_FILE_MODE: u32 = 0o600;
@@ -38,12 +38,13 @@ pub struct FileIdentity {
 
 /// Permission intent captured from and applied to file handles.
 ///
-/// Unix retains exact permission bits. Other supported platforms carry a
-/// no-op token because their ACLs cannot be represented safely as a POSIX
-/// mode.
+/// Unix retains exact permission bits. Other supported platforms retain the
+/// portable read-only attribute; this deliberately does not claim to capture
+/// or reproduce an entire Windows ACL.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AnchoredFilePermissions {
     unix_mode: Option<u32>,
+    readonly: bool,
 }
 
 impl AnchoredFilePermissions {
@@ -53,6 +54,7 @@ impl AnchoredFilePermissions {
             unix_mode: Some(0o600),
             #[cfg(not(unix))]
             unix_mode: None,
+            readonly: false,
         }
     }
 
@@ -62,6 +64,7 @@ impl AnchoredFilePermissions {
             unix_mode: Some(0o755),
             #[cfg(not(unix))]
             unix_mode: None,
+            readonly: false,
         }
     }
 }
@@ -828,7 +831,10 @@ fn read_regular_at(parent: &Dir, leaf: &OsStr, display: &Path) -> io::Result<Opt
     };
     let first_identity = file_identity(&first)?;
     let first_permissions = file_permissions(&first)?;
-    let mut first_bytes = Vec::new();
+    // Both transient buffers may hold plaintext `.env` contents. Keep them
+    // zeroizing even when a later identity, permission, or read check fails
+    // before an `AnchoredRead` can take ownership.
+    let mut first_bytes = Zeroizing::new(Vec::new());
     first.read_to_end(&mut first_bytes)?;
 
     let mut second = open_regular(parent, leaf, display)?;
@@ -838,13 +844,13 @@ fn read_regular_at(parent: &Dir, leaf: &OsStr, display: &Path) -> io::Result<Opt
     if file_permissions(&second)? != first_permissions {
         return Err(drift_error(display));
     }
-    let mut second_bytes = Vec::new();
+    let mut second_bytes = Zeroizing::new(Vec::new());
     second.read_to_end(&mut second_bytes)?;
     if second_bytes != first_bytes {
         return Err(drift_error(display));
     }
     Ok(Some(AnchoredRead {
-        bytes: first_bytes,
+        bytes: std::mem::take(&mut *first_bytes),
         identity: first_identity,
         permissions: first_permissions,
     }))
@@ -1001,21 +1007,28 @@ fn repair_private_file(_file: &File) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn apply_file_permissions(_file: &File, _permissions: AnchoredFilePermissions) -> io::Result<()> {
-    Ok(())
+fn apply_file_permissions(file: &File, permissions: AnchoredFilePermissions) -> io::Result<()> {
+    let mut current = file.metadata()?.permissions();
+    current.set_readonly(permissions.readonly);
+    file.set_permissions(current)
 }
 
 #[cfg(unix)]
 fn file_permissions(file: &File) -> io::Result<AnchoredFilePermissions> {
     use cap_std::fs::MetadataExt;
+    let metadata = file.metadata()?;
     Ok(AnchoredFilePermissions {
-        unix_mode: Some(file.metadata()?.mode() & 0o7777),
+        unix_mode: Some(metadata.mode() & 0o7777),
+        readonly: metadata.permissions().readonly(),
     })
 }
 
 #[cfg(not(unix))]
-fn file_permissions(_file: &File) -> io::Result<AnchoredFilePermissions> {
-    Ok(AnchoredFilePermissions { unix_mode: None })
+fn file_permissions(file: &File) -> io::Result<AnchoredFilePermissions> {
+    Ok(AnchoredFilePermissions {
+        unix_mode: None,
+        readonly: file.metadata()?.permissions().readonly(),
+    })
 }
 
 #[cfg(unix)]
@@ -1614,10 +1627,14 @@ mod tests {
         assert!(source.contains("Dir::rename is specified to replace an existing file"));
         assert!(source.contains("create_dir_with(name, &builder)"));
         assert!(source.contains("builder.mode(PRIVATE_DIRECTORY_MODE)"));
+        assert!(source.contains("let mut first_bytes = Zeroizing::new(Vec::new())"));
+        assert!(source.contains("let mut second_bytes = Zeroizing::new(Vec::new())"));
         assert!(
             source.contains("#[cfg(not(unix))]\n            unix_mode: None"),
             "non-Unix permission intents must compare equal to handle reads"
         );
+        assert!(source.contains("current.set_readonly(permissions.readonly)"));
+        assert!(source.contains("file.set_permissions(current)"));
 
         let close = source
             .find("drop(temp.take().expect(\"staging handle is live\"))")
@@ -1652,5 +1669,28 @@ mod tests {
             .replace_if_exact(None, b"published")
             .unwrap();
         assert!(matches!(outcome, AnchoredEffect::Durable(_)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_readonly_attribute_round_trips_by_handle() {
+        let dir = TempDir::new().unwrap();
+        let anchor = TrustedAnchor::open(dir.path()).unwrap();
+        let target = anchor.target("state").unwrap();
+        let read = match target.replace_if_exact(None, b"published").unwrap() {
+            AnchoredEffect::Durable(read) => read,
+            AnchoredEffect::CommittedButUncertain { .. } => panic!("unexpected uncertainty"),
+        };
+        let file = open_regular(target.parent(), &target.leaf, target.relative_path()).unwrap();
+        apply_file_permissions(
+            &file,
+            AnchoredFilePermissions {
+                unix_mode: None,
+                readonly: true,
+            },
+        )
+        .unwrap();
+        assert!(file_permissions(&file).unwrap().readonly);
+        assert_ne!(target.read_regular().unwrap().unwrap(), read);
     }
 }
