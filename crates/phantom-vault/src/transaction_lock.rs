@@ -4,9 +4,12 @@
 //! durability primitive and does not fsync transaction payloads. On Windows the
 //! lock directory inherits its surrounding ACL; this module does not claim that
 //! the ACL is user-only, so same-user or otherwise-authorized processes remain
-//! outside the coordination guarantee.
+//! outside the coordination guarantee. Current writers coordinate on a stable
+//! direct child of the trusted app-data anchor and also take the historical
+//! descendant lock as a one-release compatibility bridge.
 
 use phantom_core::error::{PhantomError, Result};
+use phantom_core::fs::{AnchoredLock, TrustedAnchor};
 use sha2::{Digest, Sha256};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -18,7 +21,20 @@ const PROCESS_LOCK_SHARDS: usize = 64;
 /// Keeping the guard alive spans snapshot, commit, verification, and rollback.
 pub struct ProjectTransactionLock {
     _process: MutexGuard<'static, ()>,
-    _file: std::fs::File,
+    _stable: AnchoredLock,
+    _legacy: AnchoredLock,
+}
+
+struct ProjectLockPaths {
+    identity: PathBuf,
+    anchor: PathBuf,
+    stable: PathBuf,
+    legacy: PathBuf,
+}
+
+struct ProjectFilesystemLocks {
+    stable: AnchoredLock,
+    legacy: AnchoredLock,
 }
 
 fn process_lock_for(identity: &Path) -> MutexGuard<'static, ()> {
@@ -50,7 +66,7 @@ fn lock_anchor() -> PathBuf {
         })
 }
 
-fn lock_path_at(project_dir: &Path, anchor: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
+fn lock_paths_at(project_dir: &Path, anchor: &Path) -> Result<ProjectLockPaths> {
     let canonical = project_dir.canonicalize().map_err(|error| {
         PhantomError::VaultError(format!(
             "Cannot resolve project directory {} for transaction locking: {error}",
@@ -66,38 +82,77 @@ fn lock_path_at(project_dir: &Path, anchor: &Path) -> Result<(PathBuf, PathBuf, 
     let mut digest = Sha256::new();
     digest.update(canonical.as_os_str().to_string_lossy().as_bytes());
     let name = hex::encode(digest.finalize());
-    Ok((
-        canonical,
-        anchor.to_path_buf(),
-        Path::new("transaction-locks").join(format!("{name}.lock")),
-    ))
+    Ok(ProjectLockPaths {
+        identity: canonical,
+        anchor: anchor.to_path_buf(),
+        stable: PathBuf::from(format!(".project-transaction-{name}.lock")),
+        legacy: Path::new("transaction-locks").join(format!("{name}.lock")),
+    })
 }
 
-fn lock_path(project_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
-    lock_path_at(project_dir, &lock_anchor())
+fn lock_paths(project_dir: &Path) -> Result<ProjectLockPaths> {
+    lock_paths_at(project_dir, &lock_anchor())
 }
 
 /// Acquire the process-local and cross-process lock for one canonical project.
 pub fn acquire_project_transaction_lock(project_dir: &Path) -> Result<ProjectTransactionLock> {
-    let (identity, anchor, relative_path) = lock_path(project_dir)?;
-    acquire_project_transaction_lock_at(identity, anchor, relative_path)
+    acquire_project_transaction_lock_at(lock_paths(project_dir)?)
 }
 
-fn acquire_project_transaction_lock_at(
-    identity: PathBuf,
-    anchor: PathBuf,
-    relative_path: PathBuf,
-) -> Result<ProjectTransactionLock> {
-    let process = process_lock_for(&identity);
-    let file = crate::lock_file::acquire_exclusive_lock_file(
-        &anchor,
-        &relative_path,
-        "project transaction lock",
-        true,
-    )?;
+fn open_lock_anchor(path: &Path) -> Result<TrustedAnchor> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path).map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Cannot create trusted project-lock anchor {}: {error}",
+            path.display()
+        ))
+    })?;
+    TrustedAnchor::open_canonical_private(path).map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Cannot retain trusted project-lock anchor {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn acquire_filesystem_locks(paths: &ProjectLockPaths) -> Result<ProjectFilesystemLocks> {
+    let anchor = open_lock_anchor(&paths.anchor)?;
+
+    // The direct-child lock is the durable coordination identity. Acquiring it
+    // first means replacing the legacy descendant directory cannot split two
+    // current Phantom writers into different lock domains.
+    let stable = anchor.acquire_lock(&paths.stable).map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Cannot acquire stable project transaction lock {}: {error}",
+            paths.stable.display()
+        ))
+    })?;
+
+    // One-release bridge for Phantom versions that only know the historical
+    // transaction-locks/<digest>.lock location. Always take it second to keep
+    // lock ordering deterministic. Do not remove the legacy file on drop.
+    let legacy = anchor.acquire_lock(&paths.legacy).map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Cannot acquire legacy project transaction lock {}: {error}",
+            paths.legacy.display()
+        ))
+    })?;
+    Ok(ProjectFilesystemLocks { stable, legacy })
+}
+
+fn acquire_project_transaction_lock_at(paths: ProjectLockPaths) -> Result<ProjectTransactionLock> {
+    let process = process_lock_for(&paths.identity);
+    let filesystem = acquire_filesystem_locks(&paths)?;
     Ok(ProjectTransactionLock {
         _process: process,
-        _file: file,
+        _stable: filesystem.stable,
+        _legacy: filesystem.legacy,
     })
 }
 
@@ -135,22 +190,21 @@ mod tests {
     }
 
     #[test]
-    fn windows_lock_contract_opens_reparse_point_and_checks_handle_identity() {
-        let source = include_str!("lock_file.rs");
-        assert!(source.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
-        assert!(source.contains("FILE_ATTRIBUTE_REPARSE_POINT"));
-        assert!(source.contains("GetFileInformationByHandle"));
-        assert!(source.contains("dwVolumeSerialNumber"));
-        assert!(source.contains("nFileIndexHigh"));
-        assert!(source.contains("nFileIndexLow"));
-        assert!(source.contains("nNumberOfLinks"));
-        assert!(source.contains("file_attributes"));
+    fn retained_lock_contract_is_visible_to_cross_platform_review() {
         let transaction_source = include_str!("transaction_lock.rs");
-        assert!(transaction_source.contains("crate::lock_file::acquire_exclusive_lock_file"));
-        assert!(transaction_source.contains("project transaction lock"));
-        assert!(transaction_source.contains("true"));
-        let source = include_str!("transaction_lock.rs");
-        assert!(source.contains("does not claim that\n//! the ACL is user-only"));
+        assert!(transaction_source.contains("TrustedAnchor::open_canonical_private"));
+        assert!(transaction_source.contains("let stable = anchor.acquire_lock"));
+        assert!(transaction_source.contains("let legacy = anchor.acquire_lock"));
+        assert!(transaction_source.contains("_stable: AnchoredLock"));
+        assert!(transaction_source.contains("_legacy: AnchoredLock"));
+        assert!(transaction_source.contains("does not claim that\n//! the ACL is user-only"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_project_lock_guard_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<ProjectTransactionLock>();
     }
 
     #[cfg(unix)]
@@ -167,12 +221,14 @@ mod tests {
         let anchor = container.path().canonicalize().unwrap();
         let redirected = anchor.join("transaction-locks");
         symlink(&owner, &redirected).unwrap();
-        let (identity, anchor, relative_path) = lock_path_at(project.path(), &anchor).unwrap();
+        let paths = lock_paths_at(project.path(), &anchor).unwrap();
 
-        let error = acquire_project_transaction_lock_at(identity, anchor, relative_path)
+        let error = acquire_project_transaction_lock_at(paths)
             .err()
             .expect("symlinked lock root must be rejected");
-        assert!(error.to_string().contains("ancestor"));
+        assert!(error
+            .to_string()
+            .contains("legacy project transaction lock"));
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"owner-state");
         assert_eq!(std::fs::read_dir(&owner).unwrap().count(), 1);
     }
@@ -187,12 +243,12 @@ mod tests {
         let root = lock_root.path().canonicalize().unwrap();
         let victim = root.join("owner-state");
         std::fs::write(&victim, b"preserve").unwrap();
-        let (identity, anchor, relative_path) = lock_path_at(project.path(), &root).unwrap();
+        let paths = lock_paths_at(project.path(), &root).unwrap();
         std::fs::create_dir(root.join("transaction-locks")).unwrap();
-        let path = root.join(&relative_path);
+        let path = root.join(&paths.stable);
         symlink(&victim, &path).unwrap();
 
-        assert!(acquire_project_transaction_lock_at(identity, anchor, relative_path).is_err());
+        assert!(acquire_project_transaction_lock_at(paths).is_err());
         assert_eq!(std::fs::read(&victim).unwrap(), b"preserve");
     }
 
@@ -207,12 +263,53 @@ mod tests {
         let victim = root.join("owner-state");
         std::fs::write(&victim, b"preserve").unwrap();
         std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let (identity, anchor, relative_path) = lock_path_at(project.path(), &root).unwrap();
+        let paths = lock_paths_at(project.path(), &root).unwrap();
         std::fs::create_dir(root.join("transaction-locks")).unwrap();
-        let path = root.join(&relative_path);
+        let path = root.join(&paths.stable);
         std::fs::hard_link(&victim, &path).unwrap();
 
-        assert!(acquire_project_transaction_lock_at(identity, anchor, relative_path).is_err());
+        assert!(acquire_project_transaction_lock_at(paths).is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"preserve");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_lock_blocks_before_a_swapped_legacy_decoy_is_touched() {
+        use fs2::FileExt;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let project = tempdir().unwrap();
+        let lock_root = tempdir().unwrap();
+        let root = lock_root.path().canonicalize().unwrap();
+        let first_paths = lock_paths_at(project.path(), &root).unwrap();
+        let first = acquire_filesystem_locks(&first_paths).unwrap();
+
+        let legacy_directory = root.join("transaction-locks");
+        std::fs::rename(&legacy_directory, root.join("moved-locks")).unwrap();
+        std::fs::create_dir(&legacy_directory).unwrap();
+        let victim = root.join("owner-state");
+        std::fs::write(&victim, b"preserve").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&victim, root.join(&first_paths.legacy)).unwrap();
+
+        let contender = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join(&first_paths.stable))
+            .unwrap();
+        assert!(contender.try_lock_exclusive().is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"preserve");
+
+        drop(first);
+        contender.try_lock_exclusive().unwrap();
+        contender.unlock().unwrap();
+
+        let second_paths = lock_paths_at(project.path(), &root).unwrap();
+        assert!(acquire_filesystem_locks(&second_paths).is_err());
         assert_eq!(std::fs::read(&victim).unwrap(), b"preserve");
         assert_eq!(
             std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
