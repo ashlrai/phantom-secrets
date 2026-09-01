@@ -3,5 +3,8 @@
 .env.local
 .env.*.local
 *.phantom.json
+.phantom.pid
+.phantom.proxy.lock
+.phantom.start.lock
 .DS_Store
 .claude/

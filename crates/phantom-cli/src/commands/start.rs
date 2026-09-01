@@ -1,13 +1,91 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
+use fs2::FileExt;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::proxy_state::{cleanup_if_stale_or_malformed, read_proxy_state, ProxyState};
+
+const DAEMON_CHILD_ENV: &str = "PHANTOM_INTERNAL_DAEMON_CHILD";
+
+struct ProjectFileLock(File);
+
+impl ProjectFileLock {
+    fn acquire(path: &Path) -> io::Result<Self> {
+        let file = open_lock_file(path)?;
+        FileExt::lock_exclusive(&file)?;
+        Ok(Self(file))
+    }
+
+    fn try_acquire(path: &Path) -> io::Result<Option<Self>> {
+        let file = open_lock_file(path)?;
+        match FileExt::try_lock_exclusive(&file) {
+            Ok(()) => Ok(Some(Self(file))),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Drop for ProjectFileLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+fn open_lock_file(path: &Path) -> io::Result<File> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("proxy lock path is not a regular file: {}", path.display()),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("proxy lock path is not a regular file: {}", path.display()),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(file)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellSyntax {
@@ -111,6 +189,7 @@ fn run_daemon() -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let pid_path = project_dir.join(".phantom.pid");
+    let start_lock_path = project_dir.join(".phantom.start.lock");
 
     if !config_path.exists() {
         anyhow::bail!(
@@ -118,6 +197,12 @@ fn run_daemon() -> Result<()> {
             "phantom init".cyan().bold()
         );
     }
+
+    // Serialize daemon parents through state inspection, child launch, and PID
+    // publication. The child is marked so it does not deadlock on this lock;
+    // it independently owns the full-lifetime proxy lock below.
+    let _start_lock = ProjectFileLock::acquire(&start_lock_path)
+        .with_context(|| format!("Failed to lock {}", start_lock_path.display()))?;
 
     match read_proxy_state(&pid_path) {
         ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
@@ -141,6 +226,7 @@ fn run_daemon() -> Result<()> {
     let mut cmd = Command::new(exe);
     cmd.arg("start")
         .current_dir(&project_dir)
+        .env(DAEMON_CHILD_ENV, "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .stdin(Stdio::null());
@@ -244,6 +330,8 @@ async fn run_async() -> Result<()> {
     let config_path = project_dir.join(".phantom.toml");
     let env_path = project_dir.join(".env");
     let pid_path = project_dir.join(".phantom.pid");
+    let start_lock_path = project_dir.join(".phantom.start.lock");
+    let proxy_lock_path = project_dir.join(".phantom.proxy.lock");
 
     if !config_path.exists() {
         anyhow::bail!(
@@ -251,6 +339,44 @@ async fn run_async() -> Result<()> {
             "phantom init".cyan().bold()
         );
     }
+
+    let is_daemon_child = std::env::var(DAEMON_CHILD_ENV).as_deref() == Ok("1");
+    let start_lock = if is_daemon_child {
+        None
+    } else {
+        Some(
+            ProjectFileLock::acquire(&start_lock_path)
+                .with_context(|| format!("Failed to lock {}", start_lock_path.display()))?,
+        )
+    };
+
+    // Own this lock across state inspection, bind, PID publication, serving,
+    // authenticated shutdown, and daemon-owned PID unlink. Persistent lock
+    // files are intentional: unlinking one can allow another process to lock a
+    // different inode while the original lock is still held.
+    let proxy_lock = ProjectFileLock::try_acquire(&proxy_lock_path)
+        .with_context(|| format!("Failed to lock {}", proxy_lock_path.display()))?;
+    let Some(_proxy_lock) = proxy_lock else {
+        match read_proxy_state(&pid_path) {
+            ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
+                eprintln!(
+                    "{} Proxy may already be running on 127.0.0.1:{} (PID {}). Run {} or {} first.",
+                    "!".yellow().bold(),
+                    pid.port,
+                    pid.pid,
+                    "phantom status".cyan().bold(),
+                    "phantom stop".cyan().bold()
+                );
+                return Ok(());
+            }
+            ProxyState::Missing | ProxyState::Stale(_) | ProxyState::Malformed(_) => {
+                anyhow::bail!(
+                    "Another Phantom proxy start is in progress for {}",
+                    project_dir.display()
+                );
+            }
+        }
+    };
 
     // Check if already running.
     match read_proxy_state(&pid_path) {
@@ -325,6 +451,10 @@ async fn run_async() -> Result<()> {
     // Fixes F8 from the 0.5.1 security audit (world-readable race window).
     let pid_info = format!("{}:{}:{}", std::process::id(), port, proxy_token);
     phantom_core::fs::atomic_write(&pid_path, pid_info.as_bytes())?;
+
+    // A competing start may inspect the now-complete PID record. The proxy
+    // lifetime lock remains held until shutdown cleanup completes.
+    drop(start_lock);
 
     println!(
         "{} Proxy started on {}",

@@ -78,6 +78,24 @@ fn init_creates_phantom_toml() {
 }
 
 #[test]
+fn init_excludes_session_bearer_pid_record_from_ordinary_git_staging() {
+    let dir = TempDir::new().unwrap();
+    run_init(&dir).success();
+
+    let gitignore = fs::read_to_string(dir.path().join(".gitignore")).expect("read .gitignore");
+    for runtime_file in [".phantom.pid", ".phantom.proxy.lock", ".phantom.start.lock"] {
+        assert!(
+            gitignore.lines().any(|line| line.trim() == runtime_file),
+            "{runtime_file} must be ignored; .phantom.pid carries the live session bearer token"
+        );
+    }
+    assert!(
+        !gitignore.lines().any(|line| line.trim() == ".phantom.toml"),
+        "shareable value-free project configuration must remain trackable"
+    );
+}
+
+#[test]
 fn init_rewrites_env_with_phantom_tokens() {
     let dir = TempDir::new().unwrap();
     run_init(&dir).success();

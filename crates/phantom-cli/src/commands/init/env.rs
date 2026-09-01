@@ -2,6 +2,18 @@ use anyhow::Result;
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 
+// `.phantom.pid` contains the live session bearer token. Keep it out of ordinary
+// Git staging, along with the persistent files used to coordinate proxy starts.
+const GITIGNORE_PATTERNS: &[&str] = &[
+    ".env",
+    ".env.local",
+    ".env.*.local",
+    ".env.backup",
+    ".phantom.pid",
+    ".phantom.proxy.lock",
+    ".phantom.start.lock",
+];
+
 /// Auto-detect .env files — checks current dir first, then immediate subdirectories.
 pub fn find_env_file(project_dir: &Path, user_specified: &str) -> Option<PathBuf> {
     let names = [
@@ -66,9 +78,8 @@ pub fn ensure_gitignore(project_dir: &Path) -> Result<()> {
 
     let mut added = Vec::new();
 
-    // Ensure .phantom.toml is NOT ignored (it contains no secrets, and teammates need it)
-    // But ensure .env is ignored
-    for pattern in &[".env", ".env.local", ".env.*.local", ".env.backup"] {
+    // Ensure .phantom.toml is NOT ignored (it contains no secrets, and teammates need it).
+    for pattern in GITIGNORE_PATTERNS {
         if !content.lines().any(|l| l.trim() == *pattern) {
             if !content.is_empty() && !content.ends_with('\n') {
                 content.push('\n');
@@ -100,7 +111,7 @@ pub fn prepare_gitignore(project_dir: &Path) -> Result<Option<phantom_vault::Ini
         String::new()
     };
     let original = content.clone();
-    for pattern in &[".env", ".env.local", ".env.*.local", ".env.backup"] {
+    for pattern in GITIGNORE_PATTERNS {
         if !content.lines().any(|line| line.trim() == *pattern) {
             if !content.is_empty() && !content.ends_with('\n') {
                 content.push('\n');
