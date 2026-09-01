@@ -65,6 +65,17 @@ file_identity() {
   printf '%s\n' "$identity"
 }
 
+file_link_count() {
+  local count
+  if count="$(stat -c '%h' "$1" 2>/dev/null)"; then
+    :
+  else
+    count="$(stat -f '%l' "$1" 2>/dev/null)" || return 1
+  fi
+  [[ "$count" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$count"
+}
+
 release_install_lock() {
   local current=""
   if [ -n "$lock_heartbeat_pid" ]; then
@@ -260,7 +271,7 @@ add_to_user_path() {
       rm -f -- "$before_tmp" "$candidate_tmp"
       return 1
     }
-    [ "$(stat -f '%l' "$rc" 2>/dev/null || stat -c '%h' "$rc" 2>/dev/null)" = "1" ] || {
+    [ "$(file_link_count "$rc")" = "1" ] || {
       rm -f -- "$before_tmp" "$candidate_tmp"
       return 1
     }

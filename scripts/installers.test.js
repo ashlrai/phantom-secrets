@@ -81,6 +81,34 @@ case "$1" in -s) printf '%s\\n' "$PHANTOM_TEST_UNAME_S" ;; -m) printf '%s\\n' "$
   return shims;
 }
 
+function addGnuStatShim(shims) {
+  const stat = join(shims, 'stat');
+  writeFileSync(stat, `#!/usr/bin/env node
+const { statSync } = require('node:fs');
+const [, , flag, format, path] = process.argv;
+if (flag === '-f') {
+  process.stdout.write(\`  File: "\${path}"\n    ID: simulated Namelen: 255 Type: ext2/ext3\n\`);
+  process.exit(0);
+}
+if (flag !== '-c' || !path) process.exit(2);
+const value = statSync(path, { bigint: true });
+switch (format) {
+  case '%d:%i:%h:%f':
+    process.stdout.write(\`\${value.dev}:\${value.ino}:\${value.nlink}:\${value.mode.toString(16)}\n\`);
+    break;
+  case '%h':
+    process.stdout.write(\`\${value.nlink}\n\`);
+    break;
+  case '%Y':
+    process.stdout.write(\`\${value.mtimeMs / 1000n}\n\`);
+    break;
+  default:
+    process.exit(2);
+}
+`);
+  chmodSync(stat, 0o755);
+}
+
 function runInstaller(options = {}) {
   const root = options.root ?? mkdtempSync(join(tmpdir(), 'phantom-installer-test-'));
   const target = options.target ?? 'x86_64-apple-darwin';
@@ -244,12 +272,14 @@ test('Unix installer refuses a linked shell rc without mutating its target', () 
   assert.match(result.stderr, /could not update your shell PATH/);
 });
 
-test('Unix installer atomically preserves an existing regular shell rc', () => {
+test('Unix installer atomically preserves an existing regular shell rc under GNU stat semantics', () => {
   const root = mkdtempSync(join(tmpdir(), 'phantom-installer-regular-rc-'));
   const home = join(root, 'home');
+  const shims = makeShims(root);
+  addGnuStatShim(shims);
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, '.bashrc'), '# existing\n', { mode: 0o600 });
-  const { install, result } = runInstaller({ root, home, install: join(root, 'live', 'bin') });
+  const { install, result } = runInstaller({ root, home, shims, install: join(root, 'live', 'bin') });
   assert.equal(result.status, 0, result.stderr);
   const rc = readFileSync(join(home, '.bashrc'), 'utf8');
   assert.match(rc, /^# existing\n/);

@@ -296,7 +296,7 @@ fn resolve_location_with_git(
             reason: "path output contained a line break or NUL byte".to_string(),
         });
     }
-    let path = PathBuf::from(text);
+    let path = path_from_git_output(text);
     if path.file_name() != Some(OsStr::new("pre-commit")) {
         return Err(HookError::InvalidPath {
             project: absolute_project,
@@ -348,7 +348,7 @@ fn resolve_location_with_git(
         project: absolute_project.clone(),
         reason: "Git common-directory path was not valid UTF-8".to_string(),
     })?;
-    let common_path = PathBuf::from(common_text);
+    let common_path = path_from_git_output(common_text);
     let common_dir = common_path
         .canonicalize()
         .map_err(|source| HookError::InvalidPath {
@@ -951,6 +951,24 @@ fn trim_git_line(bytes: &[u8]) -> Option<&[u8]> {
     }
 }
 
+fn path_from_git_output(text: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        // Git for Windows prints paths with `/` separators even when the
+        // native absolute path has a verbatim `\\?\` prefix. Rust correctly
+        // treats `/` as an ordinary character inside a verbatim Windows path,
+        // which would otherwise hide the final filename and any `..`
+        // components from the validations below. Windows filenames cannot
+        // contain `/`, so normalize Git's separator spelling before parsing.
+        PathBuf::from(text.replace('/', "\\"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(text)
+    }
+}
+
 fn stderr_message(stderr: &[u8]) -> String {
     let message = String::from_utf8_lossy(trim_ascii(stderr));
     if message.is_empty() {
@@ -1120,6 +1138,26 @@ mod tests {
         );
         git(project, &["config", "user.name", "Phantom Tests"]);
         git(project, &["config", "core.hooksPath", ".git/hooks"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_git_verbatim_paths_normalize_separators_before_validation() {
+        let hook = path_from_git_output(r"\\?\C:\operator-hooks/pre-commit");
+        assert!(hook.is_absolute());
+        assert_eq!(hook.file_name(), Some(OsStr::new("pre-commit")));
+        assert!(!hook
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir)));
+
+        let traversal = path_from_git_output(r"\\?\C:\operator-hooks/../escape/pre-commit");
+        assert!(traversal
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir)));
+
+        let slash_prefixed = path_from_git_output(r"//?/C:/operator-hooks/pre-commit");
+        assert!(slash_prefixed.is_absolute());
+        assert_eq!(slash_prefixed.file_name(), Some(OsStr::new("pre-commit")));
     }
 
     #[test]
