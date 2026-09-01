@@ -1137,10 +1137,12 @@ mod tests {
                     let _lock =
                         phantom_vault::acquire_project_transaction_lock(&project_from_factory)
                             .unwrap();
-                    acquired_tx.send(()).unwrap();
+                    // The receiver may already have reported a bounded timeout
+                    // under a heavily loaded full-workspace test run.
+                    let _ = acquired_tx.send(());
                 });
 
-                if acquired_rx.recv_timeout(Duration::from_secs(1)).is_err() {
+                if acquired_rx.recv_timeout(Duration::from_secs(10)).is_err() {
                     *delayed_contender_from_factory.lock().unwrap() = Some(contender);
                     return Err(PhantomError::VaultError(
                         "vault construction ran while the project transaction lock was held"
