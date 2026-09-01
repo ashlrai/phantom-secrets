@@ -75,14 +75,10 @@ This starts the Phantom proxy, sets the implemented `*_BASE_URL` overrides,
 then hands off to Codex. Calls made by SDKs that honor those overrides use the
 proxy; arbitrary network clients and unsupported protocols do not.
 
-For interactive sessions or repeated Codex runs, start the proxy once and leave it running:
-
-```bash
-phantom start
-codex "refactor auth module"
-codex "add tests for payment flow"
-phantom stop
-```
+For explicitly supervised repeated runs, start `phantom start` in a trusted
+terminal and keep it open. Copy the printed exports into a second terminal,
+launch Codex there, and press Ctrl-C in the original owning terminal to stop.
+Detached `--daemon` mode and external `phantom stop` fail closed.
 
 ---
 
@@ -146,7 +142,10 @@ If missing, re-run `phantom setup --client codex`. If present, restart Codex —
 
 **Phantom proxy not active during Codex task execution**
 
-Codex tasks must be launched from a shell where `phantom exec` has set the proxy environment. Launching Codex from a GUI shortcut or a separate terminal bypasses the proxy. Always use `phantom exec -- codex <task>` or confirm `phantom start` has been run in the current shell session.
+Codex tasks must be launched from a shell where `phantom exec` set the proxy
+environment or where you explicitly copied the exports printed by an active
+foreground `phantom start`. Launching Codex from a GUI shortcut or an unrelated
+terminal bypasses the proxy. Prefer `phantom exec -- codex <task>`.
 
 **Token in `.env` is not being replaced during test calls**
 

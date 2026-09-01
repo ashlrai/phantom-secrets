@@ -35,7 +35,14 @@ The actual API keys, tokens, passwords, and database URLs that Phantom is asked 
 
 ### 1.2 The proxy session token (`PHANTOM_PROXY_TOKEN`)
 
-A 32-byte (256-bit) CSPRNG value generated fresh each time `phantom exec` starts the local proxy. The proxy accepts it through the `x-phantom-proxy-token` request header. For generic SDK compatibility, `phantom exec` and `phantom start` include it in local `*_BASE_URL` values as `/_phantom/<token>/`; set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` to emit token-free URLs and require the header path.
+A 32-byte (256-bit) CSPRNG value generated fresh each time `phantom exec` or
+foreground `phantom start` starts the local proxy. The proxy accepts it through
+the `x-phantom-proxy-token` request header. For generic SDK compatibility, the
+CLI includes it in local `*_BASE_URL` values as `/_phantom/<token>/`; set
+`PHANTOM_PROXY_HEADER_AUTH_ONLY=1` to emit token-free URLs and require the
+header path. Phantom does not persist the token, port, or PID for cross-process
+control. `phantom start` prints exports to its trusted terminal and remains
+foreground-owned until Ctrl-C; detached and external stop paths fail closed.
 
 **Sensitivity:** High during a session. Compromising it allows a local process to use the running proxy to obtain real secrets injected into outbound requests. The token is ephemeral — it disappears when the proxy process exits.
 
@@ -151,7 +158,7 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 | Real secret values | Local process reads vault file | File vault encrypted with ChaCha20-Poly1305 + Argon2id (m=64 MiB); file permissions `0600`; attacker needs passphrase | Covered | `crates/phantom-vault/src/crypto.rs`, `crates/phantom-vault/src/file.rs` |
 | Real secret values | Local process reads OS keychain entries | Secret names are stored as SHA-256-derived identifiers (first 8 bytes, hex-encoded), reducing metadata disclosure during enumeration. Value access is governed by the native credential store and its session/application policy; a hostile same-user process may share that authority on some platforms | Partial — native policy, not a Phantom sandbox | `crates/phantom-vault/src/keychain.rs` (name hashing and native `keyring` entries) |
 | Real secret values | Proxy used without a session token to extract secrets | Proxy validates the session token on every request using constant-time comparison; unauthenticated requests receive HTTP 401. CLI-generated URLs use a local `/_phantom/<token>/` path segment for SDK compatibility unless `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` is set. | Covered | `crates/phantom-proxy/src/server.rs`, proxy auth regression tests |
-| Real secret values | Proxy token brute-forced via timing side-channel | Comparison uses `subtle::ConstantTimeEq`; length mismatch returns early (token length is not secret) | Covered | `crates/phantom-proxy/src/server.rs`, proxy authentication tests |
+| Real secret values | Proxy token brute-forced via timing side-channel | Comparison uses `subtle::ConstantTimeEq`; length mismatch returns early because token length is fixed and not secret | Covered | `crates/phantom-proxy/src/server.rs` — `constant_time_eq`, proxy authentication tests |
 | Real secret values | Secret injected into non-auth fields (prompt injection via body) | F9 scoping: for JSON bodies, token substitution is restricted to a whitelist of known-secret fields; tokens in `prompt`, `messages`, `content` fields are left as phantom tokens and not substituted | Covered | `crates/phantom-proxy/src/server.rs`, `body_scope.rs`, field-scope tests |
 | Real secret values | Secret injected into non-auth headers (e.g. User-Agent) | F9 scoping: header substitution restricted to auth-bearing headers and the per-route configured header | Covered | `crates/phantom-proxy/src/server.rs`, header-scope tests |
 | Real secret values | Secret leaked in upstream API response back to LLM | Response headers plus buffered and streaming bodies are scanned; configured values and recognized credential formats are redacted before forwarding | Covered for supported proxy paths | `crates/phantom-proxy/src/server.rs`, response leak/scrubber tests |
@@ -165,7 +172,8 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 | Provider-grant lifecycle | User assumes local deletion remotely revokes a provider credential | `phantom grant revoke` fails closed before local mutation because remote revocation is not wired | Partial — credential must be revoked at the provider | `crates/phantom-cli/src/commands/grant/revoke.rs` |
 | Proxy session token | Sniffed on localhost | Token is only ever transmitted over the loopback interface (127.0.0.1), which is not network-accessible | Covered | `crates/phantom-proxy/src/server.rs:66` — bind to `[127, 0, 0, 1]` only |
 | Proxy session token | Leaked via process environment to child | The proxy token is set in the environment of the `phantom exec` child process as `PHANTOM_PROXY_TOKEN`; any subprocess spawned by that child can read it. This is intentional — the child needs it — but a compromised child process can use it | Partial — by design; mitigated by proxy's localhost-only binding and ephemeral token lifetime |
-| Proxy session token | Token persists after session ends | Token is generated fresh on each `phantom exec` invocation and exists only in the running process's memory | Covered | `crates/phantom-proxy/src/server.rs:104–109` |
+| File-vault passphrase and protected ambient values | Delegated child inherits the parent's decryption key or plaintext protected value | `phantom exec` opens the vault in the parent, removes `PHANTOM_VAULT_PASSPHRASE` and every protected dotenv key from both child paths, then selectively sets fresh session tokens for protected keys | Covered for `phantom exec`; commands launched manually outside it inherit their parent environment | `crates/phantom-cli/src/commands/exec.rs`, child-environment integration tests |
+| Proxy session token | Phantom persists a live bearer or process identifier in the workspace | Each `phantom exec` or foreground `phantom start` generates a fresh token. The foreground lifetime lock contains no PID, port, or bearer; daemon, remote-shutdown, and external-stop paths fail closed | Covered for Phantom-managed persistence; an operator can still copy terminal exports into another process | `crates/phantom-cli/src/commands/start.rs`, `crates/phantom-cli/src/commands/stop.rs`, process-control integration tests |
 | Team X25519 private key | Exfiltration from OS keychain | Private key is stored in the native credential store, whose protection depends on platform and session/application policy | Partial — same native-policy limit as real secret values in the credential store |
 | Team X25519 private key | Insider reads another member's private key | Each member's private key never leaves their machine; the team vault push protocol encrypts to public keys only | Covered | `crates/phantom-core/src/team_crypto.rs:109–138` — `seal_sym_key` uses recipient public key only |
 | Team X25519 private key | Key revocation after member leaves team | No automated key-revocation or re-encryption flow exists. Removing a member from the team prevents future pushes encrypting to their key, but does not invalidate past pushes that included them | Not covered — see [§7](#7-known-gaps-and-non-mitigations) |
@@ -232,9 +240,12 @@ Each team vault push uses a two-layer scheme:
 
 **Generation:** `rand::thread_rng().fill_bytes()` — fresh per proxy session.
 
-**Comparison:** `subtle::ConstantTimeEq` — constant-time byte comparison to prevent timing side-channel attacks from a colocated local process.
+**Comparison:** `subtle::ConstantTimeEq` after a fixed public-length check —
+constant-time byte comparison to prevent byte-by-byte timing discovery by a
+colocated local process.
 
-**Code:** `crates/phantom-proxy/src/server.rs:104–109` (generation), `server.rs:620–623` (comparison)
+**Code:** `crates/phantom-proxy/src/server.rs` — `generate_proxy_token` and
+`constant_time_eq`.
 
 ### 4.5 Keychain secret name obfuscation
 

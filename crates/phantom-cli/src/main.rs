@@ -22,7 +22,7 @@ use tracing_subscriber::EnvFilter;
                   Unmanaged files, same-user processes, arbitrary tools, and unsupported protocols remain outside this boundary.\n\n\
                   Commands are grouped (in display order):\n  \
                     Setup        init · agent · setup · doctor · completion · mcp\n  \
-                    Daily use    exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
+                    Daily use    exec · start · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance  upgrade · watch · rotate · open · audit",
     version
@@ -154,22 +154,22 @@ enum Commands {
         cmd: Vec<String>,
     },
 
-    /// Start the proxy server
+    /// Start a foreground proxy owned by this terminal
     #[command(next_help_heading = "Daily use")]
     Start {
-        /// Run in background (daemon mode)
+        /// Reserved compatibility flag; detached mode is hard denied
         #[arg(short, long)]
         daemon: bool,
     },
 
-    /// Stop the background proxy server
+    /// Reserved compatibility command; external stop is hard denied
     #[command(next_help_heading = "Daily use")]
     Stop,
 
     /// Show proxy status and mapped secrets
     #[command(next_help_heading = "Daily use")]
     Status {
-        /// Compact one-line output for shell prompts (e.g., "3 secrets · proxy off")
+        /// Compact one-line output for shell prompts
         #[arg(long)]
         oneline: bool,
     },

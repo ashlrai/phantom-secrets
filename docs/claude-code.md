@@ -209,7 +209,10 @@ exact action and keep deployment/provider authority separately constrained.
 
 **Cannot execute sync or pull against platforms.** `phantom_sync` is informational only — it shows configuration but does not call Vercel or Railway APIs. Actual sync requires a CLI command you run directly.
 
-**Cannot start or stop the proxy.** There is no MCP tool for proxy lifecycle. The proxy is controlled via `phantom exec`, `phantom start`, and `phantom stop` in your terminal. This ensures the proxy only runs in sessions you explicitly start.
+**Cannot start or stop the proxy.** There is no MCP tool for proxy lifecycle.
+Use `phantom exec` for a child-owned session, or run foreground `phantom start`
+in a trusted terminal and press Ctrl-C in that same terminal to stop. Detached
+`--daemon` mode and external `phantom stop` fail closed.
 
 ---
 

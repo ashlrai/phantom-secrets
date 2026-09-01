@@ -463,6 +463,10 @@ export PHANTOM_VAULT_PASSPHRASE="$(openssl rand -hex 32)"
 ```
 
 Store this passphrase as a CI secret. See `docs/ci-cd.md` for full GitHub Actions and Docker examples.
+`phantom exec` uses the passphrase only in its trusted parent process, then
+removes `PHANTOM_VAULT_PASSPHRASE` from both proxied and direct child
+environments. Commands launched manually from the same shell still inherit the
+export, so avoid launching agents outside `phantom exec` while it is set.
 
 ### An older registry-based install command fails
 

@@ -64,13 +64,10 @@ phantom exec -- windsurf .
 
 This starts the Phantom proxy, sets `*_BASE_URL` environment variables, then launches Windsurf. API calls from the integrated terminal flow through the proxy.
 
-For longer-running sessions, use the background proxy instead:
-
-```bash
-phantom start
-# ... work in Windsurf ...
-phantom stop
-```
+For an explicitly supervised longer session, run `phantom start` in a trusted
+terminal and keep it open. Copy the printed exports into the terminal that
+launches Windsurf, then press Ctrl-C in the original owning terminal to stop.
+Detached `--daemon` mode and external `phantom stop` fail closed.
 
 ---
 

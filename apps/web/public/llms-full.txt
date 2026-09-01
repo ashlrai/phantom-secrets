@@ -93,10 +93,11 @@ Example: phantom exec -- claude
 Example: phantom exec -- cursor .
 Example: phantom exec -- node server.js
 
-### phantom start / phantom stop
-Standalone proxy lifecycle. --daemon flag runs in background.
-phantom start --daemon
-phantom stop
+### phantom start
+Run an explicitly supervised foreground proxy in a trusted terminal. Keep that
+terminal open and press Ctrl-C there to stop. Detached `--daemon` mode and
+external `phantom stop` fail closed; no PID, port, or proxy bearer is persisted
+for cross-process control.
 
 ### phantom list
 Show secret names stored in vault. Never shows values.
@@ -455,7 +456,9 @@ Proxy binds to 127.0.0.1 only and is not bound to a non-loopback interface. Host
 
 Proxy token authentication rejects requests without the session bearer; it does not exclude same-user local-process or bearer-theft risk.
 
-Secrets zeroized from memory after use (zeroize crate).
+Major vault retrieval, serialization, and decrypted-file buffers use targeted
+zeroization. Some proxy lookup copies remain ordinary strings, so zeroization is
+defense in depth rather than a complete memory-erasure guarantee.
 
 Allowlist model: proxy only injects for configured service URL patterns. Unknown services are not modified.
 

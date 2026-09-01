@@ -86,7 +86,7 @@ Phantom Proxy (localhost)
      |  2. Look up real secret from vault
      |  3. Replace: phm_a7f3b9e2... -> sk-proj-abc123...
      |  4. Forward over TLS to api.openai.com
-     |  5. Zeroize real secret from memory
+     |  5. Drop request buffers; the session lookup copy remains until proxy exit
      v
 OpenAI API (real endpoint, HTTPS)
      |
@@ -161,7 +161,11 @@ phantom-mcp      MCP server (rmcp SDK), stdio transport, schema-verified catalog
 workspace/kernel Value-blind setup plus fail-closed governed-execution foundations
 ```
 
-The vault uses ChaCha20-Poly1305 for encryption with Argon2id key derivation (for the encrypted file fallback). The `zeroize` crate scrubs secrets from memory after every proxy injection. CI runs the Rust test suite and clippy before release.
+The vault uses ChaCha20-Poly1305 for encryption with Argon2id key derivation
+(for the encrypted file fallback). Major vault retrieval, serialization, and
+decrypted-file buffers use targeted zeroization, while some proxy lookup copies
+remain ordinary strings. Zeroization is defense in depth, not a complete
+memory-erasure guarantee. CI runs the Rust test suite and clippy before release.
 
 The cloud client can encrypt a vault payload before upload so the vault API
 stores ciphertext rather than decrypted secret values. That property does not

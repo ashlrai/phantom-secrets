@@ -76,10 +76,14 @@ customer acceptance exist or are active.
   transactions, compensates partial mutations (including legacy plaintext-name
   migration), exposes a fallible public vault constructor, and propagates
   backend errors instead of replacing missing encryption keys or panicking.
-- Replaces ambient `kill`/`tasklist` process checks with native OS liveness,
-  authenticates graceful proxy shutdown, serializes per-project proxy starts,
-  requires authenticated daemon readiness before exporting its bearer token,
-  and keeps session PID/bearer state out of Git.
+- Makes standalone proxy lifecycle foreground-only and terminal-owned. The
+  lifetime lock contains no PID, port, or bearer; detached `start --daemon`,
+  the external shutdown endpoint, and `phantom stop` fail closed until a
+  separately reviewed private cross-platform control channel exists.
+- Removes the file-vault passphrase and ambient protected dotenv values from
+  both proxied and direct `phantom exec` child environments, inserts only fresh
+  session tokens for protected keys, and refuses missing vault mappings or
+  configured connection strings before child launch.
 
 ### Reliability and authority boundaries
 

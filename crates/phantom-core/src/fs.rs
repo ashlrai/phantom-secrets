@@ -6,8 +6,8 @@
 //! never lives on disk with a wider default umask during the write window.
 //!
 //! Callers should use this for every write that touches secrets or that must
-//! survive a crash / `kill -9` mid-write (e.g. `.env`, `.phantom.toml`,
-//! `.phantom.pid`, the vault file).
+//! survive a crash / `kill -9` mid-write (e.g. `.env`, `.phantom.toml`, and
+//! the vault file).
 
 use std::io::{self, Write};
 use std::path::Path;

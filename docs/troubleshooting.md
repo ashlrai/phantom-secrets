@@ -104,14 +104,20 @@ export PHANTOM_VAULT_PASSPHRASE="$(openssl rand -hex 32)"
 ```
 
 Store this passphrase securely (e.g., as a CI secret) — you'll need it on every run to decrypt the vault.
+`phantom exec` consumes it in the trusted parent and removes it before spawning
+either a proxied or direct child. Commands launched manually from the same shell
+still inherit the export, so do not launch an agent outside `phantom exec` while
+the variable is set.
 
-### `phantom start --daemon` fails silently
+### `phantom start --daemon` or `phantom stop` is refused
 
-If the daemon starts but the proxy fails:
-
-1. Try running in foreground first: `phantom start` (without `--daemon`)
-2. Check for port conflicts
-3. Verify `.phantom.toml` is valid: `phantom doctor`
+This is intentional. Phantom does not persist a live proxy bearer, PID, or port
+in the workspace, so detached startup and external process control fail closed.
+Use `phantom exec -- <command>` for the normal child-owned lifecycle. For an
+explicitly supervised shared proxy, run `phantom start` in a trusted terminal,
+keep that terminal open, and press Ctrl-C there to stop. `phantom status` can
+report whether the bearerless project lock is currently owned, but it cannot
+recover a port or bearer.
 
 ### An older registry-based install command fails
 

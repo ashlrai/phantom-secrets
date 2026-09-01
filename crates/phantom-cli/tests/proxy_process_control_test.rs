@@ -1,11 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 const VAULT_PASS: &str = "proxy-process-control-integration-passphrase";
+const PROBE_PATH_ENV: &str = "PHANTOM_TEST_CHILD_ENV_PROBE";
+const EXPECT_PROTECTED_ENV: &str = "PHANTOM_TEST_EXPECT_PROTECTED_TOKEN";
 
 fn phantom_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_phantom"))
@@ -54,28 +55,11 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
     predicate()
 }
 
-struct DaemonGuard {
-    project: PathBuf,
-    home: PathBuf,
-    armed: bool,
-}
+struct ChildGuard(Option<Child>);
 
-struct StartChildrenGuard {
-    project: PathBuf,
-    home: PathBuf,
-    children: Vec<Child>,
-    armed: bool,
-}
-
-impl Drop for StartChildrenGuard {
+impl Drop for ChildGuard {
     fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let _ = phantom_command(&self.project, &self.home)
-            .arg("stop")
-            .output();
-        for child in &mut self.children {
+        if let Some(child) = &mut self.0 {
             if child.try_wait().ok().flatten().is_none() {
                 let _ = child.kill();
             }
@@ -84,213 +68,170 @@ impl Drop for StartChildrenGuard {
     }
 }
 
-impl Drop for DaemonGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let _ = phantom_command(&self.project, &self.home)
-            .arg("stop")
-            .output();
-        let pid_path = self.project.join(".phantom.pid");
-        let _ = wait_until(Duration::from_secs(3), || !pid_path.exists());
-    }
-}
-
 #[test]
-fn daemon_acknowledgment_succeeds_and_daemon_unlinks_its_pid_file() {
+fn detached_start_and_external_stop_fail_closed_without_touching_legacy_pid_state() {
     let project = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
     initialize(project.path(), home.path());
 
-    let start = phantom_command(project.path(), home.path())
+    let daemon = phantom_command(project.path(), home.path())
         .args(["start", "--daemon"])
         .output()
         .unwrap();
-    assert_success(&start, "phantom start --daemon");
+    assert!(!daemon.status.success());
+    assert!(String::from_utf8_lossy(&daemon.stderr).contains("Detached proxy mode is disabled"));
+    assert!(!project.path().join(".phantom.pid").exists());
 
-    let pid_path = project.path().join(".phantom.pid");
-    assert!(pid_path.exists(), "daemon did not publish its PID record");
-    let mut guard = DaemonGuard {
-        project: project.path().to_path_buf(),
-        home: home.path().to_path_buf(),
-        armed: true,
-    };
-
+    let legacy_pid = project.path().join(".phantom.pid");
+    fs::write(&legacy_pid, b"legacy-state-must-not-be-unlinked").unwrap();
     let stop = phantom_command(project.path(), home.path())
         .arg("stop")
         .output()
         .unwrap();
-    assert_success(&stop, "phantom stop");
-    assert!(
-        String::from_utf8_lossy(&stop.stdout).contains("Authenticated proxy shutdown accepted"),
-        "stop did not report authenticated acknowledgment"
+    assert!(!stop.status.success());
+    assert!(String::from_utf8_lossy(&stop.stderr).contains("External proxy stop is disabled"));
+    assert_eq!(
+        fs::read(&legacy_pid).unwrap(),
+        b"legacy-state-must-not-be-unlinked"
     );
-    assert!(
-        wait_until(Duration::from_secs(5), || !pid_path.exists()),
-        "daemon did not unlink its owned PID record after acknowledgment"
-    );
-    guard.armed = false;
-
-    let status = phantom_command(project.path(), home.path())
-        .args(["status", "--oneline"])
-        .output()
-        .unwrap();
-    assert_success(&status, "phantom status --oneline");
-    assert!(String::from_utf8_lossy(&status.stdout).contains("proxy off"));
 }
 
 #[test]
-fn concurrent_starts_publish_exactly_one_live_proxy_owner() {
+fn foreground_lock_allows_exactly_one_owner_without_a_pid_record() {
     let project = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
     initialize(project.path(), home.path());
 
-    let barrier = Arc::new(Barrier::new(3));
-    let mut launchers = Vec::new();
-    for _ in 0..2 {
-        let barrier = Arc::clone(&barrier);
-        let project = project.path().to_path_buf();
-        let home = home.path().to_path_buf();
-        launchers.push(std::thread::spawn(move || {
-            barrier.wait();
-            phantom_command(&project, &home)
-                .arg("start")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn concurrent phantom start")
-        }));
-    }
-    barrier.wait();
+    let first = phantom_command(project.path(), home.path())
+        .arg("start")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut guard = ChildGuard(Some(first));
 
-    let children = launchers
-        .into_iter()
-        .map(|launcher| launcher.join().expect("join start launcher"))
-        .collect();
-    let mut guard = StartChildrenGuard {
-        project: project.path().to_path_buf(),
-        home: home.path().to_path_buf(),
-        children,
-        armed: true,
-    };
-
-    let pid_path = project.path().join(".phantom.pid");
-    assert!(
-        wait_until(Duration::from_secs(10), || pid_path.exists()),
-        "concurrent starts did not publish a PID record"
-    );
     assert!(
         wait_until(Duration::from_secs(10), || {
-            guard
-                .children
-                .iter_mut()
-                .map(|child| child.try_wait().expect("poll start child"))
-                .filter(Option::is_some)
-                .count()
-                == 1
+            let status = phantom_command(project.path(), home.path())
+                .args(["status", "--oneline"])
+                .output()
+                .unwrap();
+            status.status.success()
+                && String::from_utf8_lossy(&status.stdout).contains("foreground proxy active")
         }),
-        "exactly one concurrent start must remain as the live proxy owner"
+        "first start did not acquire the lifetime lock"
     );
 
-    let live_child_pids: Vec<_> = guard
-        .children
-        .iter_mut()
-        .filter_map(|child| {
-            child
-                .try_wait()
-                .expect("poll start child")
-                .is_none()
-                .then_some(child.id())
-        })
-        .collect();
-    assert_eq!(live_child_pids.len(), 1, "more than one proxy stayed live");
-    let published_pid: u32 = fs::read_to_string(&pid_path)
-        .expect("read PID record")
-        .split(':')
-        .next()
-        .expect("PID field")
-        .parse()
-        .expect("numeric PID");
-    assert_eq!(
-        published_pid, live_child_pids[0],
-        "PID record was not owned by the only live proxy"
-    );
-
-    let stop = phantom_command(project.path(), home.path())
-        .arg("stop")
+    let second = phantom_command(project.path(), home.path())
+        .arg("start")
         .output()
         .unwrap();
-    assert_success(&stop, "stop concurrent-start winner");
+    assert!(!second.status.success());
+    assert!(String::from_utf8_lossy(&second.stderr).contains("already owns"));
     assert!(
-        wait_until(Duration::from_secs(5), || !pid_path.exists()),
-        "live owner did not unlink its PID record"
+        !project.path().join(".phantom.pid").exists(),
+        "foreground lifecycle must never persist a PID or bearer"
     );
-    assert!(
-        wait_until(Duration::from_secs(5), || guard.children.iter_mut().all(
-            |child| child.try_wait().expect("poll stopped child").is_some()
-        )),
-        "a concurrent start remained orphaned after stopping the published owner"
-    );
-    std::thread::sleep(Duration::from_millis(200));
-    assert!(
-        !pid_path.exists(),
-        "a losing start overwrote the PID record after shutdown"
-    );
-    guard.armed = false;
+
+    let mut first = guard.0.take().unwrap();
+    first.kill().unwrap();
+    first.wait().unwrap();
+    assert!(wait_until(Duration::from_secs(5), || {
+        let status = phantom_command(project.path(), home.path())
+            .args(["status", "--oneline"])
+            .output()
+            .unwrap();
+        status.status.success()
+            && String::from_utf8_lossy(&status.stdout).contains("foreground proxy inactive")
+    }));
 }
 
 #[test]
-fn hostile_path_process_tools_are_never_executed_for_liveness() {
+fn exec_child_does_not_receive_vault_passphrase_or_ambient_protected_value() {
     let project = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
     initialize(project.path(), home.path());
-
-    let shims = project.path().join("hostile-path");
-    fs::create_dir(&shims).unwrap();
-    let marker = project.path().join("ambient-process-tool-ran");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for name in ["kill", "tasklist"] {
-            let shim = shims.join(name);
-            fs::write(
-                &shim,
-                format!("#!/bin/sh\nprintf ran > '{}'\nexit 0\n", marker.display()),
-            )
-            .unwrap();
-            fs::set_permissions(&shim, fs::Permissions::from_mode(0o700)).unwrap();
-        }
-    }
-
-    #[cfg(windows)]
-    for name in ["kill.cmd", "tasklist.cmd"] {
-        fs::write(
-            shims.join(name),
-            format!("@echo ran>\"{}\"\r\n@exit /b 0\r\n", marker.display()),
-        )
-        .unwrap();
-    }
-
-    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let unused_port = listener.local_addr().unwrap().port();
-    drop(listener);
-    fs::write(
-        project.path().join(".phantom.pid"),
-        format!("{}:{unused_port}:{}", std::process::id(), "a".repeat(64)),
-    )
-    .unwrap();
+    let probe = project.path().join("probe-complete");
 
     let output = phantom_command(project.path(), home.path())
-        .args(["status", "--oneline"])
-        .env("PATH", &shims)
+        .args(["exec", "--"])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", "child_environment_probe", "--nocapture"])
+        .env("OPENAI_API_KEY", "ambient-real-value-must-not-reach-child")
+        .env(PROBE_PATH_ENV, &probe)
+        .env(EXPECT_PROTECTED_ENV, "1")
         .output()
         .unwrap();
-    assert_success(&output, "phantom status with hostile PATH");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("proxy unknown"));
+    assert_success(&output, "phantom exec protected child probe");
+    assert!(probe.exists(), "child probe did not run");
+}
+
+#[test]
+fn direct_child_does_not_receive_vault_passphrase() {
+    let project = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let init = phantom_command(project.path(), home.path())
+        .args(["init", "--empty"])
+        .output()
+        .unwrap();
+    assert_success(&init, "phantom init --empty");
+    let probe = project.path().join("direct-probe-complete");
+
+    let output = phantom_command(project.path(), home.path())
+        .args(["exec", "--"])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", "child_environment_probe", "--nocapture"])
+        .env(PROBE_PATH_ENV, &probe)
+        .output()
+        .unwrap();
+    assert_success(&output, "phantom exec direct child probe");
+    assert!(probe.exists(), "direct child probe did not run");
+}
+
+#[test]
+fn protected_connection_string_is_denied_before_vault_decryption() {
+    let project = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    fs::write(
+        project.path().join(".env"),
+        "DATABASE_URL=postgresql://example.invalid/app\n",
+    )
+    .unwrap();
+    let init = phantom_command(project.path(), home.path())
+        .args(["init", "--from", ".env"])
+        .output()
+        .unwrap();
+    assert_success(&init, "phantom init connection string");
+
+    let output = phantom_command(project.path(), home.path())
+        .args(["exec", "--"])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", "child_environment_probe"])
+        // If exec tried to open the file vault before applying the configured
+        // connection-string denial, this deliberately wrong key would produce
+        // a decryption error instead of the required policy error.
+        .env("PHANTOM_VAULT_PASSPHRASE", "deliberately-wrong-passphrase")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Refusing to expose connection-string secret(s)"));
+    assert!(!stderr.contains("decrypt"));
+}
+
+#[test]
+fn child_environment_probe() {
+    let Ok(path) = std::env::var(PROBE_PATH_ENV) else {
+        return;
+    };
     assert!(
-        !marker.exists(),
-        "an ambient process-control executable was launched"
+        std::env::var_os("PHANTOM_VAULT_PASSPHRASE").is_none(),
+        "vault passphrase reached delegated child"
     );
+    if std::env::var_os(EXPECT_PROTECTED_ENV).is_some() {
+        let value = std::env::var("OPENAI_API_KEY").expect("protected key session token");
+        assert!(value.starts_with("phm_"), "protected key was not tokenized");
+        assert_ne!(value, "ambient-real-value-must-not-reach-child");
+    }
+    fs::write(path, b"ok").unwrap();
 }

@@ -5,9 +5,11 @@ use phantom_core::dotenv::DotenvFile;
 use phantom_core::env_scope::DEFAULT_ENV;
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
+
+const VAULT_PASSPHRASE_ENV: &str = "PHANTOM_VAULT_PASSPHRASE";
 
 fn header_auth_only() -> bool {
     matches!(
@@ -43,9 +45,47 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     config
         .validate_agentic_proxy_routes()
         .context("Refusing unapproved repository-controlled proxy routing")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
+    let dotenv = env_path
+        .exists()
+        .then(|| DotenvFile::parse_file(&env_path).context("Failed to read .env"))
+        .transpose()?;
+    let protected_env_keys: HashSet<String> = dotenv
+        .iter()
+        .flat_map(DotenvFile::entries)
+        .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
+        .map(|entry| entry.key.clone())
+        .collect();
+
+    // Connection strings need a protocol-aware broker. Detect them from the
+    // protected dotenv/config contract before opening or reading the vault, so
+    // a missing entry can never turn this fail-closed decision into a bypass.
+    let blocked_connection_strings: Vec<&str> = config
+        .connection_string_services()
+        .into_iter()
+        .filter_map(|(_, service)| {
+            protected_env_keys
+                .contains(&service.secret_key)
+                .then_some(service.secret_key.as_str())
+        })
+        .collect();
+    if !blocked_connection_strings.is_empty() {
+        anyhow::bail!(
+            "Refusing to expose connection-string secret(s) to the child process: {}. Phantom requires a protocol-aware broker for database credentials; direct environment injection is disabled.",
+            blocked_connection_strings.join(", ")
+        );
+    }
+
+    if protected_env_keys.is_empty() {
+        eprintln!(
+            "{} No phantom tokens found to proxy. Running command directly with Phantom internal credentials removed.",
+            "warn".yellow()
+        );
+        return run_command_directly(cmd, &protected_env_keys).await;
+    }
+
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Session-scoped token rotation:
     // Instead of using the persistent phantom tokens from .env directly,
@@ -57,78 +97,28 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     let mut env_key_to_session_token: HashMap<String, String> = HashMap::new();
     let mut secret_count = 0;
 
-    if env_path.exists() {
-        let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env")?;
-
+    if let Some(dotenv) = dotenv.as_ref() {
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
                 // Build the vault key for this env: try namespaced first, then bare (legacy).
                 // Backend errors are distinct from a missing key and must abort
                 // before a partially mapped proxy session can start.
                 let namespaced = phantom_core::env_scope::namespaced_key(&active_env, &entry.key);
-                let real_value = match retrieve_optional_secret(
-                    vault.as_ref(),
-                    &namespaced,
-                    "namespaced session secret",
-                )? {
-                    Some(value) => Some(value),
-                    None if active_env == DEFAULT_ENV => retrieve_optional_secret(
-                        vault.as_ref(),
-                        &entry.key,
-                        "legacy session secret",
-                    )?,
-                    None => None,
-                };
+                let real_value =
+                    retrieve_required_secret(vault.as_ref(), &namespaced, &entry.key, &active_env)?;
 
-                match real_value {
-                    Some(real_value) => {
-                        // Generate a fresh session token for this secret
-                        let session_token = PhantomToken::generate();
-                        session_token_to_secret.insert(
-                            session_token.as_str().to_string(),
-                            String::from(real_value.as_str()),
-                        );
-                        secret_name_to_value
-                            .insert(entry.key.clone(), String::from(real_value.as_str()));
-                        env_key_to_session_token
-                            .insert(entry.key.clone(), session_token.as_str().to_string());
-                        secret_count += 1;
-                    }
-                    None => {
-                        eprintln!(
-                            "{} No vault entry for {} in env '{}' (phantom token in .env but not in vault)",
-                            "warn".yellow(),
-                            entry.key,
-                            active_env
-                        );
-                    }
-                }
+                // Generate a fresh session token for this secret.
+                let session_token = PhantomToken::generate();
+                session_token_to_secret.insert(
+                    session_token.as_str().to_string(),
+                    String::from(real_value.as_str()),
+                );
+                secret_name_to_value.insert(entry.key.clone(), String::from(real_value.as_str()));
+                env_key_to_session_token
+                    .insert(entry.key.clone(), session_token.as_str().to_string());
+                secret_count += 1;
             }
         }
-    }
-
-    let blocked_connection_strings: Vec<&str> = config
-        .connection_string_services()
-        .into_iter()
-        .filter_map(|(_, service)| {
-            env_key_to_session_token
-                .contains_key(&service.secret_key)
-                .then_some(service.secret_key.as_str())
-        })
-        .collect();
-    if !blocked_connection_strings.is_empty() {
-        anyhow::bail!(
-            "Refusing to expose connection-string secret(s) to the child process: {}. Phantom requires a protocol-aware broker for database credentials; direct environment injection is disabled.",
-            blocked_connection_strings.join(", ")
-        );
-    }
-
-    if session_token_to_secret.is_empty() {
-        eprintln!(
-            "{} No phantom tokens found to proxy. Running command directly.",
-            "warn".yellow()
-        );
-        return run_command_directly(cmd).await;
     }
 
     // Build service registry from config
@@ -251,8 +241,8 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     let program = &cmd[0];
     let args = &cmd[1..];
 
-    let mut child = tokio::process::Command::new(program)
-        .args(args)
+    let mut command = sanitized_child_command(program, args, &protected_env_keys);
+    command
         .envs(overrides.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .envs(
             env_key_to_session_token
@@ -266,9 +256,14 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         )
         .env("PHANTOM_PROXY_PORT", port.to_string())
         .env("PHANTOM_PROXY_TOKEN", &proxy_token)
+        // A protected dotenv key may itself have this reserved name. Never
+        // reintroduce either the real vault passphrase or a confusing session
+        // token under Phantom's internal decryption-key variable.
+        .env_remove(VAULT_PASSPHRASE_ENV)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let mut child = command
         .spawn()
         .context(format!("Failed to start command: {}", program))?;
 
@@ -289,18 +284,46 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn retrieve_optional_secret(
+fn retrieve_required_secret(
     vault: &dyn phantom_vault::VaultBackend,
-    name: &str,
-    purpose: &str,
-) -> Result<Option<zeroize::Zeroizing<String>>> {
-    match vault.retrieve(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => Ok(None),
+    namespaced: &str,
+    bare: &str,
+    active_env: &str,
+) -> Result<zeroize::Zeroizing<String>> {
+    match vault.retrieve(namespaced) {
+        Ok(value) => Ok(value),
+        Err(phantom_core::error::PhantomError::SecretNotFound(_))
+            if active_env == DEFAULT_ENV =>
+        {
+            vault.retrieve(bare).map_err(|error| match error {
+                phantom_core::error::PhantomError::SecretNotFound(_) => anyhow::anyhow!(
+                    "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'; refusing to launch the child"
+                ),
+                other => anyhow::anyhow!(
+                    "Failed to read legacy session secret '{bare}' from the vault: {other}"
+                ),
+            })
+        }
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => Err(anyhow::anyhow!(
+            "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'; refusing to launch the child"
+        )),
         Err(error) => Err(anyhow::anyhow!(
-            "Failed to read {purpose} '{name}' from the vault: {error}"
+            "Failed to read namespaced session secret '{namespaced}' from the vault: {error}"
         )),
     }
+}
+
+fn sanitized_child_command(
+    program: &str,
+    args: &[String],
+    protected_env_keys: &HashSet<String>,
+) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    command.args(args).env_remove(VAULT_PASSPHRASE_ENV);
+    for key in protected_env_keys {
+        command.env_remove(key);
+    }
+    command
 }
 
 /// Check if `package.json` lists `next` as a dependency or devDependency.
@@ -315,12 +338,12 @@ fn detect_next_dependency(package_json: &Path) -> bool {
     contents.contains("\"next\"")
 }
 
-async fn run_command_directly(cmd: &[String]) -> Result<()> {
+async fn run_command_directly(cmd: &[String], protected_env_keys: &HashSet<String>) -> Result<()> {
     let program = &cmd[0];
     let args = &cmd[1..];
 
-    let status = tokio::process::Command::new(program)
-        .args(args)
+    let mut command = sanitized_child_command(program, args, protected_env_keys);
+    let status = command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -342,6 +365,7 @@ mod tests {
     use zeroize::Zeroizing;
 
     struct ReadFailingVault;
+    struct MissingVault;
 
     impl phantom_vault::VaultBackend for ReadFailingVault {
         fn store(&self, _name: &str, _value: &str) -> PhantomResult<()> {
@@ -367,12 +391,35 @@ mod tests {
         }
     }
 
+    impl phantom_vault::VaultBackend for MissingVault {
+        fn store(&self, _name: &str, _value: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            Err(PhantomError::SecretNotFound(name.to_string()))
+        }
+
+        fn delete(&self, _name: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn backend_name(&self) -> &str {
+            "missing"
+        }
+    }
+
     #[test]
     fn exec_propagates_vault_read_errors_before_starting_a_session() {
-        let error = retrieve_optional_secret(
+        let error = retrieve_required_secret(
             &ReadFailingVault,
-            "production::API_KEY",
-            "namespaced session secret",
+            "production/API_KEY",
+            "API_KEY",
+            "production",
         )
         .expect_err("backend error must not be treated as an absent mapping");
 
@@ -382,5 +429,36 @@ mod tests {
         assert!(error
             .to_string()
             .contains("injected session credential read failure"));
+    }
+
+    #[test]
+    fn exec_rejects_a_missing_protected_vault_entry() {
+        let error =
+            retrieve_required_secret(&MissingVault, "default/API_KEY", "API_KEY", DEFAULT_ENV)
+                .unwrap_err()
+                .to_string();
+
+        assert!(error.contains("has no vault entry"));
+        assert!(error.contains("refusing to launch the child"));
+    }
+
+    #[test]
+    fn child_command_removes_vault_passphrase_and_protected_ambient_values() {
+        let protected = HashSet::from(["API_KEY".to_string(), "DATABASE_URL".to_string()]);
+        let command = sanitized_child_command("phantom-child", &[], &protected);
+        let explicit: HashMap<String, Option<String>> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+
+        assert_eq!(explicit.get(VAULT_PASSPHRASE_ENV), Some(&None));
+        assert_eq!(explicit.get("API_KEY"), Some(&None));
+        assert_eq!(explicit.get("DATABASE_URL"), Some(&None));
     }
 }

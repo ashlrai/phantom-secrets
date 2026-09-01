@@ -97,7 +97,12 @@ Windows ZIP for your architecture from [Installation](#installation), verify its
 published `.sha256` sidecar, and place both executables on `PATH`. WSL is a
 separate Linux environment with its own filesystem and credential-store context.
 
-After `phantom start --daemon`, the CLI detects your shell and prints the matching env-var syntax. For reference:
+For an explicitly supervised foreground proxy, run `phantom start` in a trusted
+terminal. The CLI detects your shell and prints the matching env-var syntax;
+copy those exports into the terminal that launches the client, keep the owning
+terminal open, and press Ctrl-C there to stop. Detached `--daemon` mode and
+external `phantom stop` are fail-closed until Phantom has a separately reviewed
+private cross-platform control channel. For reference:
 
 **PowerShell:**
 ```powershell
@@ -320,7 +325,8 @@ Team memberships and member lists are visible in the read-only dashboard at [phm
 |---------|-------------|
 | `phantom init` | Import `.env` secrets into vault and rewrite with phantom tokens. `--all <DIR>` processes eligible repositories found by the bounded five-level scan; discovery stops below the first matching repository. Use `--dry-run` to inspect the exact set and `--jobs N` / `-j N` to control parallelism. |
 | `phantom exec -- <cmd>` | Start an authenticated proxy and run a command with secret injection |
-| `phantom start` / `stop` | Manage proxy lifecycle (standalone/daemon mode) |
+| `phantom start` | Run an explicitly supervised foreground proxy; keep its trusted terminal open and press Ctrl-C there to stop |
+| `phantom start --daemon` / `phantom stop` | Compatibility surfaces that fail closed; detached and external lifecycle control are not shipped |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
 | `phantom add <KEY>` | Add a secret through a hidden trusted-terminal prompt; use `--stdin` only with a trusted producer |
 | `phantom remove <KEY>` | Remove a secret from the vault |
@@ -527,7 +533,7 @@ CI runs locked, all-target workspace builds and tests on macOS, Linux, and Windo
 - **Client-encrypted cloud vaults** -- the cloud vault API stores ciphertext; decryption happens in the authenticated client. This claim does not cover plaintext sent intentionally to deployment providers during `phantom sync`.
 - **256-bit CSPRNG tokens** -- `phm_` prefix distinguishes Phantom tokens from supported real-key formats; random collisions are cryptographically negligible, not mathematically impossible
 - **Proxy binds 127.0.0.1 only** -- not bound to a non-loopback interface; same-user local-process and bearer theft remain in the threat model
-- **Secrets zeroized from memory** after injection via the `zeroize` crate
+- **Targeted memory zeroization** for major vault retrieval, serialization, and decrypted-file buffers; some proxy lookup copies remain ordinary strings, so zeroization is defense in depth rather than a complete memory-erasure guarantee
 - **Allowlist model** -- proxy only injects secrets for explicitly configured service patterns
 
 See [SECURITY.md](SECURITY.md) for the responsible disclosure policy and [THREAT_MODEL.md](THREAT_MODEL.md) for the full threat model (assets, actors, mitigations, known gaps, cryptography summary).

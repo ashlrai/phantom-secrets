@@ -2,16 +2,14 @@ use anyhow::Result;
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 
-// `.phantom.pid` contains the live session bearer token. Keep it out of ordinary
-// Git staging, along with the persistent files used to coordinate proxy starts.
+// The persistent foreground lifecycle lock contains no PID, port, or bearer,
+// but it is runtime state and does not belong in Git.
 const GITIGNORE_PATTERNS: &[&str] = &[
     ".env",
     ".env.local",
     ".env.*.local",
     ".env.backup",
-    ".phantom.pid",
     ".phantom.proxy.lock",
-    ".phantom.start.lock",
 ];
 
 /// Auto-detect .env files — checks current dir first, then immediate subdirectories.

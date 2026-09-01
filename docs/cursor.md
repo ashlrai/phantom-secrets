@@ -70,13 +70,11 @@ phantom exec -- cursor .
 
 This starts the Phantom proxy on `127.0.0.1`, sets `*_BASE_URL` environment variables for supported services (OpenAI, Anthropic, etc.), then launches Cursor. API calls made from Cursor's integrated terminal go through the proxy.
 
-Alternatively, start the proxy in the background and keep it running across sessions:
-
-```bash
-phantom start
-# ... work in Cursor normally ...
-phantom stop
-```
+For an explicitly supervised shared session, run `phantom start` in a trusted
+terminal and keep it open. Copy the printed exports into the terminal that
+launches Cursor, then press Ctrl-C in the original owning terminal to stop.
+Detached `--daemon` mode and external `phantom stop` fail closed; prefer
+`phantom exec -- cursor .` when one child process is sufficient.
 
 ---
 

@@ -112,6 +112,17 @@ Phantom narrows the risk of AI agents seeing real secrets, but it is not a compl
 
 - A compromised operating system, root/admin attacker, malicious debugger, or replaced `phantom` binary can defeat local protections.
 - `PHANTOM_PROXY_TOKEN` is exposed to the `phantom exec` child process by design. A compromised child process can use the local proxy until the session ends.
+- `phantom exec` removes `PHANTOM_VAULT_PASSPHRASE` from both proxied and direct
+  child environments. It also removes ambient values for protected dotenv keys
+  before selectively adding fresh session tokens. A command launched manually
+  outside `phantom exec` still inherits whatever its parent shell exports.
+- Standalone proxy lifecycle is foreground-only. `phantom start` persists only
+  a bearerless exclusivity lock, never a PID, port, or proxy bearer. Detached
+  `--daemon` mode, the external shutdown endpoint, and `phantom stop` fail
+  closed; stop the proxy with Ctrl-C in its owning terminal.
+- Zeroization is a partial defense in depth. Major vault retrieval,
+  serialization, and decrypted-file buffers use zeroizing containers, but some
+  proxy lookup copies and the file-vault passphrase remain ordinary strings.
 - `.phantom.toml` does not have cryptographic integrity protection. Agentic proxy execution therefore accepts only exact built-in service routes and binds the project ID to the config directory; custom route approval is not yet supported.
 - Audit logging is opt-in and local by default. It cannot prove deletion of both the audit log and its local checkpoint without external evidence.
 - Team member removal does not retroactively revoke access to vault pushes that were encrypted to that member before removal. Rotate affected secrets after offboarding.

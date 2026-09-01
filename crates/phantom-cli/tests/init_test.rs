@@ -78,17 +78,21 @@ fn init_creates_phantom_toml() {
 }
 
 #[test]
-fn init_excludes_session_bearer_pid_record_from_ordinary_git_staging() {
+fn init_excludes_the_bearerless_lifecycle_lock_from_git() {
     let dir = TempDir::new().unwrap();
     run_init(&dir).success();
 
     let gitignore = fs::read_to_string(dir.path().join(".gitignore")).expect("read .gitignore");
-    for runtime_file in [".phantom.pid", ".phantom.proxy.lock", ".phantom.start.lock"] {
-        assert!(
-            gitignore.lines().any(|line| line.trim() == runtime_file),
-            "{runtime_file} must be ignored; .phantom.pid carries the live session bearer token"
-        );
-    }
+    assert!(
+        gitignore
+            .lines()
+            .any(|line| line.trim() == ".phantom.proxy.lock"),
+        "the bearerless foreground lifecycle lock must be ignored"
+    );
+    assert!(!gitignore.lines().any(|line| line.trim() == ".phantom.pid"));
+    assert!(!gitignore
+        .lines()
+        .any(|line| line.trim() == ".phantom.start.lock"));
     assert!(
         !gitignore.lines().any(|line| line.trim() == ".phantom.toml"),
         "shareable value-free project configuration must remain trackable"

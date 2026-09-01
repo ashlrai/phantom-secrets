@@ -2,12 +2,9 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 
-use super::proxy_state::{read_proxy_state, ProxyState};
-
 pub fn run(oneline: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let pid_path = project_dir.join(".phantom.pid");
 
     if !config_path.exists() {
         if oneline {
@@ -25,7 +22,7 @@ pub fn run(oneline: bool) -> Result<()> {
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let names = vault.list().context("Failed to list secrets")?;
-    let proxy_state = read_proxy_state(&pid_path);
+    let proxy_active = super::start::foreground_proxy_active(&project_dir)?;
 
     if oneline {
         // Compact output for shell prompts
@@ -33,7 +30,11 @@ pub fn run(oneline: bool) -> Result<()> {
             "{} secret{} · {}",
             names.len(),
             if names.len() == 1 { "" } else { "s" },
-            proxy_oneline(&proxy_state)
+            if proxy_active {
+                "foreground proxy active"
+            } else {
+                "foreground proxy inactive"
+            }
         );
         return Ok(());
     }
@@ -43,7 +44,14 @@ pub fn run(oneline: bool) -> Result<()> {
     println!("  Project ID:  {}", config.portable_project_id().dimmed());
     println!("  Vault:       {}", vault.backend_name().cyan());
     println!("  Secrets:     {}", names.len().to_string().green().bold());
-    println!("  Proxy:       {}", proxy_human(&proxy_state));
+    println!(
+        "  Proxy:       {}",
+        if proxy_active {
+            "foreground session active; port and bearer intentionally not persisted".green()
+        } else {
+            "no foreground session owns the project lock".yellow()
+        }
+    );
 
     if !names.is_empty() {
         println!();
@@ -77,31 +85,4 @@ pub fn run(oneline: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn proxy_oneline(state: &ProxyState) -> String {
-    match state {
-        ProxyState::Running(pid) => format!("proxy on :{}", pid.port),
-        ProxyState::Stale(_) => "proxy stale".to_string(),
-        ProxyState::Malformed(_) => "proxy malformed".to_string(),
-        ProxyState::Unknown(pid) => format!("proxy unknown :{}", pid.port),
-        ProxyState::Missing => "proxy off".to_string(),
-    }
-}
-
-fn proxy_human(state: &ProxyState) -> String {
-    match state {
-        ProxyState::Running(pid) => {
-            format!("running on 127.0.0.1:{} (PID {})", pid.port, pid.pid).green()
-        }
-        ProxyState::Stale(pid) => {
-            format!("stale pid file for PID {} on port {}", pid.pid, pid.port).yellow()
-        }
-        ProxyState::Malformed(reason) => format!("malformed pid file ({reason})").yellow(),
-        ProxyState::Unknown(pid) => {
-            format!("unknown state for 127.0.0.1:{} (PID {})", pid.port, pid.pid).yellow()
-        }
-        ProxyState::Missing => "not running".yellow(),
-    }
-    .to_string()
 }

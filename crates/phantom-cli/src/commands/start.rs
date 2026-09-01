@@ -3,27 +3,17 @@ use colored::Colorize;
 use fs2::FileExt;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
+use phantom_core::env_scope::DEFAULT_ENV;
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::Path;
-use std::process::{Command, Stdio};
-
-use super::proxy_state::{cleanup_if_stale_or_malformed, read_proxy_state, ProxyPid, ProxyState};
-
-const DAEMON_CHILD_ENV: &str = "PHANTOM_INTERNAL_DAEMON_CHILD";
 
 struct ProjectFileLock(File);
 
 impl ProjectFileLock {
-    fn acquire(path: &Path) -> io::Result<Self> {
-        let file = open_lock_file(path)?;
-        FileExt::lock_exclusive(&file)?;
-        Ok(Self(file))
-    }
-
     fn try_acquire(path: &Path) -> io::Result<Option<Self>> {
         let file = open_lock_file(path)?;
         match FileExt::try_lock_exclusive(&file) {
@@ -85,6 +75,13 @@ fn open_lock_file(path: &Path) -> io::Result<File> {
     }
 
     Ok(file)
+}
+
+pub(crate) fn foreground_proxy_active(project_dir: &Path) -> Result<bool> {
+    let proxy_lock_path = project_dir.join(".phantom.proxy.lock");
+    let lock = ProjectFileLock::try_acquire(&proxy_lock_path)
+        .with_context(|| format!("Failed to inspect {}", proxy_lock_path.display()))?;
+    Ok(lock.is_none())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,196 +172,20 @@ fn header_auth_only() -> bool {
     )
 }
 
-fn remove_owned_pid_file(pid_path: &std::path::Path, expected: &[u8]) -> std::io::Result<bool> {
-    let current = match std::fs::read(pid_path) {
-        Ok(current) => current,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
-    };
-    if current != expected {
-        return Ok(false);
-    }
-    match std::fs::remove_file(pid_path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-fn wait_for_authenticated_daemon(
-    pid_path: &Path,
-    timeout: std::time::Duration,
-) -> Result<ProxyPid> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match read_proxy_state(pid_path) {
-            ProxyState::Running(pid) => return Ok(pid),
-            ProxyState::Missing | ProxyState::Unknown(_)
-                if std::time::Instant::now() < deadline =>
-            {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            ProxyState::Missing => {
-                anyhow::bail!(
-                    "Timed out waiting for daemon to publish an authenticated PID record"
-                );
-            }
-            ProxyState::Unknown(pid) => {
-                anyhow::bail!(
-                    "Daemon PID {} did not pass the authenticated Phantom health check",
-                    pid.pid
-                );
-            }
-            ProxyState::Stale(pid) => {
-                anyhow::bail!("Daemon process {} exited before becoming ready", pid.pid);
-            }
-            ProxyState::Malformed(error) => {
-                anyhow::bail!("Daemon published an invalid PID record: {error}");
-            }
-        }
-    }
-}
-
 pub fn run(daemon: bool) -> Result<()> {
     if daemon {
-        return run_daemon();
+        anyhow::bail!(
+            "Detached proxy mode is disabled: Phantom will not persist a live proxy bearer or external process-control state in the workspace. Use `phantom exec -- <command>` or run `phantom start` in a trusted terminal and keep that terminal open."
+        );
     }
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_async())
-}
-
-/// Spawn a detached `phantom start` subprocess (without `--daemon`) and wait
-/// for it to write the PID file. Once the PID file appears we read the port
-/// and proxy token from it, print the export commands, and exit.
-fn run_daemon() -> Result<()> {
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-    let pid_path = project_dir.join(".phantom.pid");
-    let start_lock_path = project_dir.join(".phantom.start.lock");
-
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
-    }
-
-    // Serialize daemon parents through state inspection, child launch, and PID
-    // publication. The child is marked so it does not deadlock on this lock;
-    // it independently owns the full-lifetime proxy lock below.
-    let _start_lock = ProjectFileLock::acquire(&start_lock_path)
-        .with_context(|| format!("Failed to lock {}", start_lock_path.display()))?;
-
-    match read_proxy_state(&pid_path) {
-        ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
-            eprintln!(
-                "{} Proxy may already be running on 127.0.0.1:{} (PID {}). Run {} or {} first.",
-                "!".yellow().bold(),
-                pid.port,
-                pid.pid,
-                "phantom status".cyan().bold(),
-                "phantom stop".cyan().bold()
-            );
-            return Ok(());
-        }
-        ProxyState::Stale(_) | ProxyState::Malformed(_) => {
-            cleanup_if_stale_or_malformed(&pid_path)?;
-        }
-        ProxyState::Missing => {}
-    }
-
-    let exe = std::env::current_exe()?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("start")
-        .current_dir(&project_dir)
-        .env(DAEMON_CHILD_ENV, "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null());
-
-    // Detach the child so it survives the parent exiting.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
-    }
-
-    cmd.spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn daemon process: {e}"))?;
-
-    // A PID record is only a bearer credential and process hint. Do not print
-    // success or export it until the child proves ownership by answering the
-    // authenticated loopback health request with the exact Phantom body.
-    let pid = wait_for_authenticated_daemon(&pid_path, std::time::Duration::from_secs(5))?;
-    let port = pid.port;
-    let proxy_token = pid.token.as_str();
-
-    // Load config to build the export commands.
-    let config = PhantomConfig::load(&config_path)?;
-    config.validate_agentic_proxy_routes()?;
-    let registry = ServiceRegistry::from_config(&config.services);
-
-    println!(
-        "{} Proxy started on {} (PID {})",
-        "ok".green().bold(),
-        format!("127.0.0.1:{port}").cyan(),
-        pid.pid,
-    );
-
-    // Print export commands
-    println!(
-        "\n{} Set these env vars in your shell:\n",
-        "->".blue().bold()
-    );
-    let syntax = detect_shell_syntax();
-    let header_auth_only = header_auth_only();
-    let overrides = if header_auth_only {
-        registry.base_url_overrides(port)
-    } else {
-        registry.base_url_overrides_with_token(port, Some(proxy_token))
-    };
-    for (env_var, url) in &overrides {
-        println!("{}", format_export(syntax, env_var, url));
-    }
-    println!(
-        "{}",
-        format_export(syntax, "PHANTOM_PROXY_PORT", &port.to_string())
-    );
-    println!(
-        "{}",
-        format_export(syntax, "PHANTOM_PROXY_TOKEN", proxy_token)
-    );
-    if header_auth_only {
-        println!("  # Header-only mode: clients must send x-phantom-proxy-token.");
-    } else {
-        println!(
-            "  # SDK-compatible URLs include /_phantom/TOKEN/. Set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 for header-only mode."
-        );
-    }
-    println!("\n{}", shell_hint(syntax));
-
-    println!(
-        "\n{} Running in background. Use {} to stop.",
-        "ok".green().bold(),
-        "phantom stop".cyan().bold()
-    );
-
-    Ok(())
 }
 
 async fn run_async() -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let env_path = project_dir.join(".env");
-    let pid_path = project_dir.join(".phantom.pid");
-    let start_lock_path = project_dir.join(".phantom.start.lock");
     let proxy_lock_path = project_dir.join(".phantom.proxy.lock");
 
     if !config_path.exists() {
@@ -374,62 +195,17 @@ async fn run_async() -> Result<()> {
         );
     }
 
-    let is_daemon_child = std::env::var(DAEMON_CHILD_ENV).as_deref() == Ok("1");
-    let start_lock = if is_daemon_child {
-        None
-    } else {
-        Some(
-            ProjectFileLock::acquire(&start_lock_path)
-                .with_context(|| format!("Failed to lock {}", start_lock_path.display()))?,
-        )
-    };
-
-    // Own this lock across state inspection, bind, PID publication, serving,
-    // authenticated shutdown, and daemon-owned PID unlink. Persistent lock
-    // files are intentional: unlinking one can allow another process to lock a
-    // different inode while the original lock is still held.
+    // The foreground process owns this lock from preflight through graceful
+    // shutdown. The persistent lock file contains no PID, port, or bearer;
+    // unlinking it would allow a competing process to lock a different inode.
     let proxy_lock = ProjectFileLock::try_acquire(&proxy_lock_path)
         .with_context(|| format!("Failed to lock {}", proxy_lock_path.display()))?;
     let Some(_proxy_lock) = proxy_lock else {
-        match read_proxy_state(&pid_path) {
-            ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
-                eprintln!(
-                    "{} Proxy may already be running on 127.0.0.1:{} (PID {}). Run {} or {} first.",
-                    "!".yellow().bold(),
-                    pid.port,
-                    pid.pid,
-                    "phantom status".cyan().bold(),
-                    "phantom stop".cyan().bold()
-                );
-                return Ok(());
-            }
-            ProxyState::Missing | ProxyState::Stale(_) | ProxyState::Malformed(_) => {
-                anyhow::bail!(
-                    "Another Phantom proxy start is in progress for {}",
-                    project_dir.display()
-                );
-            }
-        }
+        anyhow::bail!(
+            "Another foreground Phantom proxy session already owns {}. Stop it from its owning terminal with Ctrl-C; external process control is disabled.",
+            project_dir.display()
+        );
     };
-
-    // Check if already running.
-    match read_proxy_state(&pid_path) {
-        ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
-            eprintln!(
-                "{} Proxy may already be running on 127.0.0.1:{} (PID {}). Run {} or {} first.",
-                "!".yellow().bold(),
-                pid.port,
-                pid.pid,
-                "phantom status".cyan().bold(),
-                "phantom stop".cyan().bold()
-            );
-            return Ok(());
-        }
-        ProxyState::Stale(_) | ProxyState::Malformed(_) => {
-            cleanup_if_stale_or_malformed(&pid_path)?;
-        }
-        ProxyState::Missing => {}
-    }
 
     let config = PhantomConfig::load(&config_path)?;
     config.validate_agentic_proxy_routes()?;
@@ -442,11 +218,9 @@ async fn run_async() -> Result<()> {
         let dotenv = DotenvFile::parse_file(&env_path)?;
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
-                if let Ok(real_value) = vault.retrieve(&entry.key) {
-                    token_to_secret.insert(entry.value.clone(), String::from(real_value.as_str()));
-                    secret_name_to_value
-                        .insert(entry.key.clone(), String::from(real_value.as_str()));
-                }
+                let real_value = retrieve_required_default_secret(vault.as_ref(), &entry.key)?;
+                token_to_secret.insert(entry.value.clone(), String::from(real_value.as_str()));
+                secret_name_to_value.insert(entry.key.clone(), String::from(real_value.as_str()));
             }
         }
     }
@@ -476,19 +250,6 @@ async fn run_async() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("Failed to start proxy: {e}"))?;
 
     let port = proxy.port();
-
-    // Write PID file atomically. The PID file contains the proxy auth token,
-    // so the tempfile must have restrictive permissions from the moment of
-    // creation — not set afterward. phantom_core::fs::atomic_write stages
-    // through `tempfile::NamedTempFile` which creates with mode 0o600 on POSIX
-    // before the first byte is written, then renames over the target atomically.
-    // Fixes F8 from the 0.5.1 security audit (world-readable race window).
-    let pid_info = format!("{}:{}:{}", std::process::id(), port, proxy_token);
-    phantom_core::fs::atomic_write(&pid_path, pid_info.as_bytes())?;
-
-    // A competing start may inspect the now-complete PID record. The proxy
-    // lifetime lock remains held until shutdown cleanup completes.
-    drop(start_lock);
 
     println!(
         "{} Proxy started on {}",
@@ -533,32 +294,71 @@ async fn run_async() -> Result<()> {
     }
     println!("\n{}", shell_hint(syntax));
 
-    println!("\n{} Press Ctrl-C to stop the proxy.\n", "->".blue().bold());
-    let mut remote_shutdown = proxy.subscribe_shutdown();
-    tokio::select! {
-        ctrl_c = tokio::signal::ctrl_c() => ctrl_c?,
-        changed = remote_shutdown.changed() => {
-            changed.map_err(|_| anyhow::anyhow!("Proxy shutdown channel closed unexpectedly"))?;
-            if !*remote_shutdown.borrow() {
-                anyhow::bail!("Proxy shutdown channel changed without a shutdown request");
-            }
-        }
-    }
+    println!(
+        "\n{} Keep this trusted terminal open. Press Ctrl-C here to stop the proxy; detached mode and external stop are disabled.\n",
+        "->".blue().bold()
+    );
+    tokio::signal::ctrl_c().await?;
     println!();
 
-    // The daemon is the sole owner of unlinking its authenticated PID record.
-    // Stop clients treat the authenticated acknowledgment as success and do
-    // not race this cleanup.
     proxy.shutdown().await;
-    remove_owned_pid_file(&pid_path, pid_info.as_bytes())?;
     println!("{} Proxy stopped.", "ok".green().bold());
 
     Ok(())
 }
 
+fn retrieve_required_default_secret(
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+) -> Result<zeroize::Zeroizing<String>> {
+    let namespaced = phantom_core::env_scope::namespaced_key(DEFAULT_ENV, name);
+    match vault.retrieve(&namespaced) {
+        Ok(value) => Ok(value),
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => {
+            vault.retrieve(name).map_err(|error| match error {
+                phantom_core::error::PhantomError::SecretNotFound(_) => anyhow::anyhow!(
+                    "Protected dotenv key '{name}' has no vault entry for the default environment; refusing to start a partial proxy"
+                ),
+                other => anyhow::anyhow!(
+                    "Failed to read legacy default secret '{name}' from the vault: {other}"
+                ),
+            })
+        }
+        Err(error) => Err(anyhow::anyhow!(
+            "Failed to read default secret '{namespaced}' from the vault: {error}"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod shell_tests {
     use super::*;
+    use phantom_core::error::{PhantomError, Result as PhantomResult};
+    use zeroize::Zeroizing;
+
+    struct MissingVault;
+
+    impl phantom_vault::VaultBackend for MissingVault {
+        fn store(&self, _name: &str, _value: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            Err(PhantomError::SecretNotFound(name.to_string()))
+        }
+
+        fn delete(&self, _name: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn backend_name(&self) -> &str {
+            "missing"
+        }
+    }
 
     #[test]
     fn fish_exports_use_native_syntax_and_escape_values() {
@@ -590,49 +390,18 @@ mod shell_tests {
     }
 
     #[test]
-    fn daemon_removes_only_its_exact_pid_record() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let pid_path = temp.path().join(".phantom.pid");
-        std::fs::write(&pid_path, b"owned").unwrap();
-        assert!(remove_owned_pid_file(&pid_path, b"owned").unwrap());
-        assert!(!pid_path.exists());
-
-        std::fs::write(&pid_path, b"replacement").unwrap();
-        assert!(!remove_owned_pid_file(&pid_path, b"owned").unwrap());
-        assert_eq!(std::fs::read(&pid_path).unwrap(), b"replacement");
+    fn daemon_mode_fails_closed_before_runtime_creation() {
+        let error = run(true).unwrap_err().to_string();
+        assert!(error.contains("Detached proxy mode is disabled"));
+        assert!(error.contains("will not persist a live proxy bearer"));
     }
 
     #[test]
-    fn daemon_parent_rejects_an_unauthenticated_pid_record() {
-        use std::net::{Ipv4Addr, TcpListener};
-        use std::thread;
-
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let responder = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0u8; 2048];
-            let _ = std::io::Read::read(&mut stream, &mut request).unwrap();
-            std::io::Write::write_all(
-                &mut stream,
-                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 24\r\nConnection: close\r\n\r\n{\"error\":\"not_phantom\"}",
-            )
-            .unwrap();
-        });
-
-        let temp = tempfile::TempDir::new().unwrap();
-        let pid_path = temp.path().join(".phantom.pid");
-        std::fs::write(
-            &pid_path,
-            format!("{}:{port}:{}", std::process::id(), "a".repeat(64)),
-        )
-        .unwrap();
-
-        let error = wait_for_authenticated_daemon(&pid_path, std::time::Duration::from_millis(150))
+    fn foreground_start_rejects_a_missing_protected_vault_entry() {
+        let error = retrieve_required_default_secret(&MissingVault, "OPENAI_API_KEY")
             .unwrap_err()
             .to_string();
-        assert!(error.contains("did not pass the authenticated Phantom health check"));
-        assert!(!error.contains(&"a".repeat(64)));
-        responder.join().unwrap();
+        assert!(error.contains("has no vault entry"));
+        assert!(error.contains("refusing to start a partial proxy"));
     }
 }
