@@ -12,6 +12,7 @@ This is the canonical map for Phantom's repository documentation. Start with the
 | Diagnose an install, vault, proxy, or cloud problem | [Troubleshooting](troubleshooting.md) |
 | Understand the provider-grant design and 0.7.4 universal hard denial | [Provider grants](grants-spec.md) |
 | Understand components, trust boundaries, and activation status | [Architecture](architecture.md) |
+| Review the Rama-derived network engineering standard and adoption gates | [Rama design standard](rama-design-standard.md) |
 | Understand supported operating systems, architectures, and current validation | [Platform support](platform-support.md) |
 | Prepare or audit a release candidate | [Release and readiness](release-readiness.md) |
 | Assemble a security or third-party review | [Security and audit index](audit-index.md) |
@@ -52,6 +53,7 @@ and retains historical design-status language.
 ## Architecture and project development
 
 - [Current-state architecture and trust boundaries](architecture.md)
+- [Rama-derived network engineering standard](rama-design-standard.md)
 - [Release and readiness guide](release-readiness.md)
 - [Security and audit index](audit-index.md)
 - [Platform support and native acceptance matrix](platform-support.md)
