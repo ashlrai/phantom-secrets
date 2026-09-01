@@ -332,7 +332,7 @@ enum Commands {
         /// Deprecated and rejected: argv can expose the passphrase
         #[arg(short, long, hide = true)]
         passphrase: Option<String>,
-        /// Read from a private regular file on non-Windows platforms (maximum 4096 bytes)
+        /// Deprecated and rejected for export: enter a dedicated passphrase at the trusted-terminal prompt
         #[arg(long, value_name = "FILE")]
         passphrase_file: Option<String>,
         /// Legacy plaintext mode; retained only to fail closed
@@ -375,7 +375,7 @@ enum Commands {
         /// Path to the export file (required with --from)
         #[arg(long = "file", alias = "file-path", value_name = "FILE", required_if_eq_all([("from", "doppler"), ("from", "infisical"), ("from", "dotenvx"), ("from", "1password"), ("from", "env")]))]
         file_path: Option<String>,
-        /// Overwrite existing secrets without prompting
+        /// Select overwrite policy for existing secrets; never bypasses the exact trusted-terminal ceremony
         #[arg(long)]
         force: bool,
     },
@@ -504,7 +504,7 @@ enum Commands {
 
     /// Open a Phantom page in the browser. Defaults to the dashboard.
     /// Aliases: dashboard, billing, team, docs, pricing, github, issues, site.
-    /// Any other word becomes https://phm.dev/<word>; full URLs pass through.
+    /// Other words and arbitrary URLs are rejected before browser access.
     #[command(next_help_heading = "Maintenance")]
     Open {
         /// What to open. Defaults to the dashboard if omitted.
