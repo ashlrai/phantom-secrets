@@ -79,18 +79,32 @@ fn remove_makes_key_disappear_from_list() {
 }
 
 #[test]
-fn add_without_init_auto_inits() {
-    // No init — phantom add should auto-create .phantom.toml and succeed.
+fn add_without_init_fails_before_project_mutation() {
     let dir = TempDir::new().unwrap();
+    let output = phantom(&dir)
+        .args(["add", "SOME_KEY", "--stdin"])
+        .write_stdin("some-value\n")
+        .assert()
+        .failure();
+    assert!(String::from_utf8_lossy(&output.get_output().stderr).contains("phantom init --empty"));
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn add_to_empty_initialized_project_persists_managed_dotenv_mapping() {
+    let dir = TempDir::new().unwrap();
+    phantom(&dir).args(["init", "--empty"]).assert().success();
     phantom(&dir)
         .args(["add", "SOME_KEY", "--stdin"])
         .write_stdin("some-value\n")
         .assert()
         .success();
-    assert!(
-        dir.path().join(".phantom.toml").exists(),
-        ".phantom.toml should be auto-created by phantom add"
-    );
+
+    let config = fs::read_to_string(dir.path().join(".phantom.toml")).unwrap();
+    let dotenv = fs::read_to_string(dir.path().join(".env")).unwrap();
+    assert!(config.contains("dotenv_path = \".env\""), "{config}");
+    assert!(dotenv.contains("SOME_KEY=phm_"), "{dotenv}");
+    assert!(!dotenv.contains("some-value"));
 }
 
 #[test]

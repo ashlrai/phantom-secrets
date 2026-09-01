@@ -1,21 +1,26 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use phantom_core::dotenv::DotenvFile;
+use phantom_core::error::PhantomError;
+use phantom_core::token::TokenMap;
+use phantom_vault::{InitFile, InitSecret, VaultBackend};
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, Zeroizing};
 
-/// Returns true when stdin is connected to a terminal (not a pipe or redirect).
 fn stdin_is_tty() -> bool {
     std::io::stdin().is_terminal()
 }
 
-/// `phantom add KEY`
-///
-/// When VALUE is omitted:
-///   - If stdin is a tty, prompt silently on stderr via rpassword.
-///   - If `--stdin` is passed, read one line from stdin (piped use).
-///   - If stdin is not a tty and `--stdin` was not passed, bail with a
-///     clear error so CI jobs don't hang silently.
+struct AddPlan {
+    mutation: InitSecret,
+    files: Vec<InitFile>,
+    env_path: PathBuf,
+    replaced_existing: bool,
+}
+
+/// Add one secret through a single exact-before project transaction.
 pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()> {
     if let Some(mut value) = value_arg {
         value.zeroize();
@@ -23,32 +28,64 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
             "Positional secret values are disabled because command-line arguments can be exposed by process inspection. Omit the value for a hidden terminal prompt, or use --stdin."
         );
     }
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
+    validate_secret_name(name)?;
 
+    let project_dir = std::env::current_dir()?
+        .canonicalize()
+        .context("Failed to resolve the current project directory")?;
+    let config_path = project_dir.join(".phantom.toml");
     if !config_path.exists() {
-        // Auto-bootstrap: create .phantom.toml + empty vault on first add,
-        // so the user doesn't need a .env file just to seed a single secret.
-        let project_id = phantom_core::config::PhantomConfig::project_id_from_path(&project_dir);
-        let new_config = phantom_core::config::PhantomConfig::new_with_defaults(project_id.clone());
-        new_config
-            .save(&config_path)
-            .context("Failed to create .phantom.toml")?;
-        // Touch the vault backend.
-        let _ = phantom_vault::try_create_vault(&project_id)?.list();
-        eprintln!(
-            "{} No .phantom.toml found — created one for you.",
-            "note".cyan().bold()
+        anyhow::bail!(
+            "Project is not initialized. Run `phantom init --empty` first; `phantom add` will not create config, gitignore, or vault state outside its secret transaction."
         );
-        crate::commands::init::env::ensure_gitignore(&project_dir)?;
     }
 
-    // ── Resolve the secret value ─────────────────────────────────────
-    let value = if from_stdin {
-        // --stdin: read one line from a pipe (e.g. `echo "$VAL" | phantom add KEY --stdin`).
-        // Keep the input buffer zeroizing from its first allocation and remove
-        // only line-ending bytes in place. This avoids leaving an extra
-        // plaintext String copy behind after parsing.
+    let (config, config_before) = load_config_exact(&config_path)?;
+    let value = read_secret_value(name, from_stdin)?;
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let plan = prepare_add_plan(
+        &project_dir,
+        &config_path,
+        config,
+        config_before,
+        vault.as_ref(),
+        name,
+        value.as_str(),
+    )?;
+
+    phantom_vault::commit_init(
+        &project_dir,
+        vault.as_ref(),
+        vec![plan.mutation],
+        plan.files,
+    )
+    .context(
+        "Add transaction failed; exact transaction-owned state was rolled back where verifiable. Inspect the vault and managed dotenv before retrying.",
+    )?;
+
+    if plan.replaced_existing {
+        eprintln!(
+            "{} Replaced existing secret {} in one verified transaction",
+            "warn".yellow(),
+            name.bold()
+        );
+    }
+    println!(
+        "{} Stored {} in vault ({}) and updated {} (value never printed)",
+        "ok".green().bold(),
+        name.bold(),
+        vault.backend_name().dimmed(),
+        plan.env_path
+            .file_name()
+            .and_then(|part| part.to_str())
+            .unwrap_or("managed dotenv")
+            .cyan()
+    );
+    Ok(())
+}
+
+fn read_secret_value(name: &str, from_stdin: bool) -> Result<Zeroizing<String>> {
+    if from_stdin {
         let mut secret = Zeroizing::new(String::new());
         std::io::stdin()
             .read_line(&mut secret)
@@ -59,106 +96,310 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
         if secret.is_empty() {
             anyhow::bail!("Received empty value on stdin — aborting.");
         }
-        secret
-    } else {
-        // Interactive: prompt on stderr so that stdout can still be captured,
-        // and read silently from the controlling tty via rpassword.
-        if !stdin_is_tty() {
-            anyhow::bail!(
-                "stdin is not a terminal. \
-                 Omit the value for a hidden prompt, or use {} to read it from a pipe.",
-                "--stdin".cyan().bold()
-            );
-        }
-        let prompt = format!("Value for {name}: ");
-        // rpassword::prompt_password_stderr opens /dev/tty directly so it
-        // works even if stdout is redirected.
-        let secret =
-            rpassword::prompt_password(&prompt).context("Failed to read secret interactively")?;
-        if secret.is_empty() {
-            anyhow::bail!("Empty value — aborting.");
-        }
-        Zeroizing::new(secret)
-    };
+        return Ok(secret);
+    }
+    if !stdin_is_tty() {
+        anyhow::bail!(
+            "stdin is not a terminal. Omit the value for a hidden prompt, or use {} to read it from a pipe.",
+            "--stdin".cyan().bold()
+        );
+    }
+    let secret = rpassword::prompt_password(format!("Value for {name}: "))
+        .context("Failed to read secret interactively")?;
+    if secret.is_empty() {
+        anyhow::bail!("Empty value — aborting.");
+    }
+    Ok(Zeroizing::new(secret))
+}
 
-    // ── Store in vault ───────────────────────────────────────────────
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+#[allow(clippy::too_many_arguments)]
+fn prepare_add_plan(
+    project_dir: &Path,
+    config_path: &Path,
+    mut config: PhantomConfig,
+    config_before: Vec<u8>,
+    vault: &dyn VaultBackend,
+    name: &str,
+    value: &str,
+) -> Result<AddPlan> {
     let vault_names = vault.list().context("Failed to list protected secrets")?;
-    let env_path =
-        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?.path;
+    let resolved =
+        phantom_core::managed_dotenv::resolve_dotenv(project_dir, &config, &vault_names)?;
+    let env_path = resolved.path;
+    let env_before = snapshot_regular_file(&env_path)?;
+    let env_after = rewrite_dotenv(env_before.as_deref(), name)?;
+    let before = snapshot_secret(vault, name)?;
+    let replaced_existing = before.is_some();
 
-    // Warn if secret already exists
-    if vault
-        .exists(name)
-        .with_context(|| format!("Failed to inspect existing secret: {name}"))?
-    {
-        eprintln!(
-            "{} Secret {} already exists — overwriting with new value",
-            "warn".yellow(),
-            name.bold()
-        );
-    }
-
-    vault
-        .store(name, &value)
-        .context(format!("Failed to store secret: {name}"))?;
-
-    println!(
-        "{} Stored {} in vault ({})",
-        "ok".green().bold(),
-        name.bold(),
-        vault.backend_name().dimmed()
+    let mutation = InitSecret::replace_if_unchanged(
+        name,
+        before.as_ref().map(|current| current.as_str().to_string()),
+        value,
     );
+    let config_after = if config.phantom.dotenv_path.is_none() && vault_names.is_empty() {
+        config.phantom.dotenv_path = Some(
+            phantom_core::managed_dotenv::dotenv_basename(project_dir, &env_path)
+                .context("Failed to persist the managed dotenv mapping")?,
+        );
+        toml::to_string_pretty(&config)
+            .context("Failed to serialize managed dotenv configuration")?
+            .into_bytes()
+    } else {
+        config_before.clone()
+    };
+    // Even when no config field changes, the exact no-op replacement keeps
+    // config identity/lifecycle policy inside the same transaction boundary.
+    let mut files = vec![InitFile::replace_if_unchanged(
+        config_path,
+        Some(config_before),
+        config_after,
+    )];
+    files.push(InitFile::replace_if_unchanged(&env_path, env_before, env_after).commit_last());
+    Ok(AddPlan {
+        mutation,
+        files,
+        env_path,
+        replaced_existing,
+    })
+}
 
-    // Also update .env if it exists
-    if env_path.exists() {
-        let content = std::fs::read_to_string(&env_path)?;
-        let token = phantom_core::token::PhantomToken::generate();
-
-        if content
-            .lines()
-            .any(|l| l.trim().starts_with(&format!("{name}=")))
-        {
-            // Key exists — replace its value with the phantom token.
-            let new_content: String = content
-                .lines()
-                .map(|line| {
-                    if line.trim().starts_with(&format!("{name}=")) {
-                        format!("{name}={token}")
-                    } else {
-                        line.to_string()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-                + "\n";
-            std::fs::write(&env_path, new_content)?;
-        } else {
-            // Append new entry.
-            let mut content = content;
-            if !content.is_empty() && !content.ends_with('\n') {
-                content.push('\n');
-            }
-            content.push_str(&format!("{name}={token}\n"));
-            std::fs::write(&env_path, content)?;
-        }
-
-        println!(
-            "{} Updated .env with phantom token for {}",
-            "ok".green().bold(),
-            name.bold()
+pub(super) fn validate_secret_name(name: &str) -> Result<()> {
+    let mut bytes = name.bytes();
+    if !matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        anyhow::bail!(
+            "Invalid secret name: expected an environment key matching [A-Za-z_][A-Za-z0-9_]*"
         );
     }
-
     Ok(())
+}
+
+pub(super) fn load_config_exact(path: &Path) -> Result<(PhantomConfig, Vec<u8>)> {
+    let before = snapshot_regular_file(path)?.ok_or_else(|| {
+        anyhow::anyhow!("Project is not initialized. Run `phantom init --empty` first.")
+    })?;
+    let config = PhantomConfig::load(path).context("Failed to load .phantom.toml")?;
+    if snapshot_regular_file(path)?.as_deref() != Some(before.as_slice()) {
+        anyhow::bail!(".phantom.toml changed during preflight; no secret was read or stored");
+    }
+    Ok((config, before))
+}
+
+pub(super) fn snapshot_secret(
+    vault: &dyn VaultBackend,
+    name: &str,
+) -> Result<Option<Zeroizing<String>>> {
+    match vault.retrieve(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(PhantomError::SecretNotFound(_)) => Ok(None),
+        Err(error) => Err(anyhow::anyhow!(
+            "Failed to snapshot destination secret '{name}': {error}"
+        )),
+    }
+}
+
+pub(super) fn snapshot_regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            anyhow::bail!(
+                "Refusing {}: target must be a regular, non-symlink file or absent",
+                path.display()
+            )
+        }
+        Ok(_) => Ok(Some(std::fs::read(path).with_context(|| {
+            format!("Failed to snapshot {}", path.display())
+        })?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("Failed to inspect {}", path.display())),
+    }
+}
+
+pub(super) fn rewrite_dotenv(before: Option<&[u8]>, name: &str) -> Result<Vec<u8>> {
+    let mut content = Zeroizing::new(match before {
+        Some(bytes) => String::from_utf8(bytes.to_vec())
+            .context("Managed dotenv is not valid UTF-8; refusing to rewrite it")?,
+        None => String::new(),
+    });
+    let dotenv = DotenvFile::parse_str(content.as_str());
+    let mut tokens = TokenMap::new();
+    let token = tokens.insert(name.to_string()).to_string();
+    let mut after = if dotenv.entries().iter().any(|entry| entry.key == name) {
+        let (rewritten, mut originals) = dotenv.rewrite_with_phantoms(&tokens);
+        for original in originals.values_mut() {
+            original.zeroize();
+        }
+        originals.clear();
+        Zeroizing::new(rewritten)
+    } else {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(&format!("{name}={token}\n"));
+        Zeroizing::new(std::mem::take(&mut *content))
+    };
+    Ok(std::mem::take(&mut *after).into_bytes())
 }
 
 #[cfg(test)]
 mod tests {
-    /// Verify the tty-check helper compiles and is callable without panicking.
+    use super::*;
+    use phantom_core::error::Result as PhantomResult;
+    use phantom_vault::file::FileVault;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+
+    struct AmbiguousCasVault {
+        inner: FileVault,
+        calls: AtomicUsize,
+    }
+
+    impl VaultBackend for AmbiguousCasVault {
+        fn store(&self, name: &str, value: &str) -> PhantomResult<()> {
+            self.inner.store(name, value)
+        }
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.inner.retrieve(name)
+        }
+        fn delete(&self, name: &str) -> PhantomResult<()> {
+            self.inner.delete(name)
+        }
+        fn compare_and_swap(
+            &self,
+            name: &str,
+            expected: Option<&str>,
+            replacement: Option<&str>,
+        ) -> PhantomResult<bool> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                let _ = self.inner.compare_and_swap(name, expected, replacement)?;
+                return Err(PhantomError::VaultError(
+                    "injected ambiguous CAS failure".to_string(),
+                ));
+            }
+            self.inner.compare_and_swap(name, expected, replacement)
+        }
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            self.inner.list()
+        }
+        fn backend_name(&self) -> &str {
+            "ambiguous-cas"
+        }
+    }
+
+    fn initialized(dir: &TempDir) -> (PathBuf, PhantomConfig, Vec<u8>, FileVault) {
+        let project = dir.path().canonicalize().unwrap();
+        let config_path = project.join(".phantom.toml");
+        PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&project))
+            .save(&config_path)
+            .unwrap();
+        let (config, before) = load_config_exact(&config_path).unwrap();
+        let vault = FileVault::new(dir.path(), "add-test", "passphrase".to_string()).unwrap();
+        (config_path, config, before, vault)
+    }
+
     #[test]
     fn stdin_tty_check_does_not_panic() {
-        let _ = super::stdin_is_tty();
+        let _ = stdin_is_tty();
+    }
+
+    #[test]
+    fn rejects_names_that_can_inject_dotenv_lines() {
+        for name in ["", "A=B", "A\nB", "../A", "1KEY"] {
+            assert!(validate_secret_name(name).is_err());
+        }
+        assert!(validate_secret_name("API_KEY_2").is_ok());
+    }
+
+    #[test]
+    fn ambiguous_first_cas_rolls_back_config_and_new_dotenv() {
+        let dir = TempDir::new().unwrap();
+        let (config_path, config, before, inner) = initialized(&dir);
+        let project = dir.path().canonicalize().unwrap();
+        let original_config = std::fs::read(&config_path).unwrap();
+        let vault = AmbiguousCasVault {
+            inner,
+            calls: AtomicUsize::new(0),
+        };
+        let plan = prepare_add_plan(
+            &project,
+            &config_path,
+            config,
+            before,
+            &vault,
+            "API_KEY",
+            "secret-value",
+        )
+        .unwrap();
+
+        assert!(
+            phantom_vault::commit_init(&project, &vault, vec![plan.mutation], plan.files).is_err()
+        );
+        assert!(matches!(
+            vault.retrieve("API_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
+        assert_eq!(std::fs::read(&config_path).unwrap(), original_config);
+        assert!(!project.join(".env").exists());
+    }
+
+    #[test]
+    fn dotenv_create_race_is_detected_before_vault_cas() {
+        let dir = TempDir::new().unwrap();
+        let (config_path, config, before, vault) = initialized(&dir);
+        let project = dir.path().canonicalize().unwrap();
+        let plan = prepare_add_plan(
+            &project,
+            &config_path,
+            config,
+            before,
+            &vault,
+            "API_KEY",
+            "secret-value",
+        )
+        .unwrap();
+        std::fs::write(project.join(".env"), "FOREIGN=owner\n").unwrap();
+
+        assert!(
+            phantom_vault::commit_init(&project, &vault, vec![plan.mutation], plan.files).is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join(".env")).unwrap(),
+            "FOREIGN=owner\n"
+        );
+        assert!(matches!(
+            vault.retrieve("API_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn config_drift_aborts_before_vault_or_dotenv_mutation() {
+        let dir = TempDir::new().unwrap();
+        let (config_path, config, before, vault) = initialized(&dir);
+        let project = dir.path().canonicalize().unwrap();
+        let plan = prepare_add_plan(
+            &project,
+            &config_path,
+            config,
+            before,
+            &vault,
+            "API_KEY",
+            "secret-value",
+        )
+        .unwrap();
+        let mut concurrent_config = std::fs::read(&config_path).unwrap();
+        concurrent_config.extend_from_slice(b"\n# concurrent owner\n");
+        std::fs::write(&config_path, &concurrent_config).unwrap();
+
+        assert!(
+            phantom_vault::commit_init(&project, &vault, vec![plan.mutation], plan.files).is_err()
+        );
+        assert_eq!(std::fs::read(&config_path).unwrap(), concurrent_config);
+        assert!(!project.join(".env").exists());
+        assert!(matches!(
+            vault.retrieve("API_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
     }
 }

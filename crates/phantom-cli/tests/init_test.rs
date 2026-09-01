@@ -167,7 +167,8 @@ fn init_no_env_file_fails_gracefully() {
 }
 
 /// `phantom init --empty` creates .phantom.toml in a fresh dir without a .env,
-/// and `phantom add FOO --stdin` then succeeds (auto-init path also covered).
+/// and `phantom add FOO --stdin` then succeeds through the required explicit
+/// initialization path.
 #[test]
 fn init_empty_creates_config_and_add_works() {
     let dir = TempDir::new().unwrap();
@@ -199,14 +200,14 @@ fn init_empty_creates_config_and_add_works() {
         .success();
 }
 
-/// `phantom add BAR --stdin` in a brand-new directory (no .phantom.toml at all)
-/// must auto-create .phantom.toml and succeed — the auto-init-on-first-add path.
+/// `phantom add BAR --stdin` in a brand-new directory must fail before creating
+/// project state and direct the user to the explicit transactional init path.
 #[test]
-fn add_auto_inits_when_no_config() {
+fn add_requires_explicit_init_when_no_config() {
     let dir = TempDir::new().unwrap();
 
     // No init step — go straight to add
-    Command::cargo_bin("phantom")
+    let output = Command::cargo_bin("phantom")
         .expect("binary not found")
         .args(["add", "BAR", "--stdin"])
         .current_dir(dir.path())
@@ -214,12 +215,10 @@ fn add_auto_inits_when_no_config() {
         .env("HOME", dir.path())
         .write_stdin("anothersecret\n")
         .assert()
-        .success();
+        .failure();
+    assert!(String::from_utf8_lossy(&output.get_output().stderr).contains("phantom init --empty"));
 
-    assert!(
-        dir.path().join(".phantom.toml").exists(),
-        ".phantom.toml should be auto-created by phantom add"
-    );
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
 }
 
 /// `phantom init` must leave NEXT_PUBLIC_*, VITE_*, REACT_APP_*, EXPO_PUBLIC_*,

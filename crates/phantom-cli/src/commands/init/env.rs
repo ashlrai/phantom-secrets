@@ -67,41 +67,6 @@ pub fn find_env_file(project_dir: &Path, user_specified: &str) -> Option<PathBuf
     None
 }
 
-pub fn ensure_gitignore(project_dir: &Path) -> Result<()> {
-    let gitignore_path = project_dir.join(".gitignore");
-
-    let mut content = if gitignore_path.exists() {
-        std::fs::read_to_string(&gitignore_path)?
-    } else {
-        String::new()
-    };
-
-    let mut added = Vec::new();
-
-    // Ensure .phantom.toml is NOT ignored (it contains no secrets, and teammates need it).
-    for pattern in GITIGNORE_PATTERNS {
-        if !content.lines().any(|l| l.trim() == *pattern) {
-            if !content.is_empty() && !content.ends_with('\n') {
-                content.push('\n');
-            }
-            content.push_str(pattern);
-            content.push('\n');
-            added.push(*pattern);
-        }
-    }
-
-    if !added.is_empty() {
-        std::fs::write(&gitignore_path, &content)?;
-        println!(
-            "{} Added {} to .gitignore",
-            "ok".green().bold(),
-            added.join(", ")
-        );
-    }
-
-    Ok(())
-}
-
 /// Prepare the exact ignore-file update for inclusion in init's transaction.
 pub fn prepare_gitignore(project_dir: &Path) -> Result<Option<phantom_vault::InitFile>> {
     let gitignore_path = project_dir.join(".gitignore");
