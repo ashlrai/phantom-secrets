@@ -898,6 +898,37 @@ pub enum AlertBackendConfig {
     },
 }
 
+/// Render value-blind destination origins for human approval. URL paths,
+/// queries, userinfo, and PagerDuty routing keys are deliberately excluded.
+pub fn alert_destination_origins(backends: &[AlertBackendConfig]) -> std::io::Result<Vec<String>> {
+    let mut origins = Vec::with_capacity(backends.len());
+    for backend in backends {
+        let origin = match backend {
+            AlertBackendConfig::Webhook { url } | AlertBackendConfig::Slack { url } => {
+                let parsed = reqwest::Url::parse(url)
+                    .map_err(|_| std::io::Error::other("alert destination URL is invalid"))?;
+                if parsed.scheme() != "https"
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                    || parsed.host_str().is_none()
+                {
+                    return Err(std::io::Error::other(
+                        "alert destinations must be credential-free absolute HTTPS URLs",
+                    ));
+                }
+                parsed.origin().ascii_serialization()
+            }
+            AlertBackendConfig::PagerDuty { .. } => {
+                "https://events.pagerduty.com".to_string()
+            }
+        };
+        origins.push(origin);
+    }
+    origins.sort();
+    origins.dedup();
+    Ok(origins)
+}
+
 /// `[alerting]` section of `.phantom.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -927,6 +958,38 @@ impl Default for AlertingConfig {
             backends: Vec::new(),
         }
     }
+}
+
+/// Return the value-blind network origins an operator should review before
+/// authorizing alert delivery. Webhook paths and queries can contain bearer
+/// material, so only backend kind plus HTTPS origin is exposed.
+pub fn alert_backend_review_origins(config: &AlertingConfig) -> std::io::Result<Vec<String>> {
+    config
+        .backends
+        .iter()
+        .map(|backend| match backend {
+            AlertBackendConfig::Webhook { url } => reviewed_alert_origin("webhook", url),
+            AlertBackendConfig::Slack { url } => reviewed_alert_origin("slack", url),
+            AlertBackendConfig::PagerDuty { .. } => {
+                Ok("pagerduty:https://events.pagerduty.com".to_string())
+            }
+        })
+        .collect()
+}
+
+fn reviewed_alert_origin(kind: &str, raw_url: &str) -> std::io::Result<String> {
+    let parsed = reqwest::Url::parse(raw_url)
+        .map_err(|_| std::io::Error::other("alert backend has an invalid URL"))?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.host_str().is_none()
+    {
+        return Err(std::io::Error::other(
+            "alert destinations must be credential-free absolute HTTPS URLs",
+        ));
+    }
+    Ok(format!("{kind}:{}", parsed.origin().ascii_serialization()))
 }
 
 /// Trait for alert dispatch — one method per backend type.
@@ -2200,5 +2263,55 @@ mod tests {
         assert!(is_public_alert_ip(IpAddr::V6(
             "2606:4700:4700::1111".parse().unwrap()
         )));
+    }
+
+    #[test]
+    fn alert_review_origins_hide_webhook_paths_queries_and_keys() {
+        let config = AlertingConfig {
+            enabled: true,
+            min_confidence: 0.7,
+            backends: vec![
+                AlertBackendConfig::Webhook {
+                    url: "https://alerts.example:8443/private/bearer?token=secret".to_string(),
+                },
+                AlertBackendConfig::Slack {
+                    url: "https://hooks.slack.com/services/T/B/secret".to_string(),
+                },
+                AlertBackendConfig::PagerDuty {
+                    integration_key: "pager-secret".to_string(),
+                },
+            ],
+        };
+
+        let origins = alert_backend_review_origins(&config).unwrap();
+
+        assert_eq!(
+            origins,
+            vec![
+                "webhook:https://alerts.example:8443",
+                "slack:https://hooks.slack.com",
+                "pagerduty:https://events.pagerduty.com",
+            ]
+        );
+        let rendered = format!("{origins:?}");
+        assert!(!rendered.contains("private"));
+        assert!(!rendered.contains("secret"));
+    }
+
+    #[test]
+    fn alert_review_origins_reject_credentialed_or_non_https_urls() {
+        for url in [
+            "http://example.com/hook",
+            "https://user:pass@example.com/hook",
+        ] {
+            let config = AlertingConfig {
+                enabled: true,
+                min_confidence: 0.7,
+                backends: vec![AlertBackendConfig::Webhook {
+                    url: url.to_string(),
+                }],
+            };
+            assert!(alert_backend_review_origins(&config).is_err());
+        }
     }
 }

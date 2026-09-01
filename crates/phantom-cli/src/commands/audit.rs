@@ -1292,6 +1292,9 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
                 phantom_core::leak_correlation::AlertBackendConfig::PagerDuty { .. } => "pagerduty",
             })
             .collect::<Vec<_>>();
+        let backend_origins =
+            phantom_core::leak_correlation::alert_backend_review_origins(&alerting_config)
+                .context("Alerting configuration contains an unsafe destination")?;
         let config_sha256 = exact_bytes_digest(config_before.as_deref());
         let plan = serde_json::json!({
             "action": "audit-alerts-backfill",
@@ -1300,6 +1303,7 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
             "config_sha256": config_sha256,
             "alerting_enabled": alerting_config.enabled,
             "backend_kinds": backend_kinds,
+            "backend_origins": backend_origins,
             "alerts_path": &alerts_path,
             "effect": "correlate audit events, dispatch value-free incident metadata to configured backends, and persist alert records",
         });
