@@ -1174,10 +1174,8 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
     let engine = LeakCorrelationEngine::new()
         .map_err(|e| anyhow::anyhow!("Cannot initialise leak correlation engine: {e}"))?;
 
-    // Run correlation over the last 24 h of audit events (persists new incidents).
-    let _ = engine.run(); // best-effort; ignore new-incident errors
-
-    // Retrieve active incidents meeting the confidence threshold.
+    // This command is read-only. Correlation and incident persistence are an
+    // explicit backfill effect guarded by the audit terminal ceremony.
     let incidents = engine
         .active_incidents(min_confidence)
         .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;

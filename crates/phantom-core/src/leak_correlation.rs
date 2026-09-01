@@ -1011,11 +1011,15 @@ fn send_http_post(url: &str, payload: &serde_json::Value) -> std::io::Result<()>
         .header("Content-Type", "application/json")
         .json(payload)
         .send()
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+        .map_err(|_| {
+            std::io::Error::other("alert request failed before a response was received")
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
-        return Err(std::io::Error::other(format!("HTTP {status} from {url}")));
+        return Err(std::io::Error::other(format!(
+            "HTTP {status} from alert destination"
+        )));
     }
     Ok(())
 }
@@ -1189,14 +1193,14 @@ impl LeakIncidentAlerter {
             let mut backends_notified = Vec::new();
 
             for backend in &self.config.backends {
-                let result = match backend {
+                let (backend_kind, result) = match backend {
                     AlertBackendConfig::Webhook { url } => {
                         let payload = webhook_payload(incident);
                         let r = self.dispatch.send_webhook(url, &payload);
                         if r.is_ok() {
                             backends_notified.push("webhook".to_string());
                         }
-                        r
+                        ("webhook", r)
                     }
                     AlertBackendConfig::Slack { url } => {
                         let payload = slack_payload(incident);
@@ -1204,7 +1208,7 @@ impl LeakIncidentAlerter {
                         if r.is_ok() {
                             backends_notified.push("slack".to_string());
                         }
-                        r
+                        ("slack", r)
                     }
                     AlertBackendConfig::PagerDuty { integration_key } => {
                         let payload = pagerduty_payload(incident, integration_key);
@@ -1212,15 +1216,14 @@ impl LeakIncidentAlerter {
                         if r.is_ok() {
                             backends_notified.push("pagerduty".to_string());
                         }
-                        r
+                        ("pagerduty", r)
                     }
                 };
                 // Log backend errors to stderr but don't abort — other backends
                 // should still be notified.
                 if let Err(ref e) = result {
                     eprintln!(
-                        "phantom WARNING: alert dispatch failed for backend {:?}: {e}",
-                        backend
+                        "phantom WARNING: alert dispatch failed for {backend_kind} backend: {e}"
                     );
                 }
             }
