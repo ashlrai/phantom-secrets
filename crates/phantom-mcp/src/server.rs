@@ -60,8 +60,22 @@ impl PhantomMcpServer {
         self.project_dir.join(".phantom.toml")
     }
 
-    fn env_path(&self) -> PathBuf {
-        self.project_dir.join(".env")
+    fn env_path(&self) -> Result<PathBuf, McpError> {
+        let (config, vault) = self.load_config_and_vault()?;
+        let vault_names = vault
+            .list()
+            .map_err(|error| internal_err(format!("Failed to list vault secrets: {error}")))?;
+        self.resolve_env_path(&config, &vault_names)
+    }
+
+    fn resolve_env_path(
+        &self,
+        config: &PhantomConfig,
+        vault_names: &[String],
+    ) -> Result<PathBuf, McpError> {
+        phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, config, vault_names)
+            .map(|resolved| resolved.path)
+            .map_err(|error| internal_err(format!("Failed to resolve managed dotenv: {error}")))
     }
 
     fn load_config(&self) -> Result<PhantomConfig, String> {
@@ -81,10 +95,16 @@ impl PhantomMcpServer {
         Ok((config, vault))
     }
 
-    fn save_cloud_version(&self, config: &mut PhantomConfig, version: u64) {
+    fn save_cloud_version(&self, config: &mut PhantomConfig, version: u64) -> Result<(), McpError> {
         let cloud_config = config.cloud.get_or_insert_default();
         cloud_config.version = version;
-        let _ = config.save(&self.config_path());
+        cloud_config.reconciliation_required = false;
+        cloud_config.reconciliation_remote_version = None;
+        config.save(&self.config_path()).map_err(|error| {
+            internal_err(format!(
+                "Cloud upload succeeded at remote version {version}, but the local version could not be recorded: {error}. Do not retry automatically; inspect remote and local versions first."
+            ))
+        })
     }
 
     /// Returns the project identifier used for approval nonce scoping.
@@ -402,7 +422,7 @@ impl PhantomMcpServer {
 
     /// Show the current status of Phantom in this project.
     #[tool(
-        description = "Show Phantom status: project ID, vault backend, number of secrets, configured services, and proxy state."
+        description = "Read repository-local Phantom status without opening or provisioning a vault: project ID, managed dotenv protection counts, and configured service mappings. Vault backend and stored-secret inventory are deliberately not inspected; use phantom_list_secrets for the latter."
     )]
     fn phantom_status(&self) -> Result<CallToolResult, McpError> {
         if !self.config_path().exists() {
@@ -411,25 +431,29 @@ impl PhantomMcpServer {
             );
         }
 
-        let (config, vault) = self.load_config_and_vault()?;
-        let names = vault
-            .list()
-            .map_err(|error| internal_err(format!("Failed to list vault secrets: {error}")))?;
+        let config = self.load_config().map_err(internal_err)?;
 
         let mut output = String::new();
         output.push_str(&format!("Project ID: {}\n", config.portable_project_id()));
-        output.push_str(&format!("Vault backend: {}\n", vault.backend_name()));
-        output.push_str(&format!("Secrets stored: {}\n", names.len()));
+        output.push_str("Vault backend: not inspected (read-only status)\n");
+        output.push_str("Secrets stored: not inspected (use phantom_list_secrets)\n");
 
-        // Check .env status
-        let env_path = self.env_path();
+        // Resolve only repository-local state. Passing no vault names avoids
+        // opening/provisioning any credential backend from this status tool.
+        let env_path =
+            phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &config, &[])
+                .map_err(|error| {
+                    internal_err(format!("Failed to resolve managed dotenv: {error}"))
+                })?
+                .path;
         if env_path.exists() {
             if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
                 let real = dotenv.real_secret_entries();
                 let total = dotenv.entries().len();
                 let phantom_count = dotenv.entries().iter().filter(|e| e.is_phantom).count();
                 output.push_str(&format!(
-                    ".env: {} entries ({} phantom tokens, {} unprotected)\n",
+                    "{}: {} entries ({} phantom tokens, {} unprotected)\n",
+                    env_path.display(),
                     total,
                     phantom_count,
                     real.len()
@@ -620,7 +644,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<RotateParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_rotate", params.confirm)?;
-        let (_config, vault) = self.load_config_and_vault()?;
+        let (config, vault) = self.load_config_and_vault()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_rotate",
@@ -636,7 +660,7 @@ impl PhantomMcpServer {
             return text_result("No secrets to rotate.");
         }
 
-        let env_path = self.env_path();
+        let env_path = self.resolve_env_path(&config, &names)?;
         if env_path.exists() {
             remap_phantom_tokens(&env_path, &names)?;
         }
@@ -706,6 +730,17 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+
+        // Serialize every local stage around the irreversible provider call.
+        // This coordinates Phantom writers; an uncooperative same-user process
+        // can still mutate provider or filesystem state and is detected by the
+        // exact value checks before metadata and cleanup.
+        let _rotation_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .map_err(|error| {
+                internal_err(format!(
+                    "Failed to acquire provider-rotation transaction lock: {error}"
+                ))
+            })?;
 
         let (config, vault) = self.load_config_and_vault()?;
 
@@ -781,6 +816,10 @@ impl PhantomMcpServer {
 
         match new_value {
             Some(secret) => {
+                let mut stages = ProviderRotationStages {
+                    provider_issued: true,
+                    ..ProviderRotationStages::default()
+                };
                 // Bind local persistence to the exact value reviewed before the
                 // provider call. A concurrent local writer must never be
                 // overwritten after the provider has already issued a value.
@@ -789,6 +828,7 @@ impl PhantomMcpServer {
                     &params.name,
                     old_value.as_ref(),
                     secret.as_str(),
+                    &mut stages,
                 )?;
 
                 phantom_core::audit::log("vault.rotation.provider.stored", Some(&params.name));
@@ -796,19 +836,21 @@ impl PhantomMcpServer {
                 // Refresh the phm_ token for this secret in .env — same flow
                 // as the CLI — so a client that captured the pre-rotation
                 // phm_ token cannot resolve it to the new credential.
-                let env_path = self.env_path();
+                let env_path =
+                    self.resolve_env_path(&config, std::slice::from_ref(&params.name))?;
                 let mut env_token_refreshed = false;
                 if env_path.exists() {
-                    remap_phantom_tokens(&env_path, std::slice::from_ref(&params.name)).map_err(
-                        |error| {
+                    remap_phantom_tokens_locked(&env_path, std::slice::from_ref(&params.name))
+                        .map_err(|error| {
                             provider_rotation_partial_error(
                                 &params.name,
                                 "local Phantom-token remap",
                                 &error.message,
+                                &stages,
                             )
-                        },
-                    )?;
+                        })?;
                     env_token_refreshed = true;
+                    stages.token_remapped = true;
                 }
 
                 // Persist rotation metadata (rotated_at + recomputed
@@ -822,10 +864,18 @@ impl PhantomMcpServer {
                 } else {
                     None
                 };
+                verify_provider_issued_value(
+                    vault.as_ref(),
+                    &params.name,
+                    secret.as_str(),
+                    "pre-metadata vault verification",
+                    &mut stages,
+                )?;
                 let expires_line = persist_provider_rotation_metadata(
                     vault.as_ref(),
                     &params.name,
                     expires_override,
+                    &mut stages,
                 )?
                 .map(|ts| format!("expires_at: {ts}\n"))
                 .unwrap_or_default();
@@ -838,17 +888,50 @@ impl PhantomMcpServer {
                         .find(|p| p.name().eq_ignore_ascii_case(&effective_provider)),
                     provider_config,
                 ) {
-                    let _ = provider.post_store_cleanup(&params.name, cfg, old_value.as_ref());
+                    verify_provider_issued_value(
+                        vault.as_ref(),
+                        &params.name,
+                        secret.as_str(),
+                        "pre-cleanup vault verification",
+                        &mut stages,
+                    )?;
+                    stages.old_cleanup_attempted = true;
+                    provider
+                        .post_store_cleanup(&params.name, cfg, old_value.as_ref())
+                        .map_err(|error| {
+                            provider_rotation_partial_error(
+                                &params.name,
+                                "prior-credential cleanup",
+                                error,
+                                &stages,
+                            )
+                        })?;
+                    stages.old_cleanup_succeeded = true;
+                    verify_provider_issued_value(
+                        vault.as_ref(),
+                        &params.name,
+                        secret.as_str(),
+                        "post-cleanup vault verification",
+                        &mut stages,
+                    )?;
                 }
+
+                let stage_receipt = serde_json::to_string(&stages)
+                    .map_err(|e| internal_err(format!("Receipt serialization failed: {e}")))?;
 
                 text_result(format!(
                     "Provider rotation succeeded for '{}'.\n\
                      provider: {}\n\
                      status: rotated\n\
+                     stage_receipt: {}\n\
                      env_token_refreshed: {}\n\
                      {}The new credential has been stored in the vault.\n\
                      The secret value was NOT exposed via MCP.",
-                    params.name, effective_provider, env_token_refreshed, expires_line
+                    params.name,
+                    effective_provider,
+                    stage_receipt,
+                    env_token_refreshed,
+                    expires_line
                 ))
             }
             None => {
@@ -888,6 +971,7 @@ impl PhantomMcpServer {
             .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
 
         let (config, vault) = self.load_config_and_vault()?;
+        ensure_cloud_push_allowed_mcp(&config)?;
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
@@ -938,7 +1022,7 @@ impl PhantomMcpServer {
         .map_err(|e| internal_err(format!("Cloud push failed: {e}")))?;
 
         let mut config = config;
-        self.save_cloud_version(&mut config, new_version);
+        self.save_cloud_version(&mut config, new_version)?;
 
         text_result(format!(
             "Pushed {} secret(s) to Phantom Cloud (v{new_version}). End-to-end encrypted.",
@@ -1002,37 +1086,27 @@ impl PhantomMcpServer {
                 .map_err(|e| internal_err(format!("Decryption failed: {e}")))?,
         );
 
-        let mut secrets: std::collections::BTreeMap<String, String> =
-            serde_json::from_slice(&plaintext)
-                .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
+        let secrets = SensitiveSecretMap::parse_json(&plaintext)
+            .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
 
-        // Run the store loop without `?` so a mid-loop error can't bypass the
-        // zeroize sweep below — serde produced fresh String allocations the
-        // Zeroizing<plaintext> wrapper does not reach.
-        let mut updated_config = config;
-        updated_config.cloud.get_or_insert_default().version = pull_data.version;
-        let config_after = toml::to_string_pretty(&updated_config)
-            .map_err(|error| internal_err(format!("Failed to serialize cloud version: {error}")))?
-            .into_bytes();
-        let store_result = apply_cloud_pull_transaction(
+        // SensitiveSecretMap owns zeroizing values before TOML serialization,
+        // so every early-return path below scrubs the parsed plaintext map.
+        let (added, skipped) = apply_cloud_pull_transaction(
             &self.project_dir,
             &self.config_path(),
             vault.as_ref(),
             &secrets,
             params.force,
             config_before,
-            config_after,
-        );
-
-        for value in secrets.values_mut() {
-            zeroize::Zeroize::zeroize(value);
-        }
-        drop(secrets);
-
-        let (added, skipped) = store_result?;
+            config,
+            pull_data.version,
+        )?;
 
         let msg = if skipped > 0 {
-            format!("Pulled {added} secret(s), {skipped} skipped (already exist, use force=true to overwrite).")
+            format!(
+                "Partial reconciliation: pulled {added} secret(s), {skipped} skipped because they already exist. The prior cloud merge base was retained and cloud push is blocked. Run phantom_cloud_pull with force=true, after explicit approval, to fully reconcile remote version {}.",
+                pull_data.version
+            )
         } else {
             format!(
                 "Pulled {added} secret(s) from Phantom Cloud (v{}).",
@@ -1142,7 +1216,7 @@ impl PhantomMcpServer {
         let mut fixed = 0u32;
 
         let config_path = self.config_path();
-        let env_path = self.env_path();
+        let config_exists = config_path.exists();
 
         // ── Check 1: .phantom.toml ──────────────────────────────────────
         let config = if config_path.exists() {
@@ -1170,6 +1244,7 @@ impl PhantomMcpServer {
         };
 
         // ── Check 2: Vault accessible ───────────────────────────────────
+        let mut vault_names = Vec::new();
         if let Some(cfg) = &config {
             match phantom_vault::try_create_vault(cfg.local_project_id()) {
                 Ok(vault) => {
@@ -1177,6 +1252,7 @@ impl PhantomMcpServer {
                     match vault.list() {
                         Ok(names) => {
                             lines.push(format!("pass: {} secret(s) in vault", names.len()));
+                            vault_names = names;
                         }
                         Err(e) => {
                             lines.push(format!("FAIL: Vault access failed: {e}"));
@@ -1191,44 +1267,77 @@ impl PhantomMcpServer {
             }
         }
 
+        // Only an actually absent config may use the legacy `.env` fallback.
+        // Configured projects must honor the validated managed-dotenv choice;
+        // a malformed config is already reported above and is never bypassed.
+        let env_path = if let Some(cfg) = &config {
+            match phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, cfg, &vault_names)
+            {
+                Ok(resolved) => Some(resolved.path),
+                Err(error) => {
+                    lines.push(format!("FAIL: Managed dotenv resolution failed: {error}"));
+                    issues += 1;
+                    None
+                }
+            }
+        } else if !config_exists {
+            Some(self.project_dir.join(".env"))
+        } else {
+            None
+        };
+
         // ── Check 3: .env file ──────────────────────────────────────────
-        if env_path.exists() {
-            match DotenvFile::parse_file(&env_path) {
-                Ok(dotenv) => {
-                    let entries = dotenv.entries();
-                    let real_secrets = dotenv.real_secret_entries();
-                    if real_secrets.is_empty() {
-                        lines.push(format!(
-                            "pass: .env has {} entries, all protected",
-                            entries.len()
-                        ));
-                    } else {
-                        let names: Vec<&str> =
-                            real_secrets.iter().map(|e| e.key.as_str()).collect();
-                        lines.push(format!(
-                            "warn: .env has {} unprotected secret(s): {}",
-                            real_secrets.len(),
-                            names.join(", ")
-                        ));
-                        lines.push("  Fix: Run `phantom init`".to_string());
+        if let Some(env_path) = env_path.as_ref() {
+            if env_path.exists() {
+                match DotenvFile::parse_file(env_path) {
+                    Ok(dotenv) => {
+                        let entries = dotenv.entries();
+                        let real_secrets = dotenv.real_secret_entries();
+                        if real_secrets.is_empty() {
+                            lines.push(format!(
+                                "pass: .env has {} entries, all protected",
+                                entries.len()
+                            ));
+                        } else {
+                            let names: Vec<&str> =
+                                real_secrets.iter().map(|e| e.key.as_str()).collect();
+                            lines.push(format!(
+                                "warn: .env has {} unprotected secret(s): {}",
+                                real_secrets.len(),
+                                names.join(", ")
+                            ));
+                            lines.push("  Fix: Run `phantom init`".to_string());
+                            issues += 1;
+                        }
+                    }
+                    Err(e) => {
+                        lines.push(format!("FAIL: .env parse error: {e}"));
                         issues += 1;
                     }
                 }
-                Err(e) => {
-                    lines.push(format!("FAIL: .env parse error: {e}"));
-                    issues += 1;
-                }
+            } else {
+                lines.push(format!(
+                    "info: No {} file in current directory",
+                    env_path.display()
+                ));
             }
         } else {
-            lines.push("info: No .env file in current directory".to_string());
+            lines.push(
+                "info: Dotenv checks skipped because no safe managed path was resolved".to_string(),
+            );
         }
 
         // ── Check 4: .gitignore includes .env ───────────────────────────
         let gitignore_path = self.project_dir.join(".gitignore");
         if gitignore_path.exists() {
             let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
-            if content.lines().any(|l| l.trim() == ".env") {
-                lines.push("pass: .env is in .gitignore".to_string());
+            let managed_name = env_path
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or(".env");
+            if content.lines().any(|l| l.trim() == managed_name) {
+                lines.push(format!("pass: {managed_name} is in .gitignore"));
             } else {
                 lines.push(
                     "warn: .env is NOT in .gitignore — secrets could be committed!".to_string(),
@@ -1238,7 +1347,8 @@ impl PhantomMcpServer {
                     if !c.ends_with('\n') {
                         c.push('\n');
                     }
-                    c.push_str(".env\n");
+                    c.push_str(managed_name);
+                    c.push('\n');
                     std::fs::write(&gitignore_path, c)
                         .map_err(|e| internal_err(format!("Failed to write .gitignore: {e}")))?;
                     lines.push("  Fixed: Added .env to .gitignore".to_string());
@@ -1268,14 +1378,17 @@ impl PhantomMcpServer {
             lines.push("pass: .env.example found (team onboarding ready)".to_string());
         } else {
             lines.push("warn: No .env.example — team onboarding may be difficult".to_string());
-            if params.fix && env_path.exists() {
-                if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
-                    let cfg = config.as_ref();
-                    let content = dotenv.generate_example_content(cfg);
-                    std::fs::write(&example_path, content)
-                        .map_err(|e| internal_err(format!("Failed to write .env.example: {e}")))?;
-                    lines.push("  Fixed: Generated .env.example".to_string());
-                    fixed += 1;
+            if params.fix && env_path.as_ref().is_some_and(|path| path.exists()) {
+                if let Some(env_path) = env_path.as_ref() {
+                    if let Ok(dotenv) = DotenvFile::parse_file(env_path) {
+                        let cfg = config.as_ref();
+                        let content = dotenv.generate_example_content(cfg);
+                        std::fs::write(&example_path, content).map_err(|e| {
+                            internal_err(format!("Failed to write .env.example: {e}"))
+                        })?;
+                        lines.push("  Fixed: Generated .env.example".to_string());
+                        fixed += 1;
+                    }
                 }
             } else if !params.fix {
                 issues += 1;
@@ -1402,7 +1515,7 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<WhyParams>,
     ) -> Result<CallToolResult, McpError> {
-        let env_path = self.env_path();
+        let env_path = self.env_path()?;
         if !env_path.exists() {
             return text_result(format!(
                 "No .env file found. '{}' cannot be classified without an .env file.",
@@ -1829,7 +1942,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<EnvParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_env", params.confirm)?;
-        let env_path = self.env_path();
+        let env_path = self.env_path()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_env",
@@ -2279,7 +2392,7 @@ impl PhantomMcpServer {
             return Err(invalid_params_err("days_ttl must be > 0"));
         }
 
-        let (_config, vault) = self.load_config_and_vault()?;
+        let (config, vault) = self.load_config_and_vault()?;
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
@@ -2288,7 +2401,7 @@ impl PhantomMcpServer {
             return text_result("No Phantom tokens to remap.");
         }
 
-        let env_path = self.env_path();
+        let env_path = self.resolve_env_path(&config, &names)?;
         if !env_path.exists() {
             return Err(invalid_params_err(format!(
                 "Cannot remap Phantom tokens: {} does not exist.",
@@ -3320,7 +3433,7 @@ impl PhantomMcpServer {
         }));
 
         // Check 4: no real secrets in .env
-        let env_path = self.env_path();
+        let env_path = self.env_path()?;
         let (env_clean, env_detail) = if env_path.exists() {
             match phantom_core::dotenv::DotenvFile::parse_file(&env_path) {
                 Ok(dotenv) => {
@@ -3542,15 +3655,16 @@ impl PhantomMcpServer {
             &kp,
         )
         .await
+        .map(|(secrets, version)| (SensitiveSecretMap::new(secrets), version))
         .map_err(|e| internal_err(e.to_string()))?;
 
-        let mut written = 0usize;
-        for (name, value) in &secrets {
-            vault
-                .store(name, value)
-                .map_err(|e| internal_err(format!("Store {name} failed: {e}")))?;
-            written += 1;
-        }
+        // Team pull has explicit overwrite semantics: every remote name
+        // replaces its matching local name, while unrelated local names are
+        // retained. Exact before-images plus commit_init ensure an nth write
+        // failure restores transaction-owned changes and a concurrent local
+        // change is never overwritten.
+        let written =
+            apply_team_vault_pull_transaction(&self.project_dir, vault.as_ref(), &secrets)?;
 
         text_result(format!(
             "Pulled {written} secret(s) from team id {} (v{}). Local vault updated.",
@@ -3896,7 +4010,7 @@ impl PhantomMcpServer {
             ));
         }
 
-        let (_config, vault) = self.load_config_and_vault()?;
+        let (config, vault) = self.load_config_and_vault()?;
 
         // Confirm the secret exists.
         if !vault
@@ -3909,7 +4023,7 @@ impl PhantomMcpServer {
             )));
         }
 
-        let env_path = self.env_path();
+        let env_path = self.resolve_env_path(&config, std::slice::from_ref(&params.name))?;
         if !env_path.exists() {
             return Err(invalid_params_err(format!(
                 "Cannot remap '{}': {} does not exist.",
@@ -4195,6 +4309,57 @@ fn wrapped_script_command(original: &str) -> String {
     format!("phantom exec -- {original}")
 }
 
+struct SensitiveSecretMap(std::collections::BTreeMap<String, zeroize::Zeroizing<String>>);
+
+#[derive(serde::Deserialize)]
+struct ParsedSensitiveSecret(String);
+
+impl ParsedSensitiveSecret {
+    fn into_zeroizing(mut self) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for ParsedSensitiveSecret {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.zeroize();
+    }
+}
+
+impl SensitiveSecretMap {
+    fn new(values: std::collections::BTreeMap<String, zeroize::Zeroizing<String>>) -> Self {
+        Self(values)
+    }
+
+    fn parse_json(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        let parsed: std::collections::BTreeMap<String, ParsedSensitiveSecret> =
+            serde_json::from_slice(bytes)?;
+        Ok(Self::new(
+            parsed
+                .into_iter()
+                .map(|(name, value)| (name, value.into_zeroizing()))
+                .collect(),
+        ))
+    }
+}
+
+impl std::ops::Deref for SensitiveSecretMap {
+    type Target = std::collections::BTreeMap<String, zeroize::Zeroizing<String>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for SensitiveSecretMap {
+    fn drop(&mut self) {
+        // Each value is independently Zeroizing; clearing forces every owner
+        // to scrub before the map allocation itself is released.
+        self.0.clear();
+    }
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 fn retrieve_optional_secret(
@@ -4211,25 +4376,75 @@ fn retrieve_optional_secret(
     }
 }
 
+fn apply_team_vault_pull_transaction(
+    project_dir: &Path,
+    vault: &dyn phantom_vault::VaultBackend,
+    secrets: &SensitiveSecretMap,
+) -> Result<usize, McpError> {
+    let mut mutations = Vec::with_capacity(secrets.len());
+    for (name, value) in secrets.iter() {
+        let before = retrieve_optional_secret(vault, name, "team-vault destination")?;
+        mutations.push(phantom_vault::InitSecret::replace_if_unchanged(
+            name,
+            before.as_ref().map(|value| value.as_str().to_string()),
+            value.as_str(),
+        ));
+    }
+    let written = mutations.len();
+    phantom_vault::commit_init(project_dir, vault, mutations, Vec::new())
+        .map_err(|error| internal_err(format!("Team vault pull transaction failed: {error}")))?;
+    Ok(written)
+}
+
 fn persist_provider_rotation_metadata(
     vault: &dyn phantom_vault::VaultBackend,
     name: &str,
     expires_override: Option<u64>,
+    stages: &mut ProviderRotationStages,
 ) -> Result<Option<u64>, McpError> {
-    vault
+    let expires_at = vault
         .record_provider_rotation(name, expires_override)
         .map_err(|error| {
-            provider_rotation_partial_error(name, "rotation metadata persistence", error)
-        })
+            provider_rotation_partial_error(name, "rotation metadata persistence", error, stages)
+        })?;
+    stages.metadata_committed = true;
+    Ok(expires_at)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ProviderRotationStages {
+    provider_issued: bool,
+    vault_committed: &'static str,
+    token_remapped: bool,
+    metadata_committed: bool,
+    old_cleanup_attempted: bool,
+    old_cleanup_succeeded: bool,
+}
+
+impl Default for ProviderRotationStages {
+    fn default() -> Self {
+        Self {
+            provider_issued: false,
+            vault_committed: "false",
+            token_remapped: false,
+            metadata_committed: false,
+            old_cleanup_attempted: false,
+            old_cleanup_succeeded: false,
+        }
+    }
 }
 
 fn provider_rotation_partial_error(
     name: &str,
     failed_stage: &str,
     error: impl std::fmt::Display,
+    stages: &ProviderRotationStages,
 ) -> McpError {
+    let receipt = serde_json::to_string(stages).unwrap_or_else(|_| {
+        "{\"provider_issued\":true,\"vault_committed\":\"unknown\",\"token_remapped\":false,\"metadata_committed\":false,\"old_cleanup_attempted\":false,\"old_cleanup_succeeded\":false}".to_string()
+    });
     internal_err(format!(
-        "Provider rotation for '{name}' partially succeeded: the provider issued a new credential, but {failed_stage} failed. Local and provider state may now differ; provider cleanup was not attempted. Do not retry automatically: first reconcile the provider credential, local vault, Phantom token, and rotation metadata. Cause: {error}"
+        "Provider rotation for '{name}' partially succeeded: {failed_stage} failed. stage_receipt: {receipt}. Local and provider state may now differ. Do not retry automatically: first reconcile the provider credential, local vault, Phantom token, rotation metadata, and prior-credential cleanup. Cause: {error}"
     ))
 }
 
@@ -4238,38 +4453,79 @@ fn persist_issued_provider_credential(
     name: &str,
     expected_before: Option<&zeroize::Zeroizing<String>>,
     issued_value: &str,
+    stages: &mut ProviderRotationStages,
 ) -> Result<(), McpError> {
     let expected = expected_before.map(|value| value.as_str());
     match vault.compare_and_swap(name, expected, Some(issued_value)) {
         Ok(true) => {}
         Ok(false) => {
+            stages.vault_committed = "false";
             return Err(provider_rotation_partial_error(
                 name,
                 "local vault persistence because the credential changed concurrently",
                 "exact before-image no longer matched",
+                stages,
             ));
         }
         Err(error) => {
+            stages.vault_committed = "unknown";
             return Err(provider_rotation_partial_error(
                 name,
                 "local vault persistence",
                 error,
+                stages,
             ));
         }
     }
 
     match vault.retrieve(name) {
-        Ok(stored) if stored.as_str() == issued_value => Ok(()),
-        Ok(_) => Err(provider_rotation_partial_error(
-            name,
-            "local vault persistence verification",
-            "stored value did not match the provider-issued credential",
-        )),
-        Err(error) => Err(provider_rotation_partial_error(
-            name,
-            "local vault persistence verification",
-            error,
-        )),
+        Ok(stored) if stored.as_str() == issued_value => {
+            stages.vault_committed = "true";
+            Ok(())
+        }
+        Ok(_) => {
+            stages.vault_committed = "unknown";
+            Err(provider_rotation_partial_error(
+                name,
+                "local vault persistence verification",
+                "stored value did not match the provider-issued credential",
+                stages,
+            ))
+        }
+        Err(error) => {
+            stages.vault_committed = "unknown";
+            Err(provider_rotation_partial_error(
+                name,
+                "local vault persistence verification",
+                error,
+                stages,
+            ))
+        }
+    }
+}
+
+fn verify_provider_issued_value(
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+    issued_value: &str,
+    stage: &str,
+    stages: &mut ProviderRotationStages,
+) -> Result<(), McpError> {
+    match vault.retrieve(name) {
+        Ok(value) if value.as_str() == issued_value => Ok(()),
+        Ok(_) => {
+            stages.vault_committed = "false";
+            Err(provider_rotation_partial_error(
+                name,
+                stage,
+                "local vault no longer contains the provider-issued credential",
+                stages,
+            ))
+        }
+        Err(error) => {
+            stages.vault_committed = "unknown";
+            Err(provider_rotation_partial_error(name, stage, error, stages))
+        }
     }
 }
 
@@ -4278,14 +4534,15 @@ fn apply_cloud_pull_transaction(
     project_dir: &Path,
     config_path: &Path,
     vault: &dyn phantom_vault::VaultBackend,
-    secrets: &std::collections::BTreeMap<String, String>,
+    secrets: &SensitiveSecretMap,
     force: bool,
     config_before: Vec<u8>,
-    config_after: Vec<u8>,
+    mut config: PhantomConfig,
+    remote_version: u64,
 ) -> Result<(usize, usize), McpError> {
     let mut mutations = Vec::new();
     let mut skipped = 0;
-    for (name, value) in secrets {
+    for (name, value) in secrets.iter() {
         let before = retrieve_optional_secret(vault, name, "local cloud-pull destination")?;
         if before.is_some() && !force {
             skipped += 1;
@@ -4294,10 +4551,18 @@ fn apply_cloud_pull_transaction(
         mutations.push(phantom_vault::InitSecret::replace_if_unchanged(
             name,
             before.as_ref().map(|value| value.as_str().to_string()),
-            value,
+            value.as_str(),
         ));
     }
 
+    update_cloud_reconciliation_mcp(&mut config, remote_version, skipped);
+    let config_after = toml::to_string_pretty(&config)
+        .map_err(|error| {
+            internal_err(format!(
+                "Failed to serialize cloud reconciliation state: {error}"
+            ))
+        })?
+        .into_bytes();
     let added = mutations.len();
     let config_file = phantom_vault::InitFile::replace_if_unchanged(
         config_path,
@@ -4309,9 +4574,41 @@ fn apply_cloud_pull_transaction(
     Ok((added, skipped))
 }
 
-/// Replace protected placeholders while holding Phantom's per-project
-/// transaction lock. The before-image check also refuses an uncooperative
-/// writer that changes `.env` without taking the lock.
+fn update_cloud_reconciliation_mcp(
+    config: &mut PhantomConfig,
+    remote_version: u64,
+    skipped: usize,
+) {
+    let cloud = config.cloud.get_or_insert_default();
+    if skipped == 0 {
+        cloud.version = remote_version;
+        cloud.reconciliation_required = false;
+        cloud.reconciliation_remote_version = None;
+    } else {
+        // A partial pull is not a valid merge base. Keep the prior version so
+        // a later push cannot erase remote values that were deliberately skipped.
+        cloud.reconciliation_required = true;
+        cloud.reconciliation_remote_version = Some(remote_version);
+    }
+}
+
+fn ensure_cloud_push_allowed_mcp(config: &PhantomConfig) -> Result<(), McpError> {
+    if config
+        .cloud
+        .as_ref()
+        .is_some_and(|cloud| cloud.reconciliation_required)
+    {
+        return Err(invalid_params_err(
+            "Cloud push is blocked because the last pull was only partially reconciled. Run phantom_cloud_pull with force=true after explicit approval, or otherwise fully reconcile every remote secret. Do not retry push automatically."
+        ));
+    }
+    Ok(())
+}
+
+/// Replace protected placeholders while holding Phantom's cooperative
+/// per-project transaction lock. The before-image check detects changes visible
+/// before commit; an uncooperative same-user pathname swap after that check is
+/// outside the guarantee of portable filesystem APIs.
 fn remap_phantom_tokens(env_path: &Path, names: &[String]) -> Result<(), McpError> {
     remap_phantom_tokens_with(env_path, names, || {})
 }
@@ -4332,6 +4629,18 @@ fn remap_phantom_tokens_with(
                 project_dir.display()
             ))
         })?;
+    remap_phantom_tokens_locked_with(env_path, names, before_commit)
+}
+
+fn remap_phantom_tokens_locked(env_path: &Path, names: &[String]) -> Result<(), McpError> {
+    remap_phantom_tokens_locked_with(env_path, names, || {})
+}
+
+fn remap_phantom_tokens_locked_with(
+    env_path: &Path,
+    names: &[String],
+    before_commit: impl FnOnce(),
+) -> Result<(), McpError> {
     if !env_path.exists() {
         return Err(invalid_params_err(format!(
             "Cannot remap Phantom tokens: {} does not exist.",
@@ -4459,6 +4768,18 @@ mod tests {
     /// Shared lock so that tests mutating HOME do not race each other.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    fn cloud_test_config(version: u64) -> PhantomConfig {
+        let mut config = PhantomConfig::new_with_defaults("cloud-test-project".to_string());
+        config.cloud.get_or_insert_default().version = version;
+        config
+    }
+
+    fn write_cloud_test_config(path: &Path, config: &PhantomConfig) -> Vec<u8> {
+        let bytes = toml::to_string_pretty(config).unwrap().into_bytes();
+        std::fs::write(path, &bytes).unwrap();
+        bytes
+    }
+
     struct BackendFailureVault {
         store_calls: AtomicUsize,
     }
@@ -4466,6 +4787,12 @@ mod tests {
     struct ConcurrentCreateVault {
         inner: phantom_vault::file::FileVault,
         injected: std::sync::atomic::AtomicBool,
+    }
+
+    struct NthCasFailureVault {
+        inner: phantom_vault::file::FileVault,
+        fail_at: usize,
+        calls: AtomicUsize,
     }
 
     impl BackendFailureVault {
@@ -4580,6 +4907,120 @@ mod tests {
         }
     }
 
+    impl phantom_vault::VaultBackend for NthCasFailureVault {
+        fn store(&self, name: &str, value: &str) -> phantom_core::error::Result<()> {
+            self.inner.store(name, value)
+        }
+
+        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            self.inner.retrieve(name)
+        }
+
+        fn delete(&self, name: &str) -> phantom_core::error::Result<()> {
+            self.inner.delete(name)
+        }
+
+        fn compare_and_swap(
+            &self,
+            name: &str,
+            expected: Option<&str>,
+            replacement: Option<&str>,
+        ) -> phantom_core::error::Result<bool> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.fail_at {
+                return Err(phantom_core::error::PhantomError::VaultError(
+                    "injected nth team-pull commit failure".to_string(),
+                ));
+            }
+            self.inner.compare_and_swap(name, expected, replacement)
+        }
+
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            self.inner.list()
+        }
+
+        fn backend_name(&self) -> &str {
+            "nth-cas-failure"
+        }
+
+        fn get_metadata(
+            &self,
+            name: &str,
+        ) -> phantom_core::error::Result<Option<phantom_vault::SecretMetadata>> {
+            self.inner.get_metadata(name)
+        }
+
+        fn set_metadata(
+            &self,
+            name: &str,
+            metadata: phantom_vault::SecretMetadata,
+        ) -> phantom_core::error::Result<()> {
+            self.inner.set_metadata(name, metadata)
+        }
+
+        fn get_validation_metadata(
+            &self,
+            name: &str,
+        ) -> phantom_core::error::Result<phantom_core::validator::ValidationMetadata> {
+            self.inner.get_validation_metadata(name)
+        }
+
+        fn set_validation_metadata(
+            &self,
+            name: &str,
+            metadata: phantom_core::validator::ValidationMetadata,
+        ) -> phantom_core::error::Result<()> {
+            self.inner.set_validation_metadata(name, metadata)
+        }
+    }
+
+    #[test]
+    fn team_vault_pull_restores_exact_before_images_on_nth_commit_failure() {
+        let dir = TempDir::new().unwrap();
+        let inner = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "team-pull-nth-failure",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        phantom_vault::VaultBackend::store(&inner, "A", "local-a").unwrap();
+        phantom_vault::VaultBackend::store(&inner, "B", "local-b").unwrap();
+        let vault = NthCasFailureVault {
+            inner,
+            fail_at: 2,
+            calls: AtomicUsize::new(0),
+        };
+        let secrets = SensitiveSecretMap::new(std::collections::BTreeMap::from([
+            (
+                "A".to_string(),
+                zeroize::Zeroizing::new("remote-a".to_string()),
+            ),
+            (
+                "B".to_string(),
+                zeroize::Zeroizing::new("remote-b".to_string()),
+            ),
+        ]));
+
+        let error = apply_team_vault_pull_transaction(dir.path(), &vault, &secrets)
+            .expect_err("the second commit must fail and roll back the first");
+
+        assert!(error.message.contains("Team vault pull transaction failed"));
+        assert_eq!(
+            phantom_vault::VaultBackend::retrieve(&vault, "A")
+                .unwrap()
+                .as_str(),
+            "local-a"
+        );
+        assert_eq!(
+            phantom_vault::VaultBackend::retrieve(&vault, "B")
+                .unwrap()
+                .as_str(),
+            "local-b"
+        );
+        assert!(!error.message.contains("remote-a"));
+        assert!(!error.message.contains("remote-b"));
+    }
+
     #[test]
     fn mcp_remap_rejects_a_concurrent_env_change_without_overwriting_it() {
         let dir = TempDir::new().unwrap();
@@ -4609,8 +5050,15 @@ mod tests {
             .message
             .contains("injected credential read failure"));
 
-        let metadata_error = persist_provider_rotation_metadata(&vault, "TARGET", None)
-            .expect_err("metadata persistence errors must prevent a success response");
+        let mut metadata_stages = ProviderRotationStages {
+            provider_issued: true,
+            vault_committed: "true",
+            token_remapped: true,
+            ..ProviderRotationStages::default()
+        };
+        let metadata_error =
+            persist_provider_rotation_metadata(&vault, "TARGET", None, &mut metadata_stages)
+                .expect_err("metadata persistence errors must prevent a success response");
         assert!(metadata_error
             .message
             .contains("rotation metadata persistence failed"));
@@ -4621,11 +5069,20 @@ mod tests {
         assert!(metadata_error
             .message
             .contains("injected metadata write failure"));
+        assert!(metadata_error.message.contains(
+            r#""provider_issued":true,"vault_committed":"true","token_remapped":true,"metadata_committed":false"#
+        ));
 
+        let remap_stages = ProviderRotationStages {
+            provider_issued: true,
+            vault_committed: "true",
+            ..ProviderRotationStages::default()
+        };
         let remap_error = provider_rotation_partial_error(
             "TARGET",
             "local Phantom-token remap",
             "injected remap failure",
+            &remap_stages,
         );
         assert!(remap_error.message.contains("partially succeeded"));
         assert!(remap_error.message.contains("Do not retry automatically"));
@@ -4643,14 +5100,20 @@ mod tests {
         .unwrap();
         phantom_vault::VaultBackend::store(&vault, "TARGET", "reviewed-old").unwrap();
         let expected = zeroize::Zeroizing::new("reviewed-old".to_string());
+        let mut stages = ProviderRotationStages {
+            provider_issued: true,
+            ..ProviderRotationStages::default()
+        };
 
         persist_issued_provider_credential(
             &vault,
             "TARGET",
             Some(&expected),
             "provider-issued-new",
+            &mut stages,
         )
         .unwrap();
+        assert_eq!(stages.vault_committed, "true");
 
         assert_eq!(
             phantom_vault::VaultBackend::retrieve(&vault, "TARGET")
@@ -4675,12 +5138,17 @@ mod tests {
             injected: std::sync::atomic::AtomicBool::new(false),
         };
         let expected = zeroize::Zeroizing::new("reviewed-old".to_string());
+        let mut stages = ProviderRotationStages {
+            provider_issued: true,
+            ..ProviderRotationStages::default()
+        };
 
         let error = persist_issued_provider_credential(
             &vault,
             "TARGET",
             Some(&expected),
             "provider-issued-new",
+            &mut stages,
         )
         .expect_err("a concurrent local owner must defeat the exact CAS");
 
@@ -4692,6 +5160,7 @@ mod tests {
         assert!(error.message.contains("Do not retry automatically"));
         assert!(!error.message.contains("stored it in the local vault"));
         assert!(!error.message.contains("provider-issued-new"));
+        assert!(error.message.contains(r#""vault_committed":"false""#));
         assert_eq!(
             phantom_vault::VaultBackend::retrieve(&vault, "TARGET")
                 .unwrap()
@@ -4703,9 +5172,18 @@ mod tests {
     #[test]
     fn provider_issued_value_reports_backend_cas_failure_as_partial_success() {
         let vault = BackendFailureVault::new();
-        let error =
-            persist_issued_provider_credential(&vault, "TARGET", None, "provider-issued-new")
-                .expect_err("a backend CAS failure follows provider issuance");
+        let mut stages = ProviderRotationStages {
+            provider_issued: true,
+            ..ProviderRotationStages::default()
+        };
+        let error = persist_issued_provider_credential(
+            &vault,
+            "TARGET",
+            None,
+            "provider-issued-new",
+            &mut stages,
+        )
+        .expect_err("a backend CAS failure follows provider issuance");
 
         assert!(error.message.contains("partially succeeded"));
         assert!(error.message.contains("local vault persistence"));
@@ -4715,6 +5193,7 @@ mod tests {
         assert!(error.message.contains("Do not retry automatically"));
         assert!(!error.message.contains("stored it in the local vault"));
         assert!(!error.message.contains("provider-issued-new"));
+        assert!(error.message.contains(r#""vault_committed":"unknown""#));
         assert_eq!(vault.store_calls.load(Ordering::SeqCst), 0);
     }
 
@@ -4722,10 +5201,13 @@ mod tests {
     fn cloud_pull_never_stores_when_overwrite_inspection_fails() {
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join(".phantom.toml");
-        std::fs::write(&config_path, b"before").unwrap();
+        let config = cloud_test_config(3);
+        let config_before = write_cloud_test_config(&config_path, &config);
         let vault = BackendFailureVault::new();
-        let secrets =
-            std::collections::BTreeMap::from([("EXISTING".to_string(), "replacement".to_string())]);
+        let secrets = SensitiveSecretMap::new(std::collections::BTreeMap::from([(
+            "EXISTING".to_string(),
+            zeroize::Zeroizing::new("replacement".to_string()),
+        )]));
 
         let error = apply_cloud_pull_transaction(
             dir.path(),
@@ -4733,22 +5215,24 @@ mod tests {
             &vault,
             &secrets,
             false,
-            b"before".to_vec(),
-            b"after".to_vec(),
+            config_before.clone(),
+            config,
+            9,
         )
         .expect_err("force=false must fail closed when existence cannot be checked");
 
         assert!(error.message.contains("local cloud-pull destination"));
         assert!(error.message.contains("injected credential read failure"));
         assert_eq!(vault.store_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(std::fs::read(&config_path).unwrap(), b"before");
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
     }
 
     #[test]
     fn cloud_pull_never_overwrites_a_concurrent_force_false_create() {
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join(".phantom.toml");
-        std::fs::write(&config_path, b"before").unwrap();
+        let config = cloud_test_config(3);
+        let config_before = write_cloud_test_config(&config_path, &config);
         let vault = ConcurrentCreateVault {
             inner: phantom_vault::file::FileVault::new(
                 dir.path(),
@@ -4758,8 +5242,10 @@ mod tests {
             .unwrap(),
             injected: std::sync::atomic::AtomicBool::new(false),
         };
-        let secrets =
-            std::collections::BTreeMap::from([("RACE".to_string(), "cloud-value".to_string())]);
+        let secrets = SensitiveSecretMap::new(std::collections::BTreeMap::from([(
+            "RACE".to_string(),
+            zeroize::Zeroizing::new("cloud-value".to_string()),
+        )]));
 
         let error = apply_cloud_pull_transaction(
             dir.path(),
@@ -4767,8 +5253,9 @@ mod tests {
             &vault,
             &secrets,
             false,
-            b"before".to_vec(),
-            b"after".to_vec(),
+            config_before.clone(),
+            config,
+            9,
         )
         .expect_err("a concurrent create must make the exact CAS fail");
 
@@ -4779,7 +5266,146 @@ mod tests {
                 .as_str(),
             "concurrent-owner"
         );
-        assert_eq!(std::fs::read(&config_path).unwrap(), b"before");
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+    }
+
+    #[test]
+    fn cloud_pull_mixed_result_preserves_base_and_blocks_push() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = cloud_test_config(3);
+        let config_before = write_cloud_test_config(&config_path, &config);
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "cloud-mixed",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        phantom_vault::VaultBackend::store(&vault, "EXISTING", "local-owner").unwrap();
+        let secrets = SensitiveSecretMap::new(std::collections::BTreeMap::from([
+            (
+                "EXISTING".to_string(),
+                zeroize::Zeroizing::new("remote-existing".to_string()),
+            ),
+            (
+                "NEW".to_string(),
+                zeroize::Zeroizing::new("remote-new".to_string()),
+            ),
+        ]));
+
+        let result = apply_cloud_pull_transaction(
+            dir.path(),
+            &config_path,
+            &vault,
+            &secrets,
+            false,
+            config_before,
+            config,
+            9,
+        )
+        .unwrap();
+
+        assert_eq!(result, (1, 1));
+        assert_eq!(
+            phantom_vault::VaultBackend::retrieve(&vault, "EXISTING")
+                .unwrap()
+                .as_str(),
+            "local-owner"
+        );
+        assert_eq!(
+            phantom_vault::VaultBackend::retrieve(&vault, "NEW")
+                .unwrap()
+                .as_str(),
+            "remote-new"
+        );
+        let persisted = PhantomConfig::load(&config_path).unwrap();
+        let cloud = persisted.cloud.as_ref().unwrap();
+        assert_eq!(cloud.version, 3);
+        assert!(cloud.reconciliation_required);
+        assert_eq!(cloud.reconciliation_remote_version, Some(9));
+        assert!(ensure_cloud_push_allowed_mcp(&persisted).is_err());
+    }
+
+    #[test]
+    fn cloud_pull_all_skipped_preserves_base_and_blocks_push() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = cloud_test_config(4);
+        let config_before = write_cloud_test_config(&config_path, &config);
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "cloud-all-skipped",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        phantom_vault::VaultBackend::store(&vault, "EXISTING", "local-owner").unwrap();
+        let secrets = SensitiveSecretMap::new(std::collections::BTreeMap::from([(
+            "EXISTING".to_string(),
+            zeroize::Zeroizing::new("remote-existing".to_string()),
+        )]));
+
+        assert_eq!(
+            apply_cloud_pull_transaction(
+                dir.path(),
+                &config_path,
+                &vault,
+                &secrets,
+                false,
+                config_before,
+                config,
+                10,
+            )
+            .unwrap(),
+            (0, 1)
+        );
+        let persisted = PhantomConfig::load(&config_path).unwrap();
+        let cloud = persisted.cloud.as_ref().unwrap();
+        assert_eq!(cloud.version, 4);
+        assert!(cloud.reconciliation_required);
+        assert_eq!(cloud.reconciliation_remote_version, Some(10));
+        assert!(ensure_cloud_push_allowed_mcp(&persisted).is_err());
+    }
+
+    #[test]
+    fn complete_cloud_pull_advances_base_and_unblocks_push() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = cloud_test_config(4);
+        let cloud = config.cloud.get_or_insert_default();
+        cloud.reconciliation_required = true;
+        cloud.reconciliation_remote_version = Some(8);
+        let config_before = write_cloud_test_config(&config_path, &config);
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "cloud-complete",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        let secrets = SensitiveSecretMap::new(std::collections::BTreeMap::from([(
+            "NEW".to_string(),
+            zeroize::Zeroizing::new("remote-new".to_string()),
+        )]));
+
+        assert_eq!(
+            apply_cloud_pull_transaction(
+                dir.path(),
+                &config_path,
+                &vault,
+                &secrets,
+                true,
+                config_before,
+                config,
+                11,
+            )
+            .unwrap(),
+            (1, 0)
+        );
+        let persisted = PhantomConfig::load(&config_path).unwrap();
+        let cloud = persisted.cloud.as_ref().unwrap();
+        assert_eq!(cloud.version, 11);
+        assert!(!cloud.reconciliation_required);
+        assert_eq!(cloud.reconciliation_remote_version, None);
+        ensure_cloud_push_allowed_mcp(&persisted).unwrap();
     }
 
     struct TestHome {
@@ -4862,6 +5488,61 @@ mod tests {
     fn get_result_text(result: &CallToolResult) -> String {
         // CallToolResult content is serialized — extract text via debug format
         format!("{:?}", result.content)
+    }
+
+    #[test]
+    fn managed_dotenv_resolves_configured_custom_file() {
+        let (server, dir) = setup_initialized_project();
+        let config_path = dir.path().join(".phantom.toml");
+        let custom_path = dir.path().join("custom.env");
+        std::fs::rename(dir.path().join(".env"), &custom_path).unwrap();
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        config.save(&config_path).unwrap();
+
+        assert_eq!(server.env_path().unwrap(), custom_path);
+    }
+
+    #[test]
+    fn doctor_uninitialized_project_uses_default_dotenv_for_diagnostics() {
+        let (server, _dir) = setup_test_project();
+        let result = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: false,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap();
+        let text = extract_content_text(&result);
+        assert!(text.contains("No .phantom.toml found"), "{text}");
+        assert!(text.contains("unprotected secret"), "{text}");
+    }
+
+    #[test]
+    fn status_does_not_open_or_provision_a_vault() {
+        let dir = TempDir::new().unwrap();
+        let mut config = PhantomConfig::new_with_defaults("status-project".to_string());
+        config.phantom.dotenv_path = Some(".env".to_string());
+        config.save(&dir.path().join(".phantom.toml")).unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("A={}\n", phantom_core::token::PhantomToken::generate()),
+        )
+        .unwrap();
+        let before: std::collections::BTreeSet<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+
+        let result = server.phantom_status().unwrap();
+        let text = extract_content_text(&result);
+        let after: std::collections::BTreeSet<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(text.contains("not inspected (read-only status)"), "{text}");
+        assert_eq!(before, after);
     }
 
     #[test]

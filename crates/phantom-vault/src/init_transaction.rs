@@ -4,8 +4,12 @@
 //! `write` calls: a later failure would otherwise leave an environment file
 //! tokenized without its vault entries, or overwrite an existing credential.
 //! This module snapshots every target in memory, uses atomic file replacement,
-//! verifies compare-and-swap preconditions, and restores only state written by
-//! this transaction. Secret values are never serialized or formatted.
+//! verifies before-images immediately before and after writes, and restores only
+//! state written by this transaction. The project lock coordinates Phantom
+//! writers. An uncooperative same-user process can still replace a pathname in
+//! the interval between verification and rename; post-write verification detects
+//! observable interference but is not an OS-level filesystem CAS. Secret values
+//! are never serialized or formatted.
 
 use crate::{acquire_project_transaction_lock, SecretMetadata, VaultBackend};
 use phantom_core::error::PhantomError;
@@ -173,9 +177,9 @@ impl FileWriter for AtomicFileWriter {
 }
 
 /// Commit a complete initialization plan, restoring its exact before-images
-/// on any observable failure. Files and vault entries are guarded by
-/// compare-and-swap checks so rollback never overwrites unrelated concurrent
-/// changes.
+/// on any observable failure. Vault entries use backend atomic CAS. Files use
+/// the cooperative project lock plus before/after verification; rollback only
+/// restores a file while it still equals the transaction's exact after-image.
 pub fn commit_init(
     project_dir: &Path,
     vault: &dyn VaultBackend,

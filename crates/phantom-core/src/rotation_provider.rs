@@ -222,9 +222,9 @@ pub trait RotationProvider: Send + Sync {
     /// old credential at the vendor).
     ///
     /// `old_value` is the previous vault value of the rotated secret. Default
-    /// implementation is a no-op. Implementations MUST fail open (the new
-    /// value is already stored; a cleanup failure must not undo the rotation)
-    /// and MUST NOT log `old_value`.
+    /// implementation is a no-op. Implementations MUST return cleanup errors
+    /// truthfully without undoing the already committed replacement, and MUST
+    /// NOT log `old_value`.
     fn post_store_cleanup(
         &self,
         secret_name: &str,
@@ -1495,20 +1495,30 @@ impl RotationProvider for VercelRotationProvider {
             return Ok(());
         }
 
-        let Ok(client) = build_http_client(config.timeout_secs) else {
+        let client = build_http_client(config.timeout_secs).map_err(|_| {
             crate::audit::log("vault.rotation.old_token_revoke_failed", Some(secret_name));
-            return Ok(());
-        };
-        let revoked = client
+            RotationProviderError::UnexpectedResponse {
+                reason: "could not construct prior-token cleanup client".to_string(),
+            }
+        })?;
+        let response = client
             .delete("https://api.vercel.com/v3/user/tokens/current")
             .header("Authorization", format!("Bearer {}", old_token.as_str()))
             .send()
-            .map(|r| r.status().is_success())
-            .unwrap_or(false);
-        if !revoked {
+            .map_err(|_| {
+                crate::audit::log("vault.rotation.old_token_revoke_failed", Some(secret_name));
+                RotationProviderError::NetworkError {
+                    reason: "prior-token cleanup request failed".to_string(),
+                }
+            })?;
+        if !response.status().is_success() {
             // Operators must know the old token is still live (name only —
             // never token bytes).
             crate::audit::log("vault.rotation.old_token_revoke_failed", Some(secret_name));
+            return Err(RotationProviderError::ApiError {
+                status: response.status().as_u16(),
+                reason: "prior-token cleanup was rejected".to_string(),
+            });
         }
         Ok(())
     }

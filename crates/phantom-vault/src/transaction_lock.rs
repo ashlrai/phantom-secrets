@@ -1,3 +1,11 @@
+//! Cooperative project transaction serialization for Phantom writers.
+//!
+//! The OS releases the advisory lock if a process crashes. This is not a data
+//! durability primitive and does not fsync transaction payloads. On Windows the
+//! lock directory inherits its surrounding ACL; this module does not claim that
+//! the ACL is user-only, so same-user or otherwise-authorized processes remain
+//! outside the coordination guarantee.
+
 use fs2::FileExt;
 use phantom_core::error::{PhantomError, Result};
 use sha2::{Digest, Sha256};
@@ -81,6 +89,11 @@ pub fn acquire_project_transaction_lock(project_dir: &Path) -> Result<ProjectTra
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let file = options.open(&path).map_err(|error| {
         PhantomError::VaultError(format!(
             "Cannot open project transaction lock {}: {error}",
@@ -104,10 +117,76 @@ pub fn acquire_project_transaction_lock(project_dir: &Path) -> Result<ProjectTra
             path.display()
         ))
     })?;
+    #[cfg(windows)]
+    ensure_windows_lock_identity(&file, &path)?;
     Ok(ProjectTransactionLock {
         _process: process,
         _file: file,
     })
+}
+
+#[cfg(windows)]
+fn windows_file_information(
+    file: &std::fs::File,
+) -> Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
+    use std::os::windows::io::AsRawHandle;
+
+    let mut information =
+        windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION::default();
+    let status = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle(
+            file.as_raw_handle(),
+            &mut information,
+        )
+    };
+    if status == 0 {
+        return Err(PhantomError::VaultError(format!(
+            "Cannot inspect Windows transaction lock handle: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(information)
+}
+
+#[cfg(windows)]
+fn ensure_windows_lock_identity(file: &std::fs::File, path: &Path) -> Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let original = windows_file_information(file)?;
+    if original.dwFileAttributes
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+    {
+        return Err(PhantomError::VaultError(format!(
+            "Transaction lock is a Windows reparse point: {}",
+            path.display()
+        )));
+    }
+    let current = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|error| {
+            PhantomError::VaultError(format!(
+                "Cannot verify Windows transaction lock {}: {error}",
+                path.display()
+            ))
+        })?;
+    let current = windows_file_information(&current)?;
+    if current.dwFileAttributes
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+        || original.dwVolumeSerialNumber != current.dwVolumeSerialNumber
+        || original.nFileIndexHigh != current.nFileIndexHigh
+        || original.nFileIndexLow != current.nFileIndexLow
+    {
+        return Err(PhantomError::VaultError(format!(
+            "Windows transaction lock path changed while being acquired: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -141,5 +220,17 @@ mod tests {
             worker.join().unwrap();
         }
         assert_eq!(peak.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn windows_lock_contract_opens_reparse_point_and_checks_handle_identity() {
+        let source = include_str!("transaction_lock.rs");
+        assert!(source.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
+        assert!(source.contains("FILE_ATTRIBUTE_REPARSE_POINT"));
+        assert!(source.contains("GetFileInformationByHandle"));
+        assert!(source.contains("dwVolumeSerialNumber"));
+        assert!(source.contains("nFileIndexHigh"));
+        assert!(source.contains("nFileIndexLow"));
+        assert!(source.contains("does not claim that\n//! the ACL is user-only"));
     }
 }

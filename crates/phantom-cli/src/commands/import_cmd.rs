@@ -37,10 +37,8 @@ pub fn run(
             .context("Failed to decrypt import file — wrong passphrase or corrupt data")?,
     );
 
-    let secrets = ImportedSecrets(
-        serde_json::from_slice(&decrypted)
-            .context("Failed to parse import data — file may be corrupt")?,
-    );
+    let secrets = ImportedSecrets::parse(&decrypted)
+        .context("Failed to parse import data — file may be corrupt")?;
 
     if secrets.0.is_empty() {
         println!("{} No secrets found in import file.", "!".yellow().bold());
@@ -58,7 +56,7 @@ pub fn run(
             skipped += 1;
             continue;
         }
-        mutations.push(secret_mutation(name, value, before.as_ref()));
+        mutations.push(secret_mutation(name, value.as_str(), before.as_ref()));
     }
     let imported = mutations.len();
     phantom_vault::commit_init(&project_dir, vault.as_ref(), mutations, Vec::new())
@@ -75,37 +73,65 @@ pub fn run(
     Ok(())
 }
 
-struct ImportedSecrets(BTreeMap<String, String>);
+#[derive(serde::Deserialize)]
+struct ParsedImportedSecret(String);
+
+impl ParsedImportedSecret {
+    fn into_zeroizing(mut self) -> Zeroizing<String> {
+        Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for ParsedImportedSecret {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+struct ImportedSecrets(BTreeMap<String, Zeroizing<String>>);
+
+impl ImportedSecrets {
+    fn parse(bytes: &[u8]) -> serde_json::Result<Self> {
+        let parsed: BTreeMap<String, ParsedImportedSecret> = serde_json::from_slice(bytes)?;
+        Ok(Self(
+            parsed
+                .into_iter()
+                .map(|(name, value)| (name, value.into_zeroizing()))
+                .collect(),
+        ))
+    }
+}
 
 impl Drop for ImportedSecrets {
     fn drop(&mut self) {
-        for value in self.0.values_mut() {
-            value.zeroize();
-        }
+        self.0.clear();
     }
 }
 
 fn read_encrypted_backup(path: &Path) -> Result<Vec<u8>> {
-    let before = std::fs::symlink_metadata(path)
-        .with_context(|| format!("Failed to inspect encrypted backup: {}", path.display()))?;
-    if before.file_type().is_symlink() || !before.is_file() {
-        anyhow::bail!(
-            "Encrypted backup must be a regular file and must not be a symlink: {}",
-            path.display()
-        );
-    }
-    if before.len() > MAX_ENCRYPTED_BACKUP_BYTES {
+    // Open the authoritative handle first with no-follow semantics. Metadata
+    // obtained before open cannot identify which bytes are ultimately read.
+    let mut file = match open_encrypted_backup(path) {
+        Ok(file) => file,
+        #[cfg(unix)]
+        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
+            anyhow::bail!("Encrypted backup must not be a symlink: {}", path.display())
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to open encrypted backup: {}", path.display()))
+        }
+    };
+    ensure_opened_backup_is_safe(path, &file)?;
+    let opened_metadata = file.metadata()?;
+    if opened_metadata.len() > MAX_ENCRYPTED_BACKUP_BYTES {
         anyhow::bail!(
             "Encrypted backup exceeds the {}-byte safety limit",
             MAX_ENCRYPTED_BACKUP_BYTES
         );
     }
 
-    let mut file = File::open(path)
-        .with_context(|| format!("Failed to open encrypted backup: {}", path.display()))?;
-    ensure_opened_same_backup(path, &before, &file.metadata()?)?;
-
-    let mut encrypted = Vec::with_capacity(before.len() as usize);
+    let mut encrypted = Vec::with_capacity(opened_metadata.len() as usize);
     file.by_ref()
         .take(MAX_ENCRYPTED_BACKUP_BYTES + 1)
         .read_to_end(&mut encrypted)
@@ -116,20 +142,40 @@ fn read_encrypted_backup(path: &Path) -> Result<Vec<u8>> {
             MAX_ENCRYPTED_BACKUP_BYTES
         );
     }
+    ensure_backup_path_still_names_open_file(path, &file)?;
     Ok(encrypted)
 }
 
 #[cfg(unix)]
-fn ensure_opened_same_backup(
-    path: &Path,
-    before: &std::fs::Metadata,
-    opened: &std::fs::Metadata,
-) -> Result<()> {
-    use std::os::unix::fs::MetadataExt;
+fn open_encrypted_backup(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    options.open(path)
+}
 
-    if before.dev() != opened.dev() || before.ino() != opened.ino() || !opened.is_file() {
+#[cfg(all(not(unix), not(windows)))]
+fn open_encrypted_backup(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+#[cfg(windows)]
+fn open_encrypted_backup(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    options.open(path)
+}
+
+#[cfg(unix)]
+fn ensure_opened_backup_is_safe(path: &Path, opened: &File) -> Result<()> {
+    let opened = opened.metadata()?;
+    if !opened.is_file() {
         anyhow::bail!(
-            "Encrypted backup changed while it was being opened: {}",
+            "Encrypted backup must be a regular non-symlink file: {}",
             path.display()
         );
     }
@@ -137,22 +183,23 @@ fn ensure_opened_same_backup(
 }
 
 #[cfg(windows)]
-fn ensure_opened_same_backup(
-    path: &Path,
-    before: &std::fs::Metadata,
-    opened: &std::fs::Metadata,
-) -> Result<()> {
-    use std::os::windows::fs::MetadataExt;
-
-    // Rust 1.95 still keeps Windows volume_serial_number/file_index behind the
-    // unstable `windows_by_handle` feature. Compare several stable on-disk
-    // fingerprint field instead; a regular-file check alone would miss swaps.
-    if !opened.is_file()
-        || before.file_attributes() != opened.file_attributes()
-        || before.creation_time() != opened.creation_time()
-        || before.last_write_time() != opened.last_write_time()
-        || before.file_size() != opened.file_size()
+fn ensure_opened_backup_is_safe(path: &Path, opened: &File) -> Result<()> {
+    let info = windows_file_information(opened)?;
+    if info.dwFileAttributes & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+        || !opened.metadata()?.is_file()
     {
+        anyhow::bail!(
+            "Encrypted backup is a reparse point or is not a regular file: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn ensure_opened_backup_is_safe(path: &Path, opened: &File) -> Result<()> {
+    if !opened.metadata()?.is_file() {
         anyhow::bail!(
             "Encrypted backup changed while it was being opened: {}",
             path.display()
@@ -161,19 +208,71 @@ fn ensure_opened_same_backup(
     Ok(())
 }
 
-#[cfg(all(not(unix), not(windows)))]
-fn ensure_opened_same_backup(
-    path: &Path,
-    _before: &std::fs::Metadata,
-    opened: &std::fs::Metadata,
-) -> Result<()> {
-    if !opened.is_file() {
+#[cfg(unix)]
+fn ensure_backup_path_still_names_open_file(path: &Path, opened: &File) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let original = opened.metadata()?;
+    let current = open_encrypted_backup(path)
+        .with_context(|| format!("Failed to re-open encrypted backup: {}", path.display()))?;
+    let current = current.metadata()?;
+    if original.dev() != current.dev() || original.ino() != current.ino() {
         anyhow::bail!(
-            "Encrypted backup changed while it was being opened: {}",
+            "Encrypted backup path changed while it was being read: {}",
             path.display()
         );
     }
     Ok(())
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn ensure_backup_path_still_names_open_file(_path: &Path, _opened: &File) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_backup_path_still_names_open_file(path: &Path, opened: &File) -> Result<()> {
+    let original = windows_file_information(opened)?;
+    let current = open_encrypted_backup(path).with_context(|| {
+        format!(
+            "Failed to re-open encrypted backup for identity verification: {}",
+            path.display()
+        )
+    })?;
+    let current = windows_file_information(&current)?;
+    if current.dwFileAttributes
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+        || original.dwVolumeSerialNumber != current.dwVolumeSerialNumber
+        || original.nFileIndexHigh != current.nFileIndexHigh
+        || original.nFileIndexLow != current.nFileIndexLow
+    {
+        anyhow::bail!(
+            "Encrypted backup path changed while it was being read: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_file_information(
+    file: &File,
+) -> Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
+    use std::os::windows::io::AsRawHandle;
+
+    let mut information = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle(
+            file.as_raw_handle(),
+            &mut information,
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("GetFileInformationByHandle failed for encrypted backup");
+    }
+    Ok(information)
 }
 
 /// Competitor-format import: `phantom import --from <source> --file <path>`.
@@ -217,6 +316,11 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault_names = vault.list().context("Failed to list local vault secrets")?;
+    let env_path =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)
+            .context("Failed to resolve the managed dotenv for import")?
+            .path;
 
     // Snapshot exact destination before-images before presenting overwrite
     // consent. The transaction rejects any change after this review.
@@ -271,15 +375,18 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
         0
     );
 
-    // Suggest phantom init if a .env with plaintext secrets exists nearby
-    let env_path = project_dir.join(".env");
+    // Suggest phantom init if the managed dotenv contains plaintext secrets.
     if env_path.exists() {
         if let Ok(dotenv) = phantom_core::dotenv::DotenvFile::parse_file(&env_path) {
             if !dotenv.real_secret_entries().is_empty() {
                 println!(
                     "\n{} Your {} still contains plaintext secrets.",
                     "!".yellow().bold(),
-                    ".env".cyan()
+                    env_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("managed dotenv")
+                        .cyan()
                 );
                 println!(
                     "   Run {} to replace them with phantom tokens.",
@@ -378,5 +485,16 @@ mod fail_closed_tests {
         let debug = format!("{mutation:?}");
         assert!(debug.contains("NEW_VALUE"));
         assert!(!debug.contains("plaintext-never-print"));
+    }
+
+    #[test]
+    fn windows_backup_open_contract_is_handle_bound_and_reparse_safe() {
+        let source = include_str!("import_cmd.rs");
+        assert!(source.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
+        assert!(source.contains("GetFileInformationByHandle"));
+        assert!(source.contains("dwVolumeSerialNumber"));
+        assert!(source.contains("nFileIndexHigh"));
+        assert!(source.contains("nFileIndexLow"));
+        assert!(source.contains("FILE_ATTRIBUTE_REPARSE_POINT"));
     }
 }

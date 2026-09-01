@@ -29,7 +29,6 @@ async fn run_async(
 ) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let env_path = project_dir.join(".env");
 
     let platform: Platform = from.parse().context("Invalid platform")?;
 
@@ -61,6 +60,12 @@ async fn run_async(
                 .map_err(|e| anyhow::anyhow!("Railway pull failed: {e}"))?
         }
     };
+    // Take ownership of provider-returned plaintext immediately. Every later
+    // error path, including dotenv/config serialization failures, scrubs it.
+    let pulled: BTreeMap<String, Zeroizing<String>> = pulled
+        .into_iter()
+        .map(|(name, value)| (name, Zeroizing::new(value)))
+        .collect();
 
     if pulled.is_empty() {
         println!("{} No secrets found on {}.", "!".yellow().bold(), platform);
@@ -83,6 +88,11 @@ async fn run_async(
     };
 
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault_names = vault.list().context("Failed to list local vault secrets")?;
+    let env_path =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)
+            .context("Failed to resolve the managed dotenv for platform pull")?
+            .path;
     let counts = apply_platform_pull_transaction(
         &project_dir,
         &config_path,
@@ -122,8 +132,12 @@ async fn run_async(
 
     if new_count > 0 || updated_count > 0 {
         println!(
-            "{} .env updated with phantom tokens. Real values in vault.",
-            "ok".green().bold()
+            "{} {} updated with phantom tokens. Real values in vault.",
+            "ok".green().bold(),
+            env_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("managed dotenv")
         );
     }
 
@@ -144,7 +158,7 @@ fn apply_platform_pull_transaction(
     env_path: &Path,
     vault: &dyn VaultBackend,
     config: &PhantomConfig,
-    pulled: &BTreeMap<String, String>,
+    pulled: &BTreeMap<String, Zeroizing<String>>,
     force: bool,
 ) -> Result<PullCounts> {
     let mut counts = PullCounts::default();
@@ -160,7 +174,7 @@ fn apply_platform_pull_transaction(
         mutations.push(InitSecret::replace_if_unchanged(
             key,
             before.as_ref().map(|value| value.as_str().to_string()),
-            value,
+            value.as_str(),
         ));
         token_map.insert(key.clone());
         if before.is_some() {
@@ -316,7 +330,10 @@ mod tests {
         let config = PhantomConfig::new_with_defaults("pull-symlink-test".to_string());
         let vault =
             FileVault::new(dir.path(), "pull-symlink-test", "passphrase".to_string()).unwrap();
-        let pulled = BTreeMap::from([("NEW_SECRET".to_string(), "provider-value".to_string())]);
+        let pulled = BTreeMap::from([(
+            "NEW_SECRET".to_string(),
+            Zeroizing::new("provider-value".to_string()),
+        )]);
 
         let error = apply_platform_pull_transaction(
             dir.path(),

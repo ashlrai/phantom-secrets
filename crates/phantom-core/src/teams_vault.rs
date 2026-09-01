@@ -25,6 +25,31 @@ use rand::RngCore;
 use std::collections::{BTreeMap, HashMap};
 use zeroize::{Zeroize, Zeroizing};
 
+#[derive(serde::Deserialize)]
+struct ParsedSecretValue(String);
+
+impl ParsedSecretValue {
+    fn into_zeroizing(mut self) -> Zeroizing<String> {
+        Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for ParsedSecretValue {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+fn parse_secret_json(
+    bytes: &[u8],
+) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, serde_json::Error> {
+    let parsed: BTreeMap<String, ParsedSecretValue> = serde_json::from_slice(bytes)?;
+    Ok(parsed
+        .into_iter()
+        .map(|(name, value)| (name, value.into_zeroizing()))
+        .collect())
+}
+
 /// 12-byte ChaCha20-Poly1305 nonce.
 const NONCE_LEN: usize = 12;
 /// Minimum framed-blob length: nonce + Poly1305 tag (16) + at least 0
@@ -196,20 +221,14 @@ pub async fn pull_for_project(
     let (nonce_bytes, ct) = framed.split_at(NONCE_LEN);
     let nonce = Nonce::from_slice(nonce_bytes);
     let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
-    let mut plaintext = cipher
-        .decrypt(nonce, ct)
-        .map_err(|e| PhantomError::Other(format!("Decrypt failed: {e}")))?;
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(nonce, ct)
+            .map_err(|e| PhantomError::Other(format!("Decrypt failed: {e}")))?,
+    );
 
-    let raw: BTreeMap<String, String> = serde_json::from_slice(&plaintext)
+    let secrets = parse_secret_json(&plaintext)
         .map_err(|e| PhantomError::Other(format!("Bad vault JSON: {e}")))?;
-    plaintext.zeroize();
-
-    // Move every value into Zeroizing so the secrets are scrubbed when
-    // the caller's map is dropped.
-    let secrets: BTreeMap<String, Zeroizing<String>> = raw
-        .into_iter()
-        .map(|(k, v)| (k, Zeroizing::new(v)))
-        .collect();
 
     Ok((secrets, pulled.version))
 }
@@ -482,16 +501,14 @@ pub fn decrypt_blob_with_key(
     let (nonce_bytes, ct) = framed.split_at(NONCE_LEN);
     let nonce = Nonce::from_slice(nonce_bytes);
     let cipher = ChaCha20Poly1305::new(sym_key.into());
-    let mut plaintext = cipher
-        .decrypt(nonce, ct)
-        .map_err(|e| PhantomError::Other(format!("Decrypt failed: {e}")))?;
-    let raw: BTreeMap<String, String> = serde_json::from_slice(&plaintext)
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(nonce, ct)
+            .map_err(|e| PhantomError::Other(format!("Decrypt failed: {e}")))?,
+    );
+    let secrets = parse_secret_json(&plaintext)
         .map_err(|e| PhantomError::Other(format!("Bad vault JSON: {e}")))?;
-    plaintext.zeroize();
-    Ok(raw
-        .into_iter()
-        .map(|(k, v)| (k, Zeroizing::new(v)))
-        .collect())
+    Ok(secrets)
 }
 
 #[cfg(test)]
