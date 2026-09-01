@@ -15,6 +15,22 @@ pub trait VaultBackend: Send + Sync {
     /// Delete a secret by name.
     fn delete(&self, name: &str) -> Result<()>;
 
+    /// Atomically replace one secret value when its current value matches the
+    /// expected before-image. `None` represents an absent entry. Backends that
+    /// cannot provide a real atomic compare-and-swap must fail closed rather
+    /// than emulate it with a racy retrieve/store sequence.
+    fn compare_and_swap(
+        &self,
+        name: &str,
+        expected: Option<&str>,
+        replacement: Option<&str>,
+    ) -> Result<bool> {
+        let _ = (name, expected, replacement);
+        Err(phantom_core::error::PhantomError::VaultError(
+            "vault backend does not support atomic compare-and-swap".to_string(),
+        ))
+    }
+
     /// List all secret names stored in this vault.
     fn list(&self) -> Result<Vec<String>>;
 

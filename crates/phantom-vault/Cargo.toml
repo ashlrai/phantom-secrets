@@ -37,6 +37,7 @@ fs2 = "0.4"
 
 # Secret-name hashing so keychain metadata doesn't leak names (audit F13)
 sha2 = "0.10"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

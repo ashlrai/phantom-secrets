@@ -205,7 +205,7 @@ launched outside the proxy environment.
 Phantom stores your real secret values in one of two locations:
 
 - **OS keychain (primary):** macOS Keychain or Linux Secret Service. This is the default on desktop systems. Secrets are tied to your user account and persist across reboots.
-- **Encrypted file vault (fallback):** `~/.phantom/vaults/`. Used automatically in environments without an OS keychain (Docker, CI runners), or when `PHANTOM_VAULT_PASSPHRASE` is explicitly set. Vault payloads use ChaCha20-Poly1305 with an Argon2id-derived key.
+- **Encrypted file vault (explicit or guarded fallback):** stored below the operating system's Phantom application-data directory (the exact path varies across macOS, Linux, and Windows). Setting a non-empty `PHANTOM_VAULT_PASSPHRASE` selects this backend explicitly. Otherwise Phantom falls back only after the OS keychain is unavailable and a generated passphrase has been persisted to secure storage and verified by an exact read-after-write. If an encrypted vault already exists but its secure passphrase entry is missing, Phantom refuses to generate a replacement key. Set `PHANTOM_REQUIRE_KEYCHAIN=1` to reject any fallback. Phantom prints a warning whenever an automatic fallback changes the storage posture. Vault payloads use ChaCha20-Poly1305 with an Argon2id-derived key; provide automation passphrases through a protected environment or process manager, not shell history.
 
 ### How to back up your secrets
 

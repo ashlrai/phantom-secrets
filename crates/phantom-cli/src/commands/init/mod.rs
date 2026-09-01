@@ -13,6 +13,7 @@ use phantom_vault::{InitFile, InitReceipt, InitSecret, VaultBackend};
 use std::path::Path;
 
 fn commit_after_vault_provisioning(
+    project_dir: &Path,
     vault: phantom_core::error::Result<Box<dyn VaultBackend>>,
     secrets: Vec<InitSecret>,
     files: Vec<InitFile>,
@@ -23,8 +24,8 @@ fn commit_after_vault_provisioning(
          PHANTOM_VAULT_PASSPHRASE to a durable secret value and retry",
     )?;
     let backend_name = vault.backend_name().to_string();
-    let receipt =
-        phantom_vault::commit_init(vault.as_ref(), secrets, files).with_context(|| commit_error)?;
+    let receipt = phantom_vault::commit_init(project_dir, vault.as_ref(), secrets, files)
+        .with_context(|| commit_error)?;
     Ok((receipt, backend_name))
 }
 
@@ -56,6 +57,7 @@ pub fn run_empty() -> Result<()> {
         files.push(file);
     }
     commit_after_vault_provisioning(
+        &cwd,
         phantom_vault::try_create_vault(&project_id),
         Vec::new(),
         files,
@@ -179,6 +181,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
                 phantom_vault::try_create_vault(&project_id)
             };
             commit_after_vault_provisioning(
+                &project_dir,
                 vault,
                 Vec::new(),
                 files,
@@ -277,6 +280,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     files.extend(guidance.take_files());
 
     let (receipt, backend_name) = commit_after_vault_provisioning(
+        &project_dir,
         phantom_vault::try_create_vault(phantom_config.local_project_id()),
         secrets,
         files,
@@ -405,6 +409,7 @@ mod tests {
         ));
 
         let error = commit_after_vault_provisioning(
+            directory.path(),
             provisioning_failure,
             vec![InitSecret::new("API_KEY", "real-provider-value")],
             staged_files,

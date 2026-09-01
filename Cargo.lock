@@ -2326,6 +2326,7 @@ dependencies = [
  "fs2",
  "hex",
  "keyring",
+ "libc",
  "phantom-secrets-core",
  "rand 0.8.6",
  "serde",

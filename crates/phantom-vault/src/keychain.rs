@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use zeroize::Zeroizing;
 
 const SERVICE_PREFIX: &str = "phantom-secrets";
 const PROCESS_LOCK_SHARDS: usize = 64;
@@ -206,6 +207,60 @@ fn save_validation_meta_map(
     save_sidecar_map(&validation_meta_path(project_id), "validation", map)
 }
 
+fn read_credential(entry: &keyring::Entry, label: &str) -> Result<Option<Zeroizing<String>>> {
+    match entry.get_password() {
+        Ok(value) => Ok(Some(Zeroizing::new(value))),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(PhantomError::VaultError(format!(
+            "Failed to read {label}: {error}"
+        ))),
+    }
+}
+
+fn remove_credential(entry: &keyring::Entry, label: &str) -> Result<()> {
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(PhantomError::VaultError(format!(
+            "Failed to delete {label}: {error}"
+        ))),
+    }
+}
+
+fn restore_credential(
+    entry: &keyring::Entry,
+    value: Option<&Zeroizing<String>>,
+    label: &str,
+) -> Result<()> {
+    match value {
+        Some(value) => entry.set_password(value.as_str()).map_err(|error| {
+            PhantomError::VaultError(format!("Failed to restore {label}: {error}"))
+        }),
+        None => remove_credential(entry, label),
+    }
+}
+
+fn compensated_error(
+    operation: &str,
+    primary: PhantomError,
+    compensation_results: impl IntoIterator<Item = Result<()>>,
+) -> PhantomError {
+    let failures = compensation_results
+        .into_iter()
+        .filter_map(std::result::Result::err)
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        PhantomError::VaultError(format!(
+            "{operation} failed and prior keychain state was restored: {primary}"
+        ))
+    } else {
+        PhantomError::VaultError(format!(
+            "{operation} failed ({primary}); rollback was incomplete: {}",
+            failures.join("; ")
+        ))
+    }
+}
+
 impl KeychainVault {
     /// Create a new keychain vault for a project.
     /// Returns an error if the keychain is not available.
@@ -311,19 +366,125 @@ impl KeychainVault {
 
     /// Store a credential and update its index while the caller holds the
     /// per-project exclusive lock.
-    fn store_locked(&self, name: &str, value: &str) -> Result<()> {
+    fn store_locked(
+        &self,
+        name: &str,
+        value: &str,
+        metadata_override: Option<SecretMetadata>,
+    ) -> Result<()> {
         let entry = self.entry_for(name)?;
-        entry
-            .set_password(value)
-            .map_err(|e| PhantomError::VaultError(format!("Failed to store secret: {e}")))?;
+        let before_credential = read_credential(&entry, "secret before-image")?;
+        let before_index = self.load_index()?;
+        let before_metadata = load_meta_map(&self.project_id)?;
+        let mut after_index = before_index.clone();
+        if !after_index.iter().any(|indexed| indexed == name) {
+            after_index.push(name.to_string());
+            after_index.sort();
+        }
+        let mut after_metadata = before_metadata.clone();
+        match metadata_override {
+            Some(metadata) => {
+                after_metadata.insert(name.to_string(), metadata);
+            }
+            None => {
+                after_metadata
+                    .entry(name.to_string())
+                    .or_insert_with(SecretMetadata::new_now);
+            }
+        }
 
+        entry.set_password(value).map_err(|error| {
+            PhantomError::VaultError(format!("Failed to store secret: {error}"))
+        })?;
+        let commit = (|| {
+            if after_index != before_index {
+                self.save_index(&after_index)?;
+            }
+            if after_metadata != before_metadata {
+                save_meta_map(&self.project_id, &after_metadata)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = commit {
+            return Err(compensated_error(
+                "keychain store",
+                error,
+                [
+                    restore_credential(&entry, before_credential.as_ref(), "secret before-image"),
+                    self.save_index(&before_index),
+                    save_meta_map(&self.project_id, &before_metadata),
+                ],
+            ));
+        }
         self.delete_legacy(name);
+        Ok(())
+    }
 
-        let mut index = self.load_index()?;
-        if !index.iter().any(|indexed| indexed == name) {
-            index.push(name.to_string());
-            index.sort();
-            self.save_index(&index)?;
+    fn current_value_locked(&self, name: &str) -> Result<Option<Zeroizing<String>>> {
+        let entry = self.entry_for(name)?;
+        if let Some(value) = read_credential(&entry, "secret")? {
+            return Ok(Some(value));
+        }
+        match self.legacy_entry_for(name) {
+            Some(legacy) => read_credential(&legacy, "legacy secret"),
+            None => Ok(None),
+        }
+    }
+
+    fn delete_locked(&self, name: &str) -> Result<()> {
+        let entry = self.entry_for(name)?;
+        let legacy = self.legacy_entry_for(name);
+        let before_credential = read_credential(&entry, "secret before-image")?;
+        let before_legacy = match &legacy {
+            Some(legacy) => read_credential(legacy, "legacy secret before-image")?,
+            None => None,
+        };
+        let before_index = self.load_index()?;
+        let before_metadata = load_meta_map(&self.project_id)?;
+        let before_validation = load_validation_meta_map(&self.project_id)?;
+        let was_indexed = before_index.iter().any(|indexed| indexed == name);
+        if before_credential.is_none() && before_legacy.is_none() && !was_indexed {
+            return Err(PhantomError::SecretNotFound(name.to_string()));
+        }
+
+        let mut after_index = before_index.clone();
+        after_index.retain(|indexed| indexed != name);
+        let mut after_metadata = before_metadata.clone();
+        after_metadata.remove(name);
+        let mut after_validation = before_validation.clone();
+        after_validation.remove(name);
+
+        let commit = (|| {
+            if after_metadata != before_metadata {
+                save_meta_map(&self.project_id, &after_metadata)?;
+            }
+            if after_validation != before_validation {
+                save_validation_meta_map(&self.project_id, &after_validation)?;
+            }
+            if after_index != before_index {
+                self.save_index(&after_index)?;
+            }
+            remove_credential(&entry, "secret")?;
+            if let Some(legacy) = &legacy {
+                remove_credential(legacy, "legacy secret")?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = commit {
+            let mut compensations = vec![
+                restore_credential(&entry, before_credential.as_ref(), "secret before-image"),
+                self.save_index(&before_index),
+                save_meta_map(&self.project_id, &before_metadata),
+                save_validation_meta_map(&self.project_id, &before_validation),
+            ];
+            if let Some(legacy) = &legacy {
+                compensations.push(restore_credential(
+                    legacy,
+                    before_legacy.as_ref(),
+                    "legacy secret before-image",
+                ));
+            }
+            return Err(compensated_error("keychain delete", error, compensations));
         }
         Ok(())
     }
@@ -332,7 +493,7 @@ impl KeychainVault {
 impl VaultBackend for KeychainVault {
     fn store(&self, name: &str, value: &str) -> Result<()> {
         let _lock = acquire_project_lock(&self.project_id)?;
-        self.store_locked(name, value)?;
+        self.store_locked(name, value, None)?;
         phantom_core::audit::log("vault.store", Some(name));
         Ok(())
     }
@@ -406,66 +567,31 @@ impl VaultBackend for KeychainVault {
 
     fn delete(&self, name: &str) -> Result<()> {
         let _lock = acquire_project_lock(&self.project_id)?;
-        let entry = self.entry_for(name)?;
-        let new_result = entry.delete_credential();
+        self.delete_locked(name)?;
+        phantom_core::audit::log("vault.delete", Some(name));
+        Ok(())
+    }
 
-        // Always best-effort delete the legacy entry regardless of whether
-        // the new-style delete succeeded — the two are independent and
-        // leaving a legacy copy behind defeats F13.
-        self.delete_legacy(name);
-
-        match new_result {
-            Ok(()) => {}
-            Err(keyring::Error::NoEntry) => {
-                // If neither form existed, surface SecretNotFound. If the
-                // legacy form existed and we deleted it, that's also a
-                // successful delete.
-                //
-                // We can't easily distinguish the two here without another
-                // lookup, so fall through and rebuild the index — if the
-                // name isn't in the index either, callers get the not-found
-                // signal from the next `list()`.
-            }
-            Err(e) => {
-                return Err(PhantomError::VaultError(format!(
-                    "Failed to delete secret: {e}"
-                )));
-            }
+    fn compare_and_swap(
+        &self,
+        name: &str,
+        expected: Option<&str>,
+        replacement: Option<&str>,
+    ) -> Result<bool> {
+        let _lock = acquire_project_lock(&self.project_id)?;
+        let current = self.current_value_locked(name)?;
+        if current.as_ref().map(|value| value.as_str()) != expected {
+            return Ok(false);
         }
-
-        // Update index
-        let mut index = self.load_index()?;
-        let was_in_index = index.contains(&name.to_string());
-        index.retain(|n| n != name);
-        if was_in_index {
-            self.save_index(&index)?;
-            // Best-effort cleanup of sidecar metadata.
-            let mut map = load_meta_map(&self.project_id)?;
-            if map.remove(name).is_some() {
-                save_meta_map(&self.project_id, &map)?;
-            }
-            let mut vmap = load_validation_meta_map(&self.project_id)?;
-            if vmap.remove(name).is_some() {
-                save_validation_meta_map(&self.project_id, &vmap)?;
-            }
-            phantom_core::audit::log("vault.delete", Some(name));
-            Ok(())
-        } else if matches!(new_result, Err(keyring::Error::NoEntry)) {
-            Err(PhantomError::SecretNotFound(name.to_string()))
-        } else {
-            self.save_index(&index)?;
-            // Best-effort cleanup of sidecar metadata.
-            let mut map = load_meta_map(&self.project_id)?;
-            if map.remove(name).is_some() {
-                save_meta_map(&self.project_id, &map)?;
-            }
-            let mut vmap = load_validation_meta_map(&self.project_id)?;
-            if vmap.remove(name).is_some() {
-                save_validation_meta_map(&self.project_id, &vmap)?;
-            }
-            phantom_core::audit::log("vault.delete", Some(name));
-            Ok(())
+        if replacement == expected {
+            return Ok(true);
         }
+        match replacement {
+            Some(value) => self.store_locked(name, value, None)?,
+            None => self.delete_locked(name)?,
+        }
+        phantom_core::audit::log("vault.compare_and_swap", Some(name));
+        Ok(true)
     }
 
     fn list(&self) -> Result<Vec<String>> {
@@ -510,10 +636,7 @@ impl VaultBackend for KeychainVault {
 
     fn store_with_expiry(&self, name: &str, value: &str, days_ttl: u64) -> Result<()> {
         let _lock = acquire_project_lock(&self.project_id)?;
-        self.store_locked(name, value)?;
-        let mut map = load_meta_map(&self.project_id)?;
-        map.insert(name.to_string(), SecretMetadata::with_expiry(days_ttl));
-        save_meta_map(&self.project_id, &map)?;
+        self.store_locked(name, value, Some(SecretMetadata::with_expiry(days_ttl)))?;
         phantom_core::audit::log("vault.store", Some(name));
         Ok(())
     }
@@ -583,6 +706,27 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
+
+    #[test]
+    fn compensation_result_distinguishes_complete_and_incomplete_rollback() {
+        let restored = compensated_error(
+            "keychain store",
+            PhantomError::VaultError("index write failed".into()),
+            [Ok(())],
+        );
+        assert!(restored
+            .to_string()
+            .contains("prior keychain state was restored"));
+        assert!(!restored.to_string().contains("rollback was incomplete"));
+
+        let incomplete = compensated_error(
+            "keychain delete",
+            PhantomError::VaultError("credential delete failed".into()),
+            [Err(PhantomError::VaultError("index restore failed".into()))],
+        );
+        assert!(incomplete.to_string().contains("rollback was incomplete"));
+        assert!(incomplete.to_string().contains("index restore failed"));
+    }
 
     #[test]
     fn hash_secret_name_is_deterministic() {

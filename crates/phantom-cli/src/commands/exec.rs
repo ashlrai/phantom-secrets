@@ -43,7 +43,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     config
         .validate_agentic_proxy_routes()
         .context("Refusing unapproved repository-controlled proxy routing")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
 

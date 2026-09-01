@@ -271,7 +271,7 @@ fn run_encrypted(output: &str, passphrase: &str) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let names = vault.list().context("Failed to list secrets")?;
 
     if names.is_empty() {

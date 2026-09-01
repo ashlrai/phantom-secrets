@@ -7,7 +7,7 @@
 //! verifies compare-and-swap preconditions, and restores only state written by
 //! this transaction. Secret values are never serialized or formatted.
 
-use crate::{SecretMetadata, VaultBackend};
+use crate::{acquire_project_transaction_lock, SecretMetadata, VaultBackend};
 use phantom_core::error::PhantomError;
 use phantom_core::validator::ValidationMetadata;
 use std::collections::BTreeSet;
@@ -138,19 +138,27 @@ impl FileWriter for AtomicFileWriter {
 /// compare-and-swap checks so rollback never overwrites unrelated concurrent
 /// changes.
 pub fn commit_init(
+    project_dir: &Path,
     vault: &dyn VaultBackend,
     secrets: Vec<InitSecret>,
     files: Vec<InitFile>,
 ) -> Result<InitReceipt, InitTransactionError> {
-    commit_init_with(vault, secrets, files, &AtomicFileWriter)
+    commit_init_with(project_dir, vault, secrets, files, &AtomicFileWriter)
 }
 
 fn commit_init_with(
+    project_dir: &Path,
     vault: &dyn VaultBackend,
     mut secrets: Vec<InitSecret>,
     mut files: Vec<InitFile>,
     writer: &dyn FileWriter,
 ) -> Result<InitReceipt, InitTransactionError> {
+    let _transaction_lock = acquire_project_transaction_lock(project_dir).map_err(|error| {
+        InitTransactionError::Preflight {
+            target: project_dir.display().to_string(),
+            reason: format!("could not acquire project transaction lock: {error}"),
+        }
+    })?;
     let mut names = BTreeSet::new();
     for secret in &secrets {
         if secret.name.is_empty() || !names.insert(secret.name.clone()) {
@@ -242,10 +250,18 @@ fn commit_init_with(
         }
 
         for snapshot in &mut secret_snapshots {
-            ensure_secret_state(vault, snapshot, false)
-                .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
-            match vault.store(&snapshot.name, snapshot.after.as_str()) {
-                Ok(()) => snapshot.touched = true,
+            let expected = snapshot.before.as_ref().map(|value| value.as_str());
+            match vault.compare_and_swap(&snapshot.name, expected, Some(snapshot.after.as_str())) {
+                Ok(true) => snapshot.touched = true,
+                Ok(false) => {
+                    return Err((
+                        snapshot.name.clone(),
+                        InitTransactionError::ConcurrentChange {
+                            target: snapshot.name.clone(),
+                        }
+                        .to_string(),
+                    ));
+                }
                 Err(_error) => {
                     let current_is_after = vault
                         .retrieve(&snapshot.name)
@@ -257,7 +273,10 @@ fn commit_init_with(
                     // touched so rollback fails closed instead of claiming a
                     // complete restoration.
                     snapshot.touched = current_is_after || !current_is_before;
-                    return Err((snapshot.name.clone(), "vault store failed".to_string()));
+                    return Err((
+                        snapshot.name.clone(),
+                        "atomic vault compare-and-swap failed".to_string(),
+                    ));
                 }
             }
             ensure_secret_state(vault, snapshot, true)
@@ -439,14 +458,20 @@ fn ensure_secret_metadata(
     if snapshot.before.is_none() {
         return Ok(());
     }
-    let metadata_matches = vault
-        .get_metadata(&snapshot.name)
-        .map(|current| current == snapshot.metadata)
-        .unwrap_or(false);
-    let validation_matches = vault
-        .get_validation_metadata(&snapshot.name)
-        .map(|current| current == snapshot.validation)
-        .unwrap_or(false);
+    let metadata_matches =
+        vault
+            .get_metadata(&snapshot.name)
+            .map_err(|_| InitTransactionError::Preflight {
+                target: snapshot.name.clone(),
+                reason: "vault metadata verification failed".to_string(),
+            })?
+            == snapshot.metadata;
+    let validation_matches = vault.get_validation_metadata(&snapshot.name).map_err(|_| {
+        InitTransactionError::Preflight {
+            target: snapshot.name.clone(),
+            reason: "vault validation metadata verification failed".to_string(),
+        }
+    })? == snapshot.validation;
     if metadata_matches && validation_matches {
         Ok(())
     } else {
@@ -561,19 +586,10 @@ fn rollback_secrets(vault: &dyn VaultBackend, snapshots: &mut [SecretSnapshot]) 
         .rev()
         .filter(|snapshot| snapshot.touched)
     {
-        let current_is_after = vault
-            .retrieve(&snapshot.name)
-            .map(|value| value.as_str() == snapshot.after.as_str())
-            .unwrap_or(false);
-        if !current_is_after {
-            ok = false;
-            continue;
-        }
-        let result = match &snapshot.before {
-            Some(before) => vault.store(&snapshot.name, before.as_str()),
-            None => vault.delete(&snapshot.name),
-        };
-        if result.is_err()
+        let replacement = snapshot.before.as_ref().map(|before| before.as_str());
+        let result =
+            vault.compare_and_swap(&snapshot.name, Some(snapshot.after.as_str()), replacement);
+        if !matches!(result, Ok(true))
             || (snapshot.before.is_some() && ensure_secret_metadata(vault, snapshot).is_err())
         {
             ok = false;
@@ -611,6 +627,18 @@ mod tests {
         }
         fn delete(&self, name: &str) -> PhantomResult<()> {
             self.inner.delete(name)
+        }
+        fn compare_and_swap(
+            &self,
+            name: &str,
+            expected: Option<&str>,
+            replacement: Option<&str>,
+        ) -> PhantomResult<bool> {
+            let call = self.stores.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.fail_store {
+                return Err(PhantomError::VaultError("injected CAS failure".into()));
+            }
+            self.inner.compare_and_swap(name, expected, replacement)
         }
         fn list(&self) -> PhantomResult<Vec<String>> {
             self.inner.list()
@@ -686,6 +714,7 @@ mod tests {
             fail_store: 2,
         };
         let error = commit_init(
+            dir.path(),
             &failing,
             vec![InitSecret::new("A", "new-a"), InitSecret::new("B", "new-b")],
             vec![InitFile::replace(&env, b"A=phm_a\nB=phm_b\n".to_vec())],
@@ -720,6 +749,7 @@ mod tests {
                 fail,
             };
             let error = commit_init_with(
+                dir.path(),
                 &vault,
                 vec![InitSecret::new("KEY", "plain")],
                 vec![
@@ -751,6 +781,7 @@ mod tests {
         let vault = vault(&dir);
         let run = || {
             commit_init(
+                dir.path(),
                 &vault,
                 vec![InitSecret::new("KEY", "plain-secret-value")],
                 vec![InitFile::replace(&file, b"KEY=phm_token\n".to_vec())],
@@ -775,6 +806,7 @@ mod tests {
         let vault = vault(&dir);
 
         let error = commit_init_with(
+            dir.path(),
             &vault,
             vec![InitSecret::new("KEY", "plain")],
             vec![InitFile::replace(&file, b"KEY=phm_token\n".to_vec())],
@@ -795,6 +827,7 @@ mod tests {
         let vault = vault(&dir);
 
         let error = commit_init_with(
+            dir.path(),
             &vault,
             vec![InitSecret::new("KEY", "plain")],
             vec![InitFile::replace(&file, b"KEY=phm_token\n".to_vec())],

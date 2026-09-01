@@ -35,7 +35,7 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
             .save(&config_path)
             .context("Failed to create .phantom.toml")?;
         // Touch the vault backend.
-        let _ = phantom_vault::create_vault(&project_id).list();
+        let _ = phantom_vault::try_create_vault(&project_id)?.list();
         eprintln!(
             "{} No .phantom.toml found — created one for you.",
             "note".cyan().bold()
@@ -83,7 +83,7 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
 
     // ── Store in vault ───────────────────────────────────────────────
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Warn if secret already exists
     if vault

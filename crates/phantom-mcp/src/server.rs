@@ -76,7 +76,8 @@ impl PhantomMcpServer {
         &self,
     ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
         let config = self.load_config().map_err(internal_err)?;
-        let vault = phantom_vault::create_vault(config.local_project_id());
+        let vault = phantom_vault::try_create_vault(config.local_project_id())
+            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
         Ok((config, vault))
     }
 
@@ -520,8 +521,9 @@ impl PhantomMcpServer {
                     .into_bytes(),
             ),
         ];
-        let vault = phantom_vault::create_vault(config.local_project_id());
-        let receipt = phantom_vault::commit_init(vault.as_ref(), secrets, files)
+        let vault = phantom_vault::try_create_vault(config.local_project_id())
+            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let receipt = phantom_vault::commit_init(&self.project_dir, vault.as_ref(), secrets, files)
             .map_err(|error| internal_err(format!("Initialization transaction failed: {error}")))?;
 
         let mut output = format!(
@@ -1095,7 +1097,8 @@ impl PhantomMcpServer {
         let target_config = PhantomConfig::load(&target_config_path)
             .map_err(|e| internal_err(format!("Failed to load target config: {e}")))?;
 
-        let target_vault = phantom_vault::create_vault(target_config.local_project_id());
+        let target_vault = phantom_vault::try_create_vault(target_config.local_project_id())
+            .map_err(|error| internal_err(format!("Failed to initialize target vault: {error}")))?;
         let target_name = params.rename.as_deref().unwrap_or(&params.name);
 
         target_vault
@@ -1162,14 +1165,21 @@ impl PhantomMcpServer {
 
         // ── Check 2: Vault accessible ───────────────────────────────────
         if let Some(cfg) = &config {
-            let vault = phantom_vault::create_vault(cfg.local_project_id());
-            lines.push(format!("pass: Vault backend: {}", vault.backend_name()));
-            match vault.list() {
-                Ok(names) => {
-                    lines.push(format!("pass: {} secret(s) in vault", names.len()));
+            match phantom_vault::try_create_vault(cfg.local_project_id()) {
+                Ok(vault) => {
+                    lines.push(format!("pass: Vault backend: {}", vault.backend_name()));
+                    match vault.list() {
+                        Ok(names) => {
+                            lines.push(format!("pass: {} secret(s) in vault", names.len()));
+                        }
+                        Err(e) => {
+                            lines.push(format!("FAIL: Vault access failed: {e}"));
+                            issues += 1;
+                        }
+                    }
                 }
-                Err(e) => {
-                    lines.push(format!("FAIL: Vault access failed: {e}"));
+                Err(error) => {
+                    lines.push(format!("FAIL: Vault initialization failed: {error}"));
                     issues += 1;
                 }
             }

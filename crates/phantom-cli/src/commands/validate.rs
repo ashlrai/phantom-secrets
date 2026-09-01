@@ -77,7 +77,7 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
     }
 
     // One-shot mode.
-    let vault = phantom_vault::create_vault(&project_id);
+    let vault = phantom_vault::try_create_vault(&project_id)?;
     let names = vault.list()?;
 
     if names.is_empty() {
@@ -190,7 +190,7 @@ fn run_watch_loop(
     let poll_interval = Duration::from_secs(60);
 
     loop {
-        let vault = phantom_vault::create_vault(project_id);
+        let vault = phantom_vault::try_create_vault(project_id)?;
         let names = match vault.list() {
             Ok(n) => n,
             Err(e) => {

@@ -118,7 +118,7 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
 
     // Read the local vault into a Zeroizing-valued map so the secret
     // bytes are scrubbed when the helper drops them.
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let secret_names = vault.list()?;
     if secret_names.is_empty() {
         println!("{}  No secrets to push", "warn".yellow().bold());
@@ -179,7 +179,7 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
     // Write into local vault, overwriting existing values. The secrets
     // map's values are Zeroizing<String> — scrubbed on drop after this
     // loop returns.
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let mut written = 0usize;
     for (name, value) in &secrets {
         vault

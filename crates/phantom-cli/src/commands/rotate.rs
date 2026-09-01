@@ -3,6 +3,8 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::TokenMap;
+use phantom_vault::VaultBackend;
+use zeroize::Zeroize;
 
 /// Remap all local phantom tokens without changing provider credentials.
 ///
@@ -33,7 +35,8 @@ pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()>
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())
+        .context("Failed to initialize vault")?;
     let names = vault.list().context("Failed to list secrets")?;
 
     if names.is_empty() {
@@ -73,6 +76,25 @@ pub fn run_with_schedule_strategy(
 /// requested name must already be represented by a Phantom token, otherwise no
 /// file is written.
 pub(crate) fn remap_phantom_tokens(env_path: &std::path::Path, names: &[String]) -> Result<()> {
+    remap_phantom_tokens_with(env_path, names, || {})
+}
+
+fn remap_phantom_tokens_with(
+    env_path: &std::path::Path,
+    names: &[String],
+    before_commit: impl FnOnce(),
+) -> Result<()> {
+    let project_dir = env_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let _transaction_lock = phantom_vault::acquire_project_transaction_lock(project_dir)
+        .with_context(|| {
+            format!(
+                "Failed to acquire transaction lock for {}",
+                project_dir.display()
+            )
+        })?;
     if !env_path.exists() {
         anyhow::bail!(
             "Cannot remap Phantom tokens: {} does not exist.",
@@ -80,6 +102,8 @@ pub(crate) fn remap_phantom_tokens(env_path: &std::path::Path, names: &[String])
         );
     }
 
+    let before = std::fs::read(env_path)
+        .with_context(|| format!("Failed to snapshot {}", env_path.display()))?;
     let dotenv = DotenvFile::parse_file(env_path)
         .with_context(|| format!("Failed to parse {}", env_path.display()))?;
     for name in names {
@@ -105,10 +129,45 @@ pub(crate) fn remap_phantom_tokens(env_path: &std::path::Path, names: &[String])
     for name in names {
         token_map.insert(name.clone());
     }
-    dotenv
-        .write_phantomized(&token_map, env_path)
+    let (rewritten, mut originals) = dotenv.rewrite_with_phantoms(&token_map);
+    for value in originals.values_mut() {
+        value.zeroize();
+    }
+    originals.clear();
+
+    before_commit();
+    let current = std::fs::read(env_path)
+        .with_context(|| format!("Failed to verify {} before commit", env_path.display()))?;
+    if current != before {
+        anyhow::bail!(
+            "Cannot remap Phantom tokens: {} changed after it was read; no Phantom write was committed.",
+            env_path.display()
+        );
+    }
+    phantom_core::fs::atomic_write(env_path, rewritten.as_bytes())
         .with_context(|| format!("Failed to atomically rewrite {}", env_path.display()))?;
     Ok(())
+}
+
+fn read_expiry_metadata(vault: &dyn VaultBackend, name: &str) -> Result<Option<u64>> {
+    Ok(vault
+        .get_metadata(name)
+        .with_context(|| format!("Failed to read rotation metadata for '{name}'"))?
+        .and_then(|metadata| metadata.expires_at))
+}
+
+fn persist_provider_rotation_metadata(
+    vault: &dyn VaultBackend,
+    name: &str,
+    expires_override: Option<u64>,
+) -> Result<Option<u64>> {
+    vault
+        .record_provider_rotation(name, expires_override)
+        .with_context(|| {
+            format!(
+                "Provider issued and Phantom stored a new credential for '{name}', but rotation metadata could not be persisted; provider cleanup and deployment sync were not attempted"
+            )
+        })
 }
 
 /// Current Unix timestamp in seconds.
@@ -192,7 +251,8 @@ pub fn run_with_provider(
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())
+        .context("Failed to initialize vault")?;
 
     // Resolve provider config from .phantom.toml.
     let provider_config = config
@@ -260,10 +320,16 @@ pub fn run_with_provider(
     // Source the bootstrap credential: environment variable first, then the
     // vault under the same name. The value is zeroized after the call and is
     // never printed.
-    let mut bootstrap = provider_config
+    let mut bootstrap = if let Some(env_name) = provider_config
         .and_then(|cfg| cfg.api_key_env.as_deref())
         .filter(|env_name| std::env::var(env_name).is_err())
-        .and_then(|env_name| vault.retrieve(env_name).ok());
+    {
+        Some(vault.retrieve(env_name).with_context(|| {
+            format!("Failed to retrieve rotation bootstrap credential '{env_name}'")
+        })?)
+    } else {
+        None
+    };
 
     // GitHub App grants vault the PEM (never a ready JWT) under api_key_env.
     // Mint the short-lived RS256 App JWT in-process from that PEM immediately
@@ -275,11 +341,11 @@ pub fn run_with_provider(
             if pem.as_str().trim_start().starts_with("-----BEGIN") {
                 let client_id = vault
                     .retrieve(phantom_core::issuance::github_app::GITHUB_APP_CLIENT_ID_NAME)
-                    .map(|z| z.as_str().to_string())
-                    .unwrap_or_default();
-                if let Ok(jwt) = phantom_core::issuance::mint_app_jwt(pem, &client_id) {
-                    bootstrap = Some(jwt);
-                }
+                    .context("Failed to retrieve GitHub App client ID")?;
+                bootstrap = Some(
+                    phantom_core::issuance::mint_app_jwt(pem, &client_id)
+                        .context("Failed to mint GitHub App bootstrap JWT")?,
+                );
             }
         }
     }
@@ -298,7 +364,15 @@ pub fn run_with_provider(
     // Capture the outgoing value BEFORE overwriting it: providers that revoke
     // the old credential at the vendor (Vercel) do so only after the new value
     // is durably stored, authenticating with the old value itself.
-    let old_value = vault.retrieve(name).ok();
+    let old_value = match vault.retrieve(name) {
+        Ok(value) => Some(value),
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) if is_github_grant => None,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("Failed to snapshot the outgoing credential for '{name}'")
+            });
+        }
+    };
 
     let new_value = auto_sync_rotation_with_bootstrap(name, provider_config, &providers, bootstrap)
         .map_err(|e| anyhow::anyhow!("Provider rotation failed for '{}': {}", name, e))?;
@@ -316,10 +390,7 @@ pub fn run_with_provider(
             // token cannot resolve to the new credential.
             let mut env_token_refreshed = false;
             if env_path.exists() {
-                let mut token_map = TokenMap::new();
-                token_map.insert(name.to_string());
-                let dotenv = DotenvFile::parse_file(&env_path)?;
-                dotenv.write_phantomized(&token_map, &env_path)?;
+                remap_phantom_tokens(&env_path, &[name.to_string()])?;
                 env_token_refreshed = true;
             }
 
@@ -334,9 +405,8 @@ pub fn run_with_provider(
             } else {
                 None
             };
-            let expires_at = vault
-                .record_provider_rotation(name, expires_override)
-                .unwrap_or(None);
+            let expires_at =
+                persist_provider_rotation_metadata(vault.as_ref(), name, expires_override)?;
 
             // The new value is stored — now (and only now) let the provider
             // best-effort revoke the OLD credential at the vendor.
@@ -431,7 +501,8 @@ pub fn run_batch(
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())
+        .context("Failed to initialize vault")?;
 
     // Gather all secrets with their expiry metadata and provider config.
     let names = vault.list().context("Failed to list secrets")?;
@@ -452,11 +523,7 @@ pub fn run_batch(
         Option<phantom_core::rotation_provider::RotationProviderConfig>,
     )> = Vec::new();
     for name in &names {
-        let expires_at = vault
-            .get_metadata(name)
-            .ok()
-            .flatten()
-            .and_then(|m| m.expires_at);
+        let expires_at = read_expiry_metadata(vault.as_ref(), name)?;
         let provider_config = config
             .phantom
             .secrets
@@ -498,7 +565,12 @@ pub fn run_batch(
         if let Some(ref new_value) = outcome.new_value {
             // Capture the outgoing value BEFORE overwriting it (needed by
             // providers whose post-store cleanup revokes the old credential).
-            let old_value = vault.retrieve(&outcome.secret_name).ok();
+            let old_value = Some(vault.retrieve(&outcome.secret_name).with_context(|| {
+                format!(
+                    "Failed to snapshot the outgoing credential for '{}'",
+                    outcome.secret_name
+                )
+            })?);
 
             vault
                 .store(&outcome.secret_name, new_value.as_str())
@@ -517,9 +589,11 @@ pub fn run_batch(
             } else {
                 None
             };
-            outcome.new_expires_at = vault
-                .record_provider_rotation(&outcome.secret_name, expires_override)
-                .unwrap_or(None);
+            outcome.new_expires_at = persist_provider_rotation_metadata(
+                vault.as_ref(),
+                &outcome.secret_name,
+                expires_override,
+            )?;
 
             // New value is durably stored — run post-store cleanup.
             if let Some(item) = due_items
@@ -549,12 +623,11 @@ pub fn run_batch(
     if !rotated_vendor_names.is_empty() {
         let env_path = project_dir.join(".env");
         if env_path.exists() {
-            let mut token_map = phantom_core::token::TokenMap::new();
-            for n in &rotated_vendor_names {
-                token_map.insert(n.to_string());
-            }
-            let dotenv = phantom_core::dotenv::DotenvFile::parse_file(&env_path)?;
-            dotenv.write_phantomized(&token_map, &env_path)?;
+            let names = rotated_vendor_names
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>();
+            remap_phantom_tokens(&env_path, &names)?;
         }
     }
 
@@ -658,7 +731,11 @@ pub fn run_batch(
 #[cfg(test)]
 mod token_remap_tests {
     use super::*;
+    use phantom_core::error::{PhantomError, Result as PhantomResult};
+    use phantom_core::validator::ValidationMetadata;
+    use phantom_vault::SecretMetadata;
     use tempfile::tempdir;
+    use zeroize::Zeroizing;
 
     #[test]
     fn remap_changes_only_requested_protected_placeholder() {
@@ -692,6 +769,86 @@ mod token_remap_tests {
 
         assert!(error.to_string().contains("not a protected phm_ token"));
         assert_eq!(std::fs::read_to_string(&env_path).unwrap(), before);
+    }
+
+    #[test]
+    fn remap_detects_concurrent_file_change_and_preserves_the_other_writer() {
+        let dir = tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+        let old = format!("phm_{}", "a".repeat(64));
+        std::fs::write(&env_path, format!("TARGET={old}\n")).unwrap();
+
+        let error = remap_phantom_tokens_with(&env_path, &["TARGET".to_string()], || {
+            std::fs::write(&env_path, b"TARGET=concurrent-owner\n").unwrap();
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed after it was read"));
+        assert_eq!(
+            std::fs::read(&env_path).unwrap(),
+            b"TARGET=concurrent-owner\n"
+        );
+    }
+
+    struct MetadataFailingVault {
+        fail_read: bool,
+    }
+
+    impl VaultBackend for MetadataFailingVault {
+        fn store(&self, _name: &str, _value: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            Err(PhantomError::SecretNotFound(name.to_string()))
+        }
+        fn delete(&self, _name: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn backend_name(&self) -> &str {
+            "metadata-failure"
+        }
+        fn get_metadata(&self, _name: &str) -> PhantomResult<Option<SecretMetadata>> {
+            if self.fail_read {
+                Err(PhantomError::VaultError(
+                    "injected metadata read failure".into(),
+                ))
+            } else {
+                Ok(Some(SecretMetadata::default()))
+            }
+        }
+        fn set_metadata(&self, _name: &str, _meta: SecretMetadata) -> PhantomResult<()> {
+            Err(PhantomError::VaultError(
+                "injected metadata write failure".into(),
+            ))
+        }
+        fn get_validation_metadata(&self, _name: &str) -> PhantomResult<ValidationMetadata> {
+            Ok(ValidationMetadata::default())
+        }
+    }
+
+    #[test]
+    fn provider_metadata_read_and_write_errors_fail_closed() {
+        let read_error =
+            read_expiry_metadata(&MetadataFailingVault { fail_read: true }, "TARGET").unwrap_err();
+        assert!(read_error
+            .to_string()
+            .contains("Failed to read rotation metadata"));
+
+        let write_error = persist_provider_rotation_metadata(
+            &MetadataFailingVault { fail_read: false },
+            "TARGET",
+            None,
+        )
+        .unwrap_err();
+        assert!(write_error
+            .to_string()
+            .contains("rotation metadata could not be persisted"));
+        assert!(write_error
+            .to_string()
+            .contains("cleanup and deployment sync were not attempted"));
     }
 
     #[test]

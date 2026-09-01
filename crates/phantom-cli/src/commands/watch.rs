@@ -154,7 +154,16 @@ fn handle_env_change(env_path: &Path, config_path: &Path, auto: bool) {
 
     if auto {
         if let Ok(config) = PhantomConfig::load(config_path) {
-            let vault = phantom_vault::create_vault(config.local_project_id());
+            let vault = match phantom_vault::try_create_vault(config.local_project_id()) {
+                Ok(vault) => vault,
+                Err(error) => {
+                    eprintln!(
+                        "   {} Failed to initialize vault: {error}",
+                        "!".red().bold()
+                    );
+                    return;
+                }
+            };
             let mut token_map = TokenMap::new();
 
             for entry in &new_secrets {

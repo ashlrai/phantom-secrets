@@ -12,7 +12,7 @@ pub fn run_push() -> Result<()> {
     let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
         .context("No .phantom.toml found. Run `phantom init` first.")?;
 
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let secret_names = vault.list()?;
 
     if secret_names.is_empty() {
@@ -79,7 +79,7 @@ pub fn run_pull(force: bool) -> Result<()> {
     let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
         .context("No .phantom.toml found. Run `phantom init` first.")?;
 
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     println!("{}  Pulling from Phantom Cloud...", "->".blue().bold());
 

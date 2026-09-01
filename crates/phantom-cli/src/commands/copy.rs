@@ -37,7 +37,7 @@ pub fn run(name: &str, target_dir: &PathBuf, rename: &Option<String>) -> Result<
 
     // Load source vault
     let source_config = PhantomConfig::load(&source_config_path)?;
-    let source_vault = phantom_vault::create_vault(source_config.local_project_id());
+    let source_vault = phantom_vault::try_create_vault(source_config.local_project_id())?;
 
     // Retrieve the secret — Zeroizing<String> auto-zeroizes on drop (all exit paths)
     let secret_value = source_vault
@@ -56,7 +56,7 @@ pub fn run(name: &str, target_dir: &PathBuf, rename: &Option<String>) -> Result<
 
     // Load target vault
     let target_config = PhantomConfig::load(&target_config_path)?;
-    let target_vault = phantom_vault::create_vault(target_config.local_project_id());
+    let target_vault = phantom_vault::try_create_vault(target_config.local_project_id())?;
 
     // Store in target vault
     target_vault

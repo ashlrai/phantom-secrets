@@ -49,7 +49,7 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     let entries = vault
         .list_with_metadata()
@@ -146,7 +146,7 @@ fn print_human_table(expiring: &[ExpiryEntry], warn_days: u64) {
 /// Remap local placeholders for expiring secrets without changing the
 /// underlying provider credentials or their lifecycle metadata.
 fn run_token_remap(expiring: &[ExpiryEntry], config: &PhantomConfig, json: bool) -> Result<()> {
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let project_dir = std::env::current_dir()?;
     let env_path = project_dir.join(".env");
     let names = expiring
@@ -229,7 +229,7 @@ pub fn run_set(key: &str, days: u64) -> Result<()> {
     let expires_at = compute_new_expires_at(days, now);
 
     // Ensure the secret exists in the vault (advisory; don't block if vault unavailable).
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     match vault.list() {
         Ok(names) if !names.contains(&key.to_string()) => {
             eprintln!(
@@ -406,7 +406,7 @@ pub fn run_rotate(key: &str) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Ensure the secret exists.
     if !vault

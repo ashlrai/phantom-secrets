@@ -45,7 +45,7 @@ pub fn run_list() -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let all_keys = vault.list().context("Failed to list vault keys")?;
 
     let current = phantom_core::env_scope::read_active_env(&project_dir);
@@ -93,7 +93,7 @@ pub fn run_new(name: &str) -> Result<()> {
 
     // Check if env already has any keys in vault
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let all_keys = vault.list().context("Failed to list vault keys")?;
     let prefix = format!("{name}/");
     let existing_count = all_keys.iter().filter(|k| k.starts_with(&prefix)).count();
@@ -147,7 +147,7 @@ pub fn run_copy(from: &str, to: &str) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let all_keys = vault.list().context("Failed to list vault keys")?;
 
     // Find all keys in the source environment.

@@ -215,6 +215,39 @@ impl VaultBackend for FileVault {
         Ok(())
     }
 
+    fn compare_and_swap(
+        &self,
+        name: &str,
+        expected: Option<&str>,
+        replacement: Option<&str>,
+    ) -> Result<bool> {
+        let _lock = self.lock_file()?;
+        let mut data = self.load()?;
+        let current = data.secrets.get(name).map(String::as_str);
+        if current != expected {
+            return Ok(false);
+        }
+
+        match replacement {
+            Some(value) => {
+                if current.is_none() {
+                    data.metadata
+                        .entry(name.to_string())
+                        .or_insert_with(crate::metadata::SecretMetadata::new_now);
+                }
+                data.secrets.insert(name.to_string(), value.to_string());
+            }
+            None => {
+                data.secrets.remove(name);
+                data.metadata.remove(name);
+                data.validation_metadata.remove(name);
+            }
+        }
+        self.save(&data)?;
+        phantom_core::audit::log("vault.compare_and_swap", Some(name));
+        Ok(true)
+    }
+
     fn list(&self) -> Result<Vec<String>> {
         let data = self.load()?;
         Ok(data.secrets.keys().cloned().collect())
@@ -365,6 +398,34 @@ mod tests {
         vault.store("KEY", "v1").unwrap();
         vault.store("KEY", "v2").unwrap();
         assert_eq!(vault.retrieve("KEY").unwrap().as_str(), "v2");
+    }
+
+    #[test]
+    fn compare_and_swap_is_atomic_and_preserves_metadata_on_replace() {
+        let (vault, _dir) = test_vault();
+        vault.store("KEY", "v1").unwrap();
+        vault.set_rotation_policy("KEY", 14).unwrap();
+        let metadata = vault.get_metadata("KEY").unwrap();
+
+        assert!(!vault
+            .compare_and_swap("KEY", Some("wrong"), Some("v2"))
+            .unwrap());
+        assert_eq!(vault.retrieve("KEY").unwrap().as_str(), "v1");
+        assert!(vault
+            .compare_and_swap("KEY", Some("v1"), Some("v2"))
+            .unwrap());
+        assert_eq!(vault.retrieve("KEY").unwrap().as_str(), "v2");
+        assert_eq!(vault.get_metadata("KEY").unwrap(), metadata);
+    }
+
+    #[test]
+    fn compare_and_swap_create_and_delete_keep_metadata_consistent() {
+        let (vault, _dir) = test_vault();
+        assert!(vault.compare_and_swap("KEY", None, Some("value")).unwrap());
+        assert!(vault.get_metadata("KEY").unwrap().is_some());
+        assert!(vault.compare_and_swap("KEY", Some("value"), None).unwrap());
+        assert!(!vault.exists("KEY").unwrap());
+        assert!(vault.get_metadata("KEY").unwrap().is_none());
     }
 
     #[test]

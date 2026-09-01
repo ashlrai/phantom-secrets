@@ -47,7 +47,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 }
 
                 // Check 2: Vault accessible
-                let vault = phantom_vault::create_vault(config.local_project_id());
+                let vault = phantom_vault::try_create_vault(config.local_project_id())?;
                 check_pass(&format!("Vault backend: {}", vault.backend_name()));
 
                 match vault.list() {
@@ -317,7 +317,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     // config exists, but surfaced unconditionally here so it's always visible)
     {
         if let Ok(config) = PhantomConfig::load(&config_path) {
-            let vault = phantom_vault::create_vault(config.local_project_id());
+            let vault = phantom_vault::try_create_vault(config.local_project_id())?;
             check_info(&format!("Vault backend: {}", vault.backend_name()));
         } else {
             check_info("Vault backend: n/a (no .phantom.toml)");
@@ -372,7 +372,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     // Check 14 (optional): Validation metadata — surface invalid credentials
     {
         if let Ok(config) = PhantomConfig::load(&config_path) {
-            let vault = phantom_vault::create_vault(config.local_project_id());
+            let vault = phantom_vault::try_create_vault(config.local_project_id())?;
             if let Ok(names) = vault.list() {
                 let mut invalid_count = 0usize;
                 let mut stale_count = 0usize;
@@ -418,7 +418,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     // Check 15 (optional): Secret TTL / expiry status
     if check_expiry {
         if let Ok(config) = PhantomConfig::load(&config_path) {
-            let vault = phantom_vault::create_vault(config.local_project_id());
+            let vault = phantom_vault::try_create_vault(config.local_project_id())?;
             match vault.list_with_metadata() {
                 Ok(entries) => {
                     let mut expired = Vec::new();

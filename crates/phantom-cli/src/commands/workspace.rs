@@ -401,7 +401,7 @@ impl VaultSetupParticipant {
         };
         Ok(Self {
             workspace_root: workspace_root.to_path_buf(),
-            vault: phantom_vault::create_vault(&project_id),
+            vault: phantom_vault::try_create_vault(&project_id)?,
             snapshots: Vec::new(),
             staged_values: BTreeMap::new(),
             commit_started: false,
