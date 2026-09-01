@@ -40,7 +40,7 @@
     "url": "https://github.com/ashlrai/phantom-secrets/issues"
   },
   "engines": {
-    "node": ">=16"
+    "node": ">=22"
   },
   "os": [
     "darwin",
