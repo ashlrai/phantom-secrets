@@ -2,6 +2,7 @@ use crate::crypto;
 use crate::metadata::SecretMetadata;
 use crate::traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
 use phantom_core::error::{PhantomError, Result};
+use phantom_core::fs::{AnchoredLock, AnchoredRead, AnchoredTarget, TrustedAnchor};
 use phantom_core::validator::ValidationMetadata;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -10,12 +11,32 @@ use std::path::{Path, PathBuf};
 /// ChaCha20-Poly1305 encrypted file vault backend.
 /// Uses shared crypto module for encryption/decryption.
 pub struct FileVault {
-    base_anchor: PathBuf,
+    base_anchor: TrustedAnchor,
+    names: VaultNames,
     vault_path: PathBuf,
     passphrase: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+struct VaultNames {
+    stable_lock: String,
+    legacy_lock: String,
+    encrypted: String,
+    legacy_json: String,
+}
+
+struct LockedVault {
+    _stable_lock: AnchoredLock,
+    _legacy_lock: AnchoredLock,
+    encrypted: AnchoredTarget,
+    legacy_json: AnchoredTarget,
+}
+
+struct LoadedVault {
+    data: VaultData,
+    before: Option<AnchoredRead>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, PartialEq)]
 struct VaultData {
     secrets: BTreeMap<String, String>,
     /// Per-secret TTL/expiry metadata. Keys match the keys in `secrets`.
@@ -33,51 +54,84 @@ impl FileVault {
     ///
     /// `base_dir` is a trust boundary, not untrusted project input. Phantom may
     /// create it and resolves configured symlinks/junctions in it so OS-managed
-    /// aliases and XDG/home redirections work. All Phantom-owned descendants
-    /// below the resolved base (including `vaults`) are checked separately and
-    /// may not be links or reparse points. This constructor does not pin a
-    /// caller-controlled anchor against later replacement or make vault payload
-    /// I/O descriptor-relative; callers must retain authority over `base_dir`.
+    /// aliases and XDG/home redirections work. The resolved base is retained by
+    /// handle. Every operation takes a stable lock directly beneath that base,
+    /// then pins `vaults` and takes the legacy subtree lock for compatibility
+    /// with older Phantom processes before performing capability-relative I/O.
     pub fn new(base_dir: &Path, project_id: &str, passphrase: String) -> Result<Self> {
         validate_project_id(project_id)?;
-        let vault_dir = crate::lock_file::ensure_safe_directory(
-            base_dir,
-            Path::new("vaults"),
-            "encrypted vault directory",
-            false,
-        )?;
-        let base_anchor = vault_dir.parent().ok_or_else(|| {
-            PhantomError::VaultError("Encrypted vault directory has no trusted anchor".into())
-        })?;
+        let (base_anchor, canonical_base) = open_trusted_base(base_dir)?;
+        let names = VaultNames::new(project_id);
 
         let vault = Self {
-            base_anchor: base_anchor.to_path_buf(),
-            vault_path: vault_dir.join(format!("{project_id}.vault")),
+            base_anchor,
+            vault_path: canonical_base.join("vaults").join(&names.encrypted),
+            names,
             passphrase,
         };
 
-        // Auto-migrate from old unencrypted .json format
-        let legacy_path = vault_dir.join(format!("{project_id}.json"));
-        if legacy_path.exists() && !vault.vault_path.exists() {
-            vault.migrate_from_json(&legacy_path)?;
-        }
+        // Auto-migrate from the old unencrypted .json format while both the
+        // stable base lock and the compatibility subtree lock are held.
+        let locked = vault.lock_view()?;
+        vault.migrate_from_json(&locked)?;
 
         Ok(vault)
     }
 
     /// Migrate from old unencrypted JSON vault to encrypted format.
-    fn migrate_from_json(&self, json_path: &Path) -> Result<()> {
-        let _lock = self.lock_file()?;
+    fn migrate_from_json(&self, locked: &LockedVault) -> Result<()> {
+        let encrypted_before = locked.encrypted.read_regular()?;
+        let legacy_before = locked.legacy_json.read_regular()?;
 
-        let content = std::fs::read_to_string(json_path)?;
-        let data: VaultData = serde_json::from_str(&content)
-            .map_err(|e| PhantomError::VaultError(format!("Corrupt legacy vault: {e}")))?;
+        let Some(legacy) = legacy_before else {
+            return Ok(());
+        };
+        let legacy_data: VaultData = serde_json::from_slice(legacy.bytes()).map_err(|error| {
+            PhantomError::VaultError(format!(
+                "Legacy plaintext vault coexists with migration state but is corrupt; refusing to remove or replace either file: {error}"
+            ))
+        })?;
 
-        // Save encrypted
-        self.save(&data)?;
+        if let Some(encrypted) = encrypted_before {
+            let plaintext = zeroize::Zeroizing::new(
+                crypto::decrypt(encrypted.bytes(), &self.passphrase).map_err(|error| {
+                    PhantomError::VaultError(format!(
+                        "Encrypted vault coexists with a legacy plaintext vault but cannot be verified; refusing to remove or replace either file: {error}"
+                    ))
+                })?,
+            );
+            let encrypted_data: VaultData = serde_json::from_slice(&plaintext).map_err(|error| {
+                PhantomError::VaultError(format!(
+                    "Encrypted vault coexists with a legacy plaintext vault but is corrupt; refusing to remove or replace either file: {error}"
+                ))
+            })?;
+            if encrypted_data != legacy_data {
+                return Err(PhantomError::VaultError(
+                    "Encrypted and legacy plaintext vaults contain divergent state; refusing to remove or replace either file. Reconcile them manually before retrying"
+                        .into(),
+                ));
+            }
+            locked.legacy_json.unlink_if_exact(&legacy)?;
+            eprintln!(
+                "phantom: removed verified duplicate legacy plaintext vault ({})",
+                self.vault_path.with_extension("json").display()
+            );
+            return Ok(());
+        }
 
-        // Remove old unencrypted file
-        let _ = std::fs::remove_file(json_path);
+        let encrypted = self.encrypt(&legacy_data)?;
+        let published = locked.encrypted.replace_if_exact(None, &encrypted)?;
+        if let Err(unlink_error) = locked.legacy_json.unlink_if_exact(&legacy) {
+            let rollback = locked.encrypted.unlink_if_exact(&published);
+            return Err(PhantomError::VaultError(match rollback {
+                Ok(()) => format!(
+                    "Legacy vault changed before exact removal; encrypted migration was rolled back: {unlink_error}"
+                ),
+                Err(rollback_error) => format!(
+                    "Legacy vault changed before exact removal and encrypted migration rollback failed: {unlink_error}; rollback: {rollback_error}"
+                ),
+            }));
+        }
 
         eprintln!(
             "phantom: migrated vault to encrypted format ({})",
@@ -87,56 +141,62 @@ impl FileVault {
         Ok(())
     }
 
-    fn load(&self) -> Result<VaultData> {
-        let Some(encrypted) = phantom_core::fs::read_regular_file(&self.vault_path)? else {
-            return Ok(VaultData::default());
+    fn load(&self, locked: &LockedVault) -> Result<LoadedVault> {
+        let Some(before) = locked.encrypted.read_regular()? else {
+            return Ok(LoadedVault {
+                data: VaultData::default(),
+                before: None,
+            });
         };
 
-        // Warn if file permissions are too open
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = std::fs::metadata(&self.vault_path) {
-                let mode = metadata.permissions().mode() & 0o777;
-                if mode != 0o600 {
-                    eprintln!(
-                        "phantom: WARNING — vault file has permissions {:o} (expected 600): {}",
-                        mode,
-                        self.vault_path.display()
-                    );
-                }
-            }
+        if locked.encrypted.repair_private_regular()? {
+            eprintln!(
+                "phantom: WARNING — repaired vault file permissions to owner-only: {}",
+                self.vault_path.display()
+            );
         }
 
         // Wrap the decrypted JSON in Zeroizing so the heap buffer is overwritten
         // with zeros when it drops — whether that's on success or on an early
         // return from the serde_json error path below.
-        let plaintext = zeroize::Zeroizing::new(crypto::decrypt(&encrypted, &self.passphrase)?);
+        let plaintext = zeroize::Zeroizing::new(crypto::decrypt(before.bytes(), &self.passphrase)?);
 
-        serde_json::from_slice::<VaultData>(&plaintext)
-            .map_err(|e| PhantomError::VaultError(format!("Corrupt vault data: {e}")))
+        let data = serde_json::from_slice::<VaultData>(&plaintext)
+            .map_err(|e| PhantomError::VaultError(format!("Corrupt vault data: {e}")))?;
+        Ok(LoadedVault {
+            data,
+            before: Some(before),
+        })
     }
 
-    /// Open (creating if needed) the sidecar lock file and take an exclusive
-    /// advisory lock on it.  The returned `File` MUST be kept alive for the
-    /// duration of the critical section — dropping it releases the lock.
-    fn lock_file(&self) -> Result<std::fs::File> {
-        let lock_name = self
-            .vault_path
-            .with_extension("lock")
-            .file_name()
-            .ok_or_else(|| PhantomError::VaultError("Vault lock path has no file name".into()))?
-            .to_owned();
-        crate::lock_file::acquire_exclusive_lock_file(
-            &self.base_anchor,
-            &Path::new("vaults").join(lock_name),
-            "encrypted vault lock",
-            false,
-        )
-        .map_err(|e| PhantomError::VaultError(format!("Cannot acquire vault lock: {e}")))
+    /// Lock a stable base child first, then pin the current `vaults` directory
+    /// and take the legacy lock. This ordering serializes new processes across
+    /// subtree replacement while remaining compatible with older processes.
+    fn lock_view(&self) -> Result<LockedVault> {
+        let stable_lock = self
+            .base_anchor
+            .acquire_lock(&self.names.stable_lock)
+            .map_err(|e| {
+                PhantomError::VaultError(format!("Cannot acquire stable vault lock: {e}"))
+            })?;
+        let vaults = self.base_anchor.private_subdirectory("vaults")?;
+        // One-release compatibility bridge: remove this second lock only after
+        // every supported Phantom client emits the stable base lock and a full
+        // release cycle shows no legacy-only lock contention in migration QA.
+        let legacy_lock = vaults.acquire_lock(&self.names.legacy_lock).map_err(|e| {
+            PhantomError::VaultError(format!("Cannot acquire legacy vault lock: {e}"))
+        })?;
+        let encrypted = vaults.target(&self.names.encrypted)?;
+        let legacy_json = vaults.target(&self.names.legacy_json)?;
+        Ok(LockedVault {
+            _stable_lock: stable_lock,
+            _legacy_lock: legacy_lock,
+            encrypted,
+            legacy_json,
+        })
     }
 
-    fn save(&self, data: &VaultData) -> Result<()> {
+    fn encrypt(&self, data: &VaultData) -> Result<Vec<u8>> {
         // The plaintext JSON holds every secret in the vault. Wrap it in
         // Zeroizing so the heap allocation is scrubbed on drop — including on
         // the error paths below. String's own Drop does not zero memory.
@@ -145,28 +205,50 @@ impl FileVault {
                 .map_err(|e| PhantomError::VaultError(format!("Serialize error: {e}")))?,
         );
 
-        let encrypted = crypto::encrypt(plaintext.as_bytes(), &self.passphrase)?;
+        crypto::encrypt(plaintext.as_bytes(), &self.passphrase)
+    }
 
-        phantom_core::fs::ensure_real_parent(&self.vault_path)?;
-        phantom_core::fs::atomic_write(&self.vault_path, &encrypted)?;
-
-        // Set restrictive permissions (owner read/write only)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.vault_path, std::fs::Permissions::from_mode(0o600))?;
-        }
-
+    fn save(
+        &self,
+        locked: &LockedVault,
+        data: &VaultData,
+        expected: Option<&AnchoredRead>,
+    ) -> Result<()> {
+        let encrypted = self.encrypt(data)?;
+        locked.encrypted.replace_if_exact(expected, &encrypted)?;
         Ok(())
     }
 }
 
 pub(crate) fn encrypted_vault_exists(base_dir: &Path, project_id: &str) -> Result<bool> {
     validate_project_id(project_id)?;
-    Ok(phantom_core::fs::read_regular_file(
-        &base_dir.join("vaults").join(format!("{project_id}.vault")),
-    )?
-    .is_some())
+    let (base_anchor, _) = open_trusted_base(base_dir)?;
+    let names = VaultNames::new(project_id);
+    let stable_lock = base_anchor.acquire_lock(&names.stable_lock)?;
+    let vaults = base_anchor.private_subdirectory("vaults")?;
+    let legacy_lock = vaults.acquire_lock(&names.legacy_lock)?;
+    let exists = vaults.target(&names.encrypted)?.read_regular()?.is_some();
+    drop(legacy_lock);
+    drop(stable_lock);
+    Ok(exists)
+}
+
+impl VaultNames {
+    fn new(project_id: &str) -> Self {
+        Self {
+            stable_lock: format!("vault-{project_id}.lock"),
+            legacy_lock: format!("{project_id}.lock"),
+            encrypted: format!("{project_id}.vault"),
+            legacy_json: format!("{project_id}.json"),
+        }
+    }
+}
+
+fn open_trusted_base(base_dir: &Path) -> Result<(TrustedAnchor, PathBuf)> {
+    std::fs::create_dir_all(base_dir)?;
+    let canonical = base_dir.canonicalize()?;
+    let anchor = TrustedAnchor::open(&canonical)?;
+    Ok((anchor, canonical))
 }
 
 /// Validate the identifier before it is ever interpolated into a filesystem
@@ -192,8 +274,8 @@ fn validate_project_id(project_id: &str) -> Result<()> {
 
 impl VaultBackend for FileVault {
     fn store(&self, name: &str, value: &str) -> Result<()> {
-        let _lock = self.lock_file()?;
-        let mut data = self.load()?;
+        let locked = self.lock_view()?;
+        let LoadedVault { mut data, before } = self.load(&locked)?;
         // Preserve existing metadata on overwrite; seed created_at for new entries.
         if !data.secrets.contains_key(name) {
             data.metadata
@@ -201,13 +283,14 @@ impl VaultBackend for FileVault {
                 .or_insert_with(crate::metadata::SecretMetadata::new_now);
         }
         data.secrets.insert(name.to_string(), value.to_string());
-        self.save(&data)?;
+        self.save(&locked, &data, before.as_ref())?;
         phantom_core::audit::log("vault.store", Some(name));
         Ok(())
     }
 
     fn retrieve(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
-        let data = self.load()?;
+        let locked = self.lock_view()?;
+        let data = self.load(&locked)?.data;
         let value = data
             .secrets
             .get(name)
@@ -218,8 +301,8 @@ impl VaultBackend for FileVault {
     }
 
     fn retrieve_for_injection(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
-        let _lock = self.lock_file()?;
-        let data = self.load()?;
+        let locked = self.lock_view()?;
+        let data = self.load(&locked)?.data;
         crate::traits::ensure_secret_injectable(name, data.metadata.get(name))?;
         let value = data
             .secrets
@@ -231,15 +314,15 @@ impl VaultBackend for FileVault {
     }
 
     fn delete(&self, name: &str) -> Result<()> {
-        let _lock = self.lock_file()?;
-        let mut data = self.load()?;
+        let locked = self.lock_view()?;
+        let LoadedVault { mut data, before } = self.load(&locked)?;
         if data.secrets.remove(name).is_none() {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
         // Remove associated metadata so the vault stays consistent.
         data.metadata.remove(name);
         data.validation_metadata.remove(name);
-        self.save(&data)?;
+        self.save(&locked, &data, before.as_ref())?;
         phantom_core::audit::log("vault.delete", Some(name));
         Ok(())
     }
@@ -250,8 +333,8 @@ impl VaultBackend for FileVault {
         expected: Option<&str>,
         replacement: Option<&str>,
     ) -> Result<bool> {
-        let _lock = self.lock_file()?;
-        let mut data = self.load()?;
+        let locked = self.lock_view()?;
+        let LoadedVault { mut data, before } = self.load(&locked)?;
         let current = data.secrets.get(name).map(String::as_str);
         if current != expected {
             return Ok(false);
@@ -272,13 +355,14 @@ impl VaultBackend for FileVault {
                 data.validation_metadata.remove(name);
             }
         }
-        self.save(&data)?;
+        self.save(&locked, &data, before.as_ref())?;
         phantom_core::audit::log("vault.compare_and_swap", Some(name));
         Ok(true)
     }
 
     fn list(&self) -> Result<Vec<String>> {
-        let data = self.load()?;
+        let locked = self.lock_view()?;
+        let data = self.load(&locked)?.data;
         Ok(data.secrets.keys().cloned().collect())
     }
 
@@ -287,24 +371,25 @@ impl VaultBackend for FileVault {
     }
 
     fn get_metadata(&self, name: &str) -> phantom_core::error::Result<Option<SecretMetadata>> {
-        let data = self.load()?;
+        let locked = self.lock_view()?;
+        let data = self.load(&locked)?.data;
         Ok(data.metadata.get(name).cloned())
     }
 
     fn set_metadata(&self, name: &str, meta: SecretMetadata) -> phantom_core::error::Result<()> {
-        let _lock = self.lock_file()?;
-        let mut data = self.load()?;
+        let locked = self.lock_view()?;
+        let LoadedVault { mut data, before } = self.load(&locked)?;
         // Only set metadata for secrets that actually exist in the vault.
         if !data.secrets.contains_key(name) {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
         data.metadata.insert(name.to_string(), meta);
-        self.save(&data)
+        self.save(&locked, &data, before.as_ref())
     }
 
     fn compare_and_swap_metadata_batch(&self, changes: &[MetadataCas]) -> Result<bool> {
-        let _lock = self.lock_file()?;
-        let mut data = self.load()?;
+        let locked = self.lock_view()?;
+        let LoadedVault { mut data, before } = self.load(&locked)?;
         let mut seen = std::collections::BTreeSet::new();
         for change in changes {
             if !seen.insert(change.name.as_str()) {
@@ -330,7 +415,7 @@ impl VaultBackend for FileVault {
             }
         }
         if !changes.is_empty() {
-            self.save(&data)?;
+            self.save(&locked, &data, before.as_ref())?;
         }
         Ok(true)
     }
@@ -339,7 +424,8 @@ impl VaultBackend for FileVault {
         &self,
         name: &str,
     ) -> phantom_core::error::Result<ValidationMetadata> {
-        let data = self.load()?;
+        let locked = self.lock_view()?;
+        let data = self.load(&locked)?.data;
         Ok(data
             .validation_metadata
             .get(name)
@@ -348,7 +434,8 @@ impl VaultBackend for FileVault {
     }
 
     fn get_validation_metadata_exact(&self, name: &str) -> Result<Option<ValidationMetadata>> {
-        let data = self.load()?;
+        let locked = self.lock_view()?;
+        let data = self.load(&locked)?.data;
         Ok(data.validation_metadata.get(name).cloned())
     }
 
@@ -357,22 +444,22 @@ impl VaultBackend for FileVault {
         name: &str,
         meta: ValidationMetadata,
     ) -> phantom_core::error::Result<()> {
-        let _lock = self.lock_file()?;
-        let mut data = self.load()?;
+        let locked = self.lock_view()?;
+        let LoadedVault { mut data, before } = self.load(&locked)?;
         // Only persist if the secret exists.
         if !data.secrets.contains_key(name) {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
         data.validation_metadata.insert(name.to_string(), meta);
-        self.save(&data)
+        self.save(&locked, &data, before.as_ref())
     }
 
     fn compare_and_swap_validation_metadata_batch(
         &self,
         changes: &[ValidationMetadataCas],
     ) -> Result<bool> {
-        let _lock = self.lock_file()?;
-        let mut data = self.load()?;
+        let locked = self.lock_view()?;
+        let LoadedVault { mut data, before } = self.load(&locked)?;
         let mut seen = std::collections::BTreeSet::new();
         for change in changes {
             if !seen.insert(change.name.as_str()) {
@@ -399,18 +486,18 @@ impl VaultBackend for FileVault {
             }
         }
         if !changes.is_empty() {
-            self.save(&data)?;
+            self.save(&locked, &data, before.as_ref())?;
         }
         Ok(true)
     }
 
     fn store_with_expiry(&self, name: &str, value: &str, days_ttl: u64) -> Result<()> {
-        let _lock = self.lock_file()?;
-        let mut data = self.load()?;
+        let locked = self.lock_view()?;
+        let LoadedVault { mut data, before } = self.load(&locked)?;
         data.secrets.insert(name.to_string(), value.to_string());
         data.metadata
             .insert(name.to_string(), SecretMetadata::with_expiry(days_ttl));
-        self.save(&data)?;
+        self.save(&locked, &data, before.as_ref())?;
         phantom_core::audit::log("vault.store", Some(name));
         Ok(())
     }
@@ -509,13 +596,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn vault_lock_symlink_is_rejected_without_mutating_target() {
+    fn legacy_vault_lock_symlink_is_rejected_without_mutating_target() {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
         let (vault, _directory) = test_vault();
         let victim = vault.vault_path.with_extension("owner-state");
         std::fs::write(&victim, b"preserve").unwrap();
         std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::remove_file(vault.vault_path.with_extension("lock")).unwrap();
         symlink(&victim, vault.vault_path.with_extension("lock")).unwrap();
 
         assert!(vault.store("API_KEY", "secret").is_err());
@@ -524,6 +612,105 @@ mod tests {
             std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
             0o640
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_base_lock_symlink_is_rejected_without_mutating_target() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let (vault, directory) = test_vault();
+        let root = canonical_temp_root(&directory);
+        let stable_lock = root.join(&vault.names.stable_lock);
+        let victim = root.join("owner-state");
+        std::fs::write(&victim, b"preserve").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::remove_file(&stable_lock).unwrap();
+        symlink(&victim, &stable_lock).unwrap();
+
+        assert!(vault.store("API_KEY", "secret").is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"preserve");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_operation_ignores_vaults_swap_and_preserves_decoy() {
+        let (vault, directory) = test_vault();
+        let root = canonical_temp_root(&directory);
+        let locked = vault.lock_view().unwrap();
+
+        std::fs::rename(root.join("vaults"), root.join("vaults-original")).unwrap();
+        std::fs::create_dir(root.join("vaults")).unwrap();
+        let decoy = root.join("vaults/test-project.vault");
+        std::fs::write(&decoy, b"decoy-owner-state").unwrap();
+
+        let mut data = VaultData::default();
+        data.secrets.insert("API_KEY".into(), "secret".into());
+        vault.save(&locked, &data, None).unwrap();
+        assert_eq!(
+            vault
+                .load(&locked)
+                .unwrap()
+                .data
+                .secrets
+                .get("API_KEY")
+                .map(String::as_str),
+            Some("secret")
+        );
+        assert_eq!(std::fs::read(&decoy).unwrap(), b"decoy-owner-state");
+        assert!(root.join("vaults-original/test-project.vault").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_base_lock_serializes_old_and_new_vaults_views() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (vault, directory) = test_vault();
+        vault.store("ORIGINAL", "owner").unwrap();
+        let root = canonical_temp_root(&directory);
+        let original_before = std::fs::read(root.join("vaults/test-project.vault")).unwrap();
+        let locked = vault.lock_view().unwrap();
+
+        std::fs::rename(root.join("vaults"), root.join("vaults-original")).unwrap();
+        std::fs::create_dir(root.join("vaults")).unwrap();
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker_root = root.clone();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let current =
+                FileVault::new(&worker_root, "test-project", "test-passphrase".into()).unwrap();
+            current.store("CURRENT", "decoy-view").unwrap();
+            finished_tx.send(()).unwrap();
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(
+            finished_rx
+                .recv_timeout(Duration::from_millis(150))
+                .is_err(),
+            "new subtree writer entered before the stable base lock was released"
+        );
+        assert!(!root.join("vaults/test-project.vault").exists());
+
+        drop(locked);
+        finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+
+        assert_eq!(
+            std::fs::read(root.join("vaults-original/test-project.vault")).unwrap(),
+            original_before
+        );
+        let current = FileVault::new(&root, "test-project", "test-passphrase".into()).unwrap();
+        assert_eq!(current.retrieve("CURRENT").unwrap().as_str(), "decoy-view");
+        assert!(current.retrieve("ORIGINAL").is_err());
     }
 
     #[test]
@@ -748,6 +935,48 @@ mod tests {
         assert!(vault_dir.join("test-project.vault").exists());
     }
 
+    #[test]
+    fn equal_encrypted_and_legacy_vaults_remove_plaintext_duplicate() {
+        let dir = TempDir::new().unwrap();
+        let root = canonical_temp_root(&dir);
+        let vault = FileVault::new(&root, "test-project", "my-passphrase".into()).unwrap();
+        vault.store("OLD_KEY", "old-secret-value").unwrap();
+        let locked = vault.lock_view().unwrap();
+        let data = vault.load(&locked).unwrap().data;
+        drop(locked);
+
+        let legacy_path = root.join("vaults/test-project.json");
+        std::fs::write(&legacy_path, serde_json::to_vec(&data).unwrap()).unwrap();
+        let reopened = FileVault::new(&root, "test-project", "my-passphrase".into()).unwrap();
+
+        assert_eq!(
+            reopened.retrieve("OLD_KEY").unwrap().as_str(),
+            "old-secret-value"
+        );
+        assert!(!legacy_path.exists());
+    }
+
+    #[test]
+    fn divergent_encrypted_and_legacy_vaults_preserve_both_without_effect() {
+        let dir = TempDir::new().unwrap();
+        let root = canonical_temp_root(&dir);
+        let vault = FileVault::new(&root, "test-project", "my-passphrase".into()).unwrap();
+        vault.store("KEY", "encrypted-owner").unwrap();
+        let encrypted_path = root.join("vaults/test-project.vault");
+        let encrypted_before = std::fs::read(&encrypted_path).unwrap();
+        let legacy_path = root.join("vaults/test-project.json");
+        let legacy_before = br#"{"secrets":{"KEY":"legacy-owner"}}"#;
+        std::fs::write(&legacy_path, legacy_before).unwrap();
+
+        let error = FileVault::new(&root, "test-project", "my-passphrase".into())
+            .err()
+            .expect("divergent coexistence must fail closed");
+
+        assert!(error.to_string().contains("divergent state"));
+        assert_eq!(std::fs::read(&encrypted_path).unwrap(), encrypted_before);
+        assert_eq!(std::fs::read(&legacy_path).unwrap(), legacy_before);
+    }
+
     // ── Metadata / TTL tests ─────────────────────────────────────────
 
     #[test]
@@ -788,7 +1017,8 @@ mod tests {
         assert!(vault.get_metadata("MY_KEY").unwrap().is_some());
         vault.delete("MY_KEY").unwrap();
         // After delete the key is gone; get_metadata on a missing key returns Ok(None)
-        let data_after = vault.load().unwrap();
+        let locked = vault.lock_view().unwrap();
+        let data_after = vault.load(&locked).unwrap().data;
         assert!(!data_after.metadata.contains_key("MY_KEY"));
     }
 
