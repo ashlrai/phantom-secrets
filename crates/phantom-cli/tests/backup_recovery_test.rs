@@ -1,3 +1,5 @@
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,7 +23,7 @@ fn command(dir: &TempDir) -> Command {
 }
 
 fn setup_secret() -> TempDir {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     command(&dir).args(["init", "--empty"]).assert().success();
     command(&dir)
         .args(["add", "RECOVERY_TEST_SECRET", "--stdin"])
@@ -63,7 +65,7 @@ fn snapshot_regular_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 
 #[test]
 fn backup_commands_hide_argv_passphrases_and_describe_current_policy() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
 
     let export_help = command(&dir).args(["export", "--help"]).output().unwrap();
     assert!(export_help.status.success());
@@ -96,7 +98,7 @@ fn backup_commands_hide_argv_passphrases_and_describe_current_policy() {
 
 #[test]
 fn export_passphrase_file_is_denied_before_path_access() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let missing = dir.path().join("missing-passphrase");
     let output = command(&dir)
         .args(["export", "--passphrase-file"])

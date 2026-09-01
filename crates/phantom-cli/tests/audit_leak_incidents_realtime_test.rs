@@ -6,10 +6,11 @@
 //! `min_confidence=0.5` default, the structured incident summaries, and the
 //! read-only incident contract. Rotation is a separate approved operation.
 
+mod common;
+
 use phantom_core::leak_correlation::{LeakCorrelationEngine, LeakIncident};
 use std::io::Write as _;
 use std::sync::Mutex;
-use tempfile::tempdir;
 
 // Serialise tests that mutate HOME.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -77,7 +78,7 @@ fn append_incident(incidents_path: &std::path::Path, inc: &LeakIncident) {
 #[test]
 fn realtime_default_confidence_returns_single_event_incident() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, audit_path, _) = make_engine(tmp.path());
@@ -104,7 +105,7 @@ fn realtime_default_confidence_returns_single_event_incident() {
 #[test]
 fn realtime_incident_has_all_required_summary_fields() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
     let base = (now / 3600) * 3600;
 
@@ -149,7 +150,7 @@ fn realtime_incident_has_all_required_summary_fields() {
 #[test]
 fn realtime_incidents_ordered_by_confidence_descending() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
     let base = (now / 3600) * 3600;
 
@@ -191,7 +192,7 @@ fn realtime_incidents_ordered_by_confidence_descending() {
 #[test]
 fn realtime_excludes_incidents_older_than_24h() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, _, incidents_path) = make_engine(tmp.path());
@@ -232,7 +233,7 @@ fn realtime_excludes_incidents_older_than_24h() {
 #[test]
 fn realtime_rotation_clears_incident() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, audit_path, incidents_path) = make_engine(tmp.path());
@@ -268,7 +269,7 @@ fn realtime_rotation_clears_incident() {
 #[test]
 fn realtime_exactly_0_5_confidence_is_included() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, _, incidents_path) = make_engine(tmp.path());
@@ -301,7 +302,7 @@ fn realtime_persisted_rotation_event_clears_incident() {
     // A separately approved rotation records vault.store. Read-only incident
     // inspection then omits the remediated incident without performing a write.
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, audit_path, incidents_path) = make_engine(tmp.path());
@@ -341,7 +342,7 @@ fn realtime_persisted_rotation_event_clears_incident() {
 #[test]
 fn realtime_high_confidence_does_not_imply_rotation() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, _, incidents_path) = make_engine(tmp.path());
@@ -411,7 +412,7 @@ fn mcp_realtime_params_reject_legacy_auto_rotation_fields() {
 #[test]
 fn realtime_multiple_incidents_all_summarised() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, _, incidents_path) = make_engine(tmp.path());

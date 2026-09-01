@@ -1,3 +1,5 @@
+mod common;
+
 use assert_cmd::Command;
 use serde_json::{json, Value};
 use std::fs;
@@ -43,7 +45,7 @@ fn assert_hardened(path: &std::path::Path) {
 
 #[test]
 fn explicit_claude_setup_removes_only_legacy_exact_allows() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let settings_path = write_legacy_settings(&dir);
 
     Command::cargo_bin("phantom")
@@ -59,7 +61,7 @@ fn explicit_claude_setup_removes_only_legacy_exact_allows() {
 
 #[test]
 fn init_auto_setup_removes_only_legacy_exact_allows() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let settings_path = write_legacy_settings(&dir);
     fs::write(
         dir.path().join(".env"),
@@ -84,7 +86,7 @@ fn init_auto_setup_removes_only_legacy_exact_allows() {
 
 #[test]
 fn init_migrates_npx_to_the_bundled_local_runtime() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let claude_dir = dir.path().join(".claude");
     fs::create_dir_all(&claude_dir).unwrap();
     let settings_path = claude_dir.join("settings.local.json");
@@ -132,7 +134,7 @@ fn init_migrates_npx_to_the_bundled_local_runtime() {
 
 #[test]
 fn rerun_init_migrates_stale_setup_without_rotating_tokens() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     std::process::Command::new("git")
         .arg("init")
         .arg("--quiet")
@@ -210,7 +212,7 @@ fn rerun_init_migrates_stale_setup_without_rotating_tokens() {
 
 #[test]
 fn init_invalid_claude_config_fails_before_project_mutation() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let claude_dir = dir.path().join(".claude");
     fs::create_dir_all(&claude_dir).unwrap();
     let settings_path = claude_dir.join("settings.local.json");

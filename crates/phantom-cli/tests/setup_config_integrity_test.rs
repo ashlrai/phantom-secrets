@@ -1,10 +1,11 @@
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
-use tempfile::TempDir;
 
 #[test]
 fn explicit_claude_setup_preserves_invalid_json() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let claude_dir = dir.path().join(".claude");
     fs::create_dir_all(&claude_dir).unwrap();
     let settings_path = claude_dir.join("settings.local.json");
@@ -24,7 +25,7 @@ fn explicit_claude_setup_preserves_invalid_json() {
 
 #[test]
 fn cursor_setup_preserves_empty_existing_json() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let cursor_dir = dir.path().join(".cursor");
     fs::create_dir_all(&cursor_dir).unwrap();
     let config_path = cursor_dir.join("mcp.json");
@@ -43,7 +44,7 @@ fn cursor_setup_preserves_empty_existing_json() {
 
 #[test]
 fn codex_setup_preserves_invalid_toml() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let codex_dir = dir.path().join(".codex");
     fs::create_dir_all(&codex_dir).unwrap();
     let config_path = codex_dir.join("config.toml");

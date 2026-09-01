@@ -1,7 +1,8 @@
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use tempfile::TempDir;
 
 const VAULT_PASS: &str = "proxy-process-control-integration-passphrase";
 const PROBE_PATH_ENV: &str = "PHANTOM_TEST_CHILD_ENV_PROBE";
@@ -59,8 +60,8 @@ fn append_sync_config(project: &Path) {
 
 #[test]
 fn detached_start_and_headless_legacy_stop_fail_closed_without_touching_state() {
-    let project = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     initialize(project.path(), home.path());
 
     let daemon = phantom_command(project.path(), home.path())
@@ -87,8 +88,8 @@ fn detached_start_and_headless_legacy_stop_fail_closed_without_touching_state() 
 
 #[test]
 fn foreground_start_denies_headless_invocation_before_sensitive_work() {
-    let project = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     initialize(project.path(), home.path());
 
     let start = phantom_command(project.path(), home.path())
@@ -108,8 +109,8 @@ fn foreground_start_denies_headless_invocation_before_sensitive_work() {
 
 #[test]
 fn exec_child_does_not_receive_vault_passphrase_or_ambient_protected_value() {
-    let project = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     initialize(project.path(), home.path());
     append_sync_config(project.path());
     use std::io::Write;
@@ -144,8 +145,8 @@ fn exec_child_does_not_receive_vault_passphrase_or_ambient_protected_value() {
 
 #[test]
 fn direct_child_does_not_receive_vault_passphrase() {
-    let project = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     let init = phantom_command(project.path(), home.path())
         .args(["init", "--empty"])
         .output()
@@ -172,8 +173,8 @@ fn direct_child_does_not_receive_vault_passphrase() {
 
 #[test]
 fn status_is_truthful_read_only_and_surfaces_unsafe_legacy_state() {
-    let project = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     let init = phantom_command(project.path(), home.path())
         .args(["init", "--empty"])
         .output()
@@ -209,8 +210,8 @@ fn status_is_truthful_read_only_and_surfaces_unsafe_legacy_state() {
 
 #[test]
 fn status_does_not_provision_machine_local_vault_or_lock_state() {
-    let project = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     let config = phantom_core::config::PhantomConfig::new_with_defaults("portable".to_string());
     fs::write(
         project.path().join(".phantom.toml"),
@@ -242,8 +243,8 @@ fn status_does_not_provision_machine_local_vault_or_lock_state() {
 
 #[test]
 fn init_env_local_is_used_by_exec() {
-    let project = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     fs::write(
         project.path().join(".env.local"),
         "OPENAI_API_KEY=sk-env-local-test-value\n",
@@ -271,8 +272,8 @@ fn init_env_local_is_used_by_exec() {
 
 #[test]
 fn init_custom_dotenv_basename_is_used_by_exec() {
-    let project = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     fs::write(
         project.path().join("custom.env"),
         "OPENAI_API_KEY=sk-custom-env-test-value\n",
@@ -318,8 +319,8 @@ fn init_custom_dotenv_basename_is_used_by_exec() {
 
 #[test]
 fn protected_connection_string_is_denied_before_vault_decryption() {
-    let project = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     fs::write(
         project.path().join(".env"),
         "DATABASE_URL=postgresql://example.invalid/app\n",
@@ -349,8 +350,8 @@ fn protected_connection_string_is_denied_before_vault_decryption() {
 
 #[test]
 fn ambient_connection_string_is_denied_in_direct_mode() {
-    let project = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     let init = phantom_command(project.path(), home.path())
         .args(["init", "--empty"])
         .output()

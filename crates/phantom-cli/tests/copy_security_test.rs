@@ -1,6 +1,7 @@
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
-use tempfile::TempDir;
 
 const VAULT_PASS: &str = "test-integration-passphrase-copy-security";
 
@@ -15,7 +16,7 @@ fn phantom(project: &std::path::Path, home: &std::path::Path) -> Command {
 
 #[test]
 fn headless_copy_denies_before_source_retrieval_or_target_mutation() {
-    let root = TempDir::new().unwrap();
+    let root = common::canonical_tempdir();
     let source = root.path().join("source");
     let target = root.path().join("target");
     let home = root.path().join("home");

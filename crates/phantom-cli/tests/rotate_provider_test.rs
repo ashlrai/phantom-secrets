@@ -6,6 +6,8 @@
 /// and no real credentials exist anywhere in this file. The fixed fake value
 /// the mock path stores in the vault is known, which lets the tests assert
 /// the CLI NEVER prints the stored value to stdout or stderr.
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -61,7 +63,7 @@ fn phantom(dir: &TempDir) -> Command {
 
 #[test]
 fn rotate_provider_runtime_mock_flag_cannot_store_or_print_values() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     // Bootstrap credential in the environment; mock prefix keeps it hermetic.
@@ -111,7 +113,7 @@ fn rotate_provider_runtime_mock_flag_cannot_store_or_print_values() {
 
 #[test]
 fn rotate_provider_json_runtime_mock_flag_fails_without_secret_output() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     let output = phantom(&dir)
@@ -147,7 +149,7 @@ fn rotate_provider_json_runtime_mock_flag_fails_without_secret_output() {
 
 #[test]
 fn rotate_provider_resolves_vault_bootstrap_but_runtime_mock_still_fails_closed() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     // Store the bootstrap credential in the VAULT under the api_key_env name
@@ -192,7 +194,7 @@ fn rotate_provider_mock_bootstrap_fails_closed_without_opt_in() {
     // Regression: a mock-prefixed bootstrap credential must NOT drive a forged
     // "successful" rotation in a production binary — it requires the explicit
     // PHANTOM_ALLOW_MOCK_ROTATION=1 opt-in.
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     let output = phantom(&dir)
@@ -223,7 +225,7 @@ fn rotate_provider_mock_bootstrap_fails_closed_without_opt_in() {
 fn rotate_provider_disabled_config_reports_disabled_not_bad_credential() {
     // Regression: enabled = false must surface as a distinct "disabled" error,
     // never the misleading api_key_env / bootstrap-credential message.
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     let config_path = dir.path().join(".phantom.toml");
@@ -252,7 +254,7 @@ fn rotate_provider_disabled_config_reports_disabled_not_bad_credential() {
 fn rotate_provider_dispatches_by_config_not_secret_name() {
     // Regression: a secret whose name contains no vendor substring must still
     // rotate via the provider configured in .phantom.toml.
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
 
     fs::write(
         dir.path().join(".env"),
@@ -293,7 +295,7 @@ fn rotate_provider_dispatches_by_config_not_secret_name() {
 
 #[test]
 fn rotate_provider_mismatch_with_config_fails() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     // Config says stripe; requesting github must fail with guidance.
@@ -318,7 +320,7 @@ fn rotate_provider_mismatch_with_config_fails() {
 
 #[test]
 fn rotate_name_without_config_fails_with_toml_guidance() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
 
     // Project with a vaulted secret but NO rotation_provider block.
     fs::write(dir.path().join(".env"), "OTHER_API_KEY=sk-other-value\n").expect("write .env");

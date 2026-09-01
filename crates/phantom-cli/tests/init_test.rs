@@ -10,6 +10,8 @@
 /// PHANTOM_VAULT_PASSPHRASE is set so that if the OS keychain is unavailable
 /// (CI, sandboxed environments) the encrypted-file vault backend is used with
 /// a deterministic passphrase instead of panicking.
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -40,7 +42,7 @@ fn run_init(dir: &TempDir) -> assert_cmd::assert::Assert {
 
 #[test]
 fn init_rejects_single_project_dry_run_without_mutating() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let env_path = dir.path().join(".env");
     let original = "OPENAI_API_KEY=sk-real-test\n";
     fs::write(&env_path, original).expect("write .env");
@@ -69,7 +71,7 @@ fn init_rejects_single_project_dry_run_without_mutating() {
 
 #[test]
 fn init_creates_phantom_toml() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     run_init(&dir).success();
     assert!(
         dir.path().join(".phantom.toml").exists(),
@@ -79,7 +81,7 @@ fn init_creates_phantom_toml() {
 
 #[test]
 fn init_excludes_the_bearerless_lifecycle_lock_from_git() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     run_init(&dir).success();
 
     let gitignore = fs::read_to_string(dir.path().join(".gitignore")).expect("read .gitignore");
@@ -101,7 +103,7 @@ fn init_excludes_the_bearerless_lifecycle_lock_from_git() {
 
 #[test]
 fn init_rewrites_env_with_phantom_tokens() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     run_init(&dir).success();
 
     let env_content = fs::read_to_string(dir.path().join(".env")).expect("read .env");
@@ -129,7 +131,7 @@ fn init_rewrites_env_with_phantom_tokens() {
 
 #[test]
 fn init_leaves_non_secret_vars_untouched() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     run_init(&dir).success();
 
     let env_content = fs::read_to_string(dir.path().join(".env")).expect("read .env");
@@ -143,7 +145,7 @@ fn init_leaves_non_secret_vars_untouched() {
 
 #[test]
 fn init_never_leaves_a_plaintext_env_backup() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     run_init(&dir).success();
 
     let backup = dir.path().join(".env.backup");
@@ -152,7 +154,7 @@ fn init_never_leaves_a_plaintext_env_backup() {
 
 #[test]
 fn init_no_env_file_fails_gracefully() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     // No .env written — init should fail with a clear error message
     Command::cargo_bin("phantom")
         .expect("binary not found")
@@ -171,7 +173,7 @@ fn init_no_env_file_fails_gracefully() {
 /// initialization path.
 #[test]
 fn init_empty_creates_config_and_add_works() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
 
     // Step 1: phantom init --empty — must succeed and produce .phantom.toml
     Command::cargo_bin("phantom")
@@ -204,7 +206,7 @@ fn init_empty_creates_config_and_add_works() {
 /// project state and direct the user to the explicit transactional init path.
 #[test]
 fn add_requires_explicit_init_when_no_config() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
 
     // No init step — go straight to add
     let output = Command::cargo_bin("phantom")
@@ -226,7 +228,7 @@ fn add_requires_explicit_init_when_no_config() {
 /// browser-safe public keys and must never be wrapped in phantom tokens.
 #[test]
 fn init_skips_public_framework_keys() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let env_path = dir.path().join(".env");
     fs::write(
         &env_path,
@@ -294,7 +296,7 @@ fn init_skips_public_framework_keys() {
 /// (e.g., `phantom check`, `phantom add`) can respect the skip decision.
 #[test]
 fn init_persists_public_keys_in_toml() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let env_path = dir.path().join(".env");
     fs::write(
         &env_path,
@@ -349,7 +351,7 @@ fn init_persists_public_keys_in_toml() {
 /// not fail or attempt to create an empty vault with phantom tokens.
 #[test]
 fn init_handles_all_public_keys_no_secrets() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let env_path = dir.path().join(".env");
     fs::write(
         &env_path,

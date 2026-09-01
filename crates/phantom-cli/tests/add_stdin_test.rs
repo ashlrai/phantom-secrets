@@ -3,6 +3,8 @@
 /// These tests verify that piping a secret value via stdin (with --stdin flag)
 /// correctly stores the secret in the vault, and that passing no value and no
 /// --stdin when stdin is not a tty fails with a clear error.
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -33,7 +35,7 @@ fn phantom(dir: &TempDir) -> Command {
 
 #[test]
 fn add_stdin_stores_secret_in_vault() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     // Pipe the secret value via stdin using --stdin flag.
@@ -54,7 +56,7 @@ fn add_stdin_stores_secret_in_vault() {
 
 #[test]
 fn add_stdin_trims_trailing_newline() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     // The trimmed value must be stored (no trailing \n).
@@ -71,7 +73,7 @@ fn add_stdin_trims_trailing_newline() {
 
 #[test]
 fn add_stdin_empty_value_fails() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     // An empty stdin line must be rejected.
@@ -84,7 +86,7 @@ fn add_stdin_empty_value_fails() {
 
 #[test]
 fn add_stdin_updates_env_file_with_phantom_token() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     phantom(&dir)
@@ -106,7 +108,7 @@ fn add_stdin_updates_env_file_with_phantom_token() {
 
 #[test]
 fn add_no_value_no_stdin_on_non_tty_fails() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     // When stdin is a pipe (assert_cmd pipes stdin by default) and neither
@@ -120,7 +122,7 @@ fn add_no_value_no_stdin_on_non_tty_fails() {
 
 #[test]
 fn positional_secret_value_is_rejected_before_project_mutation() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let output = phantom(&dir)
         .args(["add", "UNSAFE_KEY", "secret-in-argv"])
         .assert()

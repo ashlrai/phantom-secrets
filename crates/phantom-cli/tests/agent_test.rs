@@ -1,3 +1,5 @@
+mod common;
+
 use assert_cmd::Command;
 use serde_json::Value;
 use std::fs;
@@ -13,7 +15,7 @@ fn phantom(dir: &TempDir) -> Command {
 
 #[test]
 fn agent_report_json_is_stable_and_blocks_unsafe_repo() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     fs::write(dir.path().join(".env"), "OPENAI_API_KEY=sk-test\n").unwrap();
 
     let output = phantom(&dir)
@@ -39,7 +41,7 @@ fn agent_report_json_is_stable_and_blocks_unsafe_repo() {
 
 #[test]
 fn agent_setup_dry_run_prints_report_without_mutating_files() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     fs::write(dir.path().join(".env"), "OPENAI_API_KEY=sk-test\n").unwrap();
 
     let output = phantom(&dir)

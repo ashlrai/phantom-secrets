@@ -11,13 +11,14 @@
 //! - HMAC chain still valid with `encrypted_context` field
 //! - `phantom audit verify --with-context` integration
 
+mod common;
+
 use phantom_core::audit::{
     decrypt_context, encrypt_context_for_test, log, log_result, verify_log,
     verify_log_with_context, verify_sidecar_event, AuditContext, AuditEventEncryption,
     SidecarEvent,
 };
 use std::sync::{Arc, Barrier, Mutex};
-use tempfile::tempdir;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared test infrastructure
@@ -29,7 +30,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// Run `f` with `HOME=tmp_dir`, `PHANTOM_AUDIT=1`, and the given encryption mode.
 fn with_encrypt_env<F: FnOnce(&std::path::Path)>(enc: &str, f: F) {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let prev_home = std::env::var("HOME").ok();
     let prev_audit = std::env::var("PHANTOM_AUDIT").ok();
     let prev_enc = std::env::var("PHANTOM_AUDIT_ENCRYPTION").ok();
@@ -152,7 +153,7 @@ fn encryption_is_active_for_non_disabled() {
 fn cloud_signed_setup_is_a_non_mutating_hard_denial() {
     use assert_cmd::Command;
 
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let output = Command::cargo_bin("phantom")
         .expect("binary not found")
         .current_dir(tmp.path())
@@ -729,7 +730,7 @@ fn log_result_required_with_encryption() {
 fn mixed_encrypted_and_plain_events_verify_clean() {
     // Write 3 events: plain, encrypted, plain — verify HMAC chain stays clean.
     // We do this in two separate env setups since ENV_LOCK is not re-entrant.
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
 
     // Step 1: Write one plain event (no encryption)
     {

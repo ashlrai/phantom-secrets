@@ -1,6 +1,7 @@
+mod common;
+
 use assert_cmd::Command;
 use std::process::Command as StdCommand;
-use tempfile::TempDir;
 
 fn git(project: &std::path::Path, args: &[&str]) {
     let output = StdCommand::new("git")
@@ -17,7 +18,7 @@ fn git(project: &std::path::Path, args: &[&str]) {
 
 #[test]
 fn unsafe_effective_hook_target_fails_before_secret_or_file_mutation() {
-    let project = TempDir::new().unwrap();
+    let project = common::canonical_tempdir();
     git(project.path(), &["init", "--quiet"]);
     git(
         project.path(),

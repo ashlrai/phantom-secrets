@@ -1,3 +1,5 @@
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -12,7 +14,7 @@ fn phantom(dir: &TempDir) -> Command {
 
 #[test]
 fn doctor_warns_on_risky_phantom_config() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let project_id = phantom_core::config::PhantomConfig::project_id_from_path(dir.path());
     fs::write(
         dir.path().join(".phantom.toml"),
@@ -49,7 +51,7 @@ secret_type = "api_key"
 
 #[test]
 fn doctor_passes_service_routes_for_default_config() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let config = phantom_core::config::PhantomConfig::new_with_defaults(
         phantom_core::config::PhantomConfig::project_id_from_path(dir.path()),
     );
@@ -73,7 +75,7 @@ fn doctor_passes_service_routes_for_default_config() {
 
 #[test]
 fn doctor_warns_that_cloud_signed_audit_is_not_commissioned() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
 
     let output = phantom(&dir)
         .env("PHANTOM_AUDIT", "1")
@@ -92,7 +94,7 @@ fn doctor_warns_that_cloud_signed_audit_is_not_commissioned() {
 
 #[test]
 fn doctor_rejects_legacy_npx_mcp_entry() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     fs::create_dir_all(dir.path().join(".claude")).unwrap();
     fs::write(
         dir.path().join(".claude/settings.local.json"),
@@ -111,7 +113,7 @@ fn doctor_rejects_legacy_npx_mcp_entry() {
 #[cfg(unix)]
 #[test]
 fn doctor_fix_refuses_to_overwrite_non_utf8_hook() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     assert!(std::process::Command::new("git")
         .args(["init", "--quiet"])
         .current_dir(dir.path())

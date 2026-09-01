@@ -1,10 +1,11 @@
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
-use tempfile::TempDir;
 
 #[test]
 fn grant_add_denies_before_project_env_or_side_effect_access() {
-    let project = TempDir::new().expect("temp project");
+    let project = common::canonical_tempdir();
     let sentinel = project.path().join("sentinel.txt");
     fs::write(&sentinel, "unchanged").expect("write sentinel");
 
@@ -35,7 +36,7 @@ fn grant_add_denies_before_project_env_or_side_effect_access() {
 
 #[test]
 fn grant_add_invalid_provider_still_hits_same_early_boundary() {
-    let project = TempDir::new().expect("temp project");
+    let project = common::canonical_tempdir();
     let assertion = Command::cargo_bin("phantom")
         .expect("phantom binary")
         .current_dir(project.path())

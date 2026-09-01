@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 
 use assert_cmd::Command;
@@ -25,7 +27,7 @@ fn combined_output(output: &std::process::Output) -> String {
 
 #[test]
 fn competitor_import_headless_denial_precedes_project_and_source_access() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let output = phantom(&dir)
         .args([
             "import",
@@ -47,7 +49,7 @@ fn competitor_import_headless_denial_precedes_project_and_source_access() {
 
 #[test]
 fn competitor_import_force_cannot_mutate_vault_without_terminal_consent() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     phantom(&dir).args(["init", "--empty"]).assert().success();
     let source = dir.path().join("doppler.json");
     fs::write(

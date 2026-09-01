@@ -8,6 +8,8 @@
 ///   - Lower-level HTTP client tests cover explicit mock origins with
 ///     test-only bearers; the production CLI intentionally has no API-origin
 ///     override because it loads a real bearer from the OS keychain.
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -40,7 +42,7 @@ fn phantom(dir: &TempDir) -> Command {
 
 #[test]
 fn cloud_push_fails_without_auth_token() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     phantom(&dir).args(["cloud", "push"]).assert().failure();
@@ -48,7 +50,7 @@ fn cloud_push_fails_without_auth_token() {
 
 #[test]
 fn cloud_pull_fails_without_auth_token() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     phantom(&dir).args(["cloud", "pull"]).assert().failure();
@@ -56,7 +58,7 @@ fn cloud_pull_fails_without_auth_token() {
 
 #[test]
 fn cloud_status_fails_closed_headlessly_before_authentication() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     let output = phantom(&dir).args(["cloud", "status"]).assert().failure();
@@ -70,7 +72,7 @@ fn cloud_status_fails_closed_headlessly_before_authentication() {
 
 #[test]
 fn cloud_push_fails_closed_at_terminal_authority_before_api_origin_or_network() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     let output = phantom(&dir)

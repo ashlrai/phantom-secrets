@@ -1,3 +1,5 @@
+mod common;
+
 use assert_cmd::Command;
 use phantom_core::config::PhantomConfig;
 use phantom_core::rotation_provider::RotationProviderConfig;
@@ -18,7 +20,7 @@ fn command(dir: &TempDir) -> Command {
 }
 
 fn setup_github_grant() -> TempDir {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     command(&dir).args(["init", "--empty"]).assert().success();
     command(&dir)
         .args(["add", "GITHUB_APP_PEM", "--stdin"])
