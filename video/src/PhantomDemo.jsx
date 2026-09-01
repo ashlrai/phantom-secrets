@@ -223,7 +223,7 @@ export const PhantomDemo = () => {
                 <span style={{ color: T3 }}>Authorization:</span><br />
                 <span style={{ color: T3 }}>  </span><span style={{ color: T3, textDecoration: "line-through" }}>phm_d9f1c157...</span><br />
                 <span style={{ color: T3 }}>  </span><span style={{ color: GREEN }}>sk-proj-a8Kx9...</span><br />
-                <span style={{ color: T3, fontSize: "12px" }}>Token swapped for real key</span>
+                <span style={{ color: T3, fontSize: "12px" }}>Route-owned auth injected</span>
               </div>
             </div>
 

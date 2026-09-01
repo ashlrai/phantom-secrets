@@ -60,14 +60,14 @@ PORT=3000
 
 Those `phm_` tokens use 256 bits of CSPRNG output. They are not provider
 credentials and cannot be redeemed directly against OpenAI, Anthropic, or
-Stripe. They are still mappings worth protecting: a party that also controls
-an authenticated active Phantom proxy may be able to resolve one. Rotate an
-exposed project token. Non-secret config values such as `NODE_ENV` and `PORT`
+Stripe. They are still mappings worth protecting. Client headers and bodies
+never resolve them, but a stolen live proxy bearer can authorize exact routes
+that inject their own credentials. Rotate an exposed project token. Non-secret config values such as `NODE_ENV` and `PORT`
 are normally left untouched by the detection heuristics.
 
 Your real secrets are stored in the OS keychain (macOS Keychain, Linux Secret Service, or an encrypted file fallback for CI environments).
 
-## The reverse proxy: where phantom tokens become real
+## The reverse proxy: route-owned authentication
 
 When you run `phantom exec -- claude`, Phantom starts a local HTTP reverse proxy on `127.0.0.1` and rewrites the base URLs in your environment:
 
@@ -83,13 +83,13 @@ Here's the full request lifecycle:
 Your code / AI agent
      |
      |  POST http://127.0.0.1:PORT/openai/v1/chat/completions
-     |  Authorization: Bearer phm_a7f3b9e2...
+     |  Client request (no credential substitution)
      v
 Phantom Proxy (localhost)
      |
-     |  1. Scan headers + body for phm_ tokens
-     |  2. Look up real secret from vault
-     |  3. Replace: phm_a7f3b9e2... -> sk-proj-abc123...
+     |  1. Authenticate session and match exact route
+     |  2. Inject route-owned key into fixed auth header
+     |  3. Forward client headers/body without token resolution
      |  4. Forward over TLS to api.openai.com
      |  5. Drop request buffers; the session lookup copy remains until proxy exit
      v
@@ -107,7 +107,7 @@ Key design decisions:
 - **Reviewed routes.** Agentic proxy sessions accept Phantom's exact built-in service definitions and reject repository-authored proxy destinations. This constrains injection, but endpoint integrity, DNS/TLS, the local account, and the configured provider remain in the threat model.
 - **Localhost only.** The proxy binds to `127.0.0.1`, never `0.0.0.0`. It is not reachable from the network.
 - **Ephemeral ports.** Each session gets a random high port, reducing the window for local process abuse.
-- **Session-scoped execution credentials.** `phantom exec` gives the child process fresh `phm_` tokens and a fresh proxy bearer. They stop resolving when that proxy exits. The project tokens stored in dotenv are different values and persist until `phantom rotate`.
+- **Session-scoped proxy authentication.** `phantom exec` gives the child process fresh `phm_` placeholders and a fresh proxy bearer. Client placeholders never resolve; the bearer becomes invalid when that proxy exits. Project tokens stored in dotenv are different values and persist until `phantom rotate`.
 
 Supported SDKs that honor Phantom's implemented base-URL overrides can work
 without source changes. This is not a claim for every HTTP client or protocol.
@@ -133,7 +133,7 @@ $ phantom exec -- claude
 -> Starting: claude
 
 # The app loads phm_ tokens; Claude uses value-blind MCP metadata.
-# The SDK hits localhost, proxy swaps tokens, forwards to real API.
+# The SDK hits localhost; the matched route injects its fixed auth header and forwards to the real API.
 # Supported SDK calls use the reviewed local proxy route; MCP stays value-blind.
 
 # 3. Deploy — push real secrets to your platform

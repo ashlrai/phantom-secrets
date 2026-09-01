@@ -8,7 +8,6 @@ use std::time::Duration;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_millis(750);
 const HEALTH_BODY: &str = r#"{"status":"ok","service":"phantom-proxy"}"#;
-const SHUTDOWN_BODY: &str = r#"{"status":"shutting_down","service":"phantom-proxy"}"#;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct LegacyProxy {
@@ -57,7 +56,10 @@ fn open_legacy_state(path: &Path) -> std::io::Result<std::fs::File> {
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    options.open(path)
+    let file = options.open(path)?;
+    #[cfg(windows)]
+    super::proxy_lifecycle::ensure_windows_file_identity(&file, path)?;
+    Ok(file)
 }
 
 fn parse(contents: &str) -> std::result::Result<LegacyProxy, String> {
@@ -112,7 +114,7 @@ pub(crate) fn refuse_start_with_legacy_state(project_dir: &Path) -> Result<()> {
     match inspect(project_dir) {
         LegacyState::Missing => Ok(()),
         LegacyState::Authenticated(proxy) => anyhow::bail!(
-            "Authenticated legacy v0.7.3 proxy state exists for PID {}. Run `phantom stop` from a trusted interactive terminal to migrate it before starting a new proxy.",
+            "Authenticated legacy v0.7.3 proxy state exists for PID {}. v0.7.3 did not ship an authenticated remote-shutdown endpoint, so this binary will not kill it or delete its record. Stop it with Ctrl-C in its owning v0.7.3 terminal; if that is unavailable, use a checksum-verified v0.7.3 binary from a trusted terminal, or independently verify that no process/listener owns the record before manually removing .phantom.pid.",
             proxy.pid
         ),
         LegacyState::Unverified(proxy) => anyhow::bail!(
@@ -123,10 +125,6 @@ pub(crate) fn refuse_start_with_legacy_state(project_dir: &Path) -> Result<()> {
             "Unsafe or malformed legacy .phantom.pid state; refusing to start and leaving it untouched: {error}"
         ),
     }
-}
-
-pub(crate) fn authenticated_shutdown(proxy: &LegacyProxy) -> Result<()> {
-    control_request(proxy, "POST", "/phantom/shutdown", SHUTDOWN_BODY).map_err(anyhow::Error::msg)
 }
 
 fn control_request(
@@ -171,19 +169,6 @@ fn control_request(
     Ok(())
 }
 
-pub(crate) fn wait_for_owner_cleanup(project_dir: &Path) -> Result<()> {
-    let path = project_dir.join(".phantom.pid");
-    for _ in 0..20 {
-        if !path.exists() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    anyhow::bail!(
-        "Legacy proxy accepted shutdown but did not remove .phantom.pid. It was left untouched to avoid deleting replaced state; inspect it manually."
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_legacy_owner_controls_shutdown_and_removes_its_record() {
+    fn authenticated_legacy_owner_is_never_stopped_or_deleted() {
         use std::net::TcpListener;
         use std::thread;
 
@@ -224,32 +209,29 @@ mod tests {
         let owner_path = pid_path.clone();
         let owner_token = token.clone();
         let owner = thread::spawn(move || {
-            for (expected_path, body) in [
-                ("/phantom/health", HEALTH_BODY),
-                ("/phantom/shutdown", SHUTDOWN_BODY),
-            ] {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut request = [0u8; 2048];
-                let count = stream.read(&mut request).unwrap();
-                let request = String::from_utf8_lossy(&request[..count]);
-                assert!(request.contains(expected_path));
-                assert!(request.contains(&format!("x-phantom-proxy-token: {owner_token}")));
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                stream.write_all(response.as_bytes()).unwrap();
-            }
-            std::fs::remove_file(owner_path).unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let count = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..count]);
+            assert!(request.contains("GET /phantom/health"));
+            assert!(request.contains(&format!("x-phantom-proxy-token: {owner_token}")));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                HEALTH_BODY.len(),
+                HEALTH_BODY
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            assert!(owner_path.exists(), "new CLI must not delete legacy state");
         });
 
-        let proxy = match inspect(dir.path()) {
-            LegacyState::Authenticated(proxy) => proxy,
+        match inspect(dir.path()) {
+            LegacyState::Authenticated(_) => {}
             other => panic!("unexpected legacy state: {other:?}"),
-        };
-        authenticated_shutdown(&proxy).unwrap();
-        wait_for_owner_cleanup(dir.path()).unwrap();
+        }
         owner.join().unwrap();
+        assert!(
+            pid_path.exists(),
+            "new CLI must leave legacy state untouched"
+        );
     }
 }

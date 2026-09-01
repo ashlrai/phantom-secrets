@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.ashlrai/phantom-secrets-mcp",
   "title": "Phantom Secrets",
-  "description": "Reduce credential exposure for AI coding agents on Phantom-supported paths. A local proxy swaps managed secrets for phm_ tokens.",
+  "description": "Reduce credential exposure for AI coding agents on Phantom-supported paths. An authenticated local proxy injects only fixed route-owned authentication; client headers and bodies never resolve phm_ tokens.",
   "websiteUrl": "https://github.com/ashlrai/phantom-secrets",
   "repository": {
     "url": "https://github.com/ashlrai/phantom-secrets",
@@ -972,7 +972,7 @@
     },
     {
       "name": "phantom_rotate_promote",
-      "description": "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters. Use phantom_rotate_provider for a real provider rotation.",
+      "description": "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "Deprecated compatibility parameters for the hard-denied promotion path.",
@@ -1004,10 +1004,10 @@
     },
     {
       "name": "phantom_rotate_provider",
-      "description": "Rotate a secret via a vendor-specific provider (stripe | github | aws | google | vercel; sentry and supabase report manual-rotation-required with a dashboard link). Calls the vendor API to re-issue the credential server-side, stores the new value in the encrypted vault, and records a signed audit event. The new secret value is NEVER exposed in the MCP response — only provider name, status, and audit metadata are returned. Requires the secret's rotation_provider config to be set in .phantom.toml under [phantom.secrets.{name}.rotation_provider]; the `provider` parameter is optional and defaults to the provider named there. The bootstrap credential named by api_key_env is sourced from the server environment first, then from the vault under the same name — it never crosses the MCP wire. DESTRUCTIVE — permanently invalidates the current key at the vendor. Requires `confirm: true`; the agent must obtain user consent before calling.",
+      "description": "Provider-rotation compatibility boundary. Shipped builds hard-deny automated live provider issuance before credential access or network I/O because the provider contract does not yet preserve a durable value-free recovery handle and verified abort path for local persistence failure. Unit-test mock providers are not production capability evidence. Current calls return a value-blind hard denial without consuming an approval or opening the vault. The confirm and approval fields are reserved for a future effectful, compensated implementation.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_rotate_provider`.\n\nCalls a vendor-specific rotation provider (Stripe, GitHub, AWS) to\nre-issue the credential server-side and stores the new value in the vault.\nThe secret value is NEVER exposed in the MCP response — only status,\nprovider name, and audit metadata are returned.",
+        "description": "Parameters for `phantom_rotate_provider`.\n\nCompatibility parameters for the shipped hard-denial boundary. Automated\nlive provider issuance is disabled before credential or network access until\na durable value-free recovery handle and verified abort path exist. No\nsecret value is accepted or returned.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1044,7 +1044,7 @@
     },
     {
       "name": "phantom_rotate_with_candidate",
-      "description": "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters. Use phantom_rotate_provider for a real provider rotation.",
+      "description": "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "Deprecated compatibility parameters for the hard-denied shadow path.",
@@ -1287,7 +1287,7 @@
     },
     {
       "name": "phantom_status",
-      "description": "Show Phantom status: project ID, vault backend, number of secrets, configured services, and proxy state.",
+      "description": "Read repository-local Phantom status without opening or provisioning a vault: project ID, managed dotenv protection counts, and configured service mappings. Vault backend and stored-secret inventory are deliberately not inspected; use phantom_list_secrets for the latter.",
       "inputSchema": {
         "properties": {},
         "type": "object"

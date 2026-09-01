@@ -37,10 +37,10 @@ On a machine where `cargo` is not on `PATH`, invoke the same commands through yo
 | Area | Purpose |
 |------|---------|
 | `crates/phantom-cli` | Operator CLI and command integration tests. |
-| `crates/phantom-core` | Configuration, dotenv handling, cloud/auth clients, audit, validation, shared policy, and the provider-issuance engine. |
-| `crates/phantom-cli/src/commands/grant` | Trusted-terminal provider consent, direct-to-vault root storage, and value-free grant lifecycle commands. |
+| `crates/phantom-core` | Configuration, dotenv handling, cloud/auth clients, audit, validation, shared policy, and test-only provider protocol scaffolding. Production issuance is disabled. |
+| `crates/phantom-cli/src/commands/grant` | Value-free grant metadata plus compatibility commands that hard-deny enrollment and remote revocation in 0.7.4. |
 | `crates/phantom-vault` | OS-keychain and encrypted-file vault backends. |
-| `crates/phantom-proxy` | Authenticated loopback proxy, scoped replacement, response scrubbing, and streaming. |
+| `crates/phantom-proxy` | Authenticated loopback proxy, exact route-owned auth-header injection, inert client headers/bodies, response scrubbing, and streaming. |
 | `crates/phantom-mcp` | MCP server, closed parameter schemas, the governed conversation facade, and separately gated compatibility tools. |
 | `crates/phantom-workspace` | Value-blind workspace planning and trusted-terminal setup transactions. |
 | `crates/phantom-authority` | Closed authority contracts; production verification remains deny-all. |
@@ -58,11 +58,13 @@ foundations must stay fail closed until the activation boundaries in
 [`docs/architecture.md`](docs/architecture.md) and
 [`THREAT_MODEL.md`](THREAT_MODEL.md) are resolved and accepted.
 
-The word **grant** has two distinct meanings. A provider grant is credential
-and renewal state created by `phantom grant`; an authority grant is an inactive
-value-free execution-kernel type. A provider grant must never be accepted as a
-Locus credential, broker lease, or execution permit. Current provider behavior
-is specified in [`docs/grants-spec.md`](docs/grants-spec.md); the root
+The word **grant** has two distinct meanings. Historical provider-grant source
+models credential and renewal metadata, while an authority grant is an inactive
+value-free execution-kernel type. Shipped 0.7.4 creates no live provider grant:
+enrollment and remote revocation hard-deny before credentials or network. A
+provider-grant record must never be accepted as a Locus credential, broker
+lease, or execution permit. Current behavior is specified in
+[`docs/grants-spec.md`](docs/grants-spec.md); the root
 [`ISSUANCE_CONTRACT.md`](ISSUANCE_CONTRACT.md) is the original design contract.
 
 ## Making a change
@@ -93,7 +95,7 @@ Run additional checks for the surface you changed:
 # MCP release binary
 cargo build --release --locked -p phantom-secrets-mcp --bin phantom-mcp
 
-# Provider-grant CLI integration tests
+# Provider hard-denial and exact cfg(test) transaction-scaffolding tests
 cargo test --locked -p phantom-secrets --test grant_github_app_test
 cargo test --locked -p phantom-secrets --test grant_vercel_integration_test
 cargo test --locked -p phantom-secrets --test grant_sentry_test
@@ -129,13 +131,16 @@ CI runs the normal Rust suite on macOS, Linux, and Windows. A successful cross-c
 - Keep secret values out of `Debug`, `Display`, serialization, logs, URLs, argv, receipts, MCP responses, telemetry, and error messages.
 - Wrap secret-bearing memory in the repository's zeroization patterns and test error/early-return paths.
 - Use the hardened filesystem helpers for secret or authority state; defend against symlinks, unsafe permissions, partial writes, and crash recovery.
-- Keep proxy listeners loopback-only and authenticate every request before substitution.
+- Keep proxy listeners loopback-only and authenticate every request before
+  route matching. Client-controlled headers and bodies must remain inert; only
+  the exact matched route may inject its vault value into its fixed auth header.
 - MCP tools must use closed input schemas. A mutation requires the surface's explicit confirmation and out-of-band approval contract; a request ID or digest is not authority.
 - `phantom_do` remains proposal-only. Do not connect its reserved `execute` phase to a shell or production executor.
 - Do not add a plaintext secret argument to MCP. New values must be collected out of band in a trusted terminal.
-- Keep provider consent in the trusted-terminal CLI. Select production provider
-  endpoints from the closed map, keep client secrets out of argv, zeroize
-  issued roots, vault them before reporting success, and return metadata only.
+- Keep all production provider issuance, enrollment, refresh, renewal,
+  rotation, and revocation paths hard-denied before credential access and
+  network I/O. Exact `cfg(test)` mocks may exercise local transaction
+  scaffolding but are not provider acceptance or activation evidence.
 - Keep provider-grant lifecycle separate from authority-grant verification.
   Remote revoke must fail before local mutation until provider revocation is
   implemented and accepted end to end.

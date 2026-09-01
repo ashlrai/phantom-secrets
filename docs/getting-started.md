@@ -23,14 +23,14 @@ agent may invoke.
 
 ## What Phantom actually does
 
-Phantom replaces detected API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in the available OS credential store or encrypted-file fallback. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`, supported service SDKs are redirected through implemented `*_BASE_URL` variables, and the proxy session is authenticated with a fresh `PHANTOM_PROXY_TOKEN`. CLI-generated SDK URLs include the token as a local `/_phantom/<token>/` path segment; header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token` instead. The proxy removes its local auth token before forwarding, replaces session tokens only in allowed headers and body fields, then forwards over TLS to the configured API endpoint. Agents can use value-blind MCP metadata without dotenv read access.
+Phantom replaces detected API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in the available OS credential store or encrypted-file fallback. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`, supported service SDKs are redirected through implemented `*_BASE_URL` variables, and the proxy session is authenticated with a fresh `PHANTOM_PROXY_TOKEN`. CLI-generated SDK URLs include the token as a local `/_phantom/<token>/` path segment; header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token` instead. The proxy removes its local auth token, matches an exact route, discards client control of that route's auth header, and injects only the route-owned vault value into that fixed header before forwarding over TLS. Client headers and bodies never resolve `phm_` tokens. Agents can use value-blind MCP metadata without dotenv read access.
 
 All request bodies are accepted into a bounded buffer before the upstream call,
 so an oversized body fails with HTTP 413 before any partial mutation reaches a
-provider. Text/form bodies retain whole-body token replacement; JSON bodies use
-field-level scoping so values in fields such as `prompt` or `messages` are not
-substituted. SSE/streaming responses remain streamed through content-aware
-response scrubbing.
+provider. Every accepted client body is forwarded byte-for-byte, regardless of
+content type or field names. Client headers are also inert; only the matched
+route's fixed authentication header receives a route-owned credential.
+SSE/streaming responses remain streamed through content-aware response scrubbing.
 
 For a detailed breakdown of assets protected, threat actors, mitigations, and known gaps, see [THREAT_MODEL.md](../THREAT_MODEL.md).
 
@@ -162,7 +162,14 @@ live status, and `PHANTOM_INIT_JOBS` can set the default parallelism.
 
 ### `phantom add` / `phantom remove`
 
+`phantom add` requires an initialized project and never auto-creates config,
+gitignore, or vault state. In a new project with no dotenv file, run
+`phantom init --empty` once before the first add.
+
 ```bash
+# New project only:
+phantom init --empty
+
 # Interactive prompt — value is read silently from the terminal (no echo):
 phantom add STRIPE_SECRET_KEY
 
@@ -178,9 +185,10 @@ phantom remove STRIPE_SECRET_KEY
 ### `phantom rotate`
 
 Regenerates all project phantom tokens without changing the real secrets. A
-`phm_` value is not accepted by the upstream provider, but an exposed mapping
-should still be rotated because an authenticated active Phantom proxy is the
-component that can resolve it.
+`phm_` value is not accepted by the upstream provider and client requests never
+resolve it. Still rotate exposed mappings: unmanaged dotenv entries remain
+possible, and a process with the active proxy bearer can invoke configured
+provider routes using route-owned authentication.
 
 ```bash
 phantom rotate
@@ -433,6 +441,9 @@ You haven't initialized in this directory.
 ```bash
 phantom init
 ```
+
+For a new project with no dotenv file, use `phantom init --empty` before the
+first `phantom add`; `add` never auto-creates project state.
 
 ### API calls return 401 after setup
 

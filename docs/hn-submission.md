@@ -12,12 +12,12 @@ I built Phantom because I watched Claude Code read my .env, grab my OpenAI key, 
 
 The core architecture: `phantom init` replaces managed real secrets in your .env with phantom tokens — 256-bit CSPRNG values prefixed with `phm_`. Your real keys go into the OS credential store or encrypted-file fallback. Application and test processes load the tokens, while agents use value-blind MCP metadata without dotenv read access.
 
-When you run `phantom exec -- claude`, a local reverse proxy starts on 127.0.0.1. It rewrites `OPENAI_BASE_URL` to point at localhost. Your code (or the AI's code) sends requests there with phantom tokens; the proxy swaps them for real credentials and forwards over TLS to the actual API. Not a MITM proxy — no CA certs, no TLS interception. Standard reverse proxy pattern.
+When you run `phantom exec -- claude`, a local reverse proxy starts on 127.0.0.1 and rewrites implemented SDK base URLs to point at localhost. After authenticating and matching an exact route, the proxy discards client control of that route's auth header and injects only the route-owned vault value there before forwarding over TLS. Client headers and bodies never resolve phantom tokens. Not a MITM proxy — no CA certs, no TLS interception. Standard reverse proxy pattern.
 
 Reviewed-route model: the agentic proxy accepts Phantom's exact built-in API
 destinations and binds to loopback. Each `phantom exec` run has a fresh proxy
-bearer and fresh child-process tokens; the persistent project tokens remain in
-dotenv until rotation. Protected database connection strings currently fail
+bearer and fresh child-process placeholders; the persistent project tokens remain
+in dotenv until rotation. Client placeholders are inert. Protected database connection strings currently fail
 closed rather than being injected into the child process.
 
 Modular Rust workspace. MIT licensed. No SaaS dependency for local protection.

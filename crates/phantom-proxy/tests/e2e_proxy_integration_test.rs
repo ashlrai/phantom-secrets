@@ -10,10 +10,9 @@
 //!    simultaneously on separate connections; secrets split across chunk
 //!    boundaries must be scrubbed before reaching the client in both streams.
 //!
-//! 3. **Malformed/partial request bodies with mixed content types** — truncated
-//!    JSON, empty bodies, multi-part and octet-stream all exercise the
-//!    body_scope / scoped_body_replace paths; phantom tokens in disallowed
-//!    fields must never reach the upstream.
+//! 3. **Client body pass-through with mixed content types** — truncated JSON,
+//!    empty bodies, form, multipart, and octet-stream remain byte-preserving;
+//!    no client body can resolve a phantom token into a real credential.
 //!
 //! 4. **Response scrubbing with adaptive leak profiles under load** — repeated
 //!    exposure of a vault-registered secret in a JSON response trains the
@@ -483,7 +482,13 @@ async fn test_concurrent_sse_and_json_streaming_secrets_scrubbed() {
 
     let mut token_map = HashMap::new();
     token_map.insert(phantom.to_string(), secret.to_string());
-    let interceptor = Interceptor::new(token_map);
+    let interceptor = Interceptor::new_with_named(
+        token_map,
+        HashMap::from([
+            ("SSE_KEY".to_string(), secret.to_string()),
+            ("JSON_KEY".to_string(), secret.to_string()),
+        ]),
+    );
 
     let mut registry = ServiceRegistry::new();
     registry.add_route(ServiceRoute {
@@ -661,7 +666,10 @@ async fn test_proxy_forces_identity_and_rejects_encoded_upstream_responses() {
             ..ProxyConfig::default()
         },
         registry,
-        Interceptor::new(token_map),
+        Interceptor::new_with_named(
+            token_map,
+            HashMap::from([("ENCODING_KEY".to_string(), secret.to_string())]),
+        ),
     )
     .await
     .unwrap();
@@ -759,11 +767,10 @@ async fn test_proxy_forces_identity_and_rejects_encoded_upstream_responses() {
 //  - Truncated JSON: proxy forwards body as-is (no panic, no 500).
 //  - Empty JSON body: proxy returns success, upstream receives empty.
 //  - application/octet-stream with phantom token: token NOT substituted (F9).
-//  - application/x-www-form-urlencoded with token: uses field-aware replacement.
+//  - application/x-www-form-urlencoded with token: passes through unchanged.
 //  - multipart/form-data: falls through buffered path unchanged.
 //
-// Exercises: body_scope.rs (scoped_body_replace, should_stream_replace),
-//            server.rs (buffered path, size limit check).
+// Exercises: server.rs (byte-preserving bounded request path).
 
 #[tokio::test]
 async fn test_malformed_partial_bodies_mixed_content_types() {
@@ -779,7 +786,7 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
             .into_iter()
             .map(|(token, value)| (token, ("API_KEY".to_string(), value)))
             .collect(),
-        HashMap::new(),
+        HashMap::from([("API_KEY".to_string(), real_secret.to_string())]),
     );
 
     let mut registry = ServiceRegistry::new();
@@ -824,7 +831,7 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
     );
     let last = reqs.last().unwrap();
     let body_str = String::from_utf8_lossy(&last.body);
-    // Malformed JSON: scoped_body_replace falls back to unchanged (F9 safety).
+    // Every client request body is forwarded unchanged.
     // Real secret must NOT appear regardless.
     assert!(
         !body_str.contains(real_secret),
@@ -872,7 +879,7 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
         "phantom token in octet-stream should pass through unchanged: {binary_body_received}"
     );
 
-    // --- 3d: application/x-www-form-urlencoded — allowed field replaced ---
+    // --- 3d: application/x-www-form-urlencoded — unchanged ---
     let form_body = format!("client_secret={phantom_token}&grant_type=client_credentials");
     let resp_form = client
         .post(format!("http://127.0.0.1:{proxy_port}/api/v1/token"))
@@ -889,14 +896,13 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
     let reqs_final = mock.recorded();
     let form_req = reqs_final.last().unwrap();
     let form_received = String::from_utf8_lossy(&form_req.body);
-    // The bounded form parser replaces only an allowed field owned by this route.
     assert!(
-        !form_received.contains(phantom_token),
-        "phantom token should be replaced in form-urlencoded body: {form_received}"
+        form_received.contains(phantom_token),
+        "phantom token should pass through form-urlencoded body: {form_received}"
     );
     assert!(
-        form_received.contains(real_secret),
-        "real secret should appear in form-urlencoded body: {form_received}"
+        !form_received.contains(real_secret),
+        "real secret must not appear in form-urlencoded body: {form_received}"
     );
 
     // --- 3e: multipart/form-data — falls through buffered path, token NOT replaced ---
@@ -918,7 +924,7 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
     let reqs_mp = mock.recorded();
     let mp_req = reqs_mp.last().unwrap();
     let mp_received = String::from_utf8_lossy(&mp_req.body);
-    // Multipart is neither JSON nor form-urlencoded so token is NOT substituted.
+    // Multipart, like every other client body, is not substituted.
     assert!(
         !mp_received.contains(real_secret),
         "SECURITY: real secret leaked in multipart body: {mp_received}"
@@ -1265,7 +1271,10 @@ async fn test_rate_limiter_429_response_headers_and_body() {
             ..ProxyConfig::default()
         },
         registry,
-        Interceptor::new(HashMap::new()),
+        Interceptor::new_with_named(
+            HashMap::new(),
+            HashMap::from([("RATE_KEY".to_string(), "rate-test-secret".to_string())]),
+        ),
     )
     .await
     .unwrap();
@@ -1356,7 +1365,10 @@ async fn test_buffered_upstream_response_is_bounded_before_scrubbing() {
             ..ProxyConfig::default()
         },
         registry,
-        Interceptor::new(HashMap::new()),
+        Interceptor::new_with_named(
+            HashMap::new(),
+            HashMap::from([("API_KEY".to_string(), "response-bound-test".to_string())]),
+        ),
     )
     .await
     .unwrap();

@@ -4,7 +4,7 @@
 
 Windsurf's Cascade AI reads files in your workspace to understand context. A `.env` file containing real API keys is visible to Cascade and can surface in suggestions, explanations, and generated code.
 
-After `phantom init`, your `.env` holds only phantom tokens (`phm_...`). Cascade reads the tokens, not the real values. When your code makes an outbound API call during development, the local Phantom proxy replaces the token with the real value before the request leaves your machine.
+After `phantom init`, successfully managed dotenv entries hold phantom tokens (`phm_...`). Cascade reads the tokens, not the real values. For a supported outbound API call, the authenticated proxy matches an exact route and injects only its route-owned vault value into the fixed auth header. Client-controlled headers and bodies never resolve tokens.
 
 The MCP integration exposes the release-schema-verified catalog in Windsurf's
 Cascade chat. The current release contract enforces 54 unique tools; runtime
@@ -68,7 +68,8 @@ For an explicitly supervised longer session, run `phantom start` in a trusted
 terminal and keep it open. Copy the printed exports into the terminal that
 launches Windsurf, then press Ctrl-C in the original owning terminal to stop.
 Detached `--daemon` mode and current external process control fail closed;
-`phantom stop` only migrates authenticated v0.7.3 state.
+`phantom stop` authenticates legacy v0.7.3 state only to report manual
+migration guidance and never kills a process or deletes the record.
 
 ---
 
@@ -106,7 +107,7 @@ phantom doctor
 phantom sync --platform vercel --project prj_abc123
 ```
 
-Inside a session started with `phantom exec`, your application code runs normally. The `phm_...` token in `process.env.MY_KEY` is swapped for the real value by the proxy before HTTP requests are made.
+Inside a session started with `phantom exec`, your application code runs normally. `process.env.MY_KEY` may hold a `phm_...` token, while an exact supported proxy route injects its own configured vault value into the upstream auth header. The token itself is never swapped in a client header or body.
 
 ---
 

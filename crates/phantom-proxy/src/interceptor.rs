@@ -266,15 +266,15 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// The interceptor replaces phantom tokens with real secrets in HTTP requests,
-/// and scrubs real secrets from API responses to prevent leakage.
+/// The interceptor injects configured route-owned secrets into fixed auth
+/// headers and scrubs real secrets from API responses to prevent leakage.
+/// Client-controlled phantom-token substitution is disabled in 0.7.4.
 #[derive(Clone)]
 pub struct Interceptor {
     /// phantom_token_string -> real_secret_value (for outgoing requests)
     token_map: HashMap<String, SecretValue>,
-    /// phantom token -> configured secret key. Request-side substitution is
-    /// route-scoped through this map; tokens without an owner never resolve on
-    /// a proxy route.
+    /// Legacy phantom-token ownership metadata retained for compatibility.
+    /// No client token resolves on a proxy route.
     token_secret_keys: HashMap<String, String>,
     /// env var / secret name -> real_secret_value (for configured header injection)
     named_secrets: HashMap<String, SecretValue>,
@@ -363,59 +363,29 @@ impl Interceptor {
         }
     }
 
-    /// Replace any phantom tokens found in a string with their real values.
-    /// Returns the modified string and whether any replacements were made.
+    /// Compatibility API: client-controlled strings are never substituted.
     pub fn replace_in_str(&self, input: &str) -> (String, bool) {
-        let pairs: Vec<(&str, &str)> = self
-            .token_map
-            .iter()
-            .map(|(token, secret)| (token.as_str(), secret.value.as_str()))
-            .collect();
-        find_replace_str(input, &pairs)
+        (input.to_string(), false)
     }
 
-    /// Replace phantom tokens in a byte buffer (for request bodies).
-    /// Returns the modified bytes and whether any replacements were made.
+    /// Compatibility API: client-controlled bytes are never substituted.
     pub fn replace_in_bytes(&self, input: &[u8]) -> (Vec<u8>, bool) {
-        let pairs: Vec<(&str, &str)> = self
-            .token_map
-            .iter()
-            .map(|(token, secret)| (token.as_str(), secret.value.as_str()))
-            .collect();
-        find_replace_bytes_via_str(input, &pairs)
+        (input.to_vec(), false)
     }
 
-    /// Replace only tokens owned by the matched route's configured secret.
-    pub fn replace_in_str_for_secret(&self, input: &str, secret_key: &str) -> (String, bool) {
-        let pairs: Vec<(&str, &str)> = self
-            .token_map
-            .iter()
-            .filter(|(token, _)| {
-                self.token_secret_keys.get(*token).map(String::as_str) == Some(secret_key)
-            })
-            .map(|(token, secret)| (token.as_str(), secret.value.as_str()))
-            .collect();
-        find_replace_str(input, &pairs)
+    /// Compatibility API: route ownership does not authorize substitution.
+    pub fn replace_in_str_for_secret(&self, input: &str, _secret_key: &str) -> (String, bool) {
+        (input.to_string(), false)
     }
 
     /// Byte-buffer equivalent of [`Self::replace_in_str_for_secret`].
-    pub fn replace_in_bytes_for_secret(&self, input: &[u8], secret_key: &str) -> (Vec<u8>, bool) {
-        let pairs: Vec<(&str, &str)> = self
-            .token_map
-            .iter()
-            .filter(|(token, _)| {
-                self.token_secret_keys.get(*token).map(String::as_str) == Some(secret_key)
-            })
-            .map(|(token, secret)| (token.as_str(), secret.value.as_str()))
-            .collect();
-        find_replace_bytes_via_str(input, &pairs)
+    pub fn replace_in_bytes_for_secret(&self, input: &[u8], _secret_key: &str) -> (Vec<u8>, bool) {
+        (input.to_vec(), false)
     }
 
-    /// Format a header value by replacing the {secret} placeholder with the real secret.
-    pub fn format_header_value(&self, format: &str, phantom_token: &str) -> Option<String> {
-        self.token_map
-            .get(phantom_token)
-            .map(|secret| format.replace("{secret}", &secret.value))
+    /// Compatibility API: phantom tokens cannot select an auth secret.
+    pub fn format_header_value(&self, _format: &str, _phantom_token: &str) -> Option<String> {
+        None
     }
 
     /// Format a header value using a configured secret name.
@@ -425,22 +395,19 @@ impl Interceptor {
             .map(|secret| format.replace("{secret}", &secret.value))
     }
 
-    /// Look up the real secret for a phantom token.
-    pub fn resolve(&self, phantom_token: &str) -> Option<&str> {
-        self.token_map.get(phantom_token).map(|s| s.value.as_str())
+    /// Compatibility API: phantom tokens never resolve to real values.
+    pub fn resolve(&self, _phantom_token: &str) -> Option<&str> {
+        None
     }
 
-    /// Check if a value contains any phantom tokens.
-    pub fn contains_phantom_token(&self, value: &str) -> bool {
-        self.token_map
-            .keys()
-            .any(|token| value.contains(token.as_str()))
+    /// Compatibility API: client token inspection never authorizes resolution.
+    pub fn contains_phantom_token(&self, _value: &str) -> bool {
+        false
     }
 
-    pub fn contains_phantom_token_for_secret(&self, value: &str, secret_key: &str) -> bool {
-        self.token_secret_keys
-            .iter()
-            .any(|(token, owner)| owner == secret_key && value.contains(token.as_str()))
+    pub fn contains_phantom_token_for_secret(&self, _value: &str, _secret_key: &str) -> bool {
+        let _ = &self.token_secret_keys;
+        false
     }
 
     /// Number of token mappings.
@@ -556,24 +523,25 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_in_header_value() {
+    fn test_client_header_value_is_inert() {
         let interceptor = test_interceptor();
         let (result, replaced) = interceptor.replace_in_str(
             "Bearer phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222",
         );
-        assert!(replaced);
-        assert_eq!(result, "Bearer sk-real-openai-key-12345");
+        assert!(!replaced);
+        assert!(result.contains("phm_"));
+        assert!(!result.contains("sk-real-openai-key-12345"));
     }
 
     #[test]
-    fn test_replace_in_body() {
+    fn test_client_body_is_inert() {
         let interceptor = test_interceptor();
         let body = r#"{"api_key": "phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222"}"#;
         let (result, replaced) = interceptor.replace_in_bytes(body.as_bytes());
-        assert!(replaced);
+        assert!(!replaced);
         let result_str = String::from_utf8(result).unwrap();
-        assert!(result_str.contains("sk-real-openai-key-12345"));
-        assert!(!result_str.contains("phm_"));
+        assert!(!result_str.contains("sk-real-openai-key-12345"));
+        assert!(result_str.contains("phm_"));
     }
 
     #[test]
@@ -585,9 +553,9 @@ mod tests {
     }
 
     #[test]
-    fn test_contains_phantom_token() {
+    fn test_compatibility_token_checks_are_inert() {
         let interceptor = test_interceptor();
-        assert!(interceptor.contains_phantom_token(
+        assert!(!interceptor.contains_phantom_token(
             "Bearer phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222"
         ));
         assert!(!interceptor.contains_phantom_token("Bearer sk-real-key"));
@@ -599,9 +567,40 @@ mod tests {
         assert_eq!(
             interceptor
                 .resolve("phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222"),
-            Some("sk-real-openai-key-12345")
+            None
         );
         assert_eq!(interceptor.resolve("phm_nonexistent"), None);
+    }
+
+    #[test]
+    fn all_client_token_compatibility_apis_fail_closed() {
+        let token = "phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222";
+        let secret = "sk-real-openai-key-12345";
+        let mut scoped = HashMap::new();
+        scoped.insert(
+            token.to_string(),
+            ("OPENAI_API_KEY".to_string(), secret.to_string()),
+        );
+        let mut named = HashMap::new();
+        named.insert("OPENAI_API_KEY".to_string(), secret.to_string());
+        let interceptor = Interceptor::new_scoped(scoped, named);
+
+        let (text, text_changed) = interceptor.replace_in_str_for_secret(token, "OPENAI_API_KEY");
+        let (bytes, bytes_changed) =
+            interceptor.replace_in_bytes_for_secret(token.as_bytes(), "OPENAI_API_KEY");
+        assert_eq!(text, token);
+        assert!(!text_changed);
+        assert_eq!(bytes, token.as_bytes());
+        assert!(!bytes_changed);
+        assert!(!interceptor.contains_phantom_token_for_secret(token, "OPENAI_API_KEY"));
+        assert_eq!(
+            interceptor.format_header_value("Bearer {secret}", token),
+            None
+        );
+        assert_eq!(
+            interceptor.format_header_for_secret_key("Bearer {secret}", "OPENAI_API_KEY"),
+            Some(format!("Bearer {secret}"))
+        );
     }
 
     #[test]
@@ -637,14 +636,14 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_replacements_in_body() {
+    fn test_multiple_client_tokens_remain_inert() {
         let interceptor = test_interceptor();
         let body = "key1=phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222&key2=phm_1111222233334444555566667777888899990000aaaabbbbccccddddeeee0000";
         let (result, replaced) = interceptor.replace_in_str(body);
-        assert!(replaced);
-        assert!(result.contains("sk-real-openai-key-12345"));
-        assert!(result.contains("sk-ant-real-anthropic-key"));
-        assert!(!result.contains("phm_"));
+        assert!(!replaced);
+        assert!(!result.contains("sk-real-openai-key-12345"));
+        assert!(!result.contains("sk-ant-real-anthropic-key"));
+        assert_eq!(result.matches("phm_").count(), 2);
     }
 
     #[test]

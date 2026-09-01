@@ -1,6 +1,6 @@
 # Phantom — Full Reference
 
-Phantom is an open-source CLI that keeps real API keys out of supported, value-blind AI-agent paths. It replaces managed dotenv values with persistent `phm_` mappings; an authenticated local HTTP proxy resolves fresh session credentials only for configured upstream routes. Persistent mappings are sensitive metadata and must remain confidential.
+Phantom is an open-source CLI that helps keep real API keys out of AI-agent context. It replaces successfully managed dotenv secrets with persistent non-provider `phm_` placeholders. An authenticated local HTTP proxy matches exact supported routes and injects a route-owned vault value only into that route's fixed authentication header; client headers and bodies never resolve placeholders. Persistent mappings are sensitive metadata and must remain confidential.
 
 Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
@@ -27,11 +27,11 @@ https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/
 
 2. `phantom exec -- claude` starts a local HTTP reverse proxy on 127.0.0.1. It sets SDK-compatible BASE_URL environment variables (e.g., OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/), exposes a fresh PHANTOM_PROXY_TOKEN to the child process, then launches the specified command.
 
-3. When code makes an API call, the proxy authenticates the local session, removes its local auth token before forwarding, replaces mapped tokens in request headers, buffers the request body in full within its size bound before scoped replacement, and forwards over TLS to the configured API endpoint. Provider responses can stream, including SSE.
+3. When code makes an API call, the proxy authenticates the local session, removes its local auth token, matches an exact route, discards client control of that route's authentication header, and injects only the route-owned vault value into the fixed header before forwarding over TLS. Client headers and bodies never resolve `phm_` placeholders. Bodies are bounded and forwarded byte-for-byte; provider responses can stream, including SSE.
 
 4. Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN. Header-aware clients can set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 and send it as x-phantom-proxy-token instead of using path-authenticated local SDK URLs.
 
-5. In the supported managed workflow, the agent receives sensitive managed mappings and scrubbed responses rather than real credential values. `phantom exec` supplies separate fresh session credentials, which must be protected while active. Unmanaged files, logs, direct environment injection, custom tools, and provider behavior remain outside that claim.
+5. In the supported managed workflow, the agent receives sensitive managed placeholders and scrubbed responses rather than real credential values. `phantom exec` supplies a fresh proxy bearer, which must be protected while active. Unmanaged files, logs, direct environment injection, custom tools, and provider behavior remain outside that claim.
 
 
 ## Install
@@ -104,7 +104,7 @@ Show secret names stored in vault. Never shows values.
 Options: --json (emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded)
 
 ### phantom add <KEY>
-Add a secret to the vault. Writes a persistent sensitive `phm_` mapping to .env.
+Transactionally add a secret to an initialized project. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Writes a persistent sensitive `phm_` mapping to the managed dotenv file.
 Prompts silently on the controlling terminal, so the value never enters shell history or `ps aux`. Positional secret values are rejected; use `--stdin` for a pipe.
 Example (interactive, hidden input): phantom add STRIPE_SECRET_KEY
 Options: --stdin (read one line from a piped stdin; CI-friendly: `echo "$VAL" | phantom add KEY --stdin`)
@@ -221,13 +221,15 @@ Options: --only <scripts> (whitelist), --skip <scripts> (blacklist)
 Reverse phantom wrap. Restores original scripts from :raw variants.
 
 ### phantom watch
-Watch .env for changes and update vault automatically.
+Watch managed dotenv files and report new unprotected secrets. The compatibility
+--auto flag hard-denies before mutation in 0.7.4; review the file and run
+transactional phantom init from a trusted terminal.
 
 ### phantom why <KEY>
 Explain why an environment variable is or isn't protected (shows classification heuristic).
 
 ### phantom copy <KEY> --to <dir>
-Copy a secret to another phantom-initialized project without exposing the value.
+After exact trusted-terminal confirmation, copy a secret to another phantom-initialized project without printing the value. Refuses an existing target vault entry, config ownership, or managed-dotenv key rather than overwriting it.
 Options: --rename <newname>
 
 ### phantom team list / create / members / invite / key-publish / vault-push / vault-pull
@@ -418,12 +420,11 @@ phantom-vault
   Shared crypto module: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key).
 
 phantom-proxy
-  HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, resolves mapped values in headers and
-  bounded, fully buffered request bodies, then forwards over TLS. Uses hyper for server and reqwest
-  for outbound HTTPS.
-  Request bodies are buffered in full within the enforced size bound before replacement.
-  JSON bodies use field-level F9 scoping (tokens in prompt/messages/content fields are not
-  substituted). Provider responses can stream, including SSE.
+  Authenticated HTTP reverse proxy on 127.0.0.1. It matches an exact configured route, discards
+  client control of that route's authentication header, injects only the route-owned vault value
+  into the fixed header, then forwards over TLS. Client headers and bodies never resolve tokens.
+  Request bodies are buffered within the enforced size bound and forwarded byte-for-byte.
+  Provider responses can stream, including SSE.
 
 phantom-core
   Also contains: importers module (doppler, infisical, dotenvx, 1password, env parsers);
@@ -460,9 +461,9 @@ Major vault retrieval, serialization, and decrypted-file buffers use targeted
 zeroization. Some proxy lookup copies remain ordinary strings, so zeroization is
 defense in depth rather than a complete memory-erasure guarantee.
 
-Allowlist model: proxy only injects for configured service URL patterns. Unknown services are not modified.
+Route model: the proxy injects only after an exact configured route match and only into that route's fixed authentication header. Unknown services are rejected; client headers and bodies remain inert.
 
-The persistent `phm_` mappings written to managed `.env` files persist until an explicit rotation or rewrite and must be handled as sensitive metadata. `phantom exec` replaces them in the child environment with fresh session `phm_` values and also creates a separate fresh `PHANTOM_PROXY_TOKEN`; those session credentials stop working when that proxy exits and must be protected while active. CLI-generated SDK URLs include the proxy token locally, and header-aware clients can opt into x-phantom-proxy-token.
+The persistent `phm_` mappings written to managed `.env` files persist until an explicit rotation or rewrite and must be handled as sensitive metadata. `phantom exec` replaces them in the child environment with fresh session `phm_` placeholders and also creates a separate fresh `PHANTOM_PROXY_TOKEN`. Client placeholders are never resolved; the bearer stops working when that proxy exits and must be protected while active. CLI-generated SDK URLs include the proxy bearer locally, and header-aware clients can opt into x-phantom-proxy-token.
 
 Cloud tokens stored hashed (SHA-256) in database — never plaintext.
 
@@ -497,7 +498,7 @@ Public key prefixes (never protected — browser-safe by convention):
 Non-secrets left untouched:
   NODE_ENV, PORT, DEBUG, APP_NAME, LOG_LEVEL, and similar config values
 
-Detection does not imply proxy compatibility. Connection strings can be classified and vaulted, but database drivers do not use Phantom's HTTP proxy; `phantom exec` fails closed rather than pass a protected connection string to the child. The proxy substitutes credentials only on configured HTTP upstream routes.
+Detection does not imply proxy compatibility. Connection strings can be classified and vaulted, but database drivers do not use Phantom's HTTP proxy; `phantom exec` fails closed rather than pass a protected connection string to the child. The proxy injects route-owned authentication only on exact configured HTTP upstream routes; it never substitutes client tokens.
 
 
 ## Configuration (.phantom.toml)

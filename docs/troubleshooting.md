@@ -11,6 +11,8 @@ phantom init
 ```
 
 This reads your `.env`, stores real secrets in the vault, and rewrites `.env` with phantom tokens.
+If this is a new project with no dotenv file, run `phantom init --empty` before
+the first `phantom add`; `add` does not bootstrap project state.
 
 ### "Secret not found in vault"
 
@@ -49,8 +51,9 @@ The default upstream timeout is 30 seconds. For long-running API calls:
 
 The proxy buffers each request body under a strict size limit before contacting
 the upstream. Bodies over the default 10 MB limit fail closed with HTTP 413, so
-the upstream receives no truncated prefix. Accepted text/form bodies use
-whole-body replacement; accepted JSON bodies use field-scoped replacement.
+the upstream receives no truncated prefix. Accepted bodies are forwarded
+byte-for-byte; no client header or body resolves a `phm_` token. Only the
+matched route's fixed authentication header receives its route-owned value.
 
 Split larger requests. The body-limit configuration is not currently exposed
 through `.phantom.toml`; track the repository issues for future configuration.
@@ -58,8 +61,9 @@ through `.phantom.toml`; track the repository issues for future configuration.
 ### Claude Code can't read my .env file
 
 Many Claude Code setups block reading `.env` files by default. Keep that
-boundary: Phantom-managed `phm_` entries are not provider credentials, but an
-authenticated active Phantom proxy can resolve a mapped token. Sibling dotenv
+boundary: Phantom-managed `phm_` entries are not provider credentials and are
+never resolved from client headers or bodies. An active bearer authorizes exact
+routes that inject their own route-owned credentials. Sibling dotenv
 files or backups from other tools can also still contain plaintext.
 
 Fix it automatically:
@@ -116,16 +120,23 @@ in the workspace, so detached startup and current external process control fail 
 Use `phantom exec -- <command>` for the normal child-owned lifecycle. For an
 explicitly supervised shared proxy, run `phantom start` in a trusted terminal,
 keep that terminal open, and press Ctrl-C there to stop. `phantom status` can
-report whether the private machine-local lifecycle lock is held, but that does
+report whether the OS user-data-directory lifecycle lock is held, but that does
 not authenticate a listener and cannot recover a port or bearer. `phantom start`
 also refuses headless invocation unless stdin, stdout, and stderr are terminals.
+Unix lock permissions are restricted. On Windows, Phantom relies on the
+inherited user-data-directory ACL and does not independently verify it.
 
 During an upgrade only, a v0.7.3 workspace may contain `.phantom.pid` in the
-legacy `PID:port:bearer` format. Run `phantom stop` from a trusted interactive
-terminal: it sends shutdown only after the recorded loopback service proves the
-bearer and expects the old owner to remove its record. Malformed, stale,
-unauthenticated, or symlinked records are left untouched for manual inspection;
-Phantom never creates new `.phantom.pid` or `.phantom.start.lock` state.
+legacy `PID:port:bearer` format. v0.7.3 did not ship an authenticated remote
+shutdown endpoint, so the new `phantom stop` authenticates the recorded
+loopback service only to distinguish a live owner from unverified state. It
+never kills a process or deletes the record. Stop the old proxy with Ctrl-C in
+its owning v0.7.3 terminal. If that is unavailable, use a checksum-verified
+v0.7.3 binary from a trusted terminal; as a last resort, independently verify
+that neither the recorded process nor loopback listener remains before manually
+removing `.phantom.pid`. Malformed, stale, unauthenticated, or symlinked records
+remain untouched. Phantom never creates new `.phantom.pid` or
+`.phantom.start.lock` state.
 
 ### An enterprise HTTP proxy is ignored
 
@@ -214,9 +225,10 @@ phantom pull --from vercel --project prj_xxx --force
 That is the intended boundary when the agent uses value-blind MCP tools and a
 supported API is launched through `phantom exec`. The upstream provider does
 not accept `phm_` values directly, and `phantom exec` issues fresh child-process
-tokens for each run. Treat any exposed token as sensitive metadata and rotate
-it: a party that also controls an authenticated active proxy may be able to
-resolve the mapping. Phantom does not cover unmanaged plaintext files or tools
+placeholders for each run. Treat any exposed token as sensitive metadata and
+rotate it. Client headers and bodies never resolve placeholders, but a stolen
+live proxy bearer can authorize exact routes that inject their own vault value.
+Phantom does not cover unmanaged plaintext files or tools
 launched outside the proxy environment.
 
 ## Vault Backup

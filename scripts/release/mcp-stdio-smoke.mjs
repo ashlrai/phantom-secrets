@@ -266,7 +266,7 @@ try {
   const registry = JSON.parse(readFileSync(registryPath, "utf8"));
   if (
     registry.description !==
-    "Reduce credential exposure for AI coding agents on Phantom-supported paths. A local proxy swaps managed secrets for phm_ tokens."
+    "Reduce credential exposure for AI coding agents on Phantom-supported paths. An authenticated local proxy injects only fixed route-owned authentication; client headers and bodies never resolve phm_ tokens."
   ) {
     throw new Error("registry description must remain evidence-bounded");
   }

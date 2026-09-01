@@ -20,7 +20,7 @@ const mono = JetBrains_Mono({
 const SITE_URL = "https://phm.dev";
 const TITLE = "Phantom — Delegate credentialed API work to AI";
 const DESCRIPTION =
-  "Phantom gives supported AI-agent workflows placeholders while an authenticated local proxy resolves fresh session tokens only for configured upstreams. Works with Claude Code, Cursor, Windsurf, and Codex.";
+  "Phantom gives supported AI-agent workflows placeholders while an authenticated local proxy injects route-owned authentication only for exact configured routes. Works with Claude Code, Cursor, Windsurf, and Codex.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -74,7 +74,7 @@ export const metadata: Metadata = {
     creator: "@ashlrai",
     title: TITLE,
     description:
-      "Supported AI workflows get placeholders. An authenticated local proxy resolves session tokens for configured upstreams. Open-source CLI for Claude Code, Cursor, Windsurf, and Codex.",
+      "Supported AI workflows get placeholders. An authenticated local proxy injects route-owned authentication only for exact configured routes. Open-source CLI for Claude Code, Cursor, Windsurf, and Codex.",
     images: ["/og-image.png"],
   },
   icons: {
@@ -197,7 +197,7 @@ export default function RootLayout({
                 {
                   "@type": "HowToStep",
                   name: "Run your code with the proxy injecting real keys",
-                  text: "Use `phantom exec -- <command>` to launch a child process with authenticated base-URL overrides for Phantom's supported HTTP SDK routes. The local proxy resolves fresh session tokens only on configured upstream routes; unsupported connection strings fail closed.",
+                  text: "Use `phantom exec -- <command>` to launch a child process with authenticated base-URL overrides for Phantom's supported HTTP SDK routes. After an exact route match, the local proxy injects only that route's vault value into its fixed authentication header; client placeholders remain inert and unsupported connection strings fail closed.",
                 },
               ],
             }),
@@ -224,7 +224,7 @@ export default function RootLayout({
                   name: "What does AI see when Phantom is installed?",
                   acceptedAnswer: {
                     "@type": "Answer",
-                    text: "A managed .env file contains persistent phm_xxxxxxxx placeholders instead of provider credentials. phantom exec creates fresh child-session tokens, and the authenticated local proxy resolves them only for configured supported HTTP routes.",
+                    text: "A managed .env file contains persistent phm_xxxxxxxx placeholders instead of provider credentials. phantom exec creates fresh child placeholders and a separate proxy bearer. The authenticated proxy injects route-owned authentication only after an exact supported route match; client placeholders remain inert.",
                   },
                 },
                 {
@@ -232,7 +232,7 @@ export default function RootLayout({
                   name: "What happens if a phm_ token leaks from AI logs?",
                   acceptedAnswer: {
                     "@type": "Answer",
-                    text: "The managed .env phm_ placeholder persists until rotation and is not the provider credential. phantom exec separately creates fresh session phm_ values and a fresh PHANTOM_PROXY_TOKEN for the child; both stop working when that proxy session ends.",
+                    text: "The managed .env phm_ placeholder persists until rotation and is not the provider credential. phantom exec separately creates fresh child placeholders and a fresh PHANTOM_PROXY_TOKEN; placeholders are never client-resolved, while the bearer stops working when that proxy session ends.",
                   },
                 },
                 {

@@ -4,7 +4,7 @@
 
 Claude Code can inspect files that its workspace permissions allow. If those permissions include a dotenv file with real values, the credentials can enter agent context, transcripts, tool logs, or generated code.
 
-Phantom removes real values from managed dotenv files, keeps dotenv read permissions closed, and exposes value-blind MCP metadata instead. Application and test processes load the `phm_` placeholders; when they make an API call, the local Phantom proxy swaps the placeholder for the real credential before the request leaves your machine.
+Phantom removes real values from managed dotenv files, keeps dotenv read permissions closed, and exposes value-blind MCP metadata instead. Application and test processes load `phm_` placeholders. On supported HTTP paths, the authenticated proxy matches an exact route and injects only that route's vault value into its fixed auth header; client headers and bodies never resolve placeholders.
 
 The MCP integration goes further: Claude gains the release-schema-verified tool
 catalog for value-free secret workflows. The current release contract enforces
@@ -213,7 +213,8 @@ exact action and keep deployment/provider authority separately constrained.
 Use `phantom exec` for a child-owned session, or run foreground `phantom start`
 in a trusted terminal and press Ctrl-C in that same terminal to stop. Detached
 `--daemon` mode and current external process control fail closed; `phantom stop`
-only migrates authenticated v0.7.3 state.
+authenticates legacy v0.7.3 state only to report manual migration guidance and
+never kills a process or deletes the record.
 
 ---
 

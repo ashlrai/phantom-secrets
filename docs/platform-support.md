@@ -50,8 +50,8 @@ part of the exact-archive acceptance process below.
 |---|---|---|---|
 | Core CLI, vault, proxy, MCP source | Implemented | Implemented | Implemented |
 | Native credential store | Keychain integration | Secret Service/keyring integration, with encrypted-file fallback | Credential Manager integration |
-| Provider-grant CLI source | Implemented | Implemented | Implemented |
-| Provider consent and keychain acceptance | Requires live, separately authorized native testing | Requires live, separately authorized native testing | Requires live, separately authorized native testing |
+| Provider-grant design source and value-free metadata | Present | Present | Present |
+| Provider issuance/enrollment/renewal/revocation | Hard-denied before credential/network access in 0.7.4 | Hard-denied before credential/network access in 0.7.4 | Hard-denied before credential/network access in 0.7.4 |
 | Workspace inspect/propose/request | Implemented | Implemented | Inspect/propose only |
 | Durable workspace apply | Descriptor-relative Unix implementation | Descriptor-relative Unix implementation | Fails closed |
 | Durable broker replay foundation | Unix implementation | Unix implementation | Fails closed |

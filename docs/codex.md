@@ -7,8 +7,9 @@ OpenAI Codex runs in a sandboxed environment and executes tasks autonomously. It
 After `phantom init`, managed dotenv secrets are replaced by `phm_` tokens, so
 Codex can use value-blind metadata instead of real values. For supported HTTP
 API routes in a process launched by `phantom exec`, the authenticated local
-proxy replaces a fresh session token before the request reaches the configured
-provider. Connection strings and unsupported protocols fail closed or require
+proxy matches an exact route and injects only its route-owned vault value into
+the fixed auth header; client headers and bodies never resolve tokens.
+Connection strings and unsupported protocols fail closed or require
 a separately approved workflow; unmanaged files remain outside this boundary.
 
 The MCP integration registers Phantom's release-schema-verified catalog in
@@ -79,7 +80,8 @@ For explicitly supervised repeated runs, start `phantom start` in a trusted
 terminal and keep it open. Copy the printed exports into a second terminal,
 launch Codex there, and press Ctrl-C in the original owning terminal to stop.
 Detached `--daemon` mode and current external process control fail closed;
-`phantom stop` is reserved for authenticated v0.7.3 migration cleanup.
+`phantom stop` authenticates legacy v0.7.3 state only to report manual
+migration guidance and never kills a process or deletes the record.
 
 ---
 
@@ -121,8 +123,9 @@ phantom cloud push
 
 Codex writes code that references `process.env.RESEND_API_KEY` (or equivalent).
 Under `phantom exec`, that variable holds a fresh-session `phm_...` token. For a
-supported HTTP SDK route, the local proxy can swap that token when Codex makes a
-test call. The generated environment-variable lookup can remain unchanged, but
+supported HTTP SDK route, the local proxy discards client control of the route
+auth header and injects its configured vault value when Codex makes a test call.
+The generated environment-variable lookup can remain unchanged, but
 the production runtime must be provisioned separately with the corresponding
 credential or an approved secret-manager integration. Phantom's local proxy
 does not deploy or authorize production credentials.
@@ -148,9 +151,9 @@ environment or where you explicitly copied the exports printed by an active
 foreground `phantom start`. Launching Codex from a GUI shortcut or an unrelated
 terminal bypasses the proxy. Prefer `phantom exec -- codex <task>`.
 
-**Token in `.env` is not being replaced during test calls**
+**Supported API call is not receiving route-owned authentication**
 
-The proxy only intercepts requests sent to URLs that match configured service mappings (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, etc.). If your code uses a hardcoded URL rather than the `*_BASE_URL` environment variable, it bypasses the proxy. Check `phantom status` to see which service URLs are rewritten, and update your code to use the env var.
+The proxy only injects authentication for requests sent to URLs that match configured service mappings (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, etc.). If your code uses a hardcoded URL rather than the `*_BASE_URL` environment variable, it bypasses the proxy. Check `phantom status` to see which service URLs are rewritten, and update your code to use the env var.
 
 ---
 

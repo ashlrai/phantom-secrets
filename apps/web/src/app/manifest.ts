@@ -5,7 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
     name: "Phantom — Delegate credentialed API work to AI",
     short_name: "Phantom",
     description:
-      "Open-source CLI that gives supported AI workflows placeholders while an authenticated local proxy resolves configured HTTP API routes.",
+      "Open-source CLI that gives supported AI workflows placeholders while an authenticated local proxy injects route-owned authentication only for exact configured HTTP routes.",
     start_url: "/",
     display: "standalone",
     background_color: "#050508",

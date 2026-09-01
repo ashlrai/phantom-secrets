@@ -8,8 +8,9 @@
 AI coding agents with dotenv filesystem access can put API keys into model
 context, session logs, malicious tool calls, or generated artifacts. Phantom
 moves detected values from managed dotenv files into a local vault and replaces
-them with `phm_` mappings. For configured HTTP routes, a local proxy resolves
-those mappings at the network boundary. This narrows credential exposure; it
+them with `phm_` mappings. For configured HTTP routes, an authenticated local
+proxy injects only the matched route's vault value into its fixed auth header;
+client headers and bodies never resolve mappings. This narrows credential exposure; it
 does not control unrelated files, processes, tools, pasted values, or
 unsupported traffic.
 
@@ -100,20 +101,21 @@ runtime `tools/list` response from the installed binary is canonical.
    entries with `phm_` mappings.
 2. `phantom exec -- <command>` starts a loopback proxy and supplies configured
    service endpoints to the child process.
-3. The proxy substitutes mapped credentials on supported request routes and
-   forwards those requests over TLS.
-4. Persistent project mappings remain resolvable while an authorized proxy has
-   access to the matching vault; rotate them when exposure is suspected.
+3. The proxy matches an exact supported route, discards client control of its
+   auth header, injects the route-owned value there, and forwards over TLS.
+4. Client headers and bodies never resolve persistent project mappings. Rotate
+   exposed mappings, and protect the live proxy bearer because it can invoke
+   configured routes.
 
 ## Selected commands
 
 | Command | Effect |
 |---------|--------|
-| `phantom init` | Apply dotenv protection to one project |
+| `phantom init` | Apply dotenv protection to one project; use `--empty` before the first add in a new project |
 | `phantom init --all <DIR> --dry-run` | Preview bounded multi-project protection without modifying files or vaults |
 | `phantom exec -- <command>` | Run a child process through the local proxy |
 | `phantom list` | List stored names, not values |
-| `phantom add <NAME>` | Prompt for a value in the trusted terminal |
+| `phantom add <NAME>` | Prompt for a value in an initialized project; it never auto-creates project state |
 | `phantom reveal <NAME>` | Intentionally disclose a stored value to the terminal or clipboard |
 | `phantom check [--staged]` | Scan selected content for unprotected secret candidates |
 | `phantom rotate` | Replace Phantom mappings; it does not rotate provider credentials |
@@ -139,13 +141,14 @@ and publish a new vault to the intended fixed membership when offboarding.
 
 - MCP responses are designed to return names and value-free metadata, not
   stored credential values. Other tools and process access remain separate.
-- The proxy binds to loopback and applies route and request-size constraints.
+- The proxy binds to loopback, applies route/request-size constraints, leaves
+  client headers/bodies unresolved, and injects only fixed route-owned auth.
 - Phantom removes selected values from managed dotenv files during
   initialization, but explicit reveal/export paths and unrelated copies remain
   the operator's responsibility.
-- Provider rotation, deployment sync, live validation, cloud operations, and
-  team workflows are explicit network or persistent effects with their own
-  confirmation and approval requirements.
+- Live provider issuance/rotation is hard-denied before credential or network
+  access in 0.7.4. Deployment sync, live validation, cloud operations, and team
+  workflows are separate network/persistent effects with their own gates.
 
 Read [SECURITY.md](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md)
 for the threat model and [Getting Started](https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md)

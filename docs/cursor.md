@@ -7,8 +7,10 @@ Cursor indexes your project files to power its AI completions and chat context. 
 After `phantom init`, managed dotenv secrets are replaced by `phm_` tokens.
 Those values are not accepted by providers, but they remain sensitive mappings
 until rotation. When supported API code runs in a Cursor process launched by
-`phantom exec`, the authenticated local proxy replaces a session token on a
-reviewed route and sends the real value to the configured provider over TLS.
+`phantom exec`, the authenticated local proxy matches an exact reviewed route,
+discards client control of its auth header, and injects only the route-owned
+vault value there before sending the request over TLS. Client headers and bodies
+never resolve session tokens.
 Unmanaged files, unsupported protocols, and processes outside that environment
 remain outside this boundary.
 
@@ -74,7 +76,8 @@ For an explicitly supervised shared session, run `phantom start` in a trusted
 terminal and keep it open. Copy the printed exports into the terminal that
 launches Cursor, then press Ctrl-C in the original owning terminal to stop.
 Detached `--daemon` mode and current external process control fail closed;
-`phantom stop` only migrates authenticated v0.7.3 state. Prefer
+`phantom stop` authenticates legacy v0.7.3 state only to report manual
+migration guidance and never kills or deletes. Prefer
 `phantom exec -- cursor .` when one child process is sufficient.
 
 ---
@@ -113,7 +116,7 @@ phantom doctor
 phantom cloud push
 ```
 
-Within a Cursor terminal session running under `phantom exec`, your existing code runs unmodified — `process.env.OPENAI_API_KEY` resolves to `phm_...` in the process environment, but the proxy replaces it with the real key before the HTTP request is sent.
+Within a Cursor terminal session running under `phantom exec`, your existing code runs unmodified — `process.env.OPENAI_API_KEY` holds `phm_...`, while the exact OpenAI proxy route injects its configured vault value into the upstream auth header. No client-controlled header or body is substituted.
 
 ---
 
@@ -142,7 +145,8 @@ The proxy sets `*_BASE_URL` variables only in the shell environment `phantom exe
 Managed dotenv files contain project `phm_` mappings, but those mappings should
 not be copied into source or intentionally committed. If a token appears in a
 completion, remove it from generated code and rotate it with `phantom rotate`;
-an authenticated active Phantom proxy is the component that can resolve it.
+client headers and bodies never resolve it. A stolen live proxy bearer can
+still authorize exact configured routes that inject their own credentials.
 
 ---
 

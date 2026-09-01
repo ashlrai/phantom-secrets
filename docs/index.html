@@ -999,7 +999,7 @@
         <div class="step sr sr-d2">
             <div class="step-num">3</div>
             <h3>Use reviewed routes</h3>
-            <p>For supported SDK calls, the proxy authenticates the local session, swaps the fresh session token, and forwards to the configured provider over TLS. Unsupported protocols fail closed or need a separate approved workflow.</p>
+            <p>For supported SDK calls, the proxy authenticates the local session, matches an exact route, and injects only that route's vault value into its fixed auth header before forwarding over TLS. Client placeholders remain inert. Unsupported protocols fail closed or need a separate approved workflow.</p>
         </div>
     </div>
 </section>

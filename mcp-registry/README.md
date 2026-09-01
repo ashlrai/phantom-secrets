@@ -160,19 +160,20 @@ Key authority boundaries:
 - `phantom_do` proposes a closed action and does not execute it.
 - `phantom_setup_workspace` can propose and request setup, but MCP cannot claim
   or apply the trusted-terminal request.
-- Provider consent and credential grants are not MCP tools and confer no Locus,
-  broker, deployment, or production execution authority.
+- Provider enrollment and live issuance/refresh/renewal/rotation/revocation are
+  hard-denied before credential and network access in 0.7.4, including from
+  MCP. Protocol source and exact test mocks confer no Locus, broker,
+  deployment, provider, or production execution authority.
 - Cloud, validation, rotation, sync, team, scheduling, report-saving, and alert
   paths can have network or persistent effects when their gates are satisfied.
 
 ## Token and vault boundary
 
 `phantom init` moves selected values from managed dotenv files into a configured
-local vault and writes `phm_` mappings. Under an authenticated local proxy
-session, configured HTTP routes can resolve those mappings at the network
-boundary. Persistent mappings can therefore remain useful to an active
-authorized proxy with the matching vault; rotate them when exposure is
-suspected.
+local vault and writes `phm_` mappings. Client headers and bodies never resolve
+those mappings. An authenticated proxy bearer can authorize exact configured
+routes, which inject their own route-owned vault value into a fixed auth
+header; rotate exposed mappings and bearers.
 
 Personal Phantom Cloud push/pull can retain a client-encrypted backup for
 recovery on the same machine while its keychain-held cloud encryption key

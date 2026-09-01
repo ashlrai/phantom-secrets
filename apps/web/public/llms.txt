@@ -1,6 +1,6 @@
 # Phantom
 
-> Open-source CLI for keeping real API keys out of supported, value-blind AI-agent paths. Phantom replaces managed `.env` values with persistent `phm_` mappings; an authenticated local proxy resolves fresh session credentials only for configured HTTP upstreams. Persistent mappings are sensitive metadata and must remain confidential.
+> Open-source CLI that helps keep real API keys out of AI-agent context. Phantom replaces successfully managed dotenv secrets with non-provider `phm_` placeholders; an authenticated local proxy injects a matched route's vault value only into that route's fixed authentication header. Client headers and bodies never resolve placeholders.
 
 - Site: https://phm.dev
 - GitHub: https://github.com/ashlrai/phantom-secrets
@@ -49,8 +49,8 @@ that hardening is not in `v0.7.3` and awaits a later release.
 
 ## What an AI agent should do
 
-- Treat persistent `phm_…` mappings in `.env` as sensitive metadata, not broken keys. Don't try to "fix" them, disclose them, or publish them. Fresh `phantom exec` session credentials are separately scoped to that proxy session.
-- Never read, log, transcribe, or echo a real API key value to a file or chat. The proxy injects them; you don't need them.
+- Treat persistent `phm_…` mappings in `.env` as sensitive metadata, not broken keys. Don't try to "fix" them, disclose them, or publish them. `phantom exec` uses a separate ephemeral proxy bearer.
+- Never read, log, transcribe, or echo a real API key value to a file or chat. Exact matched routes inject their own configured authentication; client placeholders are inert.
 - Use the MCP tools (below) for any secret-related operation. Don't shell out to `cat .env`.
 - Never call a mutating tool without explicit user consent. For the selected
   vault, package, cloud, and team tools below, also provide `confirm: true` and
@@ -108,7 +108,7 @@ Recently-added flags worth knowing:
 - `phantom agent setup --dry-run` previews safe setup changes for agent use; `phantom agent setup --apply` writes them.
 - `phantom sync --dry-run --json` previews deployment sync targets, selected key names, skipped key names, token-env presence, and warnings without decrypting values or calling platform APIs.
 - `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config file per AI tool; `--print` emits the snippet to stdout for any other client.
-- `phantom add KEY --stdin` reads the value from a piped stdin (CI-friendly). Bare `phantom add KEY` (no value) prompts silently on the terminal via `rpassword` so the secret never enters shell history.
+- `phantom add KEY --stdin` reads the value from a piped stdin (CI-friendly). Bare `phantom add KEY` (no value) prompts silently on the terminal via `rpassword` so the secret never enters shell history. Add requires an initialized project and does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project.
 - `phantom list --json` emits a JSON array of `{name, detected_service}` for scripting; values are never included.
 - `phantom sync --only PATTERN` (repeatable; OR-ed) limits which keys get pushed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`.
 - `phantom check --staged` reads from the git index (including staged `.env` files) and is suitable for pre-commit hooks.
@@ -138,7 +138,7 @@ Detection and runtime injection are different capabilities. Database connection 
 ## Runtime and data boundaries
 
 - The persistent `phm_` mapping written to a managed `.env` persists until an explicit rotation or rewrite and must be handled as sensitive metadata.
-- `phantom exec` gives its child fresh session `phm_` values plus a separate fresh `PHANTOM_PROXY_TOKEN`; those session credentials stop working when that proxy exits and must be protected while active.
+- `phantom exec` gives its child fresh session `phm_` placeholders plus a separate fresh `PHANTOM_PROXY_TOKEN`. The placeholders are never client-resolved; the bearer becomes invalid when that proxy exits and must be protected while active.
 - Upstream API requests still leave the machine and reach the configured provider. Phantom keeps local vault operations and mapping resolution under local control; it does not make application traffic local-only.
 - `phantom init` intentionally creates no plaintext project-local backup. `phantom unwrap` only reverses package-script wrapping and does not restore dotenv values.
 - The installed pre-commit hook runs `phantom check --staged`: staged dotenv content uses Phantom's detection heuristics, while added lines in other staged files are checked for a bounded set of credential prefixes. It is not a whole-repository or general-purpose secret scanner.
@@ -149,7 +149,7 @@ Detection and runtime injection are different capabilities. Database connection 
 
 - `phantom-core` — config (`.phantom.toml`), `.env` parsing, token generation (256-bit CSPRNG, `phm_` prefix)
 - `phantom-vault` — `VaultBackend` trait. macOS Keychain / Linux Secret Service / Windows Credential Manager / encrypted file fallback. ChaCha20-Poly1305 + Argon2id (hardened to OWASP balanced m=64 MiB / t=3 / p=1, with legacy-default fallback for older vaults).
-- `phantom-proxy` — HTTP reverse proxy on 127.0.0.1. It buffers each request body in full within its size bound before scoped replacement. Responses can stream, including SSE.
+- `phantom-proxy` — Authenticated HTTP reverse proxy on 127.0.0.1. It matches exact routes, drops client control of the route auth header, and injects only the route-owned value into that fixed header. Client bodies are bounded and forwarded byte-for-byte; responses can stream, including SSE.
 - `phantom-cli` — `clap` binary with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows.
 - `phantom-mcp` — `rmcp` stdio server with a release-checked tool schema; use runtime `tools/list` for the current catalog.
 - Authority, Locus-contract, broker, runtime, evidence, session, and workspace crates are fail-closed foundations; they do not activate production execution.

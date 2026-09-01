@@ -1,5 +1,4 @@
 use anyhow::Result;
-use colored::Colorize;
 use std::io::IsTerminal;
 
 pub fn run() -> Result<()> {
@@ -8,7 +7,7 @@ pub fn run() -> Result<()> {
         && std::io::stderr().is_terminal())
     {
         anyhow::bail!(
-            "`phantom stop` is only a trusted-terminal migration command for authenticated v0.7.3 state; stdin, stdout, and stderr must all be terminals"
+            "`phantom stop` is only a trusted-terminal diagnostic for legacy v0.7.3 state; stdin, stdout, and stderr must all be terminals"
         );
     }
     let project_dir = std::env::current_dir()?;
@@ -24,14 +23,10 @@ pub fn run() -> Result<()> {
             proxy.pid
         ),
         super::legacy_proxy::LegacyState::Authenticated(proxy) => {
-            super::legacy_proxy::authenticated_shutdown(&proxy)?;
-            super::legacy_proxy::wait_for_owner_cleanup(&project_dir)?;
-            println!(
-                "{} Authenticated legacy proxy shutdown completed (PID {}).",
-                "ok".green().bold(),
+            anyhow::bail!(
+                "Authenticated legacy v0.7.3 proxy state exists for PID {}. v0.7.3 did not ship an authenticated remote-shutdown endpoint, so this binary will not kill it or delete .phantom.pid. Stop it with Ctrl-C in its owning v0.7.3 terminal; if that is unavailable, use a checksum-verified v0.7.3 binary from a trusted terminal, or independently verify that no process/listener owns the record before manually removing .phantom.pid.",
                 proxy.pid
-            );
-            Ok(())
+            )
         }
     }
 }

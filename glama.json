@@ -1,6 +1,6 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
   "name": "phantom-secrets",
-  "description": "Stop AI coding agents from leaking your API keys. Local proxy + MCP that swaps real secrets for phm_ tokens. Works with Claude Code, Cursor, Windsurf, and Codex.",
+  "description": "Reduce API-key exposure in supported AI-agent workflows. Value-blind MCP plus an authenticated local proxy with exact route-owned auth injection. Works with Claude Code, Cursor, Windsurf, and Codex.",
   "maintainers": ["masonwyatt23"]
 }

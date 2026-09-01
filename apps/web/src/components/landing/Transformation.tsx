@@ -120,7 +120,7 @@ export function Transformation() {
           />
           <EnvBlock
             title="After phantom init"
-            subtitle="Managed placeholders. Configured HTTP routes resolve session tokens."
+            subtitle="Managed placeholders. Exact HTTP routes inject route-owned authentication."
             variant="after"
           />
         </div>

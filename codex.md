@@ -1,6 +1,9 @@
 # Codex Instructions — Phantom Secrets
 
-This project uses **Phantom Secrets** to protect API keys from AI leaks. The `.env` file contains phantom tokens (`phm_...`), not real secrets.
+This project uses **Phantom Secrets** to reduce API-key exposure. Successfully
+managed secret entries in the configured dotenv file contain sensitive phantom
+placeholders (`phm_...`), not provider credentials; unmanaged files and
+undetected entries remain outside that claim.
 
 ## Rules
 
@@ -40,20 +43,26 @@ Or print the snippet for manual paste:
 phantom setup --client codex --print
 ```
 
-If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine.
+Released `v0.7.3` retains a final unpinned npm fallback. Current 0.7.4 source
+removes that network fallback and fails closed when neither the running
+`phantom mcp serve` runtime nor a local `phantom-mcp` can be resolved. Install
+both exact release binaries and inspect the generated entry.
 
 ## CLI Commands
 
 - `phantom list` — See available secrets (never shows values)
-- `phantom add <name> <value>` — Add a new secret
-- `phantom exec -- <command>` — Run code with real credentials injected via proxy
+- `phantom add <name>` — Add a secret transactionally through the trusted terminal's hidden prompt; run `phantom init --empty` first in a new project
+- `phantom exec -- <command>` — Run code through Phantom's authenticated, configured HTTP routes
 - `phantom init` — Protect .env secrets
 - `phantom doctor` — Health check
 
 ## How It Works
 
 1. `phantom init` reads `.env`, stores real secrets in encrypted vault, rewrites `.env` with `phm_` tokens
-2. `phantom exec -- <cmd>` starts a local proxy that swaps phantom tokens for real credentials
+2. `phantom exec -- <cmd>` starts an authenticated local proxy. After an exact
+   route match, the proxy discards client control of that route's auth header
+   and injects only the route-owned vault value into the fixed header. Client
+   headers and bodies never resolve phantom tokens.
 3. AI agents see only worthless `phm_` tokens — real keys never enter the AI context window
 
 ## When You See API Keys

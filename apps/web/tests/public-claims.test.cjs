@@ -631,7 +631,7 @@ test("dotenv recovery copy does not confuse init, unwrap, and encrypted recovery
   }
 });
 
-test("persistent placeholders and both exec session credentials stay distinct", () => {
+test("persistent placeholders remain inert and the proxy bearer stays distinct", () => {
   for (const file of [
     "src/app/layout.tsx",
     "src/components/landing/FAQ.tsx",
@@ -639,8 +639,9 @@ test("persistent placeholders and both exec session credentials stay distinct", 
     "public/llms-full.txt",
   ]) {
     assert.match(claims[file], /persist\w* until/i, file);
-    assert.match(claims[file], /fresh session[^\n]*phm_/i, file);
+    assert.match(claims[file], /(?:fresh[^\n]*(?:phm_|placeholder)|child[^\n]*fresh[^\n]*placeholder)/i, file);
     assert.match(claims[file], /PHANTOM_PROXY_TOKEN/, file);
+    assert.match(claims[file], /(?:never[^\n]*resolv|remain[^\n]*inert)/i, file);
   }
 });
 
@@ -700,7 +701,9 @@ test("public guidance preserves upstream and production-authority boundaries", (
 test("structured metadata preserves supported-route and fail-closed boundaries", () => {
   const layout = claims["src/app/layout.tsx"];
   assert.match(layout, /supported HTTP SDK routes/);
-  assert.match(layout, /configured supported HTTP routes/);
+  assert.match(layout, /exact supported route match/);
+  assert.match(layout, /route-owned authentication/);
+  assert.match(layout, /placeholders remain inert/);
   assert.match(layout, /database connection strings fail closed/);
   assert.doesNotMatch(layout, /Any tool that reads \.env files works automatically/i);
 });

@@ -10,7 +10,7 @@ This is the canonical map for Phantom's repository documentation. Start with the
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
 | Plan a team or enterprise pilot | [Enterprise adoption](enterprise-adoption.md) |
 | Diagnose an install, vault, proxy, or cloud problem | [Troubleshooting](troubleshooting.md) |
-| Obtain and inspect provider credentials after human consent | [Provider grants](grants-spec.md) |
+| Understand the provider-grant design and 0.7.4 universal hard denial | [Provider grants](grants-spec.md) |
 | Understand components, trust boundaries, and activation status | [Architecture](architecture.md) |
 | Understand supported operating systems, architectures, and current validation | [Platform support](platform-support.md) |
 | Prepare or audit a release candidate | [Release and readiness](release-readiness.md) |
@@ -31,11 +31,12 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 
 The small conversation facade and the advanced MCP compatibility catalog are separate contracts. `phantom_do` is proposal-only and does not execute an action. `phantom_setup_workspace` can propose, create a bearerless request, or report status; applying that request requires a separate attached trusted terminal. Effectful advanced tools are disabled by default; `PHANTOM_MCP_EFFECTS=trusted-terminal` may enable their confirmation and one-use approval gates only when configured outside agent authority. Approval requires attached stdin/stderr, an informed value-blind summary, and a fresh typed challenge. A same-user shell or agent-controlled PTY can defeat the ceremony, so the approval command and storage must also be outside agent authority.
 
-Provider issuance is a separate trusted-terminal CLI contract. A **provider
-grant** records credential and renewal state produced after human consent; an
-**authority grant** is the inactive execution-kernel authority type. Provider
-grants never confer Locus authority, broker leases, or execution permission,
-and provider consent is not exposed as an MCP tool. The
+Provider issuance is not active in 0.7.4: every live enrollment exchange,
+issuance, refresh, renewal, rotation, and revocation path is hard-denied before
+provider credential or network access. A **provider grant** is design-era
+lifecycle metadata; an **authority grant** is the inactive execution-kernel
+authority type. Neither confers Locus authority, broker leases, or execution
+permission. Exact `cfg(test)` mocks are local transaction evidence only. The
 [grant specification](grants-spec.md) records the design-era target. The root
 [issuance contract](../ISSUANCE_CONTRACT.md) is the original design contract
 and retains historical design-status language.

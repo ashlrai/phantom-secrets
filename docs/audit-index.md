@@ -13,10 +13,12 @@ Unix workspace setup transaction is the only functional execution-kernel
 slice. Locus authority, the native broker, production engineering execution,
 and externally trusted execution receipts must remain inactive.
 
-The shipped `phantom grant` CLI is a provider-credential issuance surface.
-Its **provider grants** are vaulted credential and renewal state, not inactive
-execution-kernel **authority grants**. They do not activate Locus, a broker
-lease, or engineering execution.
+The shipped `phantom grant` CLI exposes value-free metadata and compatibility
+commands, not live provider issuance. Version 0.7.4 hard-denies enrollment,
+refresh, renewal, rotation, and remote revocation before credential access and
+network I/O. Historical **provider-grant** records are not execution-kernel
+**authority grants** and do not activate Locus, a broker lease, or engineering
+execution.
 
 That is a source-level decision. It does not attest to the deployed website,
 an unpublished artifact, a provider configuration, or a customer environment.
@@ -33,7 +35,7 @@ an unpublished artifact, a provider configuration, or a customer environment.
 | What blocks execution-kernel activation? | [Architecture](architecture.md) and [threat model](../THREAT_MODEL.md) |
 | How are contributors expected to build and test? | [Contributing guide](../CONTRIBUTING.md) |
 | What do CI and release automation enforce? | [`ci.yml`](../.github/workflows/ci.yml) and [`release.yml`](../.github/workflows/release.yml) |
-| What is the current provider-issuance contract? | [Provider-grant specification](grants-spec.md), with the [original design contract](../ISSUANCE_CONTRACT.md) retained separately |
+| What is the current provider-denial contract? | [Provider-grant specification](grants-spec.md), with the [historical, non-executable design contract](../ISSUANCE_CONTRACT.md) retained separately |
 | What changed between versions? | [Changelog](../CHANGELOG.md) and immutable Git history |
 | What dependencies and packages compose the Rust workspace? | [`Cargo.toml`](../Cargo.toml), [`Cargo.lock`](../Cargo.lock), and crate manifests |
 | What web dependencies and scripts are selected? | [`apps/web/package.json`](../apps/web/package.json) and [`apps/web/package-lock.json`](../apps/web/package-lock.json) |
@@ -94,10 +96,9 @@ Reviewers should pay particular attention to these unresolved boundaries:
 - no host-protected monotonic rollback anchor for replay state;
 - local HMAC integrity that does not resist a fully compromised same-user
   account and does not create externally trusted receipts;
-- provider remote revocation is not wired; `phantom grant revoke` fails closed
-  before local mutation;
-- source-level provider issuance does not prove live provider application,
-  consent, renewal, or customer acceptance; and
+- provider enrollment, issuance, refresh, renewal, rotation, and remote
+  revocation are not active; shipped paths fail before credential or network
+  access, while exact test mocks prove local scaffolding only; and
 - the published `v0.6.0` release has checksums but no per-artifact
   SBOM/provenance evidence or Windows ARM archive; this source candidate defines
   those workflow outputs but has not run them. Independent signatures, native

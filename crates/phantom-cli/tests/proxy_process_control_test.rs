@@ -78,7 +78,7 @@ fn detached_start_and_headless_legacy_stop_fail_closed_without_touching_state() 
         .output()
         .unwrap();
     assert!(!stop.status.success());
-    assert!(String::from_utf8_lossy(&stop.stderr).contains("trusted-terminal migration command"));
+    assert!(String::from_utf8_lossy(&stop.stderr).contains("trusted-terminal diagnostic"));
     assert_eq!(
         fs::read(&legacy_pid).unwrap(),
         b"legacy-state-must-not-be-unlinked"

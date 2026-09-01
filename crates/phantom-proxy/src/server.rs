@@ -1,4 +1,3 @@
-use crate::body_scope;
 use crate::interceptor::Interceptor;
 use crate::rate_limiter::{RateLimitConfig, RateLimiter};
 use crate::services::ServiceRegistry;
@@ -393,14 +392,6 @@ async fn handle_request(
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    // Capture the request content-type before consuming `req` for its body —
-    // we need it to drive content-type-aware body substitution (F9).
-    let request_content_type = req
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
     // Build the outgoing request
     let mut outgoing = state.http_client.request(method.clone(), &target_url);
 
@@ -410,12 +401,20 @@ async fn handle_request(
     let configured_auth_header = state
         .interceptor
         .format_header_for_secret_key(&route.header_format, &route.secret_key);
+    let Some(configured_auth_header) = configured_auth_header else {
+        warn!("Route credential unavailable for service {}", route.name);
+        return Ok(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"route credential unavailable"}"#,
+        ));
+    };
 
-    // Copy and transform headers. F9: phm-token substitution is restricted to
-    // a whitelist of auth-bearing header names plus the per-route configured
-    // header. Tokens present in other headers are passed through unchanged
-    // and logged — substituting them would turn arbitrary request metadata
-    // into a secret-leakage vector.
+    // Copy client headers without resolving phantom tokens. The route's exact
+    // configured auth header is always removed below and, when the configured
+    // vault secret exists, replaced only with the route-owned value. This
+    // prevents client-controlled headers (including Cookie/X-API-Key) from
+    // turning an otherwise legitimate upstream route into an exfiltration
+    // channel.
     for (name, value) in req.headers() {
         let name_str = name.as_str();
         if matches!(
@@ -430,43 +429,20 @@ async fn handle_request(
         ) {
             continue;
         }
-        // Drop any client-provided auth header for this route when we're
-        // about to inject our own — avoids ambiguity / double-auth.
-        if configured_auth_header.is_some() && name_str.eq_ignore_ascii_case(&route.header) {
+        // The client never controls the route-owned auth header. A missing
+        // vault mapping was rejected above before any upstream request.
+        if name_str.eq_ignore_ascii_case(&route.header) {
             continue;
         }
 
-        if let Ok(value_str) = value.to_str() {
-            let header_value = if body_scope::is_allowed_header(name_str, &route.header) {
-                let (replaced_value, did_replace) = state
-                    .interceptor
-                    .replace_in_str_for_secret(value_str, &route.secret_key);
-                if did_replace {
-                    debug!("Replaced phantom token in header: {}", name_str);
-                }
-                replaced_value
-            } else {
-                if state.interceptor.contains_phantom_token(value_str) {
-                    warn!(
-                        "phantom token in non-allowed request header '{}' — not substituted (F9 scope)",
-                        name_str
-                    );
-                }
-                value_str.to_string()
-            };
-            outgoing = outgoing.header(name_str, header_value);
-        } else {
-            outgoing = outgoing.header(name, value.clone());
-        }
+        outgoing = outgoing.header(name, value.clone());
     }
 
-    if let Some(header_value) = configured_auth_header {
-        debug!(
-            "Injected configured auth header '{}' for service {}",
-            route.header, route.name
-        );
-        outgoing = outgoing.header(route.header.as_str(), header_value);
-    }
+    debug!(
+        "Injected configured auth header '{}' for service {}",
+        route.header, route.name
+    );
+    outgoing = outgoing.header(route.header.as_str(), configured_auth_header);
 
     // Response scrubbing is defined over identity bytes. Never forward the
     // client's compression preferences to the upstream.
@@ -502,27 +478,9 @@ async fn handle_request(
         }
     };
     if !body_bytes.is_empty() {
-        let (replaced_body, did_replace) =
-            if body_scope::should_stream_replace(request_content_type.as_deref()) {
-                // Text bodies used the streaming replacer before the atomicity
-                // fix. Preserve those semantics after the complete bounded
-                // body has been accepted. Structured JSON and form bodies use
-                // the field-aware branch below.
-                state
-                    .interceptor
-                    .replace_in_bytes_for_secret(&body_bytes, &route.secret_key)
-            } else {
-                body_scope::scoped_body_replace_for_secret(
-                    &state.interceptor,
-                    &route.secret_key,
-                    request_content_type.as_deref(),
-                    &body_bytes,
-                )
-            };
-        if did_replace {
-            debug!("Replaced phantom token(s) in bounded request body");
-        }
-        outgoing = outgoing.body(replaced_body);
+        // Client-controlled request bodies are always forwarded byte-for-byte.
+        // Credentials are injected only through the fixed route-owned header.
+        outgoing = outgoing.body(body_bytes);
     }
 
     // Send the request
@@ -1070,7 +1028,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_replaces_phantom_token_in_header() {
+    async fn test_proxy_ignores_client_auth_token_and_injects_route_secret() {
         // Start mock upstream server
         let mock = crate::test_server::MockServer::start().await;
 
@@ -1092,7 +1050,10 @@ mod tests {
             phantom_token.to_string(),
             ("TEST_API_KEY".to_string(), real_secret.to_string()),
         );
-        let interceptor = Interceptor::new_scoped(mappings, HashMap::new());
+        let interceptor = Interceptor::new_scoped(
+            mappings,
+            HashMap::from([("TEST_API_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1106,7 +1067,8 @@ mod tests {
         .await
         .unwrap();
 
-        // Send request through proxy with phantom token in Authorization header
+        // A client-provided route auth header is discarded. The upstream sees
+        // only the fixed route-owned credential injected by the proxy.
         let client = reqwest::Client::new();
         let resp = client
             .get(format!(
@@ -1120,7 +1082,8 @@ mod tests {
 
         assert_eq!(resp.status(), 200);
 
-        // Verify the mock received the REAL secret, not the phantom token
+        // Verify the mock received the route-owned secret, not because the
+        // client token was resolved.
         let requests = mock.get_requests();
         assert_eq!(requests.len(), 1);
 
@@ -1135,7 +1098,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_replaces_phantom_token_in_body() {
+    async fn test_proxy_never_replaces_phantom_token_in_body() {
         let mock = crate::test_server::MockServer::start().await;
 
         let phantom_token = "phm_bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333";
@@ -1155,7 +1118,10 @@ mod tests {
             phantom_token.to_string(),
             ("TEST_KEY".to_string(), real_secret.to_string()),
         );
-        let interceptor = Interceptor::new_scoped(mappings, HashMap::new());
+        let interceptor = Interceptor::new_scoped(
+            mappings,
+            HashMap::from([("TEST_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1189,13 +1155,13 @@ mod tests {
 
         assert_eq!(resp.status(), 200);
 
-        // Verify the mock received the real secret in the body
+        // The body is byte-identical and never contains the real secret.
         let requests = mock.get_requests();
         assert_eq!(requests.len(), 1);
 
         let received_body = String::from_utf8(requests[0].body.clone()).unwrap();
-        assert!(received_body.contains(real_secret));
-        assert!(!received_body.contains("phm_"));
+        assert!(received_body.contains(phantom_token));
+        assert!(!received_body.contains(real_secret));
 
         proxy.shutdown().await;
         mock.shutdown().await;
@@ -1233,7 +1199,10 @@ mod tests {
                 ..ProxyConfig::default()
             },
             registry,
-            Interceptor::new_scoped(mappings, HashMap::new()),
+            Interceptor::new_scoped(
+                mappings,
+                HashMap::from([("OPENAI_API_KEY".to_string(), "sk-openai-real".to_string())]),
+            ),
         )
         .await
         .unwrap();
@@ -1270,7 +1239,7 @@ mod tests {
         assert_eq!(requests.len(), 4);
         assert_eq!(
             requests[0].headers.get("authorization"),
-            Some(&format!("Bearer {stripe_token}"))
+            Some(&"Bearer sk-openai-real".to_string())
         );
         assert!(String::from_utf8_lossy(&requests[1].body).contains(stripe_token));
         assert!(String::from_utf8_lossy(&requests[2].body).contains(stripe_token));
@@ -1310,7 +1279,10 @@ mod tests {
             phantom_token.to_string(),
             ("TEST_KEY".to_string(), real_secret.to_string()),
         );
-        let interceptor = Interceptor::new_scoped(mappings, HashMap::new());
+        let interceptor = Interceptor::new_scoped(
+            mappings,
+            HashMap::from([("TEST_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1359,9 +1331,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_does_not_replace_phantom_token_in_disallowed_header() {
-        // F9 regression: a phm token in a non-auth header (e.g. User-Agent)
-        // must NOT be substituted to the real secret.
+    async fn test_proxy_never_resolves_client_controlled_headers() {
+        // A prompt-controlled client can set auth-looking headers. Those
+        // headers remain inert; only the matched route's configured auth
+        // header receives a real credential.
         let mock = crate::test_server::MockServer::start().await;
 
         let phantom_token = "phm_dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333dddd4444eeee5555";
@@ -1381,7 +1354,10 @@ mod tests {
             phantom_token.to_string(),
             ("TEST_KEY".to_string(), real_secret.to_string()),
         );
-        let interceptor = Interceptor::new_scoped(mappings, HashMap::new());
+        let interceptor = Interceptor::new_scoped(
+            mappings,
+            HashMap::from([("TEST_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1399,6 +1375,8 @@ mod tests {
         let resp = client
             .get(format!("http://127.0.0.1:{}/testapi/v1/ping", proxy.port()))
             .header("User-Agent", format!("agent/{phantom_token}"))
+            .header("Cookie", format!("session={phantom_token}"))
+            .header("X-API-Key", phantom_token)
             .send()
             .await
             .unwrap();
@@ -1414,6 +1392,21 @@ mod tests {
         assert!(
             ua.contains(phantom_token),
             "phm token should be forwarded: {ua}"
+        );
+        for header in ["cookie", "x-api-key"] {
+            let value = requests[0].headers.get(header).unwrap();
+            assert!(
+                value.contains(phantom_token),
+                "{header} was rewritten: {value}"
+            );
+            assert!(
+                !value.contains(real_secret),
+                "real secret leaked into {header}"
+            );
+        }
+        assert_eq!(
+            requests[0].headers.get("authorization").unwrap(),
+            &format!("Bearer {real_secret}")
         );
 
         proxy.shutdown().await;
@@ -1476,6 +1469,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_route_secret_drops_client_auth_instead_of_forwarding_it() {
+        let mock = crate::test_server::MockServer::start().await;
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "MISSING_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_with_named(HashMap::new(), HashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let client_token = "phm_ffff1111eeee2222dddd3333cccc4444bbbb5555aaaa6666ffff1111eeee2222";
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/testapi/v1/models",
+                proxy.port()
+            ))
+            .header("Authorization", format!("Bearer {client_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let requests = mock.get_requests();
+        assert!(requests.is_empty(), "missing credential contacted upstream");
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_proxy_preserves_query_params() {
         let mock = crate::test_server::MockServer::start().await;
 
@@ -1488,7 +1525,10 @@ mod tests {
             header_format: "Bearer {secret}".to_string(),
         });
 
-        let interceptor = Interceptor::new(HashMap::new());
+        let interceptor = Interceptor::new_with_named(
+            HashMap::new(),
+            HashMap::from([("KEY".to_string(), "query-test-secret".to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1534,7 +1574,10 @@ mod tests {
             header_format: "Bearer {secret}".to_string(),
         });
 
-        let interceptor = Interceptor::new(HashMap::new());
+        let interceptor = Interceptor::new_with_named(
+            HashMap::new(),
+            HashMap::from([("KEY".to_string(), "size-test-secret".to_string())]),
+        );
 
         // Set a tiny body limit (100 bytes)
         let proxy = ProxyServer::start(
@@ -1671,10 +1714,10 @@ mod tests {
     // Streaming body tests
     // -----------------------------------------------------------------------
 
-    /// A phantom token split across two chunks must still be replaced when the
-    /// request body has a text/* content-type (streaming path).
+    /// Text bodies are accepted atomically but never opt arbitrary bytes into
+    /// secret substitution, even when a token is split across input chunks.
     #[tokio::test]
-    async fn test_streaming_token_split_across_chunks() {
+    async fn text_body_token_split_across_chunks_remains_unsubstituted() {
         let mock = crate::test_server::MockServer::start().await;
 
         let phantom_token = "phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222";
@@ -1694,7 +1737,10 @@ mod tests {
             phantom_token.to_string(),
             ("TEST_KEY".to_string(), real_secret.to_string()),
         );
-        let interceptor = Interceptor::new_scoped(mappings, HashMap::new());
+        let interceptor = Interceptor::new_scoped(
+            mappings,
+            HashMap::from([("TEST_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1739,14 +1785,9 @@ mod tests {
         assert_eq!(requests.len(), 1);
 
         let received_body = String::from_utf8(requests[0].body.clone()).unwrap();
-        assert!(
-            received_body.contains(real_secret),
-            "real secret not found after streaming replace: {received_body}"
-        );
-        assert!(
-            !received_body.contains("phm_"),
-            "phantom token still present after streaming replace: {received_body}"
-        );
+        assert_eq!(received_body, format!("key={phantom_token}&extra=value"));
+        assert!(received_body.contains(phantom_token));
+        assert!(!received_body.contains(real_secret));
 
         proxy.shutdown().await;
         mock.shutdown().await;
@@ -1823,7 +1864,10 @@ mod tests {
 
         let mut mappings = HashMap::new();
         mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        let interceptor = Interceptor::new_with_named(
+            mappings,
+            HashMap::from([("SSE_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1913,7 +1957,10 @@ mod tests {
                 ..ProxyConfig::default()
             },
             registry,
-            Interceptor::new(mappings),
+            Interceptor::new_with_named(
+                mappings,
+                HashMap::from([("RESPONSE_KEY".to_string(), real_secret.to_string())]),
+            ),
         )
         .await
         .unwrap();
@@ -1956,7 +2003,10 @@ mod tests {
 
         let mut mappings = HashMap::new();
         mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        let interceptor = Interceptor::new_with_named(
+            mappings,
+            HashMap::from([("TEST_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {

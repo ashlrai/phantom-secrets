@@ -34,7 +34,10 @@ async fn test_proxy_with_limits(
         header_format: "Bearer {secret}".to_string(),
     });
 
-    let interceptor = Interceptor::new(HashMap::new());
+    let interceptor = Interceptor::new_with_named(
+        HashMap::new(),
+        HashMap::from([("TEST_API_KEY".to_string(), "rate-test-secret".to_string())]),
+    );
 
     let proxy = ProxyServer::start(
         ProxyConfig {
@@ -129,7 +132,13 @@ async fn test_multi_secret_concurrent_load_independent() {
         header_format: "{secret}".to_string(),
     });
 
-    let interceptor = Interceptor::new(HashMap::new());
+    let interceptor = Interceptor::new_with_named(
+        HashMap::new(),
+        HashMap::from([
+            ("KEY_A".to_string(), "rate-test-secret-a".to_string()),
+            ("KEY_B".to_string(), "rate-test-secret-b".to_string()),
+        ]),
+    );
     let proxy = ProxyServer::start(
         ProxyConfig {
             port: 0,

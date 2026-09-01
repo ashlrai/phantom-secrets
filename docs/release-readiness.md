@@ -85,11 +85,11 @@ workflow downloads cargo-deny and Gitleaks at fixed versions and verifies their
 release-archive hashes before use. Record ignored, skipped, unavailable, and
 externally blocked checks rather than treating them as passed.
 
-Provider-grant changes need focused CLI tests for the affected provider and an
-authorized throwaway-account acceptance plan. Source tests do not prove a
-provider application, consent screen, remote credential, renewal, or revoke
-operation is live. `phantom grant revoke` currently fails closed because remote
-revocation is not wired.
+Provider-grant changes must preserve the 0.7.4 universal denial before provider
+credential lookup and network access. Exact `cfg(test)` mocks prove only local
+transaction scaffolding. Any future activation additionally needs an authorized
+throwaway-account acceptance plan; source tests do not prove a provider
+application, consent screen, remote credential, renewal, or revoke operation.
 
 ## crates.io publication
 

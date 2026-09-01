@@ -1,6 +1,6 @@
 # Phantom — AI Agent Instructions
 
-> Phantom is an open-source CLI that keeps real API-key values out of supported, value-blind AI-agent paths. It replaces managed secrets with persistent `phm_` mappings and injects real credentials through a local HTTP proxy. Those mappings are sensitive metadata and must remain confidential.
+> Phantom is an open-source CLI that keeps real API-key values out of supported, value-blind AI-agent paths. It replaces managed secrets with persistent `phm_` mappings; an authenticated local proxy injects only a matched route's vault value into its fixed auth header. Client headers and bodies never resolve mappings. Treat project mappings as sensitive metadata.
 
 ## MCP Server — Let AI manage secrets directly
 
@@ -75,7 +75,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_team_vault_pull` | Pull and locally decrypt the current project's team vault | team_id, confirm, approval_token |
 | `phantom_rotate_with_candidate` | **Deprecated hard denial** — never creates or stores a candidate; legacy candidates were local placeholders, not provider credentials | name, auto_promote_ttl_secs (ignored), confirm (ignored), approval_token (ignored) |
 | `phantom_rotate_promote` | **Deprecated hard denial** — never validates, promotes, or changes a vault value | name, confirm (ignored), approval_token (ignored) |
-| `phantom_rotate_provider` | Provider-rotate a credential; `provider` may resolve from config | name, provider (optional), confirm, approval_token |
+| `phantom_rotate_provider` | Reserved compatibility surface; 0.7.4 hard-denies every live provider path before credential or network access | name, provider (optional), confirm, approval_token |
 | `phantom_rotate_with_expiry` | **Deprecated name** — remap all local `phm_` placeholders; `days_ttl` is compatibility-only and lifecycle metadata remains unchanged | days_ttl, confirm, approval_token |
 | `phantom_validate_all` | Retrieve credentials, call live provider validators, and persist value-free result metadata | jobs, confirm, approval_token |
 | `phantom_validation_schedule` | Read schedule state, or persist a new interval when supplied | interval (optional), confirm (conditional), approval_token (conditional) |
@@ -127,8 +127,8 @@ phantom init --all ~/code               # Apply
 ## How it works
 
 1. `phantom init` reads `.env`, stores real secrets in an encrypted vault, and rewrites `.env` with persistent, sensitive `phm_` mappings
-2. `phantom exec -- claude` starts a local proxy that resolves mapped values to real credentials only for configured upstreams
-3. Managed files retain persistent `phm_` mappings, which are sensitive metadata; `phantom exec` supplies fresh session credentials while the proxy injects real keys at the network layer
+2. `phantom exec -- claude` starts an authenticated local proxy; exact matched routes inject their route-owned vault value only into the fixed authentication header
+3. Managed files retain persistent `phm_` mappings, which are sensitive metadata. `phantom exec` supplies fresh child placeholders and a separate ephemeral proxy bearer; client headers and bodies never resolve placeholders
 4. Cloud sync is end-to-end encrypted — server never sees plaintext secrets
 5. Session-scoped tokens: each `phantom exec` generates fresh tokens, invalid after session ends
 
@@ -136,7 +136,7 @@ phantom init --all ~/code               # Apply
 
 - **NEVER** show, log, or write real API key values into code files
 - **NEVER** ask users to paste real API keys into source code
-- The `.env` file contains persistent `phm_...` mappings. They are not broken keys, but they are sensitive metadata: do not disclose, log, or publish them. Fresh `phantom exec` session credentials are separately scoped to that proxy session.
+- The `.env` file contains persistent `phm_...` mappings. They are not broken keys, but they are sensitive metadata: do not disclose, log, or publish them. Fresh `phantom exec` child placeholders are inert in client headers/bodies; the separate proxy bearer is session-scoped and sensitive.
 - Use `phantom_list_secrets` to see what secrets are available (never shows values)
 - Use `phantom_add_secret_interactive` to store new keys a user provides — the **deprecated** `phantom_add_secret` refuses plaintext via MCP on purpose, so values never enter AI context
 - Use `phantom_init` to protect an unprotected `.env` file
@@ -154,10 +154,10 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 
 ## Project structure
 
-- `crates/phantom-cli/` — CLI binary for local protection, proxy, audit, import/export, sync, teams, provider grants, and trusted-terminal workspace setup; use `phantom --help` for the current command inventory
+- `crates/phantom-cli/` — CLI binary for local protection, proxy, audit, import/export, sync, teams, provider-grant metadata/design foundations, and trusted-terminal workspace setup; live provider issuance/rotation is hard-denied in 0.7.4; use `phantom --help` for the current command inventory
 - `crates/phantom-core/` — Config, .env parsing, token generation, sync, auth, cloud API client, importers (doppler/infisical/dotenvx/1password/env)
 - `crates/phantom-vault/` — Encrypted vault (OS keychain + file backends) + shared crypto module
-- `crates/phantom-proxy/` — HTTP reverse proxy that buffers each request body in full within its size bound before scoped replacement and supports streaming responses, including SSE
+- `crates/phantom-proxy/` — HTTP reverse proxy that buffers each request body within its size bound, never resolves client headers/bodies, injects only fixed route-owned auth headers, and supports streaming responses including SSE
 - `crates/phantom-mcp/` — MCP server for Claude Code, Cursor, Windsurf, Codex, and other MCP clients
 - `crates/phantom-workspace/` — value-blind, recoverable trusted-terminal workspace setup
 - `crates/phantom-authority/`, `phantom-broker/`, `phantom-runtime/`, `phantom-session/`, `phantom-evidence/` — fail-closed governed-execution foundations; production activation remains unavailable

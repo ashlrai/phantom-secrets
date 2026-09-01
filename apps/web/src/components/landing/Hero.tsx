@@ -39,8 +39,9 @@ export function Hero() {
         <p className="mt-6 mx-auto max-w-[600px] text-[0.98rem] sm:text-[1.04rem] leading-[1.65] text-t2">
           Phantom gives supported AI workflows a value-blind{" "}
           <code className="font-mono text-blue-b text-[0.92em]">phm_</code>{" "}
-          placeholder in the managed path. The authenticated local proxy
-          resolves fresh session tokens only for configured upstream routes.
+          placeholder in the managed path. After authenticating an exact
+          supported route, the local proxy injects only that route&apos;s vault
+          value into its fixed authentication header.
         </p>
 
         <div className="mt-8 mx-auto w-full max-w-[460px]">

@@ -27,10 +27,11 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
         Your <Tok>.env</Tok> file contains <Tok>phm_xxxxxxxx</Tok> tokens
         instead of real values. In the managed workflow, supported clients
         read those placeholders rather than provider values from the rewritten
-        dotenv file. <Tok>phantom exec</Tok> gives the child fresh session
-        tokens, and the authenticated local proxy resolves them only for
-        configured upstream routes. Other files and unmanaged processes remain
-        outside that boundary. Human plaintext reveal is a separate
+        dotenv file. <Tok>phantom exec</Tok> gives the child fresh placeholders
+        and a separate proxy bearer. On an exact supported route, the proxy
+        injects only that route&apos;s vault value into its fixed auth header;
+        client headers and bodies never resolve placeholders. Other files and
+        unmanaged processes remain outside that boundary. Human plaintext reveal is a separate
         trusted-terminal action with no noninteractive bypass.
       </>
     ),
@@ -67,10 +68,11 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "Can the proxy be tricked into revealing the real key?",
     a: (
       <>
-        Supported proxy paths replace configured values and redact recognized
-        credential formats in response headers and bodies before returning
-        them. This reduces accidental exposure; it is not a substitute for
-        provider scoping, rotation, or OS user-presence controls. Proxy session
+        The proxy discards client control of the matched route&apos;s auth header
+        and injects only that route&apos;s vault value there; client headers and
+        bodies never resolve placeholders. It redacts recognized credential
+        formats in responses. This reduces accidental exposure; it is not a
+        substitute for provider scoping, rotation, or OS user-presence controls. Proxy session
         tokens use constant-time comparison.
       </>
     ),
@@ -79,10 +81,10 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "What about secrets in HTTP request bodies, not just headers?",
     a: (
       <>
-        The proxy scans supported request headers and body fields for
-        <Tok>phm_</Tok> tokens. Bodies are collected under explicit byte/time
-        limits before replacement. General upstream query-parameter
-        substitution is not supported.
+        Client headers and bodies never resolve <Tok>phm_</Tok> placeholders.
+        Bodies are collected under explicit byte/time limits and forwarded
+        byte-for-byte. Only an exact matched route can inject its own vault
+        value into its fixed authentication header.
       </>
     ),
   },

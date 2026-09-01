@@ -33,8 +33,18 @@ customer acceptance exist or are active.
   longer claim provider credential rotation. The MCP compatibility names
   `phantom_secrets_auto_rotate` and `phantom_rotate_with_expiry` perform only
   approved local `phm_` remaps and do not renew credential lifecycle metadata,
-  clear incidents, or sync. Use an explicitly configured and approved
-  provider-rotation flow for real credential replacement.
+  clear incidents, or sync. Rotate through the provider's trusted interface,
+  then store the successor with trusted-terminal `phantom add`.
+- `phantom watch --auto` now fails before vault or dotenv mutation. The legacy
+  watcher could leave partial state after a concurrent edit or nth write
+  failure. Use `phantom watch` for detection, review the change, and run
+  transactional `phantom init` from a trusted terminal.
+- All live vendor issuance/rotation execution is unavailable in 0.7.4. Batch,
+  single-provider CLI, MCP, enrollment exchange, additive issuance, and rolling
+  refresh paths fail before provider credential access and network I/O. Source
+  adapters and exact `cfg(test)` mocks are local transaction evidence only, not
+  provider activation or acceptance. Operators must rotate at the vendor and
+  then use Phantom's trusted local secret-entry path.
 - Hosted billing, personal cloud-vault, and team routes now return unavailable
   unless their exact commissioning gates are enabled. Operators must separately
   verify required migrations, environment variables, provider configuration,
@@ -48,6 +58,12 @@ customer acceptance exist or are active.
 - Windows rejects `--passphrase-file` before path access because native
   handle-bound owner/DACL verification is not yet implemented. Use the hidden
   trusted-terminal prompt. Unix private regular files remain supported.
+- A live v0.7.3 standalone proxy cannot be stopped by the new binary because
+  v0.7.3 did not ship an authenticated remote-shutdown endpoint. Stop it with
+  Ctrl-C in its owning v0.7.3 terminal. If that terminal is unavailable, use a
+  checksum-verified v0.7.3 binary from a trusted terminal, or independently
+  verify that no process/listener owns the legacy record before manually
+  removing `.phantom.pid`; v0.7.4 never kills or deletes that state.
 - Legacy direct installs sharing the npm installation root may be ambiguous.
   Reinstall with the reviewed direct installer to create a source receipt;
   `phantom upgrade` now fails closed instead of guessing ownership.
@@ -77,11 +93,13 @@ customer acceptance exist or are active.
   migration), exposes a fallible public vault constructor, and propagates
   backend errors instead of replacing missing encryption keys or panicking.
 - Makes standalone proxy lifecycle foreground-only and three-terminal-gated.
-  Its persistent private machine-local lock is keyed by local project identity,
-  contains no PID, port, or bearer, and is reported as an advisory lock rather
-  than an authenticated listener. Detached `start --daemon` and current external
-  shutdown fail closed; `phantom stop` is limited to authenticated cleanup of
-  legacy v0.7.3 PID/port/bearer records.
+  Its persistent advisory lock is stored in the OS user-data directory, keyed
+  by local project identity, contains no PID, port, or bearer, and is not
+  listener authentication. Unix permissions are restricted; Windows uses the
+  inherited user-data-directory ACL, which Phantom does not independently
+  verify. Detached `start --daemon` and all external shutdown fail closed;
+  `phantom stop` authenticates legacy v0.7.3 state only to report safe manual
+  migration guidance and never kills a process or deletes the record.
 - Removes the file-vault passphrase and ambient protected dotenv values from
   both proxied and direct `phantom exec` child environments, inserts only fresh
   session tokens for protected keys, scrubs configured service, connection,
@@ -90,8 +108,11 @@ customer acceptance exist or are active.
 - Persists one strictly validated dotenv-like filename beside `.phantom.toml`,
   migrates conventional legacy dotenv names without path traversal or symlinks,
   and refuses direct launch when protected state has no token-bearing managed file.
-- Scopes request substitution to the matched service's configured secret and
-  disables ambient forward-proxy discovery for credential-bearing upstream HTTP.
+- Disables all client-controlled token substitution in request headers and
+  bodies. Only the authenticated, exactly matched route injects its configured
+  vault value into its fixed authentication header; missing mappings fail before
+  any upstream call. Bodies remain byte-preserving under a hard size cap.
+  Credential-bearing upstream HTTP disables ambient forward-proxy discovery.
 
 ### Reliability and authority boundaries
 

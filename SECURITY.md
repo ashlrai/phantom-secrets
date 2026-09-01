@@ -65,7 +65,7 @@ In scope:
 - The MCP server and tools, especially paths that accept input from AI agents.
 - Local proxy authentication, request rewriting, response scrubbing, and secret injection behavior.
 - Local vault storage, keychain integration, encryption, import/export, and rotation flows.
-- Trusted-terminal provider issuance, provider endpoint selection, direct-to-vault credential handling, and value-free `phantom grant` lifecycle output.
+- The universal pre-credential/pre-network denial for provider issuance, enrollment, refresh, renewal, rotation, and revocation, plus value-free grant metadata.
 - Phantom Cloud, device auth, cloud sync, team vault APIs, billing/auth boundaries, and deployed `phm.dev` security controls.
 - npm packages, install scripts, release artifacts, checksums, and wrapper behavior when they affect install trust.
 - Documentation that could cause users to leak secrets or rely on a security property that Phantom does not provide.
@@ -120,13 +120,18 @@ Phantom narrows the risk of AI agents seeing real secrets, but it is not a compl
   outside `phantom exec` still inherits whatever its parent shell exports.
 - Standalone proxy lifecycle is foreground-only and requires all three standard
   streams to be terminals before vault access. The stable exclusivity lock is
-  private machine-local state keyed by the local project identity and contains
-  no PID, port, or bearer. A held advisory lock is not listener authentication.
-  Detached `--daemon` mode and the current proxy's external shutdown endpoint
-  fail closed; `phantom stop` only authenticates and cleans up legacy v0.7.3
-  state. Stop a current proxy with Ctrl-C in its owning terminal.
-- Request token substitution is bound to the matched route's configured secret;
-  an unrelated provider token remains unresolved. Connection-string tokens are
+  advisory state in the OS user-data directory keyed by the local project
+  identity and contains no PID, port, or bearer. Unix permissions are
+  restricted; on Windows Phantom relies on the inherited directory ACL and
+  does not independently verify its effectiveness. A held lock is not listener
+  authentication. Detached `--daemon` mode and external shutdown fail closed.
+  `phantom stop` authenticates legacy v0.7.3 state only to report migration
+  guidance; it never kills a process or deletes the record. Stop a current
+  proxy with Ctrl-C in its owning terminal.
+- Client-controlled request headers and bodies never resolve phantom tokens.
+  After authentication and exact route matching, the proxy injects only that
+  route's configured vault secret into its fixed authentication header; a
+  missing mapping fails before any upstream call. Connection-string tokens are
   never registered. Credential-bearing upstream HTTP ignores inherited
   `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY`; enterprise forward proxies are
   intentionally unsupported until a separately reviewed trust configuration exists.
@@ -136,7 +141,7 @@ Phantom narrows the risk of AI agents seeing real secrets, but it is not a compl
 - `.phantom.toml` does not have cryptographic integrity protection. Agentic proxy execution therefore accepts only exact built-in service routes and binds the project ID to the config directory; custom route approval is not yet supported.
 - Audit logging is opt-in and local by default. It cannot prove deletion of both the audit log and its local checkpoint without external evidence.
 - Team member removal does not retroactively revoke access to vault pushes that were encrypted to that member before removal. Rotate affected secrets after offboarding.
-- Provider-grant issuance requires a human provider-consent flow and separately configured provider application. Source and mock tests do not prove live provider, renewal, or customer acceptance.
+- All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.4. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.
 - `phantom grant revoke` currently fails closed before local mutation because remote revocation is not wired for the supported providers.
 - A provider grant is credential lifecycle state, not an execution-kernel authority grant. It cannot activate Locus verification, a broker lease, or production engineering execution.
 - GitHub immutable releases, checksums, archive-specific SPDX SBOMs, and GitHub attestations protect the published `v0.7.x` release artifacts. Installers and the self-updater verify checksums but do not yet verify attestations directly. Independent signatures, macOS notarization, Windows Authenticode, and exact-archive native acceptance remain open.

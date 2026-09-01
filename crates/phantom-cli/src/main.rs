@@ -16,8 +16,8 @@ use tracing_subscriber::EnvFilter;
 #[command(
     name = "phantom",
     about = "Reduce API-key exposure in supported AI-agent workflows",
-    long_about = "Phantom replaces real secrets in your .env with worthless phantom tokens.\n\
-                  A local proxy intercepts API calls, swaps in real credentials at the network layer.\n\
+    long_about = "Phantom replaces managed dotenv secrets with non-provider phantom placeholders.\n\
+                  Its authenticated local proxy matches exact routes and injects only route-owned authentication into each route's fixed header; client headers and bodies never resolve placeholders.\n\
                   Agents confined to value-blind tools and supported proxy routes do not receive stored values.\n\
                   Unmanaged files, same-user processes, arbitrary tools, and unsupported protocols remain outside this boundary.\n\n\
                   Commands are grouped (in display order):\n  \
@@ -162,7 +162,7 @@ enum Commands {
         daemon: bool,
     },
 
-    /// TTY-only authenticated cleanup for legacy v0.7.3 proxy state
+    /// TTY-only diagnostic and manual migration guidance for legacy v0.7.3 state
     #[command(next_help_heading = "Daily use")]
     Stop,
 
@@ -200,7 +200,7 @@ enum Commands {
         min_anomaly_score: Option<u8>,
     },
 
-    /// Add a secret to the vault
+    /// Add a secret transactionally to an initialized project (`phantom init --empty` first)
     #[command(next_help_heading = "Daily use")]
     Add {
         /// Secret name (e.g., OPENAI_API_KEY)
@@ -233,7 +233,7 @@ enum Commands {
         yes: bool,
     },
 
-    /// Copy a secret from this project's vault to another project
+    /// Copy a secret to an initialized target; existing target ownership is never overwritten
     #[command(next_help_heading = "Daily use")]
     Copy {
         /// Secret name in this project
@@ -410,7 +410,8 @@ enum Commands {
     /// Watch .env files and auto-detect new unprotected secrets
     #[command(next_help_heading = "Maintenance")]
     Watch {
-        /// Auto-protect new secrets without prompting
+        /// Deprecated and disabled before mutation: use watch for detection,
+        /// then run `phantom init` for transactional protection.
         #[arg(long)]
         auto: bool,
         /// Deprecated and disabled: the legacy watcher remapped local phm_
@@ -434,35 +435,21 @@ enum Commands {
         /// phm_cand_ placeholder, not a provider-issued credential.
         #[arg(long, hide = true)]
         shadow: bool,
-        /// Secret name to rotate. With --provider (or alone, when the secret has a rotation_provider
-        /// block in .phantom.toml): rotate the real credential at the vendor.
+        /// Secret name for the reserved provider-rotation surface. In 0.7.4,
+        /// every live provider path is denied before credential or network access.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
         /// Deprecated and disabled: the legacy schedule only remapped local
         /// Phantom placeholders and did not rotate provider credentials.
         #[arg(long, value_name = "STRATEGY", conflicts_with = "name", hide = true)]
         schedule_strategy: Option<String>,
-        /// Use a vendor-specific rotation provider to re-issue the credential at
-        /// the vendor side. Accepted values: stripe | github | aws | google | vercel.
-        /// (sentry and supabase are recognized but report manual-rotation-required
-        /// with a dashboard link — those vendors expose no token-minting API.)
-        /// Requires --name <KEY> and the secret's rotation_provider config in
-        /// .phantom.toml under [phantom.secrets.<KEY>.rotation_provider].
-        /// May be omitted when that config block names the provider:
-        /// `phantom rotate --name <KEY>` resolves it from .phantom.toml.
-        /// The bootstrap credential named by api_key_env is read from the
-        /// environment first, then from the vault under the same name.
-        /// The new value is stored in the vault and never printed; pass the
-        /// global --json flag for a metadata-only JSON result.
-        /// Example: phantom rotate --provider stripe --name STRIPE_SECRET_KEY
+        /// Reserved vendor-specific rotation selector. All providers are hard
+        /// denied before bootstrap credential access and network I/O in 0.7.4.
         #[arg(long, value_name = "PROVIDER", conflicts_with_all = ["shadow", "schedule_strategy", "with_expiry", "batch"])]
         provider: Option<String>,
 
-        /// Scan vault for all secrets expiring within the rotation window and
-        /// rotate them in a single batched run.  Respects per-provider rate
-        /// limits (e.g. Stripe's 10-second post-rotation pause).
-        /// Emits a composite audit event with a shared batch_id.
-        /// Rotation window defaults to 30 days; override with --rotation-window-days.
+        /// Metadata-only discovery/manual guidance. Vendor execution is hard
+        /// denied before credential or network access in 0.7.4.
         #[arg(long, conflicts_with_all = ["shadow", "schedule_strategy", "provider"])]
         batch: bool,
 
@@ -472,8 +459,9 @@ enum Commands {
         rotation_window_days: u64,
     },
 
-    /// Bootstrap a durable credential via one human consent, then let Phantom
-    /// renew it forever (GitHub App manifest, OAuth PKCE/device grants).
+    /// Inspect configured grant metadata. Enrollment and remote revocation are
+    /// hard-denied in shipped 0.7.4; obtain credentials at the provider and
+    /// store them with trusted-terminal `phantom add`.
     ///
     /// Subcommands: `add`, `list`, `status`, `revoke`.
     #[command(next_help_heading = "Maintenance")]
@@ -661,17 +649,10 @@ enum WorkspaceCliAction {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum GrantAction {
-    /// Run the ONE human consent for a provider and vault the durable root.
-    ///
-    /// Examples:
-    ///   phantom grant add github-app --org ashlrai
-    ///   phantom grant add supabase --flow pkce --client-id <ID> --client-secret-env SUPA_SECRET
-    ///   phantom grant add github --flow device --client-id <ID>
-    ///   phantom grant add vercel-integration --client-id <ID> --client-secret-env VERCEL_SECRET --team <TEAM>
+    /// Compatibility command. Shipped 0.7.4 returns before project, vault,
+    /// environment, browser, loopback, or network access. No enrollment occurs.
     Add {
-        /// Provider: `github-app` (manifest bootstrap), `vercel-integration`
-        /// (connectable-account Integration), or an OAuth provider (`supabase`,
-        /// `sentry`, `github`, …) driven by `--flow`.
+        /// Provider identifier retained for source compatibility; never contacted.
         provider: String,
         /// Org selector: for github-app, create the App under this org instead
         /// of your account; for supabase, pre-select this `organization_slug` on
@@ -681,9 +662,7 @@ enum GrantAction {
         /// GitHub App only: the App name (must be globally unique on GitHub).
         #[arg(long)]
         name: Option<String>,
-        /// The vault secret the minted credential lands under and that the
-        /// rotation_provider block is written for (default: GITHUB_TOKEN for
-        /// github-app; the refresh-token name otherwise).
+        /// Reserved destination name; no credential is minted or stored.
         #[arg(long)]
         rotate_secret: Option<String>,
         /// Consent flow for a generic OAuth provider: pkce (loopback) or device.
@@ -692,8 +671,7 @@ enum GrantAction {
         /// The OAuth app's client id (required for --flow pkce|device).
         #[arg(long)]
         client_id: Option<String>,
-        /// Name of an env var holding the OAuth client secret (never read from
-        /// disk; used only if the provider requires a confidential client).
+        /// Reserved env-var name. Its value is not read in 0.7.4.
         #[arg(long, value_name = "ENV")]
         client_secret_env: Option<String>,
         /// Comma-separated OAuth scopes to request.
@@ -708,11 +686,10 @@ enum GrantAction {
         /// authoritative account comes back in the token exchange.
         #[arg(long)]
         account: Option<String>,
-        /// Do not open a browser; forces the device flow for OAuth providers and
-        /// prints the launch URL to paste for github-app.
+        /// Compatibility flag. No browser is opened in 0.7.4.
         #[arg(long)]
         no_browser: bool,
-        /// Emit metadata-only JSON (vaulted names, never values).
+        /// Emit the value-free denial as JSON.
         #[arg(long)]
         json: bool,
     },

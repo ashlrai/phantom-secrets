@@ -99,9 +99,11 @@ Important boundaries:
 - `phantom_do` proposes a closed engineering action and does not execute it.
 - `phantom_setup_workspace` can propose and request trusted-terminal setup; MCP
   does not claim or apply the request.
-- Provider consent and credential grants occur outside MCP and confer no Locus,
-  broker, production, or deployment authority.
-- Validation, provider rotation, deployment sync, cloud, and team tools may
+- Provider enrollment and live issuance/refresh/renewal/rotation/revocation are
+  hard-denied before credential and network access in 0.7.4, including from
+  MCP. Protocol source and test mocks confer no Locus, broker, provider,
+  production, or deployment authority.
+- Validation, deployment sync, cloud, and team tools may
   perform network or persistent effects when their required gates are met.
 
 The exact names and schemas are in
@@ -120,12 +122,12 @@ The exact names and schemas are in
    or agent-controlled PTY can defeat it, so leave effects disabled unless the
    approval command and storage are outside agent authority.
 4. Application processes use `phm_` mappings under an authenticated local proxy
-   session; configured HTTP routes can then resolve those mappings at the
-   network boundary.
+   session. Client headers and bodies never resolve them; exact configured
+   routes inject only their own vault value into a fixed auth header.
 
-Persistent mappings are not provider credentials, but they can be resolved by
-an active authorized proxy with the matching vault. Rotate mappings when their
-exposure is suspected.
+Persistent mappings are not provider credentials and are never client-resolved,
+but remain sensitive metadata. A stolen live proxy bearer can authorize exact
+configured routes; rotate mappings and bearers when exposure is suspected.
 
 ## Cloud and team boundaries
 

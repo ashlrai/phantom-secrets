@@ -28,9 +28,9 @@ provider-enabled, or accepted in a real customer workflow.
 | Layer | Components | Current responsibility and boundary |
 |---|---|---|
 | Product | `phantom-cli`, `phantom-core` | Project configuration, dotenv classification and rewriting, tokens, authentication, cloud clients, audit, sync, validation, and operator workflows. |
-| Provider issuance | `phantom-core/src/issuance`, CLI `grant` commands | Human-consent issuance for a closed provider set, direct-to-vault credential-root storage, and value-free lifecycle metadata. This is not execution authority. |
+| Provider foundations | `phantom-core/src/issuance`, CLI `grant` commands | Protocol/design source plus value-free lifecycle metadata. All live issuance/enrollment/renewal/revocation is hard-denied before credential or network access in 0.7.4. This is not execution authority. |
 | Secret storage | `phantom-vault` | Native credential-store and encrypted-file backends behind `VaultBackend`. Real values remain behind this interface. |
-| Network edge | `phantom-proxy` | Authenticated loopback HTTP proxy, scoped token replacement, response scrubbing, streaming, size/time/concurrency limits, and upstream dispatch. |
+| Network edge | `phantom-proxy` | Authenticated loopback HTTP proxy, fixed route-owned auth-header injection, inert client headers/bodies, response scrubbing, streaming, size/time/concurrency limits, and upstream dispatch. |
 | Agent interface | `phantom-mcp` | Stdio MCP tools that return value-free metadata. The small conversation facade is distinct from the advanced compatibility catalog and its legacy gates. |
 | Cloud application | `apps/web` | Next.js routes and UI for device authentication, encrypted cloud-vault storage, teams, and billing. Local source does not prove live deployment state. |
 | Setup kernel | `phantom-workspace` plus workspace-request code in `phantom-core` | Value-blind inspection, deterministic sealed plans, bearerless requests, and recoverable trusted-terminal apply on Unix. |
@@ -46,7 +46,7 @@ provider-enabled, or accepted in a real customer workflow.
      v                                                            v
   application  ---- authenticated loopback HTTP ---->  phantom-proxy
                                                            |
-                         scoped replacement at network edge | real provider credential
+                    fixed route-owned auth-header injection | real provider credential
                                                            v
                                                     external provider API
 
@@ -91,9 +91,9 @@ identified; `phantom check` and human review remain important.
 
 1. `phantom exec` opens the project vault and creates an ephemeral proxy
    session.
-2. The proxy binds to loopback, authenticates the local request, resolves
-   `phm_` placeholders, and injects the corresponding real value only on an
-   allowed upstream route.
+2. The proxy binds to loopback, authenticates the local request, matches an
+   exact route, discards client control of that route's auth header, and injects
+   only the route-owned vault value there. Client placeholders remain inert.
 3. The proxy bounds request/response resources, preserves supported streaming,
    and scrubs known secret values from responses before returning data to the
    child process.
@@ -122,31 +122,16 @@ that ceremony; when the command or `~/.phantom` approval storage is in agent
 scope, effects must remain disabled. These gates are not Locus grants, broker
 leases, or proof that the inactive execution kernel is active.
 
-### Obtain a provider grant
+### Provider-grant foundations
 
-Provider issuance is deliberately a trusted-terminal CLI flow:
+Provider protocol source and value-free metadata remain design foundations.
+In 0.7.4, CLI single-provider rotation, batch rotation, MCP rotation, enrollment
+exchange, additive issuance, rolling refresh, and remote revocation all fail
+before provider credential access and before network I/O. Exact `cfg(test)`
+mocks prove local transaction scaffolding only, not provider activation,
+commissioning, or acceptance. See the [provider-grant specification](grants-spec.md).
 
-```text
-human consent at provider
-  -> closed provider endpoint and issuance engine
-  -> zeroizing credential roots returned only to CLI
-  -> vault writes
-  -> value-free rotation metadata in .phantom.toml
-  -> metadata-only grant list/status
-```
-
-GitHub App, Vercel Integration, Sentry Integration, Supabase OAuth, and Stripe
-App OAuth issuance paths are implemented. Stripe restricted-key issuance is an
-explicit alternate flow. Exact prerequisites and lifecycle behavior are in the
-[provider-grant specification](grants-spec.md).
-
-The CLI never prints issued roots. Provider client secrets are resolved by the
-name of an environment variable rather than accepted as command-line values,
-and production endpoints come from a closed allowlist. `phantom grant revoke`
-currently fails closed before local mutation because supported-provider remote
-revocation is not wired.
-
-A **provider grant** is credential and renewal state. It is not an **authority
+A **provider grant** is design-era credential lifecycle metadata. It is not an **authority
 grant** from `phantom-authority`, a Locus credential, a broker lease, or an
 execution permit. The MCP server has no provider-consent or provider-grant
 issuance tool.
@@ -253,7 +238,7 @@ Other non-negotiable boundaries are:
 | Resource | Owner today | Lifecycle rule |
 |---|---|---|
 | Real secret value | `VaultBackend` and proxy interceptor | Resolve only for a scoped operation; do not serialize into agent-facing results. |
-| Project Phantom token | Project dotenv/config | Random placeholder, not a provider credential. It persists until rotation and can be mapped only by a Phantom process with vault access; treat exposure as a reason to rotate. |
+| Project Phantom token | Project dotenv/config | Random placeholder, not a provider credential. It persists until rotation and is never resolved from a client header/body; treat exposure as sensitive metadata and rotate it. |
 | Proxy session bearer | CLI/proxy session | Fresh per run, loopback-scoped, invalid after shutdown; exposed to the child environment. |
 | Workspace request | Authenticated machine-local request store | `Pending -> Claimed -> Applied`, or explicit `Expired`, `Failed`, or `RolledBack`; claimed work may require recovery. |
 | Setup recovery journal | Workspace transaction engine | Authenticate before recovery; reconcile or roll back before accepting new conclusions. |
@@ -286,7 +271,7 @@ candidate as a trusted release.
 Use code and executable contracts before prose:
 
 - product composition: [`Cargo.toml`](../Cargo.toml) and crate manifests;
-- provider issuance: [`issuance`](../crates/phantom-core/src/issuance/), CLI
+- provider denial and design foundations: [`issuance`](../crates/phantom-core/src/issuance/), CLI
   [`grant`](../crates/phantom-cli/src/commands/grant/), and the current
   [provider-grant specification](grants-spec.md);
 - proxy boundary: [`phantom-proxy`](../crates/phantom-proxy/);
