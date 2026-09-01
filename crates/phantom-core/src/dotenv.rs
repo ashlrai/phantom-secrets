@@ -2,6 +2,7 @@ use crate::error::{PhantomError, Result};
 use crate::token::{PhantomToken, TokenMap};
 use std::collections::BTreeMap;
 use std::path::Path;
+use zeroize::Zeroize;
 
 /// Classification of an environment variable entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +29,25 @@ pub struct EnvEntry {
 pub struct DotenvFile {
     /// All lines in order. Non-KV lines (comments, blanks) stored as-is.
     lines: Vec<DotenvLine>,
+}
+
+impl Drop for DotenvFile {
+    fn drop(&mut self) {
+        // Parsed dotenv values and raw source lines can contain credentials.
+        // Scrub every application-owned buffer, including malformed/unparsed
+        // lines, rather than relying only on the original read buffer.
+        for line in &mut self.lines {
+            match line {
+                DotenvLine::Entry(entry, format) => {
+                    entry.value.zeroize();
+                    if let Some(format) = format {
+                        format.raw.zeroize();
+                    }
+                }
+                DotenvLine::Other(raw) => raw.zeroize(),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

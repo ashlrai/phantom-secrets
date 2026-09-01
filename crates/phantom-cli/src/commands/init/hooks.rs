@@ -32,21 +32,38 @@ impl PreparedHook {
 pub fn prepare_precommit_hook(project_dir: &Path) -> anyhow::Result<PreparedHook> {
     let state = precommit_hook::inspect(project_dir)
         .map_err(|error| anyhow::anyhow!("Pre-commit hook setup failed: {error}"))?;
-    let (path, existing, executable) = match state {
+    let (path, before, executable) = match state {
         precommit_hook::HookState::NotRepository => {
             return Ok(PreparedHook {
                 file: None,
                 change: None,
             });
         }
-        precommit_hook::HookState::Missing { path } => (path, String::new(), false),
+        precommit_hook::HookState::Missing { path } => (path, None, false),
         precommit_hook::HookState::Present {
             path,
             content,
             executable,
-        } => (path, content, executable),
+        } => {
+            let before = phantom_core::fs::read_regular_file(&path).map_err(|error| {
+                anyhow::anyhow!("Failed to safely snapshot {}: {error}", path.display())
+            })?;
+            if before.as_deref() != Some(content.as_bytes()) {
+                anyhow::bail!(
+                    "Pre-commit hook changed during init preflight: {}",
+                    path.display()
+                );
+            }
+            (path, before, executable)
+        }
     };
-    let update = precommit_hook::ensure(&existing);
+    let existing = before
+        .as_deref()
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|_| anyhow::anyhow!("Pre-commit hook is not valid UTF-8"))?
+        .unwrap_or_default();
+    let update = precommit_hook::ensure(existing);
     let needs_executable_repair = !executable && !existing.is_empty();
     let change = if update.change == HookChange::Unchanged && needs_executable_repair {
         HookChange::Repaired
@@ -54,7 +71,8 @@ pub fn prepare_precommit_hook(project_dir: &Path) -> anyhow::Result<PreparedHook
         update.change
     };
     let file = (update.change != HookChange::Unchanged || needs_executable_repair).then(|| {
-        phantom_vault::InitFile::replace(path, update.content.into_bytes()).executable(true)
+        phantom_vault::InitFile::replace_if_unchanged(path, before, update.content.into_bytes())
+            .executable(true)
     });
     Ok(PreparedHook {
         file,

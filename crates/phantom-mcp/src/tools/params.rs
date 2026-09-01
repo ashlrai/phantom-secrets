@@ -236,7 +236,9 @@ pub struct CopySecretParams {
     /// `..` segments are rejected to prevent prompt-injected target-dir
     /// obfuscation; pass the full destination path explicitly.
     pub target_dir: String,
-    /// Optional new name for the secret in the target project
+    /// Optional new name for the secret in the target project. Copy refuses
+    /// if the target vault, lifecycle config, or managed dotenv already owns
+    /// this name; there is no overwrite mode.
     pub rename: Option<String>,
     /// Required. Must be true — the calling agent must confirm with the user
     /// before invoking this tool. Copying writes secrets into another vault,

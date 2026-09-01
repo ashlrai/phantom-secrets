@@ -4,12 +4,23 @@ use phantom_core::dotenv::EnvEntry;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Load or create a PhantomConfig and auto-detect services from .env key names.
-pub fn load_or_create(project_dir: &Path, config_path: &Path) -> anyhow::Result<PhantomConfig> {
+/// Load or create a PhantomConfig from an exact, safely-read before-image.
+/// Existing config is rechecked after parsing so a concurrent editor cannot
+/// silently change project identity between preflight and transaction setup.
+pub fn load_or_create(
+    project_dir: &Path,
+    config_path: &Path,
+    config_before: Option<&[u8]>,
+) -> anyhow::Result<PhantomConfig> {
     let project_id = PhantomConfig::project_id_from_path(project_dir);
-    let config = if config_path.exists() {
+    let config = if config_before.is_some() {
         println!("{} Loading existing .phantom.toml", "->".blue().bold());
-        PhantomConfig::load(config_path)?
+        let config = PhantomConfig::load(config_path)?;
+        let after = phantom_core::fs::read_regular_file(config_path)?;
+        if after.as_deref() != config_before {
+            anyhow::bail!(".phantom.toml changed while init was reading it; no changes were made");
+        }
+        config
     } else {
         PhantomConfig::new_with_defaults(project_id)
     };

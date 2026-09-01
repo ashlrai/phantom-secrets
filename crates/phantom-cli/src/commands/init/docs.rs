@@ -34,11 +34,16 @@ fn prepare_section(
     } else {
         return Ok(None);
     };
-    let content = if file_path.exists() {
-        std::fs::read_to_string(&file_path)?
-    } else {
-        String::new()
-    };
+    let before = phantom_core::fs::read_regular_file(&file_path).map_err(|error| {
+        anyhow::anyhow!("Failed to safely read {}: {error}", file_path.display())
+    })?;
+    let content = before
+        .as_deref()
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|_| anyhow::anyhow!("{} is not valid UTF-8", file_path.display()))?
+        .unwrap_or_default()
+        .to_string();
     let lower = content.to_lowercase();
     if skip_markers
         .iter()
@@ -52,7 +57,7 @@ fn prepare_section(
     }
     updated.push_str(section);
     Ok(Some((
-        phantom_vault::InitFile::replace(file_path, updated.into_bytes()),
+        phantom_vault::InitFile::replace_if_unchanged(file_path, before, updated.into_bytes()),
         success_msg,
     )))
 }

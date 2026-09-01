@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 
@@ -70,10 +70,13 @@ pub fn find_env_file(project_dir: &Path, user_specified: &str) -> Option<PathBuf
 /// Prepare the exact ignore-file update for inclusion in init's transaction.
 pub fn prepare_gitignore(project_dir: &Path) -> Result<Option<phantom_vault::InitFile>> {
     let gitignore_path = project_dir.join(".gitignore");
-    let mut content = if gitignore_path.exists() {
-        std::fs::read_to_string(&gitignore_path)?
-    } else {
-        String::new()
+    let before = phantom_core::fs::read_regular_file(&gitignore_path)
+        .with_context(|| format!("Failed to safely read {}", gitignore_path.display()))?;
+    let mut content = match before.as_deref() {
+        Some(bytes) => std::str::from_utf8(bytes)
+            .context(".gitignore is not valid UTF-8; refusing to rewrite it")?
+            .to_string(),
+        None => String::new(),
     };
     let original = content.clone();
     for pattern in GITIGNORE_PATTERNS {
@@ -85,6 +88,7 @@ pub fn prepare_gitignore(project_dir: &Path) -> Result<Option<phantom_vault::Ini
             content.push('\n');
         }
     }
-    Ok((content != original)
-        .then(|| phantom_vault::InitFile::replace(gitignore_path, content.into_bytes())))
+    Ok((content != original).then(|| {
+        phantom_vault::InitFile::replace_if_unchanged(gitignore_path, before, content.into_bytes())
+    }))
 }

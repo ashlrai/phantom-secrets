@@ -480,7 +480,7 @@ impl PhantomMcpServer {
 
     /// Initialize Phantom in the current directory.
     #[tool(
-        description = "Initialize Phantom: read .env file, store real secrets in the vault, and rewrite .env with phantom tokens. The AI agent will only see phantom tokens after this."
+        description = "Initialize Phantom through one exact-before project transaction: read a safe project-local dotenv, compare-and-swap every vault entry, persist config, and rewrite the dotenv with phantom tokens last. Concurrent file or vault changes abort and transaction-owned writes are rolled back where verifiable. Requires confirm plus out-of-band approval."
     )]
     fn phantom_init(
         &self,
@@ -494,20 +494,19 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
-        let requested_env = std::path::Path::new(&params.env_path);
-        if requested_env.is_absolute()
-            || requested_env
-                .components()
-                .any(|component| !matches!(component, std::path::Component::Normal(_)))
-        {
-            return Err(invalid_params_err(
-                "env_path must be a contained project-relative file path",
-            ));
-        }
-        let env_path = self.project_dir.join(requested_env);
-
-        let dotenv = DotenvFile::parse_file(&env_path)
-            .map_err(|e| invalid_params_err(format!("Failed to read {}: {e}", params.env_path)))?;
+        let env_name = phantom_core::managed_dotenv::validate_dotenv_basename(&params.env_path)
+            .map_err(|error| invalid_params_err(error.to_string()))?;
+        let env_path = self.project_dir.join(&env_name);
+        let env_before = zeroize::Zeroizing::new(
+            phantom_core::fs::read_regular_file(&env_path)
+                .map_err(|error| {
+                    invalid_params_err(format!("Failed to safely read {env_name}: {error}"))
+                })?
+                .ok_or_else(|| invalid_params_err(format!("{env_name} does not exist")))?,
+        );
+        let env_text = std::str::from_utf8(env_before.as_slice())
+            .map_err(|_| invalid_params_err(format!("{env_name} is not valid UTF-8")))?;
+        let dotenv = DotenvFile::parse_str(env_text);
 
         let real_entries = dotenv.real_secret_entries();
         if real_entries.is_empty() {
@@ -516,22 +515,32 @@ impl PhantomMcpServer {
             );
         }
 
+        let config_path = self.config_path();
+        let config_before = phantom_core::fs::read_regular_file(&config_path)
+            .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?;
         let project_id = PhantomConfig::project_id_from_path(&self.project_dir);
-        let config = if self.config_path().exists() {
-            PhantomConfig::load(&self.config_path())
-                .map_err(|e| internal_err(format!("Config error: {e}")))?
+        let mut config = if config_before.is_some() {
+            let config = PhantomConfig::load(&config_path)
+                .map_err(|e| internal_err(format!("Config error: {e}")))?;
+            if phantom_core::fs::read_regular_file(&config_path)
+                .map_err(|error| internal_err(format!("Failed to recheck config: {error}")))?
+                .as_deref()
+                != config_before.as_deref()
+            {
+                return Err(internal_err(
+                    ".phantom.toml changed during initialization preflight",
+                ));
+            }
+            config
         } else {
             PhantomConfig::new_with_defaults(project_id.clone())
         };
+        config.phantom.dotenv_path = Some(env_name);
 
         let mut token_map = TokenMap::new();
-        let secrets = real_entries
-            .iter()
-            .map(|entry| {
-                token_map.insert(entry.key.clone());
-                phantom_vault::InitSecret::new(entry.key.clone(), entry.value.clone())
-            })
-            .collect::<Vec<_>>();
+        for entry in &real_entries {
+            token_map.insert(entry.key.clone());
+        }
         let (phantomized, mut originals) = dotenv.rewrite_with_phantoms(&token_map);
         for value in originals.values_mut() {
             use zeroize::Zeroize;
@@ -539,9 +548,15 @@ impl PhantomMcpServer {
         }
         originals.clear();
         let files = vec![
-            phantom_vault::InitFile::replace(&env_path, phantomized.into_bytes()).commit_last(),
-            phantom_vault::InitFile::replace(
-                self.config_path(),
+            phantom_vault::InitFile::replace_if_unchanged(
+                &env_path,
+                Some(env_before.as_slice().to_vec()),
+                phantomized.into_bytes(),
+            )
+            .commit_last(),
+            phantom_vault::InitFile::replace_if_unchanged(
+                &config_path,
+                config_before,
                 toml::to_string_pretty(&config)
                     .map_err(|_| internal_err("Failed to serialize config"))?
                     .into_bytes(),
@@ -549,6 +564,21 @@ impl PhantomMcpServer {
         ];
         let vault = phantom_vault::try_create_vault(config.local_project_id())
             .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let secrets = real_entries
+            .iter()
+            .map(|entry| {
+                let before = retrieve_optional_secret(
+                    vault.as_ref(),
+                    &entry.key,
+                    "initialization destination",
+                )?;
+                Ok(phantom_vault::InitSecret::replace_if_unchanged(
+                    entry.key.clone(),
+                    before.as_ref().map(|value| value.as_str().to_string()),
+                    entry.value.clone(),
+                ))
+            })
+            .collect::<Result<Vec<_>, McpError>>()?;
         let receipt = phantom_vault::commit_init(&self.project_dir, vault.as_ref(), secrets, files)
             .map_err(|error| internal_err(format!("Initialization transaction failed: {error}")))?;
 
@@ -1153,22 +1183,13 @@ impl PhantomMcpServer {
 
     /// Copy a secret to another phantom-initialized project without exposing its value.
     #[tool(
-        description = "Copy a secret from this project's vault to another project's vault. The secret value is never exposed — it transfers directly between encrypted vaults. The target project must be phantom-initialized. DESTRUCTIVE — writes a secret into another vault (exfiltration primitive if misdirected); requires `confirm: true`; the agent must ask the user for explicit consent before calling."
+        description = "Copy a secret into a distinct initialized target through one exact-before target transaction. Refuses existing target vault, lifecycle-config, or managed-dotenv ownership; never overwrites. On success it creates both the target vault entry and managed-dotenv phantom mapping, with dotenv committed last. This is an exfiltration-capable cross-project write and requires confirm plus an out-of-band approval token before any source value retrieval."
     )]
     fn phantom_copy_secret(
         &self,
         Parameters(params): Parameters<CopySecretParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_copy_secret", params.confirm)?;
-
-        // Reject
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token(
-            "phantom_copy_secret",
-            params.approval_token.as_deref(),
-            &params_json,
-            &self.project_id(),
-        )?;
         // Reject `..` in the raw input. Canonicalize below collapses traversal,
         // but only once target_dir exists on disk — and an attacker can stage a
         // missing-path case. Guarding at the textual layer is simplest.
@@ -1178,12 +1199,9 @@ impl PhantomMcpServer {
             ));
         }
 
-        let (_config, source_vault) = self.load_config_and_vault()?;
-
-        // Retrieve from source — Zeroizing<String> auto-zeroizes on all exit paths
-        let secret_value = source_vault
-            .retrieve(&params.name)
-            .map_err(|e| invalid_params_err(format!("Secret '{}' not found: {e}", params.name)))?;
+        validate_mcp_secret_name(&params.name)?;
+        let target_name = params.rename.as_deref().unwrap_or(&params.name);
+        validate_mcp_secret_name(target_name)?;
 
         // Resolve target directory, then canonicalize to normalize any symlinks
         // and give the user a fully-qualified path in the success message.
@@ -1199,28 +1217,100 @@ impl PhantomMcpServer {
                 target_dir_raw.display()
             ))
         })?;
-
-        let target_config_path = target_dir.join(".phantom.toml");
-        if !target_config_path.exists() {
-            return Err(invalid_params_err(format!(
-                "Target project at {} is not phantom-initialized",
-                target_dir.display()
-            )));
+        let source_dir = self.project_dir.canonicalize().map_err(|error| {
+            internal_err(format!(
+                "Failed to resolve source project directory: {error}"
+            ))
+        })?;
+        if source_dir == target_dir {
+            return Err(invalid_params_err(
+                "Source and target resolve to the same project; copy refuses ambiguous self-overwrite.",
+            ));
         }
 
-        let target_config = PhantomConfig::load(&target_config_path)
-            .map_err(|e| internal_err(format!("Failed to load target config: {e}")))?;
+        let target_config_path = target_dir.join(".phantom.toml");
+        let (target_config, target_config_before) = load_mcp_config_exact(&target_config_path)
+            .map_err(|error| {
+                invalid_params_err(format!(
+                    "Target project at {} is not safely initialized: {}",
+                    target_dir.display(),
+                    error.message
+                ))
+            })?;
 
         let target_vault = phantom_vault::try_create_vault(target_config.local_project_id())
             .map_err(|error| internal_err(format!("Failed to initialize target vault: {error}")))?;
-        let target_name = params.rename.as_deref().unwrap_or(&params.name);
+        let target_vault_names = target_vault
+            .list()
+            .map_err(|error| internal_err(format!("Failed to list target vault: {error}")))?;
+        if retrieve_optional_secret(target_vault.as_ref(), target_name, "copy destination")?
+            .is_some()
+        {
+            return Err(invalid_params_err(format!(
+                "Target secret '{target_name}' already exists; copy never overwrites"
+            )));
+        }
+        if target_config.phantom.secrets.contains_key(target_name) {
+            return Err(invalid_params_err(format!(
+                "Target lifecycle config already owns '{target_name}'; copy refuses ambiguous ownership"
+            )));
+        }
+        let target_env = phantom_core::managed_dotenv::resolve_dotenv(
+            &target_dir,
+            &target_config,
+            &target_vault_names,
+        )
+        .map_err(|error| internal_err(format!("Failed to resolve target dotenv: {error}")))?;
+        let target_env_before = phantom_core::fs::read_regular_file(&target_env.path)
+            .map_err(|error| internal_err(format!("Failed to snapshot target dotenv: {error}")))?
+            .map(zeroize::Zeroizing::new);
+        if mcp_dotenv_has_key(
+            target_env_before.as_ref().map(|bytes| bytes.as_slice()),
+            target_name,
+        )? {
+            return Err(invalid_params_err(format!(
+                "Target managed dotenv already owns '{target_name}'; copy never overwrites"
+            )));
+        }
 
-        target_vault
-            .store(target_name, &secret_value)
-            .map_err(|e| internal_err(format!("Failed to store in target vault: {e}")))?;
+        // The approval binds the human-reviewed request to the resolved target
+        // vault identity and exact config before-image. Retrying after a path,
+        // symlink, config, or managed-dotenv selection swap recomputes a
+        // different arg hash and cannot consume the old approval token.
+        let approval_params = copy_approval_params_json(
+            &params,
+            &target_dir,
+            target_config.local_project_id(),
+            target_name,
+            &target_env.path,
+            &target_config_before,
+        )?;
+        require_approval_token(
+            "phantom_copy_secret",
+            params.approval_token.as_deref(),
+            &approval_params,
+            &self.project_id(),
+        )?;
+
+        let (_config, source_vault) = self.load_config_and_vault()?;
+        let secret_value = source_vault
+            .retrieve(&params.name)
+            .map_err(|e| invalid_params_err(format!("Secret '{}' not found: {e}", params.name)))?;
+        apply_mcp_copy_transaction(
+            &target_dir,
+            &target_config_path,
+            target_config,
+            target_config_before,
+            target_vault.as_ref(),
+            target_vault_names,
+            target_env.path,
+            target_env_before,
+            target_name,
+            secret_value.as_str(),
+        )?;
 
         text_result(format!(
-            "Copied '{}' -> '{}' in {}. Secret value was never exposed.",
+            "Copied '{}' -> '{}' in {} and created its managed-dotenv mapping. No target ownership was overwritten; secret value was never exposed.",
             params.name,
             target_name,
             target_dir.display()
@@ -4443,6 +4533,140 @@ fn retrieve_optional_secret(
     }
 }
 
+fn validate_mcp_secret_name(name: &str) -> Result<(), McpError> {
+    let mut bytes = name.bytes();
+    if !matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err(invalid_params_err(
+            "Secret names must match [A-Za-z_][A-Za-z0-9_]*",
+        ));
+    }
+    Ok(())
+}
+
+fn load_mcp_config_exact(path: &Path) -> Result<(PhantomConfig, Vec<u8>), McpError> {
+    let before = phantom_core::fs::read_regular_file(path)
+        .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?
+        .ok_or_else(|| invalid_params_err("Target .phantom.toml does not exist"))?;
+    let config = PhantomConfig::load(path)
+        .map_err(|error| internal_err(format!("Failed to load config: {error}")))?;
+    let after = phantom_core::fs::read_regular_file(path)
+        .map_err(|error| internal_err(format!("Failed to recheck config: {error}")))?;
+    if after.as_deref() != Some(before.as_slice()) {
+        return Err(internal_err(
+            ".phantom.toml changed during copy preflight; no source secret was read",
+        ));
+    }
+    Ok((config, before))
+}
+
+fn mcp_dotenv_has_key(before: Option<&[u8]>, name: &str) -> Result<bool, McpError> {
+    let Some(bytes) = before else {
+        return Ok(false);
+    };
+    let content = std::str::from_utf8(bytes)
+        .map_err(|_| internal_err("Target managed dotenv is not valid UTF-8"))?;
+    Ok(DotenvFile::parse_str(content)
+        .entries()
+        .iter()
+        .any(|entry| entry.key == name))
+}
+
+fn copy_approval_params_json(
+    params: &CopySecretParams,
+    canonical_target: &Path,
+    target_local_project_id: &str,
+    target_name: &str,
+    env_path: &Path,
+    config_before: &[u8],
+) -> Result<String, McpError> {
+    let config_hex = hex::encode(config_before);
+    let fingerprint_input = serde_json::json!({ "config_hex": config_hex }).to_string();
+    let config_fingerprint = phantom_core::mcp_approval::compute_arg_hash(
+        &fingerprint_input,
+        b"phantom-copy-target-config-v1",
+    );
+    let env_name = phantom_core::managed_dotenv::dotenv_basename(canonical_target, env_path)
+        .map_err(|error| internal_err(format!("Invalid target dotenv binding: {error}")))?;
+    serde_json::to_string(&serde_json::json!({
+        "name": params.name,
+        "target_dir": params.target_dir,
+        "rename": params.rename,
+        "confirm": params.confirm,
+        "approval_token": params.approval_token,
+        "resolved_target": {
+            "canonical_path": canonical_target.to_string_lossy(),
+            "local_project_id": target_local_project_id,
+            "source_name": params.name,
+            "target_name": target_name,
+            "managed_dotenv": env_name,
+            "config_hmac_sha256": config_fingerprint,
+        }
+    }))
+    .map_err(|error| internal_err(format!("Failed to bind copy approval: {error}")))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_mcp_copy_transaction(
+    target_dir: &Path,
+    config_path: &Path,
+    mut config: PhantomConfig,
+    config_before: Vec<u8>,
+    vault: &dyn phantom_vault::VaultBackend,
+    vault_names: Vec<String>,
+    env_path: PathBuf,
+    env_before: Option<zeroize::Zeroizing<Vec<u8>>>,
+    target_name: &str,
+    value: &str,
+) -> Result<(), McpError> {
+    let mut content = zeroize::Zeroizing::new(match env_before.as_deref() {
+        Some(bytes) => String::from_utf8(bytes.to_vec())
+            .map_err(|_| internal_err("Target managed dotenv is not valid UTF-8"))?,
+        None => String::new(),
+    });
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    let mut tokens = TokenMap::new();
+    let token = tokens.insert(target_name.to_string());
+    content.push_str(&format!("{target_name}={token}\n"));
+    let env_after = std::mem::take(&mut *content).into_bytes();
+
+    let config_after = if config.phantom.dotenv_path.is_none() && vault_names.is_empty() {
+        config.phantom.dotenv_path = Some(
+            phantom_core::managed_dotenv::dotenv_basename(target_dir, &env_path)
+                .map_err(|error| internal_err(format!("Invalid target dotenv: {error}")))?,
+        );
+        toml::to_string_pretty(&config)
+            .map_err(|error| internal_err(format!("Failed to serialize target config: {error}")))?
+            .into_bytes()
+    } else {
+        config_before.clone()
+    };
+    let files = vec![
+        phantom_vault::InitFile::replace_if_unchanged(
+            config_path,
+            Some(config_before),
+            config_after,
+        ),
+        phantom_vault::InitFile::replace_if_unchanged(
+            &env_path,
+            env_before.as_ref().map(|bytes| bytes.as_slice().to_vec()),
+            env_after,
+        )
+        .commit_last(),
+    ];
+    let mutation =
+        phantom_vault::InitSecret::replace_if_unchanged(target_name, None::<String>, value);
+    phantom_vault::commit_init(target_dir, vault, vec![mutation], files).map_err(|error| {
+        internal_err(format!(
+            "Target copy transaction failed: {error}. Inspect target vault/config/dotenv before retrying."
+        ))
+    })?;
+    Ok(())
+}
+
 fn apply_team_vault_pull_transaction(
     project_dir: &Path,
     vault: &dyn phantom_vault::VaultBackend,
@@ -4832,6 +5056,7 @@ impl ServerHandler for PhantomMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phantom_vault::VaultBackend;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -4882,6 +5107,13 @@ mod tests {
         let bytes = toml::to_string_pretty(config).unwrap().into_bytes();
         std::fs::write(path, &bytes).unwrap();
         bytes
+    }
+
+    fn write_copy_test_config(path: &Path) -> (PhantomConfig, Vec<u8>) {
+        let config = PhantomConfig::new_with_defaults("copy-target-project".to_string());
+        let bytes = toml::to_string_pretty(&config).unwrap().into_bytes();
+        std::fs::write(path, &bytes).unwrap();
+        (config, bytes)
     }
 
     struct BackendFailureVault {
@@ -5075,6 +5307,214 @@ mod tests {
             metadata: phantom_core::validator::ValidationMetadata,
         ) -> phantom_core::error::Result<()> {
             self.inner.set_validation_metadata(name, metadata)
+        }
+    }
+
+    #[test]
+    fn mcp_copy_transaction_creates_absent_vault_and_dotenv_mapping() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let env_path = dir.path().join(".env");
+        let (config, config_before) = write_copy_test_config(&config_path);
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "mcp-copy-success",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+
+        apply_mcp_copy_transaction(
+            dir.path(),
+            &config_path,
+            config,
+            config_before,
+            &vault,
+            Vec::new(),
+            env_path.clone(),
+            None,
+            "COPIED_KEY",
+            "source-value",
+        )
+        .unwrap();
+
+        assert_eq!(
+            vault.retrieve("COPIED_KEY").unwrap().as_str(),
+            "source-value"
+        );
+        let dotenv = std::fs::read_to_string(&env_path).unwrap();
+        assert!(dotenv.contains("COPIED_KEY=phm_"));
+        assert!(!dotenv.contains("source-value"));
+        assert_eq!(
+            PhantomConfig::load(&config_path)
+                .unwrap()
+                .phantom
+                .dotenv_path
+                .as_deref(),
+            Some(".env")
+        );
+    }
+
+    #[test]
+    fn mcp_copy_config_drift_aborts_without_vault_or_dotenv_write() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let env_path = dir.path().join(".env");
+        let (config, config_before) = write_copy_test_config(&config_path);
+        let mut concurrent = config_before.clone();
+        concurrent.extend_from_slice(b"\n# concurrent owner\n");
+        std::fs::write(&config_path, &concurrent).unwrap();
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "mcp-copy-config-race",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+
+        assert!(apply_mcp_copy_transaction(
+            dir.path(),
+            &config_path,
+            config,
+            config_before,
+            &vault,
+            Vec::new(),
+            env_path.clone(),
+            None,
+            "COPIED_KEY",
+            "source-value",
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&config_path).unwrap(), concurrent);
+        assert!(!env_path.exists());
+        assert!(matches!(
+            vault.retrieve("COPIED_KEY"),
+            Err(phantom_core::error::PhantomError::SecretNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn mcp_copy_destination_race_preserves_concurrent_owner_and_rolls_back_config() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let env_path = dir.path().join(".env");
+        let (config, config_before) = write_copy_test_config(&config_path);
+        let inner = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "mcp-copy-vault-race",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        let vault = ConcurrentCreateVault {
+            inner,
+            injected: std::sync::atomic::AtomicBool::new(false),
+        };
+
+        assert!(apply_mcp_copy_transaction(
+            dir.path(),
+            &config_path,
+            config,
+            config_before.clone(),
+            &vault,
+            Vec::new(),
+            env_path.clone(),
+            None,
+            "COPIED_KEY",
+            "source-value",
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+        assert!(!env_path.exists());
+        assert_eq!(
+            vault.retrieve("COPIED_KEY").unwrap().as_str(),
+            "concurrent-owner"
+        );
+    }
+
+    #[test]
+    fn mcp_copy_approval_binding_changes_with_target_identity_or_config() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = TempDir::new().unwrap();
+        let previous_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let first_env = first.path().join(".env");
+        let second_env = second.path().join(".env");
+        let params = CopySecretParams {
+            name: "SOURCE_KEY".to_string(),
+            target_dir: first.path().display().to_string(),
+            rename: Some("TARGET_KEY".to_string()),
+            confirm: true,
+            approval_token: None,
+        };
+        let a = copy_approval_params_json(
+            &params,
+            first.path(),
+            "target-local-a",
+            "TARGET_KEY",
+            &first_env,
+            b"config-a",
+        )
+        .unwrap();
+        let identity_swap = copy_approval_params_json(
+            &params,
+            second.path(),
+            "target-local-b",
+            "TARGET_KEY",
+            &second_env,
+            b"config-a",
+        )
+        .unwrap();
+        let config_swap = copy_approval_params_json(
+            &params,
+            first.path(),
+            "target-local-a",
+            "TARGET_KEY",
+            &first_env,
+            b"config-b",
+        )
+        .unwrap();
+        let key = b"approval-binding-test-key";
+
+        assert_ne!(
+            phantom_core::mcp_approval::compute_arg_hash(&a, key),
+            phantom_core::mcp_approval::compute_arg_hash(&identity_swap, key)
+        );
+        assert_ne!(
+            phantom_core::mcp_approval::compute_arg_hash(&a, key),
+            phantom_core::mcp_approval::compute_arg_hash(&config_swap, key)
+        );
+        assert!(!a.contains("source-value"));
+
+        let nonce = phantom_core::mcp_approval::generate_pending_approval(
+            "phantom_copy_secret",
+            &a,
+            "source-project",
+        )
+        .unwrap();
+        let approved = phantom_core::mcp_approval::approve_nonce(&nonce).unwrap();
+        let mismatch = phantom_core::mcp_approval::validate_and_consume_approval(
+            &nonce,
+            &approved.approval_token,
+            "phantom_copy_secret",
+            &identity_swap,
+            "source-project",
+        )
+        .unwrap_err();
+        assert!(mismatch.contains("parameter mismatch"));
+        phantom_core::mcp_approval::validate_and_consume_approval(
+            &nonce,
+            &approved.approval_token,
+            "phantom_copy_secret",
+            &a,
+            "source-project",
+        )
+        .unwrap();
+
+        unsafe {
+            match previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
         }
     }
 
@@ -5866,7 +6306,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert!(error.message.contains("contained project-relative"));
+        assert!(error.message.contains("safe filename"));
         assert_eq!(std::fs::read(dir.path().join(".env")).unwrap(), original);
         assert!(!dir.path().join(".phantom.toml").exists());
     }

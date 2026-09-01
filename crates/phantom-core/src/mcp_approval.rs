@@ -314,7 +314,7 @@ fn effect_summary_for_tool(tool_name: &str) -> std::io::Result<&'static str> {
         "phantom_rotate_with_expiry" => "Remap managed local phm_ placeholders without changing provider credentials or lifecycle metadata.",
         "phantom_cloud_push" => "Encrypt the local vault and overwrite the authenticated Phantom Cloud copy.",
         "phantom_cloud_pull" => "Retrieve the authenticated Phantom Cloud vault and write its entries into the local vault.",
-        "phantom_copy_secret" => "Retrieve one local credential and write it directly into the selected target project's vault without returning its value.",
+        "phantom_copy_secret" => "After target collision preflight, retrieve one local credential and transactionally create an absent target vault entry plus managed-dotenv mapping; refuse overwrite and return no value.",
         "phantom_doctor" => "Repair diagnosed project configuration or managed files when fix=true.",
         "phantom_wrap" => "Rewrite selected package.json scripts to run through phantom exec and add :raw backups.",
         "phantom_unwrap" => "Restore package.json scripts from :raw entries and remove those entries.",
