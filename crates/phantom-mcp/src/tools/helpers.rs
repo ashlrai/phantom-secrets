@@ -2,6 +2,13 @@
 
 use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
 
+const MCP_EFFECTS_ENV: &str = "PHANTOM_MCP_EFFECTS";
+const TRUSTED_TERMINAL_MODE: &str = "trusted-terminal";
+
+fn effect_execution_enabled(value: Option<&str>) -> bool {
+    value == Some(TRUSTED_TERMINAL_MODE)
+}
+
 pub fn internal_err(msg: impl Into<String>) -> McpError {
     McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, msg.into(), None)
 }
@@ -48,6 +55,17 @@ pub fn require_approval_token(
         return Ok(());
     }
 
+    if !effect_execution_enabled(std::env::var(MCP_EFFECTS_ENV).ok().as_deref()) {
+        return Err(invalid_params_err(format!(
+            "{tool_name} is disabled by default. Effectful MCP tools may run only when the \
+             operator sets {MCP_EFFECTS_ENV}={TRUSTED_TERMINAL_MODE} in a server environment \
+             the requesting agent cannot modify, and `phantom mcp-approve` plus \
+             ~/.phantom/mcp-approvals.jsonl are outside that agent's command and file \
+             authority. A same-user shell or agent-controlled PTY can defeat the terminal \
+             ceremony; leave effects disabled when that separation cannot be guaranteed."
+        )));
+    }
+
     match approval_token {
         None | Some("") => {
             // Generate a nonce and surface it to the operator via stderr.
@@ -68,8 +86,8 @@ pub fn require_approval_token(
                          `approval_token: \"<nonce>:<token>\"`."
                     )))
                 }
-                Err(e) => Err(internal_err(format!(
-                    "Failed to generate approval nonce: {e}"
+                Err(e) => Err(invalid_params_err(format!(
+                    "Approval request was rejected before persistence: {e}"
                 ))),
             }
         }
@@ -113,7 +131,16 @@ pub fn text_result(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_nonce, extract_token};
+    use super::{effect_execution_enabled, extract_nonce, extract_token};
+
+    #[test]
+    fn effect_execution_requires_exact_operator_mode() {
+        assert!(!effect_execution_enabled(None));
+        assert!(!effect_execution_enabled(Some("1")));
+        assert!(!effect_execution_enabled(Some("TRUSTED-TERMINAL")));
+        assert!(!effect_execution_enabled(Some("trusted-terminal ")));
+        assert!(effect_execution_enabled(Some("trusted-terminal")));
+    }
 
     #[test]
     fn parses_combined_approval_token() {

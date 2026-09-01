@@ -47,7 +47,7 @@ Phantom's implemented user-facing surfaces are the CLI, vault, authenticated loc
 
 - `phantom_do` is **proposal-only**. It canonicalizes a closed Cargo action and reports its digest, effect, and activation blockers; `execute` is hard denied.
 - `phantom_setup_workspace` can propose setup, create a bearerless request, and report authenticated status. Applying a request remains a separate trusted-terminal operation.
-- Advanced MCP tools remain a compatibility catalog with their own explicit confirmation and out-of-band approval gates. They are not governed by the conversation facade's capability card.
+- Advanced MCP tools remain a compatibility catalog, disabled by default, with separate explicit confirmation and informed terminal-approval gates. They are not governed by the conversation facade's capability card.
 - `phantom grant` provides shipped, trusted-terminal **provider grant** workflows for obtaining and vaulting provider credentials after human consent. A provider grant is credential lifecycle configuration; it is not an execution-kernel **authority grant**, a broker lease, or permission for an agent to execute work.
 - The authority, broker, runtime, session, and evidence crates are **inactive, fail-closed foundations**. They do not establish live Locus authority, broker credentials, execute agent actions, or produce externally trusted receipts today.
 
@@ -196,14 +196,26 @@ rotation. Team invites may assign only `member` or `admin`; ownership transfer
 is not an invite role.
 
 Tools that write state, retrieve or use credentials, or make provider/network
-requests require both `confirm: true` and the one-use `approval_token` returned
-by the out-of-band `phantom mcp-approve` challenge. Conditional tools keep
+requests are disabled by default. They can reach their `confirm: true` and
+one-use `approval_token` gates only when the operator sets
+`PHANTOM_MCP_EFFECTS=trusted-terminal` in a server environment outside agent
+authority. `phantom mcp-approve` requires attached stdin/stderr, shows the
+bounded value-blind effect plus exact parameters, and requires a fresh typed
+challenge before approval. A same-user shell or agent-controlled PTY can
+defeat that ceremony; leave effects disabled unless the approval command and
+`~/.phantom` approval storage are outside the requesting agent's authority.
+Conditional tools keep
 their inspection mode ungated and activate both gates only for the effectful
 parameters. Real secret values are never accepted as MCP tool arguments; new
 secrets are entered out-of-band in a trusted terminal. The exact 54-tool names,
 descriptions, and JSON schemas are mirrored from runtime `tools/list` into
 [`mcp-registry/server.json`](mcp-registry/server.json), and release smoke tests
 reject any drift.
+
+`phantom_rotate_with_candidate` and `phantom_rotate_promote` remain in the
+54-tool compatibility catalog as deprecated hard denials. They never create,
+validate, or promote a candidate and never change vault or shadow metadata;
+use `phantom_rotate_provider` for provider-issued credentials.
 
 Workspace setup is deliberately split across trust boundaries. MCP can call
 `phantom_setup_workspace` with `phase=propose`, then `phase=request_apply` using

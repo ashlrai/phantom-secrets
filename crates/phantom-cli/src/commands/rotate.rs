@@ -135,214 +135,22 @@ fn chrono_iso(secs: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
 }
 
-/// Rotate a single secret using shadow mode: generate a new candidate value,
-/// store it under `<name>__SHADOW_CANDIDATE` in the vault, and save shadow
-/// metadata so the candidate can be validated and promoted later.
+/// Reject the legacy shadow-candidate path.
 ///
-/// Returns the shadow ID on success.
-pub fn run_shadow(name: &str) -> Result<String> {
-    use phantom_vault::shadowing::{shadow_dir, ShadowStore, ShadowedSecret};
-
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
-
-    if !vault
-        .exists(name)
-        .context("Failed to check secret existence")?
-    {
-        anyhow::bail!("Secret '{}' not found in vault.", name);
-    }
-
-    // Retrieve the current (primary) value
-    let primary = vault
-        .retrieve(name)
-        .with_context(|| format!("Failed to retrieve secret '{name}'"))?;
-
-    // Generate a new candidate value (random hex token as placeholder;
-    // in production this would call the appropriate importer/generator)
-    let candidate = generate_candidate_value();
-
-    // Store candidate in the vault under a shadow key
-    let shadow_key = format!("{name}__SHADOW_CANDIDATE");
-    vault
-        .store(&shadow_key, &candidate)
-        .with_context(|| format!("Failed to store shadow candidate for '{name}'"))?;
-
-    phantom_core::audit::log("shadow.candidate_created", Some(name));
-
-    // Persist shadow metadata (no secret values — just status + audit trail)
-    let shadow = ShadowedSecret::new(
-        name,
-        primary.as_str(),
-        &candidate,
-        None, // no auto-promote TTL by default
-    );
-    let shadow_id = shadow.shadow_id.clone();
-
-    let store = ShadowStore::new(shadow_dir(config.local_project_id()))
-        .context("Failed to open shadow store")?;
-    store
-        .save(&shadow)
-        .context("Failed to save shadow metadata")?;
-
-    println!(
-        "{} Shadow candidate created for {}",
-        "ok".green().bold(),
-        name.bold()
-    );
-    println!("   Shadow ID : {shadow_id}");
-    println!(
-        "   To validate: {}",
-        format!("phantom validate {name} --promote").cyan()
-    );
-    println!(
-        "   Candidate mode: set {} to inject candidate in proxy sessions",
-        "PHANTOM_CANDIDATE_MODE=1".cyan()
-    );
-
-    Ok(shadow_id)
+/// It generated only a local `phm_cand_` placeholder, not a provider-issued
+/// credential, so neither staging nor later promotion was a real rotation.
+pub fn run_shadow(_name: &str) -> Result<String> {
+    anyhow::bail!(
+        "--shadow is deprecated and disabled: Phantom's legacy implementation generated a local phm_cand_ placeholder, not a provider credential. No candidate was created or stored. Use `phantom rotate --name <NAME> [--provider <PROVIDER>]` for a real provider rotation."
+    )
 }
 
-/// Validate the shadow candidate for `name` and optionally promote it.
-///
-/// When `promote` is `true` and validation succeeds the candidate becomes
-/// the new primary and the old primary is discarded.
-pub fn run_validate_promote(name: &str, promote: bool) -> Result<()> {
-    use phantom_vault::shadowing::{shadow_dir, ShadowStore};
-
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
-
-    let store = ShadowStore::new(shadow_dir(config.local_project_id()))
-        .context("Failed to open shadow store")?;
-
-    let meta = store
-        .load_meta(name)
-        .context("Failed to load shadow metadata")?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No shadow exists for secret '{name}'. Run `phantom rotate {name} --shadow` first."
-            )
-        })?;
-
-    println!(
-        "{} Shadow status for {}: {}",
-        "->".blue().bold(),
-        name.bold(),
-        meta.promotion_status
-    );
-
-    // Retrieve the candidate from the vault
-    let shadow_key = format!("{name}__SHADOW_CANDIDATE");
-    let candidate = vault
-        .retrieve(&shadow_key)
-        .with_context(|| format!("Failed to retrieve shadow candidate for '{name}'"))?;
-
-    // Run lightweight validation: check the candidate is non-empty and
-    // structurally plausible (length > 8, no whitespace).
-    let validation_ok =
-        !candidate.is_empty() && candidate.len() > 8 && !candidate.chars().any(char::is_whitespace);
-
-    // Reload as mutable ShadowedSecret to record the validation result
-    let primary = vault
-        .retrieve(name)
-        .with_context(|| format!("Failed to retrieve primary secret '{name}'"))?;
-
-    let mut shadow = phantom_vault::shadowing::ShadowedSecret::from_meta(
-        meta,
-        primary.as_str(),
-        candidate.as_str(),
-    );
-
-    if validation_ok {
-        shadow
-            .record_validation_success(Some("cli-validate".to_string()))
-            .context("Failed to record validation success")?;
-        println!("{} Candidate validation passed.", "ok".green().bold());
-
-        phantom_core::audit::log("shadow.validation_passed", Some(name));
-
-        if promote {
-            shadow
-                .promote(Some("phantom-validate --promote".to_string()))
-                .context("Failed to promote candidate")?;
-
-            // Atomically update the vault: store new primary, delete shadow key
-            vault
-                .store(name, shadow.primary.as_str())
-                .with_context(|| format!("Failed to store promoted value for '{name}'"))?;
-            vault
-                .delete(&shadow_key)
-                .context("Failed to clean up shadow candidate")?;
-
-            store
-                .save(&shadow)
-                .context("Failed to update shadow metadata")?;
-
-            phantom_core::audit::log("shadow.promoted", Some(name));
-
-            println!(
-                "{} Candidate promoted to primary for {}. Old primary discarded.",
-                "ok".green().bold(),
-                name.bold()
-            );
-        } else {
-            store
-                .save(&shadow)
-                .context("Failed to save shadow metadata")?;
-            println!(
-                "   Run {} to promote the validated candidate.",
-                format!("phantom validate {name} --promote").cyan()
-            );
-        }
-    } else {
-        shadow
-            .record_validation_failure(Some("structural-check-failed".to_string()))
-            .context("Failed to record validation failure")?;
-        store
-            .save(&shadow)
-            .context("Failed to save shadow metadata")?;
-
-        phantom_core::audit::log("shadow.validation_failed", Some(name));
-
-        println!(
-            "{} Candidate validation failed for {}.",
-            "FAIL".red().bold(),
-            name.bold()
-        );
-        println!("   The candidate will remain in shadow state until abandoned or re-validated.");
-        anyhow::bail!("Shadow candidate validation failed for '{name}'");
-    }
-
-    Ok(())
-}
-
-/// Generate a random candidate credential value (32 hex bytes).
-fn generate_candidate_value() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    format!("phm_cand_{}", hex::encode(&bytes[..16]))
+/// Reject legacy candidate validation and promotion without reading or writing
+/// the vault. `promote` is retained only for call-site compatibility.
+pub fn run_validate_promote(_name: &str, _promote: bool) -> Result<()> {
+    anyhow::bail!(
+        "--promote is deprecated and disabled: legacy shadow candidates were local phm_cand_ placeholders, not provider-issued credentials. No credential or metadata was changed. Use `phantom rotate --name <NAME> [--provider <PROVIDER>]` for a real provider rotation."
+    )
 }
 
 /// Rotate a single named secret using a vendor-specific rotation provider.
@@ -900,5 +708,18 @@ mod token_remap_tests {
             .unwrap_err()
             .to_string()
             .contains("deprecated and disabled"));
+    }
+
+    #[test]
+    fn legacy_shadow_create_and_promote_are_hard_denials() {
+        let create_error = run_shadow("OPENAI_API_KEY").unwrap_err().to_string();
+        assert!(create_error.contains("deprecated and disabled"));
+        assert!(create_error.contains("No candidate was created or stored"));
+
+        let promote_error = run_validate_promote("OPENAI_API_KEY", true)
+            .unwrap_err()
+            .to_string();
+        assert!(promote_error.contains("deprecated and disabled"));
+        assert!(promote_error.contains("No credential or metadata was changed"));
     }
 }

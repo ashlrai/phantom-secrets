@@ -14,11 +14,13 @@
 //!    A pending approval record is written to `~/.phantom/mcp-approvals.jsonl`.
 //!    The nonce is printed to stderr so the human user can see it.
 //!
-//! 2. **Approve** — The user runs `phantom mcp-approve <NONCE>` in a trusted
-//!    terminal.  The CLI verifies the nonce exists, has not expired, and computes
-//!    an approval token = HMAC-SHA256(nonce_hex || ":" || arg_hash_hex, approval_key).
-//!    The approval event is written to the audit log.  The pending record is
-//!    atomically marked approved with a fresh, short use window.
+//! 2. **Approve** — The user runs `phantom mcp-approve <NONCE>` in an attached
+//!    terminal that is outside the agent's command authority. The CLI displays a
+//!    bounded, value-blind effect and parameter summary, requires a fresh typed
+//!    challenge, then computes an approval token =
+//!    HMAC-SHA256(nonce_hex || ":" || arg_hash_hex, approval_key). The approval
+//!    event is written to the audit log. The pending record is atomically marked
+//!    approved with a fresh, short use window.
 //!
 //! 3. **Enforce** — The MCP tool handler requires
 //!    `approval_token: "<nonce_hex>:<token_hex>"` in the request. The server
@@ -56,6 +58,11 @@ pub const APPROVAL_TTL_SECS: u64 = 300;
 pub const APPROVED_USE_TTL_SECS: u64 = 300;
 
 const APPROVAL_LOCK_FILE: &str = "mcp-approvals.lock";
+const MAX_PARAMETER_SUMMARY_BYTES: usize = 4096;
+const MAX_PARAMETER_STRING_BYTES: usize = 512;
+const MAX_PARAMETER_COLLECTION_ITEMS: usize = 64;
+const MAX_PARAMETER_DEPTH: usize = 4;
+const MAX_PROJECT_ID_BYTES: usize = 1024;
 
 lazy_static! {
     /// `flock`/Windows file locks provide the cross-process boundary. This
@@ -179,6 +186,14 @@ pub struct ApprovalRecord {
     pub arg_hash: String,
     /// Project identifier (current directory path).
     pub project_id: String,
+    /// Value-blind description of the exact effect this tool may perform.
+    #[serde(default)]
+    pub effect_summary: String,
+    /// Canonical JSON for the exact reviewed parameters, excluding approval
+    /// transport fields. Generation rejects plaintext-bearing fields and
+    /// credential-shaped values before this summary is persisted.
+    #[serde(default)]
+    pub parameter_summary: String,
     /// Unix timestamp when this record was created.
     pub created_at: u64,
     /// Unix timestamp when this record expires. Pending records use the
@@ -202,6 +217,16 @@ impl ApprovalRecord {
 
     fn is_expired_at(&self, now: u64) -> bool {
         self.expires_at.is_none_or(|expires_at| now >= expires_at)
+    }
+
+    /// Seconds remaining before this record expires.
+    pub fn remaining_secs(&self) -> Option<u64> {
+        self.expires_at
+            .map(|expires_at| expires_at.saturating_sub(now_unix()))
+    }
+
+    fn has_informed_summary(&self) -> bool {
+        !self.effect_summary.is_empty() && !self.parameter_summary.is_empty()
     }
 }
 
@@ -272,6 +297,211 @@ pub fn compute_arg_hash(params_json: &str, key: &[u8]) -> String {
     hmac_sha256_hex(key, canonical.as_bytes())
 }
 
+fn invalid_approval_input(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
+}
+
+fn effect_summary_for_tool(tool_name: &str) -> std::io::Result<&'static str> {
+    let summary = match tool_name {
+        "phantom_setup_workspace" => {
+            "Provision the local plan-seal key or persist a bearerless workspace apply request, as selected by phase."
+        }
+        "phantom_init" => "Store detected dotenv secrets in the vault and rewrite project setup files, committing the managed dotenv file last.",
+        "phantom_add_secret" => "Reject the deprecated plaintext MCP add path without accepting a value.",
+        "phantom_add_secret_interactive" => "Return a terminal-side command for adding a named secret; no value crosses MCP.",
+        "phantom_remove_secret" => "Delete the named secret and its lifecycle metadata from the local vault.",
+        "phantom_rotate" => "Remap all managed local phm_ placeholders, invalidating the previous mappings.",
+        "phantom_rotate_with_expiry" => "Remap managed local phm_ placeholders without changing provider credentials or lifecycle metadata.",
+        "phantom_cloud_push" => "Encrypt the local vault and overwrite the authenticated Phantom Cloud copy.",
+        "phantom_cloud_pull" => "Retrieve the authenticated Phantom Cloud vault and write its entries into the local vault.",
+        "phantom_copy_secret" => "Retrieve one local credential and write it directly into the selected target project's vault without returning its value.",
+        "phantom_doctor" => "Repair diagnosed project configuration or managed files when fix=true.",
+        "phantom_wrap" => "Rewrite selected package.json scripts to run through phantom exec and add :raw backups.",
+        "phantom_unwrap" => "Restore package.json scripts from :raw entries and remove those entries.",
+        "phantom_env" => "Write the selected environment-example file.",
+        "phantom_team_create" => "Send an authenticated provider request that creates a team and makes the caller its owner.",
+        "phantom_team_list" => "Use the stored cloud credential to request the caller's team memberships.",
+        "phantom_team_members" => "Use the stored cloud credential to request membership metadata for the selected team.",
+        "phantom_team_invite" => "Send an authenticated provider request inviting the selected GitHub account to the selected team and role.",
+        "phantom_team_key_publish" => "Send an authenticated provider request publishing this device's public team-vault key.",
+        "phantom_team_vault_push" => "Encrypt the local vault for team members and overwrite the selected hosted team vault.",
+        "phantom_team_vault_pull" => "Retrieve and decrypt the selected hosted team vault, then overwrite matching local vault entries.",
+        "phantom_validate_all" => "Retrieve stored credentials, call supported provider validators, and persist value-free validation metadata.",
+        "phantom_validation_schedule" => "Persist the selected background validation interval.",
+        "phantom_audit_alerts" => "Backfill leak correlation, persist alert state, and dispatch configured notifications when backfill=true.",
+        "phantom_audit_export_report" => "Persist the selected value-free audit report when save=true.",
+        "phantom_audit_hotspot_alerts" => "Persist acknowledgements or snoozes for the selected hotspot alerts when ack=true.",
+        "phantom_apply_expiry_policy" => "Persist vault-mode changes for credentials affected by the expiry policy.",
+        "phantom_secrets_auto_rotate" => "Remap the selected local phm_ placeholder without rotating or syncing its provider credential.",
+        "phantom_rotate_provider" => "Call the configured provider rotation API, store the replacement credential, update local lifecycle state, and optionally revoke the prior credential.",
+        "phantom_cloud_status" => "Use the stored cloud credential to request authenticated cloud status metadata.",
+        "phantom_rotate_with_candidate" | "phantom_rotate_promote" => {
+            return Err(invalid_approval_input(format!(
+                "{tool_name} is a deprecated hard denial and must not create an approval request"
+            )));
+        }
+        _ => {
+            return Err(invalid_approval_input(format!(
+                "no reviewed MCP effect summary exists for tool '{tool_name}'"
+            )));
+        }
+    };
+    Ok(summary)
+}
+
+fn forbidden_plaintext_field(field: &str) -> bool {
+    let field = field.to_ascii_lowercase();
+    const EXACT: &[&str] = &[
+        "value",
+        "secret",
+        "secret_value",
+        "plaintext",
+        "credential",
+        "credentials",
+        "password",
+        "passphrase",
+        "api_key",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "authorization",
+        "private_key",
+        "client_secret",
+        "token",
+    ];
+    const SUFFIXES: &[&str] = &[
+        "_value",
+        "_password",
+        "_passphrase",
+        "_credential",
+        "_credentials",
+        "_access_token",
+        "_refresh_token",
+        "_auth_token",
+        "_private_key",
+        "_client_secret",
+    ];
+    EXACT.contains(&field.as_str()) || SUFFIXES.iter().any(|suffix| field.ends_with(suffix))
+}
+
+fn credential_shaped_string(value: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "sk-",
+        "sk_",
+        "pk_",
+        "rk_",
+        "whsec_",
+        "Bearer ",
+        "ghp_",
+        "gho_",
+        "github_pat_",
+        "glpat-",
+        "xoxb-",
+        "xoxp-",
+        "AKIA",
+        "shpat_",
+        "-----BEGIN ",
+    ];
+    PREFIXES.iter().any(|prefix| value.starts_with(prefix))
+        || (value.contains("://") && value.contains('@'))
+        || (value.contains("://")
+            && value.split_once('?').is_some_and(|(_, query)| {
+                query.split('&').any(|pair| {
+                    pair.split_once('=').is_some_and(|(name, _)| {
+                        matches!(
+                            name.to_ascii_lowercase().as_str(),
+                            "api_key"
+                                | "apikey"
+                                | "api-key"
+                                | "access_token"
+                                | "auth_token"
+                                | "token"
+                                | "password"
+                                | "secret"
+                                | "sig"
+                                | "signature"
+                        )
+                    })
+                })
+            }))
+}
+
+fn validate_summary_value(
+    value: &serde_json::Value,
+    path: &str,
+    depth: usize,
+) -> std::io::Result<()> {
+    if depth > MAX_PARAMETER_DEPTH {
+        return Err(invalid_approval_input(format!(
+            "MCP approval parameters exceed maximum nesting at {path}"
+        )));
+    }
+    match value {
+        serde_json::Value::String(string) => {
+            if string.len() > MAX_PARAMETER_STRING_BYTES {
+                return Err(invalid_approval_input(format!(
+                    "MCP approval parameter {path} exceeds {MAX_PARAMETER_STRING_BYTES} bytes"
+                )));
+            }
+            if credential_shaped_string(string) {
+                return Err(invalid_approval_input(format!(
+                    "MCP approval parameter {path} looks like credential plaintext; values are forbidden on the approval wire"
+                )));
+            }
+        }
+        serde_json::Value::Array(items) => {
+            if items.len() > MAX_PARAMETER_COLLECTION_ITEMS {
+                return Err(invalid_approval_input(format!(
+                    "MCP approval parameter {path} has too many items"
+                )));
+            }
+            for (index, item) in items.iter().enumerate() {
+                validate_summary_value(item, &format!("{path}[{index}]"), depth + 1)?;
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            if fields.len() > MAX_PARAMETER_COLLECTION_ITEMS {
+                return Err(invalid_approval_input(format!(
+                    "MCP approval parameter {path} has too many fields"
+                )));
+            }
+            for (field, nested) in fields {
+                if forbidden_plaintext_field(field) {
+                    return Err(invalid_approval_input(format!(
+                        "MCP approval parameters contain forbidden plaintext-bearing field '{field}'"
+                    )));
+                }
+                validate_summary_value(nested, &format!("{path}.{field}"), depth + 1)?;
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+    Ok(())
+}
+
+fn build_parameter_summary(params_json: &str) -> std::io::Result<String> {
+    let mut params: serde_json::Value = serde_json::from_str(params_json).map_err(|error| {
+        invalid_approval_input(format!(
+            "MCP approval parameters are not valid JSON: {error}"
+        ))
+    })?;
+    let fields = params
+        .as_object_mut()
+        .ok_or_else(|| invalid_approval_input("MCP approval parameters must be a JSON object"))?;
+    fields.remove("approval_token");
+    fields.remove("approval_nonce");
+    validate_summary_value(&params, "$", 0)?;
+    let summary = serde_json::to_string(&params).map_err(|error| {
+        invalid_approval_input(format!("MCP approval parameter summary failed: {error}"))
+    })?;
+    if summary.len() > MAX_PARAMETER_SUMMARY_BYTES {
+        return Err(invalid_approval_input(format!(
+            "MCP approval parameter summary exceeds {MAX_PARAMETER_SUMMARY_BYTES} bytes"
+        )));
+    }
+    Ok(summary)
+}
+
 // ── Nonce generation ───────────────────────────────────────────────────────────
 
 /// Generate a pending approval record, persist it, and return the nonce hex
@@ -283,6 +513,25 @@ pub fn generate_pending_approval(
     params_json: &str,
     project_id: &str,
 ) -> std::io::Result<String> {
+    if tool_name.len() > 128
+        || !tool_name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(invalid_approval_input("invalid MCP approval tool name"));
+    }
+    if project_id.is_empty() || project_id.len() > MAX_PROJECT_ID_BYTES {
+        return Err(invalid_approval_input(
+            "invalid MCP approval project identifier",
+        ));
+    }
+    if credential_shaped_string(project_id) {
+        return Err(invalid_approval_input(
+            "MCP approval project identifier looks like credential plaintext",
+        ));
+    }
+    let effect_summary = effect_summary_for_tool(tool_name)?.to_string();
+    let parameter_summary = build_parameter_summary(params_json)?;
     let _lock = acquire_storage_lock()?;
     let key = load_or_create_approval_key_locked()?;
     let path = approvals_path()?;
@@ -303,6 +552,8 @@ pub fn generate_pending_approval(
         tool_name: tool_name.to_string(),
         arg_hash,
         project_id: project_id.to_string(),
+        effect_summary,
+        parameter_summary,
         created_at: now,
         expires_at: Some(now + APPROVAL_TTL_SECS),
         approved: false,
@@ -383,6 +634,12 @@ pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
                 format!("Nonce '{nonce_hex}' has already been approved."),
             ));
         }
+        if !rec.has_informed_summary() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Pending approval predates the informed-consent record format; generate a fresh request.",
+            ));
+        }
     }
 
     // Mark approved.
@@ -410,6 +667,49 @@ pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
         tool_name,
         arg_hash,
     })
+}
+
+/// Inspect one pending approval without mutating it. The terminal ceremony must
+/// call this before requesting confirmation, then call [`approve_nonce`] only
+/// after the operator types the fresh challenge.
+pub fn inspect_pending_approval(nonce_hex: &str) -> std::io::Result<ApprovalRecord> {
+    let _lock = acquire_storage_lock()?;
+    let path = approvals_path()?;
+    if !path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No pending approvals found. Generate one by calling the MCP tool first.",
+        ));
+    }
+    let records = load_all_records(&path)?;
+    let record = records
+        .into_iter()
+        .find(|record| record.nonce == nonce_hex)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Nonce '{nonce_hex}' not found. It may have expired or already been used."),
+            )
+        })?;
+    if record.is_expired() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("Nonce '{nonce_hex}' has expired. Generate a fresh request."),
+        ));
+    }
+    if record.approved {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("Nonce '{nonce_hex}' has already been approved."),
+        ));
+    }
+    if !record.has_informed_summary() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Pending approval predates the informed-consent record format; generate a fresh request.",
+        ));
+    }
+    Ok(record)
 }
 
 // ── MCP server: validate approval token ───────────────────────────────────────
@@ -481,6 +781,13 @@ pub fn validate_and_consume_approval(
                 "Nonce '{nonce_hex}' has not been approved yet. \
                  Run `phantom mcp-approve {nonce_hex}` in a trusted terminal."
             ));
+        }
+
+        if !rec.has_informed_summary() {
+            return Err(
+                "Approval record predates the informed-consent format. Generate and review a fresh request."
+                    .to_string(),
+            );
         }
 
         if rec.is_expired() {
@@ -687,6 +994,83 @@ mod tests {
             assert_eq!(nonce.len(), 64, "nonce should be 32 bytes = 64 hex chars");
             // Should be parseable as hex.
             hex::decode(&nonce).unwrap();
+
+            let record = inspect_pending_approval(&nonce).unwrap();
+            assert_eq!(record.tool_name, "phantom_add_secret");
+            assert_eq!(record.project_id, "proj-1");
+            assert_eq!(
+                record.parameter_summary,
+                r#"{"confirm":true,"name":"API_KEY"}"#
+            );
+            assert!(record.effect_summary.contains("deprecated plaintext MCP"));
+        });
+    }
+
+    #[test]
+    fn plaintext_bearing_fields_are_rejected_before_persistence() {
+        with_temp_home(|| {
+            let error = generate_pending_approval(
+                "phantom_add_secret",
+                r#"{"name":"API_KEY","secret_value":"do-not-store","confirm":true}"#,
+                "proj-1",
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(error
+                .to_string()
+                .contains("forbidden plaintext-bearing field"));
+            assert!(!approvals_path().unwrap().exists());
+        });
+    }
+
+    #[test]
+    fn credential_shaped_strings_and_unreviewed_tools_are_rejected() {
+        with_temp_home(|| {
+            let credential_error = generate_pending_approval(
+                "phantom_remove_secret",
+                r#"{"name":"sk-not-a-name","confirm":true}"#,
+                "proj-1",
+            )
+            .unwrap_err();
+            assert!(credential_error
+                .to_string()
+                .contains("credential plaintext"));
+
+            let tool_error = generate_pending_approval(
+                "phantom_unreviewed_effect",
+                r#"{"confirm":true}"#,
+                "proj-1",
+            )
+            .unwrap_err();
+            assert!(tool_error
+                .to_string()
+                .contains("no reviewed MCP effect summary"));
+            assert!(!approvals_path().unwrap().exists());
+        });
+    }
+
+    #[test]
+    fn legacy_pending_record_cannot_be_approved_without_informed_summary() {
+        with_temp_home(|| {
+            let record = ApprovalRecord {
+                nonce: "legacy-nonce".to_string(),
+                tool_name: "phantom_rotate".to_string(),
+                arg_hash: "deadbeef".to_string(),
+                project_id: "proj".to_string(),
+                effect_summary: String::new(),
+                parameter_summary: String::new(),
+                created_at: now_unix(),
+                expires_at: Some(now_unix() + APPROVAL_TTL_SECS),
+                approved: false,
+                approved_at: None,
+            };
+            append_record(&record).unwrap();
+
+            let inspect_error = inspect_pending_approval("legacy-nonce").unwrap_err();
+            assert_eq!(inspect_error.kind(), std::io::ErrorKind::InvalidData);
+            let approve_error = approve_nonce("legacy-nonce").unwrap_err();
+            assert_eq!(approve_error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(!load_all_records(&approvals_path().unwrap()).unwrap()[0].approved);
         });
     }
 
@@ -754,6 +1138,8 @@ mod tests {
             tool_name: "test_tool".to_string(),
             arg_hash: "aabbcc".to_string(),
             project_id: "test-project".to_string(),
+            effect_summary: "Test effect.".to_string(),
+            parameter_summary: "{}".to_string(),
             created_at: 0,
             expires_at: Some(1), // UNIX epoch + 1 second — long expired
             approved: false,
@@ -869,6 +1255,8 @@ mod tests {
                 tool_name: "phantom_rotate".to_string(),
                 arg_hash: "aabbcc".to_string(),
                 project_id: "proj".to_string(),
+                effect_summary: "Remap local placeholders.".to_string(),
+                parameter_summary: r#"{"confirm":true}"#.to_string(),
                 created_at: 0,
                 expires_at: Some(1),
                 approved: false,
@@ -1053,6 +1441,8 @@ mod tests {
                 tool_name: "t".to_string(),
                 arg_hash: "h".to_string(),
                 project_id: "p".to_string(),
+                effect_summary: "Test effect.".to_string(),
+                parameter_summary: "{}".to_string(),
                 created_at: 0,
                 expires_at: Some(1),
                 approved: false,

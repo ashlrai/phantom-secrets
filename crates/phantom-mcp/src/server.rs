@@ -652,174 +652,31 @@ impl PhantomMcpServer {
         ))
     }
 
-    /// Create a shadow (candidate) credential for staged rotation.
+    /// Deprecated compatibility endpoint for the disabled shadow-candidate path.
     #[tool(
-        description = "Staged rotation: generate a new candidate credential alongside the current primary for a named secret. The primary remains active until phantom_rotate_promote succeeds. Set PHANTOM_CANDIDATE_MODE=1 in the proxy environment to inject the candidate instead of the primary for parallel validation. Returns { shadow_id, candidate_added_at, time_until_auto_promote_ttl } — never returns the credential values. Requires `confirm: true`."
+        description = "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters. Use phantom_rotate_provider for a real provider rotation."
     )]
     fn phantom_rotate_with_candidate(
         &self,
         Parameters(params): Parameters<RotateWithCandidateParams>,
     ) -> Result<CallToolResult, McpError> {
-        require_confirm("phantom_rotate_with_candidate", params.confirm)?;
-
-        let (config, vault) = self.load_config_and_vault()?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token(
-            "phantom_rotate_with_candidate",
-            params.approval_token.as_deref(),
-            &params_json,
-            &self.project_id(),
-        )?;
-
-        if !vault
-            .exists(&params.name)
-            .map_err(|e| internal_err(format!("Failed to check secret: {e}")))?
-        {
-            return Err(invalid_params_err(format!(
-                "Secret '{}' not found in vault.",
-                params.name
-            )));
-        }
-
-        // Retrieve primary value to build the ShadowedSecret
-        let primary = vault
-            .retrieve(&params.name)
-            .map_err(|e| internal_err(format!("Failed to retrieve secret: {e}")))?;
-
-        // Generate a candidate value
-        use rand::RngCore;
-        let mut bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
-        let candidate = format!("phm_cand_{}", hex::encode(&bytes[..16]));
-
-        // Store candidate under shadow key in vault
-        let shadow_key = format!("{}__SHADOW_CANDIDATE", params.name);
-        vault
-            .store(&shadow_key, &candidate)
-            .map_err(|e| internal_err(format!("Failed to store shadow candidate: {e}")))?;
-
-        phantom_core::audit::log("shadow.candidate_created", Some(&params.name));
-
-        // Build and persist shadow metadata
-        use phantom_vault::shadowing::{shadow_dir, ShadowStore, ShadowedSecret};
-        let shadow = ShadowedSecret::new(
-            &params.name,
-            primary.as_str(),
-            &candidate,
-            params.auto_promote_ttl_secs,
-        );
-        let shadow_id = shadow.shadow_id.clone();
-        let candidate_added_at = shadow.candidate_added_at;
-        let ttl_remaining = shadow.ttl_remaining_secs();
-
-        let store = ShadowStore::new(shadow_dir(config.local_project_id()))
-            .map_err(|e| internal_err(format!("Failed to open shadow store: {e}")))?;
-        store
-            .save(&shadow)
-            .map_err(|e| internal_err(format!("Failed to save shadow metadata: {e}")))?;
-
-        let ttl_str = match ttl_remaining {
-            Some(secs) => format!("{secs}s"),
-            None => "none (manual promotion only)".to_string(),
-        };
-
-        text_result(format!(
-            "Shadow candidate created for '{}'.\nshadow_id: {}\ncandidate_added_at: {}\ntime_until_auto_promote_ttl: {}\n\nUse phantom_rotate_promote to validate and promote the candidate.\nSet PHANTOM_CANDIDATE_MODE=1 to inject the candidate in proxy sessions.",
-            params.name, shadow_id, candidate_added_at, ttl_str
+        let _ = params;
+        Err(invalid_params_err(
+            "phantom_rotate_with_candidate is deprecated and disabled: the legacy implementation generated a local phm_cand_ placeholder, not a provider credential. No candidate was created or stored. Use phantom_rotate_provider for a real provider rotation.",
         ))
     }
 
-    /// Promote a validated shadow candidate to primary.
+    /// Deprecated compatibility endpoint for the disabled shadow promotion path.
     #[tool(
-        description = "Validate the shadow candidate for a named secret and atomically promote it to primary. The old primary is discarded. Requires `confirm: true` — the agent must obtain explicit user consent before promoting. On success returns the new shadow_id and promotion timestamp."
+        description = "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters. Use phantom_rotate_provider for a real provider rotation."
     )]
     fn phantom_rotate_promote(
         &self,
         Parameters(params): Parameters<RotatePromoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        require_confirm("phantom_rotate_promote", params.confirm)?;
-
-        let (config, vault) = self.load_config_and_vault()?;
-
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token(
-            "phantom_rotate_promote",
-            params.approval_token.as_deref(),
-            &params_json,
-            &self.project_id(),
-        )?;
-        use phantom_vault::shadowing::{shadow_dir, ShadowStore, ShadowedSecret};
-        let store = ShadowStore::new(shadow_dir(config.local_project_id()))
-            .map_err(|e| internal_err(format!("Failed to open shadow store: {e}")))?;
-
-        let meta = store
-            .load_meta(&params.name)
-            .map_err(|e| internal_err(format!("Failed to load shadow metadata: {e}")))?
-            .ok_or_else(|| {
-                invalid_params_err(format!(
-                    "No shadow exists for secret '{}'. Call phantom_rotate_with_candidate first.",
-                    params.name
-                ))
-            })?;
-
-        // Retrieve current primary and candidate from vault
-        let primary = vault
-            .retrieve(&params.name)
-            .map_err(|e| internal_err(format!("Failed to retrieve primary: {e}")))?;
-        let shadow_key = format!("{}__SHADOW_CANDIDATE", params.name);
-        let candidate = vault
-            .retrieve(&shadow_key)
-            .map_err(|e| internal_err(format!("Failed to retrieve candidate: {e}")))?;
-
-        // Reconstruct ShadowedSecret from metadata + vault values
-        let mut shadow = ShadowedSecret::from_meta(meta, primary.as_str(), candidate.as_str());
-
-        // Run validation: structural check (non-empty, length > 8, no whitespace)
-        let validation_ok = !shadow.candidate.is_empty()
-            && shadow.candidate.len() > 8
-            && !shadow.candidate.chars().any(char::is_whitespace);
-
-        if !validation_ok {
-            shadow
-                .record_validation_failure(Some("mcp-structural-check".to_string()))
-                .map_err(|e| internal_err(e.to_string()))?;
-            store
-                .save(&shadow)
-                .map_err(|e| internal_err(format!("Failed to save shadow: {e}")))?;
-            phantom_core::audit::log("shadow.validation_failed", Some(&params.name));
-            return Err(internal_err(format!(
-                "Shadow candidate for '{}' failed validation. The candidate has been marked as failed. Call phantom_rotate_with_candidate again to generate a new one.",
-                params.name
-            )));
-        }
-
-        // Record success then promote
-        shadow
-            .record_validation_success(Some("mcp-promote".to_string()))
-            .map_err(|e| internal_err(e.to_string()))?;
-        shadow
-            .promote(Some("phantom_rotate_promote".to_string()))
-            .map_err(|e| internal_err(e.to_string()))?;
-
-        // Atomically update vault: write promoted value, delete shadow key
-        vault
-            .store(&params.name, shadow.primary.as_str())
-            .map_err(|e| internal_err(format!("Failed to store promoted value: {e}")))?;
-        vault
-            .delete(&shadow_key)
-            .map_err(|e| internal_err(format!("Failed to delete shadow candidate: {e}")))?;
-
-        store
-            .save(&shadow)
-            .map_err(|e| internal_err(format!("Failed to update shadow metadata: {e}")))?;
-
-        phantom_core::audit::log("shadow.promoted", Some(&params.name));
-
-        let promoted_at = shadow.audit_trail.last().map(|e| e.ts).unwrap_or(0);
-
-        text_result(format!(
-            "Shadow candidate for '{}' promoted to primary.\nshadow_id: {}\npromoted_at: {}\nOld primary has been discarded.",
-            params.name, shadow.shadow_id, promoted_at
+        let _ = params;
+        Err(invalid_params_err(
+            "phantom_rotate_promote is deprecated and disabled: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. No credential or metadata was changed. Use phantom_rotate_provider for a real provider rotation.",
         ))
     }
 
@@ -4482,6 +4339,39 @@ mod tests {
         format!("{:?}", result.content)
     }
 
+    #[test]
+    fn shadow_candidate_compatibility_tools_are_side_effect_free_hard_denials() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        std::fs::write(&marker, b"unchanged").unwrap();
+        let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+
+        let create_error = server
+            .phantom_rotate_with_candidate(Parameters(RotateWithCandidateParams {
+                name: "OPENAI_API_KEY".to_string(),
+                auto_promote_ttl_secs: Some(60),
+                confirm: true,
+                approval_token: Some("ignored".to_string()),
+            }))
+            .unwrap_err()
+            .message;
+        assert!(create_error.contains("deprecated and disabled"));
+        assert!(create_error.contains("No candidate was created or stored"));
+
+        let promote_error = server
+            .phantom_rotate_promote(Parameters(RotatePromoteParams {
+                name: "OPENAI_API_KEY".to_string(),
+                confirm: true,
+                approval_token: Some("ignored".to_string()),
+            }))
+            .unwrap_err()
+            .message;
+        assert!(promote_error.contains("deprecated and disabled"));
+        assert!(promote_error.contains("No credential or metadata was changed"));
+        assert_eq!(std::fs::read(&marker).unwrap(), b"unchanged");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
     #[cfg(unix)]
     #[test]
     fn mcp_doctor_fix_refuses_to_overwrite_non_utf8_hook() {
@@ -4644,6 +4534,7 @@ mod tests {
         let prev_home = std::env::var("HOME").ok();
         let prev_passphrase = std::env::var("PHANTOM_VAULT_PASSPHRASE").ok();
         let prev_skip = std::env::var("PHANTOM_MCP_SKIP_APPROVAL").ok();
+        let prev_effects = std::env::var("PHANTOM_MCP_EFFECTS").ok();
 
         unsafe {
             std::env::set_var("HOME", home.path());
@@ -4652,6 +4543,7 @@ mod tests {
                 "test-passphrase-do-not-use-in-prod",
             );
             std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+            std::env::remove_var("PHANTOM_MCP_EFFECTS");
         }
 
         std::fs::write(project.path().join(".env"), "OPENAI_API_KEY=sk-test-key\n").unwrap();
@@ -4663,6 +4555,16 @@ mod tests {
             approval_token: None,
         };
 
+        let disabled_err = server.phantom_init(Parameters(params())).unwrap_err();
+        assert_eq!(disabled_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(disabled_err.message.contains("disabled by default"));
+        assert!(phantom_core::mcp_approval::list_pending_approvals()
+            .unwrap()
+            .is_empty());
+
+        unsafe {
+            std::env::set_var("PHANTOM_MCP_EFFECTS", "trusted-terminal");
+        }
         let first_err = server.phantom_init(Parameters(params())).unwrap_err();
         assert_eq!(first_err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(first_err.message.contains("out-of-band approval"));
@@ -4719,6 +4621,10 @@ mod tests {
             match prev_skip {
                 Some(value) => std::env::set_var("PHANTOM_MCP_SKIP_APPROVAL", value),
                 None => std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL"),
+            }
+            match prev_effects {
+                Some(value) => std::env::set_var("PHANTOM_MCP_EFFECTS", value),
+                None => std::env::remove_var("PHANTOM_MCP_EFFECTS"),
             }
         }
     }

@@ -143,9 +143,7 @@ try {
     "phantom_init",
     "phantom_remove_secret",
     "phantom_rotate",
-    "phantom_rotate_promote",
     "phantom_rotate_provider",
-    "phantom_rotate_with_candidate",
     "phantom_rotate_with_expiry",
     "phantom_secrets_auto_rotate",
     "phantom_setup_workspace",
@@ -176,6 +174,8 @@ try {
     "phantom_leak_incidents_realtime",
     "phantom_list_secrets",
     "phantom_list_with_expiry",
+    "phantom_rotate_promote",
+    "phantom_rotate_with_candidate",
     "phantom_rotation_schedule_next",
     "phantom_secret_rotation_due",
     "phantom_secrets_expiry_check",
@@ -227,6 +227,24 @@ try {
     tokenRemapWithExpiry.description.includes("set a TTL on every secret")
   ) {
     throw new Error("legacy rotate-with-expiry tool must preserve lifecycle metadata");
+  }
+  for (const name of ["phantom_rotate_with_candidate", "phantom_rotate_promote"]) {
+    const tool = result.tools.find((candidate) => candidate.name === name);
+    if (
+      !tool?.description?.includes("DEPRECATED hard denial") ||
+      !tool.description.includes("never") ||
+      tool.description.includes("PHANTOM_CANDIDATE_MODE")
+    ) {
+      throw new Error(`${name} must remain a truthful, side-effect-free hard denial`);
+    }
+    const properties = tool.inputSchema?.properties ?? {};
+    if (
+      !("name" in properties) ||
+      !("confirm" in properties) ||
+      !("approval_token" in properties)
+    ) {
+      throw new Error(`${name} must retain its deprecated compatibility schema`);
+    }
   }
   const teamInvite = result.tools.find(
     (tool) => tool.name === "phantom_team_invite"

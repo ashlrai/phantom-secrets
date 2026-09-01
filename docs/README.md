@@ -29,7 +29,7 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 - [Windsurf](windsurf.md)
 - [Copyable agent policy, task brief, and pilot templates](../examples/agent-delegation/README.md)
 
-The small conversation facade and the advanced MCP compatibility catalog are separate contracts. `phantom_do` is proposal-only and does not execute an action. `phantom_setup_workspace` can propose, create a bearerless request, or report status; applying that request requires a separate attached trusted terminal. Advanced tools retain their own explicit confirmation and out-of-band approval gates.
+The small conversation facade and the advanced MCP compatibility catalog are separate contracts. `phantom_do` is proposal-only and does not execute an action. `phantom_setup_workspace` can propose, create a bearerless request, or report status; applying that request requires a separate attached trusted terminal. Effectful advanced tools are disabled by default; `PHANTOM_MCP_EFFECTS=trusted-terminal` may enable their confirmation and one-use approval gates only when configured outside agent authority. Approval requires attached stdin/stderr, an informed value-blind summary, and a fresh typed challenge. A same-user shell or agent-controlled PTY can defeat the ceremony, so the approval command and storage must also be outside agent authority.
 
 Provider issuance is a separate trusted-terminal CLI contract. A **provider
 grant** records credential and renewal state produced after human consent; an

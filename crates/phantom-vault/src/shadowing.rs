@@ -2,19 +2,11 @@
 //!
 //! ## Overview
 //!
-//! A [`ShadowedSecret`] records the *primary* (live) credential alongside a
-//! *candidate* (new) credential that has been generated but not yet promoted.
-//! The workflow is:
-//!
-//! 1. `phantom rotate <name> --shadow`  → creates a candidate; stores it via
-//!    [`ShadowedSecret::new`].
-//! 2. During proxy sessions `PHANTOM_CANDIDATE_MODE=1` causes the proxy to
-//!    inject the candidate instead of the primary so it can be validated
-//!    against real APIs without touching production traffic.
-//! 3. `phantom validate <name> --promote` runs the validator and, on success,
-//!    atomically swaps primary ↔ candidate via [`ShadowedSecret::promote`].
-//! 4. If validation fails the candidate is marked [`PromotionStatus::Failed`]
-//!    and can be abandoned via [`ShadowedSecret::abandon`].
+//! A [`ShadowedSecret`] is a legacy metadata model for a primary credential and
+//! candidate. Shipped CLI and MCP shadow-create/promote entry points are hard
+//! denied because they generated local placeholders rather than provider-issued
+//! credentials. This module remains for backward-compatible metadata reads; it
+//! does not select a candidate for runtime injection.
 //!
 //! ## Persistence
 //!
@@ -370,20 +362,12 @@ impl ShadowedSecret {
         )
     }
 
-    /// Return the value to inject into the environment.
-    ///
-    /// When `PHANTOM_CANDIDATE_MODE=1` is set *and* the candidate is non-empty,
-    /// returns the candidate; otherwise returns the primary.
+    /// Return the primary value. Candidate runtime injection is disabled.
+    #[deprecated(
+        note = "candidate runtime injection is disabled; use a real provider rotation instead"
+    )]
     pub fn active_value(&self) -> &str {
-        if std::env::var("PHANTOM_CANDIDATE_MODE")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-            && !self.candidate.is_empty()
-        {
-            &self.candidate
-        } else {
-            &self.primary
-        }
+        &self.primary
     }
 }
 
@@ -602,12 +586,7 @@ pub fn shadow_dir(project_id: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    // Environment mutation is process-global. Keep candidate-mode cases from
-    // racing under Rust's parallel test runner.
-    static CANDIDATE_MODE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn make_shadow() -> ShadowedSecret {
         ShadowedSecret::new("MY_KEY", "old_value", "new_value", None)
@@ -757,34 +736,13 @@ mod tests {
         assert_eq!(s.ttl_remaining_secs(), Some(0));
     }
 
-    // ── active_value ──────────────────────────────────────────────────────────
+    // ── legacy active_value ───────────────────────────────────────────────────
 
     #[test]
-    fn test_active_value_returns_primary_by_default() {
-        let _guard = CANDIDATE_MODE_ENV_LOCK.lock().unwrap();
-        // Ensure PHANTOM_CANDIDATE_MODE is not set
-        unsafe { std::env::remove_var("PHANTOM_CANDIDATE_MODE") };
+    #[allow(deprecated)]
+    fn test_legacy_active_value_is_always_primary() {
         let s = make_shadow();
         assert_eq!(s.active_value(), "old_value");
-    }
-
-    #[test]
-    fn test_active_value_returns_candidate_when_mode_set() {
-        let _guard = CANDIDATE_MODE_ENV_LOCK.lock().unwrap();
-        unsafe { std::env::set_var("PHANTOM_CANDIDATE_MODE", "1") };
-        let s = make_shadow();
-        assert_eq!(s.active_value(), "new_value");
-        unsafe { std::env::remove_var("PHANTOM_CANDIDATE_MODE") };
-    }
-
-    #[test]
-    fn test_active_value_returns_primary_when_candidate_empty() {
-        let _guard = CANDIDATE_MODE_ENV_LOCK.lock().unwrap();
-        unsafe { std::env::set_var("PHANTOM_CANDIDATE_MODE", "1") };
-        let mut s = make_shadow();
-        s.candidate = String::new();
-        assert_eq!(s.active_value(), "old_value");
-        unsafe { std::env::remove_var("PHANTOM_CANDIDATE_MODE") };
     }
 
     // ── ShadowStore ───────────────────────────────────────────────────────────

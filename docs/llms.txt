@@ -38,15 +38,21 @@ that hardening is not in `v0.7.3` and awaits a later release.
 
 The runtime `tools/list` response is the canonical MCP parameter schema and is
 checked for exact parity with `mcp-registry/server.json`. Provider/network
-requests, credential retrieval/use, and persistent effects require both
-`confirm: true` and an out-of-band `approval_token`; conditional tools expose
-ungated inspection separately from their gated effectful parameters.
-The vault, package, cloud, and team mutation tools selected below require
-explicit consent, `confirm: true`, and the `approval_token` obtained through
-the server's out-of-band `phantom mcp-approve` challenge. Advanced audit,
+requests, credential retrieval/use, and persistent effects are disabled by
+default. Set `PHANTOM_MCP_EFFECTS=trusted-terminal` only outside agent
+authority to reach the `confirm: true` and one-use `approval_token` gates;
+conditional tools expose ungated inspection separately from effectful
+parameters. `phantom mcp-approve` requires attached stdin/stderr, shows the
+value-blind effect and exact parameters, and requires a fresh typed challenge.
+A same-user shell or agent-controlled PTY can defeat this ceremony, so leave
+effects disabled unless approval command and storage are outside agent
+authority. Advanced audit,
 validation, rotation, and expiry tools have distinct schemas; inspect
 `tools/list` rather than extrapolating these gates. `phantom_check` accepts
 `runtime`; staged index scanning is a CLI-only `phantom check --staged` option.
+
+`phantom_rotate_with_candidate` and `phantom_rotate_promote` are deprecated
+hard denials retained only for schema compatibility; they mutate nothing.
 
 Vault: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret_interactive, phantom_add_secret (deprecated; refuses plaintext), phantom_remove_secret, phantom_rotate, phantom_copy_secret
 

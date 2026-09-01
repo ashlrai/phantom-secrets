@@ -34,10 +34,16 @@ executes an unpinned registry package.
 
 The runtime `tools/list` response and `mcp-registry/server.json` are the
 canonical catalog. The table below highlights the core and team-vault surface.
-Every state-writing, credential-using, or provider/network entry below is gated by both `confirm: true` and the
-`approval_token` returned after the server's out-of-band `phantom mcp-approve`
-challenge. Optional fields are marked; parameter names match the runtime JSON
-schema exactly.
+Every state-writing, credential-using, or provider/network entry below is
+disabled by default. It can reach its `confirm: true` plus one-use
+`approval_token` gates only when the operator sets
+`PHANTOM_MCP_EFFECTS=trusted-terminal` outside agent authority. `phantom
+mcp-approve` requires attached stdin/stderr, displays the bounded value-blind
+effect and exact parameters, and requires a fresh typed challenge. A same-user
+shell or agent-controlled PTY can defeat this ceremony; leave MCP effects
+disabled unless the approval command and `~/.phantom` approval storage are
+outside the requesting agent's authority. Optional fields are marked;
+parameter names match the runtime JSON schema exactly.
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
@@ -67,8 +73,8 @@ schema exactly.
 | `phantom_team_key_publish` | Register this device's X25519 public key; the private key stays in the OS keychain | team_id, confirm, approval_token |
 | `phantom_team_vault_push` | Push the current project's vault to a client-encrypted shared team vault | team_id, confirm, approval_token |
 | `phantom_team_vault_pull` | Pull and locally decrypt the current project's team vault | team_id, confirm, approval_token |
-| `phantom_rotate_with_candidate` | Stage a candidate credential without returning its value | name, auto_promote_ttl_secs (optional), confirm, approval_token |
-| `phantom_rotate_promote` | Promote a staged candidate credential | name, confirm, approval_token |
+| `phantom_rotate_with_candidate` | **Deprecated hard denial** — never creates or stores a candidate; legacy candidates were local placeholders, not provider credentials | name, auto_promote_ttl_secs (ignored), confirm (ignored), approval_token (ignored) |
+| `phantom_rotate_promote` | **Deprecated hard denial** — never validates, promotes, or changes a vault value | name, confirm (ignored), approval_token (ignored) |
 | `phantom_rotate_provider` | Provider-rotate a credential; `provider` may resolve from config | name, provider (optional), confirm, approval_token |
 | `phantom_rotate_with_expiry` | **Deprecated name** — remap all local `phm_` placeholders; `days_ttl` is compatibility-only and lifecycle metadata remains unchanged | days_ttl, confirm, approval_token |
 | `phantom_validate_all` | Retrieve credentials, call live provider validators, and persist value-free result metadata | jobs, confirm, approval_token |

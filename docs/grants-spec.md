@@ -292,8 +292,11 @@ Grants sit *above* the shipped rotation machinery, never beside it:
   watch --auto-rotate` and `phantom rotate --schedule-strategy` paths are
   disabled rather than treating local `phm_` remaps as provider rotations.
 - Agents get the same flow through `phantom_rotate_provider` MCP, still gated
-  behind `confirm: true` plus an out-of-band `phantom mcp-approve` token,
-  still returning status metadata only.
+  behind default-denied effect execution, `confirm: true`, and an informed
+  one-use `phantom mcp-approve` token, still returning status metadata only.
+  Set `PHANTOM_MCP_EFFECTS=trusted-terminal` only where the approval command,
+  attached terminal, and approval storage are outside agent authority; a
+  same-user shell or controllable PTY can defeat the ceremony.
 
 ## Security Invariants
 

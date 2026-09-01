@@ -708,36 +708,31 @@ fn default_history_limit() -> usize {
 
 // ── Shadow rotation ───────────────────────────────────────────────────
 
-/// Parameters for `phantom_rotate_with_candidate`.
+/// Deprecated compatibility parameters for the hard-denied shadow path.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateWithCandidateParams {
-    /// Name of the secret to shadow-rotate (e.g. OPENAI_API_KEY).
+    /// Ignored compatibility field. No candidate is created.
     pub name: String,
-    /// Optional TTL in seconds after which the candidate automatically expires.
-    /// Omit for no automatic expiry (manual promotion only).
+    /// Ignored compatibility field. No candidate TTL is created.
     #[serde(default)]
     pub auto_promote_ttl_secs: Option<u64>,
-    /// Required. Must be true — creates a candidate credential and stores it
-    /// in the vault. The agent must confirm with the user before calling.
+    /// Ignored compatibility field. The tool is always denied.
     #[serde(default)]
     pub confirm: bool,
-    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    /// Ignored compatibility field. No approval can enable this tool.
     #[serde(default)]
     pub approval_token: Option<String>,
 }
 
-/// Parameters for `phantom_rotate_promote`.
+/// Deprecated compatibility parameters for the hard-denied promotion path.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotatePromoteParams {
-    /// Name of the secret whose shadow candidate should be promoted
-    /// (e.g. OPENAI_API_KEY).
+    /// Ignored compatibility field. No candidate is promoted.
     pub name: String,
-    /// Required. Must be true — promotes the candidate to primary, atomically
-    /// replacing the current live credential. The agent must confirm with the
-    /// user before calling.
+    /// Ignored compatibility field. The tool is always denied.
     #[serde(default)]
     pub confirm: bool,
-    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    /// Ignored compatibility field. No approval can enable this tool.
     #[serde(default)]
     pub approval_token: Option<String>,
 }

@@ -972,14 +972,14 @@
     },
     {
       "name": "phantom_rotate_promote",
-      "description": "Validate the shadow candidate for a named secret and atomically promote it to primary. The old primary is discarded. Requires `confirm: true` — the agent must obtain explicit user consent before promoting. On success returns the new shadow_id and promotion timestamp.",
+      "description": "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters. Use phantom_rotate_provider for a real provider rotation.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_rotate_promote`.",
+        "description": "Deprecated compatibility parameters for the hard-denied promotion path.",
         "properties": {
           "approval_token": {
             "default": null,
-            "description": "Out-of-band approval token from `phantom mcp-approve <NONCE>`.",
+            "description": "Ignored compatibility field. No approval can enable this tool.",
             "type": [
               "string",
               "null"
@@ -987,11 +987,11 @@
           },
           "confirm": {
             "default": false,
-            "description": "Required. Must be true — promotes the candidate to primary, atomically\nreplacing the current live credential. The agent must confirm with the\nuser before calling.",
+            "description": "Ignored compatibility field. The tool is always denied.",
             "type": "boolean"
           },
           "name": {
-            "description": "Name of the secret whose shadow candidate should be promoted\n(e.g. OPENAI_API_KEY).",
+            "description": "Ignored compatibility field. No candidate is promoted.",
             "type": "string"
           }
         },
@@ -1044,14 +1044,14 @@
     },
     {
       "name": "phantom_rotate_with_candidate",
-      "description": "Staged rotation: generate a new candidate credential alongside the current primary for a named secret. The primary remains active until phantom_rotate_promote succeeds. Set PHANTOM_CANDIDATE_MODE=1 in the proxy environment to inject the candidate instead of the primary for parallel validation. Returns { shadow_id, candidate_added_at, time_until_auto_promote_ttl } — never returns the credential values. Requires `confirm: true`.",
+      "description": "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters. Use phantom_rotate_provider for a real provider rotation.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_rotate_with_candidate`.",
+        "description": "Deprecated compatibility parameters for the hard-denied shadow path.",
         "properties": {
           "approval_token": {
             "default": null,
-            "description": "Out-of-band approval token from `phantom mcp-approve <NONCE>`.",
+            "description": "Ignored compatibility field. No approval can enable this tool.",
             "type": [
               "string",
               "null"
@@ -1059,7 +1059,7 @@
           },
           "auto_promote_ttl_secs": {
             "default": null,
-            "description": "Optional TTL in seconds after which the candidate automatically expires.\nOmit for no automatic expiry (manual promotion only).",
+            "description": "Ignored compatibility field. No candidate TTL is created.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -1069,11 +1069,11 @@
           },
           "confirm": {
             "default": false,
-            "description": "Required. Must be true — creates a candidate credential and stores it\nin the vault. The agent must confirm with the user before calling.",
+            "description": "Ignored compatibility field. The tool is always denied.",
             "type": "boolean"
           },
           "name": {
-            "description": "Name of the secret to shadow-rotate (e.g. OPENAI_API_KEY).",
+            "description": "Ignored compatibility field. No candidate is created.",
             "type": "string"
           }
         },

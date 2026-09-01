@@ -139,13 +139,21 @@ phantom setup --client claude
 
 ### MCP Tools
 
-The runtime `tools/list` schema is canonical. The vault, package, cloud, and
-team mutation calls selected below require both `confirm: true` and a valid
-`approval_token` obtained through the server's out-of-band
-`phantom mcp-approve` challenge; the token is never a substitute for explicit
-user consent. Advanced audit, validation, rotation, and expiry tools have
+The runtime `tools/list` schema is canonical. Effectful MCP calls are disabled
+by default. They can reach the `confirm: true` and one-use `approval_token`
+gates only when `PHANTOM_MCP_EFFECTS=trusted-terminal` is configured outside
+agent authority. `phantom mcp-approve` requires attached stdin/stderr, displays
+the value-blind effect and exact parameters, and requires a fresh typed
+challenge. A same-user shell or controllable PTY can defeat this ceremony, so
+leave effects disabled unless the approval command and approval storage are
+outside agent authority. The token is never a substitute for explicit user
+consent. Advanced audit, validation, rotation, and expiry tools have
 distinct schemas and conditional gates; inspect `tools/list` rather than
 extrapolating this selected catalog.
+
+`phantom_rotate_with_candidate` and `phantom_rotate_promote` are deprecated
+hard denials retained for schema compatibility. They create or promote nothing;
+use `phantom_rotate_provider` for real provider issuance.
 
 **Secret Management:**
 - `phantom_init` — Initialize Phantom and protect .env. Reads .env, stores real secrets in vault, rewrites with phm_ tokens, saves .phantom.toml config. Params: env_path (default `.env`), confirm, approval_token.

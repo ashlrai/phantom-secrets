@@ -113,6 +113,12 @@ The exact names and schemas are in
 2. MCP tools return names, protection state, plans, and value-free metadata.
 3. A trusted terminal remains the boundary for interactive secret entry and
    explicitly authorized local actions.
+   Effectful compatibility tools are disabled by default; enable
+   `PHANTOM_MCP_EFFECTS=trusted-terminal` only outside agent authority. The
+   approval command requires attached stdin/stderr, displays the exact
+   value-blind request, and requires a fresh typed challenge. A same-user shell
+   or agent-controlled PTY can defeat it, so leave effects disabled unless the
+   approval command and storage are outside agent authority.
 4. Application processes use `phm_` mappings under an authenticated local proxy
    session; configured HTTP routes can then resolve those mappings at the
    network boundary.

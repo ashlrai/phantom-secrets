@@ -429,14 +429,11 @@ enum Commands {
         /// placeholder cannot renew a provider credential's TTL.
         #[arg(long, value_name = "DAYS", hide = true)]
         with_expiry: Option<u64>,
-        /// Shadow mode: generate a candidate credential alongside the current
-        /// primary for staged validation before promotion. The current primary
-        /// remains active until `phantom validate <NAME> --promote` succeeds.
-        /// Requires a secret NAME when used with --shadow.
-        #[arg(long)]
+        /// Deprecated and disabled: legacy shadow mode generated only a local
+        /// phm_cand_ placeholder, not a provider-issued credential.
+        #[arg(long, hide = true)]
         shadow: bool,
-        /// Secret name to rotate. With --shadow: shadow-rotate this secret.
-        /// With --provider (or alone, when the secret has a rotation_provider
+        /// Secret name to rotate. With --provider (or alone, when the secret has a rotation_provider
         /// block in .phantom.toml): rotate the real credential at the vendor.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
@@ -497,9 +494,9 @@ enum Commands {
         /// Number of concurrent validation jobs (default: 4)
         #[arg(long, short = 'j', value_name = "N")]
         jobs: Option<usize>,
-        /// Validate the shadow candidate for NAME and atomically promote it to
-        /// primary if validation succeeds.
-        #[arg(long, value_name = "NAME", conflicts_with = "check_all")]
+        /// Deprecated and disabled: legacy candidates were local placeholders,
+        /// not provider-issued credentials, and cannot be promoted.
+        #[arg(long, value_name = "NAME", conflicts_with = "check_all", hide = true)]
         promote: Option<String>,
         /// Run as a background daemon, polling per-secret schedules and writing
         /// results to ~/.phantom/validation-report.json for MCP tools to consume.

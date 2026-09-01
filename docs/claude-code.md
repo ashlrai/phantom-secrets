@@ -104,9 +104,14 @@ Claude must ask for explicit user consent before calling any of these. Calling w
 | `phantom_wrap` | Wrap `package.json` scripts with the installed local `phantom exec --` runtime so secrets are injected at runtime. Saves originals as `script:raw` variants. |
 | `phantom_unwrap` | Reverse `phantom_wrap` — restore original scripts from `:raw` variants and remove the `:raw` entries. |
 
-Provider requests and other effectful operations also require both
-`confirm: true` and an out-of-band `approval_token`, even when their response is
-value-blind. This includes `phantom_cloud_status`, `phantom_team_list`,
+Provider requests and other effectful operations are disabled by default.
+They can reach both `confirm: true` and one-use `approval_token` gates only
+when `PHANTOM_MCP_EFFECTS=trusted-terminal` is configured outside Claude's
+authority. `phantom mcp-approve` requires attached stdin/stderr, shows the
+value-blind effect and exact parameters, and requires a fresh typed challenge.
+A same-user shell or Claude-controlled PTY can defeat the ceremony; leave MCP
+effects disabled unless approval command and storage are outside its authority.
+This includes `phantom_cloud_status`, `phantom_team_list`,
 `phantom_team_members`, and `phantom_validate_all`. Conditional operations keep
 their inspection mode read-only, but require both gates for schedule updates,
 alert backfill/dispatch, hotspot acknowledgement, and saved reports. Runtime

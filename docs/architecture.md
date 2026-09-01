@@ -112,10 +112,15 @@ cloud and team tools use the authenticated cloud client. Tool responses must
 remain value-free. The deprecated plaintext MCP add path refuses values, while
 interactive secret entry happens in an attached terminal.
 
-Some advanced compatibility tools can mutate state after their own explicit
-confirmation and out-of-band local approval checks. Those legacy gates are not
-Locus grants, broker leases, or proof that the inactive execution kernel is
-active.
+Effectful advanced compatibility tools are disabled by default. An operator
+may set `PHANTOM_MCP_EFFECTS=trusted-terminal` outside agent authority to reach
+their explicit confirmation and one-use approval checks. `phantom mcp-approve`
+inspects the pending record before mutation, displays its bounded value-blind
+effect and exact parameters, requires attached stdin/stderr, and asks for a
+fresh typed challenge. A same-user shell or agent-controlled PTY can defeat
+that ceremony; when the command or `~/.phantom` approval storage is in agent
+scope, effects must remain disabled. These gates are not Locus grants, broker
+leases, or proof that the inactive execution kernel is active.
 
 ### Obtain a provider grant
 
