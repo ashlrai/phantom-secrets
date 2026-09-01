@@ -4,13 +4,20 @@ use colored::Colorize;
 /// Reverse `phantom wrap` — restore original scripts from `:raw` variants.
 pub fn run() -> Result<()> {
     let project_dir = std::env::current_dir()?;
+    run_in(&project_dir, || {})
+}
+
+fn run_in(project_dir: &std::path::Path, after_lock: impl FnOnce()) -> Result<()> {
     let pkg_path = project_dir.join("package.json");
-    let _transaction_lock = phantom_vault::acquire_project_transaction_lock(&project_dir)
+    let transaction_lock = phantom_vault::acquire_project_transaction_lock(project_dir)
         .context("Failed to acquire the project transaction lock")?;
-    let before = phantom_core::fs::read_regular_file(&pkg_path)
+    after_lock();
+    let target = transaction_lock.target(&pkg_path)?;
+    let before = target
+        .read_regular()
         .context("Failed to inspect package.json")?
         .ok_or_else(|| anyhow::anyhow!("No package.json found in current directory."))?;
-    let content = std::str::from_utf8(&before).context("package.json is not valid UTF-8")?;
+    let content = std::str::from_utf8(before.bytes()).context("package.json is not valid UTF-8")?;
     let mut pkg: serde_json::Value =
         serde_json::from_str(content).context("Failed to parse package.json")?;
     let restored = apply_unwrap(&mut pkg);
@@ -24,12 +31,18 @@ pub fn run() -> Result<()> {
     }
 
     let output = serde_json::to_string_pretty(&pkg).context("Failed to serialize package.json")?;
-    phantom_core::fs::atomic_write_if_unchanged(
-        &pkg_path,
+    match target.replace_if_exact_with_permissions(
         Some(&before),
         format!("{output}\n").as_bytes(),
-    )
-    .context("package.json changed after it was read; no scripts were unwrapped")?;
+        before.permissions(),
+    )? {
+        phantom_core::fs::AnchoredEffect::Durable(_) => {}
+        phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => {
+            anyhow::bail!(
+                "package.json was replaced, but durability could not be verified: {error}"
+            )
+        }
+    }
 
     for name in &restored {
         println!(
@@ -125,5 +138,35 @@ mod tests {
         assert_eq!(pkg["scripts"]["build"], "next build");
         assert!(pkg["scripts"].get("build:raw").is_none());
         assert_eq!(pkg["scripts"]["dev:raw"], "user-owned");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unwrap_uses_retained_root_after_rename() {
+        let container = tempfile::tempdir().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project.join("package.json"),
+            br#"{"scripts":{"build":"phantom exec -- next build","build:raw":"next build"}}"#,
+        )
+        .unwrap();
+
+        run_in(&project, || {
+            std::fs::rename(&project, &moved).unwrap();
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(project.join("package.json"), br#"{"decoy":true}"#).unwrap();
+        })
+        .unwrap();
+
+        let unwrapped: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(moved.join("package.json")).unwrap()).unwrap();
+        assert_eq!(unwrapped["scripts"]["build"], "next build");
+        assert!(unwrapped["scripts"].get("build:raw").is_none());
+        assert_eq!(
+            std::fs::read(project.join("package.json")).unwrap(),
+            br#"{"decoy":true}"#
+        );
     }
 }

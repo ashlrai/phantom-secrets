@@ -177,9 +177,13 @@ fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> 
 
 fn ensure_gitignore(project_dir: &std::path::Path) -> Result<bool> {
     let path = project_dir.join(".gitignore");
-    let before = phantom_core::fs::read_regular_file(&path)
+    let lock = phantom_vault::acquire_project_transaction_lock(project_dir)
+        .context("Failed to acquire the project transaction lock")?;
+    let target = lock.target(&path)?;
+    let before = target
+        .read_regular()
         .with_context(|| format!("Refusing unsafe .gitignore target {}", path.display()))?;
-    let mut content = match before.as_deref() {
+    let mut content = match before.as_ref().map(phantom_core::fs::AnchoredRead::bytes) {
         Some(bytes) => {
             String::from_utf8(bytes.to_vec()).context("Refusing to rewrite non-UTF-8 .gitignore")?
         }
@@ -192,7 +196,7 @@ fn ensure_gitignore(project_dir: &std::path::Path) -> Result<bool> {
         content.push('\n');
     }
     content.push_str(".env\n.env.local\n.env.*.local\n.env.backup\n");
-    write_agent_file_exact(project_dir, &path, before.as_deref(), content.as_bytes())?;
+    replace_agent_target(&target, before.as_ref(), content.as_bytes(), &path)?;
     println!(
         "{} Updated .gitignore with env patterns",
         "ok".green().bold()
@@ -201,51 +205,100 @@ fn ensure_gitignore(project_dir: &std::path::Path) -> Result<bool> {
 }
 
 fn ensure_env_example(project_dir: &std::path::Path) -> Result<bool> {
-    let config = PhantomConfig::load(&project_dir.join(".phantom.toml")).ok();
-    let env_path = match config.as_ref() {
-        Some(config) => {
-            phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])?.path
+    let lock = phantom_vault::acquire_project_transaction_lock(project_dir)
+        .context("Failed to acquire the project transaction lock")?;
+    let config_path = project_dir.join(".phantom.toml");
+    let config = lock
+        .target(&config_path)?
+        .read_regular()?
+        .and_then(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()).ok());
+    let (_env_path, dotenv) = match config.as_ref() {
+        Some(config) => super::env::resolve_dotenv_anchored(&lock, project_dir, config)?,
+        None => {
+            let path = project_dir.join(".env");
+            let Some(bytes) = lock.target(&path)?.read_regular()? else {
+                return Ok(false);
+            };
+            let content = std::str::from_utf8(bytes.bytes()).context("Failed to read .env")?;
+            (path, Some(DotenvFile::parse_str(content)))
         }
-        None => project_dir.join(".env"),
+    };
+    let Some(dotenv) = dotenv else {
+        return Ok(false);
     };
     let example_path = project_dir.join(".env.example");
-    let example_before = phantom_core::fs::read_regular_file(&example_path).with_context(|| {
+    let example_target = lock.target(&example_path)?;
+    let example_before = example_target.read_regular().with_context(|| {
         format!(
             "Refusing unsafe .env.example target {}",
             example_path.display()
         )
     })?;
-    if example_before.is_some() || !env_path.exists() {
+    if example_before.is_some() {
         return Ok(false);
     }
 
-    let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env")?;
     let content = dotenv.generate_example_content(config.as_ref());
-    write_agent_file_exact(
-        project_dir,
-        &example_path,
-        example_before.as_deref(),
-        content.as_bytes(),
-    )?;
+    replace_agent_target(&example_target, None, content.as_bytes(), &example_path)?;
     println!("{} Generated .env.example", "ok".green().bold());
     Ok(true)
 }
 
+#[cfg(test)]
 fn write_agent_file_exact(
     project_dir: &std::path::Path,
     path: &std::path::Path,
     before: Option<&[u8]>,
     content: &[u8],
 ) -> Result<()> {
-    let _lock = phantom_vault::acquire_project_transaction_lock(project_dir)
+    write_agent_file_exact_with(project_dir, path, before, content, || {})
+}
+
+#[cfg(test)]
+fn write_agent_file_exact_with(
+    project_dir: &std::path::Path,
+    path: &std::path::Path,
+    before: Option<&[u8]>,
+    content: &[u8],
+    before_commit: impl FnOnce(),
+) -> Result<()> {
+    let lock = phantom_vault::acquire_project_transaction_lock(project_dir)
         .context("Failed to acquire the project transaction lock")?;
-    phantom_core::fs::ensure_real_parent(path)?;
-    phantom_core::fs::atomic_write_if_unchanged(path, before, content).with_context(|| {
+    let target = lock.target(path)?;
+    let reviewed = target.read_regular().with_context(|| {
         format!(
-            "{} changed during agent setup; refusing to overwrite it",
+            "Failed to inspect {} through the retained project root",
             path.display()
         )
-    })
+    })?;
+    if reviewed.as_ref().map(phantom_core::fs::AnchoredRead::bytes) != before {
+        anyhow::bail!(
+            "{} changed during agent setup; refusing to overwrite it",
+            path.display()
+        );
+    }
+    before_commit();
+    replace_agent_target(&target, reviewed.as_ref(), content, path)
+}
+
+fn replace_agent_target(
+    target: &phantom_core::fs::AnchoredTarget,
+    reviewed: Option<&phantom_core::fs::AnchoredRead>,
+    content: &[u8],
+    path: &std::path::Path,
+) -> Result<()> {
+    let permissions = reviewed
+        .map(phantom_core::fs::AnchoredRead::permissions)
+        .unwrap_or_else(phantom_core::fs::AnchoredFilePermissions::private);
+    match target.replace_if_exact_with_permissions(reviewed, content, permissions)? {
+        phantom_core::fs::AnchoredEffect::Durable(_) => Ok(()),
+        phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => {
+            anyhow::bail!(
+                "{} was replaced, but durability could not be verified: {error}",
+                path.display()
+            )
+        }
+    }
 }
 
 fn print_human_report(report: &AgentReadinessReport) {
@@ -317,5 +370,35 @@ mod tests {
 
         assert!(super::write_agent_file_exact(project.path(), &target, None, b"phantom").is_err());
         assert_eq!(std::fs::read(owner).unwrap(), b"owner");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_writer_uses_retained_root_after_rename() {
+        let container = tempfile::tempdir().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        let target = project.join(".gitignore");
+        std::fs::write(&target, b"before\n").unwrap();
+
+        super::write_agent_file_exact_with(
+            &project,
+            &target,
+            Some(b"before\n"),
+            b"after\n",
+            || {
+                std::fs::rename(&project, &moved).unwrap();
+                std::fs::create_dir(&project).unwrap();
+                std::fs::write(project.join(".gitignore"), b"decoy\n").unwrap();
+            },
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(moved.join(".gitignore")).unwrap(), b"after\n");
+        assert_eq!(
+            std::fs::read(project.join(".gitignore")).unwrap(),
+            b"decoy\n"
+        );
     }
 }

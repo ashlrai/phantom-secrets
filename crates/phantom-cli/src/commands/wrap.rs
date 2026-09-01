@@ -5,10 +5,22 @@ use colored::Colorize;
 /// Original scripts are saved as `*:raw` variants for escape-hatch usage.
 pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>) -> Result<()> {
     let project_dir = std::env::current_dir()?;
+    run_in(&project_dir, only, skip, || {})
+}
+
+fn run_in(
+    project_dir: &std::path::Path,
+    only: &Option<Vec<String>>,
+    skip: &Option<Vec<String>>,
+    after_lock: impl FnOnce(),
+) -> Result<()> {
     let pkg_path = project_dir.join("package.json");
-    let _transaction_lock = phantom_vault::acquire_project_transaction_lock(&project_dir)
+    let transaction_lock = phantom_vault::acquire_project_transaction_lock(project_dir)
         .context("Failed to acquire the project transaction lock")?;
-    let before = phantom_core::fs::read_regular_file(&pkg_path)
+    after_lock();
+    let target = transaction_lock.target(&pkg_path)?;
+    let before = target
+        .read_regular()
         .context("Failed to inspect package.json")?
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -16,7 +28,7 @@ pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>) -> Result<()>
                  Run this command from your project root."
             )
         })?;
-    let content = std::str::from_utf8(&before).context("package.json is not valid UTF-8")?;
+    let content = std::str::from_utf8(before.bytes()).context("package.json is not valid UTF-8")?;
     let mut pkg: serde_json::Value =
         serde_json::from_str(content).context("Failed to parse package.json")?;
     let wrapped = apply_wrap(&mut pkg, only, skip)?;
@@ -30,12 +42,8 @@ pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>) -> Result<()>
     }
 
     let output = serde_json::to_string_pretty(&pkg).context("Failed to serialize package.json")?;
-    phantom_core::fs::atomic_write_if_unchanged(
-        &pkg_path,
-        Some(&before),
-        format!("{output}\n").as_bytes(),
-    )
-    .context("package.json changed after it was read; no scripts were wrapped")?;
+    replace_package_json(&target, &before, format!("{output}\n").as_bytes())
+        .context("package.json changed after it was read; no scripts were wrapped")?;
 
     for name in &wrapped {
         println!(
@@ -62,6 +70,21 @@ pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>) -> Result<()>
     );
 
     Ok(())
+}
+
+fn replace_package_json(
+    target: &phantom_core::fs::AnchoredTarget,
+    before: &phantom_core::fs::AnchoredRead,
+    content: &[u8],
+) -> Result<()> {
+    match target.replace_if_exact_with_permissions(Some(before), content, before.permissions())? {
+        phantom_core::fs::AnchoredEffect::Durable(_) => Ok(()),
+        phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => {
+            anyhow::bail!(
+                "package.json was replaced, but durability could not be verified: {error}"
+            )
+        }
+    }
 }
 
 fn apply_wrap(
@@ -229,5 +252,35 @@ mod tests {
 
         apply_wrap(&mut pkg, &None, &None).unwrap_err();
         assert_eq!(pkg, before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrap_uses_retained_root_after_rename() {
+        let container = tempfile::tempdir().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project.join("package.json"),
+            br#"{"scripts":{"build":"next build"}}"#,
+        )
+        .unwrap();
+
+        run_in(&project, &None, &None, || {
+            std::fs::rename(&project, &moved).unwrap();
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(project.join("package.json"), br#"{"decoy":true}"#).unwrap();
+        })
+        .unwrap();
+
+        let wrapped: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(moved.join("package.json")).unwrap()).unwrap();
+        assert_eq!(wrapped["scripts"]["build"], "phantom exec -- next build");
+        assert_eq!(wrapped["scripts"]["build:raw"], "next build");
+        assert_eq!(
+            std::fs::read(project.join("package.json")).unwrap(),
+            br#"{"decoy":true}"#
+        );
     }
 }

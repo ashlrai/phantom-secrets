@@ -7,11 +7,14 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+#[cfg(test)]
+use phantom_core::env_scope::write_active_env_if_unchanged;
 use phantom_core::env_scope::{
-    known_envs_from_keys, namespaced_key, resolve_env, split_key, validate_env_name,
-    write_active_env_if_unchanged, DEFAULT_ENV,
+    known_envs_from_keys, namespaced_key, resolve_env, split_key, validate_env_name, DEFAULT_ENV,
 };
-use phantom_vault::{InitFile, InitSecret, VaultBackend};
+use phantom_vault::{
+    InitFile, InitSecret, ProjectDirectoryPreparation, ProjectTransactionLock, VaultBackend,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
@@ -119,6 +122,16 @@ fn apply_environment_use(
     reader: &mut impl BufRead,
     writer: &mut impl Write,
 ) -> Result<()> {
+    apply_environment_use_with(plan, attached, reader, writer, || {})
+}
+
+fn apply_environment_use_with(
+    plan: &EnvironmentUsePlan,
+    attached: bool,
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+    after_lock: impl FnOnce(),
+) -> Result<()> {
     if !attached {
         anyhow::bail!(
             "`phantom env use` requires attached stdin, stdout, and stderr terminals; the active environment was not changed"
@@ -136,18 +149,91 @@ fn apply_environment_use(
         );
     }
 
-    let _lock = phantom_vault::acquire_project_transaction_lock(&plan.project_dir)
+    let lock = phantom_vault::acquire_project_transaction_lock(&plan.project_dir)
         .context("Failed to acquire the project transaction lock")?;
-    let current_config = phantom_core::fs::read_regular_file(&plan.config_path)
+    after_lock();
+    let current_config = lock
+        .target(&plan.config_path)?
+        .read_regular()
         .context("Failed to verify the .phantom.toml before-image")?;
-    if current_config.as_deref() != Some(plan.config_before.as_slice()) {
+    if current_config
+        .as_ref()
+        .map(phantom_core::fs::AnchoredRead::bytes)
+        != Some(plan.config_before.as_slice())
+    {
         anyhow::bail!(
             ".phantom.toml changed after environment selection was reviewed; the active environment was not changed"
         );
     }
-    write_active_env_if_unchanged(&plan.project_dir, plan.env_before.as_deref(), &plan.name)
+    replace_active_environment(&lock, plan.env_before.as_deref(), &plan.name)
         .context("Failed to atomically update the active environment")?;
     Ok(())
+}
+
+fn replace_active_environment(
+    lock: &ProjectTransactionLock,
+    expected_before: Option<&[u8]>,
+    name: &str,
+) -> Result<()> {
+    let preparation = match lock.prepare_private_child(".phantom")? {
+        ProjectDirectoryPreparation::CommittedButUncertain { receipt, error } => {
+            let cleanup = receipt.map(|receipt| receipt.remove_if_empty_exact());
+            return match cleanup {
+                Some(Ok(phantom_core::fs::AnchoredEffect::Durable(()))) => {
+                    Err(error).context("Active-environment directory creation was rolled back")
+                }
+                _ => anyhow::bail!(
+                    "Active-environment directory creation may have committed and exact cleanup could not be verified: {error}"
+                ),
+            };
+        }
+        preparation => preparation,
+    };
+
+    let target = preparation
+        .anchor()
+        .expect("known directory preparation retains its anchor")
+        .target("env")?;
+    let reviewed = target.read_regular()?;
+    if reviewed.as_ref().map(phantom_core::fs::AnchoredRead::bytes) != expected_before {
+        drop(target);
+        cleanup_created_directory(preparation)?;
+        anyhow::bail!("active environment selector changed after it was reviewed");
+    }
+    let permissions = reviewed
+        .as_ref()
+        .map(phantom_core::fs::AnchoredRead::permissions)
+        .unwrap_or_else(phantom_core::fs::AnchoredFilePermissions::private);
+    let effect = target.replace_if_exact_with_permissions(
+        reviewed.as_ref(),
+        format!("{name}\n").as_bytes(),
+        permissions,
+    );
+    drop(target);
+    match effect {
+        Ok(phantom_core::fs::AnchoredEffect::Durable(_)) => Ok(()),
+        Ok(phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. }) => {
+            anyhow::bail!(
+                "active environment selector was replaced, but durability could not be verified: {error}"
+            )
+        }
+        Err(error) => {
+            cleanup_created_directory(preparation)?;
+            Err(error.into())
+        }
+    }
+}
+
+fn cleanup_created_directory(preparation: ProjectDirectoryPreparation) -> Result<()> {
+    let ProjectDirectoryPreparation::Created(receipt) = preparation else {
+        return Ok(());
+    };
+    match receipt.remove_if_empty_exact()? {
+        phantom_core::fs::AnchoredEffect::Durable(()) => Ok(()),
+        phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
+            "active-environment directory was removed, but cleanup durability could not be verified: {error}"
+        ),
+    }
 }
 
 /// `phantom env list` — list known environments extracted from vault keys.
@@ -681,6 +767,46 @@ mod tests {
 
         assert!(error.to_string().contains("changed after"));
         assert!(!dir.path().join(".phantom/env").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn environment_use_writes_retained_root_and_preserves_decoy() {
+        let (dir, mut plan) = environment_use_plan("prod");
+        let original = dir.path().join("project");
+        let moved = dir.path().join("moved");
+        std::fs::create_dir(&original).unwrap();
+        std::fs::rename(
+            dir.path().join(".phantom.toml"),
+            original.join(".phantom.toml"),
+        )
+        .unwrap();
+        plan.project_dir = original.clone();
+        plan.config_path = original.join(".phantom.toml");
+        let response = format!("{}\n", plan.challenge);
+
+        apply_environment_use_with(
+            &plan,
+            true,
+            &mut std::io::Cursor::new(response.as_bytes()),
+            &mut Vec::new(),
+            || {
+                std::fs::rename(&original, &moved).unwrap();
+                std::fs::create_dir(&original).unwrap();
+                std::fs::write(original.join(".phantom.toml"), b"decoy").unwrap();
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(moved.join(".phantom/env")).unwrap(),
+            "prod\n"
+        );
+        assert!(!original.join(".phantom/env").exists());
+        assert_eq!(
+            std::fs::read_to_string(original.join(".phantom.toml")).unwrap(),
+            "decoy"
+        );
     }
 
     struct FailingCasVault {

@@ -595,9 +595,36 @@ fn write_project_file_exact(
     before: Option<&[u8]>,
     content: &[u8],
 ) -> Result<()> {
-    let _lock = phantom_vault::acquire_project_transaction_lock(project_dir)?;
-    phantom_core::fs::ensure_real_parent(path)?;
-    phantom_core::fs::atomic_write_if_unchanged(path, before, content).map_err(Into::into)
+    write_project_file_exact_with(project_dir, path, before, content, || {})
+}
+
+fn write_project_file_exact_with(
+    project_dir: &std::path::Path,
+    path: &std::path::Path,
+    before: Option<&[u8]>,
+    content: &[u8],
+    before_commit: impl FnOnce(),
+) -> Result<()> {
+    let lock = phantom_vault::acquire_project_transaction_lock(project_dir)?;
+    let target = lock.target(path)?;
+    let reviewed = target.read_regular()?;
+    if reviewed.as_ref().map(phantom_core::fs::AnchoredRead::bytes) != before {
+        anyhow::bail!("{} changed after it was inspected", path.display());
+    }
+    let permissions = reviewed
+        .as_ref()
+        .map(phantom_core::fs::AnchoredRead::permissions)
+        .unwrap_or_else(phantom_core::fs::AnchoredFilePermissions::private);
+    before_commit();
+    match target.replace_if_exact_with_permissions(reviewed.as_ref(), content, permissions)? {
+        phantom_core::fs::AnchoredEffect::Durable(_) => Ok(()),
+        phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => {
+            anyhow::bail!(
+                "{} was replaced, but durability could not be verified: {error}",
+                path.display()
+            )
+        }
+    }
 }
 
 /// Check whether a known MCP client config has a canonical local executable.
@@ -774,5 +801,35 @@ mod tests {
             super::write_project_file_exact(project.path(), &target, None, b"phantom").is_err()
         );
         assert_eq!(std::fs::read(owner).unwrap(), b"owner");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_doctor_write_uses_retained_root_after_rename() {
+        let container = tempfile::tempdir().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        let target = project.join(".gitignore");
+        std::fs::write(&target, b"before\n").unwrap();
+
+        super::write_project_file_exact_with(
+            &project,
+            &target,
+            Some(b"before\n"),
+            b"after\n",
+            || {
+                std::fs::rename(&project, &moved).unwrap();
+                std::fs::create_dir(&project).unwrap();
+                std::fs::write(project.join(".gitignore"), b"decoy\n").unwrap();
+            },
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(moved.join(".gitignore")).unwrap(), b"after\n");
+        assert_eq!(
+            std::fs::read(project.join(".gitignore")).unwrap(),
+            b"decoy\n"
+        );
     }
 }
