@@ -16,7 +16,7 @@ use thiserror::Error;
 
 use crate::fs::{
     AnchoredEffect, AnchoredFilePermissions, AnchoredLock, AnchoredRead, AnchoredTarget,
-    FileIdentity, TrustedAnchor,
+    TrustedAnchor,
 };
 
 /// Start marker used to find and safely repair Phantom-owned hook blocks.
@@ -107,11 +107,9 @@ pub struct ExternalHookAuthorization {
     parent_identity: crate::fs::FileIdentity,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 struct HookBeforeImage {
-    bytes: Vec<u8>,
-    identity: FileIdentity,
-    permissions: AnchoredFilePermissions,
+    read: AnchoredRead,
 }
 
 /// Exact preflight plan for one independently rooted hook transaction.
@@ -737,7 +735,7 @@ fn prepare_install_plan_with_git(
         return Ok(None);
     };
     let before = read_location(&location)?;
-    let (existing, executable, before_image) = match before.as_ref() {
+    let (existing, executable, before_image) = match before {
         Some(read) => {
             let content = std::str::from_utf8(read.bytes())
                 .map_err(|_| HookError::NonUtf8Content {
@@ -748,15 +746,7 @@ fn prepare_install_plan_with_git(
             let executable = read.permissions().is_executable();
             #[cfg(not(unix))]
             let executable = true;
-            (
-                content,
-                executable,
-                Some(HookBeforeImage {
-                    bytes: read.bytes().to_vec(),
-                    identity: read.identity(),
-                    permissions: read.permissions(),
-                }),
-            )
+            (content, executable, Some(HookBeforeImage { read }))
         }
         None => (String::new(), false, None),
     };
@@ -837,11 +827,7 @@ fn commit_prepared_with_git_before_commit(
 fn matches_before(expected: Option<&HookBeforeImage>, current: Option<&AnchoredRead>) -> bool {
     match (expected, current) {
         (None, None) => true,
-        (Some(expected), Some(current)) => {
-            expected.bytes == current.bytes()
-                && expected.identity == current.identity()
-                && expected.permissions == current.permissions()
-        }
+        (Some(expected), Some(current)) => expected.read == *current,
         _ => false,
     }
 }
@@ -1424,7 +1410,7 @@ mod tests {
         std::fs::write(
             &fake_git,
             format!(
-                "#!/bin/sh\ncase \"$*\" in\n  *--is-inside-work-tree*) printf 'true\\n' ;;\n  *'--git-path hooks/pre-commit'*) printf '%s\\n' '{}' ;;\n  *--git-common-dir*) printf '%s\\n' '{}' ;;\n  *'config --null'*) printf 'global\\0file:{}\\0{}\\0' ;;\n  *) exit 2 ;;\nesac\n",
+                "#!/bin/sh\ncase \"$*\" in\n  *--is-inside-work-tree*) printf 'true\\n' ;;\n  *'--git-path hooks/pre-commit'*) printf '%s\\n' '{}' ;;\n  *--git-common-dir*) printf '%s\\n' '{}' ;;\n  *'config --null'*) printf 'global\\000file:{}\\000{}\\000' ;;\n  *) exit 2 ;;\nesac\n",
                 hook.display(),
                 common.display(),
                 origin.display(),

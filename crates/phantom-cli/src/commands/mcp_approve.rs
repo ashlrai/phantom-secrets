@@ -214,7 +214,11 @@ mod tests {
             (acquired_rx, contender)
         });
 
-        acquired_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        // The package-contract job runs the full CLI test binary in parallel;
+        // unrelated environment-isolation tests can legitimately retain the
+        // shared process lock for several seconds. This remains a bounded
+        // deadlock watchdog without classifying scheduler contention as one.
+        acquired_rx.recv_timeout(Duration::from_secs(60)).unwrap();
         contender.join().unwrap();
     }
 

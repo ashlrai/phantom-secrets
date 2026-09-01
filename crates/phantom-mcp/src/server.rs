@@ -7120,7 +7120,7 @@ mod tests {
 
     struct TestEnvironment {
         _guard: phantom_core::ProcessEnvGuard,
-        previous: [(&'static str, Option<std::ffi::OsString>); 4],
+        previous: [(&'static str, Option<std::ffi::OsString>); 5],
     }
 
     impl TestEnvironment {
@@ -7130,6 +7130,7 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous = [
                 ("HOME", std::env::var_os("HOME")),
+                ("USERPROFILE", std::env::var_os("USERPROFILE")),
                 (
                     "PHANTOM_VAULT_PASSPHRASE",
                     std::env::var_os("PHANTOM_VAULT_PASSPHRASE"),
@@ -7491,6 +7492,7 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         std::fs::create_dir(&hooks).unwrap();
         unsafe { std::env::set_var("HOME", &home) };
+        unsafe { std::env::set_var("USERPROFILE", &home) };
         assert!(std::process::Command::new("git")
             .args(["config", "--file"])
             .arg(home.join(".gitconfig"))

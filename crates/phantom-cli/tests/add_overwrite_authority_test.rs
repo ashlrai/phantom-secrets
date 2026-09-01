@@ -78,7 +78,11 @@ fn existing_name_is_denied_before_stdin_read_and_preserves_all_state() {
     // Keep the pipe open and provide no bytes. Reading stdin would block; a
     // prompt exit therefore proves the existing-name denial happened first.
     let open_stdin = child.stdin.take().expect("piped stdin");
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // CI runners may spend several seconds starting the debug binary and
+    // deriving the test vault key before reaching the existing-name check.
+    // Keep stdin open long enough to distinguish that work from an actual
+    // blocked read without turning ordinary runner load into a false failure.
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if child.try_wait().expect("poll overwrite attempt").is_some() {
             break;

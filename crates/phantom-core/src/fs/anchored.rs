@@ -158,12 +158,30 @@ impl AnchoredFilePermissions {
 ///
 /// The identity is intentionally part of equality: replacing a file with a
 /// byte-for-byte decoy is still drift and is rejected.
-#[derive(Eq, PartialEq)]
 pub struct AnchoredRead {
     bytes: Vec<u8>,
     identity: FileIdentity,
     permissions: AnchoredFilePermissions,
+    // Keep the reviewed Unix inode allocated until its before-image is
+    // dropped. A bare device/inode tuple is insufficient on filesystems that
+    // may immediately recycle an inode after unlink; retaining the no-follow
+    // handle makes a same-bytes unlink/recreate observable as identity drift.
+    // Windows no-follow handles intentionally omit FILE_SHARE_DELETE to pin
+    // the namespace while each read is in progress, so retaining one across
+    // Phantom's own atomic rename would prevent the publish.
+    #[cfg(unix)]
+    _retained: Option<File>,
 }
+
+impl PartialEq for AnchoredRead {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+            && self.identity == other.identity
+            && self.permissions == other.permissions
+    }
+}
+
+impl Eq for AnchoredRead {}
 
 impl fmt::Debug for AnchoredRead {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -675,6 +693,12 @@ impl AnchoredTarget {
                 bytes: contents.to_vec(),
                 identity: temp_identity,
                 permissions: effective_permissions,
+                // The staging handle must be closed before Windows can publish
+                // it. Successful verification below returns a freshly retained
+                // read; uncertain callers must not reuse this receipt as a new
+                // preflight before-image.
+                #[cfg(unix)]
+                _retained: None,
             };
             let verification = (|| {
                 maybe_inject_failure(TestFailurePoint::ReplaceParentSync)?;
@@ -996,12 +1020,24 @@ fn read_regular_at(parent: &Dir, leaf: &OsStr, display: &Path) -> io::Result<Opt
         bytes: std::mem::take(&mut *first_bytes),
         identity: first_identity,
         permissions: first_permissions,
+        #[cfg(unix)]
+        _retained: Some(first),
     }))
 }
 
 fn ensure_regular_single_link(file: &File, display: &Path) -> io::Result<()> {
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.is_symlink() || file_link_count(file)? != 1 {
+        return Err(io::Error::other(format!(
+            "refusing non-regular, reparse, or multiply-linked anchored file: {}",
+            display.display()
+        )));
+    }
+    #[cfg(windows)]
+    if windows_file_information(file)?.dwFileAttributes
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+    {
         return Err(io::Error::other(format!(
             "refusing non-regular, reparse, or multiply-linked anchored file: {}",
             display.display()
@@ -2301,13 +2337,15 @@ mod tests {
         let anchor = TrustedAnchor::open(dir.path()).unwrap();
         let lock = anchor.acquire_lock("locks/state.lock").unwrap();
         let locked_identity = lock.identity();
-        // LockFileEx can deny reads through an independent handle on Windows.
-        // Release the lock before reopening the file; the identity comparison
-        // still proves the stable anchored name resolves to the locked object.
+        // LockFileEx can deny reads through an independent handle on Windows,
+        // while Unix should retain the stronger held-lock regression check.
+        #[cfg(windows)]
         lock.unlock().unwrap();
         let target = anchor.target("locks/state.lock").unwrap();
         let current = target.read_regular().unwrap().unwrap();
         assert_eq!(current.identity(), locked_identity);
+        #[cfg(not(windows))]
+        lock.unlock().unwrap();
     }
 
     #[test]
@@ -2316,6 +2354,7 @@ mod tests {
         assert!(source.contains("FILE_SHARE_READ | FILE_SHARE_WRITE"));
         assert!(source.contains("Intentionally omit FILE_SHARE_DELETE"));
         assert!(source.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
+        assert!(source.contains("FILE_ATTRIBUTE_REPARSE_POINT"));
         assert!(source.contains("open_dir_nofollow"));
         assert!(source.contains("GetFileInformationByHandle"));
         assert!(source.contains("Dir::rename is specified to replace an existing file"));

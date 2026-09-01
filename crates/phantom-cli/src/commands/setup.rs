@@ -1107,7 +1107,7 @@ fn print_snippet(client: Client, mcp: &McpCommand) -> Result<()> {
 
 fn find_mcp_binary(current_exe: Option<&Path>) -> Option<PathBuf> {
     let path_match = which::which("phantom-mcp").ok();
-    let cargo_bin = dirs::home_dir().map(|home| home.join(".cargo").join("bin"));
+    let cargo_bin = home_dir().ok().map(|home| home.join(".cargo").join("bin"));
     find_mcp_binary_from(current_exe, path_match, cargo_bin.as_deref())
 }
 
