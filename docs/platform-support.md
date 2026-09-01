@@ -3,6 +3,19 @@
 This matrix separates source compilation, release packaging, installer or
 wrapper mapping, and native acceptance. One does not prove the next.
 
+## Evidence vocabulary
+
+| Layer | What it proves |
+|---|---|
+| Source contract | The inspected implementation and tests express the named invariant. It may be compiled or inspected for another target without running there. |
+| Workflow configuration | Automation is configured to request the named target/check. It does not prove that a run started or passed. |
+| Cross-compiled artifact | A host produced bytes for another target. It does not prove that the target OS loaded or exercised them. |
+| Native acceptance | The exact identified archive passed the named checks on the matching OS and architecture, with a retained receipt. |
+
+The filesystem hardening described below is source-contract evidence in this
+documentation tranche. It is not native acceptance for macOS, Linux, or
+Windows, and it is not evidence that a `0.7.4` artifact was published.
+
 ## Current matrix
 
 | Target | Release build host and mode | GitHub release workflow | Primary npm wrapper | Shell installer | Configured native acceptance / current evidence |
@@ -67,6 +80,23 @@ remaining operating-system integrations below.
 | Durable broker replay foundation | Unix implementation | Unix implementation | Fails closed |
 | Production confined engineering runtime | Unavailable | Unavailable | Unavailable |
 
+### Governed filesystem mutation
+
+| Contract | Current source evidence | Acceptance boundary |
+|---|---|---|
+| Retained root/parent identity | Project and explicitly authorized global config writers resolve targets from retained directory capabilities; Unix rename-and-decoy tests preserve the replacement decoy | No exact native-archive receipt is recorded |
+| Symlink and reparse denial | No-follow traversal rejects symlink/reparse ancestors and leaf targets; Windows implementation has source-contract checks | Windows tests in source are not a native Windows run |
+| Hard-link denial | Sensitive anchored files must be regular and have one link before read/effect | Platform filesystem behavior still needs exact native acceptance |
+| Exact compare-and-swap | Before-images bind stable file identity and bytes; same-content replacement identities are rejected | Covers cooperating Phantom operations, not arbitrary same-user writers |
+| Vault/project lock order | Vault/application authority is resolved before the project lock; stable root identity and exact config are revalidated afterward | Source and concurrency-test evidence, not native scheduler or credential-store acceptance |
+| Effect status | Durable completion is distinct from `CommittedButUncertain` (**Partial**) after a namespace effect but failed durability/verification | Partial outcomes require operator reconciliation and are not safe blind retries |
+| Created-parent rollback | Identity-bound receipts remove only exact, empty transaction-created directories after descendant handles are dropped | Unknown creation state without a receipt remains explicitly unresolved |
+
+Native credential-store source is likewise not acceptance. In particular,
+mapping the `keyring` backend to Windows Credential Manager does not prove that
+an exact Windows binary stored, read, prompted for, or removed a credential
+under a real user policy.
+
 Provider-grant support in source does not prove that a provider application is
 configured, consent completed, a credential accepted, renewal succeeded, or a
 customer workflow passed. Use throwaway provider accounts for authorized native
@@ -105,3 +135,13 @@ stores, an authenticated proxy request, shells and editors, and platform trust
 still require separately retained evidence. No repository-local source test or
 workflow definition is a substitute for a successful exact-candidate run and
 those additional receipts.
+
+## External benchmark
+
+Phantom's [Rama-derived engineering standard](rama-design-standard.md) pins the
+upstream main snapshot
+[`267e4790c899736e6f60d982c8a0932406d4079e`](https://github.com/plabayo/rama/commit/267e4790c899736e6f60d982c8a0932406d4079e),
+reviewed 2026-09-01. Rama's explicit stacks, modular crates, runnable examples,
+and tiered platform CI are benchmarks for improving Phantom's engineering
+evidence. Rama is not a dependency, and its platform tiers or features do not
+transfer to Phantom.

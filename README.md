@@ -505,6 +505,7 @@ The Rust workspace is organized as product crates plus fail-closed execution-ker
 | Product | `phantom-cli` | Operator CLI for initialization, proxy lifecycle, readiness, audit, import/export, sync, team, and workspace workflows. |
 | Product | `phantom-mcp` | Stdio MCP server. The governed conversation facade is narrow; the advanced compatibility catalog uses separate legacy gates. |
 | Product | `phantom-core/src/issuance`, CLI `grant` | Provider protocol/design foundations and value-free grant metadata. All live provider issuance/enrollment execution is hard-denied before credential or network access in 0.7.4. |
+| Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained project/config directory capabilities, exact identity-and-content before-images, no-follow targets, single-link checks, effect receipts, and explicit `CommittedButUncertain` (**Partial**) results for governed local writes. |
 | Setup kernel | `phantom-workspace` | Value-blind discovery, sealed planning, and recoverable trusted-terminal setup transactions. Non-Unix durable mutation fails closed. |
 | Inactive foundation | `phantom-authority` | Closed authority contracts and deny-all production verification boundary. No live Locus verifier. |
 | Inactive foundation | `phantom-locus-contract` | Value-free compatibility contract describing requirements for a future Phantom/Locus integration. |
@@ -512,6 +513,26 @@ The Rust workspace is organized as product crates plus fail-closed execution-ker
 | Inactive foundation | `phantom-runtime` | Closed engineering action schemas with a deny-all production executor. |
 | Inactive foundation | `phantom-session` | Crash-explicit session journal. Not wired into active execution. |
 | Inactive foundation | `phantom-evidence` | Value-free evidence and receipt primitives. Not externally anchored or wired into active execution. |
+
+Project-local effects resolve from the retained root acquired with the project
+transaction lock; global editor configuration is separately bounded beneath a
+retained user-config authority. A renamed ambient path and replacement decoy do
+not redirect those in-progress governed writes. These controls are not a
+same-user sandbox: local locks coordinate Phantom writers, and another process
+with equivalent user authority remains inside the threat model. See the
+[architecture](docs/architecture.md), [threat model](THREAT_MODEL.md), and
+[platform evidence matrix](docs/platform-support.md).
+
+Vault-backed mutations resolve machine-local vault/application authority before
+the project transaction lock, then compare the acquired root identity and
+reread the exact config through that lock. This avoids the shared
+process-environment/project-lock inversion without trusting project bytes during
+the gap.
+
+Phantom also tracks a pinned [Rama-derived engineering
+standard](docs/rama-design-standard.md) for explicit network stacks, modular
+crates, runnable examples, and tiered platform CI. Rama is a benchmark, not a
+dependency, and the comparison is not a feature or platform-parity claim.
 
 **`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
 

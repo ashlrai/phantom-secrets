@@ -99,6 +99,38 @@ systemctl --user start gnome-keyring-daemon
 export PHANTOM_VAULT_PASSPHRASE="your-secure-passphrase"
 ```
 
+### Windows Credential Manager unavailable or denied
+
+Phantom's Windows backend is mapped to Windows Credential Manager through the
+Rust `keyring` integration. That source mapping is not proof that an exact
+Phantom archive has passed native credential-store acceptance under your user
+and device policy.
+
+Run `phantom doctor` from the same interactive Windows user session that will
+run Phantom, and preserve the exact backend error for diagnosis. Confirm that
+the user's profile and Credential Manager are available and that endpoint
+policy is not denying credential access. Do not delete unrelated Windows
+credentials or disable application-control policy as a generic repair.
+
+Set `PHANTOM_REQUIRE_KEYCHAIN=1` when policy requires Phantom to fail instead of
+changing storage posture. Without that setting, Phantom permits its documented
+encrypted-file fallback only when fallback key material can be persisted
+securely and verified; it prints a warning when the backend changes. For an
+explicit encrypted-file vault, supply `PHANTOM_VAULT_PASSPHRASE` through a
+protected process or secret manager and keep it outside agent-controlled shell
+history. Windows rejects encrypted-backup `--passphrase-file` before path
+access; use the attached hidden terminal prompt for import/export ceremonies.
+
+```powershell
+$env:PHANTOM_REQUIRE_KEYCHAIN = "1"
+phantom doctor
+```
+
+If the error persists, record it as a native-platform blocker rather than
+assuming the source integration works. See [Platform
+support](platform-support.md) for the source-contract versus native-acceptance
+boundary.
+
 ### "WARNING — OS keychain unavailable"
 
 This appears in Docker/CI environments where no keychain is available. Set the passphrase explicitly:

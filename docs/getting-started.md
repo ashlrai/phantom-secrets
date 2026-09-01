@@ -138,7 +138,18 @@ database work or use a separately approved trusted-terminal workflow.
 
 ### `phantom init`
 
-Reads `.env`, stores real secrets in the OS keychain, rewrites `.env` with phantom tokens, creates `.phantom.toml`. Safe to re-run: new secrets are added, existing phantom tokens are preserved.
+Reads `.env`, stores real secrets in the OS keychain, rewrites `.env` with
+phantom tokens, and creates `.phantom.toml`. A completed run may be repeated
+from the same real project directory: new secrets are added and existing
+phantom tokens are preserved. Phantom retains that project directory while the
+transaction runs, so renaming its ambient path and replacing it with a decoy
+does not redirect the in-progress write.
+
+Do not blindly rerun after a `CommittedButUncertain`, durability, or **Partial**
+effect warning. A rename, unlink, or directory creation may already have
+committed before its final durability check failed. Run `phantom doctor`,
+inspect the intended project and current path from a trusted terminal, and
+reconcile the reported file before trying again.
 
 ```bash
 phantom init

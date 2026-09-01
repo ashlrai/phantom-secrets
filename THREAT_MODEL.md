@@ -90,6 +90,20 @@ production build and are transaction scaffolding only.
 implementation would be highest sensitivity. Provider-grant names, provider types, expiry, and state are
 value-free metadata but remain integrity-sensitive.
 
+### 1.8 Governed project and client-configuration state
+
+Managed dotenv/config files, generated agent guidance, the effective Git hook,
+and editor MCP configuration determine what Phantom and connected tools will do.
+Transaction locks, retained directory capabilities, exact before-images, and
+directory-creation receipts are integrity metadata for those effects. They do
+not contain provider credentials, but redirecting or replaying them can change
+which project or client configuration is mutated.
+
+**Sensitivity:** High for integrity and moderate for confidentiality. Managed
+dotenv mappings and route/config metadata remain sensitive even when they are
+not plaintext provider credentials. A **Partial** effect receipt signals that
+the namespace may already have changed and must be reconciled.
+
 ---
 
 ## 2. Threat Actors
@@ -166,6 +180,9 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 | Real secret values | Body too large for safe buffering | Every request body is completely accepted under a hard byte cap before any upstream request starts; buffered upstream responses use the same cap and streaming responses remain memory-bounded | Covered for supported paths | `crates/phantom-proxy/src/server.rs`, oversized request/response and zero-upstream-call tests |
 | Real secret values | Cloud server compromised — server reads plaintext | Vault is encrypted client-side before upload; server stores only ciphertext; encryption key never transmitted | Covered | `crates/phantom-core/src/cloud.rs`, `crates/phantom-vault/src/crypto.rs` |
 | Real secret values | Supply-chain attack injects `.env` real secrets | `phantom check` (including `--staged`) scans for real secret patterns and warns before commit; `pre-commit` hook integration | Covered | `crates/phantom-cli/src/commands/check.rs` (invoked by `phantom check --staged`) |
+| Project and client configuration | Attacker swaps a project root, parent directory, or target after review so Phantom mutates a decoy | Governed writers retain an acquisition-time directory capability, resolve targets relative to it, reject outside-root and symlink/reparse components, and compare the target's stable identity plus bytes before replacement or unlink. Sensitive files must be regular and single-linked. Exact directory-creation receipts constrain rollback | Partial — protects the governed Phantom operation, not the namespace from a process with equivalent same-user authority before or after it | `crates/phantom-core/src/fs/anchored.rs`, `crates/phantom-vault/src/transaction_lock.rs`, `crates/phantom-vault/src/init_transaction.rs`, rename-decoy and hard-link tests |
+| Project and client configuration | Rename or unlink commits, but post-effect durability verification fails | Effect APIs return `CommittedButUncertain` and callers report a **Partial** outcome. They do not claim rollback, absence of effect, or safe automatic retry; an exact receipt is returned only when Phantom can identify the committed object | Partial — operator reconciliation is required | `crates/phantom-core/src/fs/anchored.rs`, anchored effect-injection tests |
+| Project and vault state | A cross-domain lock inversion stalls a writer, or a project root is replaced while vault authority is resolved | Vault/application authority is resolved before the project transaction lock. The reviewed root is retained first; after lock acquisition Phantom compares stable directory identity and rereads exact config identity, bytes, and permissions before use | Partial — coordinates Phantom paths, not an uncooperative same-user process | CLI workspace/rotation and MCP anchored-loader lock-order and same-path-decoy tests |
 | Provider issuance roots | Agent or operator attempts live issuance/renewal | Every production provider path is hard-denied before provider credential access and network I/O in 0.7.4; exact `cfg(test)` mocks are local transaction evidence only | Covered for the 0.7.4 denial boundary | `crates/phantom-core/src/rotation_provider.rs`, CLI/MCP provider-denial tests |
 | Provider consent | User assumes protocol source or enrollment metadata commissions a provider | Grant/issuance source remains design scaffolding; production enrollment exchange, issuance, refresh, renewal, and revocation execution is disabled | Covered as a denial, not provider functionality | `crates/phantom-core/src/issuance`, CLI grant dispatch |
 | Provider-grant lifecycle | User assumes local deletion remotely revokes a provider credential | `phantom grant revoke` fails closed before local mutation because remote revocation is not wired | Partial — credential must be revoked at the provider | `crates/phantom-cli/src/commands/grant/revoke.rs` |
@@ -276,6 +293,7 @@ Secret names stored in the OS keychain use a SHA-256 derived identifier (first 8
 | Vault ciphertext integrity | ChaCha20-Poly1305 AEAD — decryption fails with an error if ciphertext has been tampered with |
 | Team vault key registration before send | `seal_sym_key` requires the recipient's public key to be present before encrypting their share — `crates/phantom-core/src/team_crypto.rs:111` |
 | Provider denial boundary | Production issuance/rotation dispatch returns before provider credential lookup and network access; endpoint maps are inactive design source in 0.7.4 — `crates/phantom-core/src/rotation_provider.rs`, `crates/phantom-core/src/issuance/` |
+| Governed local filesystem target | Project writers retain the acquisition-time project directory and resolve relative targets without following symlink/reparse-point components. File effects compare stable identity and bytes, require a regular single-link file where applicable, and expose durable versus committed-but-uncertain outcomes — `crates/phantom-core/src/fs/anchored.rs`, `crates/phantom-vault/src/transaction_lock.rs` |
 
 ### What Phantom does NOT trust
 
@@ -308,6 +326,15 @@ RowHammer, cold-boot attacks against DRAM, or DMA attacks via malicious peripher
 
 **Malicious `phantom` binary.**
 If the `phantom` binary itself has been replaced or backdoored, all guarantees are void. Users should verify release checksums and install from trusted sources. Phantom does not currently publish signed release binaries with hardware-backed signing; this is a roadmap item.
+
+**Equivalent same-user filesystem authority.**
+Retained directory handles prevent an ambient path rename from silently
+redirecting an in-progress governed write. They do not sandbox another process
+running with equivalent user authority. Such a process can still modify
+project or user configuration before acquisition or after Phantom releases its
+handles, race ungoverned tools, interfere with cooperative lock files, or
+control a terminal. Phantom's local locks serialize cooperating Phantom
+writers; they are not mandatory operating-system locks against the user.
 
 **AI training data exposure.**
 If an LLM provider incorporates conversation content into training data, phantom tokens that appeared in prompts could propagate. Phantom tokens are not provider credentials and client requests never resolve them. A separate live proxy bearer can still authorize use of configured routes for that session; the real secret itself is not in the conversation.
@@ -398,6 +425,33 @@ activation, renewal, commissioning, or customer acceptance.
 In this document, a **provider grant** is vaulted credential and renewal state.
 It is not an **authority grant** from the inactive execution kernel and cannot
 be used as a Locus credential, broker lease, or execution permit.
+
+### 7.10 Local filesystem effects can be Partial
+
+Project and setup writers bind reads and writes to retained directory
+capabilities, reject symlink/reparse traversal and multiply linked sensitive
+files, and verify exact identity-and-content before-images. On supported source
+paths this prevents a renamed project root plus replacement decoy from
+redirecting the governed operation.
+
+When a mutation also needs vault state, Phantom retains the reviewed project,
+resolves vault/application authority before the project lock, then compares the
+acquired directory identity and rereads exact config state. This prevents an
+environment-guard/project-lock inversion while rejecting replacement at the
+same canonical path during vault resolution.
+
+A rename, unlink, or directory create can still have changed the namespace
+before a subsequent directory-sync or verification error. That state is
+reported as `CommittedButUncertain`, with an exact receipt only when Phantom can
+identify the affected object. Treat this as **Partial**: stop, inspect the
+intended retained target and the current ambient path, and reconcile before
+retrying. Phantom must not describe it as rolled back or automatically repeat
+the operation.
+
+The Windows implementation has source-contract tests for no-follow reparse
+handling, shared-handle ordering, identity checks, and uncertainty reporting.
+This documentation review did not execute the exact binaries on native Windows,
+so it does not establish Windows filesystem or Credential Manager acceptance.
 
 ---
 

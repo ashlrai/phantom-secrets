@@ -73,7 +73,10 @@ phantom --version
 ### phantom init
 Read .env, store real secrets in vault, rewrite it with persistent sensitive mappings, and create .phantom.toml.
 Options: --from <path> (non-standard .env location)
-Safe to re-run: new secrets are added, existing tokens preserved.
+After a completed run, rerunning from the same real project directory adds new
+secrets and preserves existing tokens. Do not blindly rerun after a
+`CommittedButUncertain`, durability, or Partial warning: inspect and reconcile
+the intended project and current ambient path first.
 Multi-project: phantom init --all <DIR> processes eligible git repositories found within a scan of at most five levels and stops descending below the first matching repository.
   --dry-run: preview which repos would be touched without modifying anything.
   --jobs N / -j N: number of repos to initialise concurrently (default: 4; also reads PHANTOM_INIT_JOBS env var).
@@ -459,7 +462,7 @@ phantom-core
   error types, auth, cloud API client, smart secret detection heuristics.
 
 phantom-vault
-  VaultBackend trait with OS keychain (macOS Keychain, Linux Secret Service) and encrypted file fallback.
+  VaultBackend trait with OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager) and encrypted file fallback.
   Shared crypto module: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key).
 
 phantom-proxy
@@ -482,10 +485,39 @@ phantom-mcp
   MCP server using rmcp SDK and stdio transport. The release checks its schema; use runtime tools/list for the current catalog.
 
 apps/web
-  Next.js backend on Vercel. Supabase for database. Stripe for billing.
+  Vercel-targeted Next.js source. Supabase for database. Stripe for billing.
   Device auth API, vault sync API, billing webhooks.
 
 Authority, Locus-contract, broker, runtime, session, evidence, and workspace crates are fail-closed foundations. They do not activate production execution, issue live Locus authority, or prove an externally trusted receipt.
+
+Governed project and client-config effects resolve from retained directory
+capabilities. They reject outside-root and symlink/reparse traversal, require
+regular single-link sensitive files, and compare stable identity plus bytes
+before exact replacement/unlink. Unix rename-decoy tests verify that replacing
+an ambient root path does not redirect the in-progress anchored effect.
+
+`CommittedButUncertain` is a **Partial** outcome: the namespace effect may have
+committed before durability or final verification failed. It requires operator
+reconciliation and is neither proof of rollback nor a safe blind retry.
+Retained roots and cooperative locks are not a same-user sandbox; an equivalent
+same-user process or agent-controlled terminal remains in the threat model.
+
+Vault/application authority is resolved before the project transaction lock;
+the acquired root identity and exact config identity, bytes, and permissions
+are then revalidated. This avoids the process-environment/project-lock
+inversion and rejects a same-path root replacement during vault resolution.
+
+Windows reparse/handle behavior and Credential Manager integration have source
+contracts, not exact native Windows acceptance evidence in this review. Current
+main does not prove `v0.7.4` publication, deployment, enterprise commissioning,
+or customer acceptance.
+
+Rama upstream main snapshot
+https://github.com/plabayo/rama/commit/267e4790c899736e6f60d982c8a0932406d4079e,
+reviewed 2026-09-01, is a pinned
+benchmark for explicit network stacks, modular crates, runnable examples, and
+tiered platform CI. Rama is not a dependency, and no feature or platform parity
+is claimed.
 
 
 ## Security Model

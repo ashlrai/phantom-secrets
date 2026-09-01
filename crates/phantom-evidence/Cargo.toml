@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 publish.workspace = true
-description = "Value-free, tamper-evident execution receipts for Phantom Secrets"
+description = "Inactive value-free execution-evidence and local receipt foundations for Phantom"
 keywords = ["secrets", "agents", "receipts", "audit"]
 categories = ["development-tools"]
 

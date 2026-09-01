@@ -8,7 +8,7 @@ homepage.workspace = true
 authors.workspace = true
 publish.workspace = true
 readme = "../../README.md"
-description = "MCP server for Phantom Secrets — lets AI tools manage secrets safely"
+description = "Value-blind MCP server with default-denied effectful workflows for Phantom"
 keywords = ["mcp", "mcp-server", "secrets", "ai-safety", "claude"]
 categories = ["development-tools", "command-line-utilities"]
 

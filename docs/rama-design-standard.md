@@ -3,11 +3,18 @@
 Phantom uses [Rama](https://github.com/plabayo/rama) as a reference for how a
 serious Rust networking project makes its stack explicit, modular, observable,
 bounded, cross-platform, and operable. This is an engineering comparison and
-adoption standard, not a claim that Phantom embeds Rama or inherits Rama's
-production history.
+adoption standard, not a claim that Phantom embeds Rama, depends on it, matches
+its feature/platform coverage, or inherits its production history.
 
-Snapshot reviewed: 2026-09-01. Rama's upstream README, book, examples, release
-notes, CI, and crate layout remain the authoritative sources for Rama.
+Snapshot reviewed: upstream main commit
+[`267e4790c899736e6f60d982c8a0932406d4079e`](https://github.com/plabayo/rama/commit/267e4790c899736e6f60d982c8a0932406d4079e)
+on 2026-09-01. The pinned [crate
+tree](https://github.com/plabayo/rama/tree/267e4790c899736e6f60d982c8a0932406d4079e),
+[examples](https://github.com/plabayo/rama/tree/267e4790c899736e6f60d982c8a0932406d4079e/examples),
+and [CI
+workflows](https://github.com/plabayo/rama/tree/267e4790c899736e6f60d982c8a0932406d4079e/.github/workflows)
+are the evidence used by this comparison. Later Rama changes require a new
+dated review rather than silently changing this benchmark.
 
 ## What Phantom adopts as a standard
 
@@ -56,9 +63,11 @@ Phantom applies the same standard outside the proxy:
 
 | Area | Rama reference | Phantom 0.7.4 candidate |
 |---|---|---|
-| Primary abstraction | Composable services, layers, transports, protocols, and typed context | A purpose-built authenticated HTTP/1 credential proxy with internal registry/interceptor/scrubber components |
+| Stack composition | Explicitly composed services, layers, transports, protocols, and typed context | A purpose-built authenticated HTTP/1 credential proxy with internal registry/interceptor/scrubber components; its stage order is documented but not exposed as a public service/layer API |
+| Crate modularity | Many focused crates expose separable protocol, transport, telemetry, and utility surfaces | Twelve workspace crates separate product and fail-closed authority foundations, but count alone is not equivalent modularity or adoption evidence |
+| Examples | Pinned runnable examples expose concrete stack composition | Phantom examples and smoke tests remain narrower; security-critical examples should become executable contracts without implying Rama coverage |
 | Protocol breadth | HTTP, WebSocket, gRPC, TCP, UDP, DNS, TLS, SOCKS5, proxy protocols, and platform networking | Deliberately narrow reviewed HTTP API routes; it is not a general network framework |
-| Platforms | Upstream describes Linux, macOS, and Windows as tier 1, with mobile targets checked in CI | Six desktop release targets are configured; exact-candidate native execution remains a release gate |
+| Platform CI | Pinned workflows implement tiered platform/toolchain coverage, including desktop tier distinctions and additional target checks | Six desktop release targets are configured; workflow source is not an exact-candidate native execution receipt, and Rama's tier claims do not transfer |
 | Supply chain | Upstream reports `cargo vet` use | Phantom uses locked dependencies, Cargo policy checks, artifact checksums, SBOM/provenance contracts, secret scanning, and release verification; these are not `cargo vet` equivalence |
 | Toolchain | Upstream currently reports Rust 1.96 | Phantom pins Rust 1.95.0; adding Rama now would require a reviewed MSRV/toolchain change |
 | Commercial model | Open source with commercial support and partner offerings | Open-source local product plus separately evidenced cloud/team and future enterprise plans |

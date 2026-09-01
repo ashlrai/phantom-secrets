@@ -4,7 +4,73 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No user-facing changes have been recorded after 0.7.4.
+These entries describe the current source tree after the `0.7.4` candidate.
+They are not evidence that `0.7.4`, or any later build, has been published,
+deployed, commissioned, or accepted by a customer.
+
+### Security and filesystem integrity
+
+- Project transactions now retain the directory identity acquired with the
+  project lock. Before-image reads for governed mutations, compare-and-swap
+  writes, unlinks, permission changes, and parent creation resolve relative to
+  that retained capability, reject paths outside the governed root, and do not
+  follow symlink or Windows reparse-point components.
+- Sensitive anchored file updates require a regular, single-link target and an
+  exact identity-and-content before-image. This rejects hard-linked targets and
+  byte-for-byte replacement inodes, while rename-and-decoy tests verify that a
+  swapped ambient project path is not mutated.
+- Anchored writes, unlinks, and directory creation return explicit effect
+  outcomes. A namespace change followed by a failed durability check is
+  reported as `CommittedButUncertain` (a **Partial** result), never collapsed
+  into either success or a safe-to-retry pre-commit failure. Exact creation
+  receipts permit cleanup only of the directory identity Phantom created.
+- Governed CLI and MCP project-file mutation paths now use the retained project
+  root for initialization, token remapping, wrapping, unwrapping, environment
+  selection, agent guidance, doctor repairs, rotation, and workspace
+  participation. Read-only check, status, audit, and proposal discovery remains
+  observational and is not a sealed mutation snapshot or authority grant.
+- Workflows that need both machine-local vault authority and a project lock now
+  retain the reviewed project identity, resolve vault/application authority
+  (which can take the process-environment guard), and only then acquire the
+  project transaction lock. They compare the acquired root identity with the
+  reviewed anchor and reread exact config state before use. This removes the
+  inverse environment-lock/project-lock order and rejects a same-path root
+  replacement during vault resolution.
+- Noninteractive `phantom mcp-approve` admission now fails before inspecting
+  approval state, generating a challenge, or reading stdin. The denial path
+  therefore does not strand a project-lock waiter behind a test or host
+  environment guard.
+  Rollback restores only verified transaction-owned effects and preserves
+  rename-replacement decoys.
+- Git-hook installation retains the effective hook parent resolved through
+  Git, including linked worktrees and `core.hooksPath`. Project-local hook
+  targets use the project capability; externally located hook targets require
+  their own explicitly authorized retained root and do not gain project-root
+  authority. CLI doctor repairs prepare one exact hook plan and require an
+  attached trusted-terminal authorization for global/system hook roots; MCP
+  repair refuses those external writes.
+- `phantom setup` distinguishes project-local Claude settings from explicitly
+  authorized global Cursor, Windsurf, and Codex configuration roots. Global
+  parents are traversed or created beneath a retained home-directory anchor,
+  exact directory receipts bound rollback, and setup coordination lives under
+  retained `~/.phantom` application state instead of an ambient home-root or a
+  rollback-owned client directory.
+
+### Architecture and evidence
+
+- Local filesystem authority, effect receipts, operator boundaries, and
+  source-contract versus native-platform evidence are now documented across
+  the architecture, threat model, platform matrix, audit index, onboarding,
+  troubleshooting, and machine-readable documentation surfaces.
+- Phantom uses Rama's upstream main snapshot
+  [`267e4790c899736e6f60d982c8a0932406d4079e`](https://github.com/plabayo/rama/commit/267e4790c899736e6f60d982c8a0932406d4079e),
+  reviewed 2026-09-01, as a benchmark for explicit stacks, modular crates,
+  runnable examples, and tiered platform CI. Rama is not a Phantom dependency,
+  and this comparison does not claim feature or platform parity.
+- Locus verification, broker leases, production engineering execution, and
+  externally trusted receipts remain inactive and fail closed. Enterprise
+  packaging remains a planned contract/commissioning path, not an activated or
+  customer-accepted service.
 
 ## [0.7.4] - 2026-08-31
 

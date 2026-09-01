@@ -39,6 +39,59 @@ an unpublished artifact, a provider configuration, or a customer environment.
 | What changed between versions? | [Changelog](../CHANGELOG.md) and immutable Git history |
 | What dependencies and packages compose the Rust workspace? | [`Cargo.toml`](../Cargo.toml), [`Cargo.lock`](../Cargo.lock), and crate manifests |
 | What web dependencies and scripts are selected? | [`apps/web/package.json`](../apps/web/package.json) and [`apps/web/package-lock.json`](../apps/web/package-lock.json) |
+| Which external network-engineering benchmark is pinned? | [Rama-derived engineering standard](rama-design-standard.md), pinned to upstream main `267e4790c899736e6f60d982c8a0932406d4079e` as reviewed 2026-09-01 |
+
+## 2026-09-01 retained-filesystem source review
+
+This review documents the retained-root and exact-effect implementation. It is
+a source review, not an immutable release, native-platform, deployment,
+provider, or customer attestation.
+
+| Field | Value |
+|---|---|
+| Repository | `ashlrai/phantom-secrets` |
+| Branch | `codex/public-claim-truth` |
+| Implementation `HEAD` before final documentation validation | `1e6ce2fb7bfa1ce9c430f8d0bf704e159ed50834` |
+| Documentation commit | The later commit containing this file; it records prose/manifest descriptions and must not be substituted for the implementation SHA above |
+| Dirty state at final source review | Dirty only with this documentation and package-description tranche; no implementation file had an uncommitted diff |
+| Reviewed implementation | Retained anchored effects, project transaction/init, CLI/MCP governed mutation paths, vault-before-project lock order, stable root-identity revalidation, Git-hook authorization, and project/global editor setup |
+| Excluded evidence | No exact `0.7.4` archive, native Windows/macOS/Linux run, publication, deployment, provider activation, enterprise commissioning, or customer acceptance receipt was inspected |
+
+Primary source paths for this review:
+
+- [`anchored.rs`](../crates/phantom-core/src/fs/anchored.rs) — retained
+  directories/targets, identity-bound reads, single-link checks, exact writes
+  and unlinks, directory receipts, and durable/committed-but-uncertain effects;
+- [`transaction_lock.rs`](../crates/phantom-vault/src/transaction_lock.rs) and
+  [`init_transaction.rs`](../crates/phantom-vault/src/init_transaction.rs) —
+  acquisition-time project-root authority, project-relative targets, and exact
+  rollback;
+- [`precommit_hook.rs`](../crates/phantom-core/src/precommit_hook.rs) — effective
+  Git hook authority and fail-closed external-root handling; and
+- [`setup.rs`](../crates/phantom-cli/src/commands/setup.rs) — separate project
+  and global client-config authorities, private parent receipts, and stable
+  setup coordination under Phantom application state;
+- [`workspace.rs`](../crates/phantom-cli/src/commands/workspace.rs),
+  [`rotate.rs`](../crates/phantom-cli/src/commands/rotate.rs), and
+  [`server.rs`](../crates/phantom-mcp/src/server.rs) — vault/application
+  authority before project-lock acquisition, retained root-identity comparison,
+  and exact post-lock config revalidation; and
+- [`mcp_approve.rs`](../crates/phantom-cli/src/commands/mcp_approve.rs) —
+  noninteractive terminal denial before approval inspection, challenge
+  generation, or stdin reads.
+
+Unix rename-and-decoy tests exercise path-swap behavior. Windows implementation
+and contract tests were inspected in source, but no exact Windows binary was
+run in this documentation review. Credential Manager remains mapped source, not
+native acceptance.
+
+Bounded local verification of implementation SHA
+`1e6ce2fb7bfa1ce9c430f8d0bf704e159ed50834` reported 490/490 `phantom-cli`
+tests in the PTY harness, strict `phantom-cli` Clippy, workspace formatting, and
+diff checks passing. No immutable CI or native-archive log is embedded in this
+documentation commit, so this is focused local evidence only; it does not move
+the candidate into publication, native acceptance, deployment, provider, or
+customer evidence layers.
 
 ## 2026-08-30 local documentation-review identity
 
@@ -76,6 +129,7 @@ Use the narrowest accurate claim in an audit report:
 | Design document | Proposed behavior and intended boundary. |
 | Source inspection | Behavior implemented in the inspected tree. |
 | Focused automated test | The named behavior passed in that harness and environment. |
+| Partial effect receipt | The namespace effect may have committed, but durability or final verification was uncertain. It requires reconciliation and is not proof of rollback or safe retry. |
 | Full locked CI | The configured suite passed for the recorded commit and runners. |
 | Built archive plus digest | The bytes were produced and integrity metadata matches. |
 | Native acceptance | The exact archive passed the named checks on one OS/architecture environment. |
@@ -96,6 +150,10 @@ Reviewers should pay particular attention to these unresolved boundaries:
 - no host-protected monotonic rollback anchor for replay state;
 - local HMAC integrity that does not resist a fully compromised same-user
   account and does not create externally trusted receipts;
+- retained path capabilities protect governed operations from ambient
+  rename/decoy redirection but do not sandbox a process with equivalent
+  same-user filesystem or terminal authority; `CommittedButUncertain` effects
+  require explicit reconciliation;
 - provider enrollment, issuance, refresh, renewal, rotation, and remote
   revocation are not active; shipped paths fail before credential or network
   access, while exact test mocks prove local scaffolding only; and

@@ -115,7 +115,13 @@ decision and escalation authority is described in
 
 ## Known Limitations
 
-Phantom narrows the risk of AI agents seeing real secrets, but it is not a complete endpoint security product.
+Phantom narrows the risk of AI agents seeing real secrets, but it is not a
+complete endpoint security product. Its operator boundary is meaningful only
+when the trusted terminal, vault or native credential store, and user
+configuration roots are outside the agent's authority. Giving an agent
+equivalent same-user shell, filesystem, debugger, or terminal-control authority
+defeats that separation; Phantom does not convert a same-user process into a
+sandboxed principal.
 
 - A compromised operating system, root/admin attacker, malicious debugger, or replaced `phantom` binary can defeat local protections.
 - `PHANTOM_PROXY_TOKEN` is exposed to the `phantom exec` child process by design. A compromised child process can use the local proxy until the session ends.
@@ -146,6 +152,23 @@ Phantom narrows the risk of AI agents seeing real secrets, but it is not a compl
   serialization, and decrypted-file buffers use zeroizing containers, but some
   proxy lookup copies and the file-vault passphrase remain ordinary strings.
 - `.phantom.toml` does not have cryptographic integrity protection. Agentic proxy execution therefore accepts only exact built-in service routes and binds the project ID to the config directory; custom route approval is not yet supported.
+- Governed project and client-configuration writers retain their acquisition-time
+  directory identity, reject outside-root and symlink/reparse traversal, reject
+  multiply linked sensitive files, and compare exact target identity plus bytes.
+  These controls prevent an ambient rename-and-decoy swap from redirecting the
+  governed operation; they do not exclude a process with equivalent same-user
+  authority before acquisition or after handles are released.
+- Vault-backed project mutations resolve process-environment-dependent
+  vault/application authority before acquiring the project transaction lock,
+  then compare the acquired directory identity and reread exact config state.
+  This avoids the inverse lock order and rejects a same-path root replacement
+  during vault resolution.
+- A namespace effect followed by a durability or verification failure is
+  reported as `CommittedButUncertain`, a **Partial** outcome. Operators must stop
+  and reconcile the intended retained target and current path before retrying;
+  it is not evidence of rollback or of a safe no-op. Windows no-follow and
+  shared-handle behavior is source-contract tested, but no exact native Windows
+  filesystem or Credential Manager acceptance is claimed by this source review.
 - Audit logging is opt-in and local by default. It cannot prove deletion of both the audit log and its local checkpoint without external evidence.
 - Team member removal does not retroactively revoke access to vault pushes that were encrypted to that member before removal. Rotate affected secrets after offboarding.
 - All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.4. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.

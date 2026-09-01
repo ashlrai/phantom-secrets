@@ -167,6 +167,33 @@ Detection and runtime injection are different capabilities. Database connection 
 - `phantom init` intentionally creates no plaintext project-local backup. `phantom unwrap` only reverses package-script wrapping and does not restore dotenv values.
 - The installed pre-commit hook runs `phantom check --staged`: staged dotenv content uses Phantom's detection heuristics, while added lines in other staged files are checked for a bounded set of credential prefixes. It is not a whole-repository or general-purpose secret scanner.
 
+## Retained filesystem and evidence boundary
+
+- Governed project/config writers retain the acquisition-time directory,
+  reject outside-root and symlink/reparse traversal, require regular single-link
+  sensitive files, and compare exact identity plus bytes. Rename-decoy tests
+  verify that a swapped ambient path is not the in-progress effect target.
+- `CommittedButUncertain` is a **Partial** result: a namespace effect may have
+  committed before durability/verification failed. Inspect and reconcile the
+  intended target before retrying; do not infer rollback or a safe no-op.
+- Vault/application authority is resolved before the project transaction lock;
+  the acquired root identity and exact config are then revalidated. This avoids
+  the process-environment/project-lock inversion and rejects a same-path root
+  replacement during vault resolution.
+- This is path-integrity for governed effects, not a same-user sandbox.
+  Cooperative locks do not exclude an equivalent same-user process or an
+  agent-controlled terminal.
+- Windows reparse/handle behavior and Credential Manager integration have
+  source contracts, not exact native Windows acceptance evidence in this
+  review. Current main does not prove `v0.7.4` publication or deployment.
+- Locus and the execution-kernel crates remain inactive and fail closed.
+  Enterprise capabilities require separate commissioning and acceptance.
+- Rama upstream main snapshot
+  https://github.com/plabayo/rama/commit/267e4790c899736e6f60d982c8a0932406d4079e
+  (reviewed 2026-09-01) is a pinned
+  benchmark for explicit stacks, modular crates, examples, and tiered platform
+  CI; it is not a dependency or parity claim.
+
 ## Architecture
 
 12-crate Rust workspace:
@@ -190,4 +217,4 @@ Detection and runtime injection are different capabilities. Database connection 
 - Getting started: https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md
 - Claude Code guide: https://github.com/ashlrai/phantom-secrets/blob/main/docs/claude-code.md
 - Security model: https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md
-- Architecture: https://github.com/ashlrai/phantom-secrets/blob/main/CLAUDE.md
+- Architecture: https://github.com/ashlrai/phantom-secrets/blob/main/docs/architecture.md

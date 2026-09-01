@@ -234,6 +234,24 @@ Phantom Cloud's implemented client encrypts vault payloads before upload:
 - Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN; CLI-generated SDK URLs include it locally, and header-aware clients can opt into x-phantom-proxy-token
 - Cloud tokens stored hashed (SHA-256) in database — never plaintext
 - Streaming/SSE support for OpenAI and Anthropic APIs
+- Governed project and client-config effects resolve from retained directory
+  capabilities, reject outside-root and symlink/reparse traversal, require
+  regular single-link sensitive files, and compare stable identity plus bytes.
+  A renamed ambient root and replacement decoy do not redirect an in-progress
+  anchored effect in the source-tested cases.
+- `CommittedButUncertain` means the namespace effect may have committed but its
+  final durability/verification is uncertain. This is **Partial** and requires
+  operator reconciliation before retry; it is not proof of rollback.
+- Vault/application authority is resolved before the project transaction lock;
+  the acquired root identity and exact config are then revalidated. This avoids
+  the process-environment/project-lock inversion and rejects same-path root
+  replacement during vault resolution.
+- Retained roots and cooperative locks are not a same-user sandbox. An
+  equivalent same-user process or agent-controlled terminal remains in the
+  threat model.
+- Windows reparse/handle ordering and Credential Manager integration are
+  source contracts in this review, not an exact native Windows acceptance
+  receipt.
 
 ## Platform Sync
 
@@ -271,7 +289,20 @@ Phantom automatically identifies secrets vs config values using heuristics:
 - phantom-cli: clap CLI with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows
 - phantom-mcp: MCP server via rmcp SDK (stdio transport, 54 release-checked tools)
 - phantom-authority, phantom-locus-contract, phantom-broker, phantom-runtime, phantom-evidence, phantom-session, phantom-workspace: fail-closed authority, compatibility, lease, execution-denial, evidence, session, and setup foundations
-- apps/web: Next.js backend on Vercel (Supabase + Stripe, device auth, vault API, billing)
+- apps/web: Vercel-targeted Next.js source (Supabase + Stripe, device auth,
+  vault API, billing); repository presence is not deployment or commissioning
+
+Current-main filesystem hardening, tests, and workflow definitions do not prove
+that `v0.7.4` was published, deployed, commissioned, or accepted. Locus,
+broker, runtime, session, and externally trusted evidence remain inactive and
+fail closed; enterprise packaging remains a separately commissioned plan.
+
+Rama upstream main snapshot
+https://github.com/plabayo/rama/commit/267e4790c899736e6f60d982c8a0932406d4079e,
+reviewed 2026-09-01, is Phantom's
+pinned benchmark for explicit network stacks, modular crates, runnable
+examples, and tiered platform CI. Rama is not a dependency, and no feature or
+platform parity is claimed.
 
 MIT licensed. CI runs the Rust test suite and clippy across the workspace before release.
 
