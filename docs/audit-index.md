@@ -99,10 +99,11 @@ Reviewers should pay particular attention to these unresolved boundaries:
 - provider enrollment, issuance, refresh, renewal, rotation, and remote
   revocation are not active; shipped paths fail before credential or network
   access, while exact test mocks prove local scaffolding only; and
-- the published `v0.6.0` release has checksums but no per-artifact
-  SBOM/provenance evidence or Windows ARM archive; this source candidate defines
-  those workflow outputs but has not run them. Independent signatures, native
-  code signing/notarization, and six-target exact-archive acceptance remain open.
+- the reviewed `v0.7.3` release is distinct from staged `0.7.4` source. The
+  staged workflow defines per-artifact checksums, SBOM/provenance bindings, and
+  a six-target candidate matrix, but those definitions do not prove that exact
+  archives ran or passed on native runners. Independent signatures, native code
+  signing/notarization, and six-target exact-archive acceptance remain open.
 
 The inactive components deny production use while these activation findings
 remain open. Do not work around that denial with test constructors, caller

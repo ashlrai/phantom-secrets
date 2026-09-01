@@ -8,14 +8,15 @@ body:
         Thanks for taking the time to file a bug. Before submitting, please run
         `phantom doctor` and paste the redacted output below — it captures most
         of what we'd otherwise need to ask for. For a suspected vulnerability,
-        stop here and follow the private email instructions in `SECURITY.md`.
+        stop here and use GitHub private vulnerability reporting or the private
+        email address in `SECURITY.md`.
 
   - type: input
     id: version
     attributes:
       label: Phantom version
       description: Output of `phantom --version`
-      placeholder: "phantom 0.7.1"
+      placeholder: "phantom 0.7.3"
     validations:
       required: true
 
@@ -40,12 +41,12 @@ body:
     attributes:
       label: How was Phantom installed?
       options:
-        - npx phantom-secrets
-        - npm install -g phantom-secrets
-        - Homebrew
-        - cargo install
-        - GitHub release binary
-        - Built from source
+        - Reviewed v0.7.3 GitHub release archive
+        - Reviewed v0.7.3 Homebrew third-party tap
+        - npm or npx (older distribution track)
+        - Cargo install (older distribution track)
+        - Built from source (include full SHA below)
+        - Other (describe below)
     validations:
       required: true
 
@@ -66,10 +67,20 @@ body:
     validations:
       required: true
 
+  - type: input
+    id: source_identity
+    attributes:
+      label: Source identity, if applicable
+      description: For a source build, include the full commit SHA and whether the checkout was dirty. Otherwise write "not a source build."
+      placeholder: "0123456789abcdef...; clean"
+    validations:
+      required: true
+
   - type: textarea
     id: doctor
     attributes:
       label: Output of `phantom doctor`
+      description: Redact credentials, cookies, device codes, cloud tokens, vault values, and persistent `phm_` mappings.
       render: shell
     validations:
       required: false
@@ -79,7 +90,7 @@ body:
     attributes:
       label: Steps to reproduce
       placeholder: |
-        1. Run `phantom init` in an empty directory
+        1. Run `phantom init --empty` in an empty test directory
         2. Run `phantom add DEMO_API_KEY` and enter an obviously fake value at the terminal prompt
         3. Observe ...
     validations:
@@ -96,7 +107,7 @@ body:
     id: actual
     attributes:
       label: What actually happened
-      description: Include any error output. Redact real secret values — phm_ tokens are safe to share.
+      description: Include error output, but redact credentials and persistent `phm_` mappings; mappings are sensitive metadata.
     validations:
       required: true
 
@@ -107,7 +118,7 @@ body:
       options:
         - label: I have searched [existing issues](https://github.com/ashlrai/phantom-secrets/issues?q=is%3Aissue) for this bug
           required: true
-        - label: This report contains no real secret values (only `phm_` tokens or redacted strings)
+        - label: This report contains no real secret values, cookies, device codes, cloud tokens, vault contents, or persistent `phm_` mappings
           required: true
-        - label: This is not a vulnerability report; security issues must be emailed privately to [security@ashlr.ai](mailto:security@ashlr.ai)
+        - label: This is not a vulnerability report; security issues must use [private vulnerability reporting](https://github.com/ashlrai/phantom-secrets/security/advisories/new) or [security@ashlr.ai](mailto:security@ashlr.ai)
           required: true

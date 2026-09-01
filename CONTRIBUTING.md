@@ -4,6 +4,11 @@ Thanks for helping make safe agentic development practical. Phantom accepts focu
 
 Please read the [Code of Conduct](CODE_OF_CONDUCT.md), [security policy](SECURITY.md), and [threat model](THREAT_MODEL.md) before changing a trust boundary. Report vulnerabilities privately; do not open a public issue for them.
 
+The reviewed public distribution is `v0.7.3`; this repository currently stages
+`0.7.4`. Building or testing staged source does not prove that a package,
+native artifact, deployment, provider integration, or hosted entitlement has
+been published or accepted. See the [roadmap](ROADMAP.md) for the evidence gates.
+
 ## Before you start
 
 - Search [existing issues](https://github.com/ashlrai/phantom-secrets/issues) and [discussions](https://github.com/ashlrai/phantom-secrets/discussions).
@@ -16,8 +21,8 @@ Please read the [Code of Conduct](CODE_OF_CONDUCT.md), [security policy](SECURIT
 Prerequisites:
 
 - Git
-- Rust stable with `rustfmt` and `clippy`
-- Node.js and npm when changing npm wrappers or `apps/web`
+- Rust `1.95.0` with `rustfmt` and `clippy` (pinned by `rust-toolchain.toml`)
+- Node.js 22 and npm when changing npm wrappers or `apps/web`
 - A platform keychain only for explicitly ignored/manual keychain tests
 
 ```bash
@@ -74,6 +79,10 @@ lease, or execution permit. Current behavior is specified in
 3. Add tests that demonstrate both the intended behavior and important failure modes.
 4. Update user, agent, registry, and security documentation when a public contract changes.
 5. Run the proportional checks below and record exact commands and results in the pull request.
+
+The project generally uses focused conventional commit subjects such as
+`fix:`, `docs:`, `test:`, and `chore:`. Git history is the current convention;
+there is no claim that a commit-message bot enforces it.
 
 Security-sensitive code must fail closed. Unexpected input, missing state, unsupported platforms, failed authentication, ambiguous crash recovery, and stale authority should not silently downgrade to permissive behavior.
 
@@ -160,8 +169,18 @@ CI runs the normal Rust suite on macOS, Linux, and Windows. A successful cross-c
 
 Use the pull request template. A strong description explains the user problem, trust-boundary impact, exact verification evidence, platform coverage, and remaining limitations. Screenshots are helpful for UI changes but are not substitutes for behavioral tests.
 
-By contributing, you agree that your contribution is licensed under the repository's [MIT License](LICENSE).
+Project decisions and review authority are described in
+[GOVERNANCE.md](GOVERNANCE.md). For a bounded first contribution, improve a
+documented example, reproduce an existing issue with a test, or propose a small
+documentation correction; the project does not promise that a particular
+`good first issue` queue is populated.
+
+By contributing, you confirm that you have the right to submit the work and
+agree that your contribution is licensed under the repository's
+[MIT License](LICENSE). The project does not currently enforce a Contributor
+License Agreement or Developer Certificate of Origin sign-off; adopting either
+is a separate maintainer and legal-policy decision, not an implied requirement.
 
 ## Questions
 
-Use [GitHub Discussions](https://github.com/ashlrai/phantom-secrets/discussions) for design and usage questions, and [GitHub Issues](https://github.com/ashlrai/phantom-secrets/issues) for reproducible defects and accepted work.
+Use [GitHub Discussions](https://github.com/ashlrai/phantom-secrets/discussions) for design and usage questions, [GitHub Issues](https://github.com/ashlrai/phantom-secrets/issues) for reproducible defects and accepted work, and [SUPPORT.md](SUPPORT.md) to choose the right public or private route.

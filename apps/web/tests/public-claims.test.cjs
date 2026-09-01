@@ -65,6 +65,13 @@ const publishedPackageDocumentationClaims = Object.fromEntries(
 const repositoryGuidanceClaims = {
   "AGENTS.md": readRepo("AGENTS.md"),
   "README.md": readRepo("README.md"),
+  "CODE_OF_CONDUCT.md": readRepo("CODE_OF_CONDUCT.md"),
+  "CONTRIBUTING.md": readRepo("CONTRIBUTING.md"),
+  "GOVERNANCE.md": readRepo("GOVERNANCE.md"),
+  "ROADMAP.md": readRepo("ROADMAP.md"),
+  "SECURITY.md": readRepo("SECURITY.md"),
+  "SUPPORT.md": readRepo("SUPPORT.md"),
+  "examples/README.md": readRepo("examples/README.md"),
   "integrations/github-actions/example-workflow.yml": readRepo(
     "integrations/github-actions/example-workflow.yml",
   ),
@@ -777,4 +784,127 @@ test("monorepo guidance scopes execution to one initialized subproject", () => {
 test("visible and structured FAQs retain conservative latency language", () => {
   assert.match(claims["src/components/landing/FAQ.tsx"], /Measure overhead in your own/);
   assert.match(claims["src/app/layout.tsx"], /measure overhead in your own/);
+});
+
+test("community health metadata preserves release and support boundaries", () => {
+  for (const file of [
+    "CITATION.cff",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "GOVERNANCE.md",
+    "ROADMAP.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "examples/README.md",
+    ".github/ISSUE_TEMPLATE/documentation.yml",
+  ]) {
+    assert.equal(fs.existsSync(path.join(repoDir, file)), true, `missing ${file}`);
+  }
+
+  assert.equal(
+    fs.existsSync(path.join(repoDir, ".github/FUNDING.yml")),
+    false,
+    "do not expose a Sponsor button until a real sponsorship program exists",
+  );
+
+  const readme = readRepo("README.md");
+  assert.match(readme, /v0\.7\.3[^\n]*reviewed public distribution/i);
+  assert.match(readme, /repository stages `?0\.7\.4/i);
+  assert.match(readme, /do not prove[^\n]*0\.7\.4[^\n]*(?:artifact|package)|0\.7\.4[^\n]*(?:artifact|package)[^\n]*not prove/i);
+
+  const roadmap = readRepo("ROADMAP.md");
+  assert.match(roadmap, /ordered engineering gates, not delivery dates/i);
+  assert.match(roadmap, /\| Released \|[\s\S]*\| Staged \|[\s\S]*\| Gated \|[\s\S]*\| Exploratory \|/);
+  assert.match(roadmap, /source candidate only/i);
+
+  const support = readRepo("SUPPORT.md");
+  assert.match(
+    support,
+    /does\s+not promise paid support, priority response, uptime, or a contractual service\s+level/i,
+  );
+  assert.match(support, /security\/advisories\/new/);
+  assert.match(support, /Persistent mappings are sensitive metadata/i);
+
+  const citation = readRepo("CITATION.cff");
+  assert.match(citation, /^cff-version: 1\.2\.0$/m);
+  assert.match(citation, /^version: 0\.7\.3$/m);
+  assert.match(citation, /^date-released: 2026-08-31$/m);
+});
+
+test("contributor templates keep secrets and evidence layers separated", () => {
+  const bug = readRepo(".github/ISSUE_TEMPLATE/bug_report.yml");
+  assert.match(bug, /placeholder: "phantom 0\.7\.3"/);
+  assert.match(bug, /persistent `phm_` mappings; mappings are sensitive metadata/i);
+  assert.doesNotMatch(bug, /phm_ tokens are safe to share/i);
+  assert.match(bug, /private vulnerability reporting/i);
+
+  const feature = readRepo(".github/ISSUE_TEMPLATE/feature_request.yml");
+  assert.match(feature, /Source, artifact, publication, deployment, provider activation, and user acceptance are separate outcomes/i);
+  assert.match(feature, /Acceptance and rollback/i);
+
+  const pullRequest = readRepo(".github/pull_request_template.md");
+  assert.match(pullRequest, /cargo test --workspace --all-targets --locked --no-fail-fast/);
+  assert.match(pullRequest, /cargo clippy --workspace --all-targets --locked -- -D warnings/);
+  assert.match(pullRequest, /\| Native artifact \| Not claimed \/ \|/);
+  assert.match(pullRequest, /authority, rollback, and recovery analysis/i);
+});
+
+test("community and entry-point Markdown links resolve inside the repository", () => {
+  const files = [
+    "README.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "GOVERNANCE.md",
+    "ROADMAP.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "docs/README.md",
+    "examples/README.md",
+  ];
+
+  for (const file of files) {
+    const source = readRepo(file).replace(/```[\s\S]*?```/g, "");
+    const links = source.matchAll(/!?\[[^\]]*\]\(([^)]+)\)/g);
+    for (const match of links) {
+      let target = match[1].trim();
+      if (target.startsWith("<") && target.endsWith(">")) {
+        target = target.slice(1, -1);
+      }
+      if (/^(?:https?:|mailto:)/i.test(target)) continue;
+
+      const [relativeTarget, rawFragment] = target.split("#", 2);
+      const resolved = relativeTarget
+        ? path.resolve(repoDir, path.dirname(file), decodeURIComponent(relativeTarget))
+        : path.join(repoDir, file);
+      assert.ok(
+        resolved === repoDir || resolved.startsWith(`${repoDir}${path.sep}`),
+        `${file} link escapes repository: ${match[1]}`,
+      );
+      assert.equal(
+        fs.existsSync(resolved),
+        true,
+        `${file} has missing relative link: ${match[1]}`,
+      );
+
+      if (rawFragment && path.extname(resolved).toLowerCase() === ".md") {
+        const headings = fs
+          .readFileSync(resolved, "utf8")
+          .split("\n")
+          .filter((line) => /^#{1,6}\s+/.test(line))
+          .map((line) =>
+            line
+              .replace(/^#{1,6}\s+/, "")
+              .trim()
+              .toLowerCase()
+              .replace(/[`*_~]/g, "")
+              .replace(/[^\p{Letter}\p{Number}\s-]/gu, "")
+              .replace(/\s+/g, "-"),
+          );
+        assert.ok(
+          headings.includes(decodeURIComponent(rawFragment).toLowerCase()),
+          `${file} has missing Markdown anchor: ${match[1]}`,
+        );
+      }
+    }
+  }
 });

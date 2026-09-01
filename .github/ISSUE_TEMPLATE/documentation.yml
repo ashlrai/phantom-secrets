@@ -1,0 +1,52 @@
+name: 📚 Documentation report
+description: Report inaccurate, missing, or confusing project documentation.
+labels: ["documentation"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Page or file
+      description: Link to the page, heading, command help, or machine-readable surface.
+      placeholder: "docs/getting-started.md#install"
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current wording or gap
+      description: Quote only the smallest relevant excerpt, or describe what is missing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: correction
+    attributes:
+      label: Evidence and proposed correction
+      description: Point to code, tests, an immutable release, or another source that supports the correction.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer does the documentation describe?
+      options:
+        - Released v0.7.3 behavior
+        - Staged 0.7.4 source
+        - Native artifact or package publication
+        - Deployed cloud or provider configuration
+        - Roadmap or exploratory design
+        - Unsure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Confirmation
+      options:
+        - label: This report contains no credentials, cookies, device codes, vault contents, or persistent `phm_` mappings
+          required: true
+        - label: This is not a vulnerability report; suspected vulnerabilities use [private reporting](https://github.com/ashlrai/phantom-secrets/security/advisories/new)
+          required: true

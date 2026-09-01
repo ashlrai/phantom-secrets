@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: >-
+  If you use Phantom in research or technical work, cite the reviewed v0.7.3
+  release. For unreleased source, also record the full commit SHA.
+title: Phantom
+type: software
+authors:
+  - family-names: Wyatt
+    given-names: Mason
+repository-code: https://github.com/ashlrai/phantom-secrets
+url: https://phm.dev
+license: MIT
+version: 0.7.3
+date-released: 2026-08-31
+keywords:
+  - AI agents
+  - credential management
+  - developer tools
+  - MCP
+  - Rust

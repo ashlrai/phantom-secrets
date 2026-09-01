@@ -27,6 +27,18 @@ body:
     validations:
       required: false
 
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched [existing issues](https://github.com/ashlrai/phantom-secrets/issues?q=is%3Aissue) and discussions for this request
+          required: true
+        - label: This request contains no credentials, cookies, device codes, vault contents, or persistent `phm_` mappings
+          required: true
+        - label: This is not a vulnerability report; suspected vulnerabilities use [private reporting](https://github.com/ashlrai/phantom-secrets/security/advisories/new)
+          required: true
+
   - type: dropdown
     id: surface
     attributes:
@@ -52,6 +64,31 @@ body:
     attributes:
       label: Security and authority impact
       description: Could this expose a value, mutate state, execute code, use a provider credential, broaden agent authority, or change confirmation/recovery behavior? If not, say why not.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: evidence_layer
+    attributes:
+      label: Which evidence or availability layer should this change reach?
+      description: Source, artifact, publication, deployment, provider activation, and user acceptance are separate outcomes.
+      options:
+        - Source or documentation only
+        - Tested source candidate
+        - Native release artifact
+        - Package or registry publication
+        - Deployed hosted service
+        - Provider integration activation
+        - Customer or user acceptance
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance and rollback
+      description: What observable result proves this works, and how should partial or failed application be contained or rolled back?
     validations:
       required: true
 

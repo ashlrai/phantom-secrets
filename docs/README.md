@@ -2,6 +2,10 @@
 
 This is the canonical map for Phantom's repository documentation. Start with the shortest guide that matches your task, then use the security and architecture material when evaluating trust boundaries.
 
+The reviewed public distribution is `v0.7.3`. Repository source currently
+stages `0.7.4`; documentation of staged behavior is not evidence that its
+artifacts, packages, deployments, providers, or hosted entitlements are live.
+
 ## Start here
 
 | Goal | Guide |
@@ -18,6 +22,7 @@ This is the canonical map for Phantom's repository documentation. Start with the
 | Assemble a security or third-party review | [Security and audit index](audit-index.md) |
 | Report a vulnerability | [Security policy](../SECURITY.md) |
 | Evaluate Phantom's security assumptions and known gaps | [Threat model](../THREAT_MODEL.md) |
+| Find contribution, support, or project-decision routes | [Community and project health](#community-and-project-health) |
 
 ## Agent and editor integrations
 
@@ -29,6 +34,7 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 - [Cursor](cursor.md)
 - [Windsurf](windsurf.md)
 - [Copyable agent policy, task brief, and pilot templates](../examples/agent-delegation/README.md)
+- [Examples index](../examples/README.md), including status and safety notes
 
 The small conversation facade and the advanced MCP compatibility catalog are separate contracts. `phantom_do` is proposal-only and does not execute an action. `phantom_setup_workspace` can propose, create a bearerless request, or report status; applying that request requires a separate attached trusted terminal. Effectful advanced tools are disabled by default; `PHANTOM_MCP_EFFECTS=trusted-terminal` may enable their confirmation and one-use approval gates only when configured outside agent authority. Approval requires attached stdin/stderr, an informed value-blind summary, and a fresh typed challenge. A same-user shell or agent-controlled PTY can defeat the ceremony, so the approval command and storage must also be outside agent authority.
 
@@ -60,6 +66,8 @@ and retains historical design-status language.
 - [Design-era provider-grant lifecycle specification](grants-spec.md)
 - [Original provider-issuance design contract](../ISSUANCE_CONTRACT.md)
 - [Contributing guide](../CONTRIBUTING.md)
+- [Roadmap and milestone gates](../ROADMAP.md)
+- [Project governance](../GOVERNANCE.md)
 - [Changelog](../CHANGELOG.md)
 - [Code of Conduct](../CODE_OF_CONDUCT.md)
 - [MIT License](../LICENSE)
@@ -70,6 +78,26 @@ fail-closed foundations, not activated production authority or execution. The
 the current activation boundary and non-mitigations. A source implementation
 or passing test does not by itself prove packaged, installed, native, provider,
 or production acceptance.
+
+## Community and project health
+
+- [Contributing](../CONTRIBUTING.md) — setup, repository map, security rules,
+  test tiers, and pull-request expectations
+- [Support](../SUPPORT.md) — discussions, public issues, private security
+  reports, and commercial-evaluation routing
+- [Governance](../GOVERNANCE.md) — maintainer-led decisions, roles, release
+  authority, and commercial boundaries
+- [Code of Conduct](../CODE_OF_CONDUCT.md) — participation and enforcement
+- [Security policy](../SECURITY.md) — private reporting, scope, safe harbor,
+  response targets, and known limitations
+- [Roadmap](../ROADMAP.md) — staged, gated, and exploratory milestones without
+  delivery-date or activation claims
+- [Citation metadata](../CITATION.cff) — cite the reviewed release, or include
+  the exact commit SHA when discussing unreleased source
+
+No donation or sponsorship program is represented by repository metadata at
+this time. Hosted pilots, enterprise scope, and support terms require separate
+commissioning and written agreement.
 
 ## Machine-readable and publishing surfaces
 

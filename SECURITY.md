@@ -4,13 +4,15 @@ For the detailed technical threat model, see [THREAT_MODEL.md](./THREAT_MODEL.md
 
 ## Supported Versions
 
-Phantom is still pre-1.0, so security support is focused on the current release line and active development branch.
+Phantom is still pre-1.0, so security support is focused on the reviewed public
+release and active development branch. Repository version metadata can move
+ahead of published artifacts.
 
 | Version or surface | Security support | Notes |
 |--------------------|------------------|-------|
-| Latest release line, currently `0.7.x` | Supported | Security fixes are prioritized for the latest published CLI, MCP server, proxy, vault, npm wrappers, and web API surface. |
-| Active development branch | Supported for validation | Reports against unreleased code are welcome when the issue can affect an upcoming release or deployed service. |
-| Older release lines before `0.7.x` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
+| Reviewed public release, `v0.7.3` | Supported | Security fixes are prioritized for the immutable reviewed release and the separately deployed web surface where applicable. |
+| Staged `0.7.4` repository source | Supported for validation | Reports against unreleased source are welcome. Source and workflow definitions are not evidence of a published artifact or deployment. |
+| Releases before `v0.7.3` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
 | Forks, unofficial builds, or modified binaries | Not supported | Maintainers cannot verify the provenance or behavior of modified distributions. |
 
 ### Urgent 0.7.0 upgrade notice
@@ -40,7 +42,8 @@ Please include:
 - Affected component: CLI, provider issuance/grants, MCP server, local proxy, vault, Phantom Cloud/web API, npm wrapper, install script, release artifact, or documentation.
 - Affected version, commit, operating system, install method, and any relevant configuration flags.
 - Reproduction steps, proof of concept, expected impact, and whether you believe the issue is actively exploitable.
-- Logs or screenshots only after redacting secrets, tokens, vault contents, OAuth tokens, cookies, and personal data.
+- Logs or screenshots only after redacting secrets, tokens, vault contents,
+  OAuth tokens, cookies, personal data, and persistent `phm_` mappings.
 
 Use throwaway test credentials whenever possible. If you encounter a real credential, stop testing, redact it from your report, and rotate the credential.
 
@@ -105,6 +108,10 @@ Phantom's security boundary is that secret values should not enter AI context, l
 - The web application may send browser analytics events through PostHog when `NEXT_PUBLIC_POSTHOG_KEY` is configured. Current events include page views and high-level UI actions such as copied install commands or pricing/device-auth button clicks. These events should not include secret values or vault contents.
 
 Do not include real secrets in support requests, vulnerability reports, screenshots, telemetry examples, or reproduction repositories.
+
+For non-security questions, use the routes in [SUPPORT.md](SUPPORT.md). Project
+decision and escalation authority is described in
+[GOVERNANCE.md](GOVERNANCE.md).
 
 ## Known Limitations
 

@@ -10,6 +10,9 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 
 [![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/stargazers)
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
+[![Reviewed release](https://img.shields.io/badge/reviewed_release-v0.7.3-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3)
+[![Staged source](https://img.shields.io/badge/staged_source-v0.7.4-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#074---2026-08-31)
+[![Pinned toolchain: Rust 1.95](https://img.shields.io/badge/pinned_toolchain-Rust_1.95-CE412B?style=for-the-badge&logo=rust&labelColor=0b0b14)](rust-toolchain.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
 
 [**Quick start**](#quick-start) ·
@@ -17,16 +20,25 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 [**Why Phantom?**](#why-phantom) ·
 [**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex) ·
 [**Docs**](docs/README.md) ·
+[**Contribute**](CONTRIBUTING.md) ·
 [**phm.dev**](https://phm.dev)
 
 </div>
 
 ---
 
-> **▶ [Watch the 45-second demo](https://github.com/ashlrai/phantom-secrets/releases/download/v0.4.0/phantom-demo.mp4)** &nbsp;·&nbsp;
+> **▶ [Historical v0.4 demo — current behavior differs](https://github.com/ashlrai/phantom-secrets/releases/download/v0.4.0/phantom-demo.mp4)** &nbsp;·&nbsp;
 > **🛡 [Security model](SECURITY.md)** &nbsp;·&nbsp;
 > **📋 [Threat model](THREAT_MODEL.md)** &nbsp;·&nbsp;
 > **💬 [Discussions](https://github.com/ashlrai/phantom-secrets/discussions)**
+
+> [!IMPORTANT]
+> **Release boundary:** `v0.7.3` is the reviewed public distribution. This
+> repository stages `0.7.4`; source, changelog entries, workflow definitions,
+> and local test results do not prove that a `0.7.4` artifact or package was
+> published, deployed, provider-enabled, or accepted on any platform. See
+> [release readiness](docs/release-readiness.md) and
+> [platform support](docs/platform-support.md).
 
 ## Why Phantom?
 
@@ -34,12 +46,10 @@ AI coding agents routinely work in repositories that also contain local credenti
 
 Traditional secrets managers focus on keys *at rest* and *in transit*. Phantom adds a boundary for agent **context**:
 
-- 🔒 **Designed to keep real keys out of the LLM** — project dotenv files contain `phm_` tokens, agents use value-blind MCP metadata, and the proxy injects values only into scoped authenticated requests.
+- 🔒 **Reduces one credential-exposure path** — managed project dotenv files contain sensitive `phm_` mappings, MCP responses remain value-blind, and exact proxy routes inject their own configured authentication values. Unmanaged files, broader shell authority, and same-user processes remain in the threat model.
 - ⚡ **Fast local setup** — after installing the reviewed `v0.7.3` release, `phantom init` protects a project without requiring an account, DNS changes, or a custom CA.
 - 🧰 **Agent-native integrations** — setup helpers and value-blind MCP workflows for Claude Code, Cursor, Windsurf, and Codex, plus project instructions for GitHub Copilot.
 - 🦀 **Open source, local-first, MIT** — secrets use the native OS credential store when it is available, with an explicit encrypted-file fallback. Optional cloud sync encrypts vault payloads client-side before the server stores them.
-
-Used by developers who don't want to choose between *delegating to AI* and *not pasting their Stripe key into a chat window*.
 
 ### Project status and trust boundary
 
@@ -411,16 +421,16 @@ fails closed before vendor execution. No single-provider exception exists.
 - **Smart detection** -- Heuristic engine distinguishes secrets (`*_KEY`, `*_TOKEN`, `sk-*`, `ghp_*`) from config (`NODE_ENV`, `PORT`)
 - **Platform sync** -- Push/pull secrets to Vercel and Railway
 - **Pre-commit hook** -- Runs `phantom check --staged` when Git invokes the hook; it checks staged dotenv content plus a bounded set of hardcoded-key prefixes. Hooks can be bypassed or skipped, so CI and a broader secret scanner remain necessary.
-- **MCP server** -- core vault, diagnostics, cloud, team, audit, rotation, validation, expiry, and compliance tools for Claude Code, Cursor, Windsurf, and Codex to manage secrets without seeing values
+- **MCP server** -- value-blind vault, diagnostics, cloud, team, audit, rotation, validation, expiry, and compliance responses for Claude Code, Cursor, Windsurf, and Codex; effectful compatibility tools remain separately gated and disabled by default
 - **Cloud backup** -- client-encrypted same-keychain-machine backup and restore; key transfer and recovery are not shipped, and deployed-service and account configuration remain separate operational gates
-- **Export/import** -- Encrypted backup and restore through a hidden terminal prompt or a private bounded passphrase file on non-Windows platforms; Windows passphrase files fail closed pending no-reparse handle and effective-ACL verification; plaintext export and argv passphrases are disabled; import from Doppler, Infisical, dotenvx, 1Password, or plain `.env` via `--from`
+- **Export/import** -- Encrypted export requires an attached terminal, exact challenge, and hidden passphrase; export passphrase files, plaintext, and argv passphrases are disabled. Import uses its own exact terminal ceremony; only non-Windows encrypted-backup import may read a bounded private passphrase file. Competitor imports support Doppler, Infisical, dotenvx, 1Password, and plain `.env`.
 - **Tamper-evident audit log** -- `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log`. Each entry is chained with HMAC-SHA256; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for log access.
 - **Response scrubbing** -- Scrubs configured secret values from supported API response paths before returning data to the caller
 - **Script wrapping** -- `phantom wrap` wraps selected runtime/build scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) and deliberately leaves test, lint, type, and format scripts alone
 - **Watch mode** -- `phantom watch` reports new unprotected secrets; legacy `--auto` hard-denies before mutation, so protection stays a reviewed transactional `phantom init`
 - **Multi-project scanner** -- `phantom init --all <DIR>` processes eligible repositories found within a five-level bounded scan and stops below the first matching repository; use `--dry-run` to verify the exact set and `--jobs N` to control parallelism
 - **Multi-IDE setup** -- `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool, or `--print` for a generic snippet
-- **Agent readiness** -- `phantom agent doctor` and `phantom agent report --json` answer whether a repo is safe for Claude Code, Codex, Cursor, Windsurf, and other agents
+- **Agent readiness** -- `phantom agent doctor` and `phantom agent report --json` report bounded protection findings and activation gaps; they do not certify a repository or agent as safe
 - **Enriched diagnostics** -- `phantom doctor` reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client
 - **Secret explainer** -- `phantom why <KEY>` explains detection heuristics
 - **Cross-project copy** -- `phantom copy` shares secrets between project vaults
@@ -548,15 +558,26 @@ written plan terms; see the
 - [Safe delegation quickstart](docs/delegation-quickstart.md)
 - [Enterprise adoption guide](docs/enterprise-adoption.md)
 - [Agent delegation templates](examples/agent-delegation/README.md)
+- [Examples index](examples/README.md)
 - [Security Model](SECURITY.md)
 - [Threat Model](THREAT_MODEL.md)
+- [Roadmap](ROADMAP.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
+- [Governance](GOVERNANCE.md)
+- [Citation](CITATION.cff)
 
 ## Contributing
 
-We love PRs. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), pick a [good first issue](https://github.com/ashlrai/phantom-secrets/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22), or [open a discussion](https://github.com/ashlrai/phantom-secrets/discussions) to talk through an idea. Be excellent to each other — see [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+Focused contributions are welcome. Start with
+[`CONTRIBUTING.md`](CONTRIBUTING.md), the
+[examples index](examples/README.md), or a
+[discussion](https://github.com/ashlrai/phantom-secrets/discussions). The
+project does not assume that a `good first issue` label is populated. Follow
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and use
+[`SECURITY.md`](SECURITY.md) rather than a public issue for vulnerabilities.
 
 ## Star history
 
