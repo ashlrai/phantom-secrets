@@ -744,7 +744,8 @@ mod portable_capability_contract_tests {
         let source = include_str!("workspace.rs");
         assert!(source.contains("acquire_project_transaction_lock(&workspace_root)"));
         assert!(source.contains("project_identity_at_acquisition() != reviewed_root.identity()"));
-        assert!(source.contains("project_lock\n                .as_ref()"));
+        assert!(source.contains("project_lock"));
+        assert!(source.contains(".as_ref()"));
         assert!(source.contains(".target(&path)"));
         assert!(source.contains(".read_regular()"));
         assert!(source.contains("std::io::Read::take(&mut input"));

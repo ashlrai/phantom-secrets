@@ -12,27 +12,27 @@ use phantom_core::error::PhantomError;
 use phantom_core::fs::{AnchoredRead, FileIdentity, TrustedAnchor};
 use phantom_core::token::TokenMap;
 use phantom_vault::{InitFile, InitReceipt, InitSecret, VaultBackend};
-use std::path::Path;
+use std::path::{Component, Path};
 #[cfg(test)]
 use zeroize::Zeroizing;
 
 fn read_reviewed_project_file(
     project: &TrustedAnchor,
-    project_dir: &Path,
-    path: &Path,
+    relative: &Path,
+    display_path: &Path,
 ) -> Result<Option<AnchoredRead>> {
-    let relative = path.strip_prefix(project_dir).with_context(|| {
-        format!(
-            "Initialization target {} is outside reviewed project {}",
-            path.display(),
-            project_dir.display()
-        )
-    })?;
+    let mut components = relative.components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        anyhow::bail!(
+            "Initialization target {} is not one direct reviewed project child",
+            display_path.display()
+        );
+    }
     project
         .target(relative)
-        .with_context(|| format!("Failed to retain {}", path.display()))?
+        .with_context(|| format!("Failed to retain {}", display_path.display()))?
         .read_regular()
-        .with_context(|| format!("Failed to safely inspect {}", path.display()))
+        .with_context(|| format!("Failed to safely inspect {}", display_path.display()))
 }
 
 fn commit_after_vault_provisioning(
@@ -91,7 +91,8 @@ pub fn run_empty() -> Result<()> {
         .context("Failed to retain the reviewed project root for empty initialization")?;
     let reviewed_project_identity = reviewed_project.identity();
     let config_path = cwd.join(".phantom.toml");
-    let config_before = read_reviewed_project_file(&reviewed_project, &cwd, &config_path)?;
+    let config_before =
+        read_reviewed_project_file(&reviewed_project, Path::new(".phantom.toml"), &config_path)?;
     if config_before.is_some() {
         println!(
             "{} .phantom.toml already exists — nothing to do.",
@@ -168,7 +169,10 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     let reviewed_project_identity = reviewed_project.identity();
     let config_path = project_dir.join(".phantom.toml");
 
-    let env_before = read_reviewed_project_file(&reviewed_project, &project_dir, &env_path)?
+    let env_name = env_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Dotenv path has no reviewed direct-child name"))?;
+    let env_before = read_reviewed_project_file(&reviewed_project, Path::new(env_name), &env_path)?
         .ok_or_else(|| anyhow::anyhow!("Dotenv disappeared during preflight"))?;
     let dotenv_basename = phantom_core::managed_dotenv::dotenv_basename(&project_dir, &env_path)?;
 
@@ -190,7 +194,8 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         .map(|(e, _)| *e)
         .collect();
 
-    let config_before = read_reviewed_project_file(&reviewed_project, &project_dir, &config_path)?;
+    let config_before =
+        read_reviewed_project_file(&reviewed_project, Path::new(".phantom.toml"), &config_path)?;
     let existing_protected_setup =
         config_before.is_some() || dotenv.entries().iter().any(|e| e.is_phantom);
     // Preflight migration of any project-local Claude settings before touching

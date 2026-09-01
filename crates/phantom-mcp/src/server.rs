@@ -7491,11 +7491,14 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         std::fs::create_dir(&hooks).unwrap();
         unsafe { std::env::set_var("HOME", &home) };
-        std::fs::write(
-            home.join(".gitconfig"),
-            format!("[core]\n\thooksPath = {}\n", hooks.display()),
-        )
-        .unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["config", "--file"])
+            .arg(home.join(".gitconfig"))
+            .arg("core.hooksPath")
+            .arg(&hooks)
+            .status()
+            .unwrap()
+            .success());
         assert!(std::process::Command::new("git")
             .args(["init", "--quiet"])
             .current_dir(dir.path())

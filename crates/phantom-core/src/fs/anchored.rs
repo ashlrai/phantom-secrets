@@ -363,7 +363,7 @@ impl TrustedAnchor {
     }
 
     fn open_inner(path: &Path, repair_private: bool) -> io::Result<Self> {
-        let file = open_anchor_directory(path)?;
+        let file = open_anchor_directory(path, repair_private)?;
         let root = Dir::from_std_file(file);
         if repair_private {
             repair_private_directory(&root)?;
@@ -479,7 +479,7 @@ impl TrustedAnchor {
         create_private_directory(&parent, &leaf)?;
 
         let child = match maybe_inject_failure(TestFailurePoint::CreateDirectoryOpen)
-            .and_then(|()| parent.open_dir_nofollow(&leaf))
+            .and_then(|()| open_directory_nofollow(&parent, &leaf, true))
         {
             Ok(child) => child,
             Err(open_error) => {
@@ -551,7 +551,7 @@ impl TrustedAnchor {
             .collect::<io::Result<Vec<_>>>()?;
         for component in components {
             let current = retained.last().expect("anchor directory is retained");
-            let next = match current.open_dir_nofollow(component) {
+            let next = match open_directory_nofollow(current, component, create_private) {
                 Ok(directory) => directory,
                 Err(error) if error.kind() == io::ErrorKind::NotFound && create_private => {
                     match create_private_directory(current, component) {
@@ -560,7 +560,7 @@ impl TrustedAnchor {
                             if create_error.kind() == io::ErrorKind::AlreadyExists => {}
                         Err(create_error) => return Err(create_error),
                     }
-                    current.open_dir_nofollow(component)?
+                    open_directory_nofollow(current, component, true)?
                 }
                 Err(error) => return Err(error),
             };
@@ -1071,6 +1071,42 @@ fn create_private_directory(parent: &Dir, name: &OsStr) -> io::Result<()> {
     }
 }
 
+#[cfg(windows)]
+fn open_directory_nofollow(parent: &Dir, name: &OsStr, private: bool) -> io::Result<Dir> {
+    if !private {
+        return parent.open_dir_nofollow(name);
+    }
+
+    use cap_std::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
+    };
+
+    let mut options = OpenOptions::new();
+    options.read(true);
+    options.follow(FollowSymlinks::No);
+    options.access_mode(GENERIC_READ | READ_CONTROL | WRITE_DAC);
+    options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = parent.open_with(name, &options)?;
+    let information = windows_file_information(&file)?;
+    if !file.metadata()?.is_dir()
+        || information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(io::Error::other(
+            "private directory capability is not a real directory",
+        ));
+    }
+    Ok(Dir::from_std_file(file.into_std()))
+}
+
+#[cfg(not(windows))]
+fn open_directory_nofollow(parent: &Dir, name: &OsStr, _private: bool) -> io::Result<Dir> {
+    parent.open_dir_nofollow(name)
+}
+
 #[cfg(unix)]
 fn file_needs_private_repair(file: &File) -> io::Result<bool> {
     use cap_std::fs::MetadataExt;
@@ -1090,7 +1126,7 @@ fn file_needs_private_repair(_file: &File) -> io::Result<bool> {
 }
 
 #[cfg(unix)]
-fn open_anchor_directory(path: &Path) -> io::Result<std::fs::File> {
+fn open_anchor_directory(path: &Path, _private: bool) -> io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .read(true)
@@ -1099,19 +1135,23 @@ fn open_anchor_directory(path: &Path) -> io::Result<std::fs::File> {
 }
 
 #[cfg(windows)]
-fn open_anchor_directory(path: &Path) -> io::Result<std::fs::File> {
+fn open_anchor_directory(path: &Path, private: bool) -> io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::GENERIC_READ;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
     };
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        // Intentionally omit FILE_SHARE_DELETE: the anchor cannot be renamed
-        // or removed while this capability is live.
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .open(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    if private {
+        options.access_mode(GENERIC_READ | READ_CONTROL | WRITE_DAC);
+    }
+    options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    // Intentionally omit FILE_SHARE_DELETE: the anchor cannot be renamed or
+    // removed while this capability is live.
+    options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    let file = options.open(path)?;
     let information = windows_file_information_std(&file)?;
     if !file.metadata()?.is_dir()
         || information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
@@ -1122,7 +1162,7 @@ fn open_anchor_directory(path: &Path) -> io::Result<std::fs::File> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open_anchor_directory(_path: &Path) -> io::Result<std::fs::File> {
+fn open_anchor_directory(_path: &Path, _private: bool) -> io::Result<std::fs::File> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "descriptor-anchored filesystem operations require Unix or Windows",
@@ -1152,13 +1192,29 @@ fn repair_private_file(file: &File) -> io::Result<()> {
 
 #[cfg(windows)]
 fn apply_file_permissions(file: &File, permissions: AnchoredFilePermissions) -> io::Result<()> {
-    let dacl = match permissions.windows_dacl {
-        WindowsDaclIntent::PrivateUser => windows_private_user_dacl(file.metadata()?.is_dir())?,
-        WindowsDaclIntent::Captured(dacl) => dacl,
+    let (dacl, preserve_inherited_exactly) = match permissions.windows_dacl {
+        WindowsDaclIntent::PrivateUser => {
+            (windows_private_user_dacl(file.metadata()?.is_dir())?, false)
+        }
+        WindowsDaclIntent::Captured(dacl) => {
+            let preserve_inherited_exactly = !dacl.protected;
+            (dacl, preserve_inherited_exactly)
+        }
     };
     let original = file.try_clone()?.into_std();
-    let secured = windows_reopen_for_security(&original)?;
-    windows_set_dacl(&secured, &dacl)?;
+    let current_dacl = windows_file_dacl_std(&original)?;
+    let secured = if current_dacl == dacl {
+        windows_reopen_for_attributes(&original)?
+    } else {
+        if preserve_inherited_exactly {
+            return Err(io::Error::other(
+                "Windows cannot reproduce the reviewed inherited DACL exactly",
+            ));
+        }
+        let secured = windows_reopen_for_security(&original)?;
+        windows_set_dacl(&secured, &dacl)?;
+        secured
+    };
 
     let mut current = secured.metadata()?.permissions();
     current.set_readonly(permissions.readonly);
@@ -1219,13 +1275,8 @@ fn file_permissions(file: &File) -> io::Result<AnchoredFilePermissions> {
 #[cfg(unix)]
 fn repair_private_directory(directory: &Dir) -> io::Result<()> {
     use std::os::fd::AsRawFd;
-    if unsafe {
-        libc::fchmod(
-            directory.as_raw_fd(),
-            PRIVATE_DIRECTORY_MODE as libc::mode_t,
-        )
-    } == 0
-    {
+    let reopened = reopen_directory_for_effects(directory)?;
+    if unsafe { libc::fchmod(reopened.as_raw_fd(), PRIVATE_DIRECTORY_MODE as libc::mode_t) } == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
@@ -1234,13 +1285,13 @@ fn repair_private_directory(directory: &Dir) -> io::Result<()> {
 
 #[cfg(windows)]
 fn repair_private_directory(directory: &Dir) -> io::Result<()> {
-    let original = directory.try_clone()?.into_std_file();
+    let secured = directory.try_clone()?.into_std_file();
+    let before = std_file_identity(&secured)?;
     let dacl = windows_private_user_dacl(true)?;
-    let secured = windows_reopen_for_security(&original)?;
     windows_set_dacl(&secured, &dacl)?;
-    if windows_file_dacl_std(&secured)? != dacl {
+    if std_file_identity(&secured)? != before || windows_file_dacl_std(&secured)? != dacl {
         return Err(io::Error::other(
-            "Windows directory DACL changed while being established",
+            "Windows directory identity or DACL changed while being established",
         ));
     }
     Ok(())
@@ -1444,12 +1495,35 @@ fn windows_private_user_dacl(is_directory: bool) -> io::Result<WindowsDacl> {
 
 #[cfg(windows)]
 fn windows_reopen_for_security(file: &std::fs::File) -> io::Result<std::fs::File> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, READ_CONTROL, WRITE_DAC,
+    };
+
+    windows_reopen_with_access(
+        file,
+        READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+    )
+}
+
+#[cfg(windows)]
+fn windows_reopen_for_attributes(file: &std::fs::File) -> io::Result<std::fs::File> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, READ_CONTROL,
+    };
+
+    windows_reopen_with_access(
+        file,
+        READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+    )
+}
+
+#[cfg(windows)]
+fn windows_reopen_with_access(file: &std::fs::File, access: u32) -> io::Result<std::fs::File> {
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
         ReOpenFile, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        FILE_WRITE_ATTRIBUTES, READ_CONTROL, WRITE_DAC,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
     let before = std_file_identity(file)?;
@@ -1468,7 +1542,7 @@ fn windows_reopen_for_security(file: &std::fs::File) -> io::Result<std::fs::File
     let handle = unsafe {
         ReOpenFile(
             file.as_raw_handle(),
-            READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+            access,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             flags,
         )
@@ -1526,7 +1600,9 @@ fn aligned_words(byte_len: usize) -> Vec<usize> {
 
 #[cfg(unix)]
 fn sync_directory_best_effort(directory: &Dir) -> io::Result<()> {
-    directory.try_clone()?.into_std_file().sync_all()
+    reopen_directory_for_effects(directory)?
+        .into_std()
+        .sync_all()
 }
 
 #[cfg(not(unix))]
@@ -1585,6 +1661,22 @@ fn file_identity(_file: &File) -> io::Result<FileIdentity> {
 fn directory_identity(directory: &Dir) -> io::Result<FileIdentity> {
     let file = directory.try_clone()?.into_std_file();
     std_file_identity(&file)
+}
+
+#[cfg(unix)]
+fn reopen_directory_for_effects(directory: &Dir) -> io::Result<File> {
+    let before = directory_identity(directory)?;
+    // Descendant handles opened with `open_dir_nofollow` may be Linux
+    // `O_PATH` capabilities. Reopen the retained directory through `.` so
+    // chmod/fsync receive an ordinary descriptor without returning to an
+    // ambient pathname.
+    let reopened = directory.open(".")?;
+    if !reopened.metadata()?.is_dir() || file_identity(&reopened)? != before {
+        return Err(io::Error::other(
+            "directory effect handle did not retain the reviewed object identity",
+        ));
+    }
+    Ok(reopened)
 }
 
 #[cfg(unix)]
@@ -2024,6 +2116,50 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn retained_directory_effects_survive_name_swap_without_touching_decoy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("owned")).unwrap();
+        std::fs::set_permissions(
+            dir.path().join("owned"),
+            std::fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
+        let base = TrustedAnchor::open(dir.path()).unwrap();
+        let retained = base.open_subdirectory("owned").unwrap();
+        let directory = retained
+            .directories
+            .last()
+            .expect("opened subdirectory retains its directory");
+
+        std::fs::rename(dir.path().join("owned"), dir.path().join("moved")).unwrap();
+        std::fs::create_dir(dir.path().join("owned")).unwrap();
+        std::fs::set_permissions(
+            dir.path().join("owned"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        repair_private_directory(directory).unwrap();
+        sync_directory_best_effort(directory).unwrap();
+
+        let moved_mode = std::fs::metadata(dir.path().join("moved"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let decoy_mode = std::fs::metadata(dir.path().join("owned"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(moved_mode, 0o700);
+        assert_eq!(decoy_mode, 0o755);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn symlink_ancestor_and_leaf_are_rejected() {
         use std::os::unix::fs::symlink;
 
@@ -2157,12 +2293,13 @@ mod tests {
         assert!(source.contains("builder.mode(PRIVATE_DIRECTORY_MODE)"));
         assert!(source.contains("let mut first_bytes = Zeroizing::new(Vec::new())"));
         assert!(source.contains("let mut second_bytes = Zeroizing::new(Vec::new())"));
+        assert!(source.contains("#[cfg(not(unix))]"));
         assert!(
-            source.contains("#[cfg(not(unix))]\n            unix_mode: None"),
+            source.contains("unix_mode: None"),
             "non-Unix permission intents must compare equal to handle reads"
         );
         assert!(source.contains("current.set_readonly(permissions.readonly)"));
-        assert!(source.contains("file.set_permissions(current)"));
+        assert!(source.contains("secured.set_permissions(current)"));
 
         let close = source
             .find("drop(temp.take().expect(\"staging handle is live\"))")
@@ -2308,6 +2445,40 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_existing_private_roots_and_descendants_are_repaired_by_retained_handle() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("existing")).unwrap();
+
+        let anchor = TrustedAnchor::open_private(dir.path()).unwrap();
+        let root = anchor
+            .directories
+            .first()
+            .unwrap()
+            .try_clone()
+            .unwrap()
+            .into_std_file();
+        assert_eq!(
+            windows_file_dacl_std(&root).unwrap(),
+            windows_private_user_dacl(true).unwrap()
+        );
+
+        anchor.ensure_private_directory("existing").unwrap();
+        let descendant = anchor.open_subdirectory("existing").unwrap();
+        let existing = descendant
+            .directories
+            .last()
+            .unwrap()
+            .try_clone()
+            .unwrap()
+            .into_std_file();
+        assert_eq!(
+            windows_file_dacl_std(&existing).unwrap(),
+            windows_private_user_dacl(true).unwrap()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_private_directory_acl_is_protected_and_inheritable() {
         use windows_sys::Win32::Security::{
             GetAce, ACCESS_ALLOWED_ACE, ACL, CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE,
@@ -2319,13 +2490,9 @@ mod tests {
             AnchoredDirectoryCreation::Durable(created)
             | AnchoredDirectoryCreation::CommittedVerifiedButDurabilityUncertain {
                 receipt: created,
-            }
-            | AnchoredDirectoryCreation::CommittedButUncertain {
-                receipt: Some(created),
-                ..
             } => created,
-            AnchoredDirectoryCreation::CommittedButUncertain { receipt: None, .. } => {
-                panic!("private directory creation lost its exact receipt")
+            AnchoredDirectoryCreation::CommittedButUncertain { error, .. } => {
+                panic!("private directory creation was not verified: {error}")
             }
         };
         let directory = created

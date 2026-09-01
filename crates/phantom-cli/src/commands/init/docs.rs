@@ -230,10 +230,10 @@ mod tests {
         let mut guidance = prepare_guidance(&project).unwrap();
         let planned = format!("{:?}", guidance.take_files());
 
-        assert!(planned.contains(&format!("{}/CLAUDE.md", project.display())));
-        assert!(planned.contains(&format!("{}/README.md", project.display())));
-        assert!(!planned.contains(&format!("{}/CLAUDE.md", parent.path().display())));
-        assert!(!planned.contains(&format!("{}/README.md", parent.path().display())));
+        assert!(planned.contains(&format!("{:?}", project.join("CLAUDE.md"))));
+        assert!(planned.contains(&format!("{:?}", project.join("README.md"))));
+        assert!(!planned.contains(&format!("{:?}", parent.path().join("CLAUDE.md"))));
+        assert!(!planned.contains(&format!("{:?}", parent.path().join("README.md"))));
     }
 
     #[test]

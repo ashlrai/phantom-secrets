@@ -14,8 +14,11 @@ pub(crate) enum ProxyLockState {
 }
 
 fn lock_root() -> Result<PathBuf> {
-    directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
-        .map(|dirs| dirs.data_dir().join("proxy-locks"))
+    if let Some(project_dirs) = directories::ProjectDirs::from("ai", "phantom", "phantom-secrets") {
+        return Ok(project_dirs.data_dir().join("proxy-locks"));
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".phantom").join("proxy-locks"))
         .context("Cannot resolve the machine-local Phantom data directory")
 }
 

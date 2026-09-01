@@ -778,7 +778,10 @@ mod tests {
     #[test]
     fn cargo_path_detected() {
         assert_eq!(
-            detect_install_source_from(Path::new("/home/user/.cargo/bin/phantom"), None),
+            detect_install_source_from(
+                Path::new("/home/user/.cargo/bin/phantom"),
+                Some(Path::new("/home/user")),
+            ),
             InstallSource::Cargo
         );
     }

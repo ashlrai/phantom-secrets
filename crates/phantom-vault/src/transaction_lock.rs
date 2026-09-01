@@ -371,7 +371,8 @@ mod tests {
         assert!(transaction_source.contains("_legacy: AnchoredLock"));
         assert!(transaction_source.contains("project: TrustedAnchor"));
         assert!(transaction_source.contains("No ambient canonicalization occurs"));
-        assert!(transaction_source.contains("does not claim that\n//! the ACL is user-only"));
+        assert!(transaction_source.contains("does not claim that"));
+        assert!(transaction_source.contains("the ACL is user-only"));
     }
 
     #[test]

@@ -170,19 +170,19 @@ pub(crate) fn detect_install_source_from(exe: &Path, home: Option<&Path>) -> Ins
         if exe.parent() == Some(shared_root.as_path()) {
             return shared_root_source(exe);
         }
+        if exe.parent() == Some(home.join(".cargo").join("bin").as_path()) {
+            return InstallSource::Cargo;
+        }
+        if exe.parent() == Some(home.join(".local").join("bin").as_path()) {
+            return if verified_standalone_source(exe) {
+                InstallSource::Curl
+            } else {
+                InstallSource::Unknown
+            };
+        }
     }
     if path.contains("/Cellar/") || path.contains("/homebrew/") || path.contains("/linuxbrew/") {
         return InstallSource::Homebrew;
-    }
-    if path.contains("/.cargo/bin/") {
-        return InstallSource::Cargo;
-    }
-    if path.contains("/.local/bin/") {
-        return if verified_standalone_source(exe) {
-            InstallSource::Curl
-        } else {
-            InstallSource::Unknown
-        };
     }
     InstallSource::Unknown
 }
