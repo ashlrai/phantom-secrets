@@ -13,6 +13,30 @@ use rand::RngCore;
 
 /// Run `phantom mcp-approve <nonce>`.
 pub fn run(nonce: &str) -> Result<()> {
+    let stdin = std::io::stdin();
+    let mut stderr = std::io::stderr();
+    let stdin_is_terminal = stdin.is_terminal();
+    let stderr_is_terminal = stderr.is_terminal();
+    let mut reader = std::io::BufReader::new(stdin.lock());
+    let mut stdout = std::io::stdout();
+    run_with_terminal_state(
+        nonce,
+        stdin_is_terminal,
+        stderr_is_terminal,
+        &mut reader,
+        &mut stderr,
+        &mut stdout,
+    )
+}
+
+fn run_with_terminal_state(
+    nonce: &str,
+    stdin_is_terminal: bool,
+    stderr_is_terminal: bool,
+    input: &mut impl BufRead,
+    diagnostic: &mut impl Write,
+    output: &mut impl Write,
+) -> Result<()> {
     let nonce = nonce.trim();
     if nonce.is_empty() {
         anyhow::bail!(
@@ -22,9 +46,11 @@ pub fn run(nonce: &str) -> Result<()> {
         );
     }
 
-    let stdin = std::io::stdin();
-    let mut stderr = std::io::stderr();
-    if !stdin.is_terminal() || !stderr.is_terminal() {
+    // Keep terminal admission ahead of approval inspection, challenge
+    // generation, and every read. Besides preventing non-terminal approval,
+    // this makes the denial path independent of whether the test runner itself
+    // happens to own a PTY.
+    if !stdin_is_terminal || !stderr_is_terminal {
         anyhow::bail!(
             "Approval refused: stdin and stderr must both be attached to an interactive terminal. \
              Run `phantom mcp-approve {nonce}` yourself in a terminal outside the requesting \
@@ -36,9 +62,7 @@ pub fn run(nonce: &str) -> Result<()> {
     let mut challenge_bytes = [0_u8; 4];
     rand::thread_rng().fill_bytes(&mut challenge_bytes);
     let challenge = hex::encode(challenge_bytes);
-    let mut reader = std::io::BufReader::new(stdin.lock());
-    let mut stdout = std::io::stdout();
-    run_interactive(nonce, &challenge, &mut reader, &mut stderr, &mut stdout)
+    run_interactive(nonce, &challenge, input, diagnostic, output)
 }
 
 fn run_interactive(
@@ -103,28 +127,49 @@ fn run_interactive(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{BufRead, Cursor, Read};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     use phantom_core::mcp_approval;
     use tempfile::TempDir;
 
-    fn with_temp_home<F: FnOnce()>(f: F) {
+    fn with_temp_home<F: FnOnce() -> T, T>(f: F) -> T {
         let dir = TempDir::new().unwrap();
         let _guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("HOME").ok();
         std::env::set_var("HOME", dir.path());
-        f();
+        let result = f();
         match prev {
             Some(p) => std::env::set_var("HOME", p),
             None => std::env::remove_var("HOME"),
         }
+        result
+    }
+
+    struct PanicOnRead;
+
+    impl Read for PanicOnRead {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            panic!("noninteractive approval attempted to read stdin")
+        }
+    }
+
+    impl BufRead for PanicOnRead {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            panic!("noninteractive approval attempted to buffer stdin")
+        }
+
+        fn consume(&mut self, _amount: usize) {}
     }
 
     #[test]
-    fn noninteractive_run_fails_without_approving() {
-        with_temp_home(|| {
+    fn noninteractive_admission_never_reads_or_strands_transaction_waiters() {
+        let project = TempDir::new().unwrap();
+        let project_path = project.path().to_path_buf();
+        let (acquired_rx, contender) = with_temp_home(|| {
             let nonce = mcp_approval::generate_pending_approval(
                 "phantom_rotate",
                 r#"{"confirm":true}"#,
@@ -132,10 +177,42 @@ mod tests {
             )
             .unwrap();
 
-            let error = super::run(&nonce).unwrap_err().to_string();
+            // A transaction contender must wait while this test owns the
+            // environment guard. The noninteractive approval path must return
+            // without reading the runner's terminal so the guard can be
+            // released and the contender can make progress.
+            let (started_tx, started_rx) = mpsc::channel();
+            let (acquired_tx, acquired_rx) = mpsc::channel();
+            let contender = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let _lock = phantom_vault::acquire_project_transaction_lock(&project_path).unwrap();
+                acquired_tx.send(()).unwrap();
+            });
+            started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
+
+            let mut input = PanicOnRead;
+            let mut diagnostic = Vec::new();
+            let mut output = Vec::new();
+            let error = super::run_with_terminal_state(
+                &nonce,
+                false,
+                true,
+                &mut input,
+                &mut diagnostic,
+                &mut output,
+            )
+            .unwrap_err()
+            .to_string();
             assert!(error.contains("interactive terminal"), "{error}");
+            assert!(diagnostic.is_empty());
+            assert!(output.is_empty());
             assert_eq!(mcp_approval::list_pending_approvals().unwrap().len(), 1);
+            (acquired_rx, contender)
         });
+
+        acquired_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        contender.join().unwrap();
     }
 
     #[test]

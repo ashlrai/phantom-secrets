@@ -3,6 +3,7 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::error::PhantomError;
+use phantom_core::fs::TrustedAnchor;
 use phantom_core::token::TokenMap;
 use phantom_core::workspace_request::{
     self, SanitizedActionSummary, WorkspaceActionKind, WorkspaceApplyReceipt, WorkspaceRequestState,
@@ -426,20 +427,41 @@ fn validate_workspace_config(
 
 impl VaultSetupParticipant {
     fn new(workspace_root: &Path) -> Result<Self> {
+        Self::new_with_vault_factory(workspace_root, phantom_vault::try_create_vault)
+    }
+
+    fn new_with_vault_factory(
+        workspace_root: &Path,
+        create_vault: impl FnOnce(&str) -> phantom_core::error::Result<Box<dyn VaultBackend>>,
+    ) -> Result<Self> {
         let workspace_root = workspace_root
             .canonicalize()
             .context("Workspace root could not be resolved safely")?;
         if !workspace_root.is_dir() {
             bail!("workspace root is not a directory");
         }
+        let reviewed_root = TrustedAnchor::open(&workspace_root)
+            .context("Workspace root could not be retained before vault resolution")?;
+
+        // Vault construction resolves machine-local HOME/app-data authority.
+        // Resolve it before taking the project transaction lock so another
+        // thread that owns Phantom's process-environment guard can never form
+        // the inverse ENV -> project wait. No project bytes are trusted before
+        // the retained lock below, and the local namespace is derived only
+        // from this canonical path spelling.
+        let project_id = PhantomConfig::project_id_from_path(&workspace_root);
+        let vault = create_vault(&project_id)?;
         let project_lock = phantom_vault::acquire_project_transaction_lock(&workspace_root)
             .context("Workspace project lock could not be acquired")?;
-        let project_id =
-            PhantomConfig::project_id_from_path(project_lock.project_root_at_acquisition());
+        if project_lock.project_identity_at_acquisition() != reviewed_root.identity() {
+            bail!(
+                "Workspace root identity changed while machine-local vault authority was resolved"
+            );
+        }
         validate_workspace_config(&workspace_root, &project_lock)?;
         Ok(Self {
             workspace_root,
-            vault: phantom_vault::try_create_vault(&project_id)?,
+            vault,
             snapshots: Vec::new(),
             project_lock: Some(project_lock),
             commit_started: false,
@@ -713,6 +735,7 @@ mod portable_capability_contract_tests {
     fn windows_source_contract_keeps_effect_inputs_behind_retained_targets() {
         let source = include_str!("workspace.rs");
         assert!(source.contains("acquire_project_transaction_lock(&workspace_root)"));
+        assert!(source.contains("project_identity_at_acquisition() != reviewed_root.identity()"));
         assert!(source.contains("project_lock\n                .as_ref()"));
         assert!(source.contains(".target(&path)"));
         assert!(source.contains(".read_regular()"));
@@ -1040,6 +1063,79 @@ mod tests {
         write(project.join(".phantom.toml"), "not valid phantom toml\n");
 
         validate_workspace_config(&project, &project_lock).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(project.join(".phantom.toml")).unwrap(),
+            "not valid phantom toml\n"
+        );
+    }
+
+    #[test]
+    fn participant_resolves_vault_authority_before_project_transaction_lock() {
+        let workspace = TempDir::new().unwrap();
+        let workspace_path = workspace.path().canonicalize().unwrap();
+        let delayed_contender = Arc::new(Mutex::new(None));
+        let delayed_contender_from_factory = Arc::clone(&delayed_contender);
+        let project_from_factory = workspace_path.clone();
+        let values = Arc::new(Mutex::new(BTreeMap::new()));
+        let values_from_factory = Arc::clone(&values);
+
+        let participant =
+            VaultSetupParticipant::new_with_vault_factory(&workspace_path, move |_project_id| {
+                let (acquired_tx, acquired_rx) = mpsc::channel();
+                let contender = std::thread::spawn(move || {
+                    let _lock =
+                        phantom_vault::acquire_project_transaction_lock(&project_from_factory)
+                            .unwrap();
+                    acquired_tx.send(()).unwrap();
+                });
+
+                if acquired_rx.recv_timeout(Duration::from_secs(1)).is_err() {
+                    *delayed_contender_from_factory.lock().unwrap() = Some(contender);
+                    return Err(PhantomError::VaultError(
+                        "vault construction ran while the project transaction lock was held"
+                            .to_string(),
+                    ));
+                }
+                contender.join().unwrap();
+                Ok(Box::new(FailingStoreVault {
+                    values: values_from_factory,
+                    fail_name: "NEVER_FAIL".to_string(),
+                }) as Box<dyn VaultBackend>)
+            });
+
+        // If this assertion ever fails, first join the contender after the
+        // constructor has released its lock so the regression test itself
+        // cannot strand a test-runner thread.
+        if let Some(contender) = delayed_contender.lock().unwrap().take() {
+            contender.join().unwrap();
+        }
+        drop(participant.unwrap());
+    }
+
+    #[test]
+    fn participant_rejects_same_path_root_replacement_during_vault_resolution() {
+        let container = TempDir::new().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        let values = Arc::new(Mutex::new(BTreeMap::new()));
+
+        let result = VaultSetupParticipant::new_with_vault_factory(&project, |_project_id| {
+            std::fs::rename(&project, &moved).unwrap();
+            std::fs::create_dir(&project).unwrap();
+            write(project.join(".phantom.toml"), "not valid phantom toml\n");
+            Ok(Box::new(FailingStoreVault {
+                values,
+                fail_name: "NEVER_FAIL".to_string(),
+            }) as Box<dyn VaultBackend>)
+        });
+        let error = match result {
+            Ok(_) => panic!("same-path replacement must not acquire project authority"),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(error.contains("Workspace root identity changed"), "{error}");
+        assert!(moved.is_dir());
         assert_eq!(
             std::fs::read_to_string(project.join(".phantom.toml")).unwrap(),
             "not valid phantom toml\n"

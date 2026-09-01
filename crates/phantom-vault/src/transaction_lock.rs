@@ -13,7 +13,7 @@
 use phantom_core::error::{PhantomError, Result};
 use phantom_core::fs::{
     AnchoredCreatedDirectory, AnchoredDirectoryCreation, AnchoredLock, AnchoredTarget,
-    TrustedAnchor,
+    FileIdentity, TrustedAnchor,
 };
 use sha2::{Digest, Sha256};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -220,6 +220,16 @@ impl ProjectTransactionLock {
         &self.canonical_root
     }
 
+    /// Stable identity of the retained project directory.
+    ///
+    /// Callers that must resolve other machine-local authority before taking
+    /// the transaction lock can pre-open the reviewed root and compare this
+    /// value after acquisition. Path spelling alone cannot detect a
+    /// rename-and-replacement decoy at the same canonical pathname.
+    pub fn project_identity_at_acquisition(&self) -> FileIdentity {
+        self.project.identity()
+    }
+
     /// Resolve one project-relative payload through the retained root.
     ///
     /// Absolute paths are accepted only when they are lexically beneath the
@@ -383,6 +393,10 @@ mod tests {
         let paths = lock_paths_at(&project, lock_root.path()).unwrap();
         let lock = acquire_project_transaction_lock_at(paths).unwrap();
         assert_eq!(lock.project_root_at_acquisition(), canonical_project);
+        assert_eq!(
+            lock.project_identity_at_acquisition(),
+            TrustedAnchor::open(&project).unwrap().identity()
+        );
         let target = lock.target(project.join("state")).unwrap();
         let before = target.read_regular().unwrap().unwrap();
 
