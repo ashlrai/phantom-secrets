@@ -235,5 +235,9 @@ jobs:
           node-version: 22
       - name: Test fail-closed publication and release receipts
         run: node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs
+      - name: Install checksum-verified MCP Registry publisher
+        run: bash scripts/release/install-mcp-publisher.sh
+      - name: Validate the staged MCP Registry manifest
+        run: /tmp/phantom-mcp-publisher-bin/mcp-publisher validate mcp-registry/server.json
       - name: Package every crates.io crate in dependency order
         run: ./scripts/publish-crates.sh --verify-only
