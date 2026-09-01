@@ -97,14 +97,16 @@ enum ShellSyntax {
 }
 
 fn detect_shell_syntax() -> ShellSyntax {
-    // POSIX shells (incl. Git Bash on Windows, WSL, macOS, Linux) set $SHELL.
-    if let Ok(sh) = std::env::var("SHELL") {
-        let lower = sh.to_lowercase();
-        if lower.contains("fish") {
-            return ShellSyntax::Fish;
+    // PHANTOM_SHELL is the explicit override for nested shells. SHELL usually
+    // names the login shell and is only a fallback hint.
+    if let Ok(shell) = std::env::var("PHANTOM_SHELL") {
+        if let Some(syntax) = shell_syntax_from_name(&shell) {
+            return syntax;
         }
-        if lower.contains("bash") || lower.contains("zsh") || lower.ends_with("/sh") {
-            return ShellSyntax::Bash;
+    }
+    if let Ok(shell) = std::env::var("SHELL") {
+        if let Some(syntax) = shell_syntax_from_name(&shell) {
+            return syntax;
         }
     }
     // $PSModulePath is set by PowerShell on Windows and nowhere else.
@@ -118,6 +120,21 @@ fn detect_shell_syntax() -> ShellSyntax {
     #[cfg(not(windows))]
     {
         ShellSyntax::Bash
+    }
+}
+
+fn shell_syntax_from_name(shell: &str) -> Option<ShellSyntax> {
+    let lower = shell.to_lowercase();
+    if lower.contains("fish") {
+        Some(ShellSyntax::Fish)
+    } else if lower.contains("powershell") || lower.contains("pwsh") {
+        Some(ShellSyntax::PowerShell)
+    } else if lower == "cmd" || lower.ends_with("cmd.exe") {
+        Some(ShellSyntax::Cmd)
+    } else if lower.contains("bash") || lower.contains("zsh") || lower.ends_with("/sh") {
+        Some(ShellSyntax::Bash)
+    } else {
+        None
     }
 }
 
@@ -140,11 +157,11 @@ fn quote_fish_single(value: &str) -> String {
 
 fn shell_hint(syntax: ShellSyntax) -> &'static str {
     match syntax {
-        ShellSyntax::Bash => "  # Detected bash/zsh. fish: `set -gx X Y`. PowerShell: `$env:X = 'Y'`. cmd: `set X=Y`.",
-        ShellSyntax::Fish => "  # Detected fish. bash/zsh: `export X=Y`. PowerShell: `$env:X = 'Y'`. cmd: `set X=Y`.",
-        ShellSyntax::PowerShell => "  # Detected PowerShell. bash: `export X=Y`. cmd: `set X=Y`.",
+        ShellSyntax::Bash => "  # Selected bash/zsh syntax from PHANTOM_SHELL or the login-shell hint. For a different nested shell, set PHANTOM_SHELL explicitly.",
+        ShellSyntax::Fish => "  # Selected fish syntax from PHANTOM_SHELL or the login-shell hint. For a different nested shell, set PHANTOM_SHELL explicitly.",
+        ShellSyntax::PowerShell => "  # Selected PowerShell syntax. For a different nested shell, set PHANTOM_SHELL explicitly.",
         ShellSyntax::Cmd => {
-            "  # Assuming cmd.exe. PowerShell: `$env:X = \"Y\"`. bash: `export X=Y`."
+            "  # Selected cmd.exe syntax. For a different nested shell, set PHANTOM_SHELL explicitly."
         }
     }
 }
@@ -532,7 +549,15 @@ mod shell_tests {
             format_export(ShellSyntax::Fish, "PHANTOM_PROXY_TOKEN", "a'b\\c"),
             "  set -gx PHANTOM_PROXY_TOKEN 'a\\'b\\\\c'"
         );
-        assert!(shell_hint(ShellSyntax::Fish).contains("Detected fish"));
+        assert!(shell_hint(ShellSyntax::Fish).contains("Selected fish"));
+        assert_eq!(
+            shell_syntax_from_name("/opt/homebrew/bin/fish"),
+            Some(ShellSyntax::Fish)
+        );
+        assert_eq!(
+            shell_syntax_from_name("pwsh"),
+            Some(ShellSyntax::PowerShell)
+        );
     }
 
     #[test]

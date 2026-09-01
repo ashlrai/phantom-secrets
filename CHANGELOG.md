@@ -39,6 +39,18 @@ customer acceptance exist or are active.
   unless their exact commissioning gates are enabled. Operators must separately
   verify required migrations, environment variables, provider configuration,
   rollback, and authenticated acceptance before enabling those gates.
+- Effectful advanced MCP tools are now disabled unless
+  `PHANTOM_MCP_EFFECTS=trusted-terminal` is configured outside the requesting
+  agent's authority. Approval requires an attached terminal, a displayed
+  value-blind effect and exact parameter summary, and a fresh typed challenge.
+  A same-user shell or agent-controlled PTY is not human-presence proof; leave
+  effects disabled when the approval command or storage is within agent scope.
+- Windows rejects `--passphrase-file` before path access because native
+  handle-bound owner/DACL verification is not yet implemented. Use the hidden
+  trusted-terminal prompt. Unix private regular files remain supported.
+- Legacy direct installs sharing the npm installation root may be ambiguous.
+  Reinstall with the reviewed direct installer to create a source receipt;
+  `phantom upgrade` now fails closed instead of guessing ownership.
 
 ### Security
 
@@ -53,15 +65,28 @@ customer acceptance exist or are active.
 - Keeps incident reads read-only, removes false auto-rotation behavior, rejects
   unsupported team ownership invitation, and keeps stored secret values out of
   approval and MCP response contracts.
+- Removes dummy `phm_cand_` shadow "credential" promotion. Candidate and
+  promotion compatibility paths now fail closed until a real provider-backed,
+  out-of-band candidate workflow exists.
 - Resolves the effective Git hook through Git, including linked worktrees and
   `core.hooksPath`, and requires Phantom's canonical local check to be first and
   executable before readiness passes.
+- Makes fallback vault provisioning fail closed unless a generated passphrase
+  is durably persisted and verified, serializes keychain index/metadata
+  transactions, compensates partial mutations, and propagates backend errors
+  instead of replacing missing encryption keys or panicking.
+- Replaces ambient `kill`/`tasklist` process checks with native OS liveness,
+  authenticates graceful proxy shutdown, serializes per-project proxy starts,
+  and keeps session PID/bearer state out of Git.
 
 ### Reliability and authority boundaries
 
 - Makes initialization recoverable across vault, config, guidance, hook, and
   dotenv updates using compare-and-swap checks, collision-safe atomic writes,
   and rollback that never stores plaintext secret backups or journals.
+- Spans initialization and token-remap compare-and-swap checks with
+  cross-process project locks so concurrent writers cannot overwrite a newer
+  dotenv or vault state between verification and commit.
 - Normalizes Pro access from an exact lowercase plan plus a strictly valid,
   timezone-qualified future expiry. Billing lookup exhausts bounded Stripe
   subscription pagination and fails closed on malformed or non-progressing
@@ -69,6 +94,15 @@ customer acceptance exist or are active.
 - Keeps generated scripts and hooks on reviewed local executables, and aligns
   current-source package metadata, MCP schemas, and documentation with shipped
   behavior rather than uncommissioned pricing or hosted-service promises.
+- Serializes direct and npm installer promotion with owner/stale-recovery
+  locks, records distribution ownership transactionally, and verifies the
+  reviewed direct binaries before promotion. PowerShell no longer recommends
+  piping a network response into execution.
+- Builds GNU Linux archives on an explicit Ubuntu 22.04 baseline and rejects
+  either binary when ELF requirements exceed `GLIBC_2.35` or cannot be proven.
+  This is a symbol ceiling, not native archive acceptance. Shell exports use
+  quoted Bash, Fish, PowerShell, or cmd syntax with `PHANTOM_SHELL` available
+  for nested-shell overrides.
 - The authority, Locus-contract, broker, runtime, session, and evidence crates
   remain fail-closed foundations. This release does not activate a Locus
   verifier, issue broker leases, execute production engineering actions, or

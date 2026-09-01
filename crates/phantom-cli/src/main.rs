@@ -15,10 +15,11 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(
     name = "phantom",
-    about = "Prevent AI coding agents from leaking your API keys",
+    about = "Reduce API-key exposure in supported AI-agent workflows",
     long_about = "Phantom replaces real secrets in your .env with worthless phantom tokens.\n\
                   A local proxy intercepts API calls, swaps in real credentials at the network layer.\n\
-                  The AI agent never sees a real secret.\n\n\
+                  Agents confined to value-blind tools and supported proxy routes do not receive stored values.\n\
+                  Unmanaged files, same-user processes, arbitrary tools, and unsupported protocols remain outside this boundary.\n\n\
                   Commands are grouped (in display order):\n  \
                     Setup        init · agent · setup · doctor · completion · mcp\n  \
                     Daily use    exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \

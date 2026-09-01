@@ -270,6 +270,19 @@ test("machine-readable guidance rejects absolute security guarantees", () => {
   }
 });
 
+test("CLI and crate metadata state bounded credential-exposure claims", () => {
+  const metadata = {
+    "Cargo.toml": readRepo("Cargo.toml"),
+    "crates/phantom-cli/Cargo.toml": readRepo("crates/phantom-cli/Cargo.toml"),
+    "crates/phantom-cli/src/main.rs": readRepo("crates/phantom-cli/src/main.rs"),
+  };
+
+  for (const [file, source] of Object.entries(metadata)) {
+    assert.doesNotMatch(source, /prevents? AI coding agents from leaking/i, file);
+    assert.doesNotMatch(source, /AI agent never sees a real secret/i, file);
+  }
+});
+
 test("active wrapping guidance uses the installed local Phantom runtime", () => {
   for (const [file, source] of Object.entries(machineReadableClaims)) {
     assert.doesNotMatch(source, /npx\s+(?:-y\s+)?phantom-secrets\s+exec/i, file);
