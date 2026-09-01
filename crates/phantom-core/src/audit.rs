@@ -266,6 +266,9 @@ fn flush_sidecar_queue() {
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
+            .https_only(true)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let body = serde_json::to_vec(&events)?;
         let resp = client

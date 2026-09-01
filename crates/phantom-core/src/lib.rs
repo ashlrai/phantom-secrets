@@ -16,6 +16,7 @@ pub mod leak_correlation;
 pub mod managed_dotenv;
 pub mod mcp_approval;
 pub mod precommit_hook;
+mod provider_http;
 pub mod rotation_provider;
 pub mod rotation_strategy;
 pub mod sync;

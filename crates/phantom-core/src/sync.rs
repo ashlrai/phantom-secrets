@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
-const MAX_PROVIDER_RESPONSE_BYTES: usize = 1024 * 1024;
+use crate::provider_http;
 
 /// Supported deployment platforms for secret syncing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -142,7 +142,10 @@ pub async fn sync_to_vercel(
     secrets: &BTreeMap<String, String>,
     targets: &[String],
 ) -> Vec<SyncResult> {
-    let client = reqwest::Client::new();
+    let client = match provider_http::async_client() {
+        Ok(client) => client,
+        Err(error) => return error_results(secrets, error),
+    };
     let mut results = Vec::new();
 
     // First, list existing env vars to know what to update vs create
@@ -236,7 +239,7 @@ async fn list_vercel_env_vars(
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Vercel environment inventory request failed".to_string())?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -245,7 +248,7 @@ async fn list_vercel_env_vars(
         ));
     }
 
-    let bytes = read_bounded_provider_response(resp, "Vercel environment inventory").await?;
+    let bytes = provider_http::read_bounded_response(resp, "Vercel environment inventory").await?;
     let data: VercelEnvMetadataResponse = serde_json::from_slice(&bytes)
         .map_err(|_| "Vercel environment inventory response was invalid".to_string())?;
     Ok(data.envs)
@@ -283,7 +286,7 @@ async fn create_vercel_env_var(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Vercel environment create request failed".to_string())?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -316,7 +319,7 @@ async fn update_vercel_env_var(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Vercel environment update request failed".to_string())?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -336,7 +339,10 @@ pub async fn sync_to_railway(
     service_id: Option<&str>,
     secrets: &BTreeMap<String, String>,
 ) -> Vec<SyncResult> {
-    let client = reqwest::Client::new();
+    let client = match provider_http::async_client() {
+        Ok(client) => client,
+        Err(error) => return error_results(secrets, error),
+    };
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -378,7 +384,8 @@ pub async fn sync_to_railway(
     match resp {
         Ok(r) => {
             if r.status().is_success() {
-                let bytes = match read_bounded_provider_response(r, "Railway mutation").await {
+                let bytes = match provider_http::read_bounded_response(r, "Railway mutation").await
+                {
                     Ok(bytes) => bytes,
                     Err(error) => return error_results(secrets, error),
                 };
@@ -407,13 +414,10 @@ pub async fn sync_to_railway(
                     .collect()
             }
         }
-        Err(e) => secrets
-            .keys()
-            .map(|key| SyncResult {
-                key: key.clone(),
-                status: SyncStatus::Error(format!("Request failed: {e}")),
-            })
-            .collect(),
+        Err(_) => error_results(
+            secrets,
+            "Railway variable upsert request failed".to_string(),
+        ),
     }
 }
 
@@ -456,34 +460,6 @@ fn parse_railway_mutation_response(bytes: &[u8]) -> std::result::Result<(), Stri
     Ok(())
 }
 
-async fn read_bounded_provider_response(
-    mut response: reqwest::Response,
-    operation: &str,
-) -> std::result::Result<Zeroizing<Vec<u8>>, String> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_PROVIDER_RESPONSE_BYTES as u64)
-    {
-        return Err(format!(
-            "{operation} response exceeded the {MAX_PROVIDER_RESPONSE_BYTES}-byte limit"
-        ));
-    }
-    let mut bytes = Zeroizing::new(Vec::new());
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| format!("{operation} response could not be read"))?
-    {
-        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_RESPONSE_BYTES {
-            return Err(format!(
-                "{operation} response exceeded the {MAX_PROVIDER_RESPONSE_BYTES}-byte limit"
-            ));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
-}
-
 // ── Pull Functions ───────────────────────────────────────────────────
 
 /// Pull secrets from Vercel into a local map.
@@ -491,7 +467,7 @@ pub async fn pull_from_vercel(
     token: &str,
     project_id: &str,
 ) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, String> {
-    let client = reqwest::Client::new();
+    let client = provider_http::async_client()?;
 
     // Use decrypt=true to get actual values
     let resp = client
@@ -501,14 +477,14 @@ pub async fn pull_from_vercel(
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Vercel pull request failed".to_string())?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         return Err(format!("Vercel pull request failed (HTTP {status})"));
     }
 
-    let bytes = read_bounded_provider_response(resp, "Vercel pull").await?;
+    let bytes = provider_http::read_bounded_response(resp, "Vercel pull").await?;
     let data: VercelEnvListResponse = serde_json::from_slice(&bytes)
         .map_err(|_| "Vercel pull response was invalid".to_string())?;
 
@@ -532,7 +508,7 @@ pub async fn pull_from_railway(
     environment_id: &str,
     service_id: Option<&str>,
 ) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, String> {
-    let client = reqwest::Client::new();
+    let client = provider_http::async_client()?;
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -569,14 +545,14 @@ pub async fn pull_from_railway(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Railway pull request failed".to_string())?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         return Err(format!("Railway pull request failed (HTTP {status})"));
     }
 
-    let bytes = read_bounded_provider_response(resp, "Railway pull").await?;
+    let bytes = provider_http::read_bounded_response(resp, "Railway pull").await?;
     parse_railway_pull_response(&bytes)
 }
 
@@ -730,12 +706,12 @@ mod tests {
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                MAX_PROVIDER_RESPONSE_BYTES + 1
+                provider_http::MAX_PROVIDER_RESPONSE_BYTES + 1
             )
             .unwrap();
         });
         let response = reqwest::get(format!("http://{address}")).await.unwrap();
-        let error = read_bounded_provider_response(response, "mock provider")
+        let error = provider_http::read_bounded_response(response, "mock provider")
             .await
             .unwrap_err();
         assert!(error.contains("exceeded"));

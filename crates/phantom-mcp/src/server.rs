@@ -1425,14 +1425,18 @@ impl PhantomMcpServer {
         let mut lines: Vec<String> = Vec::new();
         let mut issues = 0u32;
         let mut fixed = 0u32;
+        let mut doctor_files = Vec::new();
+        let mut hook_changed = false;
 
         let config_path = self.config_path();
-        let config_exists = config_path.exists();
+        let config_before = phantom_core::fs::read_regular_file(&config_path)
+            .map_err(|error| internal_err(format!("Failed to read config safely: {error}")))?;
+        let config_exists = config_before.is_some();
 
         // ── Check 1: .phantom.toml ──────────────────────────────────────
-        let config = if config_path.exists() {
+        let config = if let Some(bytes) = config_before.as_deref() {
             lines.push("pass: .phantom.toml found".to_string());
-            match PhantomConfig::load(&config_path) {
+            match PhantomConfig::load_from_bytes(&config_path, bytes) {
                 Ok(cfg) => {
                     let id_short = cfg
                         .portable_project_id()
@@ -1505,8 +1509,13 @@ impl PhantomMcpServer {
 
         // ── Check 3: .env file ──────────────────────────────────────────
         if let Some(env_path) = env_path.as_ref() {
-            if env_path.exists() {
-                match DotenvFile::parse_file(env_path) {
+            let env_before = phantom_core::fs::read_regular_file(env_path)
+                .map_err(|error| {
+                    internal_err(format!("Failed to read managed dotenv safely: {error}"))
+                })?
+                .map(zeroize::Zeroizing::new);
+            if let Some(bytes) = env_before.as_deref() {
+                match std::str::from_utf8(bytes).map(DotenvFile::parse_str) {
                     Ok(dotenv) => {
                         let entries = dotenv.entries();
                         let real_secrets = dotenv.real_secret_entries();
@@ -1527,8 +1536,8 @@ impl PhantomMcpServer {
                             issues += 1;
                         }
                     }
-                    Err(e) => {
-                        lines.push(format!("FAIL: .env parse error: {e}"));
+                    Err(_) => {
+                        lines.push("FAIL: .env parse error: file is not valid UTF-8".to_string());
                         issues += 1;
                     }
                 }
@@ -1546,8 +1555,11 @@ impl PhantomMcpServer {
 
         // ── Check 4: .gitignore includes .env ───────────────────────────
         let gitignore_path = self.project_dir.join(".gitignore");
-        if gitignore_path.exists() {
-            let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+        let gitignore_before = phantom_core::fs::read_regular_file(&gitignore_path)
+            .map_err(|error| internal_err(format!("Failed to read .gitignore safely: {error}")))?;
+        if let Some(before) = gitignore_before {
+            let content = String::from_utf8(before.clone())
+                .map_err(|_| internal_err("Refusing to repair a non-UTF-8 .gitignore"))?;
             let managed_name = env_path
                 .as_ref()
                 .and_then(|path| path.file_name())
@@ -1566,10 +1578,12 @@ impl PhantomMcpServer {
                     }
                     c.push_str(managed_name);
                     c.push('\n');
-                    std::fs::write(&gitignore_path, c)
-                        .map_err(|e| internal_err(format!("Failed to write .gitignore: {e}")))?;
+                    doctor_files.push(phantom_vault::InitFile::replace_if_unchanged(
+                        &gitignore_path,
+                        Some(before),
+                        c.into_bytes(),
+                    ));
                     lines.push("  Fixed: Added .env to .gitignore".to_string());
-                    fixed += 1;
                 } else {
                     issues += 1;
                 }
@@ -1577,13 +1591,12 @@ impl PhantomMcpServer {
         } else {
             lines.push("warn: No .gitignore — consider adding one".to_string());
             if params.fix {
-                std::fs::write(
+                doctor_files.push(phantom_vault::InitFile::replace_if_unchanged(
                     &gitignore_path,
+                    None::<Vec<u8>>,
                     ".env\n.env.local\n.env.*.local\n.env.backup\n",
-                )
-                .map_err(|e| internal_err(format!("Failed to create .gitignore: {e}")))?;
+                ));
                 lines.push("  Fixed: Created .gitignore with .env patterns".to_string());
-                fixed += 1;
             } else {
                 issues += 1;
             }
@@ -1591,20 +1604,34 @@ impl PhantomMcpServer {
 
         // ── Check 5: .env.example exists ────────────────────────────────
         let example_path = self.project_dir.join(".env.example");
-        if example_path.exists() {
+        let example_before =
+            phantom_core::fs::read_regular_file(&example_path).map_err(|error| {
+                internal_err(format!("Failed to inspect .env.example safely: {error}"))
+            })?;
+        if example_before.is_some() {
             lines.push("pass: .env.example found (team onboarding ready)".to_string());
         } else {
             lines.push("warn: No .env.example — team onboarding may be difficult".to_string());
-            if params.fix && env_path.as_ref().is_some_and(|path| path.exists()) {
+            if params.fix && env_path.is_some() {
                 if let Some(env_path) = env_path.as_ref() {
-                    if let Ok(dotenv) = DotenvFile::parse_file(env_path) {
+                    if let Some(env_bytes) =
+                        phantom_core::fs::read_regular_file(env_path).map_err(|error| {
+                            internal_err(format!("Failed to read managed dotenv safely: {error}"))
+                        })?
+                    {
+                        let env_bytes = zeroize::Zeroizing::new(env_bytes);
+                        let env_content = std::str::from_utf8(&env_bytes).map_err(|_| {
+                            internal_err("Refusing to generate an example from non-UTF-8 dotenv")
+                        })?;
+                        let dotenv = DotenvFile::parse_str(env_content);
                         let cfg = config.as_ref();
                         let content = dotenv.generate_example_content(cfg);
-                        std::fs::write(&example_path, content).map_err(|e| {
-                            internal_err(format!("Failed to write .env.example: {e}"))
-                        })?;
+                        doctor_files.push(phantom_vault::InitFile::replace_if_unchanged(
+                            &example_path,
+                            None::<Vec<u8>>,
+                            content.into_bytes(),
+                        ));
                         lines.push("  Fixed: Generated .env.example".to_string());
-                        fixed += 1;
                     }
                 }
             } else if !params.fix {
@@ -1614,13 +1641,14 @@ impl PhantomMcpServer {
 
         // ── Check 6: Project-local Claude MCP wiring ───────────────────
         let claude_settings = self.project_dir.join(".claude/settings.local.json");
-        if claude_settings.exists() {
-            let content = std::fs::read_to_string(&claude_settings).map_err(|e| {
-                internal_err(format!(
-                    "Refusing to inspect or repair unreadable Claude settings {}: {e}",
-                    claude_settings.display()
-                ))
-            })?;
+        if let Some(bytes) = phantom_core::fs::read_regular_file(&claude_settings).map_err(|e| {
+            internal_err(format!(
+                "Refusing to inspect unreadable Claude settings {}: {e}",
+                claude_settings.display()
+            ))
+        })? {
+            let content = String::from_utf8(bytes)
+                .map_err(|_| internal_err("Refusing to inspect non-UTF-8 Claude settings"))?;
             if phantom_core::agent::mcp_config_has_local_runtime(&claude_settings) {
                 lines.push(
                     "pass: Claude Code MCP server uses a local Phantom executable".to_string(),
@@ -1682,6 +1710,7 @@ impl PhantomMcpServer {
                     };
                     lines.push(message.to_string());
                     fixed += 1;
+                    hook_changed = true;
                 } else {
                     issues += 1;
                 }
@@ -1696,6 +1725,7 @@ impl PhantomMcpServer {
                     })?;
                     lines.push("  Fixed: Installed pre-commit hook".to_string());
                     fixed += 1;
+                    hook_changed = true;
                 } else {
                     issues += 1;
                 }
@@ -1703,6 +1733,12 @@ impl PhantomMcpServer {
             precommit_hook::HookState::NotRepository => {
                 lines.push("info: Not a git repo — pre-commit hook not applicable".to_string());
             }
+        }
+
+        if !doctor_files.is_empty() {
+            let count = doctor_files.len() as u32;
+            commit_doctor_file_updates(&self.project_dir, doctor_files, hook_changed)?;
+            fixed += count;
         }
 
         // ── Summary ─────────────────────────────────────────────────────
@@ -2447,7 +2483,35 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamVaultParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_push", params.confirm)?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        if params.team_id.is_empty()
+            || params.team_id.len() > 128
+            || !params
+                .team_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(invalid_params_err("team_id is not a valid Phantom team ID"));
+        }
+        let config_path = self.config_path();
+        let (config, config_before) = load_mcp_config_exact(&config_path)?;
+        let vault = phantom_vault::try_create_vault(config.local_project_id())
+            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let project_id = config.portable_project_id().to_string();
+        let mut names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to list vault: {e}")))?;
+        names.sort();
+        if names.is_empty() {
+            return text_result("No secrets in this project's vault to push.".to_string());
+        }
+        let params_json = team_push_approval_params_json(
+            &params,
+            &self.project_id(),
+            &config,
+            &config_before,
+            vault.backend_name(),
+            &names,
+        )?;
         require_approval_token(
             "phantom_team_vault_push",
             params.approval_token.as_deref(),
@@ -2457,21 +2521,24 @@ impl PhantomMcpServer {
         use std::collections::BTreeMap;
         use zeroize::Zeroizing;
 
-        let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
+        require_exact_config_before_effect(&config_path, &config_before)?;
+        let mut current_names = vault
+            .list()
+            .map_err(|e| internal_err(format!("Failed to recheck vault names: {e}")))?;
+        current_names.sort();
+        if current_names != names {
+            return Err(internal_err(
+                "Vault names changed after approval; no secret value or provider request was attempted",
+            ));
+        }
+
+        let token = Zeroizing::new(
+            phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?,
+        );
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
         let kp = phantom_core::auth::get_or_create_team_keypair()
             .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
-
-        let (config, vault) = self.load_config_and_vault()?;
-        let project_id = config.portable_project_id().to_string();
-
-        let names = vault
-            .list()
-            .map_err(|e| internal_err(format!("Failed to list vault: {e}")))?;
-        if names.is_empty() {
-            return text_result("No secrets in this project's vault to push.".to_string());
-        }
         let mut secrets: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
         for name in &names {
             let value = vault
@@ -2482,7 +2549,7 @@ impl PhantomMcpServer {
 
         let outcome = phantom_core::teams_vault::push_for_project(
             &api_base,
-            &token,
+            token.as_str(),
             &params.team_id,
             &project_id,
             secrets,
@@ -4795,6 +4862,57 @@ impl Drop for SensitiveSecretMap {
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
+struct DoctorFileOnlyVault;
+
+impl phantom_vault::VaultBackend for DoctorFileOnlyVault {
+    fn store(&self, _name: &str, _value: &str) -> phantom_core::error::Result<()> {
+        Err(phantom_core::error::PhantomError::VaultError(
+            "doctor file transaction cannot mutate vault state".to_string(),
+        ))
+    }
+
+    fn retrieve(&self, _name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+        Err(phantom_core::error::PhantomError::VaultError(
+            "doctor file transaction cannot read vault state".to_string(),
+        ))
+    }
+
+    fn delete(&self, _name: &str) -> phantom_core::error::Result<()> {
+        Err(phantom_core::error::PhantomError::VaultError(
+            "doctor file transaction cannot mutate vault state".to_string(),
+        ))
+    }
+
+    fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+        Err(phantom_core::error::PhantomError::VaultError(
+            "doctor file transaction cannot read vault state".to_string(),
+        ))
+    }
+
+    fn backend_name(&self) -> &str {
+        "doctor-file-only"
+    }
+}
+
+fn commit_doctor_file_updates(
+    project_dir: &Path,
+    files: Vec<phantom_vault::InitFile>,
+    hook_changed: bool,
+) -> Result<(), McpError> {
+    phantom_vault::commit_init(project_dir, &DoctorFileOnlyVault, Vec::new(), files)
+        .map(|_| ())
+        .map_err(|error| {
+            let prior_effect = if hook_changed {
+                " The pre-commit hook was already repaired before this independent file transaction failed; inspect it before retrying."
+            } else {
+                ""
+            };
+            internal_err(format!(
+                "Doctor file transaction failed; exact transaction-owned changes were rolled back where verifiable: {error}.{prior_effect}"
+            ))
+        })
+}
+
 fn retrieve_optional_secret(
     vault: &dyn phantom_vault::VaultBackend,
     name: &str,
@@ -4860,6 +4978,30 @@ fn bounded_name_digest(names: &[String]) -> Result<String, McpError> {
         digest.update(name.as_bytes());
     }
     Ok(hex::encode(digest.finalize()))
+}
+
+fn team_push_approval_params_json(
+    params: &TeamVaultParams,
+    canonical_project: &str,
+    config: &PhantomConfig,
+    config_before: &[u8],
+    vault_backend: &str,
+    names: &[String],
+) -> Result<String, McpError> {
+    serde_json::to_string(&serde_json::json!({
+        "team_id": &params.team_id,
+        "confirm": params.confirm,
+        "plan": {
+            "canonical_project": canonical_project,
+            "local_project_id": config.local_project_id(),
+            "portable_project_id": config.portable_project_id(),
+            "config_sha256": hex::encode(Sha256::digest(config_before)),
+            "vault_backend": vault_backend,
+            "secret_count": names.len(),
+            "secret_names_sha256": bounded_name_digest(names)?,
+        }
+    }))
+    .map_err(|error| internal_err(format!("Failed to bind team-push approval: {error}")))
 }
 
 fn sanitized_alert_origins(
@@ -6057,6 +6199,60 @@ mod tests {
     }
 
     #[test]
+    fn team_push_approval_binds_config_vault_and_exact_name_set_without_values() {
+        let params = TeamVaultParams {
+            team_id: "team-safe".to_string(),
+            confirm: true,
+            approval_token: None,
+        };
+        let config = cloud_test_config(0);
+        let names_a = vec!["ALPHA".to_string(), "BETA".to_string()];
+        let names_b = vec!["ALPHA".to_string(), "GAMMA".to_string()];
+        let a = team_push_approval_params_json(
+            &params,
+            "/canonical/project",
+            &config,
+            b"config-a",
+            "file",
+            &names_a,
+        )
+        .unwrap();
+        let config_swap = team_push_approval_params_json(
+            &params,
+            "/canonical/project",
+            &config,
+            b"config-b",
+            "file",
+            &names_a,
+        )
+        .unwrap();
+        let backend_swap = team_push_approval_params_json(
+            &params,
+            "/canonical/project",
+            &config,
+            b"config-a",
+            "keychain",
+            &names_a,
+        )
+        .unwrap();
+        let names_swap = team_push_approval_params_json(
+            &params,
+            "/canonical/project",
+            &config,
+            b"config-a",
+            "file",
+            &names_b,
+        )
+        .unwrap();
+
+        assert_ne!(a, config_swap);
+        assert_ne!(a, backend_swap);
+        assert_ne!(a, names_swap);
+        assert!(!a.contains("secret-value"));
+        assert!(!a.contains("approval_token"));
+    }
+
+    #[test]
     fn mcp_remap_rejects_a_concurrent_env_change_without_overwriting_it() {
         let dir = TempDir::new().unwrap();
         let env_path = dir.path().join(".env");
@@ -6673,6 +6869,53 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(hook).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mcp_doctor_fix_rejects_gitignore_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, dir) = setup_test_project();
+        let victim = dir.path().join("outside-owned-file");
+        std::fs::write(&victim, b"owner-content\n").unwrap();
+        symlink(&victim, dir.path().join(".gitignore")).unwrap();
+
+        let error = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: true,
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap_err();
+
+        assert!(error.message.contains("symlink"), "{}", error.message);
+        assert_eq!(std::fs::read(victim).unwrap(), b"owner-content\n");
+        assert!(!dir.path().join(".env.example").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mcp_doctor_fix_rejects_dangling_example_symlink_without_creating_target() {
+        use std::os::unix::fs::symlink;
+
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (server, dir) = setup_test_project();
+        std::fs::write(dir.path().join(".gitignore"), b".env\n").unwrap();
+        let victim = dir.path().join("not-yet-created");
+        symlink(&victim, dir.path().join(".env.example")).unwrap();
+
+        let error = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: true,
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap_err();
+
+        assert!(error.message.contains("symlink"), "{}", error.message);
+        assert!(!victim.exists());
     }
 
     #[test]
