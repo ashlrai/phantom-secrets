@@ -246,25 +246,14 @@ pub struct RotateOutcome {
     pub secret_count: usize,
 }
 
-/// Revoke a member from the team vault and rotate the symmetric key.
+/// Compatibility boundary for team-member revocation.
 ///
-/// Steps use optimistic concurrency for the encrypted vault blob only:
-/// 1. Pull the current vault and decrypt it with `kp`.
-/// 2. Remove `revoked_github_login` from the recipient set.
-/// 3. Generate a fresh symmetric key and re-encrypt the vault plaintext.
-/// 4. Re-wrap the new key for every *remaining* member with a registered
-///    public key.
-/// 5. Push the rotated vault with an exact expected version.
-/// 6. Emit tamper-proof audit events for the rotation + revocation.
-///
-/// This helper does **not** remove the member from the team's authorization
-/// roster. It only omits that member's key share from the newly encrypted
-/// vault. Complete offboarding requires a separate, authorized server-side
-/// membership mutation, which is not composed atomically here.
-///
-/// Fails if `revoked_github_login` is not a current member, or if the
-/// caller (`kp`) cannot decrypt the current vault (i.e. the caller does
-/// not have a valid share).
+/// Shipped 0.7.4 hard-denies before decrypt, roster lookup, network, audit, or
+/// mutation. Omitting a key share without atomically removing the server-side
+/// member would not revoke authorization, and the current key roster exposes
+/// an opaque `user_id` rather than a verified GitHub-login identity. A future
+/// implementation requires one authorized server transaction that removes the
+/// member and commits the rekey together.
 pub async fn revoke_member(
     api_base: &str,
     token: &str,
@@ -273,105 +262,18 @@ pub async fn revoke_member(
     revoked_github_login: &str,
     kp: &team_crypto::MemberKeypair,
 ) -> Result<RotateOutcome> {
-    // 1. Pull current vault and decrypt. This SINGLE pull supplies both the
-    //    plaintext for re-encryption AND the OCC expected_version for the push.
-    //    Do NOT pull a second time before pushing — a concurrent push between
-    //    two pulls would be silently overwritten (a revoked share could
-    //    re-appear). See TOCTOU fix below.
-    let (secrets, current_version) =
-        pull_for_project(api_base, token, team_id, project_id, kp).await?;
-
-    // 2. Fetch current members, excluding the revoked user.
-    let all_members = teams::list_team_member_keys(api_base, token, team_id).await?;
-    let remaining: Vec<&teams::TeamMemberKey> = all_members
-        .iter()
-        .filter(|m| {
-            // user_id on TeamMemberKey is typically the github login or an opaque
-            // server-side ID; we also check by excluding the revoked login from the
-            // public-key recipients list. The server enforces the actual removal —
-            // we just stop wrapping for that user here.
-            m.user_id != revoked_github_login
-        })
-        .collect();
-
-    if remaining.len() == all_members.len() {
-        // No member matched — either the user doesn't exist or already removed.
-        return Err(PhantomError::Other(format!(
-            "Member @{revoked_github_login} not found in team {team_id}. \
-             Check `phantom team members {team_id}` for valid logins."
-        )));
-    }
-
-    let recipients: Vec<&teams::TeamMemberKey> = remaining
-        .iter()
-        .filter(|m| m.public_key.is_some())
-        .copied()
-        .collect();
-    let skipped = remaining.len() - recipients.len();
-
-    // 3. Re-encrypt vault with a fresh symmetric key.
-    let plaintext_view: std::collections::BTreeMap<&str, &str> = secrets
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-    let plaintext = Zeroizing::new(
-        serde_json::to_string(&plaintext_view)
-            .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?,
-    );
-
-    let sym_key = team_crypto::generate_sym_key();
-    let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
-        .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-
-    let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    framed.extend_from_slice(&nonce_bytes);
-    framed.extend_from_slice(&ciphertext);
-    let blob_b64 = B64.encode(&framed);
-
-    // 4. Re-wrap the new key for all remaining recipients.
-    let mut shares: HashMap<String, team_crypto::KeyShare> = HashMap::new();
-    for m in &recipients {
-        let share = team_crypto::seal_sym_key(&sym_key, m.public_key.as_ref().unwrap())?;
-        shares.insert(m.user_id.clone(), share);
-    }
-
-    // 5. Push the rotated vault using the version observed in step 1 as the OCC
-    //    expected_version. This guarantees the push fails (rather than silently
-    //    clobbering) if another writer mutated the vault after we decrypted it.
-    let expected_version = current_version;
-    let new_version = teams::push_team_vault(
+    let _ = (
         api_base,
         token,
         team_id,
         project_id,
-        &blob_b64,
-        Some(expected_version),
-        shares,
-    )
-    .await?;
-
-    // 6. Emit audit events (best-effort — never fail the rotation).
-    let remaining_logins: Vec<String> = remaining.iter().map(|m| m.user_id.clone()).collect();
-    crate::audit::log_team_member_revoked(
-        team_id,
         revoked_github_login,
-        &remaining_logins,
-        new_version,
+        kp,
     );
-    crate::audit::log_vault_key_rotated(team_id, project_id, new_version);
-
-    Ok(RotateOutcome {
-        new_version,
-        recipients: recipients.len(),
-        skipped,
-        revoked_user: Some(revoked_github_login.to_string()),
-        secret_count: secrets.len(),
-    })
+    Err(PhantomError::Other(
+        "Team member revocation is disabled before decrypt, network, audit, or mutation: Phantom Cloud lacks an atomic membership-removal plus vault-rekey transaction and the key roster does not expose a verified GitHub-login identity. No offboarding occurred. Do not retry automatically."
+            .to_string(),
+    ))
 }
 
 /// Proactively rotate the team vault's symmetric key without removing any
@@ -650,5 +552,28 @@ mod tests {
         crate::audit::log_vault_key_rotated(team_id, project_id, version);
         crate::audit::log_team_member_revoked(team_id, "@carol", &remaining, version);
         crate::audit::log_team_vault_rotation_members(team_id, &remaining, version);
+    }
+
+    #[tokio::test]
+    async fn revoke_member_hard_denies_before_network_or_decrypt() {
+        let keypair = team_crypto::MemberKeypair::generate();
+        let result = revoke_member(
+            "http://127.0.0.1:1",
+            "token-must-not-be-used",
+            "team-test",
+            "project-test",
+            "member-test",
+            &keypair,
+        )
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("revocation must remain unavailable"),
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("disabled before decrypt, network, audit, or mutation"));
+        assert!(message.contains("No offboarding occurred"));
+        assert!(!message.contains("token-must-not-be-used"));
     }
 }

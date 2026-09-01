@@ -333,7 +333,7 @@ fn effect_summary_for_tool(tool_name: &str) -> std::io::Result<&'static str> {
         "phantom_audit_hotspot_alerts" => "Persist acknowledgements or snoozes for the selected hotspot alerts when ack=true.",
         "phantom_apply_expiry_policy" => "Persist vault-mode changes for credentials affected by the expiry policy.",
         "phantom_secrets_auto_rotate" => "Remap the selected local phm_ placeholder without rotating or syncing its provider credential.",
-        "phantom_rotate_provider" => "Call the configured provider rotation API, store the replacement credential, update local lifecycle state, and optionally revoke the prior credential.",
+        "phantom_rotate_provider" => "Hard-deny automated live provider issuance before credential or network access; no provider or local state changes occur.",
         "phantom_cloud_status" => "Use the stored cloud credential to request authenticated cloud status metadata.",
         "phantom_rotate_with_candidate" | "phantom_rotate_promote" => {
             return Err(invalid_approval_input(format!(

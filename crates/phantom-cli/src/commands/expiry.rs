@@ -34,7 +34,7 @@ pub struct ExpiryEntry {
 pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> Result<()> {
     if auto_rotate && sync_after {
         anyhow::bail!(
-            "--sync is not valid with the deprecated --auto-rotate token remap: provider credentials are unchanged. Use `phantom rotate --name <NAME> [--provider <PROVIDER>] --sync` for a real provider rotation."
+            "--sync is not valid with the deprecated --auto-rotate token remap: provider credentials are unchanged. Rotate at the provider, store the replacement from a trusted terminal, then run an explicitly reviewed sync; automated live provider issuance is disabled."
         );
     }
 

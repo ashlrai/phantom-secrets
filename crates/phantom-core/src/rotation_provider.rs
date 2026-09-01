@@ -311,9 +311,10 @@ pub struct RotationProviderConfig {
     /// custom name for [`GenericRotationProvider`].
     pub provider: String,
 
-    /// Name of an environment variable (or vault secret) holding the API key
-    /// used to call the vendor's rotation endpoint. This is NOT the secret
-    /// being rotated; it is a separate rotation-management credential.
+    /// Reserved name of an environment variable (or vault secret) holding a
+    /// future provider-management credential. Shipped builds do not read it
+    /// for live issuance; exact unit-test mocks use it to exercise local
+    /// transaction behavior. This is not the secret being rotated.
     ///
     /// Example: `"STRIPE_ROTATION_API_KEY"` or `"GH_ADMIN_TOKEN"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -608,8 +609,9 @@ pub struct StripeRotationProvider;
 const STRIPE_NOT_SUPPORTED_REASON: &str =
     "Stripe has no public API for creating or rolling API keys — key rotation \
      is dashboard-only. Roll the key at https://dashboard.stripe.com/apikeys \
-     then store the replacement with `phantom add`. For a self-refreshing \
-     credential, use the OAuth app grant: `phantom grant add stripe`.";
+     then store the replacement with trusted-terminal `phantom add`. Automated \
+     enrollment and OAuth refresh are also disabled until durable recovery \
+     escrow exists.";
 
 /// Reserved environment variable for a future recovery-escrow-backed Stripe
 /// refresh flow. The current rotation provider never reads or transmits it.
@@ -635,6 +637,12 @@ impl RotationProvider for StripeRotationProvider {
             return Err(RotationProviderError::NotSupported {
                 reason: "Stripe OAuth refresh rotation is disabled because the token exchange invalidates the current refresh token before Phantom can durably verify the successor in its vault. A durable verified recovery escrow channel is required before this path can be enabled. Do not retry automatically."
                     .to_string(),
+            });
+        }
+
+        if !mock_rotation_allowed() {
+            return Err(RotationProviderError::NotSupported {
+                reason: STRIPE_NOT_SUPPORTED_REASON.to_string(),
             });
         }
 
@@ -702,19 +710,13 @@ fn stripe_is_oauth_refresh(config: &RotationProviderConfig) -> bool {
 /// durably identified and revoked after local persistence failure. The only
 /// executable path is the exact `cfg(test)` mock prefix.
 ///
-/// 1. **GitHub Apps installation tokens**: POST `/app/installations/{id}/access_tokens`
-///    generates a fresh short-lived token (**expires after 1 hour**). This is
-///    the recommended approach for automated rotation in CI. Callers should
-///    persist a ~1 h expiry on the stored secret so expiry tooling flags it
-///    (the CLI/MCP rotation paths do this).
-/// 2. **Mock path** (for `ghp_mock_*` tokens): returns a deterministic rotated value.
+/// A future compensated implementation may use GitHub App installation tokens,
+/// which expire after one hour, but this source does not make that provider
+/// call. The exact `ghp_mock_*` unit-test path returns a deterministic value so
+/// local persistence, expiry, and receipt behavior can be tested hermetically.
 ///
-/// **Bootstrap credential caveat**: the mint endpoint requires
-/// `Authorization: Bearer <GitHub App JWT>` — a JWT signed with the App's
-/// private key that itself **expires ~10 minutes after minting**. The value
-/// behind `api_key_env` must therefore be a *freshly generated* App JWT for
-/// each rotation (e.g. minted by a wrapper script), not a static long-lived
-/// credential.
+/// The reserved future mint contract requires a short-lived GitHub App JWT;
+/// that design note is not evidence that live issuance is enabled.
 ///
 /// For classic PATs or fine-grained PATs the GitHub API does not support
 /// programmatic rotation — there is no endpoint to mint or regenerate a PAT.
@@ -1120,14 +1122,8 @@ impl RotationProvider for VercelRotationProvider {
         CleanupSemantics::RevokePriorCredential
     }
 
-    /// Revocation of the OLD token, run by the caller only after the new token
-    /// is durably stored and verified in the vault.
-    ///
-    /// Authenticates the `DELETE /v3/user/tokens/current` call with the old
-    /// secret value itself, so exactly the rotated-out token is revoked —
-    /// never the bootstrap credential (which may be a separate
-    /// rotation-management token). Failures are recorded as value-free audit
-    /// events and returned so the caller can report explicit partial success.
+    /// Cleanup is disabled with live issuance. Exact mock values remain a
+    /// hermetic transaction-test seam and never reach the network.
     fn post_store_cleanup(
         &self,
         secret_name: &str,
@@ -1141,35 +1137,14 @@ impl RotationProvider for VercelRotationProvider {
 
         // Hermetic mock values never reach the network.
         if old_token.starts_with("vercel_mock_") || old_token.starts_with("vercel_rotated_mock_") {
+            guard_mock_rotation(secret_name)?;
             return Ok(CleanupOutcome::SkippedMockCredential);
         }
-
-        let client = build_http_client(config.timeout_secs).map_err(|_| {
-            crate::audit::log("vault.rotation.old_token_revoke_failed", Some(secret_name));
-            RotationProviderError::UnexpectedResponse {
-                reason: "could not construct prior-token cleanup client".to_string(),
-            }
-        })?;
-        let response = client
-            .delete("https://api.vercel.com/v3/user/tokens/current")
-            .header("Authorization", format!("Bearer {}", old_token.as_str()))
-            .send()
-            .map_err(|_| {
-                crate::audit::log("vault.rotation.old_token_revoke_failed", Some(secret_name));
-                RotationProviderError::NetworkError {
-                    reason: "prior-token cleanup request failed".to_string(),
-                }
-            })?;
-        if !response.status().is_success() {
-            // Operators must know the old token is still live (name only —
-            // never token bytes).
-            crate::audit::log("vault.rotation.old_token_revoke_failed", Some(secret_name));
-            return Err(RotationProviderError::ApiError {
-                status: response.status().as_u16(),
-                reason: "prior-token cleanup was rejected".to_string(),
-            });
-        }
-        Ok(CleanupOutcome::Succeeded)
+        let _ = config;
+        Err(RotationProviderError::NotSupported {
+            reason: "Live Vercel prior-token cleanup is disabled before credential or network access together with live issuance. Revoke provider credentials directly in the Vercel dashboard and verify the result; do not retry automatically."
+                .to_string(),
+        })
     }
 
     fn rotation_source(&self) -> RotationSource {
@@ -1454,6 +1429,7 @@ pub(crate) fn resolve_api_key(
 /// secrets verbatim to the redirect target. `Policy::none()` makes any 3xx
 /// surface as a non-2xx error instead of replaying the body — mirroring
 /// `issuance::build_http_client` and the dedicated Stripe roll client.
+#[cfg(test)]
 pub(crate) fn build_http_client(
     timeout_secs: u64,
 ) -> Result<reqwest::blocking::Client, RotationProviderError> {
@@ -3046,6 +3022,20 @@ typo_field = "oops"
             .post_store_cleanup("VERCEL_TOKEN", &config, Some(&old))
             .expect("mock old values must never reach the network");
         assert_eq!(outcome, CleanupOutcome::SkippedMockCredential);
+    }
+
+    #[test]
+    fn vercel_nonmock_cleanup_is_denied_before_network() {
+        let provider = VercelRotationProvider;
+        let config = RotationProviderConfig {
+            provider: "vercel".to_string(),
+            ..Default::default()
+        };
+        let old = zeroize::Zeroizing::new("vercel_live_shaped_prior_token".to_string());
+        let error = provider
+            .post_store_cleanup("VERCEL_TOKEN", &config, Some(&old))
+            .expect_err("live cleanup must remain disabled");
+        assert!(matches!(error, RotationProviderError::NotSupported { .. }));
     }
 
     #[test]

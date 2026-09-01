@@ -1,4 +1,8 @@
-//! Vercel connectable-account Integration — "Phantom for Vercel".
+//! Vercel connectable-account Integration protocol foundation.
+//!
+//! Shipped 0.7.4 returns `NotSupported` before request inspection, browser,
+//! loopback, credential, or network access. The flow below executes only in
+//! crate-local overridden-endpoint tests; it is not live enrollment capability.
 //!
 //! [`VercelIntegrationFlow`] runs the ONE human "Add Integration" click and
 //! exchanges the resulting one-time code for a **non-expiring, team-scoped
@@ -37,14 +41,13 @@
 use zeroize::Zeroizing;
 
 use super::{
-    guard_mock_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
+    guard_test_only_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
     IssuanceMetadata, IssuanceOutcome, IssuanceRequest, IssuedMaterial, MaterialKind,
 };
 use crate::rotation_provider::{summarize_error_body, RotationProviderConfig};
 
-/// Fixed vault name the scoped Integration token is stored under. Contains
-/// `VERCEL` and `TOKEN` so [`crate::rotation_provider::VercelRotationProvider`]
-/// matches it and `phantom rotate --name VERCEL_INTEGRATION_TOKEN` dispatches.
+/// Reserved prospective vault name for a scoped Integration token. Shipped
+/// builds do not enroll or rotate it.
 pub const VERCEL_INTEGRATION_TOKEN_NAME: &str = "VERCEL_INTEGRATION_TOKEN";
 
 /// Consent window for the "Add Integration" click (matches the other engines).
@@ -67,13 +70,7 @@ impl ConsentEngine for VercelIntegrationFlow {
         req: &IssuanceRequest,
         deps: &IssuanceDeps,
     ) -> Result<IssuanceOutcome, IssuanceError> {
-        // Fail closed: an overridden (non-production) endpoint may only be hit
-        // when mock issuance is explicitly enabled. This stops a prompt-injected
-        // agent from redirecting the exchange — and the token it yields — to an
-        // attacker-controlled host.
-        if deps.endpoints.is_overridden() {
-            guard_mock_issuance()?;
-        }
+        guard_test_only_issuance(deps)?;
 
         // The Integration is a confidential client: both halves come from the
         // integration's Credentials section (never read from disk — the secret
@@ -198,11 +195,8 @@ fn build_integration_outcome(
         sensitive: true,
     };
 
-    // Write the rotation_provider block so `phantom rotate --name
-    // VERCEL_INTEGRATION_TOKEN` dispatches to the shipped Vercel provider with
-    // the right teamId. The Integration token is non-expiring, so renewal is a
-    // no-op by construction; a raw dashboard user-token seed re-enables true
-    // self-rotation via the same provider.
+    // Protocol-test metadata only. Shipped enrollment and provider issuance
+    // remain hard denied; account_id records the prospective team scope.
     let rotation_config = RotationProviderConfig {
         provider: "vercel".to_string(),
         api_key_env: Some(VERCEL_INTEGRATION_TOKEN_NAME.to_string()),

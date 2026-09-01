@@ -92,7 +92,7 @@ fn rotate_provider_runtime_mock_flag_cannot_store_or_print_values() {
         "bootstrap credential leaked into CLI output"
     );
     assert!(
-        stderr.contains("mock rotation is disabled in this build"),
+        stderr.contains("Automated live provider issuance") && stderr.contains("disabled"),
         "expected fail-closed mock error, got: {stderr}"
     );
 
@@ -134,7 +134,7 @@ fn rotate_provider_json_runtime_mock_flag_fails_without_secret_output() {
         stdout.is_empty(),
         "failed JSON rotation must emit no stdout"
     );
-    assert!(stderr.contains("mock rotation is disabled in this build"));
+    assert!(stderr.contains("Automated live provider issuance"));
     assert!(
         !stderr.contains(MOCK_ROTATED_VALUE),
         "rotated secret value leaked into error output"
@@ -174,7 +174,7 @@ fn rotate_provider_resolves_vault_bootstrap_but_runtime_mock_still_fails_closed(
         "provider resolved from config must be reported, got: {stdout}"
     );
     assert!(
-        stderr.contains("mock rotation is disabled in this build"),
+        stderr.contains("Automated live provider issuance") && stderr.contains("disabled"),
         "expected fail-closed mock error, got: {stderr}"
     );
     assert!(
@@ -287,8 +287,7 @@ fn rotate_provider_dispatches_by_config_not_secret_name() {
     let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
     assert!(stdout.is_empty());
-    assert!(stderr.contains("PAYMENTS_API_KEY"));
-    assert!(stderr.contains("mock rotation is disabled in this build"));
+    assert!(stderr.contains("Automated live provider issuance for 'stripe'"));
     assert!(!stderr.contains("configured for provider"));
 }
 

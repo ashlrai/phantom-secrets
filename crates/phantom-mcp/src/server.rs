@@ -673,7 +673,7 @@ impl PhantomMcpServer {
 
     /// Deprecated compatibility endpoint for the disabled shadow-candidate path.
     #[tool(
-        description = "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters. Use phantom_rotate_provider for a real provider rotation."
+        description = "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively."
     )]
     fn phantom_rotate_with_candidate(
         &self,
@@ -681,13 +681,13 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let _ = params;
         Err(invalid_params_err(
-            "phantom_rotate_with_candidate is deprecated and disabled: the legacy implementation generated a local phm_cand_ placeholder, not a provider credential. No candidate was created or stored. Use phantom_rotate_provider for a real provider rotation.",
+            "phantom_rotate_with_candidate is deprecated and disabled: the legacy implementation generated a local phm_cand_ placeholder, not a provider credential. No candidate was created or stored. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively.",
         ))
     }
 
     /// Deprecated compatibility endpoint for the disabled shadow promotion path.
     #[tool(
-        description = "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters. Use phantom_rotate_provider for a real provider rotation."
+        description = "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively."
     )]
     fn phantom_rotate_promote(
         &self,
@@ -695,7 +695,7 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let _ = params;
         Err(invalid_params_err(
-            "phantom_rotate_promote is deprecated and disabled: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. No credential or metadata was changed. Use phantom_rotate_provider for a real provider rotation.",
+            "phantom_rotate_promote is deprecated and disabled: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. No credential or metadata was changed. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively.",
         ))
     }
 
@@ -1923,8 +1923,8 @@ impl PhantomMcpServer {
                 output.push_str(&format!("  - {}\n", var));
             }
             output.push_str(
-                "\nThese tokens will not resolve to real secrets without the proxy running.\n\
-                 Run `phantom exec -- <command>` to start the proxy.",
+                "\nClient-supplied headers and bodies never resolve phantom placeholders, even while the proxy is running.\n\
+                 `phantom exec -- <command>` can start an authenticated session whose exact configured routes inject only route-owned authentication; review the route mapping before use.",
             );
             text_result(output)
         } else {
@@ -2550,7 +2550,7 @@ impl PhantomMcpServer {
                 ));
             }
             output.push_str(
-                "Rotate expired provider credentials through phantom_rotate_provider; a local token remap does not refresh TTLs.",
+                "Rotate expired credentials at the provider, then store replacements from a trusted terminal; automated live provider issuance is disabled, and a local token remap does not refresh TTLs.",
             );
         }
 
@@ -4046,7 +4046,7 @@ impl PhantomMcpServer {
 
         if params.sync {
             return Err(invalid_params_err(
-                "sync=true is not valid for a Phantom token remap: the provider credential is unchanged. Use phantom_rotate_provider for a real approved provider rotation and deployment workflow.",
+                "sync=true is not valid for a Phantom token remap: the provider credential is unchanged. Rotate at the provider, store the replacement from a trusted terminal, then use a separately reviewed deployment workflow; automated live provider issuance is disabled.",
             ));
         }
 

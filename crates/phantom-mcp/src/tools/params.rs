@@ -837,10 +837,10 @@ pub struct PhantomExpiryEnforceParams {
 
 /// Parameters for `phantom_rotate_provider`.
 ///
-/// Calls a vendor-specific rotation provider (Stripe, GitHub, AWS) to
-/// re-issue the credential server-side and stores the new value in the vault.
-/// The secret value is NEVER exposed in the MCP response — only status,
-/// provider name, and audit metadata are returned.
+/// Compatibility parameters for the shipped hard-denial boundary. Automated
+/// live provider issuance is disabled before credential or network access until
+/// a durable value-free recovery handle and verified abort path exist. No
+/// secret value is accepted or returned.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateProviderParams {
     /// Name of the secret to rotate (e.g. `STRIPE_SECRET_KEY`).

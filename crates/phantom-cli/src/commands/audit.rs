@@ -143,8 +143,8 @@ pub enum AuditAction {
         #[arg(long)]
         json: bool,
         /// Deprecated and disabled. Incident detection cannot prove or perform
-        /// provider credential rotation; use an explicitly reviewed
-        /// `phantom rotate --name <NAME> [--provider <PROVIDER>]` transaction.
+        /// provider credential rotation. Rotate at the provider and store the
+        /// replacement from a trusted terminal.
         #[arg(long, hide = true)]
         auto_rotate_on_high: bool,
     },
@@ -1114,7 +1114,7 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
 
     if auto_rotate_on_high {
         anyhow::bail!(
-            "--auto-rotate-on-high is deprecated and disabled: remapping a local phm_ token does not rotate the leaked provider credential and must not clear an incident. Review the incident, then use `phantom rotate --name <NAME> [--provider <PROVIDER>]` with the correct provider configuration."
+            "--auto-rotate-on-high is deprecated and disabled: remapping a local phm_ token does not rotate the leaked provider credential and must not clear an incident. Review the incident, rotate at the provider, then store the replacement from a trusted terminal. Automated live provider issuance is disabled."
         );
     }
 

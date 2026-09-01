@@ -159,12 +159,13 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
 }
 
 pub fn run_vault_pull(team_id: &str) -> Result<()> {
+    let project_dir = std::env::current_dir()?;
     let token = auth::require_token()?;
     let api_base = auth::api_base_url()?;
     let kp = auth::get_or_create_team_keypair()?;
     let rt = tokio::runtime::Runtime::new()?;
 
-    let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
+    let config = PhantomConfig::load(&project_dir.join(".phantom.toml"))
         .context("No .phantom.toml found. Run `phantom init` first.")?;
     let project_id = config.portable_project_id().to_string();
 
@@ -176,17 +177,11 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
         &kp,
     ))?;
 
-    // Write into local vault, overwriting existing values. The secrets
-    // map's values are Zeroizing<String> — scrubbed on drop after this
-    // loop returns.
+    // Commit the complete remote snapshot under Phantom's project transaction
+    // lock. Every target carries an exact local before-image; a later failure
+    // rolls back only transaction-owned writes and never prints a value.
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let mut written = 0usize;
-    for (name, value) in &secrets {
-        vault
-            .store(name, value)
-            .with_context(|| format!("Failed to store {name}"))?;
-        written += 1;
-    }
+    let written = apply_team_vault_pull_transaction(&project_dir, vault.as_ref(), &secrets)?;
 
     println!(
         "{}  Pulled {} secret(s) from team id {} (v{}). Local vault updated.",
@@ -196,6 +191,37 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
         version
     );
     Ok(())
+}
+
+fn apply_team_vault_pull_transaction(
+    project_dir: &std::path::Path,
+    vault: &dyn phantom_vault::VaultBackend,
+    secrets: &BTreeMap<String, Zeroizing<String>>,
+) -> Result<usize> {
+    let mut mutations = Vec::with_capacity(secrets.len());
+    for (name, value) in secrets {
+        let before = match vault.retrieve(name) {
+            Ok(value) => Some(value),
+            Err(phantom_core::error::PhantomError::SecretNotFound(_)) => None,
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "Team vault pull preflight failed for '{name}' before any local write: {error}"
+                ));
+            }
+        };
+        mutations.push(phantom_vault::InitSecret::replace_if_unchanged(
+            name,
+            before.as_ref().map(|value| value.as_str().to_string()),
+            value.as_str(),
+        ));
+    }
+    let written = mutations.len();
+    phantom_vault::commit_init(project_dir, vault, mutations, Vec::new()).map_err(|error| {
+        anyhow::anyhow!(
+            "Team vault pull transaction failed; local state was rolled back where exact transaction ownership could be verified: {error}. No secret value is included. Inspect the local vault before retrying."
+        )
+    })?;
+    Ok(written)
 }
 
 pub fn run_revoke(team_id: &str, github_login: &str, _yes: bool) -> Result<()> {
@@ -296,12 +322,126 @@ fn invitation_checklist(team_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::invitation_checklist;
+    use super::{apply_team_vault_pull_transaction, invitation_checklist};
+    use phantom_core::error::{PhantomError, Result as PhantomResult};
+    use phantom_vault::{file::FileVault, VaultBackend};
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+    use zeroize::Zeroizing;
+
+    struct FaultVault {
+        inner: FileVault,
+        cas_calls: AtomicUsize,
+        fail_cas: Option<usize>,
+        fail_retrieve: Option<String>,
+    }
+
+    impl VaultBackend for FaultVault {
+        fn store(&self, name: &str, value: &str) -> PhantomResult<()> {
+            self.inner.store(name, value)
+        }
+
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            if self.fail_retrieve.as_deref() == Some(name) {
+                return Err(PhantomError::VaultError(
+                    "injected team-pull preflight read failure".to_string(),
+                ));
+            }
+            self.inner.retrieve(name)
+        }
+
+        fn delete(&self, name: &str) -> PhantomResult<()> {
+            self.inner.delete(name)
+        }
+
+        fn compare_and_swap(
+            &self,
+            name: &str,
+            expected: Option<&str>,
+            replacement: Option<&str>,
+        ) -> PhantomResult<bool> {
+            let call = self.cas_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.fail_cas == Some(call) {
+                return Err(PhantomError::VaultError(
+                    "injected team-pull CAS failure".to_string(),
+                ));
+            }
+            self.inner.compare_and_swap(name, expected, replacement)
+        }
+
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            self.inner.list()
+        }
+
+        fn backend_name(&self) -> &str {
+            "team-pull-fault"
+        }
+    }
+
+    fn fault_vault(
+        dir: &TempDir,
+        fail_cas: Option<usize>,
+        fail_retrieve: Option<&str>,
+    ) -> FaultVault {
+        FaultVault {
+            inner: FileVault::new(dir.path(), "team-pull", "passphrase".to_string()).unwrap(),
+            cas_calls: AtomicUsize::new(0),
+            fail_cas,
+            fail_retrieve: fail_retrieve.map(str::to_string),
+        }
+    }
+
+    fn remote(values: &[(&str, &str)]) -> BTreeMap<String, Zeroizing<String>> {
+        values
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), Zeroizing::new((*value).to_string())))
+            .collect()
+    }
 
     #[test]
     fn team_revoke_fails_before_auth_or_network_access() {
         let error = super::run_revoke("team-test", "member-test", true).unwrap_err();
         assert!(error.to_string().contains("atomic membership-removal"));
+    }
+
+    #[test]
+    fn team_pull_rolls_back_first_write_when_second_cas_fails() {
+        let project = TempDir::new().unwrap();
+        let vault = fault_vault(&project, Some(2), None);
+        vault.store("A", "old-a").unwrap();
+        vault.store("B", "old-b").unwrap();
+
+        let error = apply_team_vault_pull_transaction(
+            project.path(),
+            &vault,
+            &remote(&[("A", "new-a"), ("B", "new-b")]),
+        )
+        .expect_err("second CAS must fail the whole pull");
+
+        assert!(error.to_string().contains("rolled back"));
+        assert_eq!(vault.retrieve("A").unwrap().as_str(), "old-a");
+        assert_eq!(vault.retrieve("B").unwrap().as_str(), "old-b");
+    }
+
+    #[test]
+    fn team_pull_preflight_read_failure_writes_nothing() {
+        let project = TempDir::new().unwrap();
+        let vault = fault_vault(&project, None, Some("B"));
+        vault.store("A", "old-a").unwrap();
+        vault.store("B", "old-b").unwrap();
+
+        let error = apply_team_vault_pull_transaction(
+            project.path(),
+            &vault,
+            &remote(&[("A", "new-a"), ("B", "new-b")]),
+        )
+        .expect_err("preflight read failure must abort");
+
+        assert!(error.to_string().contains("before any local write"));
+        assert_eq!(vault.retrieve("A").unwrap().as_str(), "old-a");
+        assert_eq!(vault.inner.retrieve("B").unwrap().as_str(), "old-b");
+        assert_eq!(vault.cas_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

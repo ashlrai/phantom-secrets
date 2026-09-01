@@ -1,4 +1,8 @@
-//! Supabase OAuth grant + bounded Management-API issuer.
+//! Supabase OAuth and Management-API protocol foundations.
+//!
+//! Shipped 0.7.4 returns `NotSupported` before OAuth request, browser,
+//! loopback, credential, or network access. Consent protocol execution is
+//! confined to crate-local overridden-endpoint tests.
 //!
 //! Two halves with an explicit fresh-consent boundary:
 //!
@@ -52,12 +56,12 @@ use super::pkce::{
     build_authorize_url, code_challenge_s256, generate_code_verifier, map_oauth_error, now_unix,
 };
 use super::{
-    guard_mock_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
+    guard_test_only_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
     IssuanceMetadata, IssuanceOutcome, IssuanceRequest, IssuedMaterial, MaterialKind,
 };
 use crate::rotation_provider::{
-    build_http_client, guard_mock_rotation, mock_rotation_allowed, redact_challenge_id,
-    resolve_api_key, summarize_error_body, CleanupOutcome, CleanupSemantics, RotationProvider,
+    guard_mock_rotation, mock_rotation_allowed, redact_challenge_id, resolve_api_key,
+    summarize_error_body, CleanupOutcome, CleanupSemantics, RotationProvider,
     RotationProviderConfig, RotationProviderError, RotationSource,
 };
 
@@ -77,13 +81,6 @@ pub const ENV_SUPABASE_CLIENT_ID: &str = "SUPABASE_OAUTH_CLIENT_ID";
 /// Env var holding the Supabase OAuth app **client secret** for Basic client
 /// auth. Never read from disk; resolved from the process env only.
 pub const ENV_SUPABASE_CLIENT_SECRET: &str = "SUPABASE_OAUTH_CLIENT_SECRET";
-
-/// Unit-test-only override of the Management-API base.
-#[cfg(test)]
-pub const ENV_SUPABASE_API_BASE: &str = "PHANTOM_SUPABASE_API_BASE";
-
-/// Production Management-API / OAuth base.
-const DEFAULT_API_BASE: &str = "https://api.supabase.com";
 
 /// Bootstrap values with this prefix take the hermetic mock fast-path (guarded
 /// by [`mock_rotation_allowed`]); real bootstraps never start with it.
@@ -113,12 +110,7 @@ impl ConsentEngine for SupabaseOAuthFlow {
         req: &IssuanceRequest,
         deps: &IssuanceDeps,
     ) -> Result<IssuanceOutcome, IssuanceError> {
-        // Fail closed on overridden (non-production) endpoints unless mock
-        // issuance is explicitly enabled — stops a prompt-injected agent from
-        // redirecting the exchange (and the refresh token) to an attacker host.
-        if deps.endpoints.is_overridden() {
-            guard_mock_issuance()?;
-        }
+        guard_test_only_issuance(deps)?;
 
         let client_id = req
             .client_id
@@ -368,10 +360,8 @@ impl RotationProvider for SupabaseManagementProvider {
         })
     }
 
-    /// Deletion of the rotated-out project key (Mode B only), run by the caller
-    /// only AFTER the successor is durably vaulted and verified. Failures are
-    /// returned for explicit partial-success reporting and audited by name.
-    /// Mode A (refresh) has no separate vendor-side delete.
+    /// Cleanup is disabled with live issuance. Exact mock values remain a
+    /// hermetic transaction-test seam and never reach the network.
     fn cleanup_semantics(&self, config: &RotationProviderConfig) -> CleanupSemantics {
         if config.account_id.is_some() {
             CleanupSemantics::RevokePriorCredential
@@ -395,19 +385,13 @@ impl RotationProvider for SupabaseManagementProvider {
         };
         // Mock / rotated-mock values never reach the network.
         if old.starts_with(MOCK_BOOTSTRAP_PREFIX) || old.starts_with("sb_secret_rotated_mock") {
+            guard_mock_rotation(secret_name)?;
             return Ok(CleanupOutcome::SkippedMockCredential);
         }
-        let access_token = resolve_api_key(config).inspect_err(|_| {
-            crate::audit::log("vault.rotation.old_token_revoke_failed", Some(secret_name));
-        })?;
-        let deleted = delete_matching_project_key(config, &access_token, project_ref, old)
-            .inspect_err(|_| {
-                crate::audit::log("vault.rotation.old_token_revoke_failed", Some(secret_name));
-            })?;
-        Ok(if deleted {
-            CleanupOutcome::Succeeded
-        } else {
-            CleanupOutcome::SkippedPriorCredentialNotFound
+        let _ = project_ref;
+        Err(RotationProviderError::NotSupported {
+            reason: "Live Supabase prior-key cleanup is disabled before credential or network access together with live issuance. Revoke provider credentials directly in the Supabase dashboard and verify the result; do not retry automatically."
+                .to_string(),
         })
     }
 
@@ -416,97 +400,6 @@ impl RotationProvider for SupabaseManagementProvider {
             provider_name: SUPABASE_MANAGEMENT_PROVIDER.to_string(),
         }
     }
-}
-
-/// List the project's api-keys (revealed), find the one whose value equals
-/// `old_value`, and DELETE it by id. Returns `true` only after the DELETE
-/// succeeds; `false` means the prior value was not discoverable in the list.
-fn delete_matching_project_key(
-    config: &RotationProviderConfig,
-    access_token: &Zeroizing<String>,
-    project_ref: &str,
-    old_value: &Zeroizing<String>,
-) -> Result<bool, RotationProviderError> {
-    let base = supabase_api_base();
-    let client = build_http_client(config.timeout_secs)?;
-    let list = client
-        .get(format!(
-            "{base}/v1/projects/{project_ref}/api-keys?reveal=true"
-        ))
-        .header("Authorization", format!("Bearer {}", access_token.as_str()))
-        .header("User-Agent", "phantom-secrets-rotation/0.1")
-        .send()
-        .map_err(|e| RotationProviderError::NetworkError {
-            reason: e.to_string(),
-        })?;
-    if !list.status().is_success() {
-        return Err(RotationProviderError::ApiError {
-            status: list.status().as_u16(),
-            reason: "listing project api-keys failed".to_string(),
-        });
-    }
-    let keys: Value = list
-        .json()
-        .map_err(|e| RotationProviderError::UnexpectedResponse {
-            reason: e.to_string(),
-        })?;
-    let id = keys.as_array().and_then(|arr| {
-        arr.iter()
-            .find(|k| k.get("api_key").and_then(|v| v.as_str()) == Some(old_value.as_str()))
-            .and_then(|k| k.get("id").and_then(|v| v.as_str()))
-            .map(|s| s.to_string())
-    });
-    let Some(id) = id else {
-        // Absence is ambiguous: the key may already be gone, may not be a
-        // project key, or may not have been revealed. Never claim revocation.
-        return Ok(false);
-    };
-    let del = client
-        .delete(format!("{base}/v1/projects/{project_ref}/api-keys/{id}"))
-        .header("Authorization", format!("Bearer {}", access_token.as_str()))
-        .header("User-Agent", "phantom-secrets-rotation/0.1")
-        .send()
-        .map_err(|e| RotationProviderError::NetworkError {
-            reason: e.to_string(),
-        })?;
-    if !del.status().is_success() {
-        return Err(RotationProviderError::ApiError {
-            status: del.status().as_u16(),
-            reason: "deleting rotated-out project api-key failed".to_string(),
-        });
-    }
-    Ok(true)
-}
-
-/// Resolve the fixed production Management-API base. The shipped implementation
-/// contains no environment-variable override.
-#[cfg(not(test))]
-fn supabase_api_base() -> String {
-    DEFAULT_API_BASE.to_string()
-}
-
-/// Unit tests may inject a loopback stub. This branch is absent from shipped
-/// libraries, including debug builds.
-#[cfg(test)]
-fn supabase_api_base() -> String {
-    if let Ok(value) = std::env::var(ENV_SUPABASE_API_BASE) {
-        if !value.is_empty() && is_https_or_localhost(&value) && mock_rotation_allowed() {
-            return value.trim_end_matches('/').to_string();
-        }
-    }
-    DEFAULT_API_BASE.to_string()
-}
-
-/// Test helper for validating injected stub bases.
-#[cfg(test)]
-fn is_https_or_localhost(url: &str) -> bool {
-    url.starts_with("https://")
-        || url == "http://localhost"
-        || url.starts_with("http://localhost/")
-        || url.starts_with("http://localhost:")
-        || url == "http://127.0.0.1"
-        || url.starts_with("http://127.0.0.1/")
-        || url.starts_with("http://127.0.0.1:")
 }
 
 #[cfg(test)]
@@ -770,23 +663,17 @@ mod tests {
     }
 
     #[test]
-    fn mode_b_cleanup_not_found_never_claims_revocation() {
+    fn mode_b_nonmock_cleanup_is_denied_before_credential_or_network() {
         let _g = env_guard();
-        let (base, seen) = spawn_stub(200, "[]");
-        std::env::set_var(ENV_SUPABASE_API_BASE, &base);
-        std::env::set_var("SUPABASE_PROJECT_ADMIN", "sbat_management_access_token");
         let mut config = base_config(Some("abcdefghijklmnop"));
-        config.api_key_env = Some("SUPABASE_PROJECT_ADMIN".to_string());
+        config.api_key_env = Some("UNSET_SUPABASE_PROJECT_ADMIN".to_string());
         let old = Zeroizing::new("sb_secret_prior_value".to_string());
 
-        let outcome = SupabaseManagementProvider
+        let error = SupabaseManagementProvider
             .post_store_cleanup("SUPABASE_PROJECT_KEY", &config, Some(&old))
-            .unwrap();
+            .expect_err("live cleanup must be disabled before credential lookup");
 
-        assert_eq!(outcome, CleanupOutcome::SkippedPriorCredentialNotFound);
-        assert_eq!(seen.lock().unwrap().len(), 1, "no DELETE should be sent");
-        std::env::remove_var(ENV_SUPABASE_API_BASE);
-        std::env::remove_var("SUPABASE_PROJECT_ADMIN");
+        assert!(matches!(error, RotationProviderError::NotSupported { .. }));
     }
 
     #[test]
@@ -796,15 +683,6 @@ mod tests {
             SupabaseManagementProvider.rotation_source().label(),
             "supabase-management"
         );
-    }
-
-    #[test]
-    fn api_base_override_ignored_without_mock_and_for_bad_scheme() {
-        // Not https/localhost → rejected regardless.
-        assert!(!is_https_or_localhost("http://evil.example.com"));
-        assert!(!is_https_or_localhost("http://127.0.0.1.attacker.com/"));
-        assert!(is_https_or_localhost("https://api.supabase.com"));
-        assert!(is_https_or_localhost("http://127.0.0.1:52100"));
     }
 
     #[test]

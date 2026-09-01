@@ -14,12 +14,12 @@ use zeroize::Zeroize;
 pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()> {
     if expiry_days.is_some() {
         anyhow::bail!(
-            "--with-expiry is not valid for a Phantom token remap: the provider credential is unchanged, so its TTL cannot be renewed. Use `phantom rotate --name <NAME> [--provider <PROVIDER>]` for a real provider rotation."
+            "--with-expiry is not valid for a Phantom token remap: the provider credential is unchanged, so its TTL cannot be renewed. Rotate at the provider, then store the replacement from a trusted terminal; automated live provider issuance is disabled."
         );
     }
     if sync_after {
         anyhow::bail!(
-            "--sync is not valid for a Phantom token remap: there is no new provider credential to deploy. Use `phantom rotate --name <NAME> [--provider <PROVIDER>] --sync` for a real provider rotation."
+            "--sync is not valid for a Phantom token remap: there is no new provider credential to deploy. Rotate at the provider, store the replacement from a trusted terminal, then run an explicitly reviewed sync."
         );
     }
 
@@ -318,7 +318,7 @@ fn chrono_iso(secs: u64) -> String {
 /// credential, so neither staging nor later promotion was a real rotation.
 pub fn run_shadow(_name: &str) -> Result<String> {
     anyhow::bail!(
-        "--shadow is deprecated and disabled: Phantom's legacy implementation generated a local phm_cand_ placeholder, not a provider credential. No candidate was created or stored. Use `phantom rotate --name <NAME> [--provider <PROVIDER>]` for a real provider rotation."
+        "--shadow is deprecated and disabled: Phantom's legacy implementation generated a local phm_cand_ placeholder, not a provider credential. No candidate was created or stored. Automated live provider issuance is also disabled; rotate at the provider and store the replacement from a trusted terminal."
     )
 }
 
@@ -326,7 +326,7 @@ pub fn run_shadow(_name: &str) -> Result<String> {
 /// the vault. `promote` is retained only for call-site compatibility.
 pub fn run_validate_promote(_name: &str, _promote: bool) -> Result<()> {
     anyhow::bail!(
-        "--promote is deprecated and disabled: legacy shadow candidates were local phm_cand_ placeholders, not provider-issued credentials. No credential or metadata was changed. Use `phantom rotate --name <NAME> [--provider <PROVIDER>]` for a real provider rotation."
+        "--promote is deprecated and disabled: legacy shadow candidates were local phm_cand_ placeholders, not provider-issued credentials. No credential or metadata was changed. Automated live provider issuance is also disabled; rotate at the provider and store the replacement from a trusted terminal."
     )
 }
 
@@ -705,8 +705,9 @@ pub fn run_with_provider(
 ///
 /// Vendor batch issuance is disabled before any provider call. Issuing several
 /// successors before each one is independently persisted and verified creates
-/// unrecoverable ambiguity. Manual items remain report-only; rotate configured
-/// vendor secrets one at a time with `phantom rotate --name`.
+/// unrecoverable ambiguity. Manual items remain report-only; provider
+/// credentials must be rotated at the provider and stored from a trusted
+/// terminal.
 ///
 /// Emits a composite audit event with a shared `batch_id` covering the
 /// discovery/manual-report outcomes.
@@ -784,7 +785,7 @@ pub fn run_batch(
 
     if due_items.iter().any(|item| item.provider_label != "manual") {
         anyhow::bail!(
-            "Batch vendor rotation is disabled before issuance: Phantom cannot durably persist and verify each successor before issuing the next. Rotate each configured secret one at a time with `phantom rotate --name <NAME>`. No provider call was made; do not retry this batch automatically."
+            "Batch vendor rotation is disabled before issuance: Phantom cannot durably persist and verify each successor before issuing the next. Rotate each credential through the provider's trusted interface, then store each replacement from a trusted terminal. No provider call was made; do not retry this batch automatically."
         );
     }
 

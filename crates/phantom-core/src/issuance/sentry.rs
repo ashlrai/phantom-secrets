@@ -1,4 +1,7 @@
-//! Sentry published-integration install flow + stateless JWT-bearer renewal.
+//! Sentry published-integration protocol foundation.
+//!
+//! Shipped 0.7.4 returns `NotSupported` before request, browser, loopback,
+//! credential, or network access. This flow executes only in crate-local tests.
 //!
 //! This mirrors the shipped GitHub installation-token architecture almost
 //! verbatim: a long-lived **app identity** (the integration's `client_id` /
@@ -44,7 +47,7 @@ use serde::Serialize;
 use zeroize::Zeroizing;
 
 use super::{
-    guard_mock_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
+    guard_test_only_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
     IssuanceMetadata, IssuanceOutcome, IssuanceRequest, IssuedMaterial, MaterialKind,
 };
 use crate::rotation_provider::{summarize_error_body, RotationProviderConfig};
@@ -89,13 +92,7 @@ impl ConsentEngine for SentryInstallFlow {
         req: &IssuanceRequest,
         deps: &IssuanceDeps,
     ) -> Result<IssuanceOutcome, IssuanceError> {
-        // Fail closed: an overridden (non-production) endpoint may only be hit
-        // when mock issuance is explicitly enabled. Stops a prompt-injected
-        // agent from redirecting the exchange — and the token it yields — to an
-        // attacker-controlled host.
-        if deps.endpoints.is_overridden() {
-            guard_mock_issuance()?;
-        }
+        guard_test_only_issuance(deps)?;
 
         // Confidential client: both halves come from the integration's
         // Developer Settings. The secret was resolved from an env var by the CLI
@@ -213,12 +210,9 @@ impl ConsentEngine for SentryInstallFlow {
             installation_ids: vec![installation_id],
             scopes: req.scopes.clone(),
             notes: vec![
-                "8-hour org tokens renew forever via the client_secret-signed JWT-bearer grant \
-                 — stateless, no stored refresh token."
+                "Protocol-test outcome only: shipped builds do not enroll or renew Sentry credentials."
                     .to_string(),
-                format!(
-                    "Run `phantom rotate --name {SENTRY_ORG_TOKEN_NAME}` to mint the next token."
-                ),
+                format!("Prospective working credential name: {SENTRY_ORG_TOKEN_NAME}."),
             ],
             ..Default::default()
         };
