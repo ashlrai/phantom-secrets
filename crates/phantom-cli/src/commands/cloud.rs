@@ -35,13 +35,12 @@ pub fn run_push() -> Result<()> {
     for value in secrets.values_mut() {
         value.zeroize();
     }
-    let mut plaintext = serialize_result.context("Failed to serialize secrets")?;
+    let plaintext = Zeroizing::new(serialize_result.context("Failed to serialize secrets")?);
 
     // Encrypt with cloud passphrase (stored in keychain, never transmitted)
     let passphrase =
         auth::get_or_create_cloud_passphrase().context("Failed to access cloud encryption key")?;
     let encrypted = phantom_vault::crypto::encrypt(plaintext.as_bytes(), &passphrase)?;
-    plaintext.zeroize();
     let blob_b64 = BASE64.encode(&encrypted);
 
     let expected_version = config.cloud.as_ref().map(|c| c.version).unwrap_or(0);
@@ -64,7 +63,13 @@ pub fn run_push() -> Result<()> {
     // Update local version in config
     let mut config = config;
     record_cloud_push_success(&mut config, new_version);
-    config.save(std::path::Path::new(".phantom.toml"))?;
+    config
+        .save(std::path::Path::new(".phantom.toml"))
+        .with_context(|| {
+            format!(
+                "Cloud push succeeded remotely at version {new_version}, but local sync metadata could not be saved. Do not retry automatically: reconcile the remote version and local .phantom.toml first"
+            )
+        })?;
 
     println!(
         "{}  {} secret(s) synced to cloud (v{})",

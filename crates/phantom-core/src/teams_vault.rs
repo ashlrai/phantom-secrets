@@ -134,8 +134,10 @@ async fn push_inner(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let mut plaintext = serde_json::to_string(&plaintext_view)
-        .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?;
+    let plaintext = Zeroizing::new(
+        serde_json::to_string(&plaintext_view)
+            .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?,
+    );
 
     // Per-push 32-byte symmetric key, never reused.
     let sym_key = team_crypto::generate_sym_key();
@@ -146,7 +148,6 @@ async fn push_inner(
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
         .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-    plaintext.zeroize();
 
     let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     framed.extend_from_slice(&nonce_bytes);
@@ -247,15 +248,19 @@ pub struct RotateOutcome {
 
 /// Revoke a member from the team vault and rotate the symmetric key.
 ///
-/// Steps performed atomically from the server's perspective:
+/// Steps use optimistic concurrency for the encrypted vault blob only:
 /// 1. Pull the current vault and decrypt it with `kp`.
 /// 2. Remove `revoked_github_login` from the recipient set.
 /// 3. Generate a fresh symmetric key and re-encrypt the vault plaintext.
 /// 4. Re-wrap the new key for every *remaining* member with a registered
 ///    public key.
-/// 5. Push the rotated vault — server updates the member list server-side
-///    when the push succeeds.
+/// 5. Push the rotated vault with an exact expected version.
 /// 6. Emit tamper-proof audit events for the rotation + revocation.
+///
+/// This helper does **not** remove the member from the team's authorization
+/// roster. It only omits that member's key share from the newly encrypted
+/// vault. Complete offboarding requires a separate, authorized server-side
+/// membership mutation, which is not composed atomically here.
 ///
 /// Fails if `revoked_github_login` is not a current member, or if the
 /// caller (`kp`) cannot decrypt the current vault (i.e. the caller does
@@ -309,8 +314,10 @@ pub async fn revoke_member(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let mut plaintext = serde_json::to_string(&plaintext_view)
-        .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?;
+    let plaintext = Zeroizing::new(
+        serde_json::to_string(&plaintext_view)
+            .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?,
+    );
 
     let sym_key = team_crypto::generate_sym_key();
     let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
@@ -320,7 +327,6 @@ pub async fn revoke_member(
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
         .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-    plaintext.zeroize();
 
     let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     framed.extend_from_slice(&nonce_bytes);
@@ -404,8 +410,10 @@ pub async fn rotate_vault(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let mut plaintext = serde_json::to_string(&plaintext_view)
-        .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?;
+    let plaintext = Zeroizing::new(
+        serde_json::to_string(&plaintext_view)
+            .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?,
+    );
 
     let sym_key = team_crypto::generate_sym_key();
     let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
@@ -415,7 +423,6 @@ pub async fn rotate_vault(
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
         .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-    plaintext.zeroize();
 
     let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     framed.extend_from_slice(&nonce_bytes);
@@ -468,8 +475,10 @@ pub fn encrypt_secrets_to_blob(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let mut plaintext = serde_json::to_string(&plaintext_view)
-        .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?;
+    let plaintext = Zeroizing::new(
+        serde_json::to_string(&plaintext_view)
+            .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?,
+    );
     let sym_key = team_crypto::generate_sym_key();
     let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
     let mut nonce_bytes = [0u8; NONCE_LEN];
@@ -478,7 +487,6 @@ pub fn encrypt_secrets_to_blob(
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
         .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-    plaintext.zeroize();
     let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     framed.extend_from_slice(&nonce_bytes);
     framed.extend_from_slice(&ciphertext);

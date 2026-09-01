@@ -699,29 +699,27 @@ impl PhantomMcpServer {
         ))
     }
 
-    /// Rotate a secret using a vendor-specific provider (Stripe, GitHub, AWS,
-    /// Google, Vercel).
+    /// Rotate a secret using a configured vendor-specific provider.
     ///
-    /// Calls the vendor's API to re-issue the credential, stores the new value
-    /// in the vault, and records an audit event. The new secret value is NEVER
-    /// returned in the MCP response — only status metadata is exposed.
-    #[tool(description = "Rotate a secret via a vendor-specific provider \
-            (stripe | github | aws | google | vercel; sentry and supabase report \
-            manual-rotation-required with a dashboard link). \
-            Calls the vendor API to re-issue the credential server-side, stores the new value \
-            in the encrypted vault, and records a signed audit event. The new secret value is \
-            NEVER exposed in the MCP response — only provider name, status, and audit metadata \
-            are returned. Requires the secret's rotation_provider config to be set in \
-            .phantom.toml under [phantom.secrets.{name}.rotation_provider]; the `provider` \
-            parameter is optional and defaults to the provider named there. The bootstrap \
-            credential named by api_key_env is sourced from the server environment first, \
-            then from the vault under the same name — it never crosses the MCP wire. \
-            DESTRUCTIVE — permanently invalidates the current key at the vendor. \
-            Requires `confirm: true`; the agent must obtain user consent before calling.")]
+    /// Compatibility boundary for future compensated provider rotation.
+    #[tool(
+        description = "Provider-rotation compatibility boundary. Shipped builds hard-deny \
+            automated live provider issuance before credential access or network I/O because \
+            the provider contract does not yet preserve a durable value-free recovery handle \
+            and verified abort path for local persistence failure. Unit-test mock providers \
+            are not production capability evidence. Current calls return a value-blind hard \
+            denial without consuming an approval or opening the vault. The confirm and approval \
+            fields are reserved for a future effectful, compensated implementation."
+    )]
     fn phantom_rotate_provider(
         &self,
         Parameters(params): Parameters<RotateProviderParams>,
     ) -> Result<CallToolResult, McpError> {
+        if !phantom_core::rotation_provider::unit_test_mock_issuance_enabled() {
+            return Err(invalid_params_err(
+                "Automated live provider issuance is disabled before approval consumption, vault access, credential access, or network I/O. Phantom requires a durable value-free provider recovery handle and verified abort path before it can safely persist a successor locally. Rotate at the provider, then store the replacement interactively. Unit-test mock providers are not production capability evidence. Do not retry automatically.",
+            ));
+        }
         require_confirm("phantom_rotate_provider", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
@@ -784,6 +782,30 @@ impl PhantomMcpServer {
             }
             (None, Some(cfg)) => cfg.provider.clone(),
         };
+
+        if effective_provider.eq_ignore_ascii_case("stripe")
+            && provider_config
+                .and_then(|cfg| cfg.api_key_env.as_deref())
+                .map(|name| name.to_ascii_uppercase().ends_with("REFRESH_TOKEN"))
+                .unwrap_or(false)
+        {
+            return Err(invalid_params_err(
+                "Stripe OAuth refresh rotation is disabled before credential access or provider issuance: Stripe invalidates the current refresh token during exchange, before Phantom can durably verify the successor. A durable verified recovery escrow channel is required. Do not retry automatically.",
+            ));
+        }
+        if effective_provider.eq_ignore_ascii_case("supabase-management")
+            && provider_config.is_some_and(|cfg| cfg.account_id.is_none())
+        {
+            return Err(invalid_params_err(
+                "Supabase management refresh-token rotation is disabled before credential access or provider issuance: the refresh exchange invalidates the current token before Phantom can durably verify its successor. A durable verified recovery escrow channel is required. Keep the vaulted enrollment material and obtain fresh operator consent when it expires. Do not retry automatically.",
+            ));
+        }
+        if !phantom_core::rotation_provider::unit_test_mock_issuance_enabled() {
+            return Err(invalid_params_err(format!(
+                "Automated live provider issuance for '{}' is disabled before credential access or network I/O. Phantom requires a durable value-free provider recovery handle and verified abort path before it can safely persist a successor locally. Rotate at the provider, then store the replacement interactively. Unit-test mock providers are not production capability evidence. Do not retry automatically.",
+                effective_provider
+            )));
+        }
 
         // Bootstrap credential: environment variable first, then the vault
         // under the same name. Zeroized after the call; never in the response.
@@ -880,40 +902,52 @@ impl PhantomMcpServer {
                 .map(|ts| format!("expires_at: {ts}\n"))
                 .unwrap_or_default();
 
-                // New value is durably stored — best-effort revoke of the old
-                // credential at the vendor (audited, fail-open).
+                // Invoke cleanup only when the provider declares an explicit
+                // effect. Errors are returned as partial success and never
+                // represented as a completed revocation.
                 if let (Some(provider), Some(cfg)) = (
                     providers
                         .iter()
                         .find(|p| p.name().eq_ignore_ascii_case(&effective_provider)),
                     provider_config,
                 ) {
-                    verify_provider_issued_value(
-                        vault.as_ref(),
-                        &params.name,
-                        secret.as_str(),
-                        "pre-cleanup vault verification",
-                        &mut stages,
-                    )?;
-                    stages.old_cleanup_attempted = true;
-                    provider
-                        .post_store_cleanup(&params.name, cfg, old_value.as_ref())
-                        .map_err(|error| {
-                            provider_rotation_partial_error(
-                                &params.name,
-                                "prior-credential cleanup",
-                                error,
-                                &stages,
-                            )
-                        })?;
-                    stages.old_cleanup_succeeded = true;
-                    verify_provider_issued_value(
-                        vault.as_ref(),
-                        &params.name,
-                        secret.as_str(),
-                        "post-cleanup vault verification",
-                        &mut stages,
-                    )?;
+                    let cleanup_semantics = provider.cleanup_semantics(cfg);
+                    stages.cleanup_semantics = cleanup_semantics;
+                    if cleanup_semantics
+                        == phantom_core::rotation_provider::CleanupSemantics::NotApplicable
+                    {
+                        stages.cleanup_outcome =
+                            Some(phantom_core::rotation_provider::CleanupOutcome::NotApplicable);
+                    } else {
+                        verify_provider_issued_value(
+                            vault.as_ref(),
+                            &params.name,
+                            secret.as_str(),
+                            "pre-cleanup vault verification",
+                            &mut stages,
+                        )?;
+                        stages.old_cleanup_attempted = true;
+                        let cleanup_outcome = provider
+                            .post_store_cleanup(&params.name, cfg, old_value.as_ref())
+                            .map_err(|error| {
+                                provider_rotation_partial_error(
+                                    &params.name,
+                                    "prior-credential cleanup",
+                                    error,
+                                    &stages,
+                                )
+                            })?;
+                        stages.cleanup_outcome = Some(cleanup_outcome);
+                        stages.old_cleanup_succeeded = cleanup_outcome
+                            == phantom_core::rotation_provider::CleanupOutcome::Succeeded;
+                        verify_provider_issued_value(
+                            vault.as_ref(),
+                            &params.name,
+                            secret.as_str(),
+                            "post-cleanup vault verification",
+                            &mut stages,
+                        )?;
+                    }
                 }
 
                 let stage_receipt = serde_json::to_string(&stages)
@@ -1245,26 +1279,32 @@ impl PhantomMcpServer {
 
         // ── Check 2: Vault accessible ───────────────────────────────────
         let mut vault_names = Vec::new();
-        if let Some(cfg) = &config {
-            match phantom_vault::try_create_vault(cfg.local_project_id()) {
-                Ok(vault) => {
-                    lines.push(format!("pass: Vault backend: {}", vault.backend_name()));
-                    match vault.list() {
-                        Ok(names) => {
-                            lines.push(format!("pass: {} secret(s) in vault", names.len()));
-                            vault_names = names;
-                        }
-                        Err(e) => {
-                            lines.push(format!("FAIL: Vault access failed: {e}"));
-                            issues += 1;
+        if params.fix {
+            if let Some(cfg) = &config {
+                match phantom_vault::try_create_vault(cfg.local_project_id()) {
+                    Ok(vault) => {
+                        lines.push(format!("pass: Vault backend: {}", vault.backend_name()));
+                        match vault.list() {
+                            Ok(names) => {
+                                lines.push(format!("pass: {} secret(s) in vault", names.len()));
+                                vault_names = names;
+                            }
+                            Err(e) => {
+                                lines.push(format!("FAIL: Vault access failed: {e}"));
+                                issues += 1;
+                            }
                         }
                     }
-                }
-                Err(error) => {
-                    lines.push(format!("FAIL: Vault initialization failed: {error}"));
-                    issues += 1;
+                    Err(error) => {
+                        lines.push(format!("FAIL: Vault initialization failed: {error}"));
+                        issues += 1;
+                    }
                 }
             }
+        } else if config.is_some() {
+            lines.push(
+                "info: Vault backend and inventory not opened in read-only doctor mode".to_string(),
+            );
         }
 
         // Only an actually absent config may use the legacy `.env` fallback.
@@ -4419,6 +4459,8 @@ struct ProviderRotationStages {
     metadata_committed: bool,
     old_cleanup_attempted: bool,
     old_cleanup_succeeded: bool,
+    cleanup_semantics: phantom_core::rotation_provider::CleanupSemantics,
+    cleanup_outcome: Option<phantom_core::rotation_provider::CleanupOutcome>,
 }
 
 impl Default for ProviderRotationStages {
@@ -4430,6 +4472,8 @@ impl Default for ProviderRotationStages {
             metadata_committed: false,
             old_cleanup_attempted: false,
             old_cleanup_succeeded: false,
+            cleanup_semantics: phantom_core::rotation_provider::CleanupSemantics::NotApplicable,
+            cleanup_outcome: None,
         }
     }
 }
@@ -4441,7 +4485,7 @@ fn provider_rotation_partial_error(
     stages: &ProviderRotationStages,
 ) -> McpError {
     let receipt = serde_json::to_string(stages).unwrap_or_else(|_| {
-        "{\"provider_issued\":true,\"vault_committed\":\"unknown\",\"token_remapped\":false,\"metadata_committed\":false,\"old_cleanup_attempted\":false,\"old_cleanup_succeeded\":false}".to_string()
+        "{\"provider_issued\":true,\"vault_committed\":\"unknown\",\"token_remapped\":false,\"metadata_committed\":false,\"old_cleanup_attempted\":false,\"old_cleanup_succeeded\":false,\"cleanup_semantics\":\"not_applicable\",\"cleanup_outcome\":null}".to_string()
     });
     internal_err(format!(
         "Provider rotation for '{name}' partially succeeded: {failed_stage} failed. stage_receipt: {receipt}. Local and provider state may now differ. Do not retry automatically: first reconcile the provider credential, local vault, Phantom token, rotation metadata, and prior-credential cleanup. Cause: {error}"
@@ -5542,6 +5586,42 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert!(text.contains("not inspected (read-only status)"), "{text}");
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn doctor_without_fix_does_not_open_or_provision_a_vault() {
+        let dir = TempDir::new().unwrap();
+        let mut config = PhantomConfig::new_with_defaults("doctor-read-only-project".to_string());
+        config.phantom.dotenv_path = Some(".env".to_string());
+        config.save(&dir.path().join(".phantom.toml")).unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("A={}\n", phantom_core::token::PhantomToken::generate()),
+        )
+        .unwrap();
+        let before: std::collections::BTreeSet<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+
+        let result = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: false,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap();
+        let text = extract_content_text(&result);
+        let after: std::collections::BTreeSet<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(
+            text.contains("not opened in read-only doctor mode"),
+            "{text}"
+        );
         assert_eq!(before, after);
     }
 

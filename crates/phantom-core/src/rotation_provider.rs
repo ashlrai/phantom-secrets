@@ -1,32 +1,20 @@
-//! Vendor-specific secret rotation providers.
+//! Vendor-specific rotation compatibility contracts.
 //!
-//! This module defines the [`RotationProvider`] trait and concrete implementations
-//! for Stripe, GitHub, AWS, Google Cloud, and Vercel, plus explicit
-//! not-supported providers for Sentry and Supabase (whose vendors expose no
-//! token-auth minting API). Providers allow `phantom rotate --auto-sync` to
-//! delegate credential rotation to the vendor's own API, then receive the new
-//! secret value back — enabling zero-downtime rotation without manual intervention.
-//!
-//! # Flow
-//!
-//! ```text
-//! phantom rotate --auto-sync STRIPE_SECRET_KEY
-//!     │
-//!     ├── 1. look up RotationProviderConfig in .phantom.toml
-//!     ├── 2. call provider.initiate_rotation(secret_name) → challenge_id
-//!     ├── 3. call provider.finalize_rotation(challenge_id) → new_secret_value
-//!     └── 4. store new_secret_value in vault + record audit event with source
-//! ```
+//! Shipped builds hard-deny automated live provider issuance before credential
+//! access or network I/O. The current challenge contract cannot durably carry a
+//! value-free provider resource handle through local persistence and perform a
+//! verified compensating abort when persistence fails. Exact `cfg(test)` mock
+//! prefixes exercise the locked local CAS/remap/metadata transaction only; they
+//! are not production provider capability evidence.
 //!
 //! # Security
 //!
 //! - Secret values returned by `finalize_rotation` are wrapped in
 //!   `zeroize::Zeroizing<String>` and MUST NOT be logged or written to disk
 //!   other than into the encrypted vault.
-//! - API credentials for each provider (used to *call* the rotation API) are
-//!   stored in `.phantom.toml` under `[phantom.secrets.{name}.rotation_provider]`
-//!   and are themselves protected by the vault's access controls.
-//! - All rotation attempts (successful or failed) are recorded as audit events
+//! - Provider identity/config may be recorded in `.phantom.toml`; bootstrap
+//!   values belong in the environment or vault, never in config.
+//! - Rotation attempts are recorded as audit events
 //!   with a `source` field: `"manual"`, `"stripe"`, `"github"`, `"aws"`,
 //!   `"google"`, `"vercel"`, etc.
 
@@ -179,6 +167,23 @@ impl fmt::Display for RotationSource {
 /// For synchronous vendors (where the new key is returned immediately from the
 /// initiate call) `finalize_rotation` simply returns the value stashed during
 /// `initiate_rotation`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupSemantics {
+    NotApplicable,
+    RevokePriorCredential,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupOutcome {
+    NotApplicable,
+    Succeeded,
+    SkippedNoPriorCredential,
+    SkippedMockCredential,
+    SkippedPriorCredentialNotFound,
+}
+
 pub trait RotationProvider: Send + Sync {
     /// Human-readable provider name, e.g. `"stripe"`.
     fn name(&self) -> &str;
@@ -217,22 +222,26 @@ pub trait RotationProvider: Send + Sync {
     /// The [`RotationSource`] label used for audit events from this provider.
     fn rotation_source(&self) -> RotationSource;
 
-    /// Best-effort cleanup performed by the caller only **after** the new
-    /// secret value has been durably stored in the vault (e.g. revoking the
-    /// old credential at the vendor).
+    /// Optional cleanup performed by the caller only **after** the new secret
+    /// value has been durably stored and verified in the vault (e.g. revoking
+    /// the old credential at the vendor).
     ///
     /// `old_value` is the previous vault value of the rotated secret. Default
     /// implementation is a no-op. Implementations MUST return cleanup errors
     /// truthfully without undoing the already committed replacement, and MUST
     /// NOT log `old_value`.
+    fn cleanup_semantics(&self, _config: &RotationProviderConfig) -> CleanupSemantics {
+        CleanupSemantics::NotApplicable
+    }
+
     fn post_store_cleanup(
         &self,
         secret_name: &str,
         config: &RotationProviderConfig,
         old_value: Option<&zeroize::Zeroizing<String>>,
-    ) -> Result<(), RotationProviderError> {
+    ) -> Result<CleanupOutcome, RotationProviderError> {
         let _ = (secret_name, config, old_value);
-        Ok(())
+        Ok(CleanupOutcome::NotApplicable)
     }
 }
 
@@ -254,6 +263,13 @@ pub(crate) fn mock_rotation_allowed() -> bool {
     {
         false
     }
+}
+
+/// True only for this crate's hermetic unit-test build. Shipped CLI/MCP
+/// artifacts currently expose no automated live provider issuance: every
+/// provider requires a durable recovery handle and verified abort path first.
+pub fn unit_test_mock_issuance_enabled() -> bool {
+    mock_rotation_allowed()
 }
 
 /// Guard shared by every provider's mock fast-path: permits the mock branch
@@ -577,28 +593,15 @@ pub fn auto_sync_rotation_with_bootstrap(
 
 // ── Stripe provider ───────────────────────────────────────────────────────────
 
-/// Stripe rotation provider — an **oauth-refresh roll** for Stripe App grants,
-/// **manual rotation** for raw keys.
+/// Stripe provider compatibility boundary.
 ///
-/// Two paths, selected by identity (never a name heuristic):
+/// Raw API keys are dashboard-only. OAuth refresh exchange is also disabled:
+/// Stripe invalidates the current refresh token during issuance, before
+/// Phantom can durably verify the replacement. Enabling that destructive path
+/// requires a separately durable, verified recovery escrow channel.
 ///
-/// 1. **OAuth-refresh** (additive): when the config's `api_key_env` is a
-///    `*_REFRESH_TOKEN` (written by [`crate::issuance::stripe::StripeAppOAuthFlow`]),
-///    the bootstrap credential is a Stripe App refresh token. The provider POSTs
-///    `grant_type=refresh_token` to `POST /v1/oauth/token` — HTTP Basic-authed
-///    with Phantom's own developer secret key from `$STRIPE_APP_SECRET_KEY` —
-///    and returns the **new rolled refresh token** (Stripe invalidates the old
-///    one on every exchange, so the successor MUST be re-vaulted; the caller's
-///    store-then-cleanup ordering handles that). Rolling within the 1-year
-///    window keeps the chain immortal.
-/// 2. **Raw keys**: Stripe exposes no public API to create or roll `rk_`/`sk_`
-///    keys — dashboard-only. This path returns [`RotationProviderError::NotSupported`]
-///    with a dashboard link instead of POSTing the bootstrap at an endpoint that
-///    cannot work.
-///
-/// In test/mock mode the raw-key path is keyed on a `"sk_test_mock_"` bootstrap
-/// and the oauth-refresh path on a `"stripe_mock_refresh_"` bootstrap (both
-/// require mock rotation to be enabled).
+/// Unit tests retain a raw-key-only mock path. It does not model the destructive
+/// OAuth refresh transaction and must never be treated as production evidence.
 pub struct StripeRotationProvider;
 
 /// Operator-facing explanation for the raw-key (dashboard-only) path.
@@ -608,10 +611,8 @@ const STRIPE_NOT_SUPPORTED_REASON: &str =
      then store the replacement with `phantom add`. For a self-refreshing \
      credential, use the OAuth app grant: `phantom grant add stripe`.";
 
-/// Env var holding Phantom's own Stripe App **developer secret key**, used as
-/// HTTP Basic auth to roll the app's OAuth refresh token. Never on disk (env /
-/// vault only); never logged. This is the confidential-client secret Stripe
-/// requires on the token endpoint — the app developer's key, not each user's.
+/// Reserved environment variable for a future recovery-escrow-backed Stripe
+/// refresh flow. The current rotation provider never reads or transmits it.
 pub const STRIPE_APP_SECRET_KEY_ENV: &str = "STRIPE_APP_SECRET_KEY";
 
 impl RotationProvider for StripeRotationProvider {
@@ -630,27 +631,22 @@ impl RotationProvider for StripeRotationProvider {
         secret_name: &str,
         config: &RotationProviderConfig,
     ) -> Result<String, RotationProviderError> {
-        // Resolve the bootstrap credential from the env var named in config
-        // (env-then-vault). For the oauth-refresh path this is the refresh token;
-        // for the raw-key path it is the (unusable) admin key.
+        if stripe_is_oauth_refresh(config) {
+            return Err(RotationProviderError::NotSupported {
+                reason: "Stripe OAuth refresh rotation is disabled because the token exchange invalidates the current refresh token before Phantom can durably verify the successor in its vault. A durable verified recovery escrow channel is required before this path can be enabled. Do not retry automatically."
+                    .to_string(),
+            });
+        }
+
+        // Resolve the raw-key bootstrap credential from the env var named in
+        // config (env-then-vault). OAuth refresh was rejected above before any
+        // credential lookup or provider request.
         let api_key = resolve_api_key(config)?;
 
         // Mock path (raw-key): deterministic challenge, test/opt-in only.
         if api_key.starts_with("sk_test_mock_") {
             guard_mock_rotation(secret_name)?;
             return Ok(format!("mock_challenge_stripe_{secret_name}"));
-        }
-
-        // Mock path (oauth-refresh): deterministic rolled refresh token, no
-        // network. Test/opt-in only.
-        if api_key.starts_with("stripe_mock_refresh_") {
-            guard_mock_rotation(secret_name)?;
-            return Ok(encode_challenge_payload("stripe_mock_refresh_rolled"));
-        }
-
-        // OAuth-refresh path: the config points at a refresh token. Roll it.
-        if stripe_is_oauth_refresh(config) {
-            return self.roll_refresh_token(config, &api_key);
         }
 
         // Raw-key path: no public endpoint can mint a replacement, so refuse
@@ -678,12 +674,6 @@ impl RotationProvider for StripeRotationProvider {
             ));
         }
 
-        // OAuth-refresh path: the rolled refresh token was stashed (base64) in
-        // the challenge by `initiate_rotation`; decode it as the new secret.
-        if challenge_id.starts_with("payload_") {
-            return decode_challenge_payload(challenge_id);
-        }
-
         Err(RotationProviderError::NotSupported {
             reason: STRIPE_NOT_SUPPORTED_REASON.to_string(),
         })
@@ -691,96 +681,6 @@ impl RotationProvider for StripeRotationProvider {
 
     fn rotation_source(&self) -> RotationSource {
         RotationSource::Stripe
-    }
-}
-
-impl StripeRotationProvider {
-    /// Roll the Stripe App refresh token: `POST /v1/oauth/token` with
-    /// `grant_type=refresh_token`, HTTP Basic-authed with the developer secret
-    /// key. Returns the **new** refresh token (base64-encoded in the challenge)
-    /// — Stripe invalidates the old one on exchange, so the successor MUST be
-    /// vaulted. The freshly issued 1-hour access token in the same response is
-    /// ephemeral and intentionally discarded (minted on demand elsewhere).
-    fn roll_refresh_token(
-        &self,
-        config: &RotationProviderConfig,
-        current_refresh: &zeroize::Zeroizing<String>,
-    ) -> Result<String, RotationProviderError> {
-        // The confidential-client secret is Phantom's own developer key, read
-        // from the environment only. Never on disk, never logged.
-        let developer_secret = std::env::var(STRIPE_APP_SECRET_KEY_ENV)
-            .map(zeroize::Zeroizing::new)
-            .map_err(|_| RotationProviderError::NotSupported {
-                reason: format!(
-                    "Stripe OAuth-refresh rotation needs the app developer secret key in \
-                     ${STRIPE_APP_SECRET_KEY_ENV} (HTTP Basic auth for POST /v1/oauth/token). \
-                     Set it, then retry `phantom rotate`."
-                ),
-            })?;
-
-        // RFC 9700: the token endpoint MUST NOT follow redirects — the request
-        // carries the developer secret (HTTP Basic) and the refresh token in the
-        // body, which reqwest would replay to a 307/308 target. A dedicated
-        // redirect-none client makes any 3xx surface as a non-2xx error instead.
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .user_agent("phantom-secrets-rotation/0.1")
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| RotationProviderError::NetworkError {
-                reason: format!("failed to build HTTP client: {e}"),
-            })?;
-        let url = stripe_oauth_token_url()?;
-
-        let response = client
-            .post(&url)
-            .basic_auth(developer_secret.as_str(), Some(""))
-            .header("Accept", "application/json")
-            .form(&[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", current_refresh.as_str()),
-            ])
-            .send()
-            .map_err(|e| RotationProviderError::NetworkError {
-                reason: e.to_string(),
-            })?;
-
-        let status = response.status().as_u16();
-        if status == 401 || status == 403 {
-            return Err(RotationProviderError::AuthFailed {
-                reason: format!("Stripe returned HTTP {status}"),
-            });
-        }
-        if !(200..300).contains(&status) {
-            let body = response.text().unwrap_or_default();
-            return Err(RotationProviderError::ApiError {
-                status,
-                reason: summarize_error_body(&body),
-            });
-        }
-
-        let body: serde_json::Value =
-            response
-                .json()
-                .map_err(|e| RotationProviderError::UnexpectedResponse {
-                    reason: e.to_string(),
-                })?;
-
-        // Stripe reports OAuth failures as a top-level `error` string even on 200.
-        if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
-            return Err(RotationProviderError::ApiError {
-                status,
-                reason: format!("error={}", err.chars().take(64).collect::<String>()),
-            });
-        }
-
-        let new_refresh = body
-            .get("refresh_token")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| RotationProviderError::UnexpectedResponse {
-                reason: "Stripe refresh response had no refresh_token".to_string(),
-            })?;
-        Ok(encode_challenge_payload(new_refresh))
     }
 }
 
@@ -793,51 +693,14 @@ fn stripe_is_oauth_refresh(config: &RotationProviderConfig) -> bool {
         .unwrap_or(false)
 }
 
-/// Resolve the Stripe OAuth token endpoint. Production is
-/// `https://api.stripe.com/v1/oauth/token`. The alternate endpoint exists only
-/// in the crate's unit-test build; shipped binaries cannot redirect this
-/// credential-bearing exchange with an environment variable.
-fn stripe_oauth_token_url() -> Result<String, RotationProviderError> {
-    const DEFAULT: &str = "https://api.stripe.com/v1/oauth/token";
-
-    #[cfg(test)]
-    {
-        if let Ok(base) = std::env::var("PHANTOM_STRIPE_API_BASE") {
-            if !base.is_empty() {
-                if !is_https_or_localhost(&base) {
-                    return Err(RotationProviderError::NotSupported {
-                        reason: "PHANTOM_STRIPE_API_BASE must be https:// or http://localhost / \
-                                 http://127.0.0.1"
-                            .to_string(),
-                    });
-                }
-                return Ok(format!("{}/v1/oauth/token", base.trim_end_matches('/')));
-            }
-        }
-    }
-
-    Ok(DEFAULT.to_string())
-}
-
-/// Accept only `https://…`, `http://localhost…`, or `http://127.0.0.1…`
-/// (mirrors the issuance endpoint guard's host-confusion boundaries).
-#[cfg(test)]
-fn is_https_or_localhost(url: &str) -> bool {
-    url.starts_with("https://")
-        || url == "http://localhost"
-        || url.starts_with("http://localhost/")
-        || url.starts_with("http://localhost:")
-        || url == "http://127.0.0.1"
-        || url.starts_with("http://127.0.0.1/")
-        || url.starts_with("http://127.0.0.1:")
-}
-
 // ── GitHub provider ───────────────────────────────────────────────────────────
 
-/// GitHub fine-grained token refresh provider.
+/// GitHub rotation compatibility provider.
 ///
 /// GitHub does not expose a public "rotate token" API endpoint for PATs.
-/// This provider covers two supported paths:
+/// Live installation-token issuance is disabled until an issued token can be
+/// durably identified and revoked after local persistence failure. The only
+/// executable path is the exact `cfg(test)` mock prefix.
 ///
 /// 1. **GitHub Apps installation tokens**: POST `/app/installations/{id}/access_tokens`
 ///    generates a fresh short-lived token (**expires after 1 hour**). This is
@@ -855,9 +718,7 @@ fn is_https_or_localhost(url: &str) -> bool {
 ///
 /// For classic PATs or fine-grained PATs the GitHub API does not support
 /// programmatic rotation — there is no endpoint to mint or regenerate a PAT.
-/// This provider only mints App installation tokens; when `account_id` (the
-/// App installation ID) is missing it fails with an actionable error telling
-/// the operator to rotate PATs manually in the GitHub dashboard.
+/// Classic and fine-grained PATs also remain dashboard-only.
 pub struct GitHubRotationProvider;
 
 /// Installation access tokens minted by the GitHub App API expire after 1 hour.
@@ -879,6 +740,12 @@ impl RotationProvider for GitHubRotationProvider {
         secret_name: &str,
         config: &RotationProviderConfig,
     ) -> Result<String, RotationProviderError> {
+        if !mock_rotation_allowed() {
+            return Err(RotationProviderError::NotSupported {
+                reason: "Live GitHub installation-token issuance is disabled before credential access or network I/O: Phantom cannot durably retain a value-free recovery handle and abort an issued token if local vault persistence fails. Re-enable only with verified provider cleanup. Do not retry automatically."
+                    .to_string(),
+            });
+        }
         let api_key = resolve_api_key(config)?;
 
         // Mock path: GitHub App installation tokens prefixed "ghp_mock_"
@@ -887,66 +754,10 @@ impl RotationProvider for GitHubRotationProvider {
             return Ok(format!("mock_challenge_github_{secret_name}"));
         }
 
-        // Real path: generate a new GitHub App installation access token.
-        let installation_id =
-            config
-                .account_id
-                .as_deref()
-                .ok_or_else(|| RotationProviderError::ApiError {
-                    status: 0,
-                    reason: "account_id must be set to the GitHub App installation ID. \
-                             GitHub has no API to rotate classic or fine-grained personal \
-                             access tokens — rotate PATs manually at \
-                             https://github.com/settings/tokens"
-                        .to_string(),
-                })?;
-
-        let client = build_http_client(config.timeout_secs)?;
-        let url =
-            format!("https://api.github.com/app/installations/{installation_id}/access_tokens");
-        let response = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key.as_str()))
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .header("User-Agent", "phantom-secrets/0.1")
-            .send()
-            .map_err(|e| RotationProviderError::NetworkError {
-                reason: e.to_string(),
-            })?;
-
-        let status = response.status().as_u16();
-        if status == 401 || status == 403 {
-            return Err(RotationProviderError::AuthFailed {
-                reason: format!(
-                    "GitHub returned HTTP {status} — note the bootstrap credential must be \
-                     a freshly minted GitHub App JWT (App JWTs expire ~10 minutes after \
-                     signing); generate a new JWT for each rotation"
-                ),
-            });
-        }
-        if status != 201 {
-            let body = response.text().unwrap_or_default();
-            return Err(RotationProviderError::ApiError {
-                status,
-                reason: summarize_error_body(&body),
-            });
-        }
-
-        let body: serde_json::Value =
-            response
-                .json()
-                .map_err(|e| RotationProviderError::UnexpectedResponse {
-                    reason: e.to_string(),
-                })?;
-
-        let token = body.get("token").and_then(|v| v.as_str()).ok_or_else(|| {
-            RotationProviderError::UnexpectedResponse {
-                reason: "missing 'token' field in GitHub response".to_string(),
-            }
-        })?;
-
-        Ok(encode_challenge_payload(token))
+        Err(RotationProviderError::NotSupported {
+            reason: "Only the exact cfg(test) GitHub mock prefix is supported. Live installation-token issuance is disabled until a durable recovery handle and verified abort path exist."
+                .to_string(),
+        })
     }
 
     fn finalize_rotation(
@@ -965,7 +776,9 @@ impl RotationProvider for GitHubRotationProvider {
             ));
         }
 
-        decode_challenge_payload(challenge_id)
+        Err(RotationProviderError::NotSupported {
+            reason: "Only cfg(test) GitHub mock challenges can be finalized".to_string(),
+        })
     }
 
     fn rotation_source(&self) -> RotationSource {
@@ -1011,6 +824,12 @@ impl RotationProvider for AwsRotationProvider {
         secret_name: &str,
         config: &RotationProviderConfig,
     ) -> Result<String, RotationProviderError> {
+        if !mock_rotation_allowed() {
+            return Err(RotationProviderError::NotSupported {
+                reason: "Live AWS rotation is disabled before credential access or network I/O. Rotate with the AWS CLI or console, then store the replacement interactively."
+                    .to_string(),
+            });
+        }
         let api_key = resolve_api_key(config)?;
 
         // Mock path.
@@ -1055,9 +874,11 @@ impl RotationProvider for AwsRotationProvider {
 
 // ── Google Cloud Secret Manager provider ──────────────────────────────────────
 
-/// Google Cloud Secret Manager rotation provider.
+/// Google Cloud Secret Manager rotation compatibility provider.
 ///
-/// Rotates a GCP secret by calling the Secret Manager REST API:
+/// Live version issuance is disabled until the issued version resource can be
+/// durably carried through local persistence and disabled on failure. The
+/// operations below describe the future compensated contract:
 ///
 /// 1. **Add a new secret version** via
 ///    `POST /v1/projects/{project}/secrets/{secret}/versions:add`
@@ -1087,9 +908,7 @@ impl RotationProvider for AwsRotationProvider {
 ///
 /// # Scope: application-owned shared secrets ONLY
 ///
-/// This provider generates a fresh random value and pushes it as a new GSM
-/// version — valid only for secrets your application owns (webhook signing
-/// keys, internal shared secrets). It refuses names that denote
+/// The compatibility provider refuses names that denote
 /// **Google-issued** credentials (service-account keys, application default
 /// credentials), which a random value can never replace.
 pub struct GoogleRotationProvider;
@@ -1143,6 +962,13 @@ impl RotationProvider for GoogleRotationProvider {
             });
         }
 
+        if !mock_rotation_allowed() {
+            return Err(RotationProviderError::NotSupported {
+                reason: "Live Google Secret Manager version issuance is disabled before credential access or network I/O: Phantom cannot durably retain the issued version resource and disable it if local vault persistence fails. Re-enable only with a verified recovery handle and abort path. Do not retry automatically."
+                    .to_string(),
+            });
+        }
+
         let access_token = resolve_api_key(config)?;
 
         // ── Mock path ────────────────────────────────────────────────────────
@@ -1151,85 +977,10 @@ impl RotationProvider for GoogleRotationProvider {
             return Ok(format!("mock_challenge_google_{secret_name}"));
         }
 
-        // ── Real path: add a new secret version ──────────────────────────────
-        //
-        // The `account_id` field must hold the full Secret Manager resource
-        // name: projects/{project}/secrets/{secret}. Guessing a resource path
-        // from the secret name is guaranteed-invalid, so its absence is a
-        // configuration error (checked before any network I/O).
-        let resource_name = config
-            .account_id
-            .as_deref()
-            .ok_or(RotationProviderError::NotConfigured)?;
-
-        // Generate a new random secret value (32 bytes, hex-encoded).
-        let new_secret_value = generate_secret_value();
-
-        // Encode the payload as the Secret Manager API expects: base64 of the
-        // raw secret bytes in a JSON `{"payload": {"data": "<base64>"}}` body.
-        use base64::Engine;
-        let data_b64 =
-            base64::engine::general_purpose::STANDARD.encode(new_secret_value.as_bytes());
-
-        let body = serde_json::json!({
-            "payload": {
-                "data": data_b64
-            }
-        });
-
-        // Documented REST method: projects.secrets.addVersion — the custom
-        // method suffix goes on the secret resource itself
-        // (`.../secrets/my-secret:addVersion`), NOT on a `/versions`
-        // sub-collection.
-        let url = format!("https://secretmanager.googleapis.com/v1/{resource_name}:addVersion");
-
-        let client = build_http_client(config.timeout_secs)?;
-        let response = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", access_token.as_str()))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .map_err(|e| RotationProviderError::NetworkError {
-                reason: e.to_string(),
-            })?;
-
-        let status = response.status().as_u16();
-        if status == 401 || status == 403 {
-            return Err(RotationProviderError::AuthFailed {
-                reason: format!(
-                    "Google Secret Manager returned HTTP {status} — check access token permissions"
-                ),
-            });
-        }
-        if status != 200 {
-            let body_text = response.text().unwrap_or_default();
-            return Err(RotationProviderError::ApiError {
-                status,
-                reason: summarize_error_body(&body_text),
-            });
-        }
-
-        // The response contains the new version resource name; we encode both
-        // it and the new secret value into the challenge_id so finalize can
-        // return the value without a second API call.
-        let resp_body: serde_json::Value =
-            response
-                .json()
-                .map_err(|e| RotationProviderError::UnexpectedResponse {
-                    reason: e.to_string(),
-                })?;
-
-        let version_name = resp_body
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(resource_name);
-
-        // Pack version_name + new_value as "version\x00new_value" then base64.
-        // Kept in a Zeroizing wrapper — it embeds the new secret value.
-        let packed =
-            zeroize::Zeroizing::new(format!("{version_name}\x00{}", new_secret_value.as_str()));
-        Ok(encode_challenge_payload(packed.as_str()))
+        Err(RotationProviderError::NotSupported {
+            reason: "Only the exact cfg(test) Google mock prefix is supported. Live Secret Manager version issuance is disabled until a durable version recovery handle and verified abort path exist."
+                .to_string(),
+        })
     }
 
     fn finalize_rotation(
@@ -1249,14 +1000,9 @@ impl RotationProvider for GoogleRotationProvider {
             ));
         }
 
-        // Real path: decode the packed payload (Zeroizing — embeds the value).
-        let packed = decode_challenge_payload(challenge_id)?;
-        // The new value is after the null-byte separator.
-        let new_value = packed
-            .split_once('\x00')
-            .map(|(_, v)| v)
-            .unwrap_or(packed.as_str());
-        Ok(zeroize::Zeroizing::new(new_value.to_string()))
+        Err(RotationProviderError::NotSupported {
+            reason: "Only cfg(test) Google mock challenges can be finalized".to_string(),
+        })
     }
 
     fn rotation_source(&self) -> RotationSource {
@@ -1264,33 +1010,18 @@ impl RotationProvider for GoogleRotationProvider {
     }
 }
 
-/// Generate a cryptographically random secret value (32 bytes, hex-encoded).
-///
-/// This value is used as the *new* secret payload when the Google Secret Manager
-/// provider creates a new version. Returned inside `Zeroizing` so intermediate
-/// copies are scrubbed from memory.
-fn generate_secret_value() -> zeroize::Zeroizing<String> {
-    use rand::RngCore;
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    let value = zeroize::Zeroizing::new(hex::encode(bytes));
-    zeroize::Zeroize::zeroize(&mut bytes);
-    value
-}
-
 // ── Vercel provider ───────────────────────────────────────────────────────────
 
-/// Vercel auth-token rotation provider.
+/// Vercel auth-token compatibility provider.
 ///
-/// Mints a fresh Vercel REST API auth token and verifies it. Revocation of
-/// the OLD token deliberately does **not** happen here: the minted
-/// `bearerToken` is one-time-retrievable, so revoking the old token before
-/// the caller has durably stored the new one would create a crash window
-/// ending in total credential lockout. Revocation runs in
-/// [`RotationProvider::post_store_cleanup`], which callers invoke only AFTER
-/// the new value is persisted in the vault. Endpoints confirmed against the
-/// Vercel REST API reference (fetched 2026-08-16):
+/// Live issuance is disabled before credential access or network I/O because
+/// the current challenge contract cannot durably preserve the successor token
+/// id for compensating deletion if local persistence fails. Only an exact
+/// `cfg(test)` mock prefix exercises the local transaction scaffolding.
 ///
+/// A future implementation must durably carry the token id from mint through
+/// local persistence and use it for verified abort on every failure. The
+/// relevant provider operations are:
 /// 1. **Mint**: `POST https://api.vercel.com/v3/user/tokens` authenticated
 ///    with `Authorization: Bearer <existing token>`, JSON body
 ///    `{"name": <string, required>}` (optional `expiresAt` in ms since epoch,
@@ -1298,11 +1029,8 @@ fn generate_secret_value() -> zeroize::Zeroizing<String> {
 ///    the token to a team. The response carries one-time `bearerToken`
 ///    (never retrievable again) plus `token` metadata including `token.id`.
 ///    <https://vercel.com/docs/rest-api/reference/endpoints/authentication/create-an-auth-token>
-/// 2. **Verify**: `GET https://api.vercel.com/v2/user` (whoami) with the NEW
-///    token; only a 2xx counts as verified. On ANY other status (401, 429,
-///    5xx, …) the just-minted token is best-effort deleted by id and the
-///    rotation fails **without touching the old token**.
-/// 3. **Revoke old** (in `post_store_cleanup`, best-effort, fail-open):
+/// 2. **Verify**: `GET https://api.vercel.com/v2/user` with the new token.
+/// 3. **Revoke old** (in `post_store_cleanup`, explicit partial-success on failure):
 ///    `DELETE https://api.vercel.com/v3/user/tokens/current` authenticated
 ///    with the OLD SECRET VALUE itself (never the bootstrap credential, which
 ///    may be a separate rotation-management token) — the special `current` id
@@ -1327,8 +1055,8 @@ fn generate_secret_value() -> zeroize::Zeroizing<String> {
 ///
 /// # Mock path
 ///
-/// When `api_key_env` resolves to a value starting with `"vercel_mock_"`, the
-/// provider returns deterministic mock values without real HTTP calls.
+/// Only the crate's `cfg(test)` build accepts a `"vercel_mock_"` bootstrap and
+/// returns a deterministic non-production value without HTTP calls.
 pub struct VercelRotationProvider;
 
 impl RotationProvider for VercelRotationProvider {
@@ -1347,6 +1075,12 @@ impl RotationProvider for VercelRotationProvider {
         secret_name: &str,
         config: &RotationProviderConfig,
     ) -> Result<String, RotationProviderError> {
+        if !mock_rotation_allowed() {
+            return Err(RotationProviderError::NotSupported {
+                reason: "Live Vercel token issuance is disabled before credential access or network I/O: Phantom cannot durably retain a value-free successor resource id and delete the issued token if local vault persistence fails. Use the Vercel dashboard and store the replacement interactively. Do not retry automatically."
+                    .to_string(),
+            });
+        }
         let api_key = resolve_api_key(config)?;
 
         // Mock path.
@@ -1355,101 +1089,10 @@ impl RotationProvider for VercelRotationProvider {
             return Ok(format!("mock_challenge_vercel_{secret_name}"));
         }
 
-        let client = build_http_client(config.timeout_secs)?;
-
-        // 1. Mint a new auth token (team-scoped when account_id is set).
-        let mut url = "https://api.vercel.com/v3/user/tokens".to_string();
-        if let Some(team_id) = config.account_id.as_deref() {
-            url.push_str("?teamId=");
-            url.push_str(team_id);
-        }
-
-        let token_name = format!(
-            "phantom-rotation-{}-{}",
-            secret_name.to_lowercase(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
-        );
-
-        let response = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key.as_str()))
-            .json(&serde_json::json!({ "name": token_name }))
-            .send()
-            .map_err(|e| RotationProviderError::NetworkError {
-                reason: e.to_string(),
-            })?;
-
-        let status = response.status().as_u16();
-        if status == 401 || status == 403 {
-            return Err(RotationProviderError::AuthFailed {
-                reason: format!("Vercel returned HTTP {status}"),
-            });
-        }
-        if !(200..300).contains(&status) {
-            let body = response.text().unwrap_or_default();
-            return Err(RotationProviderError::ApiError {
-                status,
-                reason: summarize_error_body(&body),
-            });
-        }
-
-        let body: serde_json::Value =
-            response
-                .json()
-                .map_err(|e| RotationProviderError::UnexpectedResponse {
-                    reason: e.to_string(),
-                })?;
-
-        let new_token = body
-            .get("bearerToken")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| RotationProviderError::UnexpectedResponse {
-                reason: "missing 'bearerToken' field in Vercel response".to_string(),
-            })?;
-        let new_token_id = body
-            .get("token")
-            .and_then(|t| t.get("id"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        // 2. Verify the minted token works (whoami-style call). ONLY a 2xx
-        //    counts as verified: a 429 / 5xx / transient outage must never
-        //    lead to the old token being replaced on the strength of an
-        //    unverified new one.
-        let verify_status = client
-            .get("https://api.vercel.com/v2/user")
-            .header("Authorization", format!("Bearer {new_token}"))
-            .send()
-            .map(|r| r.status().as_u16())
-            .map_err(|e| RotationProviderError::NetworkError {
-                reason: format!("verification call failed: {e}"),
-            })?;
-        if !(200..300).contains(&verify_status) {
-            // The minted token is not verified — clean it up (best-effort,
-            // by explicit id, using the still-valid old bootstrap token) and
-            // fail WITHOUT touching the old token.
-            if !new_token_id.is_empty() {
-                let _ = client
-                    .delete(format!(
-                        "https://api.vercel.com/v3/user/tokens/{new_token_id}"
-                    ))
-                    .header("Authorization", format!("Bearer {}", api_key.as_str()))
-                    .send();
-            }
-            return Err(RotationProviderError::UnexpectedResponse {
-                reason: format!(
-                    "newly minted Vercel token failed whoami verification (HTTP {verify_status})"
-                ),
-            });
-        }
-
-        // NOTE: the OLD token is deliberately NOT revoked here. The caller
-        // stores the new value first, then invokes `post_store_cleanup`.
-        Ok(encode_challenge_payload(new_token))
+        Err(RotationProviderError::NotSupported {
+            reason: "Live Vercel token issuance is disabled before network access: the current provider challenge contract does not preserve a value-free successor resource id for compensating cleanup if local vault persistence fails. Use the Vercel dashboard and then store the replacement interactively. Do not retry automatically."
+                .to_string(),
+        })
     }
 
     fn finalize_rotation(
@@ -1468,31 +1111,37 @@ impl RotationProvider for VercelRotationProvider {
             ));
         }
 
-        decode_challenge_payload(challenge_id)
+        Err(RotationProviderError::NotSupported {
+            reason: "Only cfg(test) Vercel mock challenges can be finalized".to_string(),
+        })
     }
 
-    /// Best-effort revocation of the OLD token, run by the caller only after
-    /// the new token is durably stored in the vault.
+    fn cleanup_semantics(&self, _config: &RotationProviderConfig) -> CleanupSemantics {
+        CleanupSemantics::RevokePriorCredential
+    }
+
+    /// Revocation of the OLD token, run by the caller only after the new token
+    /// is durably stored and verified in the vault.
     ///
     /// Authenticates the `DELETE /v3/user/tokens/current` call with the old
     /// secret value itself, so exactly the rotated-out token is revoked —
     /// never the bootstrap credential (which may be a separate
-    /// rotation-management token). Fail-open: any failure or skip is recorded
-    /// as an audit event (name only) and never undoes the rotation.
+    /// rotation-management token). Failures are recorded as value-free audit
+    /// events and returned so the caller can report explicit partial success.
     fn post_store_cleanup(
         &self,
         secret_name: &str,
         config: &RotationProviderConfig,
         old_value: Option<&zeroize::Zeroizing<String>>,
-    ) -> Result<(), RotationProviderError> {
+    ) -> Result<CleanupOutcome, RotationProviderError> {
         let Some(old_token) = old_value else {
             crate::audit::log("vault.rotation.old_token_revoke_skipped", Some(secret_name));
-            return Ok(());
+            return Ok(CleanupOutcome::SkippedNoPriorCredential);
         };
 
         // Hermetic mock values never reach the network.
         if old_token.starts_with("vercel_mock_") || old_token.starts_with("vercel_rotated_mock_") {
-            return Ok(());
+            return Ok(CleanupOutcome::SkippedMockCredential);
         }
 
         let client = build_http_client(config.timeout_secs).map_err(|_| {
@@ -1520,7 +1169,7 @@ impl RotationProvider for VercelRotationProvider {
                 reason: "prior-token cleanup was rejected".to_string(),
             });
         }
-        Ok(())
+        Ok(CleanupOutcome::Succeeded)
     }
 
     fn rotation_source(&self) -> RotationSource {
@@ -1530,19 +1179,19 @@ impl RotationProvider for VercelRotationProvider {
 
 // ── Sentry provider ───────────────────────────────────────────────────────────
 
-/// Sentry rotation provider — mints fresh **8-hour org tokens** on demand from a
-/// vaulted **app identity**, mirroring the GitHub installation-token model.
+/// Sentry rotation compatibility provider.
 ///
-/// The durable root is the published integration's app identity
+/// Live installation-token issuance is disabled until an issued authorization
+/// has a durable recovery handle and verified abort path. The prospective root
+/// is the published integration's app identity
 /// (`client_id` + `client_secret`), packed into the JWT-bearer *seed* that
 /// [`crate::issuance::sentry::SentryInstallFlow`] vaults. Each rotation signs a
 /// short-lived HS256 JWT from that seed
 /// ([`crate::issuance::sentry::mint_install_jwt`]) and exchanges it at
 /// `POST /api/0/sentry-app-installations/{uuid}/authorizations/` with
 /// `grant_type=urn:sentry:params:oauth:grant-type:jwt-bearer` — a **stateless**
-/// renewal with no stored refresh token to lose. Issuance and renewal are the
-/// same operation, so a target that does not exist yet is legal (the mint
-/// creates it).
+/// renewal with no stored refresh token. These protocol notes do not represent
+/// an enabled production path.
 ///
 /// Config (written by the install flow):
 ///
@@ -1557,8 +1206,7 @@ impl RotationProvider for VercelRotationProvider {
 ///
 /// Org auth tokens (`sntrys_…`), internal-integration tokens, and personal
 /// tokens are all session-gated (token-cannot-mint-token) and remain
-/// dashboard-only; store any of those as a `manual` grant. This provider mints
-/// only installation org tokens from the app identity.
+/// dashboard-only; store any of those as a `manual` grant.
 ///
 /// # Mock path
 ///
@@ -1566,15 +1214,6 @@ impl RotationProvider for VercelRotationProvider {
 /// rotation is enabled), the provider returns deterministic values without any
 /// network or signing I/O — keeping tests hermetic.
 pub struct SentryRotationProvider;
-
-/// Operator-facing explanation when the seed is missing/malformed.
-const SENTRY_SEED_MISSING_REASON: &str =
-    "Sentry rotation needs the app-identity JWT-bearer seed (client_id + \
-     client_secret) that `phantom grant add sentry` vaults under \
-     SENTRY_APP_JWT_SEED, plus account_id set to the installation uuid. Run \
-     `phantom grant add sentry --client-id <ID> --client-secret-env <ENV>` to \
-     establish the grant; legacy static Sentry tokens are dashboard-only and \
-     cannot be minted headlessly.";
 
 impl RotationProvider for SentryRotationProvider {
     fn name(&self) -> &str {
@@ -1592,6 +1231,12 @@ impl RotationProvider for SentryRotationProvider {
         secret_name: &str,
         config: &RotationProviderConfig,
     ) -> Result<String, RotationProviderError> {
+        if !mock_rotation_allowed() {
+            return Err(RotationProviderError::NotSupported {
+                reason: "Live Sentry installation-token issuance is disabled before credential access or network I/O: Phantom cannot durably retain a value-free recovery handle and revoke an issued token if local vault persistence fails. Re-enable only with verified provider cleanup. Do not retry automatically."
+                    .to_string(),
+            });
+        }
         let seed = resolve_api_key(config)?;
 
         // Mock path: deterministic, no signing or network.
@@ -1600,75 +1245,10 @@ impl RotationProvider for SentryRotationProvider {
             return Ok(format!("mock_challenge_sentry_{secret_name}"));
         }
 
-        // Real path. Validate the installation uuid (cheap) before parsing the
-        // app identity, then sign a JWT and exchange it.
-        let installation_id =
-            config
-                .account_id
-                .as_deref()
-                .ok_or_else(|| RotationProviderError::ApiError {
-                    status: 0,
-                    reason: "account_id must be set to the Sentry installation uuid — the \
-                             install flow records it; re-run `phantom grant add sentry`."
-                        .to_string(),
-                })?;
-        let (client_id, client_secret) = crate::issuance::sentry::unpack_seed(seed.as_str())
-            .ok_or_else(|| RotationProviderError::NotSupported {
-                reason: SENTRY_SEED_MISSING_REASON.to_string(),
-            })?;
-
-        let jwt =
-            crate::issuance::sentry::mint_install_jwt(client_id, client_secret).map_err(|e| {
-                RotationProviderError::UnexpectedResponse {
-                    reason: e.to_string(),
-                }
-            })?;
-
-        let client = build_http_client(config.timeout_secs)?;
-        let url = crate::issuance::sentry::authorizations_url("https://sentry.io", installation_id);
-        let response = client
-            .post(&url)
-            .header("Accept", "application/json")
-            .header("User-Agent", "phantom-secrets/0.1")
-            .json(&serde_json::json!({
-                "grant_type": "urn:sentry:params:oauth:grant-type:jwt-bearer",
-                "jwt": jwt.as_str(),
-            }))
-            .send()
-            .map_err(|e| RotationProviderError::NetworkError {
-                reason: e.to_string(),
-            })?;
-
-        let status = response.status().as_u16();
-        if status == 401 || status == 403 {
-            return Err(RotationProviderError::AuthFailed {
-                reason: format!(
-                    "Sentry returned HTTP {status} for the JWT-bearer grant — the app identity \
-                     may be revoked or the installation uninstalled"
-                ),
-            });
-        }
-        if !(200..300).contains(&status) {
-            let body = response.text().unwrap_or_default();
-            return Err(RotationProviderError::ApiError {
-                status,
-                reason: summarize_error_body(&body),
-            });
-        }
-
-        let body: serde_json::Value =
-            response
-                .json()
-                .map_err(|e| RotationProviderError::UnexpectedResponse {
-                    reason: e.to_string(),
-                })?;
-        let token = body.get("token").and_then(|v| v.as_str()).ok_or_else(|| {
-            RotationProviderError::UnexpectedResponse {
-                reason: "missing 'token' field in Sentry authorization response".to_string(),
-            }
-        })?;
-
-        Ok(encode_challenge_payload(token))
+        Err(RotationProviderError::NotSupported {
+            reason: "Only the exact cfg(test) Sentry mock prefix is supported. Live installation-token issuance is disabled until a durable recovery handle and verified abort path exist."
+                .to_string(),
+        })
     }
 
     fn finalize_rotation(
@@ -1687,7 +1267,9 @@ impl RotationProvider for SentryRotationProvider {
             ));
         }
 
-        decode_challenge_payload(challenge_id)
+        Err(RotationProviderError::NotSupported {
+            reason: "Only cfg(test) Sentry mock challenges can be finalized".to_string(),
+        })
     }
 
     fn rotation_source(&self) -> RotationSource {
@@ -1760,10 +1342,9 @@ impl RotationProvider for SupabaseRotationProvider {
 
 // ── Generic provider ──────────────────────────────────────────────────────────
 
-/// A generic rotation provider for custom vendor APIs.
-///
-/// Calls a user-specified `rotate_url` with a POST request, expects the new
-/// secret to be returned in the JSON field named `value_field`.
+/// Deprecated generic-provider schema retained for configuration compatibility.
+/// It never performs network I/O because it has no provider-specific durable
+/// recovery handle or verified abort path.
 pub struct GenericRotationProvider {
     /// Human-readable provider name.
     pub provider_name: String,
@@ -1790,56 +1371,22 @@ impl RotationProvider for GenericRotationProvider {
     fn initiate_rotation(
         &self,
         _secret_name: &str,
-        config: &RotationProviderConfig,
+        _config: &RotationProviderConfig,
     ) -> Result<String, RotationProviderError> {
-        let api_key = resolve_api_key(config)?;
-        let client = build_http_client(config.timeout_secs)?;
-
-        let response = client
-            .post(&self.rotate_url)
-            .header("Authorization", format!("Bearer {}", api_key.as_str()))
-            .send()
-            .map_err(|e| RotationProviderError::NetworkError {
-                reason: e.to_string(),
-            })?;
-
-        let status = response.status().as_u16();
-        if status == 401 || status == 403 {
-            return Err(RotationProviderError::AuthFailed {
-                reason: format!("HTTP {status}"),
-            });
-        }
-        if !(200..300).contains(&status) {
-            let body = response.text().unwrap_or_default();
-            return Err(RotationProviderError::ApiError {
-                status,
-                reason: summarize_error_body(&body),
-            });
-        }
-
-        let body: serde_json::Value =
-            response
-                .json()
-                .map_err(|e| RotationProviderError::UnexpectedResponse {
-                    reason: e.to_string(),
-                })?;
-
-        let new_value = body
-            .get(&self.value_field)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| RotationProviderError::UnexpectedResponse {
-                reason: format!("missing '{}' field in response", self.value_field),
-            })?;
-
-        Ok(encode_challenge_payload(new_value))
+        Err(RotationProviderError::NotSupported {
+            reason: "Live custom-provider issuance is disabled before credential access or network I/O: the generic challenge contract has no durable provider recovery handle or verified abort path for local persistence failure. Implement a provider-specific compensated transaction first."
+                .to_string(),
+        })
     }
 
     fn finalize_rotation(
         &self,
-        challenge_id: &str,
+        _challenge_id: &str,
         _config: &RotationProviderConfig,
     ) -> Result<zeroize::Zeroizing<String>, RotationProviderError> {
-        decode_challenge_payload(challenge_id)
+        Err(RotationProviderError::NotSupported {
+            reason: "Generic provider challenges cannot be finalized".to_string(),
+        })
     }
 
     fn rotation_source(&self) -> RotationSource {
@@ -1851,9 +1398,9 @@ impl RotationProvider for GenericRotationProvider {
 
 // ── Default providers ─────────────────────────────────────────────────────────
 
-/// Build the default set of rotation providers (Stripe, GitHub, AWS, Google,
-/// Vercel, plus the not-supported Sentry and Supabase providers, which report
-/// manual-rotation-required with a dashboard link).
+/// Build the compatibility provider set. Shipped builds hard-deny automated
+/// live issuance before credential access/network I/O. Unit-test mock paths
+/// exercise local transaction logic but are not production capability proof.
 pub fn default_rotation_providers() -> Vec<Box<dyn RotationProvider>> {
     vec![
         Box::new(StripeRotationProvider),
@@ -1863,10 +1410,8 @@ pub fn default_rotation_providers() -> Vec<Box<dyn RotationProvider>> {
         Box::new(VercelRotationProvider),
         Box::new(SentryRotationProvider),
         Box::new(SupabaseRotationProvider),
-        // Self-rotating issuer built on the Supabase OAuth grant: refreshes the
-        // management token (atomic refresh-token rotation) and mints/rotates
-        // project API keys via the Management API. Distinct identity
-        // ("supabase-management") from the manual-only PAT provider above.
+        // Compatibility boundary for Supabase enrollment/project-key configs;
+        // live issuance is disabled until compensated recovery exists.
         Box::new(crate::issuance::supabase::SupabaseManagementProvider),
     ]
 }
@@ -1925,6 +1470,7 @@ pub(crate) fn build_http_client(
 /// Encode a secret value into a challenge_id using base64 (URL-safe, no padding).
 ///
 /// The challenge_id prefix distinguishes encoded payloads from plain IDs.
+#[cfg(test)]
 pub(crate) fn encode_challenge_payload(value: &str) -> String {
     use base64::Engine;
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.as_bytes());
@@ -1935,6 +1481,7 @@ pub(crate) fn encode_challenge_payload(value: &str) -> String {
 ///
 /// Returned inside `Zeroizing` — the decoded payload IS the freshly minted
 /// secret, and intermediate copies must be scrubbed from memory.
+#[cfg(test)]
 pub(crate) fn decode_challenge_payload(
     challenge_id: &str,
 ) -> Result<zeroize::Zeroizing<String>, RotationProviderError> {
@@ -2274,16 +1821,14 @@ pub fn batch_discover_due(
     items
 }
 
-/// Execute a batch rotation for the given items, respecting per-provider rate
-/// limits and emitting a composite audit event with a shared `batch_id`.
+/// Compatibility batch planner. Vendor issuance is deliberately disabled.
 ///
 /// Returns `(batch_id, Vec<BatchItemOutcome>)`.
 ///
-/// # Security
-/// New secret values returned by vendor providers are wrapped in
-/// `Zeroizing<String>` and are NOT logged, printed, or returned except inside
-/// the `BatchItemOutcome.new_value` field, which callers must store in the
-/// vault immediately and then drop.
+/// Issuing multiple successors before the caller has durably persisted the
+/// first one creates an unrecoverable ambiguity window. Until issuance and
+/// persistence are one sequential transaction, every vendor item is denied
+/// before any provider call; manual items remain report-only.
 pub fn execute_batch_rotation(
     items: &[BatchRotationItem],
     providers: &[Box<dyn RotationProvider>],
@@ -2291,133 +1836,30 @@ pub fn execute_batch_rotation(
 ) -> (String, Vec<BatchItemOutcome>) {
     // `now` is kept in the signature for API stability; expiry persistence is
     // caller-side (the caller owns the vault TTL metadata).
-    let _ = now;
+    let _ = (now, providers);
     let batch_id = generate_batch_id();
 
     crate::audit::log_batch_rotation_started(&batch_id, items.len());
 
-    // Group items by provider so we can apply per-provider rate limits.
-    // Order within each provider group preserves the input ordering.
-    let provider_names: Vec<String> = {
-        let mut seen = std::collections::HashSet::new();
-        items
-            .iter()
-            .map(|i| i.provider_label.clone())
-            .filter(|p| seen.insert(p.clone()))
-            .collect()
-    };
-
     let mut outcomes: Vec<BatchItemOutcome> = Vec::with_capacity(items.len());
-
-    for provider_name in &provider_names {
-        let provider_items: Vec<&BatchRotationItem> = items
-            .iter()
-            .filter(|i| &i.provider_label == provider_name)
-            .collect();
-
-        let rate_limit = ProviderRateLimit::for_provider(provider_name);
-
-        // Find the matching provider implementation.
-        let maybe_provider = providers
-            .iter()
-            .find(|p| p.name() == provider_name.as_str());
-
-        for item in &provider_items {
-            let secret_name = &item.secret_name;
-
-            if let (Some(provider), Some(config)) =
-                (maybe_provider.as_ref(), item.provider_config.as_ref())
-            {
-                // Vendor path: initiate → pause → finalize.
-                let challenge_result = provider.initiate_rotation(secret_name, config);
-
-                match challenge_result {
-                    Err(e) => {
-                        crate::audit::log_batch_item_failed(&batch_id, secret_name, &e.to_string());
-                        outcomes.push(BatchItemOutcome {
-                            secret_name: secret_name.clone(),
-                            old_expires_at: item.expires_at,
-                            new_expires_at: None,
-                            provider_label: provider_name.clone(),
-                            vendor_rotated: false,
-                            new_value: None,
-                            error: Some(e.to_string()),
-                        });
-                    }
-                    Ok(challenge_id) => {
-                        // Apply post-initiation delay for providers like Stripe.
-                        if rate_limit.inter_call_delay_ms > 0 {
-                            std::thread::sleep(std::time::Duration::from_millis(
-                                rate_limit.inter_call_delay_ms,
-                            ));
-                        }
-
-                        let finalize_result = provider.finalize_rotation(&challenge_id, config);
-
-                        match finalize_result {
-                            Err(e) => {
-                                crate::audit::log_batch_item_failed(
-                                    &batch_id,
-                                    secret_name,
-                                    &e.to_string(),
-                                );
-                                outcomes.push(BatchItemOutcome {
-                                    secret_name: secret_name.clone(),
-                                    old_expires_at: item.expires_at,
-                                    new_expires_at: None,
-                                    provider_label: provider_name.clone(),
-                                    vendor_rotated: false,
-                                    new_value: None,
-                                    error: Some(e.to_string()),
-                                });
-                            }
-                            Ok(new_value) => {
-                                // The new expiry is persisted by the CALLER
-                                // (which owns the vault and its TTL metadata)
-                                // after it stores the value; reporting a
-                                // fabricated expiry here would let the summary
-                                // claim a TTL that was never written.
-                                let new_expires_at = None;
-
-                                crate::audit::log_batch_item_succeeded(
-                                    &batch_id,
-                                    secret_name,
-                                    provider_name,
-                                );
-
-                                // Apply post-rotation pause (e.g. Stripe 10 s).
-                                if rate_limit.post_rotation_pause_ms > 0 {
-                                    std::thread::sleep(std::time::Duration::from_millis(
-                                        rate_limit.post_rotation_pause_ms,
-                                    ));
-                                }
-
-                                outcomes.push(BatchItemOutcome {
-                                    secret_name: secret_name.clone(),
-                                    old_expires_at: item.expires_at,
-                                    new_expires_at,
-                                    provider_label: provider_name.clone(),
-                                    vendor_rotated: true,
-                                    new_value: Some(new_value),
-                                    error: None,
-                                });
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Manual path: no vendor provider; caller must supply value.
-                outcomes.push(BatchItemOutcome {
-                    secret_name: secret_name.clone(),
-                    old_expires_at: item.expires_at,
-                    new_expires_at: None,
-                    provider_label: "manual".to_string(),
-                    vendor_rotated: false,
-                    new_value: None,
-                    error: None, // not an error — caller handles manual rotation
-                });
-            }
+    for item in items {
+        let manual = item.provider_label == "manual" || item.provider_config.is_none();
+        let error = (!manual).then(|| {
+            "Batch vendor rotation is disabled before issuance: Phantom cannot durably persist and verify each successor before issuing the next. Rotate one secret at a time. Do not retry this batch automatically."
+                .to_string()
+        });
+        if let Some(error) = &error {
+            crate::audit::log_batch_item_failed(&batch_id, &item.secret_name, error);
         }
+        outcomes.push(BatchItemOutcome {
+            secret_name: item.secret_name.clone(),
+            old_expires_at: item.expires_at,
+            new_expires_at: None,
+            provider_label: item.provider_label.clone(),
+            vendor_rotated: false,
+            new_value: None,
+            error,
+        });
     }
 
     crate::audit::log_batch_rotation_completed(
@@ -2996,7 +2438,7 @@ typo_field = "oops"
     }
 
     #[test]
-    fn execute_batch_rotation_google_mock_succeeds() {
+    fn execute_batch_rotation_google_mock_is_denied_before_issuance() {
         let _env_guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3029,20 +2471,12 @@ typo_field = "oops"
 
         let outcome = &outcomes[0];
         assert_eq!(outcome.secret_name, "GCP_API_KEY");
-        assert!(
-            outcome.vendor_rotated,
-            "should be vendor-rotated via Google mock"
-        );
-        assert!(
-            outcome.is_ok(),
-            "should have no error; got: {:?}",
-            outcome.error
-        );
-        assert!(outcome.new_value.is_some(), "should have a new value");
-        assert_eq!(
-            outcome.new_value.as_ref().unwrap().as_str(),
-            "gcp_rotated_mock_secret_value_v2"
-        );
+        assert!(!outcome.vendor_rotated);
+        assert!(!outcome.is_ok());
+        assert!(outcome.new_value.is_none());
+        assert!(outcome.error.as_deref().is_some_and(|error| {
+            error.contains("disabled before issuance") && error.contains("Do not retry")
+        }));
         assert!(
             outcome.new_expires_at.is_none(),
             "core must not fabricate an expiry — persistence is caller-side"
@@ -3408,10 +2842,10 @@ typo_field = "oops"
         unsafe { std::env::remove_var("PHANTOM_TEST_STRIPE_REAL_KEY") };
     }
 
-    // ── Stripe OAuth-refresh roll (additive path) ─────────────────────────────
+    // ── Stripe OAuth-refresh hard denial ─────────────────────────────────────
 
     #[test]
-    fn stripe_oauth_refresh_mock_rolls_refresh_token() {
+    fn stripe_oauth_refresh_mock_is_denied_before_credential_access() {
         let _env_guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3422,57 +2856,28 @@ typo_field = "oops"
             api_key_env: Some("PHANTOM_TEST_STRIPE_REFRESH_TOKEN".to_string()),
             ..Default::default()
         };
-        unsafe {
-            std::env::set_var(
-                "PHANTOM_TEST_STRIPE_REFRESH_TOKEN",
-                "stripe_mock_refresh_seed",
-            )
-        };
-
-        let challenge = provider
-            .initiate_rotation("STRIPE_REFRESH_TOKEN", &config)
-            .expect("mock oauth-refresh roll must initiate");
-        // The challenge carries the rolled token (base64), never a plain mock id.
-        assert!(challenge.starts_with("payload_"));
-        assert!(!challenge.contains("stripe_mock_refresh_rolled"));
-
-        let rolled = provider
-            .finalize_rotation(&challenge, &config)
-            .expect("finalize must decode the rolled refresh token");
-        assert_eq!(rolled.as_str(), "stripe_mock_refresh_rolled");
-
         unsafe { std::env::remove_var("PHANTOM_TEST_STRIPE_REFRESH_TOKEN") };
+
+        let error = provider
+            .initiate_rotation("STRIPE_REFRESH_TOKEN", &config)
+            .expect_err("OAuth refresh must be denied before bootstrap lookup");
+        assert!(matches!(error, RotationProviderError::NotSupported { .. }));
+        assert!(error.to_string().contains("recovery escrow"));
+        assert!(error.to_string().contains("Do not retry automatically"));
     }
 
     #[test]
-    fn stripe_oauth_refresh_real_rolls_via_stub_and_never_leaks() {
-        use std::io::{Read, Write};
+    fn stripe_oauth_refresh_does_not_contact_provider_stub() {
         use std::net::TcpListener;
         let _env_guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("PHANTOM_AUDIT");
 
-        // Single-response stub that records the raw request (headers + body).
+        // A nonblocking stub proves the hard denial happens before a request.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let seen_c = seen.clone();
-        let handle = std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 8192];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                *seen_c.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
-                let body = r#"{"access_token":"sk_test_access_MOCK","refresh_token":"rt_test_rolled_MOCK","stripe_user_id":"acct_MOCK","token_type":"bearer"}"#;
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-            }
-        });
 
         let provider = StripeRotationProvider;
         let config = RotationProviderConfig {
@@ -3487,36 +2892,25 @@ typo_field = "oops"
             std::env::set_var("PHANTOM_STRIPE_API_BASE", &base);
         }
 
-        let challenge = provider
+        let error = provider
             .initiate_rotation("STRIPE_REFRESH_TOKEN", &config)
-            .expect("real oauth-refresh roll must succeed against the stub");
-        let rolled = provider
-            .finalize_rotation(&challenge, &config)
-            .expect("finalize must decode the rolled refresh token");
-
-        handle.join().ok();
-        let request = seen.lock().unwrap().clone();
+            .expect_err("OAuth refresh must fail closed before network");
+        assert!(matches!(error, RotationProviderError::NotSupported { .. }));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
 
         unsafe {
             std::env::remove_var("PHANTOM_TEST_STRIPE_REFRESH_TOKEN");
             std::env::remove_var("STRIPE_APP_SECRET_KEY");
             std::env::remove_var("PHANTOM_STRIPE_API_BASE");
         }
-
-        // The rolled refresh token is returned (the successor to re-vault).
-        assert_eq!(rolled.as_str(), "rt_test_rolled_MOCK");
-        // The exchange used grant_type=refresh_token with the current token, and
-        // the developer secret travelled as HTTP Basic (never in the clear).
-        assert!(request.contains("grant_type=refresh_token"));
-        assert!(request.contains("refresh_token=rt_test_current_MOCK"));
-        assert!(request.to_lowercase().contains("authorization: basic "));
-        assert!(!request.contains("sk_test_developer_MOCK"));
-        // The challenge never renders the rolled token in the clear.
-        assert!(!challenge.contains("rt_test_rolled_MOCK"));
     }
 
     #[test]
-    fn stripe_oauth_refresh_missing_developer_secret_is_not_supported() {
+    fn stripe_oauth_refresh_denial_does_not_depend_on_developer_secret() {
         let _env_guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3535,7 +2929,7 @@ typo_field = "oops"
             .initiate_rotation("STRIPE_REFRESH_TOKEN", &config)
             .expect_err("no developer secret → NotSupported before any network");
         assert!(matches!(err, RotationProviderError::NotSupported { .. }));
-        assert!(err.to_string().contains("STRIPE_APP_SECRET_KEY"));
+        assert!(err.to_string().contains("recovery escrow"));
 
         unsafe { std::env::remove_var("PHANTOM_TEST_STRIPE_REFRESH_TOKEN") };
     }
@@ -3566,7 +2960,7 @@ typo_field = "oops"
     // ── Google guards ─────────────────────────────────────────────────────────
 
     #[test]
-    fn google_missing_account_id_is_not_configured_before_any_network() {
+    fn google_non_mock_is_denied_before_any_network() {
         let _env_guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3577,16 +2971,17 @@ typo_field = "oops"
             account_id: None, // missing resource name
             ..Default::default()
         };
-        // Non-mock token: the account_id check must fire before any HTTP call.
+        // Any non-mock token is denied without reaching provider I/O.
         unsafe { std::env::set_var("PHANTOM_TEST_GCP_REAL_KEY", "ya29_placeholder_token") };
 
         let err = provider
             .initiate_rotation("GCP_API_KEY", &config)
-            .expect_err("missing account_id must be a config error, not a guessed URL");
+            .expect_err("non-mock Google issuance must be denied");
         assert!(
-            matches!(err, RotationProviderError::NotConfigured),
-            "expected NotConfigured, got: {err}"
+            matches!(err, RotationProviderError::NotSupported { .. }),
+            "expected NotSupported, got: {err}"
         );
+        assert!(err.to_string().contains("exact cfg(test) Google mock"));
 
         unsafe { std::env::remove_var("PHANTOM_TEST_GCP_REAL_KEY") };
     }
@@ -3633,9 +3028,10 @@ typo_field = "oops"
             ..Default::default()
         };
         unsafe { std::env::remove_var("PHANTOM_AUDIT") };
-        provider
+        let outcome = provider
             .post_store_cleanup("VERCEL_TOKEN", &config, None)
-            .expect("cleanup must fail open");
+            .expect("missing prior value is a truthful skip");
+        assert_eq!(outcome, CleanupOutcome::SkippedNoPriorCredential);
     }
 
     #[test]
@@ -3646,9 +3042,10 @@ typo_field = "oops"
             ..Default::default()
         };
         let old = zeroize::Zeroizing::new("vercel_mock_old_token".to_string());
-        provider
+        let outcome = provider
             .post_store_cleanup("VERCEL_TOKEN", &config, Some(&old))
             .expect("mock old values must never reach the network");
+        assert_eq!(outcome, CleanupOutcome::SkippedMockCredential);
     }
 
     #[test]
@@ -3656,9 +3053,14 @@ typo_field = "oops"
         let provider = StripeRotationProvider;
         let config = RotationProviderConfig::default();
         let old = zeroize::Zeroizing::new("sk_old".to_string());
-        provider
+        let outcome = provider
             .post_store_cleanup("STRIPE_SECRET_KEY", &config, Some(&old))
             .expect("default cleanup is a no-op");
+        assert_eq!(
+            provider.cleanup_semantics(&config),
+            CleanupSemantics::NotApplicable
+        );
+        assert_eq!(outcome, CleanupOutcome::NotApplicable);
     }
 
     // ── default_rotation_providers ────────────────────────────────────────────
@@ -3877,7 +3279,7 @@ typo_field = "oops"
     // ── execute_batch_rotation ────────────────────────────────────────────────
 
     #[test]
-    fn execute_batch_rotation_stripe_mock_succeeds() {
+    fn execute_batch_rotation_stripe_mock_is_denied_before_issuance() {
         let _env_guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3908,16 +3310,12 @@ typo_field = "oops"
 
         let outcome = &outcomes[0];
         assert_eq!(outcome.secret_name, "STRIPE_SECRET_KEY");
-        assert!(
-            outcome.vendor_rotated,
-            "should be vendor-rotated via Stripe mock"
-        );
-        assert!(outcome.is_ok(), "should have no error");
-        assert!(outcome.new_value.is_some(), "should have a new value");
-        assert_eq!(
-            outcome.new_value.as_ref().unwrap().as_str(),
-            "sk_test_rotated_mock_value_stripe"
-        );
+        assert!(!outcome.vendor_rotated);
+        assert!(!outcome.is_ok());
+        assert!(outcome.new_value.is_none());
+        assert!(outcome.error.as_deref().is_some_and(|error| {
+            error.contains("disabled before issuance") && error.contains("Do not retry")
+        }));
         assert!(
             outcome.new_expires_at.is_none(),
             "core must not fabricate an expiry — persistence is caller-side"
@@ -3962,7 +3360,7 @@ typo_field = "oops"
     }
 
     #[test]
-    fn execute_batch_rotation_mixed_providers_three_secrets() {
+    fn execute_batch_rotation_denies_vendor_items_and_keeps_manual_report_only() {
         let _env_guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -4015,29 +3413,27 @@ typo_field = "oops"
         assert!(!batch_id.is_empty(), "batch_id must be set");
         assert_eq!(outcomes.len(), 3, "must have 3 outcomes");
 
-        // All 3 must be ok (no errors)
-        for o in &outcomes {
-            assert!(
-                o.is_ok(),
-                "outcome for {} must be ok, got: {:?}",
-                o.secret_name,
-                o.error
-            );
-        }
-
         let stripe_out = outcomes
             .iter()
             .find(|o| o.secret_name == "STRIPE_SECRET_KEY")
             .unwrap();
-        assert!(stripe_out.vendor_rotated, "Stripe must be vendor-rotated");
-        assert!(stripe_out.new_value.is_some());
+        assert!(!stripe_out.vendor_rotated);
+        assert!(stripe_out.new_value.is_none());
+        assert!(stripe_out
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("disabled before issuance")));
 
         let github_out = outcomes
             .iter()
             .find(|o| o.secret_name == "GITHUB_TOKEN")
             .unwrap();
-        assert!(github_out.vendor_rotated, "GitHub must be vendor-rotated");
-        assert!(github_out.new_value.is_some());
+        assert!(!github_out.vendor_rotated);
+        assert!(github_out.new_value.is_none());
+        assert!(github_out
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("disabled before issuance")));
 
         let manual_out = outcomes
             .iter()
@@ -4045,6 +3441,7 @@ typo_field = "oops"
             .unwrap();
         assert!(!manual_out.vendor_rotated);
         assert!(manual_out.new_value.is_none());
+        assert!(manual_out.error.is_none());
 
         unsafe {
             std::env::remove_var("BATCH_MIX_STRIPE_KEY");
@@ -4301,14 +3698,12 @@ typo_field = "oops"
     }
 
     #[test]
-    fn sentry_real_path_requires_account_id() {
+    fn sentry_non_mock_is_denied_before_network() {
         let _env_guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let provider = SentryRotationProvider;
-        // A non-mock seed but no account_id → configuration error, surfaced
-        // before the seed is even parsed and before any network I/O. (The seed
-        // value is arbitrary here; account_id is validated first.)
+        // A non-mock seed never reaches signing or network code.
         let config = RotationProviderConfig {
             provider: "sentry".to_string(),
             api_key_env: Some("PHANTOM_TEST_SENTRY_REAL_SEED".to_string()),
@@ -4318,11 +3713,9 @@ typo_field = "oops"
         unsafe { std::env::set_var("PHANTOM_TEST_SENTRY_REAL_SEED", "real_seed_value") };
         let err = provider
             .initiate_rotation("SENTRY_ORG_TOKEN", &config)
-            .expect_err("missing account_id must fail before any network call");
-        assert!(matches!(
-            err,
-            RotationProviderError::ApiError { status: 0, .. }
-        ));
+            .expect_err("non-mock Sentry issuance must fail before any network call");
+        assert!(matches!(err, RotationProviderError::NotSupported { .. }));
+        assert!(err.to_string().contains("exact cfg(test) Sentry mock"));
         unsafe { std::env::remove_var("PHANTOM_TEST_SENTRY_REAL_SEED") };
     }
 
@@ -4433,7 +3826,7 @@ typo_field = "oops"
     // ── GitHub PAT guidance ───────────────────────────────────────────────────
 
     #[test]
-    fn github_missing_installation_id_explains_pat_limitation() {
+    fn github_non_mock_is_denied_before_network() {
         let _env_guard = crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -4456,16 +3849,10 @@ typo_field = "oops"
 
         let err = provider
             .initiate_rotation("GITHUB_TOKEN", &config)
-            .expect_err("missing account_id must return an error");
+            .expect_err("non-mock GitHub issuance must be denied");
         let msg = err.to_string();
-        assert!(
-            msg.contains("installation ID"),
-            "error must ask for the App installation ID"
-        );
-        assert!(
-            msg.contains("github.com/settings/tokens"),
-            "error must point PAT users at manual rotation"
-        );
+        assert!(matches!(err, RotationProviderError::NotSupported { .. }));
+        assert!(msg.contains("exact cfg(test) GitHub mock"));
 
         unsafe { std::env::remove_var("PHANTOM_TEST_GITHUB_NO_INSTALL_KEY") };
     }

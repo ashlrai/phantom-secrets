@@ -5,6 +5,10 @@ use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::precommit_hook::{self, HookChange};
 
+fn doctor_can_open_vault(fix: bool) -> bool {
+    fix
+}
+
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
 pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
@@ -51,18 +55,21 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                     issues += service_risks.len();
                 }
 
-                // Check 2: Vault accessible
-                let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-                check_pass(&format!("Vault backend: {}", vault.backend_name()));
-
-                match vault.list() {
-                    Ok(names) => {
-                        check_pass(&format!("{} secret(s) in vault", names.len()));
+                // Opening a backend can provision keychain/file state. Only an
+                // explicitly gated --fix run may do that; plain doctor is
+                // repository-local and non-provisioning.
+                if doctor_can_open_vault(fix) {
+                    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+                    check_pass(&format!("Vault backend: {}", vault.backend_name()));
+                    match vault.list() {
+                        Ok(names) => check_pass(&format!("{} secret(s) in vault", names.len())),
+                        Err(e) => {
+                            check_fail(&format!("Vault access failed: {e}"));
+                            issues += 1;
+                        }
                     }
-                    Err(e) => {
-                        check_fail(&format!("Vault access failed: {e}"));
-                        issues += 1;
-                    }
+                } else {
+                    check_info("Vault backend and inventory not opened in read-only doctor mode");
                 }
 
                 // Check sync targets
@@ -144,7 +151,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         }
     } else {
         check_warn("No .gitignore — consider adding one");
-        if fix {
+        if doctor_can_open_vault(fix) {
             std::fs::write(
                 &gitignore_path,
                 ".env\n.env.local\n.env.*.local\n.env.backup\n",
@@ -321,11 +328,15 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     // Check 11: Vault backend (informational — also shown inline above when
     // config exists, but surfaced unconditionally here so it's always visible)
     {
-        if let Ok(config) = PhantomConfig::load(&config_path) {
-            let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-            check_info(&format!("Vault backend: {}", vault.backend_name()));
+        if doctor_can_open_vault(fix) {
+            if let Ok(config) = PhantomConfig::load(&config_path) {
+                let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+                check_info(&format!("Vault backend: {}", vault.backend_name()));
+            } else {
+                check_info("Vault backend: n/a (no .phantom.toml)");
+            }
         } else {
-            check_info("Vault backend: n/a (no .phantom.toml)");
+            check_info("Vault backend: not opened (read-only doctor mode)");
         }
     }
 
@@ -376,52 +387,56 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 14 (optional): Validation metadata — surface invalid credentials
     {
-        if let Ok(config) = PhantomConfig::load(&config_path) {
-            let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-            if let Ok(names) = vault.list() {
-                let mut invalid_count = 0usize;
-                let mut stale_count = 0usize;
-                for name in &names {
-                    let meta = vault.get_validation_metadata(name).unwrap_or_default();
-                    if meta.never_checked() {
-                        // Not yet validated — not an issue, just informational.
-                    } else if !meta.is_valid {
-                        invalid_count += 1;
-                        let reason = meta.failure_reason.as_deref().unwrap_or("unknown reason");
-                        check_fail(&format!("Secret '{}' FAILED validation: {}", name, reason));
-                        check_fix("Run: phantom validate --check-all (then rotate if needed)");
-                        issues += 1;
-                    } else if meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS) {
-                        stale_count += 1;
+        if fix {
+            if let Ok(config) = PhantomConfig::load(&config_path) {
+                let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+                if let Ok(names) = vault.list() {
+                    let mut invalid_count = 0usize;
+                    let mut stale_count = 0usize;
+                    for name in &names {
+                        let meta = vault.get_validation_metadata(name).unwrap_or_default();
+                        if meta.never_checked() {
+                            // Not yet validated — not an issue, just informational.
+                        } else if !meta.is_valid {
+                            invalid_count += 1;
+                            let reason = meta.failure_reason.as_deref().unwrap_or("unknown reason");
+                            check_fail(&format!("Secret '{}' FAILED validation: {}", name, reason));
+                            check_fix("Run: phantom validate --check-all (then rotate if needed)");
+                            issues += 1;
+                        } else if meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS) {
+                            stale_count += 1;
+                        }
                     }
-                }
-                if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
-                    let all_checked = names.iter().all(|n| {
-                        vault
-                            .get_validation_metadata(n)
-                            .map(|m| !m.never_checked())
-                            .unwrap_or(false)
-                    });
-                    if all_checked {
-                        check_pass("All secrets passed last validation check");
-                    } else {
-                        check_info(
+                    if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
+                        let all_checked = names.iter().all(|n| {
+                            vault
+                                .get_validation_metadata(n)
+                                .map(|m| !m.never_checked())
+                                .unwrap_or(false)
+                        });
+                        if all_checked {
+                            check_pass("All secrets passed last validation check");
+                        } else {
+                            check_info(
                             "Validation: run `phantom validate --check-all` to check credential health",
                         );
+                        }
+                    } else if stale_count > 0 {
+                        check_info(&format!(
+                            "Validation: {} secret(s) have stale check results (>24 h old)",
+                            stale_count
+                        ));
+                        check_fix("Run: phantom validate --check-all");
                     }
-                } else if stale_count > 0 {
-                    check_info(&format!(
-                        "Validation: {} secret(s) have stale check results (>24 h old)",
-                        stale_count
-                    ));
-                    check_fix("Run: phantom validate --check-all");
                 }
             }
+        } else {
+            check_info("Validation metadata not read in non-provisioning doctor mode");
         }
     }
 
     // Check 15 (optional): Secret TTL / expiry status
-    if check_expiry {
+    if check_expiry && doctor_can_open_vault(fix) {
         if let Ok(config) = PhantomConfig::load(&config_path) {
             let vault = phantom_vault::try_create_vault(config.local_project_id())?;
             match vault.list_with_metadata() {
@@ -472,6 +487,8 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 }
             }
         }
+    } else if check_expiry {
+        check_info("Expiry metadata not read in non-provisioning doctor mode");
     }
 
     // Check 14: MCP setup status per known client
@@ -658,5 +675,11 @@ mod tests {
             detect_install_source_from(Path::new("/home/user/.cargo/bin/phantom"), None),
             InstallSource::Cargo
         );
+    }
+
+    #[test]
+    fn read_only_doctor_never_opens_a_vault_backend() {
+        assert!(!super::doctor_can_open_vault(false));
+        assert!(super::doctor_can_open_vault(true));
     }
 }

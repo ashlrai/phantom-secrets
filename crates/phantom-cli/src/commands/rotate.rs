@@ -99,6 +99,18 @@ fn remap_phantom_tokens_with(
                 project_dir.display()
             )
         })?;
+    remap_phantom_tokens_locked_with(env_path, names, before_commit)
+}
+
+fn remap_phantom_tokens_locked(env_path: &std::path::Path, names: &[String]) -> Result<()> {
+    remap_phantom_tokens_locked_with(env_path, names, || {})
+}
+
+fn remap_phantom_tokens_locked_with(
+    env_path: &std::path::Path,
+    names: &[String],
+    before_commit: impl FnOnce(),
+) -> Result<()> {
     if !env_path.exists() {
         anyhow::bail!(
             "Cannot remap Phantom tokens: {} does not exist.",
@@ -151,6 +163,108 @@ fn remap_phantom_tokens_with(
     phantom_core::fs::atomic_write(env_path, rewritten.as_bytes())
         .with_context(|| format!("Failed to atomically rewrite {}", env_path.display()))?;
     Ok(())
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CliProviderStages {
+    provider_issued: bool,
+    vault_committed: &'static str,
+    token_remapped: bool,
+    metadata_committed: bool,
+    old_cleanup_attempted: bool,
+    old_cleanup_succeeded: bool,
+    cleanup_semantics: phantom_core::rotation_provider::CleanupSemantics,
+    cleanup_outcome: Option<phantom_core::rotation_provider::CleanupOutcome>,
+}
+
+impl Default for CliProviderStages {
+    fn default() -> Self {
+        Self {
+            provider_issued: false,
+            vault_committed: "false",
+            token_remapped: false,
+            metadata_committed: false,
+            old_cleanup_attempted: false,
+            old_cleanup_succeeded: false,
+            cleanup_semantics: phantom_core::rotation_provider::CleanupSemantics::NotApplicable,
+            cleanup_outcome: None,
+        }
+    }
+}
+
+fn cli_provider_partial_error(
+    name: &str,
+    stage: &str,
+    error: impl std::fmt::Display,
+    stages: &CliProviderStages,
+) -> anyhow::Error {
+    let receipt = serde_json::to_string(stages).unwrap_or_else(|_| "receipt_unavailable".into());
+    anyhow::anyhow!(
+        "Provider rotation for '{name}' partially succeeded: {stage} failed. stage_receipt: {receipt}. Local and provider state may now differ. Do not retry automatically; reconcile provider, vault, token, metadata, and cleanup state first. Cause: {error}"
+    )
+}
+
+fn persist_cli_provider_value(
+    vault: &dyn VaultBackend,
+    name: &str,
+    before: Option<&zeroize::Zeroizing<String>>,
+    issued: &str,
+    stages: &mut CliProviderStages,
+) -> Result<()> {
+    match vault.compare_and_swap(name, before.map(|value| value.as_str()), Some(issued)) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(cli_provider_partial_error(
+                name,
+                "vault exact-before persistence",
+                "destination changed concurrently",
+                stages,
+            ))
+        }
+        Err(error) => {
+            stages.vault_committed = "unknown";
+            return Err(cli_provider_partial_error(
+                name,
+                "vault persistence",
+                error,
+                stages,
+            ));
+        }
+    }
+    verify_cli_provider_value(
+        vault,
+        name,
+        issued,
+        "vault persistence verification",
+        stages,
+    )?;
+    stages.vault_committed = "true";
+    Ok(())
+}
+
+fn verify_cli_provider_value(
+    vault: &dyn VaultBackend,
+    name: &str,
+    issued: &str,
+    stage: &str,
+    stages: &mut CliProviderStages,
+) -> Result<()> {
+    match vault.retrieve(name) {
+        Ok(value) if value.as_str() == issued => Ok(()),
+        Ok(_) => {
+            stages.vault_committed = "false";
+            Err(cli_provider_partial_error(
+                name,
+                stage,
+                "vault no longer contains the provider-issued credential",
+                stages,
+            ))
+        }
+        Err(error) => {
+            stages.vault_committed = "unknown";
+            Err(cli_provider_partial_error(name, stage, error, stages))
+        }
+    }
 }
 
 fn read_expiry_metadata(vault: &dyn VaultBackend, name: &str) -> Result<Option<u64>> {
@@ -218,8 +332,9 @@ pub fn run_validate_promote(_name: &str, _promote: bool) -> Result<()> {
 
 /// Rotate a single named secret using a vendor-specific rotation provider.
 ///
-/// Called by `phantom rotate --name <KEY> [--provider stripe|github|aws|google|vercel]`.
-/// (`sentry` / `supabase` are recognized but report manual-rotation-required.)
+/// Called by `phantom rotate --name <KEY> [--provider <PROVIDER>]`. Shipped
+/// builds hard-deny every automated live issuance mode before bootstrap access
+/// or provider I/O. Exact unit-test mocks exercise the local transaction only.
 ///
 /// When `provider` is `None` the provider is resolved from the secret's
 /// `[phantom.secrets.<KEY>.rotation_provider]` block in `.phantom.toml`.
@@ -227,12 +342,9 @@ pub fn run_validate_promote(_name: &str, _promote: bool) -> Result<()> {
 /// process environment first, then from the vault under the same name —
 /// it is never echoed.
 ///
-/// This delegates to the appropriate [`phantom_core::rotation_provider`]
-/// implementation, which calls the vendor API to re-issue the credential.
-/// The new value is stored in the vault (same write path as `phantom add`)
-/// and the secret's `phm_` token in `.env` is refreshed; the value itself
-/// is never printed to stdout. With `--json`, a metadata-only JSON object
-/// is emitted for scripting.
+/// The locked CAS/remap/metadata/cleanup transaction remains as tested
+/// scaffolding for future provider-specific recovery contracts; it is not a
+/// claim of current production issuance capability.
 pub fn run_with_provider(
     provider: Option<&str>,
     name: &str,
@@ -323,6 +435,30 @@ pub fn run_with_provider(
         }
     };
 
+    if effective_provider.eq_ignore_ascii_case("stripe")
+        && provider_config
+            .and_then(|cfg| cfg.api_key_env.as_deref())
+            .map(|name| name.to_ascii_uppercase().ends_with("REFRESH_TOKEN"))
+            .unwrap_or(false)
+    {
+        anyhow::bail!(
+            "Stripe OAuth refresh rotation is disabled before credential access or provider issuance: Stripe invalidates the current refresh token during exchange, before Phantom can durably verify the successor. A durable verified recovery escrow channel is required. Do not retry automatically."
+        );
+    }
+    if effective_provider.eq_ignore_ascii_case("supabase-management")
+        && provider_config.is_some_and(|cfg| cfg.account_id.is_none())
+    {
+        anyhow::bail!(
+            "Supabase management refresh-token rotation is disabled before credential access or provider issuance: the refresh exchange invalidates the current token before Phantom can durably verify its successor. A durable verified recovery escrow channel is required. Keep the vaulted enrollment material and obtain fresh operator consent when it expires. Do not retry automatically."
+        );
+    }
+    if !phantom_core::rotation_provider::unit_test_mock_issuance_enabled() {
+        anyhow::bail!(
+            "Automated live provider issuance for '{}' is disabled before credential access or network I/O. Phantom requires a durable value-free provider recovery handle and verified abort path before it can safely persist a successor locally. Rotate at the provider, then store the replacement interactively. Unit-test mock providers are not production capability evidence. Do not retry automatically.",
+            effective_provider
+        );
+    }
+
     // Source the bootstrap credential: environment variable first, then the
     // vault under the same name. The value is zeroized after the call and is
     // never printed.
@@ -356,16 +492,13 @@ pub fn run_with_provider(
         }
     }
 
-    if !json_output {
-        println!(
-            "{} Calling {} rotation API for {}…",
-            "->".blue().bold(),
-            effective_provider.cyan().bold(),
-            name.bold()
-        );
-    }
-
     let providers = default_rotation_providers();
+
+    // Phantom operations cooperate through this project-spanning lock. Keep it
+    // across the exact before-image, provider issuance, verified vault CAS,
+    // token remap, metadata commit, and any explicitly supported cleanup.
+    let transaction_lock = phantom_vault::acquire_project_transaction_lock(&project_dir)
+        .context("Failed to acquire project transaction lock for provider rotation")?;
 
     // Capture the outgoing value BEFORE overwriting it: providers that revoke
     // the old credential at the vendor (Vercel) do so only after the new value
@@ -385,10 +518,17 @@ pub fn run_with_provider(
 
     match new_value {
         Some(secret) => {
-            // Same vault write path as `phantom add`.
-            vault
-                .store(name, secret.as_str())
-                .with_context(|| format!("Failed to store rotated value for '{name}'"))?;
+            let mut stages = CliProviderStages {
+                provider_issued: true,
+                ..CliProviderStages::default()
+            };
+            persist_cli_provider_value(
+                vault.as_ref(),
+                name,
+                old_value.as_ref(),
+                secret.as_str(),
+                &mut stages,
+            )?;
 
             phantom_core::audit::log("vault.rotation.provider.stored", Some(name));
 
@@ -396,8 +536,11 @@ pub fn run_with_provider(
             // token cannot resolve to the new credential.
             let mut env_token_refreshed = false;
             if env_path.exists() {
-                remap_phantom_tokens(&env_path, &[name.to_string()])?;
+                remap_phantom_tokens_locked(&env_path, &[name.to_string()]).map_err(|error| {
+                    cli_provider_partial_error(name, "Phantom token remap", error, &stages)
+                })?;
                 env_token_refreshed = true;
+                stages.token_remapped = true;
             }
 
             // Persist rotation metadata (rotated_at + recomputed expires_at).
@@ -411,18 +554,66 @@ pub fn run_with_provider(
             } else {
                 None
             };
+            verify_cli_provider_value(
+                vault.as_ref(),
+                name,
+                secret.as_str(),
+                "pre-metadata vault verification",
+                &mut stages,
+            )?;
             let expires_at =
-                persist_provider_rotation_metadata(vault.as_ref(), name, expires_override)?;
+                persist_provider_rotation_metadata(vault.as_ref(), name, expires_override)
+                    .map_err(|error| {
+                        cli_provider_partial_error(name, "rotation metadata commit", error, &stages)
+                    })?;
+            stages.metadata_committed = true;
 
-            // The new value is stored — now (and only now) let the provider
-            // best-effort revoke the OLD credential at the vendor.
+            // Only providers that declare a real cleanup effect are invoked.
+            // Default no-op providers report not_applicable and are never
+            // represented as an attempted or successful revocation.
             if let (Some(provider), Some(cfg)) = (
                 providers
                     .iter()
                     .find(|p| p.name().eq_ignore_ascii_case(&effective_provider)),
                 provider_config,
             ) {
-                let _ = provider.post_store_cleanup(name, cfg, old_value.as_ref());
+                let semantics = provider.cleanup_semantics(cfg);
+                stages.cleanup_semantics = semantics;
+                if semantics
+                    == phantom_core::rotation_provider::CleanupSemantics::RevokePriorCredential
+                {
+                    verify_cli_provider_value(
+                        vault.as_ref(),
+                        name,
+                        secret.as_str(),
+                        "pre-cleanup vault verification",
+                        &mut stages,
+                    )?;
+                    stages.old_cleanup_attempted = true;
+                    let outcome = provider
+                        .post_store_cleanup(name, cfg, old_value.as_ref())
+                        .map_err(|error| {
+                            cli_provider_partial_error(
+                                name,
+                                "prior-credential cleanup",
+                                error,
+                                &stages,
+                            )
+                        })?;
+                    stages.cleanup_outcome = Some(outcome);
+                    stages.old_cleanup_succeeded =
+                        outcome == phantom_core::rotation_provider::CleanupOutcome::Succeeded;
+                    verify_cli_provider_value(
+                        vault.as_ref(),
+                        name,
+                        secret.as_str(),
+                        "post-cleanup vault verification",
+                        &mut stages,
+                    )?;
+                } else {
+                    stages.cleanup_outcome =
+                        Some(phantom_core::rotation_provider::CleanupOutcome::NotApplicable);
+                }
             }
 
             if json_output {
@@ -435,6 +626,7 @@ pub fn run_with_provider(
                     "env_token_refreshed": env_token_refreshed,
                     "expires_at": expires_at,
                     "value_printed": false,
+                    "stage_receipt": stages,
                 });
                 println!("{}", serde_json::to_string_pretty(&obj)?);
             } else {
@@ -450,6 +642,35 @@ pub fn run_with_provider(
                 }
                 if let Some(ts) = expires_at {
                     println!("   Expires at: {}", chrono_iso(ts));
+                }
+                match stages.cleanup_outcome {
+                    Some(phantom_core::rotation_provider::CleanupOutcome::Succeeded) => {
+                        println!("   The prior provider credential was revoked.");
+                    }
+                    Some(
+                        phantom_core::rotation_provider::CleanupOutcome::SkippedNoPriorCredential,
+                    ) => {
+                        println!("   Prior-credential cleanup was skipped: no prior local value was available.");
+                    }
+                    Some(
+                        phantom_core::rotation_provider::CleanupOutcome::SkippedMockCredential,
+                    ) => {
+                        println!(
+                            "   Prior-credential cleanup was skipped for the unit-test mock value."
+                        );
+                    }
+                    Some(
+                        phantom_core::rotation_provider::CleanupOutcome::SkippedPriorCredentialNotFound,
+                    ) => {
+                        println!(
+                            "   Prior-credential cleanup found no matching provider credential; revocation was not confirmed."
+                        );
+                    }
+                    Some(phantom_core::rotation_provider::CleanupOutcome::NotApplicable) | None => {
+                        println!(
+                            "   This provider does not declare a prior-credential cleanup effect."
+                        );
+                    }
                 }
                 println!("   The secret value was not printed for security.");
             }
@@ -467,6 +688,8 @@ pub fn run_with_provider(
         }
     }
 
+    drop(transaction_lock);
+
     if sync_after {
         if !json_output {
             println!("\n{} Syncing to deployment platforms…", "->".blue().bold());
@@ -480,12 +703,13 @@ pub fn run_with_provider(
 /// Execute expiry-driven batch rotation across all vault secrets whose TTL
 /// falls within `rotation_window_days`.
 ///
-/// For secrets with a `rotation_provider` configured (Stripe, GitHub, AWS),
-/// vendor API calls are made respecting per-provider rate limits.
-/// For manual secrets the item is listed in the summary table but no value
-/// change is made (operator must supply values manually).
+/// Vendor batch issuance is disabled before any provider call. Issuing several
+/// successors before each one is independently persisted and verified creates
+/// unrecoverable ambiguity. Manual items remain report-only; rotate configured
+/// vendor secrets one at a time with `phantom rotate --name`.
 ///
-/// Emits a composite audit event with a shared `batch_id` covering all rotations.
+/// Emits a composite audit event with a shared `batch_id` covering the
+/// discovery/manual-report outcomes.
 /// Prints a summary table: secret name | old expiry | new expiry | provider.
 pub fn run_batch(
     rotation_window_days: u64,
@@ -495,6 +719,12 @@ pub fn run_batch(
     use phantom_core::rotation_provider::{
         batch_discover_due, default_rotation_providers, execute_batch_rotation,
     };
+
+    if sync_after {
+        anyhow::bail!(
+            "--sync is not valid for report-only batch rotation: no provider credential is issued or changed. Rotate and sync each configured secret individually."
+        );
+    }
 
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
@@ -552,6 +782,12 @@ pub fn run_batch(
         return Ok(());
     }
 
+    if due_items.iter().any(|item| item.provider_label != "manual") {
+        anyhow::bail!(
+            "Batch vendor rotation is disabled before issuance: Phantom cannot durably persist and verify each successor before issuing the next. Rotate each configured secret one at a time with `phantom rotate --name <NAME>`. No provider call was made; do not retry this batch automatically."
+        );
+    }
+
     println!(
         "{} Found {} secret(s) due for rotation within {} day(s).",
         "->".blue().bold(),
@@ -561,83 +797,7 @@ pub fn run_batch(
     println!();
 
     // Execute the batch.
-    let (batch_id, mut outcomes) = execute_batch_rotation(&due_items, &providers, now);
-
-    // Store any new values returned by vendor providers, persist the new
-    // expiry metadata (otherwise the same secrets stay perpetually "due" and
-    // get re-rotated at the vendor on every run), and only then let the
-    // provider best-effort revoke the old credential.
-    for outcome in &mut outcomes {
-        if let Some(ref new_value) = outcome.new_value {
-            // Capture the outgoing value BEFORE overwriting it (needed by
-            // providers whose post-store cleanup revokes the old credential).
-            let old_value = Some(vault.retrieve(&outcome.secret_name).with_context(|| {
-                format!(
-                    "Failed to snapshot the outgoing credential for '{}'",
-                    outcome.secret_name
-                )
-            })?);
-
-            vault
-                .store(&outcome.secret_name, new_value.as_str())
-                .with_context(|| {
-                    format!(
-                        "Failed to store rotated value for '{}'",
-                        outcome.secret_name
-                    )
-                })?;
-            phantom_core::audit::log("vault.rotation.provider.stored", Some(&outcome.secret_name));
-
-            // Persist rotated_at + recomputed expires_at so the reported new
-            // expiry is REAL. GitHub App installation tokens expire in 1 hour.
-            let expires_override = if outcome.provider_label.eq_ignore_ascii_case("github") {
-                Some(now + phantom_core::rotation_provider::GITHUB_INSTALLATION_TOKEN_TTL_SECS)
-            } else {
-                None
-            };
-            outcome.new_expires_at = persist_provider_rotation_metadata(
-                vault.as_ref(),
-                &outcome.secret_name,
-                expires_override,
-            )?;
-
-            // New value is durably stored — run post-store cleanup.
-            if let Some(item) = due_items
-                .iter()
-                .find(|i| i.secret_name == outcome.secret_name)
-            {
-                if let (Some(provider), Some(cfg)) = (
-                    providers
-                        .iter()
-                        .find(|p| p.name().eq_ignore_ascii_case(&outcome.provider_label)),
-                    item.provider_config.as_ref(),
-                ) {
-                    let _ =
-                        provider.post_store_cleanup(&outcome.secret_name, cfg, old_value.as_ref());
-                }
-            }
-        }
-    }
-
-    // Also rotate phantom tokens for all successfully vendor-rotated secrets.
-    let rotated_vendor_names: Vec<&str> = outcomes
-        .iter()
-        .filter(|o| o.vendor_rotated)
-        .map(|o| o.secret_name.as_str())
-        .collect();
-
-    if !rotated_vendor_names.is_empty() {
-        let vault_names = vault.list().context("Failed to list secrets")?;
-        let env_path =
-            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?.path;
-        if env_path.exists() {
-            let names = rotated_vendor_names
-                .iter()
-                .map(|name| (*name).to_string())
-                .collect::<Vec<_>>();
-            remap_phantom_tokens(&env_path, &names)?;
-        }
-    }
+    let (batch_id, outcomes) = execute_batch_rotation(&due_items, &providers, now);
 
     // Print summary table.
     if json_output {
@@ -726,11 +886,6 @@ pub fn run_batch(
             "   Audit events tagged with {}",
             format!("batch_id={batch_id}").cyan()
         );
-    }
-
-    if sync_after && outcomes.iter().any(|o| o.vendor_rotated) {
-        println!("\n{} Syncing to deployment platforms…", "->".blue().bold());
-        crate::commands::sync::run(None, None, vec![], false, false)?;
     }
 
     Ok(())
