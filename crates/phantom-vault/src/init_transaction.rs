@@ -378,6 +378,7 @@ fn commit_init_with(
 
     if let Err((target, reason)) = commit_result {
         let files_ok = rollback_files(&mut file_snapshots);
+        release_file_capabilities(&mut file_snapshots);
         let directories_ok = rollback_directories(created_directories, unresolved_directory_effect);
         let vault_ok = rollback_secrets(vault, &mut secret_snapshots);
         return if files_ok && directories_ok && vault_ok {
@@ -788,6 +789,16 @@ fn rollback_files(snapshots: &mut [FileSnapshot]) -> bool {
     ok
 }
 
+fn release_file_capabilities(snapshots: &mut [FileSnapshot]) {
+    for snapshot in snapshots {
+        // On Windows every retained descendant handle intentionally omits
+        // FILE_SHARE_DELETE. Close all file-target and pre-existing-parent
+        // handles before consuming exact created-directory removal receipts.
+        snapshot.target.take();
+        snapshot.parent_anchor.take();
+    }
+}
+
 fn rollback_directories(
     created: BTreeMap<PathBuf, AnchoredCreatedDirectory>,
     unresolved_directory_effect: bool,
@@ -1066,6 +1077,26 @@ mod tests {
         assert!(unresolved);
         assert!(created.is_empty());
         assert!(!rollback_directories(created, unresolved));
+    }
+
+    #[test]
+    fn windows_directory_rollback_closes_no_delete_handles_first() {
+        let source = include_str!("init_transaction.rs");
+        let rollback = source
+            .find("let files_ok = rollback_files(&mut file_snapshots);")
+            .expect("file rollback must run first");
+        let release = source[rollback..]
+            .find("release_file_capabilities(&mut file_snapshots);")
+            .map(|offset| rollback + offset)
+            .expect("retained file capabilities must be released");
+        let directories = source[release..]
+            .find("rollback_directories(created_directories")
+            .map(|offset| release + offset)
+            .expect("directory rollback must run after handle release");
+        assert!(rollback < release && release < directories);
+
+        let core_source = include_str!("../../phantom-core/src/fs/anchored.rs");
+        assert!(core_source.contains("Intentionally omit FILE_SHARE_DELETE"));
     }
 
     #[test]

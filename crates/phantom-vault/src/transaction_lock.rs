@@ -11,7 +11,10 @@
 //! descendant lock as a one-release compatibility bridge.
 
 use phantom_core::error::{PhantomError, Result};
-use phantom_core::fs::{AnchoredLock, AnchoredTarget, TrustedAnchor};
+use phantom_core::fs::{
+    AnchoredCreatedDirectory, AnchoredDirectoryCreation, AnchoredLock, AnchoredTarget,
+    TrustedAnchor,
+};
 use sha2::{Digest, Sha256};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -28,6 +31,31 @@ pub struct ProjectTransactionLock {
     project: TrustedAnchor,
     requested_root: PathBuf,
     canonical_root: PathBuf,
+}
+
+/// Receipt-bearing preparation of one direct child directory beneath the
+/// retained project root.
+#[derive(Debug)]
+pub enum ProjectDirectoryPreparation {
+    Existing(TrustedAnchor),
+    Created(AnchoredCreatedDirectory),
+    CommittedButUncertain {
+        receipt: Option<AnchoredCreatedDirectory>,
+        error: std::io::Error,
+    },
+}
+
+impl ProjectDirectoryPreparation {
+    /// Borrow the retained child anchor when its exact identity is known.
+    pub fn anchor(&self) -> Option<&TrustedAnchor> {
+        match self {
+            Self::Existing(anchor) => Some(anchor),
+            Self::Created(created) => Some(created.anchor()),
+            Self::CommittedButUncertain { receipt, .. } => {
+                receipt.as_ref().map(AnchoredCreatedDirectory::anchor)
+            }
+        }
+    }
 }
 
 struct ProjectLockPaths {
@@ -207,6 +235,56 @@ impl ProjectTransactionLock {
         })
     }
 
+    /// Open or privately create one direct project child directory.
+    ///
+    /// Creation never collapses a committed-but-uncertain namespace effect
+    /// into an ordinary error. Callers must stop on that variant and, when a
+    /// receipt is present, drop descendant handles before attempting the
+    /// receipt's exact cleanup operation.
+    pub fn prepare_private_child(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ProjectDirectoryPreparation> {
+        let path = path.as_ref();
+        let relative = self.relative_payload(path)?;
+        let mut components = relative.components();
+        let Some(std::path::Component::Normal(name)) = components.next() else {
+            return Err(PhantomError::VaultError(format!(
+                "Project child directory must be one normal relative component: {}",
+                path.display()
+            )));
+        };
+        if components.next().is_some() {
+            return Err(PhantomError::VaultError(format!(
+                "Project child directory must be a direct child of {}: {}",
+                self.canonical_root.display(),
+                path.display()
+            )));
+        }
+
+        match self.project.open_subdirectory(Path::new(name)) {
+            Ok(anchor) => Ok(ProjectDirectoryPreparation::Existing(anchor)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match self.project.create_private_child(Path::new(name)) {
+                    Ok(AnchoredDirectoryCreation::Durable(created)) => {
+                        Ok(ProjectDirectoryPreparation::Created(created))
+                    }
+                    Ok(AnchoredDirectoryCreation::CommittedButUncertain { receipt, error }) => {
+                        Ok(ProjectDirectoryPreparation::CommittedButUncertain { receipt, error })
+                    }
+                    Err(error) => Err(PhantomError::VaultError(format!(
+                        "Cannot create private project child directory {}: {error}",
+                        path.display()
+                    ))),
+                }
+            }
+            Err(error) => Err(PhantomError::VaultError(format!(
+                "Cannot retain project child directory {}: {error}",
+                path.display()
+            ))),
+        }
+    }
+
     pub(crate) fn project_anchor(&self) -> &TrustedAnchor {
         &self.project
     }
@@ -340,6 +418,49 @@ mod tests {
         assert!(anchored_source.contains("Intentionally omit FILE_SHARE_DELETE"));
         assert!(anchored_source.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
         assert!(anchored_source.contains("open_dir_nofollow"));
+    }
+
+    #[test]
+    fn direct_child_preparation_returns_exact_created_receipt() {
+        let project = tempdir().unwrap();
+        let lock_root = tempdir().unwrap();
+        let paths = lock_paths_at(project.path(), lock_root.path()).unwrap();
+        let lock = acquire_project_transaction_lock_at(paths).unwrap();
+
+        let created = match lock.prepare_private_child(".phantom").unwrap() {
+            ProjectDirectoryPreparation::Created(created) => created,
+            other => panic!("unexpected preparation: {other:?}"),
+        };
+        let target = created.anchor().target("active-env").unwrap();
+        assert!(matches!(
+            target.replace_if_exact(None, b"development").unwrap(),
+            phantom_core::fs::AnchoredEffect::Durable(_)
+        ));
+        let current = target.read_regular().unwrap().unwrap();
+        assert!(matches!(
+            target.unlink_if_exact(&current).unwrap(),
+            phantom_core::fs::AnchoredEffect::Durable(())
+        ));
+        drop(target);
+        assert!(matches!(
+            created.remove_if_empty_exact().unwrap(),
+            phantom_core::fs::AnchoredEffect::Durable(())
+        ));
+        assert!(!project.path().join(".phantom").exists());
+    }
+
+    #[test]
+    fn direct_child_preparation_rejects_nested_and_outside_paths() {
+        let project = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let lock_root = tempdir().unwrap();
+        let paths = lock_paths_at(project.path(), lock_root.path()).unwrap();
+        let lock = acquire_project_transaction_lock_at(paths).unwrap();
+
+        assert!(lock.prepare_private_child("nested/child").is_err());
+        assert!(lock
+            .prepare_private_child(outside.path().join("child"))
+            .is_err());
     }
 
     #[cfg(unix)]

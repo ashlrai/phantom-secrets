@@ -12,7 +12,9 @@ pub use init_transaction::{commit_init, InitFile, InitReceipt, InitSecret, InitT
 pub use managed_remove::ManagedRemovePlan;
 pub use metadata::{RotationPolicy, SecretMetadata};
 pub use traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
-pub use transaction_lock::{acquire_project_transaction_lock, ProjectTransactionLock};
+pub use transaction_lock::{
+    acquire_project_transaction_lock, ProjectDirectoryPreparation, ProjectTransactionLock,
+};
 
 use phantom_core::error::{PhantomError, Result};
 
