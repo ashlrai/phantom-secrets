@@ -20,7 +20,7 @@ enterprise certification, contractual SLA, or completed customer rollout.
 | Agent integration | Setup writers exist for Claude Code, Codex, Cursor, and Windsurf; MCP returns value-blind metadata and separately gated operations. | Client policy, extension/version behavior, user acceptance, and task-specific authorization. |
 | Cloud and teams | Client and web source implement encrypted cloud and team workflows. | Deployed-service state, plan entitlement, identity configuration, tenant acceptance, recovery, and contract terms. |
 | Audit and posture | Local audit commands, readiness reports, and an MCP compliance-status badge are implemented. | Central collection, retention, reviewer independence, regulatory mapping, and an actual audit. |
-| Provider grants | A trusted-terminal CLI obtains credentials for a closed provider set after human consent and stores roots directly in the vault. | Approved provider applications, scopes, live consent, renewal, revocation operations, and customer acceptance. |
+| Provider-grant foundations | Value-free lifecycle metadata and protocol/design source remain available; 0.7.4 hard-denies every live provider path before credential or network access. | Durable successor recovery/verified abort, approved provider applications and scopes, live consent, renewal/revocation operations, and customer acceptance. |
 | Governed execution | Workspace setup can be proposed by MCP and applied through a separate trusted-terminal transaction on Unix. | Production execution authority; Locus, broker, runtime, session, and externally trusted receipt foundations remain inactive. |
 
 The MCP `phantom_compliance_status` result is a local five-check posture badge:
@@ -40,8 +40,10 @@ Do not treat the following as available enterprise controls:
   teams and do not make team vaults an offboarding control;
 - audit policy and retention are not centrally enforced by the local CLI;
 - headless Phantom Cloud pull in CI is unsupported;
-- cloud-signed audit delivery must not be an acceptance dependency until the
-  named deployed endpoint and reviewer workflow are separately verified; and
+- cloud-signed audit delivery is protocol-only and hard-disabled: setup refuses
+  it before mutation, legacy settings fall back to encrypted local retention
+  without network I/O, and no central ingest or reviewer workflow is
+  commissioned; and
 - the repository provides no regulatory certification or contractual SLA.
 
 An organization that requires any blocker above should keep the pilot local or

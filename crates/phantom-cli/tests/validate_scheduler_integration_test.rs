@@ -9,6 +9,8 @@
 //!    whose `last_check_ts` is < 24 h ago is skipped by
 //!    `ValidationScheduleConfig::is_due`.
 
+mod common;
+
 use phantom_core::config::ValidationScheduleConfig;
 use phantom_core::validator::{
     run_validation_pipeline, SecretValidator, ValidationMetadata, ValidationResult,
@@ -17,7 +19,6 @@ use phantom_core::validator::{
 use phantom_vault::VaultBackend;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tempfile::TempDir;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -167,7 +168,7 @@ fn validate_all_mixed_results_report_counts_and_exit_signal() {
 /// `has_invalid = true`.
 #[test]
 fn watch_mode_detects_fresh_invalid_secret_and_updates_report() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let vault = phantom_vault::file::FileVault::new(
         dir.path(),
         "test-watch-invalid",
@@ -359,7 +360,7 @@ fn per_secret_schedule_daily_not_rechecked_if_fresh() {
 /// `set_validation_metadata` / `get_validation_metadata` survive a round-trip.
 #[test]
 fn pipeline_metadata_persisted_in_file_vault_after_run() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let vault =
         phantom_vault::file::FileVault::new(dir.path(), "test-meta-roundtrip", "pass".to_string())
             .unwrap();

@@ -3,15 +3,49 @@ use anyhow::Result;
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
+use phantom_core::precommit_hook::{self, HookChange};
+
+fn doctor_can_open_vault(_fix: bool) -> bool {
+    // Diagnostics and repository-local repairs must not provision keychain or
+    // vault state merely because --fix was supplied. Commands that explicitly
+    // operate on the vault perform their own authenticated preflight.
+    false
+}
+
+fn commit_precommit_repair(project_dir: &std::path::Path) -> Result<Option<HookChange>> {
+    let Some(plan) = precommit_hook::prepare_install_plan(project_dir)? else {
+        return Ok(None);
+    };
+    let authorization = if plan.change() != HookChange::Unchanged && plan.authority().is_external()
+    {
+        precommit_hook::authorize_external_install_from_terminal(project_dir)?
+    } else {
+        None
+    };
+    Ok(Some(precommit_hook::commit_prepared_install(
+        project_dir,
+        &plan,
+        authorization.as_ref(),
+    )?))
+}
 
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
 pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let env_path = project_dir.join(".env");
+    let env_path = match PhantomConfig::load(&config_path).ok() {
+        Some(config) => {
+            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?.path
+        }
+        None => project_dir.join(".env"),
+    };
     let mut issues = 0;
     let mut fixed = 0;
+    // A doctor invocation publishes at most one local repair. This prevents a
+    // later failure from stranding an earlier unrelated file mutation without
+    // a cross-file rollback contract. Re-running --fix advances the next item.
+    let mut mutation_applied = false;
 
     println!("{}", "Phantom Doctor".bold().underline());
     println!();
@@ -45,18 +79,21 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                     issues += service_risks.len();
                 }
 
-                // Check 2: Vault accessible
-                let vault = phantom_vault::create_vault(config.local_project_id());
-                check_pass(&format!("Vault backend: {}", vault.backend_name()));
-
-                match vault.list() {
-                    Ok(names) => {
-                        check_pass(&format!("{} secret(s) in vault", names.len()));
+                // Opening a backend can provision keychain/file state. Only an
+                // explicitly gated --fix run may do that; plain doctor is
+                // repository-local and non-provisioning.
+                if doctor_can_open_vault(fix) {
+                    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+                    check_pass(&format!("Vault backend: {}", vault.backend_name()));
+                    match vault.list() {
+                        Ok(names) => check_pass(&format!("{} secret(s) in vault", names.len())),
+                        Err(e) => {
+                            check_fail(&format!("Vault access failed: {e}"));
+                            issues += 1;
+                        }
                     }
-                    Err(e) => {
-                        check_fail(&format!("Vault access failed: {e}"));
-                        issues += 1;
-                    }
+                } else {
+                    check_info("Vault backend and inventory not opened in read-only doctor mode");
                 }
 
                 // Check sync targets
@@ -116,35 +153,47 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 4: .gitignore
     let gitignore_path = project_dir.join(".gitignore");
-    if gitignore_path.exists() {
-        let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+    let gitignore_before = phantom_core::fs::read_regular_file(&gitignore_path)
+        .map_err(|error| anyhow::anyhow!("Refusing unsafe .gitignore target: {error}"))?;
+    if let Some(bytes) = gitignore_before.as_deref() {
+        let content = String::from_utf8(bytes.to_vec())
+            .map_err(|_| anyhow::anyhow!("Refusing to rewrite non-UTF-8 .gitignore"))?;
         if content.lines().any(|l| l.trim() == ".env") {
             check_pass(".env is in .gitignore");
         } else {
             check_warn(".env is NOT in .gitignore — secrets could be committed!");
             check_fix("Run: echo '.env' >> .gitignore");
-            if fix {
+            if fix && !mutation_applied {
                 let mut c = content;
                 if !c.ends_with('\n') {
                     c.push('\n');
                 }
                 c.push_str(".env\n");
-                std::fs::write(&gitignore_path, c)?;
+                write_project_file_exact(
+                    &project_dir,
+                    &gitignore_path,
+                    gitignore_before.as_deref(),
+                    c.as_bytes(),
+                )?;
                 check_fixed("Added .env to .gitignore");
                 fixed += 1;
+                mutation_applied = true;
             } else {
                 issues += 1;
             }
         }
     } else {
         check_warn("No .gitignore — consider adding one");
-        if fix {
-            std::fs::write(
+        if fix && !mutation_applied {
+            write_project_file_exact(
+                &project_dir,
                 &gitignore_path,
-                ".env\n.env.local\n.env.*.local\n.env.backup\n",
+                None,
+                b".env\n.env.local\n.env.*.local\n.env.backup\n",
             )?;
             check_fixed("Created .gitignore with .env patterns");
             fixed += 1;
+            mutation_applied = true;
         } else {
             issues += 1;
         }
@@ -152,18 +201,26 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 5: .env.example exists
     let example_path = project_dir.join(".env.example");
-    if example_path.exists() {
+    let example_before = phantom_core::fs::read_regular_file(&example_path)
+        .map_err(|error| anyhow::anyhow!("Refusing unsafe .env.example target: {error}"))?;
+    if example_before.is_some() {
         check_pass(".env.example found (team onboarding ready)");
     } else {
         check_warn("No .env.example — team onboarding may be difficult");
         check_fix("Run: phantom env");
-        if fix && env_path.exists() {
+        if fix && !mutation_applied && env_path.exists() {
             if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
                 let config = PhantomConfig::load(&config_path).ok();
                 let content = dotenv.generate_example_content(config.as_ref());
-                std::fs::write(&example_path, content)?;
+                write_project_file_exact(
+                    &project_dir,
+                    &example_path,
+                    example_before.as_deref(),
+                    content.as_bytes(),
+                )?;
                 check_fixed("Generated .env.example");
                 fixed += 1;
+                mutation_applied = true;
             }
         } else if fix {
             issues += 1; // Can't fix without .env
@@ -175,12 +232,16 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     // Check 6: Claude Code MCP configuration
     let claude_settings = project_dir.join(".claude/settings.local.json");
     if claude_settings.exists() {
-        let content = std::fs::read_to_string(&claude_settings).unwrap_or_default();
-        if content.contains("phantom") {
-            check_pass("Claude Code MCP server configured");
+        let content = std::fs::read_to_string(&claude_settings)?;
+        if phantom_core::agent::mcp_config_has_local_runtime(&claude_settings) {
+            check_pass("Claude Code MCP server uses a local Phantom executable");
+        } else if content.contains("phantom") {
+            check_warn("Claude Code Phantom MCP entry is stale or network-capable");
+            check_fix("Run: phantom setup --client claude");
+            issues += 1;
         } else {
             check_info("Claude Code settings exist but no Phantom MCP");
-            check_fix("Run: phantom setup");
+            check_fix("Run: phantom setup --client claude");
         }
 
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -223,54 +284,59 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     }
 
     // Check 8: Pre-commit hook
-    let pre_commit_config = project_dir.join(".pre-commit-config.yaml");
-    let git_hook = project_dir.join(".git/hooks/pre-commit");
-    if pre_commit_config.exists() {
-        let content = std::fs::read_to_string(&pre_commit_config).unwrap_or_default();
-        if content.contains("phantom") {
-            check_pass("Pre-commit hook configured");
-        } else {
-            check_info("pre-commit config exists but no phantom hook");
+    match precommit_hook::inspect(&project_dir)? {
+        precommit_hook::HookState::Present {
+            content,
+            executable,
+            ..
+        } if precommit_hook::is_ready(&content, executable) => {
+            check_pass("Git pre-commit hook runs the local Phantom check first");
         }
-    } else if git_hook.exists() {
-        let content = std::fs::read_to_string(&git_hook).unwrap_or_default();
-        if content.contains("phantom") {
-            check_pass("Git pre-commit hook includes phantom check");
-        } else {
-            check_warn("Git pre-commit hook exists but no phantom check");
-            check_fix("Run: phantom init (will offer to add phantom check to hook)");
-            if fix {
-                let mut c = content;
-                c.push_str(
-                    "\n\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\n",
-                );
-                std::fs::write(&git_hook, c)?;
-                check_fixed("Appended phantom check to pre-commit hook");
+        precommit_hook::HookState::Present {
+            content,
+            executable,
+            ..
+        } => {
+            if precommit_hook::is_current(&content) && !executable {
+                check_warn("Git pre-commit hook is not executable");
+                check_fix("Run: phantom doctor --fix (repairs hook permissions)");
+            } else if precommit_hook::has_phantom_block(&content) {
+                check_warn("Git pre-commit hook uses a stale Phantom check");
+                check_fix("Run: phantom doctor --fix (uses the installed local binary)");
+            } else {
+                check_warn("Git pre-commit hook exists but no phantom check");
+                check_fix("Run: phantom init (will add a local Phantom check to the hook)");
+            }
+            if fix && !mutation_applied {
+                let change = commit_precommit_repair(&project_dir)?
+                    .expect("Git hook state already established a repository");
+                let message = match change {
+                    HookChange::Installed => {
+                        "Installed local Phantom check before existing hook commands"
+                    }
+                    HookChange::Repaired => "Repaired stale Phantom pre-commit hook",
+                    HookChange::Unchanged => "Phantom pre-commit hook already current",
+                };
+                check_fixed(message);
                 fixed += 1;
             } else {
                 issues += 1;
             }
         }
-    } else if project_dir.join(".git").exists() {
-        check_warn("No pre-commit hook installed");
-        check_fix("Run: phantom init (will auto-install hook)");
-        if fix {
-            let hooks_dir = project_dir.join(".git/hooks");
-            let _ = std::fs::create_dir_all(&hooks_dir);
-            let hook = "#!/bin/sh\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\nexit $?\n";
-            std::fs::write(&git_hook, hook)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&git_hook, std::fs::Permissions::from_mode(0o755));
+        precommit_hook::HookState::Missing { .. } => {
+            check_warn("No pre-commit hook installed");
+            check_fix("Run: phantom init (will install a local Phantom check)");
+            if fix && !mutation_applied {
+                commit_precommit_repair(&project_dir)?;
+                check_fixed("Installed pre-commit hook");
+                fixed += 1;
+            } else {
+                issues += 1;
             }
-            check_fixed("Installed pre-commit hook");
-            fixed += 1;
-        } else {
-            issues += 1;
         }
-    } else {
-        check_info("Not a git repo — pre-commit hook not applicable");
+        precommit_hook::HookState::NotRepository => {
+            check_info("Not a git repo — pre-commit hook not applicable");
+        }
     }
 
     // Check 9: README mentions Phantom
@@ -295,7 +361,9 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
             InstallSource::Npm => "npm (phantom-secrets package)",
             InstallSource::Homebrew => "Homebrew",
             InstallSource::Cargo => "Cargo (cargo install)",
-            InstallSource::Curl => "curl installer (~/.local/bin)",
+            InstallSource::Direct => "direct checksum-verifying installer",
+            InstallSource::Curl => "legacy standalone installer (~/.local/bin)",
+            InstallSource::LegacySharedRoot => "ambiguous legacy shared installer root",
             InstallSource::Unknown => "unknown",
         };
         check_info(&format!("Install source: {label}"));
@@ -304,16 +372,30 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     // Check 11: Vault backend (informational — also shown inline above when
     // config exists, but surfaced unconditionally here so it's always visible)
     {
-        if let Ok(config) = PhantomConfig::load(&config_path) {
-            let vault = phantom_vault::create_vault(config.local_project_id());
-            check_info(&format!("Vault backend: {}", vault.backend_name()));
+        if doctor_can_open_vault(fix) {
+            if let Ok(config) = PhantomConfig::load(&config_path) {
+                let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+                check_info(&format!("Vault backend: {}", vault.backend_name()));
+            } else {
+                check_info("Vault backend: n/a (no .phantom.toml)");
+            }
         } else {
-            check_info("Vault backend: n/a (no .phantom.toml)");
+            check_info("Vault backend: not opened (read-only doctor mode)");
         }
     }
 
     // Check 12: Audit logging
     {
+        if phantom_core::audit::AuditEventEncryption::from_env()
+            == phantom_core::audit::AuditEventEncryption::CloudSigned
+        {
+            check_warn(
+                "Cloud-signed audit delivery is not commissioned; legacy requests stay encrypted in the local audit log and perform no network I/O",
+            );
+            check_fix("Set PHANTOM_AUDIT_ENCRYPTION=local or unset it");
+            issues += 1;
+        }
+
         if phantom_core::audit::enabled() {
             match phantom_core::audit::log_path() {
                 Ok(path) => match std::fs::metadata(&path) {
@@ -359,54 +441,58 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 14 (optional): Validation metadata — surface invalid credentials
     {
-        if let Ok(config) = PhantomConfig::load(&config_path) {
-            let vault = phantom_vault::create_vault(config.local_project_id());
-            if let Ok(names) = vault.list() {
-                let mut invalid_count = 0usize;
-                let mut stale_count = 0usize;
-                for name in &names {
-                    let meta = vault.get_validation_metadata(name).unwrap_or_default();
-                    if meta.never_checked() {
-                        // Not yet validated — not an issue, just informational.
-                    } else if !meta.is_valid {
-                        invalid_count += 1;
-                        let reason = meta.failure_reason.as_deref().unwrap_or("unknown reason");
-                        check_fail(&format!("Secret '{}' FAILED validation: {}", name, reason));
-                        check_fix("Run: phantom validate --check-all (then rotate if needed)");
-                        issues += 1;
-                    } else if meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS) {
-                        stale_count += 1;
+        if doctor_can_open_vault(fix) {
+            if let Ok(config) = PhantomConfig::load(&config_path) {
+                let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+                if let Ok(names) = vault.list() {
+                    let mut invalid_count = 0usize;
+                    let mut stale_count = 0usize;
+                    for name in &names {
+                        let meta = vault.get_validation_metadata(name).unwrap_or_default();
+                        if meta.never_checked() {
+                            // Not yet validated — not an issue, just informational.
+                        } else if !meta.is_valid {
+                            invalid_count += 1;
+                            let reason = meta.failure_reason.as_deref().unwrap_or("unknown reason");
+                            check_fail(&format!("Secret '{}' FAILED validation: {}", name, reason));
+                            check_fix("Run: phantom validate --check-all (then rotate if needed)");
+                            issues += 1;
+                        } else if meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS) {
+                            stale_count += 1;
+                        }
                     }
-                }
-                if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
-                    let all_checked = names.iter().all(|n| {
-                        vault
-                            .get_validation_metadata(n)
-                            .map(|m| !m.never_checked())
-                            .unwrap_or(false)
-                    });
-                    if all_checked {
-                        check_pass("All secrets passed last validation check");
-                    } else {
-                        check_info(
+                    if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
+                        let all_checked = names.iter().all(|n| {
+                            vault
+                                .get_validation_metadata(n)
+                                .map(|m| !m.never_checked())
+                                .unwrap_or(false)
+                        });
+                        if all_checked {
+                            check_pass("All secrets passed last validation check");
+                        } else {
+                            check_info(
                             "Validation: run `phantom validate --check-all` to check credential health",
                         );
+                        }
+                    } else if stale_count > 0 {
+                        check_info(&format!(
+                            "Validation: {} secret(s) have stale check results (>24 h old)",
+                            stale_count
+                        ));
+                        check_fix("Run: phantom validate --check-all");
                     }
-                } else if stale_count > 0 {
-                    check_info(&format!(
-                        "Validation: {} secret(s) have stale check results (>24 h old)",
-                        stale_count
-                    ));
-                    check_fix("Run: phantom validate --check-all");
                 }
             }
+        } else {
+            check_info("Validation metadata not read in non-provisioning doctor mode");
         }
     }
 
     // Check 15 (optional): Secret TTL / expiry status
-    if check_expiry {
+    if check_expiry && doctor_can_open_vault(fix) {
         if let Ok(config) = PhantomConfig::load(&config_path) {
-            let vault = phantom_vault::create_vault(config.local_project_id());
+            let vault = phantom_vault::try_create_vault(config.local_project_id())?;
             match vault.list_with_metadata() {
                 Ok(entries) => {
                     let mut expired = Vec::new();
@@ -455,6 +541,8 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 }
             }
         }
+    } else if check_expiry {
+        check_info("Expiry metadata not read in non-provisioning doctor mode");
     }
 
     // Check 14: MCP setup status per known client
@@ -464,25 +552,39 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
         // Claude Code — project-local .claude/settings.local.json
         let claude_path = project_dir.join(".claude/settings.local.json");
-        check_mcp_client("claude", &claude_path, false);
+        issues += usize::from(check_mcp_client("claude", &claude_path, false));
 
         if let Some(home) = dirs::home_dir() {
             // Cursor — ~/.cursor/mcp.json
-            check_mcp_client("cursor", &home.join(".cursor/mcp.json"), true);
+            issues += usize::from(check_mcp_client(
+                "cursor",
+                &home.join(".cursor/mcp.json"),
+                true,
+            ));
             // Windsurf — ~/.codeium/windsurf/mcp_config.json
-            check_mcp_client(
+            issues += usize::from(check_mcp_client(
                 "windsurf",
                 &home.join(".codeium/windsurf/mcp_config.json"),
                 true,
-            );
+            ));
             // Codex — ~/.codex/config.toml
-            check_mcp_client("codex", &home.join(".codex/config.toml"), true);
+            issues += usize::from(check_mcp_client(
+                "codex",
+                &home.join(".codex/config.toml"),
+                true,
+            ));
         }
     }
 
     println!();
     if fix && fixed > 0 {
         println!("{} Auto-fixed {} issue(s)", "ok".green().bold(), fixed);
+        if issues > 0 {
+            println!(
+                "{} Re-run `phantom doctor --fix` to apply the next isolated repair",
+                "next".blue().bold()
+            );
+        }
     }
     if issues == 0 {
         println!("{} All checks passed!", "ok".green().bold());
@@ -502,8 +604,54 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     Ok(())
 }
 
-/// Check whether a known MCP client config file exists and references "phantom".
-fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) {
+fn write_project_file_exact(
+    project_dir: &std::path::Path,
+    path: &std::path::Path,
+    before: Option<&[u8]>,
+    content: &[u8],
+) -> Result<()> {
+    write_project_file_exact_with(project_dir, path, before, content, || {})
+}
+
+fn write_project_file_exact_with(
+    project_dir: &std::path::Path,
+    path: &std::path::Path,
+    before: Option<&[u8]>,
+    content: &[u8],
+    before_commit: impl FnOnce(),
+) -> Result<()> {
+    let lock = phantom_vault::acquire_project_transaction_lock(project_dir)?;
+    let target = lock.target(path)?;
+    let reviewed = target.read_regular()?;
+    if reviewed.as_ref().map(phantom_core::fs::AnchoredRead::bytes) != before {
+        anyhow::bail!("{} changed after it was inspected", path.display());
+    }
+    let permissions = reviewed
+        .as_ref()
+        .map(phantom_core::fs::AnchoredRead::permissions)
+        .unwrap_or_else(phantom_core::fs::AnchoredFilePermissions::private);
+    before_commit();
+    match target.replace_if_exact_with_permissions(reviewed.as_ref(), content, permissions)? {
+        phantom_core::fs::AnchoredEffect::Durable(_) => Ok(()),
+        phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
+            eprintln!(
+                "warning: {} was replaced and verified, but directory crash durability is not provable on this platform",
+                path.display()
+            );
+            Ok(())
+        }
+        phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => {
+            anyhow::bail!(
+                "{} was replaced, but durability could not be verified: {error}",
+                path.display()
+            )
+        }
+    }
+}
+
+/// Check whether a known MCP client config has a canonical local executable.
+/// Returns true for a present-but-unsafe or unreadable Phantom configuration.
+fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
     let location = if global {
         if let Some(home) = dirs::home_dir() {
             if let Ok(suffix) = path.strip_prefix(&home) {
@@ -519,14 +667,40 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) {
     };
 
     if path.exists() {
-        let content = std::fs::read_to_string(path).unwrap_or_default();
-        if content.contains("phantom") {
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) => {
+                println!(
+                    "       {} {} config cannot be read safely: {} ({})",
+                    "FAIL".red().bold(),
+                    name,
+                    error,
+                    location.dimmed()
+                );
+                return true;
+            }
+        };
+        if phantom_core::agent::mcp_config_has_local_runtime(path) {
             println!(
-                "       {} {} wired up ({})",
+                "       {} {} uses a local Phantom executable ({})",
                 "ok".green(),
                 name,
                 location.dimmed()
             );
+            false
+        } else if content.contains("phantom") {
+            println!(
+                "       {} {} Phantom entry is stale or network-capable ({})",
+                "warn".yellow(),
+                name,
+                location.dimmed()
+            );
+            println!(
+                "          {} phantom setup --client {}",
+                "Fix:".dimmed(),
+                name
+            );
+            true
         } else {
             println!(
                 "       {} {} config exists but no phantom MCP ({})",
@@ -534,6 +708,7 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) {
                 name,
                 location.dimmed()
             );
+            false
         }
     } else {
         println!(
@@ -542,6 +717,7 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) {
             name,
             location.dimmed()
         );
+        false
     }
 }
 
@@ -571,7 +747,11 @@ fn check_fixed(msg: &str) {
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::upgrade::{detect_install_source, InstallSource};
+    use super::{precommit_hook, HookChange};
+    use crate::commands::upgrade::{
+        detect_install_source, detect_install_source_from, InstallSource,
+    };
+    use std::path::Path;
 
     /// Smoke test — detect_install_source() must be stable across two calls.
     #[test]
@@ -581,52 +761,135 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    /// Verify that a binary path under ~/.phantom-secrets/bin/ is classified
-    /// as Npm by replicating the detection logic with a synthetic path.
-    #[test]
-    fn npm_path_detected_via_home_prefix() {
-        let home = dirs::home_dir().expect("need home dir for this test");
-        let npm_root = home.join(".phantom-secrets").join("bin");
-        let fake_exe = npm_root.join("phantom");
-
-        // Replicate the npm branch from detect_install_source().
-        let detected = if fake_exe.starts_with(&npm_root) {
-            InstallSource::Npm
-        } else {
-            InstallSource::Unknown
-        };
-        assert_eq!(detected, InstallSource::Npm);
-    }
-
-    /// Verify Homebrew path strings are classified correctly.
     #[test]
     fn homebrew_paths_detected() {
-        for path_str in &[
+        for path in [
             "/usr/local/Cellar/phantom/1.0/bin/phantom",
             "/opt/homebrew/bin/phantom",
             "/home/linuxbrew/.linuxbrew/bin/phantom",
         ] {
-            let detected = if path_str.contains("/Cellar/")
-                || path_str.contains("/homebrew/")
-                || path_str.contains("/linuxbrew/")
-            {
+            assert_eq!(
+                detect_install_source_from(Path::new(path), None),
                 InstallSource::Homebrew
-            } else {
-                InstallSource::Unknown
-            };
-            assert_eq!(detected, InstallSource::Homebrew, "path: {path_str}");
+            );
         }
     }
 
-    /// Verify Cargo path strings are classified correctly.
     #[test]
     fn cargo_path_detected() {
-        let path_str = "/home/user/.cargo/bin/phantom";
-        let detected = if path_str.contains("/.cargo/bin/") {
+        assert_eq!(
+            detect_install_source_from(
+                Path::new("/home/user/.cargo/bin/phantom"),
+                Some(Path::new("/home/user")),
+            ),
             InstallSource::Cargo
-        } else {
-            InstallSource::Unknown
-        };
-        assert_eq!(detected, InstallSource::Cargo);
+        );
+    }
+
+    #[test]
+    fn read_only_doctor_never_opens_a_vault_backend() {
+        assert!(!super::doctor_can_open_vault(false));
+        assert!(!super::doctor_can_open_vault(true));
+    }
+
+    #[test]
+    fn exact_doctor_write_preserves_concurrent_owner() {
+        let project = tempfile::tempdir().unwrap();
+        let target = project.path().join(".gitignore");
+        std::fs::write(&target, b"before\n").unwrap();
+        let before = phantom_core::fs::read_regular_file(&target)
+            .unwrap()
+            .unwrap();
+        std::fs::write(&target, b"concurrent\n").unwrap();
+
+        assert!(super::write_project_file_exact(
+            project.path(),
+            &target,
+            Some(&before),
+            b"phantom\n"
+        )
+        .is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"concurrent\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_doctor_write_refuses_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempfile::tempdir().unwrap();
+        let owner = project.path().join("owner");
+        let target = project.path().join(".gitignore");
+        std::fs::write(&owner, b"owner").unwrap();
+        symlink(&owner, &target).unwrap();
+
+        assert!(
+            super::write_project_file_exact(project.path(), &target, None, b"phantom").is_err()
+        );
+        assert_eq!(std::fs::read(owner).unwrap(), b"owner");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_doctor_write_uses_retained_root_after_rename() {
+        let container = tempfile::tempdir().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        let target = project.join(".gitignore");
+        std::fs::write(&target, b"before\n").unwrap();
+
+        super::write_project_file_exact_with(
+            &project,
+            &target,
+            Some(b"before\n"),
+            b"after\n",
+            || {
+                std::fs::rename(&project, &moved).unwrap();
+                std::fs::create_dir(&project).unwrap();
+                std::fs::write(project.join(".gitignore"), b"decoy\n").unwrap();
+            },
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(moved.join(".gitignore")).unwrap(), b"after\n");
+        assert_eq!(
+            std::fs::read(project.join(".gitignore")).unwrap(),
+            b"decoy\n"
+        );
+    }
+
+    #[test]
+    fn doctor_hook_repair_uses_exact_hook_plan_without_project_lock() {
+        let project = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(project.path())
+            .status()
+            .unwrap()
+            .success());
+        let hook = project.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho stale\n").unwrap();
+
+        assert_eq!(
+            super::commit_precommit_repair(project.path()).unwrap(),
+            Some(HookChange::Installed)
+        );
+        assert!(precommit_hook::is_current(
+            &std::fs::read_to_string(hook).unwrap()
+        ));
+
+        let source = include_str!("doctor.rs");
+        let helper = source
+            .split("fn commit_precommit_repair")
+            .nth(1)
+            .unwrap()
+            .split("/// Run the full doctor suite")
+            .next()
+            .unwrap();
+        assert!(helper.contains("prepare_install_plan"));
+        assert!(helper.contains("authorize_external_install_from_terminal"));
+        assert!(helper.contains("commit_prepared_install"));
+        assert!(!helper.contains("acquire_project_transaction_lock"));
     }
 }

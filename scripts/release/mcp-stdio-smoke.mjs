@@ -2,19 +2,30 @@
 
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { accessSync, constants } from "node:fs";
+import {
+  accessSync,
+  constants,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { createInterface } from "node:readline";
 import { validatePhantomDoSchema } from "./mcp-schema-contract.mjs";
 
 const binaryPath = process.argv[2];
 const expectedToolCount = Number(process.argv[3] ?? "54");
+const registryPath = process.argv[4] ?? "mcp-registry/server.json";
+const writeRegistry = process.argv[5] === "--write-registry";
 if (
   !binaryPath ||
-  process.argv.length > 4 ||
+  process.argv.length > 6 ||
+  (process.argv[5] && !writeRegistry) ||
   !Number.isSafeInteger(expectedToolCount) ||
   expectedToolCount < 1
 ) {
-  throw new Error("usage: mcp-stdio-smoke.mjs <phantom-mcp-binary> [expected-tool-count]");
+  throw new Error(
+    "usage: mcp-stdio-smoke.mjs <phantom-mcp-binary> [expected-tool-count] [registry-path] [--write-registry]"
+  );
 }
 accessSync(binaryPath, constants.X_OK);
 
@@ -111,13 +122,195 @@ try {
   }
   validatePhantomDoSchema(phantomDo.inputSchema);
 
+  // Closed authority catalog: every live tool must be classified. Tools in
+  // dualApprovalTools either always have an external/persistent effect or
+  // expose a conditional effectful mode. Their runtime schema must make both
+  // gates representable; handlers remain responsible for enforcing the gates
+  // before the effect.
+  const dualApprovalTools = new Set([
+    "phantom_add_secret",
+    "phantom_add_secret_interactive",
+    "phantom_apply_expiry_policy",
+    "phantom_audit_alerts",
+    "phantom_audit_export_report",
+    "phantom_audit_hotspot_alerts",
+    "phantom_cloud_pull",
+    "phantom_cloud_push",
+    "phantom_cloud_status",
+    "phantom_copy_secret",
+    "phantom_doctor",
+    "phantom_env",
+    "phantom_init",
+    "phantom_remove_secret",
+    "phantom_rotate",
+    "phantom_rotate_provider",
+    "phantom_rotate_with_expiry",
+    "phantom_secrets_auto_rotate",
+    "phantom_setup_workspace",
+    "phantom_team_create",
+    "phantom_team_invite",
+    "phantom_team_key_publish",
+    "phantom_team_list",
+    "phantom_team_members",
+    "phantom_team_vault_pull",
+    "phantom_team_vault_push",
+    "phantom_unwrap",
+    "phantom_validate_all",
+    "phantom_validation_schedule",
+    "phantom_wrap",
+  ]);
+  const readOnlyOrDeniedTools = new Set([
+    "phantom_audit_analytics",
+    "phantom_audit_anomalies",
+    "phantom_audit_anomalies_realtime",
+    "phantom_audit_incidents",
+    "phantom_audit_recent",
+    "phantom_audit_stats",
+    "phantom_capability",
+    "phantom_check",
+    "phantom_compliance_status",
+    "phantom_do",
+    "phantom_expiry_enforce",
+    "phantom_leak_incidents_realtime",
+    "phantom_list_secrets",
+    "phantom_list_with_expiry",
+    "phantom_rotate_promote",
+    "phantom_rotate_with_candidate",
+    "phantom_rotation_schedule_next",
+    "phantom_secret_rotation_due",
+    "phantom_secrets_expiry_check",
+    "phantom_status",
+    "phantom_sync",
+    "phantom_validate_secret",
+    "phantom_validation_history",
+    "phantom_why",
+  ]);
+  const classifiedNames = [...dualApprovalTools, ...readOnlyOrDeniedTools].sort();
+  if (
+    classifiedNames.length !== new Set(classifiedNames).size ||
+    !isDeepStrictEqual(classifiedNames, [...names].sort())
+  ) {
+    throw new Error("MCP effect catalog does not classify every live tool exactly once");
+  }
+  for (const tool of result.tools) {
+    if (!dualApprovalTools.has(tool.name)) continue;
+    const properties = tool.inputSchema?.properties ?? {};
+    if (!("confirm" in properties) || !("approval_token" in properties)) {
+      throw new Error(`${tool.name} is effectful but lacks the dual approval schema`);
+    }
+  }
+  const realtimeLeak = result.tools.find(
+    (tool) => tool.name === "phantom_leak_incidents_realtime"
+  );
+  if (
+    "auto_rotate_on_high" in (realtimeLeak?.inputSchema?.properties ?? {}) ||
+    "confirm" in (realtimeLeak?.inputSchema?.properties ?? {})
+  ) {
+    throw new Error("realtime leak inspection must not expose a simulated rotation mode");
+  }
+  const tokenRemap = result.tools.find(
+    (tool) => tool.name === "phantom_secrets_auto_rotate"
+  );
+  if (
+    !tokenRemap?.description?.includes("DEPRECATED compatibility name") ||
+    !tokenRemap.description.includes("does not rotate or validate the provider credential") ||
+    tokenRemap.description.includes("extend its expiry")
+  ) {
+    throw new Error("legacy auto-rotate tool must advertise token-remap-only semantics");
+  }
+  const tokenRemapWithExpiry = result.tools.find(
+    (tool) => tool.name === "phantom_rotate_with_expiry"
+  );
+  if (
+    !tokenRemapWithExpiry?.description?.includes("DEPRECATED compatibility name") ||
+    !tokenRemapWithExpiry.description.includes("no longer renews") ||
+    tokenRemapWithExpiry.description.includes("set a TTL on every secret")
+  ) {
+    throw new Error("legacy rotate-with-expiry tool must preserve lifecycle metadata");
+  }
+  for (const name of ["phantom_rotate_with_candidate", "phantom_rotate_promote"]) {
+    const tool = result.tools.find((candidate) => candidate.name === name);
+    if (
+      !tool?.description?.includes("DEPRECATED hard denial") ||
+      !tool.description.includes("never") ||
+      tool.description.includes("PHANTOM_CANDIDATE_MODE")
+    ) {
+      throw new Error(`${name} must remain a truthful, side-effect-free hard denial`);
+    }
+    const properties = tool.inputSchema?.properties ?? {};
+    if (
+      !("name" in properties) ||
+      !("confirm" in properties) ||
+      !("approval_token" in properties)
+    ) {
+      throw new Error(`${name} must retain its deprecated compatibility schema`);
+    }
+  }
+  const teamInvite = result.tools.find(
+    (tool) => tool.name === "phantom_team_invite"
+  );
+  const inviteRoleSchema = teamInvite?.inputSchema?.properties?.role;
+  const inviteRoleRefName = inviteRoleSchema?.$ref?.split("/").at(-1);
+  const inviteRoleEnum =
+    inviteRoleSchema?.enum ??
+    teamInvite?.inputSchema?.$defs?.[inviteRoleRefName]?.enum;
+  if (
+    !isDeepStrictEqual(
+      inviteRoleEnum,
+      ["member", "admin"]
+    )
+  ) {
+    throw new Error("team invite schema must restrict assigned roles to member or admin");
+  }
+
+  const registry = JSON.parse(readFileSync(registryPath, "utf8"));
+  if (
+    registry.description !==
+    "Value-blind secret metadata and gated workflows for AI coding agents through Phantom's local proxy."
+  ) {
+    throw new Error("registry description must remain evidence-bounded");
+  }
+  if (registry.description.length > 100) {
+    throw new Error("registry description exceeds the MCP Registry 100-character limit");
+  }
+  if (writeRegistry) {
+    registry.tools = result.tools;
+    writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+  } else if (!isDeepStrictEqual(registry.tools, result.tools)) {
+    throw new Error(
+      `${registryPath} tools differ from the runtime tools/list catalog; ` +
+        "run this smoke with --write-registry after reviewing runtime effects"
+    );
+  }
+
+  const readme = readFileSync("README.md", "utf8");
+  const catalogStart = readme.indexOf("- **Conversation facade**");
+  const catalogEnd = readme.indexOf("\n\nTools that write state", catalogStart);
+  if (catalogStart < 0 || catalogEnd < 0) {
+    throw new Error("README MCP catalog boundaries are missing");
+  }
+  const readmeNames = [
+    ...new Set(
+      readme
+        .slice(catalogStart, catalogEnd)
+        .match(/`(phantom_[a-z_]+)`/g)
+        ?.map((match) => match.slice(1, -1)) ?? []
+    ),
+  ].sort();
+  const runtimeNames = [...names].sort();
+  if (!isDeepStrictEqual(readmeNames, runtimeNames)) {
+    throw new Error(
+      `README MCP catalog does not enumerate the exact ${expectedToolCount} runtime tools`
+    );
+  }
+
   child.stdin.end();
   const [code, signal] = await withTimeout(exitPromise, "MCP shutdown");
   if (code !== 0 || signal !== null) {
     throw new Error(`phantom-mcp exited with code=${code} signal=${signal}`);
   }
   console.log(
-    `MCP stdio smoke passed: ${result.tools.length} unique tools and deeply closed phantom_do schema`
+    `MCP stdio smoke passed: ${result.tools.length} unique tools, deeply closed phantom_do schema, exact registry parity, and complete README catalog${writeRegistry ? " (registry updated)" : ""}`
   );
 } catch (error) {
   child.kill("SIGKILL");

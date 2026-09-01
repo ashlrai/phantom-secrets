@@ -17,7 +17,7 @@ function workspaceVersion() {
   return match[1];
 }
 
-test("current workspace version has publishable release notes", () => {
+test("current workspace version release notes include the complete candidate tranche", () => {
   const version = workspaceVersion();
   const result = spawnSync(process.execPath, [extractor, `v${version}`], {
     cwd: repoRoot,
@@ -27,6 +27,12 @@ test("current workspace version has publishable release notes", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`^## \\[${version.replaceAll(".", "\\.")}\\]`, "m"));
   assert.match(result.stdout, /^### Breaking changes and migration$/m);
+  assert.match(result.stdout, /Initialization admission now retains the reviewed project-root identity/);
+  assert.match(result.stdout, /CommittedVerifiedButDurabilityUncertain/);
+  assert.match(result.stdout, /On Windows, new private anchored files and directories establish and verify/);
+  assert.match(result.stdout, /Phantom uses Rama's upstream main snapshot/);
+  assert.doesNotMatch(result.stdout, /^## \\[Unreleased\\]$/m);
+  assert.doesNotMatch(result.stdout, /after the `0\.7\.4` candidate/);
 });
 
 test("missing release notes fail closed", () => {

@@ -1,3 +1,5 @@
+mod common;
+
 use assert_cmd::Command;
 use serde_json::Value;
 use std::fs;
@@ -13,8 +15,8 @@ fn phantom(workspace: &TempDir, home: &TempDir) -> Command {
 
 #[test]
 fn workspace_plan_and_request_records_are_value_free() {
-    let workspace = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let workspace = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     let sentinel = "sk-workspace-plan-output-sentinel";
     fs::write(
         workspace.path().join(".env"),
@@ -58,8 +60,8 @@ fn workspace_plan_and_request_records_are_value_free() {
 
 #[test]
 fn workspace_apply_refuses_non_terminal_invocation_before_request_access() {
-    let workspace = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
+    let workspace = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
     let assertion = phantom(&workspace, &home)
         .args(["workspace", "apply", "--request", &"0".repeat(64)])
         .assert()

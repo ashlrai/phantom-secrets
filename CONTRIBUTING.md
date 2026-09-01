@@ -4,6 +4,11 @@ Thanks for helping make safe agentic development practical. Phantom accepts focu
 
 Please read the [Code of Conduct](CODE_OF_CONDUCT.md), [security policy](SECURITY.md), and [threat model](THREAT_MODEL.md) before changing a trust boundary. Report vulnerabilities privately; do not open a public issue for them.
 
+The reviewed public distribution is `v0.7.3`; this repository currently stages
+`0.7.4`. Building or testing staged source does not prove that a package,
+native artifact, deployment, provider integration, or hosted entitlement has
+been published or accepted. See the [roadmap](ROADMAP.md) for the evidence gates.
+
 ## Before you start
 
 - Search [existing issues](https://github.com/ashlrai/phantom-secrets/issues) and [discussions](https://github.com/ashlrai/phantom-secrets/discussions).
@@ -16,8 +21,8 @@ Please read the [Code of Conduct](CODE_OF_CONDUCT.md), [security policy](SECURIT
 Prerequisites:
 
 - Git
-- Rust stable with `rustfmt` and `clippy`
-- Node.js and npm when changing npm wrappers or `apps/web`
+- Rust `1.95.0` with `rustfmt` and `clippy` (pinned by `rust-toolchain.toml`)
+- Node.js 22 and npm when changing npm wrappers or `apps/web`
 - A platform keychain only for explicitly ignored/manual keychain tests
 
 ```bash
@@ -37,10 +42,10 @@ On a machine where `cargo` is not on `PATH`, invoke the same commands through yo
 | Area | Purpose |
 |------|---------|
 | `crates/phantom-cli` | Operator CLI and command integration tests. |
-| `crates/phantom-core` | Configuration, dotenv handling, cloud/auth clients, audit, validation, shared policy, and the provider-issuance engine. |
-| `crates/phantom-cli/src/commands/grant` | Trusted-terminal provider consent, direct-to-vault root storage, and value-free grant lifecycle commands. |
+| `crates/phantom-core` | Configuration, dotenv handling, cloud/auth clients, audit, validation, shared policy, and test-only provider protocol scaffolding. Production issuance is disabled. |
+| `crates/phantom-cli/src/commands/grant` | Value-free grant metadata plus compatibility commands that hard-deny enrollment and remote revocation in 0.7.4. |
 | `crates/phantom-vault` | OS-keychain and encrypted-file vault backends. |
-| `crates/phantom-proxy` | Authenticated loopback proxy, scoped replacement, response scrubbing, and streaming. |
+| `crates/phantom-proxy` | Authenticated loopback proxy, exact route-owned auth-header injection, inert client headers/bodies, response scrubbing, and streaming. |
 | `crates/phantom-mcp` | MCP server, closed parameter schemas, the governed conversation facade, and separately gated compatibility tools. |
 | `crates/phantom-workspace` | Value-blind workspace planning and trusted-terminal setup transactions. |
 | `crates/phantom-authority` | Closed authority contracts; production verification remains deny-all. |
@@ -58,11 +63,13 @@ foundations must stay fail closed until the activation boundaries in
 [`docs/architecture.md`](docs/architecture.md) and
 [`THREAT_MODEL.md`](THREAT_MODEL.md) are resolved and accepted.
 
-The word **grant** has two distinct meanings. A provider grant is credential
-and renewal state created by `phantom grant`; an authority grant is an inactive
-value-free execution-kernel type. A provider grant must never be accepted as a
-Locus credential, broker lease, or execution permit. Current provider behavior
-is specified in [`docs/grants-spec.md`](docs/grants-spec.md); the root
+The word **grant** has two distinct meanings. Historical provider-grant source
+models credential and renewal metadata, while an authority grant is an inactive
+value-free execution-kernel type. Shipped 0.7.4 creates no live provider grant:
+enrollment and remote revocation hard-deny before credentials or network. A
+provider-grant record must never be accepted as a Locus credential, broker
+lease, or execution permit. Current behavior is specified in
+[`docs/grants-spec.md`](docs/grants-spec.md); the root
 [`ISSUANCE_CONTRACT.md`](ISSUANCE_CONTRACT.md) is the original design contract.
 
 ## Making a change
@@ -72,6 +79,10 @@ is specified in [`docs/grants-spec.md`](docs/grants-spec.md); the root
 3. Add tests that demonstrate both the intended behavior and important failure modes.
 4. Update user, agent, registry, and security documentation when a public contract changes.
 5. Run the proportional checks below and record exact commands and results in the pull request.
+
+The project generally uses focused conventional commit subjects such as
+`fix:`, `docs:`, `test:`, and `chore:`. Git history is the current convention;
+there is no claim that a commit-message bot enforces it.
 
 Security-sensitive code must fail closed. Unexpected input, missing state, unsupported platforms, failed authentication, ambiguous crash recovery, and stale authority should not silently downgrade to permissive behavior.
 
@@ -93,7 +104,7 @@ Run additional checks for the surface you changed:
 # MCP release binary
 cargo build --release --locked -p phantom-secrets-mcp --bin phantom-mcp
 
-# Provider-grant CLI integration tests
+# Provider hard-denial and exact cfg(test) transaction-scaffolding tests
 cargo test --locked -p phantom-secrets --test grant_github_app_test
 cargo test --locked -p phantom-secrets --test grant_vercel_integration_test
 cargo test --locked -p phantom-secrets --test grant_sentry_test
@@ -129,13 +140,16 @@ CI runs the normal Rust suite on macOS, Linux, and Windows. A successful cross-c
 - Keep secret values out of `Debug`, `Display`, serialization, logs, URLs, argv, receipts, MCP responses, telemetry, and error messages.
 - Wrap secret-bearing memory in the repository's zeroization patterns and test error/early-return paths.
 - Use the hardened filesystem helpers for secret or authority state; defend against symlinks, unsafe permissions, partial writes, and crash recovery.
-- Keep proxy listeners loopback-only and authenticate every request before substitution.
+- Keep proxy listeners loopback-only and authenticate every request before
+  route matching. Client-controlled headers and bodies must remain inert; only
+  the exact matched route may inject its vault value into its fixed auth header.
 - MCP tools must use closed input schemas. A mutation requires the surface's explicit confirmation and out-of-band approval contract; a request ID or digest is not authority.
 - `phantom_do` remains proposal-only. Do not connect its reserved `execute` phase to a shell or production executor.
 - Do not add a plaintext secret argument to MCP. New values must be collected out of band in a trusted terminal.
-- Keep provider consent in the trusted-terminal CLI. Select production provider
-  endpoints from the closed map, keep client secrets out of argv, zeroize
-  issued roots, vault them before reporting success, and return metadata only.
+- Keep all production provider issuance, enrollment, refresh, renewal,
+  rotation, and revocation paths hard-denied before credential access and
+  network I/O. Exact `cfg(test)` mocks may exercise local transaction
+  scaffolding but are not provider acceptance or activation evidence.
 - Keep provider-grant lifecycle separate from authority-grant verification.
   Remote revoke must fail before local mutation until provider revocation is
   implemented and accepted end to end.
@@ -155,8 +169,18 @@ CI runs the normal Rust suite on macOS, Linux, and Windows. A successful cross-c
 
 Use the pull request template. A strong description explains the user problem, trust-boundary impact, exact verification evidence, platform coverage, and remaining limitations. Screenshots are helpful for UI changes but are not substitutes for behavioral tests.
 
-By contributing, you agree that your contribution is licensed under the repository's [MIT License](LICENSE).
+Project decisions and review authority are described in
+[GOVERNANCE.md](GOVERNANCE.md). For a bounded first contribution, improve a
+documented example, reproduce an existing issue with a test, or propose a small
+documentation correction; the project does not promise that a particular
+`good first issue` queue is populated.
+
+By contributing, you confirm that you have the right to submit the work and
+agree that your contribution is licensed under the repository's
+[MIT License](LICENSE). The project does not currently enforce a Contributor
+License Agreement or Developer Certificate of Origin sign-off; adopting either
+is a separate maintainer and legal-policy decision, not an implied requirement.
 
 ## Questions
 
-Use [GitHub Discussions](https://github.com/ashlrai/phantom-secrets/discussions) for design and usage questions, and [GitHub Issues](https://github.com/ashlrai/phantom-secrets/issues) for reproducible defects and accepted work.
+Use [GitHub Discussions](https://github.com/ashlrai/phantom-secrets/discussions) for design and usage questions, [GitHub Issues](https://github.com/ashlrai/phantom-secrets/issues) for reproducible defects and accepted work, and [SUPPORT.md](SUPPORT.md) to choose the right public or private route.

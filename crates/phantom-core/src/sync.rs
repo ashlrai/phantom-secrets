@@ -2,6 +2,9 @@ use crate::error::{PhantomError, Result};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use zeroize::Zeroizing;
+
+use crate::provider_http;
 
 /// Supported deployment platforms for secret syncing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -139,20 +142,34 @@ pub async fn sync_to_vercel(
     secrets: &BTreeMap<String, String>,
     targets: &[String],
 ) -> Vec<SyncResult> {
-    let client = reqwest::Client::new();
+    let client = match provider_http::async_client() {
+        Ok(client) => client,
+        Err(error) => return error_results(secrets, error),
+    };
     let mut results = Vec::new();
 
     // First, list existing env vars to know what to update vs create
-    let existing = list_vercel_env_vars(&client, token, project_id).await;
+    let existing = match list_vercel_env_vars(&client, token, project_id).await {
+        Ok(existing) => existing,
+        Err(error) => {
+            return secrets
+                .keys()
+                .map(|key| SyncResult {
+                    key: key.clone(),
+                    status: SyncStatus::Error(error.clone()),
+                })
+                .collect();
+        }
+    };
 
     for (key, value) in secrets {
         let target_array: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
 
         // Check if this key already exists
         let existing_id = existing
-            .as_ref()
-            .ok()
-            .and_then(|vars| vars.iter().find(|v| v.key == *key).map(|v| v.id.clone()));
+            .iter()
+            .find(|variable| variable.key == *key)
+            .map(|variable| variable.id.clone());
 
         let result = if let Some(env_id) = existing_id {
             // Update existing
@@ -188,14 +205,24 @@ pub async fn sync_to_vercel(
 }
 
 #[derive(Debug, Deserialize)]
-struct VercelEnvVar {
+struct VercelEnvVarMetadata {
     id: String,
     key: String,
-    #[serde(default)]
-    value: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+struct VercelEnvMetadataResponse {
+    envs: Vec<VercelEnvVarMetadata>,
+}
+
+#[derive(Deserialize)]
+struct VercelEnvVar {
+    key: String,
+    #[serde(default)]
+    value: Option<PulledSecret>,
+}
+
+#[derive(Deserialize)]
 struct VercelEnvListResponse {
     envs: Vec<VercelEnvVar>,
 }
@@ -204,7 +231,7 @@ async fn list_vercel_env_vars(
     client: &reqwest::Client,
     token: &str,
     project_id: &str,
-) -> std::result::Result<Vec<VercelEnvVar>, String> {
+) -> std::result::Result<Vec<VercelEnvVarMetadata>, String> {
     let resp = client
         .get(format!(
             "https://api.vercel.com/v9/projects/{project_id}/env"
@@ -212,16 +239,28 @@ async fn list_vercel_env_vars(
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Vercel environment inventory request failed".to_string())?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Vercel API error ({status}): {body}"));
+        return Err(format!(
+            "Vercel environment inventory request failed (HTTP {status})"
+        ));
     }
 
-    let data: VercelEnvListResponse = resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+    let bytes = provider_http::read_bounded_response(resp, "Vercel environment inventory").await?;
+    let data: VercelEnvMetadataResponse = serde_json::from_slice(&bytes)
+        .map_err(|_| "Vercel environment inventory response was invalid".to_string())?;
     Ok(data.envs)
+}
+
+#[derive(Serialize)]
+struct VercelCreateRequest<'a> {
+    key: &'a str,
+    value: &'a str,
+    #[serde(rename = "type")]
+    secret_type: &'static str,
+    target: &'a [&'a str],
 }
 
 async fn create_vercel_env_var(
@@ -232,12 +271,12 @@ async fn create_vercel_env_var(
     value: &str,
     targets: &[&str],
 ) -> std::result::Result<(), String> {
-    let body = serde_json::json!({
-        "key": key,
-        "value": value,
-        "type": "encrypted",
-        "target": targets,
-    });
+    let body = VercelCreateRequest {
+        key,
+        value,
+        secret_type: "encrypted",
+        target: targets,
+    };
 
     let resp = client
         .post(format!(
@@ -247,12 +286,13 @@ async fn create_vercel_env_var(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Vercel environment create request failed".to_string())?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Vercel API error ({status}): {body}"));
+        return Err(format!(
+            "Vercel environment create request failed (HTTP {status})"
+        ));
     }
 
     Ok(())
@@ -265,9 +305,11 @@ async fn update_vercel_env_var(
     env_id: &str,
     value: &str,
 ) -> std::result::Result<(), String> {
-    let body = serde_json::json!({
-        "value": value,
-    });
+    #[derive(Serialize)]
+    struct UpdateRequest<'a> {
+        value: &'a str,
+    }
+    let body = UpdateRequest { value };
 
     let resp = client
         .patch(format!(
@@ -277,12 +319,13 @@ async fn update_vercel_env_var(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Vercel environment update request failed".to_string())?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Vercel API error ({status}): {body}"));
+        return Err(format!(
+            "Vercel environment update request failed (HTTP {status})"
+        ));
     }
 
     Ok(())
@@ -296,22 +339,40 @@ pub async fn sync_to_railway(
     service_id: Option<&str>,
     secrets: &BTreeMap<String, String>,
 ) -> Vec<SyncResult> {
-    let client = reqwest::Client::new();
+    let client = match provider_http::async_client() {
+        Ok(client) => client,
+        Err(error) => return error_results(secrets, error),
+    };
 
-    // Use GraphQL variables (not string interpolation) to prevent injection
-    let mut input = serde_json::json!({
-        "projectId": project_id,
-        "environmentId": environment_id,
-        "variables": secrets,
-    });
-    if let Some(svc_id) = service_id {
-        input["serviceId"] = serde_json::json!(svc_id);
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RailwayInput<'a> {
+        project_id: &'a str,
+        environment_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        service_id: Option<&'a str>,
+        variables: &'a BTreeMap<String, String>,
     }
-
-    let body = serde_json::json!({
-        "query": "mutation($input: VariableCollectionUpsertInput!) { variableCollectionUpsert(input: $input) }",
-        "variables": { "input": input },
-    });
+    #[derive(Serialize)]
+    struct RailwayVariables<'a> {
+        input: RailwayInput<'a>,
+    }
+    #[derive(Serialize)]
+    struct RailwayRequest<'a> {
+        query: &'static str,
+        variables: RailwayVariables<'a>,
+    }
+    let body = RailwayRequest {
+        query: "mutation($input: VariableCollectionUpsertInput!) { variableCollectionUpsert(input: $input) }",
+        variables: RailwayVariables {
+            input: RailwayInput {
+                project_id,
+                environment_id,
+                service_id,
+                variables: secrets,
+            },
+        },
+    };
 
     let resp = client
         .post("https://backboard.railway.com/graphql/v2")
@@ -323,17 +384,13 @@ pub async fn sync_to_railway(
     match resp {
         Ok(r) => {
             if r.status().is_success() {
-                let body_text = r.text().await.unwrap_or_default();
-
-                // Check for GraphQL errors
-                if body_text.contains("\"errors\"") {
-                    return secrets
-                        .keys()
-                        .map(|key| SyncResult {
-                            key: key.clone(),
-                            status: SyncStatus::Error(format!("GraphQL error: {body_text}")),
-                        })
-                        .collect();
+                let bytes = match provider_http::read_bounded_response(r, "Railway mutation").await
+                {
+                    Ok(bytes) => bytes,
+                    Err(error) => return error_results(secrets, error),
+                };
+                if let Err(error) = parse_railway_mutation_response(&bytes) {
+                    return error_results(secrets, error);
                 }
 
                 // All secrets synced in one request
@@ -346,26 +403,61 @@ pub async fn sync_to_railway(
                     .collect()
             } else {
                 let status = r.status();
-                let body_text = r.text().await.unwrap_or_default();
                 secrets
                     .keys()
                     .map(|key| SyncResult {
                         key: key.clone(),
                         status: SyncStatus::Error(format!(
-                            "Railway API error ({status}): {body_text}"
+                            "Railway variable upsert request failed (HTTP {status})"
                         )),
                     })
                     .collect()
             }
         }
-        Err(e) => secrets
-            .keys()
-            .map(|key| SyncResult {
-                key: key.clone(),
-                status: SyncStatus::Error(format!("Request failed: {e}")),
-            })
-            .collect(),
+        Err(_) => error_results(
+            secrets,
+            "Railway variable upsert request failed".to_string(),
+        ),
     }
+}
+
+fn error_results(secrets: &BTreeMap<String, String>, error: String) -> Vec<SyncResult> {
+    secrets
+        .keys()
+        .map(|key| SyncResult {
+            key: key.clone(),
+            status: SyncStatus::Error(error.clone()),
+        })
+        .collect()
+}
+
+#[derive(Deserialize)]
+struct RailwayMutationResponse {
+    #[serde(default)]
+    data: Option<RailwayMutationData>,
+    #[serde(default)]
+    errors: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+struct RailwayMutationData {
+    #[serde(rename = "variableCollectionUpsert")]
+    variable_collection_upsert: bool,
+}
+
+fn parse_railway_mutation_response(bytes: &[u8]) -> std::result::Result<(), String> {
+    let response: RailwayMutationResponse = serde_json::from_slice(bytes)
+        .map_err(|_| "Railway mutation response was invalid".to_string())?;
+    if response.errors.is_some() {
+        return Err("Railway mutation returned GraphQL errors".to_string());
+    }
+    if response
+        .data
+        .is_none_or(|data| !data.variable_collection_upsert)
+    {
+        return Err("Railway mutation did not confirm the requested upsert".to_string());
+    }
+    Ok(())
 }
 
 // ── Pull Functions ───────────────────────────────────────────────────
@@ -374,8 +466,8 @@ pub async fn sync_to_railway(
 pub async fn pull_from_vercel(
     token: &str,
     project_id: &str,
-) -> std::result::Result<BTreeMap<String, String>, String> {
-    let client = reqwest::Client::new();
+) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, String> {
+    let client = provider_http::async_client()?;
 
     // Use decrypt=true to get actual values
     let resp = client
@@ -385,19 +477,21 @@ pub async fn pull_from_vercel(
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Vercel pull request failed".to_string())?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Vercel API error ({status}): {body}"));
+        return Err(format!("Vercel pull request failed (HTTP {status})"));
     }
 
-    let data: VercelEnvListResponse = resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+    let bytes = provider_http::read_bounded_response(resp, "Vercel pull").await?;
+    let data: VercelEnvListResponse = serde_json::from_slice(&bytes)
+        .map_err(|_| "Vercel pull response was invalid".to_string())?;
 
     let mut secrets = BTreeMap::new();
     for env_var in data.envs {
         if let Some(value) = env_var.value {
+            let value = value.into_zeroizing();
             if !value.is_empty() {
                 secrets.insert(env_var.key, value);
             }
@@ -413,16 +507,21 @@ pub async fn pull_from_railway(
     project_id: &str,
     environment_id: &str,
     service_id: Option<&str>,
-) -> std::result::Result<BTreeMap<String, String>, String> {
-    let client = reqwest::Client::new();
+) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, String> {
+    let client = provider_http::async_client()?;
 
-    // Use GraphQL variables to prevent injection
-    let mut vars = serde_json::json!({
-        "projectId": project_id,
-        "environmentId": environment_id,
-    });
-    if let Some(svc_id) = service_id {
-        vars["serviceId"] = serde_json::json!(svc_id);
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PullVariables<'a> {
+        project_id: &'a str,
+        environment_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        service_id: Option<&'a str>,
+    }
+    #[derive(Serialize)]
+    struct PullRequest<'a> {
+        query: &'static str,
+        variables: PullVariables<'a>,
     }
 
     let query = if service_id.is_some() {
@@ -431,7 +530,14 @@ pub async fn pull_from_railway(
         "query($projectId: String!, $environmentId: String!) { variables(projectId: $projectId, environmentId: $environmentId) }"
     };
 
-    let body = serde_json::json!({ "query": query, "variables": vars });
+    let body = PullRequest {
+        query,
+        variables: PullVariables {
+            project_id,
+            environment_id,
+            service_id,
+        },
+    };
 
     let resp = client
         .post("https://backboard.railway.com/graphql/v2")
@@ -439,38 +545,65 @@ pub async fn pull_from_railway(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Railway pull request failed".to_string())?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
-        return Err(format!("Railway API error ({status}): {body_text}"));
+        return Err(format!("Railway pull request failed (HTTP {status})"));
     }
 
-    let resp_body: serde_json::Value =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+    let bytes = provider_http::read_bounded_response(resp, "Railway pull").await?;
+    parse_railway_pull_response(&bytes)
+}
 
-    // Check for GraphQL errors
-    if let Some(errors) = resp_body.get("errors") {
-        return Err(format!("GraphQL errors: {errors}"));
+#[derive(Deserialize)]
+struct PulledSecret(String);
+
+impl PulledSecret {
+    fn into_zeroizing(mut self) -> Zeroizing<String> {
+        Zeroizing::new(std::mem::take(&mut self.0))
     }
+}
 
-    // Railway returns variables as a flat JSON object: { "KEY": "value", ... }
-    let variables = resp_body
-        .get("data")
-        .and_then(|d| d.get("variables"))
-        .ok_or_else(|| "Missing 'data.variables' in response".to_string())?;
-
-    let mut secrets = BTreeMap::new();
-    if let Some(obj) = variables.as_object() {
-        for (key, value) in obj {
-            if let Some(v) = value.as_str() {
-                secrets.insert(key.clone(), v.to_string());
-            }
-        }
+impl Drop for PulledSecret {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.zeroize();
     }
+}
 
-    Ok(secrets)
+#[derive(Deserialize)]
+struct RailwayPullResponse {
+    #[serde(default)]
+    data: Option<RailwayPullData>,
+    #[serde(default)]
+    errors: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+struct RailwayPullData {
+    variables: BTreeMap<String, PulledSecret>,
+}
+
+fn parse_railway_pull_response(
+    bytes: &[u8],
+) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, String> {
+    let response: RailwayPullResponse = serde_json::from_slice(bytes)
+        .map_err(|_| "Railway pull response was invalid".to_string())?;
+    if response.errors.is_some() {
+        return Err("Railway pull returned GraphQL errors".to_string());
+    }
+    let data = response
+        .data
+        .ok_or_else(|| "Railway pull did not return data.variables".to_string())?;
+    Ok(data
+        .variables
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let value = value.into_zeroizing();
+            (!value.is_empty()).then_some((name, value))
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -536,5 +669,73 @@ mod tests {
         let invalid = validate_only_patterns(&["[".to_string(), "STRIPE_*".to_string()]);
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0].0, "[");
+    }
+
+    #[test]
+    fn railway_secret_echo_is_ignored_and_never_enters_error() {
+        let bytes = br#"{"data":null,"errors":[{"message":"echoed-secret-value"}]}"#;
+        let error = parse_railway_mutation_response(bytes).unwrap_err();
+        assert_eq!(error, "Railway mutation returned GraphQL errors");
+        assert!(!error.contains("echoed-secret-value"));
+    }
+
+    #[test]
+    fn railway_requires_exact_positive_success_field() {
+        assert!(parse_railway_mutation_response(br#"{"data":{}}"#).is_err());
+        assert!(
+            parse_railway_mutation_response(br#"{"data":{"variableCollectionUpsert":false}}"#)
+                .is_err()
+        );
+        assert!(
+            parse_railway_mutation_response(br#"{"data":{"variableCollectionUpsert":true}}"#)
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_response_content_length_is_bounded_before_read() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                provider_http::MAX_PROVIDER_RESPONSE_BYTES + 1
+            )
+            .unwrap();
+        });
+        let response = reqwest::get(format!("http://{address}")).await.unwrap();
+        let error = provider_http::read_bounded_response(response, "mock provider")
+            .await
+            .unwrap_err();
+        assert!(error.contains("exceeded"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn railway_pull_secret_echo_in_errors_is_never_formatted() {
+        let error = parse_railway_pull_response(
+            br#"{"data":null,"errors":[{"message":"provider-echoed-secret"}]}"#,
+        )
+        .unwrap_err();
+        assert_eq!(error, "Railway pull returned GraphQL errors");
+        assert!(!error.contains("provider-echoed-secret"));
+    }
+
+    #[test]
+    fn railway_pull_returns_zeroizing_values() {
+        let pulled = parse_railway_pull_response(
+            br#"{"data":{"variables":{"API_KEY":"secret-value","EMPTY":""}}}"#,
+        )
+        .unwrap();
+        let value: &Zeroizing<String> = pulled.get("API_KEY").unwrap();
+        assert_eq!(value.as_str(), "secret-value");
+        assert!(!pulled.contains_key("EMPTY"));
     }
 }

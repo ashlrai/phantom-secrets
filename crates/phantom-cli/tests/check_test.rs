@@ -1,3 +1,5 @@
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use std::process::Command as StdCommand;
@@ -11,7 +13,7 @@ fn phantom(dir: &TempDir) -> Command {
 
 #[test]
 fn check_staged_blocks_staged_env_plaintext_secret() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     StdCommand::new("git")
         .arg("init")
         .current_dir(dir.path())
@@ -35,7 +37,7 @@ fn check_staged_blocks_staged_env_plaintext_secret() {
 
 #[test]
 fn check_staged_warns_on_risky_phantom_config_without_blocking() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     StdCommand::new("git")
         .arg("init")
         .current_dir(dir.path())
@@ -74,7 +76,7 @@ secret_type = "api_key"
 
 #[test]
 fn check_staged_scans_only_added_code_lines() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     StdCommand::new("git")
         .arg("init")
         .current_dir(dir.path())

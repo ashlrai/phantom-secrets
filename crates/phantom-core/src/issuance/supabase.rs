@@ -1,8 +1,12 @@
-//! Supabase OAuth grant + self-rotating Management-API issuer.
+//! Supabase OAuth and Management-API protocol foundations.
 //!
-//! Two halves, matching the grants-spec "one consent, perpetual lifecycle":
+//! Shipped 0.7.4 returns `NotSupported` before OAuth request, browser,
+//! loopback, credential, or network access. Consent protocol execution is
+//! confined to crate-local overridden-endpoint tests.
 //!
-//! 1. [`SupabaseOAuthFlow`] — the ONE human "Authorize" click. Authorization
+//! Two halves with an explicit fresh-consent boundary:
+//!
+//! 1. [`SupabaseOAuthFlow`] — one human "Authorize" flow. Authorization
 //!    Code + **PKCE S256** with a `127.0.0.1` loopback redirect, exactly like
 //!    [`super::pkce::LoopbackPkceEngine`], but with the two Supabase-specific
 //!    twists the generic engine cannot express:
@@ -15,35 +19,26 @@
 //!      [`IssuanceOutcome`] for the CLI to vault — never logged, printed, in
 //!      `--json`, or in an MCP response).
 //!
-//! 2. [`SupabaseManagementProvider`] — the perpetual half, a
+//! 2. [`SupabaseManagementProvider`] — the Management-API provider, a
 //!    [`RotationProvider`] with a distinct identity (`"supabase-management"`,
 //!    NOT the manual-only `"supabase"` PAT provider). Two trait-coherent modes,
 //!    dispatched by whether `account_id` names a project ref:
-//!    - **management-token self-rotation** (`account_id` = `None`): calls the
-//!      Supabase refresh grant (`grant_type=refresh_token`, Basic client auth)
-//!      and returns the **new** refresh token. Supabase invalidates the old
-//!      refresh token the moment it issues the new one, so this is
-//!      **spend-then-store**, NOT the store-then-invalidate ordering Vercel
-//!      uses: the predecessor is already dead at the vendor by the time
-//!      `initiate_rotation` returns, and the successor exists only in the
-//!      in-memory challenge payload until the caller vaults it. A crash between
-//!      the vendor call and the vault write bricks the grant (old token dead,
-//!      new token unpersisted) and requires a fresh human consent — the same
-//!      hazard as the Stripe `roll_refresh_token` path. (Mode B minting below,
-//!      like GitHub-App JWTs, is retry-safe because it issues a new credential
-//!      without invalidating the old.)
-//!    - **project-API-key minting** (`account_id` = a project ref): mints a
-//!      fresh `sb_secret_` key via `POST /v1/projects/{ref}/api-keys`, returns
-//!      it, and best-effort DELETEs the rotated-out key in
-//!      [`post_store_cleanup`](RotationProvider::post_store_cleanup). The
-//!      bootstrap here is a **management access token** the operator keeps fresh
-//!      (via the self-rotation above) — the same "freshly-minted bootstrap per
-//!      rotation" contract as the GitHub App JWT provider.
+//!    - **management-token self-rotation** (`account_id` = `None`) is hard
+//!      denied before credential access or network I/O. Supabase invalidates
+//!      the current refresh token during exchange, before Phantom can durably
+//!      verify its successor. The vaulted token remains enrollment material;
+//!      expiration requires fresh operator consent until recovery escrow exists.
+//!    - **project-API-key minting** (`account_id` = a project ref) is also hard
+//!      denied in shipped builds. The current challenge contract cannot durably
+//!      preserve the successor key id for compensating DELETE if local
+//!      persistence fails. `cfg(test)` mocks cover local transaction behavior.
 //!
 //! # Security
 //!
-//! - Every token (refresh, access, minted `sb_secret_`) is a [`Zeroizing`]
-//!   end to end; none is ever logged, printed, or surfaced in an error/JSON.
+//! - Application-owned parsed token buffers use [`Zeroizing`] and no token is
+//!   intentionally logged, printed, or surfaced in an error/JSON. Transport
+//!   headers, encoded Basic-auth strings, and HTTP library request buffers are
+//!   not proven to be zeroized by their dependencies.
 //! - Vendor error bodies pass through
 //!   [`crate::rotation_provider::summarize_error_body`] (type/code/status only).
 //! - Both HTTP clients disable redirects (`redirect(Policy::none())`): the
@@ -61,20 +56,19 @@ use super::pkce::{
     build_authorize_url, code_challenge_s256, generate_code_verifier, map_oauth_error, now_unix,
 };
 use super::{
-    guard_mock_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
+    guard_test_only_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
     IssuanceMetadata, IssuanceOutcome, IssuanceRequest, IssuedMaterial, MaterialKind,
 };
 use crate::rotation_provider::{
-    build_http_client, decode_challenge_payload, encode_challenge_payload, guard_mock_rotation,
-    mock_rotation_allowed, redact_challenge_id, resolve_api_key, summarize_error_body,
-    RotationProvider, RotationProviderConfig, RotationProviderError, RotationSource,
+    guard_mock_rotation, mock_rotation_allowed, redact_challenge_id, resolve_api_key,
+    summarize_error_body, CleanupOutcome, CleanupSemantics, RotationProvider,
+    RotationProviderConfig, RotationProviderError, RotationSource,
 };
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/// Vault name the durable refresh-token root is stored under. Contains
-/// `SUPABASE` + `REFRESH_TOKEN` so operators recognise it and so
-/// `phantom rotate --name SUPABASE_REFRESH_TOKEN` locates the self-rotation.
+/// Vault name the refresh-token enrollment material is stored under. Contains
+/// `SUPABASE` + `REFRESH_TOKEN` so operators recognize its lifecycle.
 pub const SUPABASE_REFRESH_TOKEN_NAME: &str = "SUPABASE_REFRESH_TOKEN";
 
 /// The rotation-provider identity written into the `rotation_provider` block —
@@ -87,13 +81,6 @@ pub const ENV_SUPABASE_CLIENT_ID: &str = "SUPABASE_OAUTH_CLIENT_ID";
 /// Env var holding the Supabase OAuth app **client secret** for Basic client
 /// auth. Never read from disk; resolved from the process env only.
 pub const ENV_SUPABASE_CLIENT_SECRET: &str = "SUPABASE_OAUTH_CLIENT_SECRET";
-
-/// Unit-test-only override of the Management-API base.
-#[cfg(test)]
-pub const ENV_SUPABASE_API_BASE: &str = "PHANTOM_SUPABASE_API_BASE";
-
-/// Production Management-API / OAuth base.
-const DEFAULT_API_BASE: &str = "https://api.supabase.com";
 
 /// Bootstrap values with this prefix take the hermetic mock fast-path (guarded
 /// by [`mock_rotation_allowed`]); real bootstraps never start with it.
@@ -123,12 +110,7 @@ impl ConsentEngine for SupabaseOAuthFlow {
         req: &IssuanceRequest,
         deps: &IssuanceDeps,
     ) -> Result<IssuanceOutcome, IssuanceError> {
-        // Fail closed on overridden (non-production) endpoints unless mock
-        // issuance is explicitly enabled — stops a prompt-injected agent from
-        // redirecting the exchange (and the refresh token) to an attacker host.
-        if deps.endpoints.is_overridden() {
-            guard_mock_issuance()?;
-        }
+        guard_test_only_issuance(deps)?;
 
         let client_id = req
             .client_id
@@ -227,9 +209,9 @@ impl ConsentEngine for SupabaseOAuthFlow {
 }
 
 /// Build the `OauthRefresh` outcome from the Supabase token response. The
-/// refresh token is the durable root; the access token / expiries are metadata
-/// only. The `rotation_provider` block dispatches to
-/// [`SupabaseManagementProvider`] (self-rotation, no `account_id`).
+/// refresh token is vaulted enrollment material; the access token / expiries
+/// are metadata only. The generated compatibility rotation block is disabled
+/// because refresh exchange is not recoverable transactionally.
 fn build_supabase_outcome(
     scopes: &[String],
     org: Option<&str>,
@@ -263,10 +245,11 @@ fn build_supabase_outcome(
     let rotation_config = RotationProviderConfig {
         provider: SUPABASE_MANAGEMENT_PROVIDER.to_string(),
         api_key_env: Some(SUPABASE_REFRESH_TOKEN_NAME.to_string()),
-        // No account_id → management-token self-rotation mode. A separate block
-        // with account_id = <project ref> drives project-API-key minting.
+        // No account_id identifies the destructive refresh mode. Keep the
+        // compatibility block disabled; additive project-key minting requires
+        // an independently configured account_id and management access token.
         account_id: None,
-        enabled: true,
+        enabled: false,
         ..Default::default()
     };
     let metadata = IssuanceMetadata {
@@ -275,10 +258,10 @@ fn build_supabase_outcome(
         scopes: scopes.to_vec(),
         expires_at,
         notes: vec![
-            "`phantom rotate --name SUPABASE_REFRESH_TOKEN` refreshes the management token. \
-             Supabase invalidates the old refresh token when it issues the new one \
-             (spend-then-store): an ill-timed crash before the successor is vaulted bricks \
-             the grant and needs a fresh `phantom grant add supabase`."
+            "Automatic Supabase refresh-token rotation is disabled: exchange invalidates the \
+             current token before Phantom can durably verify its successor. Keep this vaulted \
+             enrollment material; when it expires, obtain fresh operator consent with \
+             `phantom grant add supabase` until verified recovery escrow exists."
                 .to_string(),
         ],
         ..Default::default()
@@ -306,8 +289,8 @@ fn basic_auth_header(client_id: &str, client_secret: &Zeroizing<String>) -> Stri
 
 // ── Management-API rotation provider ─────────────────────────────────────────
 
-/// Self-rotating Supabase Management-API issuer. See the module docs for the
-/// two modes. Registered in
+/// Supabase Management-API compatibility provider. Shipped builds hard-deny
+/// both issuance modes; see the module safety boundaries. Registered in
 /// [`crate::rotation_provider::default_rotation_providers`] under the identity
 /// `"supabase-management"`.
 pub struct SupabaseManagementProvider;
@@ -333,6 +316,18 @@ impl RotationProvider for SupabaseManagementProvider {
         secret_name: &str,
         config: &RotationProviderConfig,
     ) -> Result<String, RotationProviderError> {
+        if config.account_id.is_none() {
+            return Err(RotationProviderError::NotSupported {
+                reason: "Supabase management refresh-token rotation is disabled before credential access or provider issuance: the refresh exchange invalidates the current token before Phantom can durably verify its successor. A durable verified recovery escrow channel is required. Keep the vaulted enrollment material and obtain fresh operator consent when it expires. Do not retry automatically."
+                    .to_string(),
+            });
+        }
+        if !mock_rotation_allowed() {
+            return Err(RotationProviderError::NotSupported {
+                reason: "Live Supabase project-key issuance is disabled before credential access or network I/O: Phantom cannot durably retain a value-free successor resource id and delete the issued key if local vault persistence fails. Create the key in Supabase and store it interactively. Do not retry automatically."
+                    .to_string(),
+            });
+        }
         let bootstrap = resolve_api_key(config)?;
 
         // Hermetic mock fast-path (guarded — fails closed off cfg(test)).
@@ -341,21 +336,10 @@ impl RotationProvider for SupabaseManagementProvider {
             return Ok(format!("mock_challenge_supabase_{secret_name}"));
         }
 
-        match config.account_id.as_deref() {
-            // Mode A: management-token self-rotation. The rotated secret IS the
-            // refresh token; Supabase returns a new one on every refresh.
-            None => {
-                let (_access, new_refresh) = refresh_management_token(config, &bootstrap)?;
-                Ok(encode_challenge_payload(new_refresh.as_str()))
-            }
-            // Mode B: mint a fresh project API key. The bootstrap is a management
-            // ACCESS token the operator keeps fresh via Mode A (same
-            // freshly-minted-bootstrap contract as the GitHub App JWT provider).
-            Some(project_ref) => {
-                let new_key = mint_project_api_key(config, &bootstrap, project_ref, secret_name)?;
-                Ok(encode_challenge_payload(new_key.as_str()))
-            }
-        }
+        Err(RotationProviderError::NotSupported {
+            reason: "Live Supabase project-key issuance is disabled before network access: the current provider challenge contract does not preserve a value-free successor resource id for compensating cleanup if local vault persistence fails. Create the key in Supabase and store it interactively. Do not retry automatically."
+                .to_string(),
+        })
     }
 
     fn finalize_rotation(
@@ -371,37 +355,44 @@ impl RotationProvider for SupabaseManagementProvider {
             }
             return Ok(Zeroizing::new("sb_secret_rotated_mock_value".to_string()));
         }
-        decode_challenge_payload(challenge_id)
+        Err(RotationProviderError::NotSupported {
+            reason: "Only cfg(test) Supabase mock challenges can be finalized".to_string(),
+        })
     }
 
-    /// Best-effort deletion of the rotated-out project key (Mode B only), run by
-    /// the caller only AFTER the successor is durably vaulted. Fail-open and
-    /// audited (name only). Mode A (refresh) has no vendor-side delete.
+    /// Cleanup is disabled with live issuance. Exact mock values remain a
+    /// hermetic transaction-test seam and never reach the network.
+    fn cleanup_semantics(&self, config: &RotationProviderConfig) -> CleanupSemantics {
+        if config.account_id.is_some() {
+            CleanupSemantics::RevokePriorCredential
+        } else {
+            CleanupSemantics::NotApplicable
+        }
+    }
+
     fn post_store_cleanup(
         &self,
         secret_name: &str,
         config: &RotationProviderConfig,
         old_value: Option<&Zeroizing<String>>,
-    ) -> Result<(), RotationProviderError> {
+    ) -> Result<CleanupOutcome, RotationProviderError> {
         let Some(project_ref) = config.account_id.as_deref() else {
-            return Ok(()); // Mode A: nothing to revoke.
+            return Ok(CleanupOutcome::NotApplicable);
         };
         let Some(old) = old_value else {
             crate::audit::log("vault.rotation.old_token_revoke_skipped", Some(secret_name));
-            return Ok(());
+            return Ok(CleanupOutcome::SkippedNoPriorCredential);
         };
         // Mock / rotated-mock values never reach the network.
         if old.starts_with(MOCK_BOOTSTRAP_PREFIX) || old.starts_with("sb_secret_rotated_mock") {
-            return Ok(());
+            guard_mock_rotation(secret_name)?;
+            return Ok(CleanupOutcome::SkippedMockCredential);
         }
-        let Ok(access_token) = resolve_api_key(config) else {
-            crate::audit::log("vault.rotation.old_token_revoke_failed", Some(secret_name));
-            return Ok(());
-        };
-        if delete_matching_project_key(config, &access_token, project_ref, old).is_err() {
-            crate::audit::log("vault.rotation.old_token_revoke_failed", Some(secret_name));
-        }
-        Ok(())
+        let _ = project_ref;
+        Err(RotationProviderError::NotSupported {
+            reason: "Live Supabase prior-key cleanup is disabled before credential or network access together with live issuance. Revoke provider credentials directly in the Supabase dashboard and verify the result; do not retry automatically."
+                .to_string(),
+        })
     }
 
     fn rotation_source(&self) -> RotationSource {
@@ -409,245 +400,6 @@ impl RotationProvider for SupabaseManagementProvider {
             provider_name: SUPABASE_MANAGEMENT_PROVIDER.to_string(),
         }
     }
-}
-
-/// Refresh the management token via `POST /v1/oauth/token`
-/// (`grant_type=refresh_token`, Basic client auth). Returns
-/// `(access_token, new_refresh_token)`, both `Zeroizing`. The new refresh token
-/// MUST be persisted by the caller before the old one is considered spent.
-///
-/// `pub(crate)` so higher layers can compose "refresh → mint" explicitly.
-pub(crate) fn refresh_management_token(
-    config: &RotationProviderConfig,
-    refresh_token: &Zeroizing<String>,
-) -> Result<(Zeroizing<String>, Zeroizing<String>), RotationProviderError> {
-    let client_id =
-        std::env::var(ENV_SUPABASE_CLIENT_ID).map_err(|_| RotationProviderError::AuthFailed {
-            reason: format!(
-                "{ENV_SUPABASE_CLIENT_ID} must be set to the Supabase OAuth app client id to \
-                 refresh the management token"
-            ),
-        })?;
-    let client_secret =
-        Zeroizing::new(std::env::var(ENV_SUPABASE_CLIENT_SECRET).map_err(|_| {
-            RotationProviderError::AuthFailed {
-                reason: format!(
-                "{ENV_SUPABASE_CLIENT_SECRET} must be set to the Supabase OAuth app client secret"
-            ),
-            }
-        })?);
-
-    let base = supabase_api_base();
-    let url = format!("{base}/v1/oauth/token");
-    let client = build_http_client(config.timeout_secs)?;
-    let response = client
-        .post(&url)
-        .header("Accept", "application/json")
-        .header(
-            "Authorization",
-            basic_auth_header(&client_id, &client_secret),
-        )
-        .header("User-Agent", "phantom-secrets-rotation/0.1")
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token.as_str()),
-        ])
-        .send()
-        .map_err(|e| RotationProviderError::NetworkError {
-            reason: e.to_string(),
-        })?;
-
-    let status = response.status().as_u16();
-    if status == 401 {
-        // No silent demotion: a 401 means the user disconnected the app / the
-        // refresh token was revoked — the grant is broken and needs one consent.
-        return Err(RotationProviderError::AuthFailed {
-            reason: "Supabase refused the refresh token (HTTP 401) — the OAuth app was likely \
-                     disconnected; re-run `phantom grant add supabase`"
-                .to_string(),
-        });
-    }
-    if !(200..300).contains(&status) {
-        let body = response.text().unwrap_or_default();
-        return Err(RotationProviderError::ApiError {
-            status,
-            reason: summarize_error_body(&body),
-        });
-    }
-
-    let body: Value = response
-        .json()
-        .map_err(|e| RotationProviderError::UnexpectedResponse {
-            reason: e.to_string(),
-        })?;
-    let access = body
-        .get("access_token")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| RotationProviderError::UnexpectedResponse {
-            reason: "supabase refresh response missing access_token".to_string(),
-        })?;
-    let new_refresh = body
-        .get("refresh_token")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| RotationProviderError::UnexpectedResponse {
-            reason: "supabase refresh response missing the rotated refresh_token".to_string(),
-        })?;
-    Ok((
-        Zeroizing::new(access.to_string()),
-        Zeroizing::new(new_refresh.to_string()),
-    ))
-}
-
-/// Mint a fresh `sb_secret_` project API key via
-/// `POST /v1/projects/{ref}/api-keys` with the management access token. Returns
-/// the new key (`Zeroizing`). `pub(crate)` for explicit composition/testing.
-pub(crate) fn mint_project_api_key(
-    config: &RotationProviderConfig,
-    access_token: &Zeroizing<String>,
-    project_ref: &str,
-    secret_name: &str,
-) -> Result<Zeroizing<String>, RotationProviderError> {
-    let base = supabase_api_base();
-    let url = format!("{base}/v1/projects/{project_ref}/api-keys");
-    let client = build_http_client(config.timeout_secs)?;
-    let key_name = format!("phantom-{}-{}", secret_name.to_lowercase(), now_unix());
-
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", access_token.as_str()))
-        .header("Content-Type", "application/json")
-        .header("User-Agent", "phantom-secrets-rotation/0.1")
-        .json(&serde_json::json!({ "type": "secret", "name": key_name }))
-        .send()
-        .map_err(|e| RotationProviderError::NetworkError {
-            reason: e.to_string(),
-        })?;
-
-    let status = response.status().as_u16();
-    if status == 401 || status == 403 {
-        return Err(RotationProviderError::AuthFailed {
-            reason: format!(
-                "Supabase Management API returned HTTP {status} minting a project key — the \
-                 management access token is invalid or lacks secrets:write (refresh it via \
-                 `phantom rotate --name SUPABASE_REFRESH_TOKEN`)"
-            ),
-        });
-    }
-    if !(200..300).contains(&status) {
-        let body = response.text().unwrap_or_default();
-        return Err(RotationProviderError::ApiError {
-            status,
-            reason: summarize_error_body(&body),
-        });
-    }
-
-    let body: Value = response
-        .json()
-        .map_err(|e| RotationProviderError::UnexpectedResponse {
-            reason: e.to_string(),
-        })?;
-    let api_key = body
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| RotationProviderError::UnexpectedResponse {
-            reason: "supabase api-key response missing 'api_key'".to_string(),
-        })?;
-    if api_key.is_empty() {
-        return Err(RotationProviderError::UnexpectedResponse {
-            reason: "supabase returned an empty api_key".to_string(),
-        });
-    }
-    Ok(Zeroizing::new(api_key.to_string()))
-}
-
-/// Best-effort: list the project's api-keys (revealed), find the one whose value
-/// equals `old_value`, and DELETE it by id. Fail-open — any error propagates to
-/// the caller which audits and moves on.
-fn delete_matching_project_key(
-    config: &RotationProviderConfig,
-    access_token: &Zeroizing<String>,
-    project_ref: &str,
-    old_value: &Zeroizing<String>,
-) -> Result<(), RotationProviderError> {
-    let base = supabase_api_base();
-    let client = build_http_client(config.timeout_secs)?;
-    let list = client
-        .get(format!(
-            "{base}/v1/projects/{project_ref}/api-keys?reveal=true"
-        ))
-        .header("Authorization", format!("Bearer {}", access_token.as_str()))
-        .header("User-Agent", "phantom-secrets-rotation/0.1")
-        .send()
-        .map_err(|e| RotationProviderError::NetworkError {
-            reason: e.to_string(),
-        })?;
-    if !list.status().is_success() {
-        return Err(RotationProviderError::ApiError {
-            status: list.status().as_u16(),
-            reason: "listing project api-keys failed".to_string(),
-        });
-    }
-    let keys: Value = list
-        .json()
-        .map_err(|e| RotationProviderError::UnexpectedResponse {
-            reason: e.to_string(),
-        })?;
-    let id = keys.as_array().and_then(|arr| {
-        arr.iter()
-            .find(|k| k.get("api_key").and_then(|v| v.as_str()) == Some(old_value.as_str()))
-            .and_then(|k| k.get("id").and_then(|v| v.as_str()))
-            .map(|s| s.to_string())
-    });
-    let Some(id) = id else {
-        // The old key is already gone (or was never a project key) — nothing to do.
-        return Ok(());
-    };
-    let del = client
-        .delete(format!("{base}/v1/projects/{project_ref}/api-keys/{id}"))
-        .header("Authorization", format!("Bearer {}", access_token.as_str()))
-        .header("User-Agent", "phantom-secrets-rotation/0.1")
-        .send()
-        .map_err(|e| RotationProviderError::NetworkError {
-            reason: e.to_string(),
-        })?;
-    if !del.status().is_success() {
-        return Err(RotationProviderError::ApiError {
-            status: del.status().as_u16(),
-            reason: "deleting rotated-out project api-key failed".to_string(),
-        });
-    }
-    Ok(())
-}
-
-/// Resolve the fixed production Management-API base. The shipped implementation
-/// contains no environment-variable override.
-#[cfg(not(test))]
-fn supabase_api_base() -> String {
-    DEFAULT_API_BASE.to_string()
-}
-
-/// Unit tests may inject a loopback stub. This branch is absent from shipped
-/// libraries, including debug builds.
-#[cfg(test)]
-fn supabase_api_base() -> String {
-    if let Ok(value) = std::env::var(ENV_SUPABASE_API_BASE) {
-        if !value.is_empty() && is_https_or_localhost(&value) && mock_rotation_allowed() {
-            return value.trim_end_matches('/').to_string();
-        }
-    }
-    DEFAULT_API_BASE.to_string()
-}
-
-/// Test helper for validating injected stub bases.
-#[cfg(test)]
-fn is_https_or_localhost(url: &str) -> bool {
-    url.starts_with("https://")
-        || url == "http://localhost"
-        || url.starts_with("http://localhost/")
-        || url.starts_with("http://localhost:")
-        || url == "http://127.0.0.1"
-        || url.starts_with("http://127.0.0.1/")
-        || url.starts_with("http://127.0.0.1:")
 }
 
 #[cfg(test)]
@@ -662,7 +414,7 @@ mod tests {
 
     /// Serialize any test that touches process-wide env or the ambient audit log
     /// (mock guards emit audit events). Poison-tolerant per the repo convention.
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    fn env_guard() -> crate::ProcessEnvGuard {
         crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -761,13 +513,19 @@ mod tests {
         assert_eq!(m.phm_name, SUPABASE_REFRESH_TOKEN_NAME);
         assert_eq!(m.value.as_str(), "sbrt_refresh_MOCK");
         assert!(m.sensitive);
-        // rotation dispatches to the self-rotating management provider.
+        // The compatibility block is present but disabled because the refresh
+        // exchange is destructive before local persistence.
         assert_eq!(outcome.rotation_config.provider, "supabase-management");
         assert_eq!(
             outcome.rotation_config.api_key_env.as_deref(),
             Some(SUPABASE_REFRESH_TOKEN_NAME)
         );
         assert!(outcome.rotation_config.account_id.is_none());
+        assert!(!outcome.rotation_config.enabled);
+        assert!(outcome.metadata.notes.iter().any(|note| {
+            note.contains("Automatic Supabase refresh-token rotation is disabled")
+                && note.contains("fresh operator consent")
+        }));
         assert_eq!(outcome.metadata.account.as_deref(), Some("ashlrai"));
 
         // Authorize URL: S256 PKCE, a state, and the org pre-select.
@@ -847,97 +605,53 @@ mod tests {
     }
 
     #[test]
-    fn mode_a_refreshes_and_returns_rolled_refresh_token() {
+    fn mode_a_is_denied_before_bootstrap_access() {
         let _g = env_guard();
-        let (base, seen) = spawn_stub(
-            200,
-            r#"{"access_token":"sbat_new_MOCK","refresh_token":"sbrt_rotated_MOCK","expires_in":86400}"#,
-        );
-        std::env::set_var(ENV_SUPABASE_API_BASE, &base);
-        std::env::set_var(ENV_SUPABASE_CLIENT_ID, "sb_client_id");
-        std::env::set_var(ENV_SUPABASE_CLIENT_SECRET, "sb_client_secret_MOCK");
-        std::env::set_var("SUPABASE_REFRESH_TOKEN", "sbrt_old_real_value");
-
-        let config = base_config(None);
-        let challenge = SupabaseManagementProvider
-            .initiate_rotation("SUPABASE_REFRESH_TOKEN", &config)
-            .unwrap();
-        let new_value = SupabaseManagementProvider
-            .finalize_rotation(&challenge, &config)
-            .unwrap();
-
-        assert_eq!(new_value.as_str(), "sbrt_rotated_MOCK");
-        // Refresh grant used Basic auth + grant_type=refresh_token.
-        let requests = seen.lock().unwrap();
-        assert!(requests[0].contains("grant_type=refresh_token"));
-        assert!(
-            requests[0].contains("Basic ")
-                || requests[0].to_lowercase().contains("authorization: basic")
-        );
-        // Never render the token in the challenge Debug.
-        assert!(!format!("{challenge:?}").contains("sbrt_rotated_MOCK"));
-
-        std::env::remove_var(ENV_SUPABASE_API_BASE);
-        std::env::remove_var(ENV_SUPABASE_CLIENT_ID);
-        std::env::remove_var(ENV_SUPABASE_CLIENT_SECRET);
         std::env::remove_var("SUPABASE_REFRESH_TOKEN");
+        let error = SupabaseManagementProvider
+            .initiate_rotation("SUPABASE_REFRESH_TOKEN", &base_config(None))
+            .expect_err("Mode A must fail before bootstrap lookup");
+        assert!(matches!(error, RotationProviderError::NotSupported { .. }));
+        assert!(error.to_string().contains("recovery escrow"));
+        assert!(error.to_string().contains("Do not retry automatically"));
     }
 
     #[test]
-    fn mode_a_401_reports_user_revoked() {
+    fn mode_a_mock_is_also_denied() {
         let _g = env_guard();
-        let (base, _seen) = spawn_stub(401, r#"{"message":"unauthorized"}"#);
-        std::env::set_var(ENV_SUPABASE_API_BASE, &base);
-        std::env::set_var(ENV_SUPABASE_CLIENT_ID, "sb_client_id");
-        std::env::set_var(ENV_SUPABASE_CLIENT_SECRET, "sb_client_secret_MOCK");
-        std::env::set_var("SUPABASE_REFRESH_TOKEN", "sbrt_old_real_value");
+        std::env::set_var("SUPABASE_REFRESH_TOKEN", "sbmock_bootstrap");
 
         let err = SupabaseManagementProvider
             .initiate_rotation("SUPABASE_REFRESH_TOKEN", &base_config(None))
             .unwrap_err();
-        assert!(matches!(err, RotationProviderError::AuthFailed { .. }));
-        assert!(format!("{err}").to_lowercase().contains("disconnect"));
+        assert!(matches!(err, RotationProviderError::NotSupported { .. }));
 
-        std::env::remove_var(ENV_SUPABASE_API_BASE);
-        std::env::remove_var(ENV_SUPABASE_CLIENT_ID);
-        std::env::remove_var(ENV_SUPABASE_CLIENT_SECRET);
         std::env::remove_var("SUPABASE_REFRESH_TOKEN");
     }
 
     #[test]
-    fn mode_b_mints_project_api_key() {
+    fn mode_b_non_mock_is_denied_before_network() {
         let _g = env_guard();
-        let (base, seen) = spawn_stub(
-            201,
-            r#"{"id":"key_123","api_key":"sb_secret_minted_MOCK","type":"secret"}"#,
-        );
-        std::env::set_var(ENV_SUPABASE_API_BASE, &base);
         std::env::set_var("SUPABASE_PROJECT_KEY", "sbat_management_access_token");
 
         let mut config = base_config(Some("abcdefghijklmnop"));
         config.api_key_env = Some("SUPABASE_PROJECT_KEY".to_string());
-        let challenge = SupabaseManagementProvider
+        let error = SupabaseManagementProvider
             .initiate_rotation("SUPABASE_PROJECT_KEY", &config)
-            .unwrap();
-        let new_value = SupabaseManagementProvider
-            .finalize_rotation(&challenge, &config)
-            .unwrap();
+            .expect_err("non-mock Mode B issuance must be denied");
+        assert!(matches!(error, RotationProviderError::NotSupported { .. }));
+        assert!(error
+            .to_string()
+            .contains("current provider challenge contract"));
 
-        assert_eq!(new_value.as_str(), "sb_secret_minted_MOCK");
-        let requests = seen.lock().unwrap();
-        assert!(requests[0].contains("/v1/projects/abcdefghijklmnop/api-keys"));
-        assert!(requests[0].to_lowercase().contains("authorization: bearer"));
-        assert!(!format!("{challenge:?}").contains("sb_secret_minted_MOCK"));
-
-        std::env::remove_var(ENV_SUPABASE_API_BASE);
         std::env::remove_var("SUPABASE_PROJECT_KEY");
     }
 
     #[test]
-    fn mock_bootstrap_takes_guarded_fast_path() {
+    fn mode_b_mock_bootstrap_takes_guarded_fast_path() {
         let _g = env_guard();
         std::env::set_var("SUPABASE_REFRESH_TOKEN", "sbmock_bootstrap");
-        let config = base_config(None);
+        let config = base_config(Some("abcdefghijklmnop"));
         let challenge = SupabaseManagementProvider
             .initiate_rotation("SUPABASE_REFRESH_TOKEN", &config)
             .unwrap();
@@ -949,21 +663,26 @@ mod tests {
     }
 
     #[test]
+    fn mode_b_nonmock_cleanup_is_denied_before_credential_or_network() {
+        let _g = env_guard();
+        let mut config = base_config(Some("abcdefghijklmnop"));
+        config.api_key_env = Some("UNSET_SUPABASE_PROJECT_ADMIN".to_string());
+        let old = Zeroizing::new("sb_secret_prior_value".to_string());
+
+        let error = SupabaseManagementProvider
+            .post_store_cleanup("SUPABASE_PROJECT_KEY", &config, Some(&old))
+            .expect_err("live cleanup must be disabled before credential lookup");
+
+        assert!(matches!(error, RotationProviderError::NotSupported { .. }));
+    }
+
+    #[test]
     fn provider_identity_is_distinct_from_manual_supabase() {
         assert_eq!(SupabaseManagementProvider.name(), "supabase-management");
         assert_eq!(
             SupabaseManagementProvider.rotation_source().label(),
             "supabase-management"
         );
-    }
-
-    #[test]
-    fn api_base_override_ignored_without_mock_and_for_bad_scheme() {
-        // Not https/localhost → rejected regardless.
-        assert!(!is_https_or_localhost("http://evil.example.com"));
-        assert!(!is_https_or_localhost("http://127.0.0.1.attacker.com/"));
-        assert!(is_https_or_localhost("https://api.supabase.com"));
-        assert!(is_https_or_localhost("http://127.0.0.1:52100"));
     }
 
     #[test]

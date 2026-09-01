@@ -1,4 +1,3 @@
-use crate::body_scope;
 use crate::interceptor::Interceptor;
 use crate::rate_limiter::{RateLimitConfig, RateLimiter};
 use crate::services::ServiceRegistry;
@@ -8,13 +7,21 @@ use hyper::body::{Frame, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
+use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
+
+const MAX_CONCURRENT_CONNECTIONS: usize = 256;
+const MAX_CONCURRENT_REQUESTS: usize = 32;
+const REQUEST_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const REQUEST_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const MAX_HTTP1_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Configuration for the proxy server.
 #[derive(Clone)]
@@ -80,11 +87,15 @@ impl ProxyServer {
             registry,
             interceptor,
             rate_limiter: RateLimiter::new(config.rate_limit),
+            request_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
             proxy_token: config.proxy_token,
             allow_query_token_auth: config.allow_query_token_auth,
             max_body_size: config.max_body_size,
             http_client: reqwest::Client::builder()
                 .danger_accept_invalid_certs(false)
+                // Credential-bearing upstream requests must never inherit an
+                // agent-controlled HTTP(S)/ALL_PROXY redirect.
+                .no_proxy()
                 // Credential-bearing custom headers survive cross-origin
                 // redirects in some HTTP stacks. Never follow upstream
                 // redirects inside the secret-injecting proxy.
@@ -132,6 +143,7 @@ struct ProxyState {
     registry: ServiceRegistry,
     interceptor: Interceptor,
     rate_limiter: RateLimiter,
+    request_slots: Arc<Semaphore>,
     proxy_token: String,
     allow_query_token_auth: bool,
     max_body_size: usize,
@@ -143,25 +155,58 @@ async fn run_server(
     state: Arc<ProxyState>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    let connection_slots = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+    let mut connections = JoinSet::new();
     loop {
         tokio::select! {
+            Some(result) = connections.join_next(), if !connections.is_empty() => {
+                if result.is_err() {
+                    warn!("Proxy connection task ended unexpectedly");
+                }
+            }
             result = listener.accept() => {
                 match result {
                     Ok((stream, addr)) => {
+                        let Ok(permit) = connection_slots.clone().try_acquire_owned() else {
+                            warn!(
+                                "Rejected loopback connection from {} because the {}-connection limit is active",
+                                addr,
+                                MAX_CONCURRENT_CONNECTIONS
+                            );
+                            drop(stream);
+                            continue;
+                        };
                         debug!("Connection from {}", addr);
                         let state = state.clone();
-                        tokio::spawn(async move {
+                        let mut connection_shutdown = shutdown_rx.clone();
+                        connections.spawn(async move {
+                            let _permit = permit;
                             let io = TokioIo::new(stream);
-                            if let Err(e) = http1::Builder::new()
-                                .serve_connection(
-                                    io,
-                                    service_fn(move |req| {
-                                        handle_request(req, state.clone())
-                                    }),
-                                )
-                                .await
-                            {
-                                debug!("Connection error: {}", e);
+                            let mut builder = http1::Builder::new();
+                            builder
+                                .timer(TokioTimer::new())
+                                .header_read_timeout(REQUEST_HEADER_TIMEOUT)
+                                .max_buf_size(MAX_HTTP1_BUFFER_BYTES);
+                            let mut connection = std::pin::pin!(builder.serve_connection(
+                                io,
+                                service_fn(move |req| handle_request(req, state.clone())),
+                            ));
+                            tokio::select! {
+                                result = &mut connection => {
+                                    if let Err(error) = result {
+                                        debug!("Connection error: {error}");
+                                    }
+                                }
+                                changed = connection_shutdown.changed() => {
+                                    if changed.is_ok() && *connection_shutdown.borrow() {
+                                        connection.as_mut().graceful_shutdown();
+                                        match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, &mut connection).await {
+                                            Ok(Err(error)) => debug!("Connection drain error: {error}"),
+                                            Err(_) => debug!("Connection drain timed out"),
+                                            Ok(Ok(())) => {}
+                                        }
+                                    }
+                                }
                             }
                         });
                     }
@@ -177,6 +222,26 @@ async fn run_server(
                 }
             }
         }
+    }
+
+    let drain_deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN_TIMEOUT;
+    while !connections.is_empty() {
+        let remaining = drain_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero()
+            || tokio::time::timeout(remaining, connections.join_next())
+                .await
+                .is_err()
+        {
+            break;
+        }
+    }
+    if !connections.is_empty() {
+        warn!(
+            "Aborting {} proxy connection(s) that exceeded the shutdown drain deadline",
+            connections.len()
+        );
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
     }
 }
 
@@ -250,7 +315,7 @@ async fn handle_request(
         })
         .unwrap_or_default();
 
-    debug!("{} {}{}", method, path, query);
+    debug!("{} {} query_present={}", method, path, !query.is_empty());
 
     // Verify proxy token (defense-in-depth — prevents other local processes from using the proxy)
     // Token check runs before ALL endpoints, including health check.
@@ -278,10 +343,7 @@ async fn handle_request(
                 .unwrap_or("");
 
             if !state.allow_query_token_auth || !constant_time_eq(query_token, &state.proxy_token) {
-                warn!(
-                    "Rejected request without valid proxy token from {}",
-                    original_path
-                );
+                warn!("Rejected request without a valid proxy session token");
                 return Ok(error_response(
                     StatusCode::UNAUTHORIZED,
                     r#"{"error":"missing or invalid proxy token"}"#,
@@ -314,7 +376,22 @@ async fn handle_request(
     };
 
     let target_url = format!("{}{}{}", route.target_base, remainder, query);
-    debug!("Proxying to: {}", target_url);
+    debug!("Proxying reviewed route for service {}", route.name);
+
+    let Ok(_request_permit) = state.request_slots.clone().try_acquire_owned() else {
+        warn!(
+            "Rejected request because the {}-request work limit is active",
+            MAX_CONCURRENT_REQUESTS
+        );
+        let mut response = error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"proxy request capacity is temporarily exhausted"}"#,
+        );
+        response
+            .headers_mut()
+            .insert("retry-after", hyper::header::HeaderValue::from_static("1"));
+        return Ok(response);
+    };
 
     // ── Rate-limit / anomaly detection ──────────────────────────────────────
     // Record the access against the matched route's secret key and classify.
@@ -390,14 +467,6 @@ async fn handle_request(
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    // Capture the request content-type before consuming `req` for its body —
-    // we need it to drive content-type-aware body substitution (F9).
-    let request_content_type = req
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
     // Build the outgoing request
     let mut outgoing = state.http_client.request(method.clone(), &target_url);
 
@@ -407,12 +476,20 @@ async fn handle_request(
     let configured_auth_header = state
         .interceptor
         .format_header_for_secret_key(&route.header_format, &route.secret_key);
+    let Some(configured_auth_header) = configured_auth_header else {
+        warn!("Route credential unavailable for service {}", route.name);
+        return Ok(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"route credential unavailable"}"#,
+        ));
+    };
 
-    // Copy and transform headers. F9: phm-token substitution is restricted to
-    // a whitelist of auth-bearing header names plus the per-route configured
-    // header. Tokens present in other headers are passed through unchanged
-    // and logged — substituting them would turn arbitrary request metadata
-    // into a secret-leakage vector.
+    // Copy client headers without resolving phantom tokens. The route's exact
+    // configured auth header is always removed below and, when the configured
+    // vault secret exists, replaced only with the route-owned value. This
+    // prevents client-controlled headers (including Cookie/X-API-Key) from
+    // turning an otherwise legitimate upstream route into an exfiltration
+    // channel.
     for (name, value) in req.headers() {
         let name_str = name.as_str();
         if matches!(
@@ -427,41 +504,20 @@ async fn handle_request(
         ) {
             continue;
         }
-        // Drop any client-provided auth header for this route when we're
-        // about to inject our own — avoids ambiguity / double-auth.
-        if configured_auth_header.is_some() && name_str.eq_ignore_ascii_case(&route.header) {
+        // The client never controls the route-owned auth header. A missing
+        // vault mapping was rejected above before any upstream request.
+        if name_str.eq_ignore_ascii_case(&route.header) {
             continue;
         }
 
-        if let Ok(value_str) = value.to_str() {
-            let header_value = if body_scope::is_allowed_header(name_str, &route.header) {
-                let (replaced_value, did_replace) = state.interceptor.replace_in_str(value_str);
-                if did_replace {
-                    debug!("Replaced phantom token in header: {}", name_str);
-                }
-                replaced_value
-            } else {
-                if state.interceptor.contains_phantom_token(value_str) {
-                    warn!(
-                        "phantom token in non-allowed request header '{}' — not substituted (F9 scope)",
-                        name_str
-                    );
-                }
-                value_str.to_string()
-            };
-            outgoing = outgoing.header(name_str, header_value);
-        } else {
-            outgoing = outgoing.header(name, value.clone());
-        }
+        outgoing = outgoing.header(name, value.clone());
     }
 
-    if let Some(header_value) = configured_auth_header {
-        debug!(
-            "Injected configured auth header '{}' for service {}",
-            route.header, route.name
-        );
-        outgoing = outgoing.header(route.header.as_str(), header_value);
-    }
+    debug!(
+        "Injected configured auth header '{}' for service {}",
+        route.header, route.name
+    );
+    outgoing = outgoing.header(route.header.as_str(), configured_auth_header);
 
     // Response scrubbing is defined over identity bytes. Never forward the
     // client's compression preferences to the upstream.
@@ -472,10 +528,11 @@ async fn handle_request(
     // that the body exceeds the cap can cause an upstream mutation to execute
     // on truncated input. The buffer remains strictly bounded.
     let limited_body = http_body_util::Limited::new(req.into_body(), state.max_body_size);
-    let body_bytes = match limited_body.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            let err_str = e.to_string();
+    let body_bytes = match tokio::time::timeout(REQUEST_BODY_TIMEOUT, limited_body.collect()).await
+    {
+        Ok(Ok(collected)) => collected.to_bytes(),
+        Ok(Err(error)) => {
+            let err_str = error.to_string();
             if err_str.contains("length limit exceeded") {
                 warn!(
                     "Request body too large (limit: {} bytes)",
@@ -489,39 +546,31 @@ async fn handle_request(
                     ),
                 ));
             }
-            error!("Failed to read request body: {}", e);
+            error!("Failed to read request body");
             return Ok(error_response(
                 StatusCode::BAD_REQUEST,
                 r#"{"error":"failed to read request body"}"#,
             ));
         }
+        Err(_) => {
+            warn!("Request body deadline exceeded");
+            return Ok(error_response(
+                StatusCode::REQUEST_TIMEOUT,
+                r#"{"error":"request body deadline exceeded"}"#,
+            ));
+        }
     };
     if !body_bytes.is_empty() {
-        let (replaced_body, did_replace) =
-            if body_scope::should_stream_replace(request_content_type.as_deref()) {
-                // Text and form bodies used the streaming replacer before the
-                // atomicity fix. Preserve their substitution semantics after
-                // the complete bounded body has been accepted.
-                state.interceptor.replace_in_bytes(&body_bytes)
-            } else {
-                body_scope::scoped_body_replace(
-                    &state.interceptor,
-                    request_content_type.as_deref(),
-                    &body_bytes,
-                )
-            };
-        if did_replace {
-            debug!("Replaced phantom token(s) in bounded request body");
-        }
-        outgoing = outgoing.body(replaced_body);
+        // Client-controlled request bodies are always forwarded byte-for-byte.
+        // Credentials are injected only through the fixed route-owned header.
+        outgoing = outgoing.body(body_bytes);
     }
 
     // Send the request
     let response = match outgoing.send().await {
         Ok(resp) => resp,
         Err(e) => {
-            // Log full error for debugging, but sanitize response to avoid leaking internal details
-            error!("Upstream request failed for {}: {}", route.name, e);
+            error!("Upstream request failed for service {}", route.name);
             let user_msg = if e.is_timeout() {
                 "upstream request timed out"
             } else if e.is_connect() {
@@ -767,6 +816,13 @@ mod tests {
         assert!(constant_time_eq("", ""));
     }
 
+    #[test]
+    fn credential_transport_disables_ambient_forward_proxies() {
+        let source = include_str!("server.rs");
+        assert!(source.contains(".no_proxy()"));
+        assert!(source.contains(".danger_accept_invalid_certs(false)"));
+    }
+
     fn test_state() -> (ServiceRegistry, Interceptor) {
         let mut registry = ServiceRegistry::new();
         registry.add_route(ServiceRoute {
@@ -816,11 +872,61 @@ mod tests {
 
         let header_resp = client
             .get(format!("http://127.0.0.1:{}/phantom/health", proxy.port()))
-            .header("x-phantom-proxy-token", token)
+            .header("x-phantom-proxy-token", token.clone())
             .send()
             .await
             .unwrap();
         assert_eq!(header_resp.status(), 200);
+
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn external_shutdown_endpoint_is_not_exposed() {
+        let (registry, interceptor) = test_state();
+        let token = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.clone(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+
+        let unauthenticated = client
+            .post(format!(
+                "http://127.0.0.1:{}/phantom/shutdown",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "wrong-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), 401);
+
+        let authenticated = client
+            .post(format!(
+                "http://127.0.0.1:{}/phantom/shutdown",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", token.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(authenticated.status(), 404);
+
+        let health = client
+            .get(format!("http://127.0.0.1:{}/phantom/health", proxy.port()))
+            .header("x-phantom-proxy-token", token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(health.status(), 200, "owning handle must remain live");
 
         proxy.shutdown().await;
     }
@@ -1004,7 +1110,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_replaces_phantom_token_in_header() {
+    async fn test_proxy_ignores_client_auth_token_and_injects_route_secret() {
         // Start mock upstream server
         let mock = crate::test_server::MockServer::start().await;
 
@@ -1022,8 +1128,14 @@ mod tests {
         });
 
         let mut mappings = HashMap::new();
-        mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        mappings.insert(
+            phantom_token.to_string(),
+            ("TEST_API_KEY".to_string(), real_secret.to_string()),
+        );
+        let interceptor = Interceptor::new_scoped(
+            mappings,
+            HashMap::from([("TEST_API_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1037,7 +1149,8 @@ mod tests {
         .await
         .unwrap();
 
-        // Send request through proxy with phantom token in Authorization header
+        // A client-provided route auth header is discarded. The upstream sees
+        // only the fixed route-owned credential injected by the proxy.
         let client = reqwest::Client::new();
         let resp = client
             .get(format!(
@@ -1051,7 +1164,8 @@ mod tests {
 
         assert_eq!(resp.status(), 200);
 
-        // Verify the mock received the REAL secret, not the phantom token
+        // Verify the mock received the route-owned secret, not because the
+        // client token was resolved.
         let requests = mock.get_requests();
         assert_eq!(requests.len(), 1);
 
@@ -1066,7 +1180,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_replaces_phantom_token_in_body() {
+    async fn test_proxy_never_replaces_phantom_token_in_body() {
         let mock = crate::test_server::MockServer::start().await;
 
         let phantom_token = "phm_bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333";
@@ -1082,8 +1196,14 @@ mod tests {
         });
 
         let mut mappings = HashMap::new();
-        mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        mappings.insert(
+            phantom_token.to_string(),
+            ("TEST_KEY".to_string(), real_secret.to_string()),
+        );
+        let interceptor = Interceptor::new_scoped(
+            mappings,
+            HashMap::from([("TEST_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1117,14 +1237,102 @@ mod tests {
 
         assert_eq!(resp.status(), 200);
 
-        // Verify the mock received the real secret in the body
+        // The body is byte-identical and never contains the real secret.
         let requests = mock.get_requests();
         assert_eq!(requests.len(), 1);
 
         let received_body = String::from_utf8(requests[0].body.clone()).unwrap();
-        assert!(received_body.contains(real_secret));
-        assert!(!received_body.contains("phm_"));
+        assert!(received_body.contains(phantom_token));
+        assert!(!received_body.contains(real_secret));
 
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cross_route_token_never_reaches_upstream_as_a_secret() {
+        let mock = crate::test_server::MockServer::start().await;
+        let openai_token = "phm_1111111122222222333333334444444455555555666666667777777788888888";
+        let stripe_token = "phm_aaaaaaaa11111111bbbbbbbb22222222cccccccc33333333dddddddd44444444";
+        let stripe_secret = "sk_live_cross_route_must_not_leak";
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "openai".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "OPENAI_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+        let mappings = HashMap::from([
+            (
+                openai_token.to_string(),
+                ("OPENAI_API_KEY".to_string(), "sk-openai-real".to_string()),
+            ),
+            (
+                stripe_token.to_string(),
+                ("STRIPE_SECRET_KEY".to_string(), stripe_secret.to_string()),
+            ),
+        ]);
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_scoped(
+                mappings,
+                HashMap::from([("OPENAI_API_KEY".to_string(), "sk-openai-real".to_string())]),
+            ),
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        client
+            .post(format!("http://127.0.0.1:{}/openai/header", proxy.port()))
+            .header("Authorization", format!("Bearer {stripe_token}"))
+            .send()
+            .await
+            .unwrap();
+        client
+            .post(format!("http://127.0.0.1:{}/openai/json", proxy.port()))
+            .header("content-type", "application/json")
+            .body(format!(r#"{{"api_key":"{stripe_token}"}}"#))
+            .send()
+            .await
+            .unwrap();
+        client
+            .post(format!("http://127.0.0.1:{}/openai/text", proxy.port()))
+            .header("content-type", "text/plain")
+            .body(format!("credential={stripe_token}"))
+            .send()
+            .await
+            .unwrap();
+        client
+            .post(format!("http://127.0.0.1:{}/openai/form", proxy.port()))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("client_secret={stripe_token}&grant_type=test"))
+            .send()
+            .await
+            .unwrap();
+
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(
+            requests[0].headers.get("authorization"),
+            Some(&"Bearer sk-openai-real".to_string())
+        );
+        assert!(String::from_utf8_lossy(&requests[1].body).contains(stripe_token));
+        assert!(String::from_utf8_lossy(&requests[2].body).contains(stripe_token));
+        assert!(String::from_utf8_lossy(&requests[3].body).contains(stripe_token));
+        for request in requests {
+            assert!(!String::from_utf8_lossy(&request.body).contains(stripe_secret));
+            assert!(request
+                .headers
+                .values()
+                .all(|value| !value.contains(stripe_secret)));
+        }
         proxy.shutdown().await;
         mock.shutdown().await;
     }
@@ -1149,8 +1357,14 @@ mod tests {
         });
 
         let mut mappings = HashMap::new();
-        mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        mappings.insert(
+            phantom_token.to_string(),
+            ("TEST_KEY".to_string(), real_secret.to_string()),
+        );
+        let interceptor = Interceptor::new_scoped(
+            mappings,
+            HashMap::from([("TEST_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1199,9 +1413,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_does_not_replace_phantom_token_in_disallowed_header() {
-        // F9 regression: a phm token in a non-auth header (e.g. User-Agent)
-        // must NOT be substituted to the real secret.
+    async fn test_proxy_never_resolves_client_controlled_headers() {
+        // A prompt-controlled client can set auth-looking headers. Those
+        // headers remain inert; only the matched route's configured auth
+        // header receives a real credential.
         let mock = crate::test_server::MockServer::start().await;
 
         let phantom_token = "phm_dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333dddd4444eeee5555";
@@ -1217,8 +1432,14 @@ mod tests {
         });
 
         let mut mappings = HashMap::new();
-        mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        mappings.insert(
+            phantom_token.to_string(),
+            ("TEST_KEY".to_string(), real_secret.to_string()),
+        );
+        let interceptor = Interceptor::new_scoped(
+            mappings,
+            HashMap::from([("TEST_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1236,6 +1457,8 @@ mod tests {
         let resp = client
             .get(format!("http://127.0.0.1:{}/testapi/v1/ping", proxy.port()))
             .header("User-Agent", format!("agent/{phantom_token}"))
+            .header("Cookie", format!("session={phantom_token}"))
+            .header("X-API-Key", phantom_token)
             .send()
             .await
             .unwrap();
@@ -1251,6 +1474,21 @@ mod tests {
         assert!(
             ua.contains(phantom_token),
             "phm token should be forwarded: {ua}"
+        );
+        for header in ["cookie", "x-api-key"] {
+            let value = requests[0].headers.get(header).unwrap();
+            assert!(
+                value.contains(phantom_token),
+                "{header} was rewritten: {value}"
+            );
+            assert!(
+                !value.contains(real_secret),
+                "real secret leaked into {header}"
+            );
+        }
+        assert_eq!(
+            requests[0].headers.get("authorization").unwrap(),
+            &format!("Bearer {real_secret}")
         );
 
         proxy.shutdown().await;
@@ -1313,6 +1551,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_route_secret_drops_client_auth_instead_of_forwarding_it() {
+        let mock = crate::test_server::MockServer::start().await;
+
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "MISSING_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+        });
+
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_with_named(HashMap::new(), HashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let client_token = "phm_ffff1111eeee2222dddd3333cccc4444bbbb5555aaaa6666ffff1111eeee2222";
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/testapi/v1/models",
+                proxy.port()
+            ))
+            .header("Authorization", format!("Bearer {client_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let requests = mock.get_requests();
+        assert!(requests.is_empty(), "missing credential contacted upstream");
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_proxy_preserves_query_params() {
         let mock = crate::test_server::MockServer::start().await;
 
@@ -1325,7 +1607,10 @@ mod tests {
             header_format: "Bearer {secret}".to_string(),
         });
 
-        let interceptor = Interceptor::new(HashMap::new());
+        let interceptor = Interceptor::new_with_named(
+            HashMap::new(),
+            HashMap::from([("KEY".to_string(), "query-test-secret".to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1371,7 +1656,10 @@ mod tests {
             header_format: "Bearer {secret}".to_string(),
         });
 
-        let interceptor = Interceptor::new(HashMap::new());
+        let interceptor = Interceptor::new_with_named(
+            HashMap::new(),
+            HashMap::from([("KEY".to_string(), "size-test-secret".to_string())]),
+        );
 
         // Set a tiny body limit (100 bytes)
         let proxy = ProxyServer::start(
@@ -1508,10 +1796,10 @@ mod tests {
     // Streaming body tests
     // -----------------------------------------------------------------------
 
-    /// A phantom token split across two chunks must still be replaced when the
-    /// request body has a text/* content-type (streaming path).
+    /// Text bodies are accepted atomically but never opt arbitrary bytes into
+    /// secret substitution, even when a token is split across input chunks.
     #[tokio::test]
-    async fn test_streaming_token_split_across_chunks() {
+    async fn text_body_token_split_across_chunks_remains_unsubstituted() {
         let mock = crate::test_server::MockServer::start().await;
 
         let phantom_token = "phm_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222";
@@ -1527,8 +1815,14 @@ mod tests {
         });
 
         let mut mappings = HashMap::new();
-        mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        mappings.insert(
+            phantom_token.to_string(),
+            ("TEST_KEY".to_string(), real_secret.to_string()),
+        );
+        let interceptor = Interceptor::new_scoped(
+            mappings,
+            HashMap::from([("TEST_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1573,14 +1867,9 @@ mod tests {
         assert_eq!(requests.len(), 1);
 
         let received_body = String::from_utf8(requests[0].body.clone()).unwrap();
-        assert!(
-            received_body.contains(real_secret),
-            "real secret not found after streaming replace: {received_body}"
-        );
-        assert!(
-            !received_body.contains("phm_"),
-            "phantom token still present after streaming replace: {received_body}"
-        );
+        assert_eq!(received_body, format!("key={phantom_token}&extra=value"));
+        assert!(received_body.contains(phantom_token));
+        assert!(!received_body.contains(real_secret));
 
         proxy.shutdown().await;
         mock.shutdown().await;
@@ -1657,7 +1946,10 @@ mod tests {
 
         let mut mappings = HashMap::new();
         mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        let interceptor = Interceptor::new_with_named(
+            mappings,
+            HashMap::from([("SSE_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -1747,7 +2039,10 @@ mod tests {
                 ..ProxyConfig::default()
             },
             registry,
-            Interceptor::new(mappings),
+            Interceptor::new_with_named(
+                mappings,
+                HashMap::from([("RESPONSE_KEY".to_string(), real_secret.to_string())]),
+            ),
         )
         .await
         .unwrap();
@@ -1790,7 +2085,10 @@ mod tests {
 
         let mut mappings = HashMap::new();
         mappings.insert(phantom_token.to_string(), real_secret.to_string());
-        let interceptor = Interceptor::new(mappings);
+        let interceptor = Interceptor::new_with_named(
+            mappings,
+            HashMap::from([("TEST_KEY".to_string(), real_secret.to_string())]),
+        );
 
         let proxy = ProxyServer::start(
             ProxyConfig {

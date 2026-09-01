@@ -39,8 +39,8 @@ pub fn run_list(json_output: bool) -> Result<()> {
     if rows.is_empty() {
         println!("{} No grants configured.", "!".yellow().bold());
         println!(
-            "   Seed one with {}.",
-            "phantom grant add github-app".cyan()
+            "   Live enrollment is unavailable in 0.7.4. Obtain credentials from the provider with fresh operator consent, then store them from a trusted terminal with {}.",
+            "phantom add <NAME>".cyan()
         );
         return Ok(());
     }

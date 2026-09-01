@@ -32,111 +32,107 @@ struct TeamMembersResp {
     members: Vec<TeamMember>,
 }
 
+fn validate_api_id(label: &str, value: &str) -> Result<()> {
+    if !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        Ok(())
+    } else {
+        Err(PhantomError::CloudError {
+            status: 0,
+            message: format!("Invalid {label} for Phantom Cloud request"),
+        })
+    }
+}
+
+async fn parse_success<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    status: u16,
+    operation: &str,
+) -> Result<T> {
+    let bytes = crate::cloud_http::read_bounded_response(response, operation).await?;
+    crate::cloud_http::parse_json(&bytes, status, operation)
+}
+
+fn rejected(status: u16, operation: &str) -> PhantomError {
+    crate::cloud_http::response_error(status, operation, "Phantom Cloud rejected the request")
+}
+
 /// List all teams the authenticated user belongs to.
 pub async fn list_teams(api_base: &str, token: &str) -> Result<Vec<Team>> {
-    let client = reqwest::Client::new();
+    let client = crate::cloud_http::client()?;
     let resp = client
         .get(format!("{api_base}/teams"))
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|e| PhantomError::CloudError {
+        .map_err(|_| PhantomError::CloudError {
             status: 0,
-            message: format!("Failed to connect: {e}"),
+            message: "Failed to connect to Phantom Cloud".to_string(),
         })?;
 
     let status = resp.status().as_u16();
 
     match status {
-        200 => resp
-            .json::<TeamsResp>()
+        200 => parse_success::<TeamsResp>(resp, status, "Team list")
             .await
-            .map(|r| r.teams)
-            .map_err(|e| PhantomError::CloudError {
-                status,
-                message: format!("Invalid response: {e}"),
-            }),
+            .map(|response| response.teams),
         401 => Err(PhantomError::AuthRequired),
-        _ => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(PhantomError::CloudError {
-                status,
-                message: body,
-            })
-        }
+        _ => Err(rejected(status, "Team list")),
     }
 }
 
 /// Create a new team. Requires a Pro plan.
 pub async fn create_team(api_base: &str, token: &str, name: &str) -> Result<Team> {
-    let client = reqwest::Client::new();
+    let client = crate::cloud_http::client()?;
     let resp = client
         .post(format!("{api_base}/teams"))
         .bearer_auth(token)
         .json(&serde_json::json!({ "name": name }))
         .send()
         .await
-        .map_err(|e| PhantomError::CloudError {
+        .map_err(|_| PhantomError::CloudError {
             status: 0,
-            message: format!("Failed to connect: {e}"),
+            message: "Failed to connect to Phantom Cloud".to_string(),
         })?;
 
     let status = resp.status().as_u16();
 
     match status {
-        200 | 201 => {
-            resp.json::<TeamResp>()
-                .await
-                .map(|r| r.team)
-                .map_err(|e| PhantomError::CloudError {
-                    status,
-                    message: format!("Invalid response: {e}"),
-                })
-        }
+        200 | 201 => parse_success::<TeamResp>(resp, status, "Team creation")
+            .await
+            .map(|response| response.team),
         401 => Err(PhantomError::AuthRequired),
         402 => Err(PhantomError::PlanRequired),
-        _ => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(PhantomError::CloudError {
-                status,
-                message: body,
-            })
-        }
+        _ => Err(rejected(status, "Team creation")),
     }
 }
 
 /// List members of a team.
 pub async fn list_members(api_base: &str, token: &str, team_id: &str) -> Result<Vec<TeamMember>> {
-    let client = reqwest::Client::new();
+    validate_api_id("team ID", team_id)?;
+    let client = crate::cloud_http::client()?;
     let resp = client
         .get(format!("{api_base}/teams/{team_id}/members"))
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|e| PhantomError::CloudError {
+        .map_err(|_| PhantomError::CloudError {
             status: 0,
-            message: format!("Failed to connect: {e}"),
+            message: "Failed to connect to Phantom Cloud".to_string(),
         })?;
 
     let status = resp.status().as_u16();
 
     match status {
-        200 => resp
-            .json::<TeamMembersResp>()
+        200 => parse_success::<TeamMembersResp>(resp, status, "Team member list")
             .await
-            .map(|r| r.members)
-            .map_err(|e| PhantomError::CloudError {
-                status,
-                message: format!("Invalid response: {e}"),
-            }),
+            .map(|response| response.members),
         401 => Err(PhantomError::AuthRequired),
-        _ => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(PhantomError::CloudError {
-                status,
-                message: body,
-            })
-        }
+        _ => Err(rejected(status, "Team member list")),
     }
 }
 
@@ -148,7 +144,8 @@ pub async fn invite_member(
     github_login: &str,
     role: &str,
 ) -> Result<()> {
-    let client = reqwest::Client::new();
+    validate_api_id("team ID", team_id)?;
+    let client = crate::cloud_http::client()?;
     let resp = client
         .post(format!("{api_base}/teams/{team_id}/members"))
         .bearer_auth(token)
@@ -158,9 +155,9 @@ pub async fn invite_member(
         }))
         .send()
         .await
-        .map_err(|e| PhantomError::CloudError {
+        .map_err(|_| PhantomError::CloudError {
             status: 0,
-            message: format!("Failed to connect: {e}"),
+            message: "Failed to connect to Phantom Cloud".to_string(),
         })?;
 
     let status = resp.status().as_u16();
@@ -169,13 +166,7 @@ pub async fn invite_member(
         200 | 201 => Ok(()),
         401 => Err(PhantomError::AuthRequired),
         402 => Err(PhantomError::PlanRequired),
-        _ => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(PhantomError::CloudError {
-                status,
-                message: body,
-            })
-        }
+        _ => Err(rejected(status, "Team member invitation")),
     }
 }
 
@@ -203,34 +194,24 @@ pub async fn list_team_member_keys(
     token: &str,
     team_id: &str,
 ) -> Result<Vec<TeamMemberKey>> {
-    let client = reqwest::Client::new();
+    validate_api_id("team ID", team_id)?;
+    let client = crate::cloud_http::client()?;
     let resp = client
         .get(format!("{api_base}/teams/{team_id}/key"))
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|e| PhantomError::CloudError {
+        .map_err(|_| PhantomError::CloudError {
             status: 0,
-            message: format!("Failed to connect: {e}"),
+            message: "Failed to connect to Phantom Cloud".to_string(),
         })?;
     let status = resp.status().as_u16();
     match status {
-        200 => resp
-            .json::<TeamMemberKeysResp>()
+        200 => parse_success::<TeamMemberKeysResp>(resp, status, "Team public-key list")
             .await
-            .map(|r| r.members)
-            .map_err(|e| PhantomError::CloudError {
-                status,
-                message: format!("Invalid response: {e}"),
-            }),
+            .map(|response| response.members),
         401 => Err(PhantomError::AuthRequired),
-        _ => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(PhantomError::CloudError {
-                status,
-                message: body,
-            })
-        }
+        _ => Err(rejected(status, "Team public-key list")),
     }
 }
 
@@ -241,28 +222,23 @@ pub async fn register_team_key(
     team_id: &str,
     public_key_b64: &str,
 ) -> Result<()> {
-    let client = reqwest::Client::new();
+    validate_api_id("team ID", team_id)?;
+    let client = crate::cloud_http::client()?;
     let resp = client
         .post(format!("{api_base}/teams/{team_id}/key"))
         .bearer_auth(token)
         .json(&serde_json::json!({ "public_key": public_key_b64 }))
         .send()
         .await
-        .map_err(|e| PhantomError::CloudError {
+        .map_err(|_| PhantomError::CloudError {
             status: 0,
-            message: format!("Failed to connect: {e}"),
+            message: "Failed to connect to Phantom Cloud".to_string(),
         })?;
     let status = resp.status().as_u16();
     match status {
         200 => Ok(()),
         401 => Err(PhantomError::AuthRequired),
-        _ => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(PhantomError::CloudError {
-                status,
-                message: body,
-            })
-        }
+        _ => Err(rejected(status, "Team public-key registration")),
     }
 }
 
@@ -283,37 +259,27 @@ pub async fn pull_team_vault(
     team_id: &str,
     project_id: &str,
 ) -> Result<Option<PulledTeamVault>> {
-    let client = reqwest::Client::new();
+    validate_api_id("team ID", team_id)?;
+    validate_api_id("project ID", project_id)?;
+    let client = crate::cloud_http::client()?;
     let resp = client
         .get(format!("{api_base}/teams/{team_id}/vaults/{project_id}"))
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|e| PhantomError::CloudError {
+        .map_err(|_| PhantomError::CloudError {
             status: 0,
-            message: format!("Failed to connect: {e}"),
+            message: "Failed to connect to Phantom Cloud".to_string(),
         })?;
     let status = resp.status().as_u16();
     match status {
         200 => {
-            let v = resp
-                .json::<PulledTeamVault>()
-                .await
-                .map_err(|e| PhantomError::CloudError {
-                    status,
-                    message: format!("Invalid response: {e}"),
-                })?;
+            let v = parse_success::<PulledTeamVault>(resp, status, "Team vault pull").await?;
             Ok(Some(v))
         }
         404 => Ok(None),
         401 => Err(PhantomError::AuthRequired),
-        _ => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(PhantomError::CloudError {
-                status,
-                message: body,
-            })
-        }
+        _ => Err(rejected(status, "Team vault pull")),
     }
 }
 
@@ -336,7 +302,9 @@ pub async fn push_team_vault(
     expected_version: Option<u64>,
     key_shares: HashMap<String, KeyShare>,
 ) -> Result<u64> {
-    let client = reqwest::Client::new();
+    validate_api_id("team ID", team_id)?;
+    validate_api_id("project ID", project_id)?;
+    let client = crate::cloud_http::client()?;
     let body = PushTeamVaultBody {
         encrypted_blob,
         expected_version,
@@ -348,9 +316,9 @@ pub async fn push_team_vault(
         .json(&body)
         .send()
         .await
-        .map_err(|e| PhantomError::CloudError {
+        .map_err(|_| PhantomError::CloudError {
             status: 0,
-            message: format!("Failed to connect: {e}"),
+            message: "Failed to connect to Phantom Cloud".to_string(),
         })?;
     let status = resp.status().as_u16();
     match status {
@@ -359,38 +327,25 @@ pub async fn push_team_vault(
             struct PushResp {
                 version: u64,
             }
-            resp.json::<PushResp>()
+            parse_success::<PushResp>(resp, status, "Team vault push")
                 .await
-                .map(|r| r.version)
-                .map_err(|e| PhantomError::CloudError {
-                    status,
-                    message: format!("Invalid response: {e}"),
-                })
+                .map(|response| response.version)
         }
         401 => Err(PhantomError::AuthRequired),
         402 => Err(PhantomError::PlanRequired),
         409 => {
-            let body = resp.text().await.unwrap_or_default();
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                let server_version = v["server_version"].as_u64().unwrap_or(0);
-                Err(PhantomError::VersionConflict {
-                    local: expected_version.unwrap_or(0),
-                    remote: server_version,
-                })
-            } else {
-                Err(PhantomError::CloudError {
-                    status,
-                    message: body,
-                })
+            #[derive(Deserialize)]
+            struct ConflictResp {
+                server_version: u64,
             }
-        }
-        _ => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(PhantomError::CloudError {
-                status,
-                message: body,
+            let conflict =
+                parse_success::<ConflictResp>(resp, status, "Team vault push conflict").await?;
+            Err(PhantomError::VersionConflict {
+                local: expected_version.unwrap_or(0),
+                remote: conflict.server_version,
             })
         }
+        _ => Err(rejected(status, "Team vault push")),
     }
 }
 
@@ -442,5 +397,16 @@ mod tests {
         assert_eq!(resp.members[0].github_login, "mason");
         assert_eq!(resp.members[0].email.as_deref(), Some("mason@example.com"));
         assert_eq!(resp.members[0].role, "member");
+    }
+
+    #[test]
+    fn path_identifiers_reject_cross_route_forms() {
+        for value in ["", "../vault", "team/id", "team?id", "team id"] {
+            assert!(
+                validate_api_id("team ID", value).is_err(),
+                "accepted {value:?}"
+            );
+        }
+        validate_api_id("team ID", "team_01-safe").unwrap();
     }
 }

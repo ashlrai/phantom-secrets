@@ -76,6 +76,17 @@ pub struct CloudConfig {
     /// Last synced version number (managed by CLI)
     #[serde(default)]
     pub version: u64,
+    /// A prior pull observed remote state that was not fully reconciled into
+    /// the local vault. Push must fail closed until a complete pull clears it.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub reconciliation_required: bool,
+    /// Remote version associated with the incomplete reconciliation marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_remote_version: Option<u64>,
+}
+
+fn bool_is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -88,6 +99,11 @@ pub struct PhantomMeta {
     /// Machine-local vault and state namespacing uses
     /// [`PhantomConfig::local_project_id`] instead.
     pub project_id: String,
+    /// Basename of the dotenv file protected by this config. The config is
+    /// stored beside the dotenv file, so accepting a path here would let
+    /// repository-controlled config redirect security-sensitive rewrites.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dotenv_path: Option<String>,
     /// Global rotation schedule — applies to all secrets unless overridden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation_policy: Option<RotationSchedule>,
@@ -208,9 +224,9 @@ pub struct SecretOverride {
     /// and the `phantom_expiry_enforce` MCP tool to block deployments and CI pipelines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
-    /// Number of days between rotations for this secret. Used by
-    /// `phantom expiry rotate <KEY>` to reset the expiry timer.
-    /// Stored as `rotation_window = <DAYS>` in `.phantom.toml`.
+    /// Legacy requested rotation window in days. Retained for configuration
+    /// compatibility; a local Phantom token remap never renews provider TTL.
+    /// True provider rotation paths may use provider-issued expiry metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation_window: Option<u64>,
     /// Per-secret validation schedule configuration.
@@ -515,15 +531,24 @@ const DEFAULT_PROXY_SERVICE_NAMES: &[&str] = &[
 impl PhantomConfig {
     /// Load config from a file path.
     pub fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path).map_err(|e| {
+        let content = std::fs::read(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 PhantomError::ConfigNotFound(path.display().to_string())
             } else {
                 PhantomError::Io(e)
             }
         })?;
+        Self::load_from_bytes(path, &content)
+    }
+
+    /// Parse an already-snapshotted project config while deriving the same
+    /// canonical machine-local namespace as [`Self::load`]. Transactional
+    /// callers use this to bind review and commit to one exact byte image.
+    pub fn load_from_bytes(path: &Path, content: &[u8]) -> Result<Self> {
+        let content = std::str::from_utf8(content)
+            .map_err(|error| PhantomError::ConfigParseError(error.to_string()))?;
         let mut config: Self =
-            toml::from_str(&content).map_err(|e| PhantomError::ConfigParseError(e.to_string()))?;
+            toml::from_str(content).map_err(|e| PhantomError::ConfigParseError(e.to_string()))?;
         validate_portable_project_id(&config.phantom.project_id)?;
 
         // `.phantom.toml` is repository-controlled. Its portable project_id is
@@ -599,6 +624,7 @@ impl PhantomConfig {
             phantom: PhantomMeta {
                 version: "1".to_string(),
                 project_id: project_id.clone(),
+                dotenv_path: None,
                 rotation_policy: None,
                 secrets: BTreeMap::new(),
             },
@@ -1580,5 +1606,37 @@ rotate_every = "30d"
         let ov = parsed.phantom.secrets.get("MY_KEY").unwrap();
         // validation should be absent (None) when not specified
         assert!(ov.validation.is_none());
+    }
+
+    #[test]
+    fn managed_dotenv_and_cloud_reconciliation_fields_are_backward_compatible() {
+        let legacy = r#"
+[phantom]
+version = "1"
+project_id = "abc"
+
+[cloud]
+version = 4
+"#;
+        let parsed: PhantomConfig = toml::from_str(legacy).unwrap();
+        assert!(parsed.phantom.dotenv_path.is_none());
+        let cloud = parsed.cloud.unwrap();
+        assert_eq!(cloud.version, 4);
+        assert!(!cloud.reconciliation_required);
+        assert!(cloud.reconciliation_remote_version.is_none());
+
+        let mut config = PhantomConfig::new_with_defaults("abc".to_string());
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        config.cloud = Some(CloudConfig {
+            version: 4,
+            reconciliation_required: true,
+            reconciliation_remote_version: Some(9),
+        });
+        let encoded = toml::to_string_pretty(&config).unwrap();
+        let roundtrip: PhantomConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(roundtrip.phantom.dotenv_path.as_deref(), Some("custom.env"));
+        let cloud = roundtrip.cloud.unwrap();
+        assert!(cloud.reconciliation_required);
+        assert_eq!(cloud.reconciliation_remote_version, Some(9));
     }
 }

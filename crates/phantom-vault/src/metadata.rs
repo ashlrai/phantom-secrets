@@ -53,11 +53,11 @@ impl VaultMode {
 }
 
 /// Metadata attached to a single vault secret.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SecretMetadata {
     /// Unix timestamp when the secret was first stored.
     pub created_at: Option<Timestamp>,
-    /// Unix timestamp of the last rotation (token regeneration).
+    /// Unix timestamp of the last confirmed provider credential replacement.
     pub rotated_at: Option<Timestamp>,
     /// Unix timestamp after which the secret is considered expired.
     pub expires_at: Option<Timestamp>,

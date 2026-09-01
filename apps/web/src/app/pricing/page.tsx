@@ -1,13 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { posthog } from "@/lib/posthog";
 import { Nav } from "@/components/landing/Nav";
 import { SiteFooter } from "@/components/landing/SiteFooter";
 import { Check } from "@/components/landing/Icons";
 import { FAQ } from "@/components/landing/FAQ";
 import { Comparison } from "@/components/landing/Comparison";
-import { getBrowserClient } from "@/lib/supabase-browser";
 
 type Tier = {
   name: string;
@@ -16,9 +14,7 @@ type Tier = {
   pitch: string;
   featured: boolean;
   features: string[];
-  cta:
-    | { kind: "checkout"; label: string }
-    | { kind: "link"; label: string; href: string };
+  cta: { label: string; href: string };
 };
 
 const TIERS: Tier[] = [
@@ -30,191 +26,53 @@ const TIERS: Tier[] = [
     featured: false,
     features: [
       "Local vault (OS keychain or encrypted file)",
-      "Proxy with full streaming support",
-      "MCP server for every editor",
+      "Local proxy: requests are size-bounded and buffered; responses can stream",
+      "MCP server for supported clients",
       "Agent readiness CLI · MCP tool catalog",
       "Unlimited local secrets",
-      "1 cloud vault",
       "Vercel & Railway sync with local platform tokens",
     ],
     cta: {
-      kind: "link",
       label: "Install free",
       href: "https://github.com/ashlrai/phantom-secrets",
     },
   },
   {
     name: "Pro",
-    price: "$8",
-    cadence: "/mo",
-    pitch: "Cloud sync, multi-device, full backup.",
+    price: "Planned",
+    cadence: "",
+    pitch: "Join the pilot list for cloud-backup and team-vault evaluation.",
     featured: true,
     features: [
       "Everything in Free",
-      "Unlimited cloud vaults",
-      "Multi-device sync (E2E encrypted)",
-      "Team vaults & shared secrets",
-      "Vault backup & restore",
-      "Pre-commit secret scanning",
-      "Priority support",
+      "Planned cloud-vault pilots",
+      "Planned cloud-key portability evaluation",
+      "Fixed-membership team-vault pilots",
+      "Commercial terms set before each pilot",
     ],
-    cta: { kind: "checkout", label: "Start with Pro" },
+    cta: {
+      label: "Join the Pro pilot list",
+      href: "mailto:mason@ashlr.ai?subject=Phantom%20Pro%20pilot",
+    },
   },
   {
     name: "Enterprise",
     price: "Custom",
     cadence: "",
-    pitch: "Teams, audit, SSO, dedicated support.",
+    pitch: "Scope a bounded evaluation before any commercial rollout.",
     featured: false,
     features: [
-      "Everything in Pro",
-      "Audit log",
-      "SSO/SAML (planned)",
+      "Written pilot scope and acceptance criteria",
+      "Evaluate local audit tooling",
+      "SSO/SAML not shipped",
       "On-prem deployment option (planned)",
-      "Dedicated support",
+      "Support scope by written agreement",
     ],
-    cta: { kind: "link", label: "Talk to sales", href: "mailto:mason@ashlr.ai" },
+    cta: { label: "Talk to us", href: "mailto:mason@ashlr.ai" },
   },
 ];
 
-const CHECKOUT_INTENT_KEY = "phantom_checkout_intent";
-
-function setCheckoutIntent() {
-  try {
-    localStorage.setItem(CHECKOUT_INTENT_KEY, "pro");
-  } catch {
-    // The OAuth redirect includes checkout=pro; storage is only a fallback.
-  }
-}
-
-function clearCheckoutIntent() {
-  try {
-    localStorage.removeItem(CHECKOUT_INTENT_KEY);
-  } catch {
-    // Ignore restricted browser storage.
-  }
-}
-
-function hasCheckoutIntent() {
-  try {
-    return localStorage.getItem(CHECKOUT_INTENT_KEY) === "pro";
-  } catch {
-    return false;
-  }
-}
-
 export default function PricingPage() {
-  const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const signInForCheckout = async () => {
-    setCheckoutIntent();
-    const { error: authError } = await getBrowserClient().auth.signInWithOAuth({
-      provider: "github",
-      options: {
-        redirectTo: `${window.location.origin}/pricing?checkout=pro`,
-      },
-    });
-
-    if (authError) {
-      clearCheckoutIntent();
-      setError(authError.message);
-      setLoading(false);
-    }
-  };
-
-  const startCheckout = async (accessToken: string) => {
-    try {
-      const resp = await fetch("/api/v1/billing/checkout", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (resp.status === 401) {
-        setError("Please sign in with GitHub before starting checkout.");
-        setLoading(false);
-        return;
-      }
-      if (resp.status === 409) {
-        const conflict = (await resp.json().catch(() => ({}))) as {
-          error?: string;
-        };
-        if (conflict.error === "subscription_exists") {
-          clearCheckoutIntent();
-          setLoading(false);
-          window.location.href = "/dashboard/billing";
-          return;
-        }
-      }
-      if (!resp.ok) {
-        setError("Could not start checkout. Please try again or email mason@ashlr.ai.");
-        setLoading(false);
-        return;
-      }
-      const data = (await resp.json()) as { url?: string };
-      if (data.url) {
-        setLoading(false);
-        window.location.href = data.url;
-        return;
-      }
-      setError("Checkout returned no URL. Please try again.");
-      setLoading(false);
-    } catch {
-      setError("Network error reaching checkout. Please try again.");
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    // Stripe redirects back with ?success=true; clean the URL after read.
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("success") === "true") {
-      clearCheckoutIntent();
-      setSuccess(true);
-      window.history.replaceState({}, "", "/pricing");
-      return;
-    }
-
-    const shouldResumeCheckout =
-      params.get("checkout") === "pro" || hasCheckoutIntent();
-    if (shouldResumeCheckout) {
-      clearCheckoutIntent();
-      setLoading(true);
-      getBrowserClient()
-        .auth.getSession()
-        .then(({ data: { session } }) => {
-          window.history.replaceState({}, "", "/pricing");
-          if (session) {
-            void startCheckout(session.access_token);
-            return;
-          }
-          setLoading(false);
-        })
-        .catch(() => {
-          window.history.replaceState({}, "", "/pricing");
-          setError("Could not restore your sign-in session. Please try again.");
-          setLoading(false);
-        });
-    }
-  }, []);
-
-  const handleSubscribe = async () => {
-    setLoading(true);
-    setError(null);
-    posthog.capture("subscribe_clicked", { plan: "pro" });
-
-    const {
-      data: { session },
-    } = await getBrowserClient().auth.getSession();
-
-    if (!session) {
-      await signInForCheckout();
-      return;
-    }
-
-    await startCheckout(session.access_token);
-  };
-
   return (
     <>
       <Nav />
@@ -232,48 +90,24 @@ export default function PricingPage() {
 
           <div className="mx-auto max-w-[940px] px-7 text-center">
             <span className="inline-flex items-center gap-2 rounded-full border border-border bg-s1/80 px-3 py-1 text-[0.72rem] font-medium text-t2 backdrop-blur-md">
-              Pricing · transparent · cancel any time
+              Open source today · commercial pilots by agreement
             </span>
 
             <h1 className="mt-7 font-extrabold tracking-[-0.04em] leading-[1.04] text-white text-[clamp(2.2rem,5.4vw,3.8rem)]">
               Free for you.
               <br />
               <span className="bg-gradient-to-br from-blue-b via-blue to-blue-d bg-clip-text text-transparent">
-                Eight bucks for your team.
+                Cloud pilots by agreement.
               </span>
             </h1>
 
             <p className="mt-6 mx-auto max-w-[600px] text-[0.98rem] sm:text-[1.04rem] leading-[1.65] text-t2">
               The CLI, vault, proxy, and MCP server are open source forever.
-              Cloud sync and multi-device cost what a coffee costs.
+              Pro billing and cloud entitlements are not commissioned; contact
+              us to scope a bounded pilot.
             </p>
           </div>
         </header>
-
-        {/* Live regions are rendered unconditionally so screen readers
-            attach listeners before content arrives — required for SR
-            announcement when content is injected via state change. */}
-        <div className="mx-auto max-w-[640px] px-7" aria-live="polite" role="status">
-          {success && (
-            <div className="mb-8 rounded-xl border border-green/30 bg-green/10 px-5 py-4 text-[0.92rem] font-medium text-green flex items-center gap-3">
-              <span
-                aria-hidden
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-green/15"
-              >
-                <Check className="h-4 w-4 text-green" strokeWidth={2.6} />
-              </span>
-              Welcome to Phantom Pro — your subscription is active.
-            </div>
-          )}
-        </div>
-
-        <div className="mx-auto max-w-[640px] px-7" aria-live="assertive" role="alert">
-          {error && (
-            <div className="mb-8 rounded-xl border border-red-500/30 bg-red-500/10 px-5 py-4 text-[0.92rem] font-medium text-red-300">
-              {error}
-            </div>
-          )}
-        </div>
 
         {/* Tier cards */}
         <section className="pb-20 sm:pb-28">
@@ -291,7 +125,7 @@ export default function PricingPage() {
                   >
                     {t.featured && (
                       <span className="absolute -top-2.5 left-7 rounded-full border border-blue-d/40 bg-blue px-2.5 py-0.5 text-[0.7rem] font-bold uppercase tracking-[0.12em] text-white">
-                        Most popular
+                        Pilot list
                       </span>
                     )}
 
@@ -327,37 +161,27 @@ export default function PricingPage() {
                       ))}
                     </ul>
 
-                    {t.cta.kind === "checkout" ? (
-                      <button
-                        type="button"
-                        onClick={handleSubscribe}
-                        disabled={loading}
-                        className="mt-6 inline-flex items-center justify-center min-h-[44px] rounded-lg bg-blue px-4 py-2.5 text-[0.88rem] font-semibold text-white transition-all duration-200 hover:bg-blue-d hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(59,130,246,0.32)] disabled:bg-blue/60 disabled:cursor-wait disabled:hover:translate-y-0 disabled:hover:shadow-none"
-                      >
-                        {loading ? "Redirecting…" : `${t.cta.label} — ${t.price}${t.cadence}`}
-                      </button>
-                    ) : (
-                      <a
-                        href={t.cta.href}
-                        onClick={() =>
-                          posthog.capture("pricing_cta_clicked", {
-                            tier: t.name.toLowerCase(),
-                          })
-                        }
-                        className="mt-6 inline-flex items-center justify-center min-h-[44px] rounded-lg border border-border-l px-4 py-2.5 text-[0.88rem] font-semibold text-t1 no-underline transition-colors duration-200 hover:border-t3"
-                      >
-                        {t.cta.label}
-                      </a>
-                    )}
+                    <a
+                      href={t.cta.href}
+                      onClick={() =>
+                        posthog.capture("pricing_cta_clicked", {
+                          tier: t.name.toLowerCase(),
+                        })
+                      }
+                      className="mt-6 inline-flex items-center justify-center min-h-[44px] rounded-lg border border-border-l px-4 py-2.5 text-[0.88rem] font-semibold text-t1 no-underline transition-colors duration-200 hover:border-t3"
+                    >
+                      {t.cta.label}
+                    </a>
                   </article>
               ))}
             </div>
 
             <p className="mt-10 text-center text-[0.82rem] text-t3 max-w-[680px] mx-auto leading-[1.7]">
               All plans include the open-source CLI, the local proxy, the MCP
-              server, and the local vault. Cloud features require a Phantom
-              account. Vaults are end-to-end encrypted — we never see your
-              secrets, even on Pro or Enterprise.
+              server, and the local vault. Cloud plans, billing, and hosted
+              entitlements are not commissioned. Any pilot requires written
+              scope and acceptance criteria before access is represented as
+              available.
             </p>
           </div>
         </section>

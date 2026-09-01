@@ -5,6 +5,8 @@
 //! spawning a full CLI process, which makes them deterministic and fast while
 //! still covering the public API surface that the CLI and MCP tool both use.
 
+mod common;
+
 use phantom_core::analytics::{
     check_windowed_anomaly, compute_windowed_anomalies, AuditThresholdConfig,
 };
@@ -19,7 +21,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// Set HOME and PHANTOM_AUDIT for the duration of a closure, then restore.
 fn with_audit_home<F: FnOnce(&std::path::Path)>(f: F) {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let prev_home = std::env::var("HOME").ok();
     let prev_audit = std::env::var("PHANTOM_AUDIT").ok();
     unsafe {

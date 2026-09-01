@@ -1,4 +1,5 @@
 import type Stripe from "stripe";
+import { requireHostedService } from "@/lib/commissioning";
 import { readBoundedText, requestBodyErrorResponse } from "@/lib/http-body";
 import { getStripe, getStripeWebhookSecret } from "@/lib/stripe";
 import { createServiceClient } from "@/lib/supabase-server";
@@ -118,6 +119,9 @@ function billingEventInput(event: Stripe.Event): BillingEventInput | null {
 }
 
 export async function POST(req: Request) {
+  const commissioningGate = requireHostedService("billing");
+  if (commissioningGate) return commissioningGate;
+
   let body: string;
   try {
     body = await readBoundedText(req, MAX_STRIPE_WEBHOOK_BYTES);

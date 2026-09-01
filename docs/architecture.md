@@ -28,9 +28,10 @@ provider-enabled, or accepted in a real customer workflow.
 | Layer | Components | Current responsibility and boundary |
 |---|---|---|
 | Product | `phantom-cli`, `phantom-core` | Project configuration, dotenv classification and rewriting, tokens, authentication, cloud clients, audit, sync, validation, and operator workflows. |
-| Provider issuance | `phantom-core/src/issuance`, CLI `grant` commands | Human-consent issuance for a closed provider set, direct-to-vault credential-root storage, and value-free lifecycle metadata. This is not execution authority. |
+| Provider foundations | `phantom-core/src/issuance`, CLI `grant` commands | Protocol/design source plus value-free lifecycle metadata. All live issuance/enrollment/renewal/revocation is hard-denied before credential or network access in 0.7.4. This is not execution authority. |
 | Secret storage | `phantom-vault` | Native credential-store and encrypted-file backends behind `VaultBackend`. Real values remain behind this interface. |
-| Network edge | `phantom-proxy` | Authenticated loopback HTTP proxy, scoped token replacement, response scrubbing, streaming, size/time/concurrency limits, and upstream dispatch. |
+| Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained directory capabilities, exact before-images, no-follow target resolution, effect receipts, and explicit durable versus committed-but-uncertain outcomes for governed project and client-config mutation. |
+| Network edge | `phantom-proxy` | Authenticated loopback HTTP proxy, fixed route-owned auth-header injection, inert client headers/bodies, response scrubbing, streaming, size/time/concurrency limits, and upstream dispatch. |
 | Agent interface | `phantom-mcp` | Stdio MCP tools that return value-free metadata. The small conversation facade is distinct from the advanced compatibility catalog and its legacy gates. |
 | Cloud application | `apps/web` | Next.js routes and UI for device authentication, encrypted cloud-vault storage, teams, and billing. Local source does not prove live deployment state. |
 | Setup kernel | `phantom-workspace` plus workspace-request code in `phantom-core` | Value-blind inspection, deterministic sealed plans, bearerless requests, and recoverable trusted-terminal apply on Unix. |
@@ -46,7 +47,7 @@ provider-enabled, or accepted in a real customer workflow.
      v                                                            v
   application  ---- authenticated loopback HTTP ---->  phantom-proxy
                                                            |
-                         scoped replacement at network edge | real provider credential
+                    fixed route-owned auth-header injection | real provider credential
                                                            v
                                                     external provider API
 
@@ -91,9 +92,9 @@ identified; `phantom check` and human review remain important.
 
 1. `phantom exec` opens the project vault and creates an ephemeral proxy
    session.
-2. The proxy binds to loopback, authenticates the local request, resolves
-   `phm_` placeholders, and injects the corresponding real value only on an
-   allowed upstream route.
+2. The proxy binds to loopback, authenticates the local request, matches an
+   exact route, discards client control of that route's auth header, and injects
+   only the route-owned vault value there. Client placeholders remain inert.
 3. The proxy bounds request/response resources, preserves supported streaming,
    and scrubs known secret values from responses before returning data to the
    child process.
@@ -112,39 +113,121 @@ cloud and team tools use the authenticated cloud client. Tool responses must
 remain value-free. The deprecated plaintext MCP add path refuses values, while
 interactive secret entry happens in an attached terminal.
 
-Some advanced compatibility tools can mutate state after their own explicit
-confirmation and out-of-band local approval checks. Those legacy gates are not
-Locus grants, broker leases, or proof that the inactive execution kernel is
-active.
+Effectful advanced compatibility tools are disabled by default. An operator
+may set `PHANTOM_MCP_EFFECTS=trusted-terminal` outside agent authority to reach
+their explicit confirmation and one-use approval checks. `phantom mcp-approve`
+inspects the pending record before mutation, displays its bounded value-blind
+effect and exact parameters, requires attached stdin/stderr, and asks for a
+fresh typed challenge. A same-user shell or agent-controlled PTY can defeat
+that ceremony; when the command or `~/.phantom` approval storage is in agent
+scope, effects must remain disabled. These gates are not Locus grants, broker
+leases, or proof that the inactive execution kernel is active.
 
-### Obtain a provider grant
+### Provider-grant foundations
 
-Provider issuance is deliberately a trusted-terminal CLI flow:
+Provider protocol source and value-free metadata remain design foundations.
+In 0.7.4, CLI single-provider rotation, batch rotation, MCP rotation, enrollment
+exchange, additive issuance, rolling refresh, and remote revocation all fail
+before provider credential access and before network I/O. Exact `cfg(test)`
+mocks prove local transaction scaffolding only, not provider activation,
+commissioning, or acceptance. See the [provider-grant specification](grants-spec.md).
 
-```text
-human consent at provider
-  -> closed provider endpoint and issuance engine
-  -> zeroizing credential roots returned only to CLI
-  -> vault writes
-  -> value-free rotation metadata in .phantom.toml
-  -> metadata-only grant list/status
-```
-
-GitHub App, Vercel Integration, Sentry Integration, Supabase OAuth, and Stripe
-App OAuth issuance paths are implemented. Stripe restricted-key issuance is an
-explicit alternate flow. Exact prerequisites and lifecycle behavior are in the
-[provider-grant specification](grants-spec.md).
-
-The CLI never prints issued roots. Provider client secrets are resolved by the
-name of an environment variable rather than accepted as command-line values,
-and production endpoints come from a closed allowlist. `phantom grant revoke`
-currently fails closed before local mutation because supported-provider remote
-revocation is not wired.
-
-A **provider grant** is credential and renewal state. It is not an **authority
+A **provider grant** is design-era credential lifecycle metadata. It is not an **authority
 grant** from `phantom-authority`, a Locus credential, a broker lease, or an
 execution permit. The MCP server has no provider-consent or provider-grant
 issuance tool.
+
+## Retained local filesystem effects
+
+Phantom treats an ambient pathname as a locator, not durable authority. A
+governed writer first retains a real directory, then keeps target resolution and
+effects relative to that retained directory identity:
+
+```text
+acquire retained root + stable lock
+  -> resolve no-follow relative target
+  -> read identity + bytes + permissions before-image
+  -> compare-and-swap atomic replace or exact unlink
+  -> Durable
+     | CommittedVerifiedButDurabilityUncertain (committed success + warning)
+     | CommittedButUncertain (Partial; reconcile)
+```
+
+When an operation needs both project state and a machine-local vault, Phantom
+uses one cross-domain lock order:
+
+```text
+retain reviewed project identity
+  -> resolve vault/application authority (may take the process-environment guard)
+  -> acquire project transaction lock
+  -> compare acquired root identity with reviewed identity
+  -> reread exact config identity + bytes + permissions through the lock
+  -> use vault and commit the governed project effect
+```
+
+No project mutation is authorized during the gap before the transaction lock.
+The retained review anchor and exact post-lock reread close that gap: replacing
+the project with a different directory at the same canonical spelling is
+rejected. Resolving vault authority before the project lock also avoids an
+environment-guard/project-lock inversion with other Phantom threads.
+
+`phantom init` additionally binds the exact dotenv/config leaf identity, bytes,
+and permissions during review before vault provisioning. The transaction
+revalidates the retained root after lock acquisition and every reviewed leaf
+before mutation, so a byte-identical replacement inode/file identity is drift.
+
+- Symlink and Windows reparse-point components are rejected. Sensitive file
+  effects require a regular, single-link target, so a hard link cannot silently
+  redirect a governed update to a second name.
+- Exact target identity and bytes are checked immediately before replacement or
+  unlink. A same-content file on a different inode/file identity is drift.
+- Renaming the ambient root and installing a decoy at its old path does not
+  redirect the in-progress effect. Tests verify that the retained tree is
+  updated or rolled back while the decoy remains unchanged.
+- Newly created private directories carry identity-bound receipts. Cleanup
+  removes only an empty directory with the exact created identity, after
+  descendant handles have been released.
+- A verified rename, unlink, or create can commit on a platform that cannot
+  prove directory crash durability. `CommittedVerifiedButDurabilityUncertain`
+  is committed success with a value-free warning/receipt; callers do not roll
+  it back or retry it.
+- If post-publish verification or durability remains unresolved,
+  `CommittedButUncertain` is a **Partial** outcome: callers require
+  reconciliation rather than claiming rollback or retry safety.
+- On Windows, a new private file or directory receives and verifies a protected
+  current-user DACL before content bytes. A replacement staging file receives
+  and verifies the reviewed target's exact DACL, inheritance state, and
+  read-only state before content is copied; NULL/nonrestrictive DACLs fail
+  closed.
+
+Authorities remain intentionally separate:
+
+| Effect | Retained authority |
+|---|---|
+| Project dotenv, config, guidance, doctor, rotation, and workspace files | The acquisition-time project root held by `ProjectTransactionLock` |
+| Project-local or linked-worktree Git hook | The effective Git hook parent resolved from the retained project/Git context |
+| Explicit external `core.hooksPath` | A separately retained hook root plus an exact attached trusted-terminal authorization; project authority is not widened, and MCP refuses the external write |
+| Claude project settings | The retained project root |
+| Cursor, Windsurf, and Codex user config | A retained home/config ancestor traversed component by component; setup coordination is under retained `~/.phantom` app state |
+
+These are path-integrity and transaction controls, not same-user isolation.
+Locks serialize cooperating Phantom writers. A process with equivalent user
+filesystem or terminal authority can still mutate state before acquisition or
+after handles are released, race ungoverned tools, or defeat a terminal
+ceremony. The Windows implementation has source-contract tests for reparse,
+identity, handle ordering, exact ACL establishment/preservation, and both
+uncertainty outcomes; protected native Windows CI acceptance remains pending.
+
+Read-only check, status, audit, and proposal discovery is intentionally distinct
+from a governed effect. Those paths may resolve ambient state for observation;
+their output is not a retained before-image, a sealed mutation target, or an
+authority grant. A later effect must independently acquire its lock/capability
+and revalidate the exact state it will mutate.
+
+Terminal admission is likewise ordered before approval-state inspection and
+input. A noninteractive `phantom mcp-approve` request is rejected before the
+pending record is inspected, a challenge is generated, or stdin is read; it
+cannot hold an environment guard while waiting for terminal input.
 
 ## Functional workspace setup transaction
 
@@ -248,7 +331,7 @@ Other non-negotiable boundaries are:
 | Resource | Owner today | Lifecycle rule |
 |---|---|---|
 | Real secret value | `VaultBackend` and proxy interceptor | Resolve only for a scoped operation; do not serialize into agent-facing results. |
-| Phantom token | Project dotenv/config | Worthless placeholder; rotation invalidates the old mapping. |
+| Project Phantom token | Project dotenv/config | Random placeholder, not a provider credential. It persists until rotation and is never resolved from a client header/body; treat exposure as sensitive metadata and rotate it. |
 | Proxy session bearer | CLI/proxy session | Fresh per run, loopback-scoped, invalid after shutdown; exposed to the child environment. |
 | Workspace request | Authenticated machine-local request store | `Pending -> Claimed -> Applied`, or explicit `Expired`, `Failed`, or `RolledBack`; claimed work may require recovery. |
 | Setup recovery journal | Workspace transaction engine | Authenticate before recovery; reconcile or roll back before accepting new conclusions. |
@@ -281,17 +364,25 @@ candidate as a trusted release.
 Use code and executable contracts before prose:
 
 - product composition: [`Cargo.toml`](../Cargo.toml) and crate manifests;
-- provider issuance: [`issuance`](../crates/phantom-core/src/issuance/), CLI
+- provider denial and design foundations: [`issuance`](../crates/phantom-core/src/issuance/), CLI
   [`grant`](../crates/phantom-cli/src/commands/grant/), and the current
   [provider-grant specification](grants-spec.md);
 - proxy boundary: [`phantom-proxy`](../crates/phantom-proxy/);
 - workspace transaction: [`phantom-workspace`](../crates/phantom-workspace/),
   [`workspace_request.rs`](../crates/phantom-core/src/workspace_request.rs), and
   [`workspace.rs`](../crates/phantom-cli/src/commands/workspace.rs);
+- retained filesystem effects:
+  [`anchored.rs`](../crates/phantom-core/src/fs/anchored.rs),
+  [`transaction_lock.rs`](../crates/phantom-vault/src/transaction_lock.rs),
+  [`init_transaction.rs`](../crates/phantom-vault/src/init_transaction.rs), and
+  [`precommit_hook.rs`](../crates/phantom-core/src/precommit_hook.rs);
 - MCP facade: [`server.rs`](../crates/phantom-mcp/src/server.rs) and
   [`params.rs`](../crates/phantom-mcp/src/tools/params.rs);
 - inactive boundaries: the public module documentation in each execution-kernel
   crate; and
+- external design benchmark: the pinned
+  [Rama-derived standard](rama-design-standard.md), which is inspiration rather
+  than a dependency or parity claim; and
 - activation gates and non-mitigations: this document, the
   [threat model](../THREAT_MODEL.md), and public module documentation in the
   inactive crates.

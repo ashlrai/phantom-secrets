@@ -27,6 +27,7 @@ readonly CARGO_BIN="${CARGO:-cargo}"
 readonly CURL_BIN="${CURL:-curl}"
 readonly GIT_BIN="${GIT:-git}"
 readonly GH_BIN="${GH:-gh}"
+readonly NODE_BIN="${NODE:-node}"
 readonly PYTHON_BIN="${PYTHON:-python3}"
 readonly REGISTRY_API="https://crates.io/api/v1"
 readonly GITHUB_REPOSITORY="ashlrai/phantom-secrets"
@@ -89,7 +90,9 @@ Modes:
   --publish      Publish missing packages and verify their immutable checksums.
 
 Publishing additionally requires:
-  * a clean worktree at the exact v<semver> tag;
+  * a clean worktree at the exact annotated v<semver> tag and current origin/main;
+  * an immutable GitHub Release whose exact hosted bundle passes digest,
+    structure, build-provenance, and SPDX-attestation verification;
   * PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-<semver>;
   * cargo credentials or CARGO_REGISTRY_TOKEN (never pass a token on argv).
 
@@ -155,6 +158,7 @@ if [[ "$MODE" != "verify-only" ]]; then
 fi
 if [[ "$MODE" == "publish" ]]; then
   require_command "$GH_BIN"
+  require_command "$NODE_BIN"
 fi
 
 cd -- "$REPO_ROOT"
@@ -232,8 +236,9 @@ readonly WORKSPACE_VERSION
 remote_tag_sha() {
   local tag="v$WORKSPACE_VERSION"
   local refs="$TMP_DIR/origin-tag-refs.txt"
-  "$GIT_BIN" ls-remote --exit-code --tags origin \
-    "refs/tags/$tag" "refs/tags/$tag^{}" >"$refs" || die "origin does not expose the exact $tag tag"
+  "$GIT_BIN" ls-remote --exit-code origin \
+    "refs/tags/$tag" "refs/tags/$tag^{}" "refs/heads/main" >"$refs" ||
+    die "origin does not expose the exact $tag tag and main branch"
   "$PYTHON_BIN" - "$tag" "$refs" <<'PY'
 import pathlib
 import re
@@ -242,34 +247,49 @@ import sys
 tag = sys.argv[1]
 direct = f"refs/tags/{tag}"
 peeled = f"{direct}^{{}}"
+protected_branch = "refs/heads/main"
 refs = {}
 for line in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines():
     parts = line.split("\t")
-    if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{40}", parts[0]):
+    if (
+        len(parts) != 2
+        or not re.fullmatch(r"[0-9a-f]{40}", parts[0])
+        or parts[1] not in {direct, peeled, protected_branch}
+    ):
         raise SystemExit("origin returned a malformed tag reference")
     if parts[1] in refs:
         raise SystemExit("origin returned a duplicate tag reference")
     refs[parts[1]] = parts[0]
-if direct not in refs:
-    raise SystemExit(f"origin is missing {direct}")
-print(refs.get(peeled, refs[direct]))
+if direct not in refs or peeled not in refs:
+    raise SystemExit(f"origin release tag {tag} must exist and be annotated")
+if refs[direct] == refs[peeled]:
+    raise SystemExit(f"origin release tag {tag} is not an annotated tag object")
+if protected_branch not in refs:
+    raise SystemExit(f"origin is missing {protected_branch}")
+if refs[peeled] != refs[protected_branch]:
+    raise SystemExit(
+        f"origin release tag {tag} resolves to {refs[peeled]}, "
+        f"but {protected_branch} is at {refs[protected_branch]}"
+    )
+print(refs[peeled])
 PY
+}
+
+github_cli() {
+  if [[ -n "$GITHUB_API_TOKEN" ]]; then
+    GH_TOKEN="$GITHUB_API_TOKEN" "$GH_BIN" "$@"
+  else
+    "$GH_BIN" "$@"
+  fi
 }
 
 verify_github_release_receipt() {
   local receipt="$TMP_DIR/github-release.json"
   local tag="v$WORKSPACE_VERSION"
-  if [[ -n "$GITHUB_API_TOKEN" ]]; then
-    GH_TOKEN="$GITHUB_API_TOKEN" "$GH_BIN" release view "$tag" \
-      --repo "$GITHUB_REPOSITORY" \
-      --json tagName,isDraft,isPrerelease,assets,url >"$receipt" ||
-      die "GitHub release receipt lookup failed for $tag"
-  else
-    "$GH_BIN" release view "$tag" \
-      --repo "$GITHUB_REPOSITORY" \
-      --json tagName,isDraft,isPrerelease,assets,url >"$receipt" ||
-      die "GitHub release receipt lookup failed for $tag"
-  fi
+  github_cli release view "$tag" \
+    --repo "$GITHUB_REPOSITORY" \
+    --json tagName,isDraft,isImmutable,isPrerelease,assets,url >"$receipt" ||
+    die "GitHub release receipt lookup failed for $tag"
   "$PYTHON_BIN" - "$receipt" "$tag" <<'PY'
 import json
 import pathlib
@@ -293,7 +313,10 @@ if payload.get("tagName") != tag or payload.get("isDraft") is not False:
     raise SystemExit("GitHub release is absent, draft, or bound to the wrong tag")
 if payload.get("isPrerelease") is not False:
     raise SystemExit("GitHub release is still marked as a prerelease")
-if not isinstance(payload.get("url"), str) or not payload["url"].startswith("https://github.com/"):
+if payload.get("isImmutable") is not True:
+    raise SystemExit("GitHub release is not immutable")
+expected_url = f"https://github.com/ashlrai/phantom-secrets/releases/tag/{tag}"
+if payload.get("url") != expected_url:
     raise SystemExit("GitHub release URL is missing or invalid")
 if not isinstance(assets, list) or any(not isinstance(asset, dict) for asset in assets):
     raise SystemExit("GitHub release assets are malformed")
@@ -307,6 +330,41 @@ for asset in assets:
         raise SystemExit(f"GitHub release asset has invalid size: {asset.get('name')}")
 print(payload["url"])
 PY
+}
+
+verify_hosted_release_evidence() {
+  local tag="v$WORKSPACE_VERSION"
+  local hosted_dir="$TMP_DIR/hosted-release"
+  local archive
+  mkdir -p -- "$hosted_dir"
+  github_cli release download "$tag" \
+    --repo "$GITHUB_REPOSITORY" \
+    --dir "$hosted_dir" || die "could not download the exact hosted release artifacts for $tag"
+  "$NODE_BIN" scripts/release/verify-release-artifacts.mjs "$hosted_dir" ||
+    die "hosted GitHub release artifacts failed exact digest and structure verification"
+  for archive in \
+    phantom-aarch64-apple-darwin.tar.gz \
+    phantom-x86_64-apple-darwin.tar.gz \
+    phantom-aarch64-unknown-linux-gnu.tar.gz \
+    phantom-x86_64-unknown-linux-gnu.tar.gz \
+    phantom-aarch64-pc-windows-msvc.zip \
+    phantom-x86_64-pc-windows-msvc.zip; do
+    github_cli attestation verify "$hosted_dir/$archive" \
+      --repo "$GITHUB_REPOSITORY" \
+      --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+      --source-ref "refs/tags/$tag" \
+      --source-digest "$SOURCE_SHA" \
+      --deny-self-hosted-runners >/dev/null ||
+      die "GitHub build-provenance attestation verification failed for $archive"
+    github_cli attestation verify "$hosted_dir/$archive" \
+      --repo "$GITHUB_REPOSITORY" \
+      --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+      --source-ref "refs/tags/$tag" \
+      --source-digest "$SOURCE_SHA" \
+      --predicate-type "https://spdx.dev/Document/v2.3" \
+      --deny-self-hosted-runners >/dev/null ||
+      die "GitHub SPDX attestation verification failed for $archive"
+  done
 }
 
 if [[ "$MODE" == "publish" ]]; then
@@ -339,6 +397,7 @@ if [[ "$MODE" == "publish" ]]; then
   GITHUB_RELEASE_URL="$(verify_github_release_receipt)" ||
     die "could not verify the completed GitHub release for v$WORKSPACE_VERSION"
   readonly GITHUB_RELEASE_URL
+  verify_hosted_release_evidence
   printf 'Authorized crates.io publication: version=%s source=%s release=%s\n' \
     "$WORKSPACE_VERSION" "$SOURCE_SHA" "$GITHUB_RELEASE_URL"
 elif [[ "$ALLOW_DIRTY" -eq 0 && -n "$($GIT_BIN status --porcelain --untracked-files=all)" ]]; then

@@ -1,4 +1,7 @@
-//! Stripe App OAuth — the `oauth-refresh` grant for Stripe.
+//! Stripe App OAuth protocol foundation.
+//!
+//! Shipped 0.7.4 returns `NotSupported` before request, browser, loopback,
+//! credential, or network access. This flow executes only in crate-local tests.
 //!
 //! [`StripeAppOAuthFlow`] runs the ONE human "accept permissions" click on a
 //! Phantom Stripe App configured with `stripe_api_access_type=oauth`, then
@@ -27,13 +30,10 @@
 //!
 //! # Refresh rolling & the 1-year window
 //!
-//! The refresh token expires 1 year after issue but is **rolled on every
-//! exchange** — any refresh cadence under a year makes it immortal. Issuance
-//! stamps a 1-year `expires_at` in metadata and writes the `rotation_provider`
-//! block so `phantom rotate --name STRIPE_REFRESH_TOKEN` performs the
-//! `grant_type=refresh_token` roll (see
-//! [`crate::rotation_provider::StripeRotationProvider`], the *additive*
-//! oauth-refresh path).
+//! The protocol documentation describes a one-year rolling refresh token, but
+//! shipped builds neither enroll nor refresh it. Refresh invalidates the prior
+//! token before Phantom can verify durable successor persistence, so it remains
+//! disabled until recovery escrow exists.
 //!
 //! # STRIPE_KOALA_TEST and raw restricted keys
 //!
@@ -48,15 +48,13 @@
 use zeroize::Zeroizing;
 
 use super::{
-    guard_mock_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
+    guard_test_only_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
     IssuanceMetadata, IssuanceOutcome, IssuanceRequest, IssuedMaterial, MaterialKind,
 };
 use crate::rotation_provider::{summarize_error_body, RotationProviderConfig};
 
-/// Fixed vault name the durable 1-year refresh token is stored under. Contains
-/// `STRIPE` and `TOKEN` so [`crate::rotation_provider::StripeRotationProvider`]
-/// matches it and `phantom rotate --name STRIPE_REFRESH_TOKEN` dispatches; the
-/// `_REFRESH_TOKEN` suffix is what selects the provider's oauth-refresh path.
+/// Reserved prospective vault name for a Stripe refresh token. Shipped builds
+/// do not enroll or refresh it.
 pub const STRIPE_REFRESH_TOKEN_NAME: &str = "STRIPE_REFRESH_TOKEN";
 
 /// Vault name for the Stripe publishable key (`pk_…`). Publishable keys are
@@ -90,13 +88,7 @@ impl ConsentEngine for StripeAppOAuthFlow {
         req: &IssuanceRequest,
         deps: &IssuanceDeps,
     ) -> Result<IssuanceOutcome, IssuanceError> {
-        // Fail closed: an overridden (non-production) endpoint may only be hit
-        // when mock issuance is explicitly enabled. This stops a prompt-injected
-        // agent from redirecting the exchange — and the refresh token it yields —
-        // to an attacker-controlled host.
-        if deps.endpoints.is_overridden() {
-            guard_mock_issuance()?;
-        }
+        guard_test_only_issuance(deps)?;
 
         // The Stripe App is a confidential client: `client_id` is the app's
         // OAuth client id (`ca_…`); the exchange is authenticated with the app
@@ -265,9 +257,8 @@ fn build_stripe_outcome(
         });
     }
 
-    // Write the rotation_provider block so `phantom rotate --name
-    // STRIPE_REFRESH_TOKEN` rolls the refresh token (grant_type=refresh_token),
-    // keeping the 1-year chain alive. account_id scopes acct_-aware calls.
+    // Protocol-test metadata only. Shipped enrollment and refresh remain hard
+    // denied; account_id records the prospective account scope.
     let rotation_config = RotationProviderConfig {
         provider: "stripe".to_string(),
         api_key_env: Some(STRIPE_REFRESH_TOKEN_NAME.to_string()),
@@ -285,11 +276,9 @@ fn build_stripe_outcome(
         .unwrap_or_else(|| req.scopes.clone());
 
     let mut notes = vec![
-        "1-hour access tokens are minted on demand from the vaulted refresh token — \
-         never stored, never shown."
+        "Protocol-test outcome only: shipped builds do not enroll or refresh Stripe credentials."
             .to_string(),
-        "`phantom rotate --name STRIPE_REFRESH_TOKEN` rolls the 1-year refresh token; \
-         any cadence under a year keeps the chain immortal."
+        "Refresh remains disabled until a durable verified recovery escrow can preserve the prior credential on local persistence failure."
             .to_string(),
     ];
     if let Some(acct) = account.as_deref() {
@@ -331,10 +320,9 @@ const STRIPE_RAK_NOT_SUPPORTED_REASON: &str =
      creation is dashboard-only, behind an interactive 2FA dialog. For a test-mode key \
      (e.g. STRIPE_KOALA_TEST): create a sandbox restricted key at \
      https://dashboard.stripe.com/test/apikeys/create (sandbox keys are always revealable \
-     and never expire), then store it with `phantom add STRIPE_KOALA_TEST`. \
-     RECOMMENDED for a self-refreshing credential: use the OAuth app flow instead — \
-     `phantom grant add stripe --client-id <ca_…>` — which mints 1-hour access tokens off \
-     a 1-year rolling refresh token, fully unattended.";
+     and never expire), then store it with trusted-terminal `phantom add STRIPE_KOALA_TEST`. \
+     Automated enrollment and OAuth refresh are disabled in shipped 0.7.4 until durable \
+     recovery escrow exists.";
 
 impl ConsentEngine for StripeRestrictedKeyFlow {
     fn name(&self) -> &str {
@@ -408,7 +396,7 @@ mod tests {
     /// that repointed `HOME`/`PHANTOM_AUDIT` would otherwise miscount. Same idiom
     /// the pkce/device/vercel/audit tests use; poison-tolerant so one panicking
     /// test never cascades into the rest of the suite.
-    fn issue_audit_guard() -> std::sync::MutexGuard<'static, ()> {
+    fn issue_audit_guard() -> crate::ProcessEnvGuard {
         crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -707,7 +695,8 @@ mod tests {
         match err {
             IssuanceError::NotSupported { reason } => {
                 assert!(reason.contains("dashboard.stripe.com"));
-                assert!(reason.contains("grant add stripe"));
+                assert!(reason.contains("Automated enrollment"));
+                assert!(reason.contains("recovery escrow"));
             }
             other => panic!("expected NotSupported, got {other:?}"),
         }

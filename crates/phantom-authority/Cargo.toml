@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 publish.workspace = true
-description = "Fail-closed authority contracts for Phantom Secrets agent workflows"
+description = "Inactive, fail-closed authority contracts for future Phantom agent workflows"
 keywords = ["secrets", "agents", "authorization", "security"]
 categories = ["development-tools"]
 

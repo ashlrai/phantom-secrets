@@ -10,6 +10,8 @@
 /// PHANTOM_VAULT_PASSPHRASE is set so that if the OS keychain is unavailable
 /// (CI, sandboxed environments) the encrypted-file vault backend is used with
 /// a deterministic passphrase instead of panicking.
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -39,8 +41,37 @@ fn run_init(dir: &TempDir) -> assert_cmd::assert::Assert {
 }
 
 #[test]
+fn init_rejects_single_project_dry_run_without_mutating() {
+    let dir = common::canonical_tempdir();
+    let env_path = dir.path().join(".env");
+    let original = "OPENAI_API_KEY=sk-real-test\n";
+    fs::write(&env_path, original).expect("write .env");
+
+    let output = Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["init", "--dry-run"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .output()
+        .expect("run phantom init --dry-run");
+
+    assert!(
+        !output.status.success(),
+        "unsupported flag combination must fail"
+    );
+    assert_eq!(
+        fs::read_to_string(&env_path).expect("read .env"),
+        original,
+        "rejected preview must not rewrite .env"
+    );
+    assert!(!dir.path().join(".phantom.toml").exists());
+    assert!(!dir.path().join(".env.example").exists());
+}
+
+#[test]
 fn init_creates_phantom_toml() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     run_init(&dir).success();
     assert!(
         dir.path().join(".phantom.toml").exists(),
@@ -49,8 +80,30 @@ fn init_creates_phantom_toml() {
 }
 
 #[test]
+fn init_excludes_the_bearerless_lifecycle_lock_from_git() {
+    let dir = common::canonical_tempdir();
+    run_init(&dir).success();
+
+    let gitignore = fs::read_to_string(dir.path().join(".gitignore")).expect("read .gitignore");
+    assert!(
+        gitignore
+            .lines()
+            .any(|line| line.trim() == ".phantom.proxy.lock"),
+        "the bearerless foreground lifecycle lock must be ignored"
+    );
+    assert!(gitignore.lines().any(|line| line.trim() == ".phantom.pid"));
+    assert!(gitignore
+        .lines()
+        .any(|line| line.trim() == ".phantom.start.lock"));
+    assert!(
+        !gitignore.lines().any(|line| line.trim() == ".phantom.toml"),
+        "shareable value-free project configuration must remain trackable"
+    );
+}
+
+#[test]
 fn init_rewrites_env_with_phantom_tokens() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     run_init(&dir).success();
 
     let env_content = fs::read_to_string(dir.path().join(".env")).expect("read .env");
@@ -78,7 +131,7 @@ fn init_rewrites_env_with_phantom_tokens() {
 
 #[test]
 fn init_leaves_non_secret_vars_untouched() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     run_init(&dir).success();
 
     let env_content = fs::read_to_string(dir.path().join(".env")).expect("read .env");
@@ -92,7 +145,7 @@ fn init_leaves_non_secret_vars_untouched() {
 
 #[test]
 fn init_never_leaves_a_plaintext_env_backup() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     run_init(&dir).success();
 
     let backup = dir.path().join(".env.backup");
@@ -101,7 +154,7 @@ fn init_never_leaves_a_plaintext_env_backup() {
 
 #[test]
 fn init_no_env_file_fails_gracefully() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     // No .env written — init should fail with a clear error message
     Command::cargo_bin("phantom")
         .expect("binary not found")
@@ -116,10 +169,11 @@ fn init_no_env_file_fails_gracefully() {
 }
 
 /// `phantom init --empty` creates .phantom.toml in a fresh dir without a .env,
-/// and `phantom add FOO --stdin` then succeeds (auto-init path also covered).
+/// and `phantom add FOO --stdin` then succeeds through the required explicit
+/// initialization path.
 #[test]
 fn init_empty_creates_config_and_add_works() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
 
     // Step 1: phantom init --empty — must succeed and produce .phantom.toml
     Command::cargo_bin("phantom")
@@ -148,14 +202,14 @@ fn init_empty_creates_config_and_add_works() {
         .success();
 }
 
-/// `phantom add BAR --stdin` in a brand-new directory (no .phantom.toml at all)
-/// must auto-create .phantom.toml and succeed — the auto-init-on-first-add path.
+/// `phantom add BAR --stdin` in a brand-new directory must fail before creating
+/// project state and direct the user to the explicit transactional init path.
 #[test]
-fn add_auto_inits_when_no_config() {
-    let dir = TempDir::new().unwrap();
+fn add_requires_explicit_init_when_no_config() {
+    let dir = common::canonical_tempdir();
 
     // No init step — go straight to add
-    Command::cargo_bin("phantom")
+    let output = Command::cargo_bin("phantom")
         .expect("binary not found")
         .args(["add", "BAR", "--stdin"])
         .current_dir(dir.path())
@@ -163,12 +217,10 @@ fn add_auto_inits_when_no_config() {
         .env("HOME", dir.path())
         .write_stdin("anothersecret\n")
         .assert()
-        .success();
+        .failure();
+    assert!(String::from_utf8_lossy(&output.get_output().stderr).contains("phantom init --empty"));
 
-    assert!(
-        dir.path().join(".phantom.toml").exists(),
-        ".phantom.toml should be auto-created by phantom add"
-    );
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
 }
 
 /// `phantom init` must leave NEXT_PUBLIC_*, VITE_*, REACT_APP_*, EXPO_PUBLIC_*,
@@ -176,7 +228,7 @@ fn add_auto_inits_when_no_config() {
 /// browser-safe public keys and must never be wrapped in phantom tokens.
 #[test]
 fn init_skips_public_framework_keys() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let env_path = dir.path().join(".env");
     fs::write(
         &env_path,
@@ -244,7 +296,7 @@ fn init_skips_public_framework_keys() {
 /// (e.g., `phantom check`, `phantom add`) can respect the skip decision.
 #[test]
 fn init_persists_public_keys_in_toml() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let env_path = dir.path().join(".env");
     fs::write(
         &env_path,
@@ -299,7 +351,7 @@ fn init_persists_public_keys_in_toml() {
 /// not fail or attempt to create an empty vault with phantom tokens.
 #[test]
 fn init_handles_all_public_keys_no_secrets() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let env_path = dir.path().join(".env");
     fs::write(
         &env_path,

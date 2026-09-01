@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 publish.workspace = true
-description = "Fail-closed supervised execution runtime for Phantom engineering agents"
+description = "Inactive, fail-closed supervised-execution foundations for Phantom"
 keywords = ["agents", "sandbox", "security", "runtime"]
 categories = ["development-tools"]
 

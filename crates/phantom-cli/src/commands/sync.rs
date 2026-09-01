@@ -2,9 +2,59 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::sync::{self, Platform, SyncStatus};
+use rand::RngCore;
 use serde::Serialize;
-use std::collections::BTreeMap;
-use zeroize::Zeroize;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, IsTerminal, Write};
+use zeroize::{Zeroize, Zeroizing};
+
+struct SyncTargetSpec {
+    platform: Platform,
+    token: Zeroizing<String>,
+    token_env: String,
+    project_id: String,
+    environments: Vec<String>,
+    service_id: Option<String>,
+    environment_id: Option<String>,
+    only: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct LiveTargetPlan {
+    platform: String,
+    project_id: String,
+    token_env: String,
+    token_present: bool,
+    environments: Vec<String>,
+    service_id: Option<String>,
+    environment_id: Option<String>,
+    filters: Vec<String>,
+    selected_keys: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct LiveSyncReceipt {
+    mode: &'static str,
+    plan_digest: String,
+    fully_succeeded: bool,
+    targets: Vec<LiveTargetReceipt>,
+}
+
+#[derive(Debug, Serialize)]
+struct LiveTargetReceipt {
+    plan: LiveTargetPlan,
+    outcome: &'static str,
+    stages: Vec<LiveKeyStage>,
+}
+
+#[derive(Debug, Serialize)]
+struct LiveKeyStage {
+    key: String,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
 
 pub fn run(
     platform: Option<String>,
@@ -40,7 +90,7 @@ async fn run_async(
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Cheap precondition check before decrypting anything.
     let secret_names = vault.list().context("Failed to list secrets")?;
@@ -56,11 +106,10 @@ async fn run_async(
                 exit_code: 1,
             })?
         );
-        std::process::exit(1);
+        anyhow::bail!("Sync dry run found no vault secrets.");
     }
     if secret_names.is_empty() {
-        println!("{} No secrets in vault to sync.", "!".yellow().bold());
-        return Ok(());
+        anyhow::bail!("No secrets in vault to sync.");
     }
 
     // Determine sync targets
@@ -74,25 +123,22 @@ async fn run_async(
                 Platform::Railway => "RAILWAY_TOKEN",
             };
 
-            let token = std::env::var(token_env).unwrap_or_default();
-
-            if token.is_empty() && !dry_run {
-                anyhow::bail!("{token_env} not set. Export your {} API token.", platform);
-            }
+            let token = Zeroizing::new(std::env::var(token_env).unwrap_or_default());
 
             let project_id = project_override.clone().context(
                 "No project ID specified. Use --project <id> or add [[sync]] to .phantom.toml",
             )?;
 
-            vec![(
+            vec![SyncTargetSpec {
                 platform,
                 token,
+                token_env: token_env.to_string(),
                 project_id,
-                vec!["production".to_string(), "preview".to_string()],
-                None,
-                None,
-                Vec::<String>::new(), // no per-target only; cli_only applied later
-            )]
+                environments: vec!["production".to_string(), "preview".to_string()],
+                service_id: None,
+                environment_id: None,
+                only: Vec::new(),
+            }]
         } else {
             eprintln!("{} No sync targets configured.", "!".yellow().bold());
             eprintln!();
@@ -109,7 +155,7 @@ async fn run_async(
                 "--platform vercel".cyan(),
                 "--project <project-id>".cyan()
             );
-            return Ok(());
+            anyhow::bail!("No sync targets configured.");
         }
     } else {
         // Use configured sync targets
@@ -124,43 +170,103 @@ async fn run_async(
                 }
             })
             .map(|t| {
-                let token = std::env::var(&t.token_env).unwrap_or_default();
+                let token = Zeroizing::new(std::env::var(&t.token_env).unwrap_or_default());
                 let pid = project_override
                     .clone()
                     .unwrap_or_else(|| t.project_id.clone());
-                (
-                    t.platform.clone(),
+                SyncTargetSpec {
+                    platform: t.platform.clone(),
                     token,
-                    pid,
-                    t.targets.clone(),
-                    t.service_id.clone(),
-                    t.environment_id.clone(),
-                    t.only.clone(), // per-target only patterns from .phantom.toml
-                )
+                    token_env: t.token_env.clone(),
+                    project_id: pid,
+                    environments: t.targets.clone(),
+                    service_id: t.service_id.clone(),
+                    environment_id: t.environment_id.clone(),
+                    only: t.only.clone(),
+                }
             })
             .collect()
     };
 
     if targets.is_empty() {
-        println!("{} No matching sync targets.", "!".yellow().bold());
-        return Ok(());
+        anyhow::bail!("No matching sync targets.");
     }
 
     if dry_run {
         return run_dry_run(&secret_names, &targets, &cli_only, json);
     }
 
-    // Decrypt vault values only after we know we have targets to push to.
-    // Anything that exits via `return Ok(())` above never touches plaintext.
+    let plans = build_live_plans(&secret_names, &targets, &cli_only);
+    let plan_digest = sync_plan_digest(&plans)?;
+    let mut preflight_receipts = Vec::new();
+    let mut preflight_failed = false;
+    for (target, plan) in targets.iter().zip(&plans) {
+        let mut stages = Vec::new();
+        if target.token.is_empty() {
+            preflight_failed = true;
+            stages.push(LiveKeyStage {
+                key: target.token_env.clone(),
+                status: "missing_credential",
+                error: Some("deployment credential environment variable is not set".to_string()),
+            });
+        }
+        for (pattern, error) in sync::validate_only_patterns(&plan.filters) {
+            preflight_failed = true;
+            stages.push(LiveKeyStage {
+                key: pattern,
+                status: "invalid_filter",
+                error: Some(error),
+            });
+        }
+        if plan.selected_keys.is_empty() {
+            preflight_failed = true;
+            stages.push(LiveKeyStage {
+                key: "selection".to_string(),
+                status: "empty_selection",
+                error: Some("no vault secret names matched this target".to_string()),
+            });
+        }
+        preflight_receipts.push(LiveTargetReceipt {
+            plan: plan.clone(),
+            outcome: if stages.is_empty() {
+                "ready"
+            } else {
+                "preflight_failed"
+            },
+            stages,
+        });
+    }
+    if preflight_failed {
+        let receipt = LiveSyncReceipt {
+            mode: "live",
+            plan_digest,
+            fully_succeeded: false,
+            targets: preflight_receipts,
+        };
+        eprintln!("stage_receipt: {}", serde_json::to_string(&receipt)?);
+        anyhow::bail!(
+            "Live sync preflight failed before vault plaintext access or provider network calls."
+        );
+    }
+
+    require_trusted_terminal_sync(&plans)?;
+
+    // Decrypt only the exact union reviewed in the attached terminal.
+    let selected_names: BTreeSet<String> = plans
+        .iter()
+        .flat_map(|plan| plan.selected_keys.iter().cloned())
+        .collect();
     let mut secrets: BTreeMap<String, String> = BTreeMap::new();
-    for name in &secret_names {
+    let mut retrieval_failures = BTreeSet::new();
+    for name in &selected_names {
         match vault.retrieve(name) {
             Ok(value) => {
                 secrets.insert(name.clone(), String::from(value.as_str()));
             }
             Err(_) => {
+                retrieval_failures.insert(name.clone());
                 eprintln!(
-                    "{} Could not retrieve {} from vault, skipping",
+                    "{} Could not retrieve {} from vault; the stage receipt records the skip",
                     "warn".yellow(),
                     name
                 );
@@ -168,114 +274,110 @@ async fn run_async(
         }
     }
 
-    for (platform, token, project_id, env_targets, service_id, environment_id, target_only) in
-        &targets
-    {
-        // Merge CLI --only flags with per-target `only` from .phantom.toml.
-        // The union is OR-ed: a key passes if it matches any pattern from
-        // either source. When both are empty no filter is applied.
-        let effective_only: Vec<String> = {
-            let mut merged = cli_only.clone();
-            merged.extend(target_only.iter().cloned());
-            merged
-        };
-        // Apply the filter; build a temporary owned map for the push calls.
-        let filtered_secrets: BTreeMap<String, String> =
-            phantom_core::sync::filter_by_only(&secrets, &effective_only)
-                .into_iter()
-                .map(|(k, v)| (k, v.clone()))
-                .collect();
-
-        if filtered_secrets.is_empty() && !effective_only.is_empty() {
-            println!(
-                "{} No secrets matched the --only filter for {} — skipping",
-                "!".yellow().bold(),
-                platform.to_string().cyan().bold()
-            );
-            continue;
-        }
-        if token.is_empty() {
-            let token_env = match platform {
-                Platform::Vercel => "VERCEL_TOKEN",
-                Platform::Railway => "RAILWAY_TOKEN",
-            };
-            eprintln!(
-                "{} {} not set — skipping {}",
-                "warn".yellow(),
-                token_env,
-                platform
-            );
-            continue;
-        }
+    let mut target_receipts = Vec::new();
+    let mut any_failure = !retrieval_failures.is_empty();
+    for (target, plan) in targets.iter().zip(&plans) {
+        let mut stages: Vec<LiveKeyStage> = plan
+            .selected_keys
+            .iter()
+            .filter(|name| retrieval_failures.contains(*name))
+            .map(|name| LiveKeyStage {
+                key: name.clone(),
+                status: "vault_retrieval_failed",
+                error: Some("vault retrieval failed; provider was not called for this key".into()),
+            })
+            .collect();
+        let mut filtered_secrets: BTreeMap<String, String> = plan
+            .selected_keys
+            .iter()
+            .filter_map(|name| secrets.get(name).map(|value| (name.clone(), value.clone())))
+            .collect();
 
         println!(
             "\n{} Syncing {} secret(s) to {} (project: {})...",
             "->".blue().bold(),
             filtered_secrets.len(),
-            platform.to_string().cyan().bold(),
-            project_id.dimmed()
+            target.platform.to_string().cyan().bold(),
+            target.project_id.dimmed()
         );
 
-        let results = match platform {
-            Platform::Vercel => {
-                sync::sync_to_vercel(token, project_id, &filtered_secrets, env_targets).await
-            }
-            Platform::Railway => {
-                let env_id = environment_id.as_deref().unwrap_or("production");
-                sync::sync_to_railway(
-                    token,
-                    project_id,
-                    env_id,
-                    service_id.as_deref(),
-                    &filtered_secrets,
-                )
-                .await
+        let results = if filtered_secrets.is_empty() {
+            Vec::new()
+        } else {
+            match target.platform {
+                Platform::Vercel => {
+                    sync::sync_to_vercel(
+                        target.token.as_str(),
+                        &target.project_id,
+                        &filtered_secrets,
+                        &target.environments,
+                    )
+                    .await
+                }
+                Platform::Railway => {
+                    let env_id = target.environment_id.as_deref().unwrap_or("production");
+                    sync::sync_to_railway(
+                        target.token.as_str(),
+                        &target.project_id,
+                        env_id,
+                        target.service_id.as_deref(),
+                        &filtered_secrets,
+                    )
+                    .await
+                }
             }
         };
-
-        let mut created = 0;
-        let mut updated = 0;
-        let mut errors = 0;
 
         for result in &results {
             match &result.status {
                 SyncStatus::Created => {
                     println!("   {} {} (created)", "+".green(), result.key.bold());
-                    created += 1;
+                    stages.push(LiveKeyStage {
+                        key: result.key.clone(),
+                        status: "created",
+                        error: None,
+                    });
                 }
                 SyncStatus::Updated => {
                     println!("   {} {} (updated)", "~".blue(), result.key.bold());
-                    updated += 1;
+                    stages.push(LiveKeyStage {
+                        key: result.key.clone(),
+                        status: "updated",
+                        error: None,
+                    });
                 }
                 SyncStatus::Unchanged => {
                     println!("   {} {} (unchanged)", "-".dimmed(), result.key);
+                    stages.push(LiveKeyStage {
+                        key: result.key.clone(),
+                        status: "unchanged",
+                        error: None,
+                    });
                 }
                 SyncStatus::Error(e) => {
                     eprintln!("   {} {} ({})", "!".red().bold(), result.key.bold(), e);
-                    errors += 1;
+                    any_failure = true;
+                    stages.push(LiveKeyStage {
+                        key: result.key.clone(),
+                        status: "provider_error",
+                        error: Some(e.clone()),
+                    });
                 }
             }
         }
-
-        println!();
-        if errors > 0 {
-            println!(
-                "{} {}: {} created, {} updated, {} errors",
-                "!".yellow().bold(),
-                platform,
-                created,
-                updated,
-                errors
-            );
-        } else {
-            println!(
-                "{} {}: {} created, {} updated",
-                "ok".green().bold(),
-                platform,
-                created,
-                updated
-            );
+        for value in filtered_secrets.values_mut() {
+            value.zeroize();
         }
+        let target_failed = stages.iter().any(|stage| stage.error.is_some());
+        target_receipts.push(LiveTargetReceipt {
+            plan: plan.clone(),
+            outcome: if target_failed {
+                "partially_failed"
+            } else {
+                "succeeded"
+            },
+            stages,
+        });
     }
 
     for value in secrets.values_mut() {
@@ -283,6 +385,18 @@ async fn run_async(
     }
     drop(secrets);
 
+    let receipt = LiveSyncReceipt {
+        mode: "live",
+        plan_digest,
+        fully_succeeded: !any_failure,
+        targets: target_receipts,
+    };
+    eprintln!("stage_receipt: {}", serde_json::to_string(&receipt)?);
+    if any_failure {
+        anyhow::bail!(
+            "Live sync did not fully succeed. Successful remote effects are preserved in the stage receipt; reconcile them before retrying."
+        );
+    }
     Ok(())
 }
 
@@ -319,39 +433,116 @@ struct InvalidFilter {
     error: String,
 }
 
-type TargetTuple = (
-    Platform,
-    String,
-    String,
-    Vec<String>,
-    Option<String>,
-    Option<String>,
-    Vec<String>,
-);
+fn build_live_plans(
+    secret_names: &[String],
+    targets: &[SyncTargetSpec],
+    cli_only: &[String],
+) -> Vec<LiveTargetPlan> {
+    targets
+        .iter()
+        .map(|target| {
+            let mut filters = cli_only.to_vec();
+            filters.extend(target.only.iter().cloned());
+            let (selected_keys, _) = filter_key_names(secret_names, &filters);
+            LiveTargetPlan {
+                platform: target.platform.to_string(),
+                project_id: target.project_id.clone(),
+                token_env: target.token_env.clone(),
+                token_present: !target.token.is_empty(),
+                environments: target.environments.clone(),
+                service_id: target.service_id.clone(),
+                environment_id: target.environment_id.clone(),
+                filters,
+                selected_keys,
+            }
+        })
+        .collect()
+}
+
+fn sync_plan_digest(plans: &[LiveTargetPlan]) -> Result<String> {
+    let canonical = serde_json::to_vec(plans).context("Could not serialize live sync plan")?;
+    let mut digest = Sha256::new();
+    digest.update(b"phantom.live-sync.v1\0");
+    digest.update(canonical);
+    Ok(hex::encode(digest.finalize()))
+}
+
+fn require_trusted_terminal_sync(plans: &[LiveTargetPlan]) -> Result<()> {
+    if !std::io::stdin().is_terminal()
+        || !std::io::stdout().is_terminal()
+        || !std::io::stderr().is_terminal()
+    {
+        anyhow::bail!(
+            "Live `phantom sync` requires attached stdin, stdout, and stderr terminals and cannot run headlessly. No vault plaintext was read and no provider request was sent. Use --dry-run for a value-blind headless preview."
+        );
+    }
+    let mut nonce_bytes = [0_u8; 4];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = hex::encode(nonce_bytes);
+    let mut reader = std::io::BufReader::new(std::io::stdin().lock());
+    let mut diagnostic = std::io::stderr();
+    run_sync_confirmation(plans, &nonce, &mut reader, &mut diagnostic)
+}
+
+fn run_sync_confirmation(
+    plans: &[LiveTargetPlan],
+    nonce: &str,
+    input: &mut impl BufRead,
+    diagnostic: &mut impl Write,
+) -> Result<()> {
+    let plan_digest = sync_plan_digest(plans)?;
+    let plan_json = serde_json::to_string_pretty(plans)?;
+    let expected = format!("SYNC {plan_digest} {nonce}");
+    writeln!(diagnostic, "Phantom live deployment sync")?;
+    writeln!(diagnostic, "Exact value-blind plan:\n{plan_json}")?;
+    writeln!(
+        diagnostic,
+        "This sends the selected vault values to the named provider targets and may partially succeed."
+    )?;
+    writeln!(
+        diagnostic,
+        "Approve only if this terminal is outside the requesting agent's authority. A same-user shell or agent-controlled PTY can automate this ceremony."
+    )?;
+    writeln!(
+        diagnostic,
+        "Type this exact challenge to continue:\n{expected}"
+    )?;
+    write!(diagnostic, "> ")?;
+    diagnostic.flush()?;
+
+    let mut response = String::new();
+    input
+        .read_line(&mut response)
+        .context("Failed to read trusted-terminal sync confirmation")?;
+    if response.trim_end_matches(['\r', '\n']) != expected {
+        anyhow::bail!(
+            "Live sync confirmation did not match exactly. No vault plaintext was read and no provider request was sent."
+        );
+    }
+    Ok(())
+}
 
 fn run_dry_run(
     secret_names: &[String],
-    targets: &[TargetTuple],
+    targets: &[SyncTargetSpec],
     cli_only: &[String],
     json: bool,
 ) -> Result<()> {
     let mut report_targets = Vec::new();
 
-    for (platform, token, project_id, env_targets, service_id, environment_id, target_only) in
-        targets
-    {
+    for target in targets {
         let mut filters = cli_only.to_vec();
-        filters.extend(target_only.iter().cloned());
+        filters.extend(target.only.iter().cloned());
 
         let (selected_keys, skipped_keys) = filter_key_names(secret_names, &filters);
         let invalid_filters: Vec<InvalidFilter> = sync::validate_only_patterns(&filters)
             .into_iter()
             .map(|(pattern, error)| InvalidFilter { pattern, error })
             .collect();
-        let token_env = token_env_for(platform).to_string();
+        let token_env = target.token_env.clone();
         let mut warnings = Vec::new();
 
-        if token.is_empty() {
+        if target.token.is_empty() {
             warnings.push(format!("{token_env} is not set"));
         }
         if selected_keys.is_empty() {
@@ -363,13 +554,13 @@ fn run_dry_run(
         let selected_count = selected_keys.len();
 
         report_targets.push(SyncDryRunTarget {
-            platform: platform.to_string(),
-            project_id: project_id.clone(),
+            platform: target.platform.to_string(),
+            project_id: target.project_id.clone(),
             token_env,
-            token_present: !token.is_empty(),
-            environments: env_targets.clone(),
-            service_id: service_id.clone(),
-            environment_id: environment_id.clone(),
+            token_present: !target.token.is_empty(),
+            environments: target.environments.clone(),
+            service_id: target.service_id.clone(),
+            environment_id: target.environment_id.clone(),
             filters,
             invalid_filters,
             selected_keys,
@@ -452,7 +643,7 @@ fn run_dry_run(
     if exit_code == 0 {
         Ok(())
     } else {
-        std::process::exit(exit_code);
+        anyhow::bail!("Sync dry run found one or more blocking target conditions.");
     }
 }
 
@@ -473,16 +664,10 @@ fn filter_key_names(secret_names: &[String], patterns: &[String]) -> (Vec<String
     (selected, skipped)
 }
 
-fn token_env_for(platform: &Platform) -> &'static str {
-    match platform {
-        Platform::Vercel => "VERCEL_TOKEN",
-        Platform::Railway => "RAILWAY_TOKEN",
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::filter_key_names;
+    use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn filter_key_names_without_patterns_selects_all() {
@@ -502,5 +687,101 @@ mod tests {
         let (selected, skipped) = filter_key_names(&names, &["*_KEY".to_string()]);
         assert_eq!(selected, vec!["OPENAI_API_KEY", "STRIPE_SECRET_KEY"]);
         assert_eq!(skipped, vec!["NODE_ENV"]);
+    }
+
+    fn plan() -> LiveTargetPlan {
+        LiveTargetPlan {
+            platform: "vercel".into(),
+            project_id: "project-a".into(),
+            token_env: "VERCEL_TOKEN".into(),
+            token_present: true,
+            environments: vec!["production".into()],
+            service_id: None,
+            environment_id: None,
+            filters: vec!["API_*".into()],
+            selected_keys: vec!["API_KEY".into()],
+        }
+    }
+
+    #[test]
+    fn plan_digest_binds_every_effect_field() {
+        let original = plan();
+        let original_digest = sync_plan_digest(std::slice::from_ref(&original)).unwrap();
+        let mut variants = Vec::new();
+        let mut changed = original.clone();
+        changed.platform = "railway".into();
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.project_id = "project-b".into();
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.environments = vec!["preview".into()];
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.environment_id = Some("environment-b".into());
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.service_id = Some("service-b".into());
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.filters = vec!["OTHER_*".into()];
+        variants.push(changed);
+        let mut changed = original;
+        changed.selected_keys = vec!["OTHER_KEY".into()];
+        variants.push(changed);
+
+        for variant in variants {
+            assert_ne!(
+                original_digest,
+                sync_plan_digest(&[variant]).unwrap(),
+                "every provider effect field must be challenge-bound"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_digest_and_fresh_nonce_are_required() {
+        let plans = vec![plan()];
+        let digest = sync_plan_digest(&plans).unwrap();
+        let expected = format!("SYNC {digest} fresh1234\n");
+        let mut output = Vec::new();
+        run_sync_confirmation(&plans, "fresh1234", &mut Cursor::new(expected), &mut output)
+            .unwrap();
+
+        let error = run_sync_confirmation(
+            &plans,
+            "fresh1234",
+            &mut Cursor::new(format!("SYNC {digest} wrongnonce\n")),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("did not match exactly"));
+    }
+
+    #[test]
+    fn noninteractive_entrypoint_denies_before_confirmation() {
+        if !std::io::stdin().is_terminal()
+            || !std::io::stdout().is_terminal()
+            || !std::io::stderr().is_terminal()
+        {
+            let error = require_trusted_terminal_sync(&[plan()]).unwrap_err();
+            assert!(error.to_string().contains("cannot run headlessly"));
+        }
+    }
+
+    #[test]
+    fn confirmation_precedes_vault_retrieval_and_provider_calls() {
+        let source = include_str!("sync.rs");
+        let confirmation = source
+            .find("require_trusted_terminal_sync(&plans)?")
+            .expect("live path must require terminal confirmation");
+        let retrieval = source
+            .find("for name in &selected_names")
+            .expect("live path must retrieve the reviewed selection");
+        let provider = source
+            .find("sync::sync_to_vercel(")
+            .expect("live path must contain provider call");
+        assert!(confirmation < retrieval);
+        assert!(retrieval < provider);
     }
 }

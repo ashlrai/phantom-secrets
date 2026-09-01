@@ -28,6 +28,8 @@ zeroize = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"], default-features = false }
 base64 = { workspace = true }
+cap-std = { workspace = true }
+cap-fs-ext = { workspace = true }
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
 tokio = { workspace = true }
 tempfile = "3"
@@ -50,6 +52,16 @@ libc = "0.2"
 # RS256 signing of the in-process GitHub App JWT minted from the vaulted PEM
 # (issuance → rotation bootstrap). No key generation here — signing only.
 jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # Generate a throwaway RSA keypair at test runtime so the issuance/JWT tests

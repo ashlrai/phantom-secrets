@@ -1,56 +1,66 @@
 # Phantom — Full Reference
 
-Phantom is an open-source CLI that protects API keys from AI coding agent leaks. It replaces real secrets in .env files with worthless "phantom tokens" (phm_...) and injects real credentials at the network layer via a local HTTP reverse proxy.
+Phantom is an open-source CLI that helps keep real API keys out of AI-agent context. It replaces successfully managed dotenv secrets with persistent non-provider `phm_` placeholders. An authenticated local HTTP proxy matches exact supported routes and injects a route-owned vault value only into that route's fixed authentication header; client headers and bodies never resolve placeholders. Persistent mappings are sensitive metadata and must remain confidential.
 
 Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Install: `npx phantom-secrets init` or `brew tap ashlrai/phantom && brew install phantom`
-MCP: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
+Current reviewed release: `v0.7.3` at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
+Install: macOS uses the exact Homebrew tap/trust/fully-qualified formula commands below; Linux and Windows use the exact checksum-verified `v0.7.3` assets below
+MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`
 
 
 ## The Problem
 
 AI coding tools with dotenv filesystem access can put real API keys into the LLM context window. They can leak via session logs and transcripts, prompt injection attacks, malicious MCP servers, code generation, and potential training data exposure.
 
-GitGuardian reports 39.6M secrets leaked on GitHub in 2025. AI-assisted commits leak at 2x the baseline rate.
+GitGuardian reports 28.65M new hardcoded secrets in public GitHub commits in
+2025, a 34% year-over-year increase.
+AI-service secrets separately increased 81% year over year; that category-specific figure does not apply to all secrets. Primary source:
+https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/
 
 
 ## How Phantom Works
 
-1. `phantom init` reads your .env, stores real secrets in an encrypted vault (OS keychain or ChaCha20-Poly1305 encrypted file), and rewrites .env with worthless phantom tokens (phm_...).
+1. `phantom init` reads your .env, stores real secrets in an encrypted vault (OS keychain or ChaCha20-Poly1305 encrypted file), and rewrites .env with persistent `phm_` mappings. Those mappings do not contain the plaintext value, but they are sensitive metadata and must not be disclosed or published.
 
 2. `phantom exec -- claude` starts a local HTTP reverse proxy on 127.0.0.1. It sets SDK-compatible BASE_URL environment variables (e.g., OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/), exposes a fresh PHANTOM_PROXY_TOKEN to the child process, then launches the specified command.
 
-3. When code makes an API call, the proxy authenticates the local session, removes its local auth token before forwarding, replaces phantom tokens with real credentials in request headers and body, and forwards over TLS to the real API endpoint. Full streaming/SSE support for OpenAI and Anthropic.
+3. When code makes an API call, the proxy authenticates the local session, removes its local auth token, matches an exact route, discards client control of that route's authentication header, and injects only the route-owned vault value into the fixed header before forwarding over TLS. Client headers and bodies never resolve `phm_` placeholders. Bodies are bounded and forwarded byte-for-byte; provider responses can stream, including SSE.
 
 4. Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN. Header-aware clients can set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 and send it as x-phantom-proxy-token instead of using path-authenticated local SDK URLs.
 
-5. The AI agent never sees, logs, or transmits a real secret.
+5. In the supported managed workflow, the agent receives sensitive managed placeholders and scrubbed responses rather than real credential values. `phantom exec` supplies a fresh proxy bearer, which must be protected while active. Unmanaged files, logs, direct environment injection, custom tools, and provider behavior remain outside that claim.
 
 
 ## Install
 
-### npx (recommended)
-```
-npx phantom-secrets init
-```
-Downloads the correct platform binary automatically. No Rust toolchain needed.
-
-### Homebrew (macOS)
+### Homebrew (macOS, reviewed v0.7.3)
 ```
 brew tap ashlrai/phantom
-brew install phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
 ```
 
-### Direct binary download
-Download from: https://github.com/ashlrai/phantom-secrets/releases
+### Exact v0.7.3 assets
+Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz
+Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz
+Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip
+Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip
+For each archive, download its adjacent `.sha256` sidecar, verify it, extract both `phantom` and `phantom-mcp` executables, and place them on PATH.
 
-### Cargo (from source)
+### Exact source build
 ```
-cargo install phantom-secrets
+git clone https://github.com/ashlrai/phantom-secrets.git
+cd phantom-secrets
+git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
+
+Registry status verified 2026-08-31: npm and the MCP Registry publish 0.6.0;
+crates.io publishes 0.5.1. Unpinned npm, npx, and `cargo install` commands are
+older distribution tracks, not the reviewed v0.7.3 release.
 
 ### Verify
 ```
@@ -61,10 +71,15 @@ phantom --version
 ## CLI Commands
 
 ### phantom init
-Read .env, store real secrets in vault, rewrite with phantom tokens, create .phantom.toml.
+Read .env, store real secrets in vault, rewrite it with persistent sensitive mappings, and create .phantom.toml.
 Options: --from <path> (non-standard .env location)
-Safe to re-run: new secrets are added, existing tokens preserved.
-Multi-project: --all <DIR> walks a workspace and runs init in every git repo with a .env.
+After a completed run, rerunning from the same real project directory adds new
+secrets and preserves existing tokens. A
+`CommittedVerifiedButDurabilityUncertain` warning is committed and exactly
+verified success, so do not roll it back or retry it. After
+`CommittedButUncertain` or another Partial warning, inspect and reconcile the
+intended project and current ambient path before retrying.
+Multi-project: phantom init --all <DIR> processes eligible git repositories found within a scan of at most five levels and stops descending below the first matching repository.
   --dry-run: preview which repos would be touched without modifying anything.
   --jobs N / -j N: number of repos to initialise concurrently (default: 4; also reads PHANTOM_INIT_JOBS env var).
   A progress bar shows live status during --all runs.
@@ -83,31 +98,40 @@ Example: phantom exec -- claude
 Example: phantom exec -- cursor .
 Example: phantom exec -- node server.js
 
-### phantom start / phantom stop
-Standalone proxy lifecycle. --daemon flag runs in background.
-phantom start --daemon
-phantom stop
+### phantom start
+Run an explicitly supervised foreground proxy in a trusted terminal. Keep that
+terminal open and press Ctrl-C there to stop. Detached `--daemon` mode and
+external `phantom stop` fail closed; no PID, port, or proxy bearer is persisted
+for cross-process control.
 
 ### phantom list
 Show secret names stored in vault. Never shows values.
 Options: --json (emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded)
 
 ### phantom add <KEY>
-Add a secret to the vault. Writes phantom token to .env.
-Prompts silently on the controlling terminal, so the value never enters shell history or `ps aux`. Positional secret values are rejected; use `--stdin` for a pipe.
+Transactionally create a new secret name in an initialized project. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Writes a persistent sensitive `phm_` mapping to the managed dotenv file.
+Prompts silently on the controlling terminal, so the value never enters shell history or `ps aux`. Positional secret values are rejected; use `--stdin` only with a trusted pipe. Existing names are denied before prompt/stdin read and are never replaced.
 Example (interactive, hidden input): phantom add STRIPE_SECRET_KEY
-Options: --stdin (read one line from a piped stdin; CI-friendly: `echo "$VAL" | phantom add KEY --stdin`)
+Options: --stdin (read one line for a new name from a trusted piped producer)
 
 ### phantom remove <KEY>
-Remove a secret from the vault permanently.
+From an attached trusted terminal, review and type the exact removal challenge.
+The transaction removes the vault value, lifecycle record, and exact managed-
+dotenv mapping together or rolls back transaction-owned changes.
 
 ### phantom reveal <KEY>
 View a real secret value. Blocked in non-interactive contexts by default.
 Options: --clipboard (auto-clears after 30s). Attached terminals and exact typed confirmation are always required; there is no non-interactive bypass.
 
 ### phantom rotate
-Regenerate all phantom tokens in .env. Real secrets in vault are unchanged.
-Options: --sync (push updated tokens to deployment platforms simultaneously)
+Regenerate all persistent `phm_` mappings in .env. Real secrets in vault are unchanged; old mappings become invalid.
+Requires attached stdin, stdout, and stderr plus an exact challenge bound to the
+canonical project, exact config and dotenv snapshots, and sorted protected-name
+digest. Headless use fails before vault access or mutation; post-approval drift
+aborts without writing.
+`--sync` is a deprecated compatibility flag and is rejected. Provider-side
+credentials are unchanged; rotate them in the provider's trusted interface and
+add the replacement credential from a trusted terminal.
 
 ### phantom status
 Show project ID, vault backend, secret count, service mappings, proxy state.
@@ -118,7 +142,7 @@ Options: --fix (auto-fix safe issues)
 
 ### phantom check
 Scans for unprotected real secrets. Exit code 1 if found.
-Options: --staged (read content from the git index instead of the working tree; staged .env files are also scanned — suitable for pre-commit hooks), --runtime (detect phantom tokens in the current environment when the proxy is not running, indicating a leak path)
+Options: --staged (read content from the git index instead of the working tree; staged .env files are also scanned — suitable for pre-commit hooks), --runtime (detect sensitive `phm_` values in the current environment when the proxy is not running, indicating a session-credential leak path)
 Example: phantom check --staged
 
 ### phantom sync
@@ -144,23 +168,36 @@ Configure Claude Code MCP server and permissions automatically.
 Writes to .claude/settings.local.json.
 
 ### phantom login
-Sign in to Phantom Cloud via GitHub OAuth (device code flow).
+Sign in through a GitHub device flow. Requires attached stdin/stdout/stderr,
+then exact typed challenges before provider access and before browser/polling/
+keychain effects.
 
 ### phantom logout
-Sign out of Phantom Cloud.
+Delete the stored cloud token only after an exact trusted-terminal challenge.
 
 ### phantom cloud push
-Encrypt vault client-side and upload to Phantom Cloud. Server never sees plaintext.
+After an exact trusted-terminal challenge, encrypt the vault client-side and
+upload ciphertext to Phantom Cloud. A config-save failure after upload is an
+explicit partial success that must be reconciled; do not retry automatically.
 
 ### phantom cloud pull
-Download and decrypt vault from Phantom Cloud.
-Options: --force (overwrite existing local secrets)
+Download and decrypt a personal-vault snapshot from Phantom Cloud. Decryption
+requires the cloud encryption key in the original OS keychain; login alone on a
+different machine is insufficient.
+Requires an exact trusted-terminal challenge. With `force=false`, skipped local
+entries preserve the prior merge base, set a durable reconciliation marker,
+and block a later push until a full pull is applied. `--force` declares local
+overwrites but never bypasses the ceremony.
 
 ### phantom cloud status
-Check cloud auth status, plan, and last sync version.
+Authenticated provider read requiring attached stdin/stdout/stderr and an exact
+typed challenge before stored-bearer or network access.
 
 ### phantom export
-Export the vault to a new encrypted backup. Omit passphrase flags for a hidden terminal prompt, or use `--passphrase-file PRIVATE_FILE` for bounded automation. Plaintext export and argv passphrases are disabled.
+Export the vault to a new encrypted backup only from attached stdin/stdout/
+stderr after an exact value-blind typed challenge and hidden passphrase prompt.
+Export `--passphrase-file`, plaintext export, argv passphrases, existing targets,
+symlinks, and output paths outside the project are rejected.
 
 ### phantom import
 Restore secrets from an encrypted backup, or import from a competitor export file.
@@ -175,7 +212,11 @@ Competitor migration (--from):
   phantom import --from dotenvx   --file .env
   phantom import --from 1password  --file 1p-export.json
   phantom import --from env        --file .env
-Options: --force (overwrite existing secrets without prompting)
+Import requires attached stdin/stdout/stderr and an exact typed plan bound to
+the source digest, target identity, destination names, and overwrite set.
+`--force` declares overwrites but never bypasses this ceremony. Encrypted-backup
+passphrase files are accepted only on non-Windows systems and do not enable a
+headless import.
 
 Note: dotenvx encrypted .env.vault files are not supported — run
   `dotenvx decrypt --stdout > .env` first, then import the plain .env.
@@ -200,7 +241,7 @@ Each log entry contains: ts (Unix epoch), op, name (secret name — never value)
 Each entry is chained with HMAC-SHA256 over the previous entry's hash and checked against a signed head checkpoint. `phantom audit verify` detects malformed lines, modified or inserted entries, sequence gaps, prefix deletion, and log tail/head mismatches; full log and checkpoint deletion still requires external evidence.
 
 ### phantom wrap
-Wrap package.json scripts with `npx phantom-secrets exec --` so secrets are injected at runtime.
+Wrap selected runtime/build package.json scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with the installed local `phantom exec --` runtime so secrets are injected at runtime. It skips test, lint, type, format, and other scripts.
 Saves originals as script:raw variants.
 Options: --only <scripts> (whitelist), --skip <scripts> (blacklist)
 
@@ -208,35 +249,47 @@ Options: --only <scripts> (whitelist), --skip <scripts> (blacklist)
 Reverse phantom wrap. Restores original scripts from :raw variants.
 
 ### phantom watch
-Watch .env for changes and update vault automatically.
+Watch managed dotenv files and report new unprotected secrets. The compatibility
+--auto flag hard-denies before mutation in 0.7.4; review the file and run
+transactional phantom init from a trusted terminal.
 
 ### phantom why <KEY>
 Explain why an environment variable is or isn't protected (shows classification heuristic).
 
 ### phantom copy <KEY> --to <dir>
-Copy a secret to another phantom-initialized project without exposing the value.
+After exact trusted-terminal confirmation, copy a secret to another phantom-initialized project without printing the value. Refuses an existing target vault entry, config ownership, or managed-dotenv key rather than overwriting it.
 Options: --rename <newname>
 
 ### phantom team list / create / members / invite / key-publish / vault-push / vault-pull
-Multi-developer shared-vault commands (Pro plan). `list` and `members` are read-only. `create` and `invite` are mutating (require explicit user confirmation when called via MCP). `key-publish` is one-time setup that registers this device's X25519 public key with the team — pubkey only, the private key stays in the OS keychain. `vault-push` wraps the project's secrets with a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305) and uploads ciphertext only; `vault-pull` is the corresponding download/decrypt.
+Multi-developer fixed-membership shared-vault commands for a planned Pro pilot. Current vault access is member-wide: every team member can read and write the shared vault, and roles do not provide per-vault access control. CLI `list` and `members` are authenticated provider reads requiring attached stdin/stdout/stderr and an exact typed challenge before bearer/network access. CLI team mutations require the same terminal ceremony before provider access. MCP team reads and mutations instead require both `confirm: true` and an out-of-band `approval_token`. The authenticated creator becomes owner; invitations may assign only `member` or `admin`, and invitation management is owner/admin-gated. `key-publish` registers this device's X25519 public key with the team — pubkey only, the private key stays in the OS keychain. `vault-push` wraps the project's secrets with a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305) and uploads ciphertext only; `vault-pull` is the corresponding download/decrypt.
+
+Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control. Pro is a planned hosted plan, not a generally purchasable or commissioned entitlement evidenced by this repository.
 
 ### phantom open [target]
-Open a Phantom page in the browser. Aliases: `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, `site`. Any other word becomes `https://phm.dev/<word>`; full URLs pass through.
+Open one closed-catalog Phantom destination only after an exact trusted-terminal
+challenge. Accepted aliases are `dashboard`, `billing`, `team`/`teams`, `docs`,
+`pricing`, `github`/`repo`, `issues`, and `site`/`home`; arbitrary paths and URLs
+are rejected.
 
 ### phantom upgrade [--check-only] [--force]
-Self-replace this binary with the latest GitHub release.
+Check-only is read-only. An eligible standalone binary may self-replace only
+after two exact trusted-terminal challenges bound to the signed release plan.
+Managed installations route to their package manager; ambiguous ownership and
+the deprecated `--force` flag fail closed.
 
 ### phantom completion <bash|zsh|fish|powershell|elvish>
 Print a shell-completion script to stdout. Source from your shell rc; see the README for per-shell paths.
 
 
-## MCP Server — 54 Tools
+## MCP server — selected release-checked tools
 
-Install: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`
+Setup: install both reviewed `v0.7.3` binaries, then run `phantom setup --client claude`
 
-The MCP server uses stdio transport via the rmcp 1.3 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex.
+Released `v0.7.3` normally records the running `phantom` executable with `mcp serve`; if that cannot be resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is unpinned `npx -y phantom-secrets-mcp`, which resolves an older registry track. Keep both verified `v0.7.3` binaries installed and inspect the generated entry instead of relying on that fallback. Current main removes the network fallback and fails closed; that hardening is not in `v0.7.3` and awaits a later release.
 
-### Read-only tools (safe to call any time)
+The MCP server uses stdio transport via the rmcp 1.3 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex. The runtime `tools/list` response is the canonical parameter schema.
+
+### Read-only and read-only-by-default tools
 
 phantom_list_secrets
   List secret names stored in vault. Never returns values.
@@ -247,7 +300,8 @@ phantom_status
   Returns: formatted status report.
 
 phantom_cloud_status
-  Check Phantom Cloud auth status, plan tier, and last sync version.
+  Authenticated provider read of Phantom Cloud auth status, plan tier, and last sync version.
+  Params: confirm (bool, must be true), approval_token (string)
   Returns: login status, plan, vault count if logged in.
 
 phantom_why
@@ -257,8 +311,8 @@ phantom_why
 
 phantom_check
   Scan for security issues.
-  Params: runtime (bool) — if true, scans process environment for phantom tokens without proxy
-  Returns: list of unprotected secrets or phantom token warnings.
+  Params: runtime (bool) — if true, scans the process environment for sensitive `phm_` values without a proxy
+  Returns: list of unprotected secrets or sensitive mapping/session-credential warnings.
 
 phantom_sync
   Show sync configuration and what would be pushed to deployment platforms.
@@ -267,119 +321,138 @@ phantom_sync
 
 phantom_doctor
   Run all health checks.
-  Params: fix (bool) — auto-fix safe issues if true
+  Params: fix (bool), confirm (bool), approval_token (string, optional in schema) — `confirm: true` and a valid approval token are required when fix is true
   Returns: pass/warn/fail for each check, summary.
   Checks: .phantom.toml, vault access, .env protection, .gitignore, .env.example, pre-commit hook.
 
 ### Initialization tools
 
 phantom_init
-  Read .env, store real secrets in vault, rewrite with phantom tokens, write .phantom.toml.
-  Params: env_path (string, default: ".env")
+  Apply one exact-before transaction across config, dotenv, gitignore, hook,
+  generated client files, and vault CAS operations. Conflicts roll back only
+  transaction-owned changes.
+  Params: env_path (string, default: ".env"), confirm (bool, must be true), approval_token (string)
   Returns: list of protected secrets.
 
 phantom_env
   Generate .env.example from .env. Secrets replaced with descriptive placeholders.
-  Params: output (string, default: ".env.example")
+  Params: output (string, default: ".env.example"), confirm (bool, must be true), approval_token (string)
   Returns: confirmation with entry count.
 
-### Destructive tools — require confirm=true
+### Mutating tools — require confirmation and out-of-band approval
 
-All destructive tools return an error if called without confirm=true.
-The agent must ask the user for explicit consent before calling any of these.
+These tools return an error unless called with `confirm: true` and a valid
+`approval_token` obtained through the server's out-of-band
+`phantom mcp-approve` challenge. The agent must obtain explicit user consent;
+an approval token does not replace that consent.
 
 phantom_add_secret_interactive
   Start a trusted terminal prompt for adding a secret without passing the value through MCP.
-  Params: name (string), confirm (bool, must be true)
+  Params: name (string), confirm (bool, must be true), approval_token (string)
   Effect: returns the terminal command to run; the user enters the value outside agent context.
 
 phantom_add_secret
   Deprecated compatibility tool. Plaintext values passed through MCP are rejected.
+  Params: name (string), confirm (bool, must be true), approval_token (string). There is no value parameter.
 
 phantom_remove_secret
-  Permanently delete a secret from the vault.
-  Params: name (string), confirm (bool, must be true)
+  Transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping.
+  Params: name (string), confirm (bool, must be true), approval_token (string)
   Effect: secret is gone — not recoverable unless cloud backup exists.
 
 phantom_rotate
-  Regenerate all phantom tokens in .env. Old tokens immediately invalid.
-  Params: confirm (bool, must be true)
-  Effect: .env rewritten with new phm_ tokens. Real secrets unchanged.
+  Regenerate all persistent `phm_` mappings in .env. Old mappings immediately invalid.
+  Params: confirm (bool, must be true), approval_token (string)
+  Effect: .env rewritten with new persistent `phm_` mappings. Real secrets unchanged; mappings remain sensitive metadata.
 
 phantom_cloud_push
   Encrypt vault client-side and upload to Phantom Cloud.
-  Params: confirm (bool, must be true)
+  Params: confirm (bool, must be true), approval_token (string)
   Effect: overwrites existing cloud copy. Requires phantom login first.
   Encryption: ChaCha20-Poly1305 client-side. Server never sees plaintext.
 
 phantom_cloud_pull
   Download and decrypt vault from Phantom Cloud.
-  Params: force (bool), confirm (bool, must be true)
-  Effect: writes secrets into local vault. force=true overwrites existing entries.
+  Params: force (bool), confirm (bool, must be true), approval_token (string)
+  Effect: writes secrets into local vault. With force=false, any skipped entries
+  preserve the prior merge base and block push until full reconciliation.
+  force=true declares overwrites but never bypasses the two gates.
 
 phantom_copy_secret
-  Copy a secret from this vault to another phantom-initialized project.
-  Params: name (string), target_dir (string), rename (string, optional), confirm (bool, must be true)
+  Copy a secret into another initialized project using exact config/vault/
+  managed-dotenv before-images. Existing target ownership is refused.
+  Params: name (string), target_dir (string), rename (string, optional), confirm (bool, must be true), approval_token (string)
   Effect: writes into target vault. .. path traversal is rejected.
 
 phantom_wrap
-  Wrap package.json scripts with `npx phantom-secrets exec --`.
-  Params: only (array), skip (array), confirm (bool, must be true)
+  Wrap selected runtime/build package.json scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) with the installed local `phantom exec --` runtime; skip test, lint, type, format, and other scripts.
+  Params: only (array), skip (array), confirm (bool, must be true), approval_token (string)
   Effect: modifies package.json. Saves originals as script:raw variants.
 
 phantom_unwrap
   Restore original package.json scripts from :raw variants.
-  Params: confirm (bool, must be true)
+  Params: confirm (bool, must be true), approval_token (string)
   Effect: restores and removes :raw entries.
 
-### Team tools (Pro plan, multi-developer shared vaults)
+phantom_apply_expiry_policy
+  Demote expired entries to `VaultMode::ReadOnly`. Vault backends then refuse
+  value retrieval, and `phantom exec`/foreground `phantom start` fail mapped-
+  secret preflight instead of injecting an expired value. A later verified
+  lifecycle promotion restores access. Demotion does not recall a value already
+  injected into or cached by a running process.
+  Params: promote_rotated, confirm (bool, must be true), approval_token (string)
+
+### Team tools (planned Pro pilot, multi-developer fixed-membership shared vaults)
+
+Current vault access is member-wide: every team member can read and write the shared vault. Invitation management is owner/admin-gated; roles do not provide per-vault access control.
 
 phantom_team_list
   List teams the authenticated user belongs to. Returns team id, name, and the user's role for each.
-  Read-only.
+  Authenticated provider request. Params: confirm (bool, must be true), approval_token (string)
 
 phantom_team_members
   List members of a team by team_id. Returns GitHub login, email, and role for each.
-  Read-only. Params: team_id
+  Authenticated provider request. Params: team_id, confirm (bool, must be true), approval_token (string)
 
 phantom_team_key_publish
   One-time setup: register this device's X25519 public key with the team so encrypted vaults can be addressed to it.
   Idempotent — safe to call again after a key rotation. Pubkey only; the private key stays in the OS keychain.
-  Params: team_id
+  Params: team_id, confirm (bool, must be true), approval_token (string)
 
 phantom_team_create
-  Create a new team. The authenticated user becomes the owner. Pro plan required.
-  Params: name, confirm (bool, must be true)
+  Create a new team. The authenticated user becomes the owner. Planned Pro entitlement required when the hosted service is commissioned.
+  Params: name, confirm (bool, must be true), approval_token (string)
 
 phantom_team_invite
   Invite someone to a team by GitHub username. Requires owner or admin role.
-  Params: team_id, github_login, role ("member" | "admin" | "owner"), confirm (bool, must be true)
+  Params: team_id, github_login, role ("member" | "admin"), confirm (bool, must be true), approval_token (string)
 
 phantom_team_vault_push
   Push this project's secrets to the shared team vault so all members can pull them.
   Encrypts client-side for each member who has registered a key (phantom_team_key_publish).
   Server only stores ciphertext.
-  Params: team_id, confirm (bool, must be true)
+  Params: team_id, confirm (bool, must be true), approval_token (string)
 
 phantom_team_vault_pull
   Download and decrypt the team vault for this project into the local vault.
   Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push.
-  Params: team_id, confirm (bool, must be true). Overwrites local secrets.
+  Params: team_id, confirm (bool, must be true), approval_token (string). Overwrites local secrets.
+
+Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control.
 
 ### MCP setup by IDE
 
 Claude Code:
-  claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp
+  phantom setup --client claude
 
 Cursor:
-  Settings > Features > MCP Servers
-  Name: phantom, Command: npx, Args: phantom-secrets-mcp
+  phantom setup --client cursor
 
 Windsurf:
-  {"mcpServers": {"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}}
+  phantom setup --client windsurf
 
-OpenAI Codex (~/.codex/config.json):
-  {"mcpServers": {"phantom": {"command": "npx", "args": ["phantom-secrets-mcp"]}}}
+OpenAI Codex:
+  phantom setup --client codex
 
 
 ## Architecture
@@ -387,20 +460,19 @@ OpenAI Codex (~/.codex/config.json):
 12-crate Rust workspace:
 
 phantom-core
-  Config (.phantom.toml), .env parsing/rewriting, phantom token generation (256-bit CSPRNG, phm_ prefix),
+  Config (.phantom.toml), .env parsing/rewriting, persistent mapping generation (256-bit CSPRNG, phm_ prefix),
   error types, auth, cloud API client, smart secret detection heuristics.
 
 phantom-vault
-  VaultBackend trait with OS keychain (macOS Keychain, Linux Secret Service) and encrypted file fallback.
+  VaultBackend trait with OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager) and encrypted file fallback.
   Shared crypto module: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key).
 
 phantom-proxy
-  HTTP reverse proxy on 127.0.0.1. Receives plaintext HTTP, replaces phantom tokens in headers/body
-  with real secrets from vault, forwards over TLS. Uses hyper for server, reqwest for outbound HTTPS.
-  Streaming token replacement for text/* and application/x-www-form-urlencoded request bodies
-  (frame-by-frame, 67-byte carry buffer for tokens straddling chunk boundaries).
-  JSON bodies use a buffered path with field-level F9 scoping (tokens in prompt/messages/content
-  fields are not substituted). Full SSE/streaming response support for OpenAI and Anthropic APIs.
+  Authenticated HTTP reverse proxy on 127.0.0.1. It matches an exact configured route, discards
+  client control of that route's authentication header, injects only the route-owned vault value
+  into the fixed header, then forwards over TLS. Client headers and bodies never resolve tokens.
+  Request bodies are buffered within the enforced size bound and forwarded byte-for-byte.
+  Provider responses can stream, including SSE.
 
 phantom-core
   Also contains: importers module (doppler, infisical, dotenvx, 1password, env parsers);
@@ -412,34 +484,82 @@ phantom-cli
   CLI output uses -> (info), ok (success), ! (error), warn (warning) prefixes.
 
 phantom-mcp
-  MCP server using rmcp SDK. Stdio transport. 54 release-checked tools.
+  MCP server using rmcp SDK and stdio transport. The release checks its schema; use runtime tools/list for the current catalog.
 
 apps/web
-  Next.js backend on Vercel. Supabase for database. Stripe for billing.
+  Vercel-targeted Next.js source. Supabase for database. Stripe for billing.
   Device auth API, vault sync API, billing webhooks.
+
+Authority, Locus-contract, broker, runtime, session, evidence, and workspace crates are fail-closed foundations. They do not activate production execution, issue live Locus authority, or prove an externally trusted receipt.
+
+Governed project and client-config effects resolve from retained directory
+capabilities. They reject outside-root and symlink/reparse traversal, require
+regular single-link sensitive files, and compare stable identity plus bytes
+before exact replacement/unlink. Unix rename-decoy tests verify that replacing
+an ambient root path does not redirect the in-progress anchored effect.
+
+Init retains the reviewed root and exact dotenv/config leaf identity, bytes,
+and permissions before vault provisioning, then revalidates them under the
+project lock before mutation. Byte-identical replacement leaves are drift.
+
+`CommittedVerifiedButDurabilityUncertain` is committed, exactly verified
+success with a value-free warning/receipt and no rollback or retry.
+`CommittedButUncertain` is the distinct **Partial** outcome when verification or
+durability remains unresolved; it requires operator reconciliation and is
+neither proof of rollback nor a safe blind retry.
+Retained roots and cooperative locks are not a same-user sandbox; an equivalent
+same-user process or agent-controlled terminal remains in the threat model.
+
+Vault/application authority is resolved before the project transaction lock;
+the acquired root identity and exact config identity, bytes, and permissions
+are then revalidated. This avoids the process-environment/project-lock
+inversion and rejects a same-path root replacement during vault resolution.
+
+Windows source establishes a protected current-user DACL on new private
+files/directories before bytes and preserves the reviewed exact DACL and
+inheritance state on replacement staging files before writing. Reparse, handle,
+ACL, and Credential Manager behavior still await protected native Windows CI
+acceptance. Current main does not prove `v0.7.4` publication, deployment,
+enterprise commissioning, or customer acceptance.
+
+Implementation-security identity:
+`5a3edad60634c78af3079f588bf51fefa0b69586`. Live GitHub governance observed
+2026-09-01: the `release` environment required review and accepted only `v*`
+tags; no-bypass immutability ruleset `21903888` was separate from creation
+ruleset `21997435` with Mason-only bypass. Creation authority cannot bypass the
+separate immutability policy; reverify before release.
+
+Rama upstream main snapshot
+https://github.com/plabayo/rama/commit/267e4790c899736e6f60d982c8a0932406d4079e,
+reviewed 2026-09-01, is a pinned
+benchmark for explicit network stacks, modular crates, runnable examples, and
+tiered platform CI. Rama is not a dependency, and no feature or platform parity
+is claimed.
 
 
 ## Security Model
 
-Real secrets never on disk in project directory — only in OS keychain or encrypted vault.
+`phantom init` atomically replaces managed dotenv values and intentionally creates no plaintext project-local backup. Unmanaged files, existing backups, logs, and external tools remain outside that claim.
 
 Vault encryption: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key).
 
-Phantom tokens: 256-bit CSPRNG with phm_ prefix. Never collide with real API key formats (sk-*, ghp_*, AKIA*, etc.).
+Phantom mappings: 256-bit CSPRNG values with a `phm_` prefix. The prefix distinguishes mappings from supported real-key formats, and random collisions are cryptographically negligible rather than mathematically impossible. Persistent mappings are sensitive metadata even though they do not contain plaintext secret values.
 
-Proxy binds to 127.0.0.1 only — never exposed to network.
+Proxy binds to 127.0.0.1 only and is not bound to a non-loopback interface. Host compromise, same-user local-process access, and bearer theft remain in the threat model.
 
-Proxy token authentication prevents other local processes from using the proxy.
+Proxy token authentication rejects requests without the session bearer; it does not exclude same-user local-process or bearer-theft risk.
 
-Secrets zeroized from memory after use (zeroize crate).
+Major vault retrieval, serialization, and decrypted-file buffers use targeted
+zeroization. Some proxy lookup copies remain ordinary strings, so zeroization is
+defense in depth rather than a complete memory-erasure guarantee.
 
-Allowlist model: proxy only injects for configured service URL patterns. Unknown services are not modified.
+Route model: the proxy injects only after an exact configured route match and only into that route's fixed authentication header. Unknown services are rejected; client headers and bodies remain inert.
 
-Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN; CLI-generated SDK URLs include it locally, and header-aware clients can opt into x-phantom-proxy-token.
+The persistent `phm_` mappings written to managed `.env` files persist until an explicit rotation or rewrite and must be handled as sensitive metadata. `phantom exec` replaces them in the child environment with fresh session `phm_` placeholders and also creates a separate fresh `PHANTOM_PROXY_TOKEN`. Client placeholders are never resolved; the bearer stops working when that proxy exits and must be protected while active. CLI-generated SDK URLs include the proxy bearer locally, and header-aware clients can opt into x-phantom-proxy-token.
 
 Cloud tokens stored hashed (SHA-256) in database — never plaintext.
 
-MCP destructive tools require explicit confirm=true — prompt injection cannot silently modify vaults.
+The vault, package, cloud, and team mutation tools documented above require explicit consent, `confirm=true`, and the out-of-band `approval_token` challenge as guards against unintended mutation. Advanced tools have distinct runtime schemas and conditional gates; inspect `tools/list` instead of extrapolating. These gates are not prompt-injection immunity; an agent or user can still authorize a harmful request.
 
 phantom_reveal blocked in non-interactive contexts by default to prevent AI agents from reading real values.
 
@@ -469,6 +589,8 @@ Public key prefixes (never protected — browser-safe by convention):
 
 Non-secrets left untouched:
   NODE_ENV, PORT, DEBUG, APP_NAME, LOG_LEVEL, and similar config values
+
+Detection does not imply proxy compatibility. Connection strings can be classified and vaulted, but database drivers do not use Phantom's HTTP proxy; `phantom exec` fails closed rather than pass a protected connection string to the child. The proxy injects route-owned authentication only on exact configured HTTP upstream routes; it never substitutes client tokens.
 
 
 ## Configuration (.phantom.toml)
@@ -512,7 +634,7 @@ phantom sync --platform vercel --project prj_xxx
 phantom sync --platform railway --project xxx
 ```
 
-Pull secrets from platforms (new machine onboarding):
+Pull secrets from deployment platforms (requires that provider's credentials):
 ```
 phantom pull --from vercel --project prj_xxx
 phantom pull --from railway --project xxx --environment production
@@ -522,21 +644,35 @@ phantom pull --from vercel --project prj_xxx --force   # overwrite existing
 Supported platforms: Vercel, Railway. Requires platform API token in environment.
 
 
-## Cloud Sync Architecture
+## Personal Cloud Backup Architecture
 
-Phantom Cloud provides end-to-end encrypted vault sync.
+Phantom Cloud provides client-encrypted personal-vault backup and restore on the
+machine that holds the original OS-keychain encryption key.
 
-Zero-knowledge: server stores opaque encrypted blobs. Never sees plaintext secrets.
+For the implemented encrypted cloud-vault path, the server stores opaque ciphertext; encryption and decryption occur in the client. This claim does not make provider API traffic local: configured upstream requests still leave the machine.
 
-Client-side encryption: ChaCha20-Poly1305 with Argon2id key derivation. Encryption key stored only in user's OS keychain.
+Client-side encryption: ChaCha20-Poly1305 with Argon2id key derivation. The
+random encryption passphrase is stored only in the user's OS keychain. Personal
+cloud-key export, transfer, and recovery are not shipped, so account login on a
+different machine cannot decrypt the snapshot.
 
-Optimistic concurrency: version numbers prevent conflicting pushes from multiple devices.
+Optimistic concurrency: version numbers reject a push based on a stale local
+version. This does not imply cross-device decryption.
+
+Team vaults use a separate design: a fresh shared key is wrapped to each
+registered member's X25519 public key. That fixed-membership flow does not make
+personal cloud backups portable.
 
 Auth: GitHub OAuth via device code flow (like GitHub CLI).
 
-Pricing:
-  Free tier: 1 cloud vault, unlimited local vaults
-  Pro ($8/mo): unlimited cloud vaults, multi-device sync
+Packaging direction:
+  Free tier: local vault, proxy, and MCP; no public hosted cloud-vault
+  entitlement is commissioned
+  Pro (planned hosted pilot): proposed packaging for expanded cloud-backup,
+  cloud-key-portability evaluation, and team-vault capabilities; limits and
+  pricing are TBD, and no self-serve checkout is commissioned
+
+The Pro plan is not generally purchasable or commissioned based on repository source alone. Verify the deployed service, account entitlement, and written plan terms before relying on it.
 
 
 ## CI/CD
@@ -544,19 +680,35 @@ Pricing:
 Direct Phantom Cloud pulls from headless CI are not supported in this release because the CLI does not expose a non-interactive cloud login flow. Use GitHub Actions for checks and builds, then sync deploy-time secrets to Vercel or Railway before deployment.
 
 ```yaml
+- name: Install the immutable Phantom v0.7.3 Linux release
+  env:
+    GH_TOKEN: ${{ github.token }}
+  run: |
+    gh release download v0.7.3 --repo ashlrai/phantom-secrets \
+      --pattern phantom-x86_64-unknown-linux-gnu.tar.gz \
+      --pattern phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
+    sha256sum -c phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
+    tar -xzf phantom-x86_64-unknown-linux-gnu.tar.gz
+    install -d "$HOME/.local/bin"
+    install -m 0755 phantom phantom-mcp "$HOME/.local/bin/"
+    echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
 - name: Check for unprotected secrets
-  run: npx phantom-secrets check
+  run: phantom check
 
 - name: Build
   run: npm ci && npm run build
 ```
 
 For deploy secrets, run `phantom sync --platform vercel --project <id>` or `phantom sync --platform railway --project <id>` from a trusted environment.
+The example verifies the immutable reviewed Linux x64 release before executing
+it. Select the matching release asset for other runner architectures and do not
+replace it with an unpinned registry command.
 
 
 ## Monorepo Support
 
-Running `phantom init` in a subdirectory with its own .env creates a project-scoped vault. Each subdirectory can have its own .phantom.toml and independent secret set. A single `phantom exec` session handles all of them.
+Running `phantom init` in a subdirectory with its own .env creates a project-scoped vault. Each subdirectory can have its own .phantom.toml and independent secret set. Run `phantom exec` from the subproject whose configuration and dotenv file the command needs; one session does not aggregate independently initialized subprojects.
 
 
 ## What to Commit
@@ -566,7 +718,7 @@ Commit:
   .env.example        — generated by `phantom env`, shows required variable names
 
 Do not commit:
-  .env                — contains phantom tokens specific to your vault
+  .env                — contains persistent `phm_` mappings specific to your vault; treat them as sensitive metadata
   .env.local          — same reason
   .env*.local         — same reason
 
@@ -575,23 +727,20 @@ Do not commit:
 
 1. Solo developer with Claude Code: phantom init, then phantom exec -- claude
 2. Delegate to Claude: add MCP server, say "protect my API keys" — Claude runs phantom_init
-3. Multi-device sync: phantom login, phantom cloud push on one machine, phantom cloud pull on another
+3. Same-keychain-machine backup: phantom login, phantom cloud push, then phantom cloud pull where the original cloud encryption key remains available
 4. Deploy to Vercel: phantom sync --platform vercel --project prj_xxx
-5. New machine onboarding: phantom pull --from vercel --project prj_xxx
-6. Vault backup (encrypted): phantom export --output backup.enc / phantom import backup.enc (hidden prompts; use a private --passphrase-file for automation)
+5. Provider-backed machine setup: phantom pull --from vercel --project prj_xxx (requires Vercel credentials)
+6. Vault backup (encrypted): phantom export --output backup.enc / phantom import backup.enc (separate exact trusted-terminal ceremonies; export passphrase files are rejected)
 7. Team onboarding: phantom env generates .env.example with placeholders
 8. CI/CD: use phantom check in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
-9. Pre-commit safety: phantom check in git hooks or pre-commit framework
-10. Rotate with sync: phantom rotate --sync regenerates tokens and pushes to deployment platforms
+9. Pre-commit safety: `phantom check --staged` checks staged dotenv content with Phantom's heuristics and added lines in other staged files for a bounded credential-prefix set
+10. Rotate mappings from an attached trusted terminal: phantom rotate requires an exact snapshot-bound challenge before remapping every local placeholder; headless calls are denied. Provider-side credential rotation remains hard-denied; rotate at the provider and add the replacement credential from a trusted terminal.
 11. Monorepo: phantom init in each subdirectory — each gets its own vault and config
 12. Multi-IDE team: same MCP server works across Claude Code, Cursor, Windsurf, and Codex
 13. Migrate from Doppler/Infisical/dotenvx/1Password: phantom import --from <source> --file <path>
 14. Audit trail: PHANTOM_AUDIT=1 + phantom audit show/tail/verify for compliance and forensics
 
 
-## Test and Quality Stats
+## Test and quality evidence
 
-Tests: 69 (at last count)
-Clippy: zero warnings (enforced in CI with -D warnings)
-License: MIT
-Rust edition: 2021
+Use the repository's current CI workflow and release artifacts for test, lint, and build evidence. Do not infer a current test count, deployment, certification, or service-level commitment from this reference.

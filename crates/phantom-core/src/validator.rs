@@ -25,6 +25,8 @@
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::provider_http;
+
 /// How old a validation result can be before it is considered stale.
 /// Exposed as a constant so callers can adjust in tests via mock timestamps.
 pub const DEFAULT_STALE_SECS: u64 = 86_400; // 24 hours
@@ -171,24 +173,20 @@ fn http_check(
     auth_header: Option<(&str, &str)>,
     timeout: Duration,
 ) -> Result<u16, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .user_agent("phantom-secrets-validator/0.1")
-        .build()
-        .map_err(|e| format!("client build error: {e}"))?;
+    let client = provider_http::blocking_client(timeout)?;
 
     let mut req = client.get(url);
     if let Some((header_name, header_value)) = auth_header {
         req = req.header(header_name, header_value);
     }
 
-    let resp = req.send().map_err(|e| {
-        if e.is_timeout() {
+    let resp = req.send().map_err(|error| {
+        if error.is_timeout() {
             "timeout".to_string()
-        } else if e.is_connect() {
-            format!("connection refused: {e}")
+        } else if error.is_connect() {
+            "connection failed".to_string()
         } else {
-            format!("network error: {e}")
+            "provider request failed".to_string()
         }
     })?;
 
@@ -204,32 +202,35 @@ fn http_check_with_body(
     url: &str,
     auth_header: Option<(&str, &str)>,
     timeout: Duration,
-) -> Result<(u16, String), String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .user_agent("phantom-secrets-validator/0.1")
-        .build()
-        .map_err(|e| format!("client build error: {e}"))?;
+) -> Result<(u16, zeroize::Zeroizing<String>), String> {
+    let client = provider_http::blocking_client(timeout)?;
 
     let mut req = client.get(url);
     if let Some((header_name, header_value)) = auth_header {
         req = req.header(header_name, header_value);
     }
 
-    let resp = req.send().map_err(|e| {
-        if e.is_timeout() {
+    let resp = req.send().map_err(|error| {
+        if error.is_timeout() {
             "timeout".to_string()
-        } else if e.is_connect() {
-            format!("connection refused: {e}")
+        } else if error.is_connect() {
+            "connection failed".to_string()
         } else {
-            format!("network error: {e}")
+            "provider request failed".to_string()
         }
     })?;
 
     let status = resp.status().as_u16();
-    // Read the body best-effort; an empty string on read error is fine because
-    // the classifier degrades to Unknown when it cannot positively diagnose.
-    let body = resp.text().unwrap_or_default();
+    let mut bytes = provider_http::read_bounded_blocking_response(resp, "Google validation")?;
+    let body = match String::from_utf8(std::mem::take(&mut *bytes)) {
+        Ok(body) => zeroize::Zeroizing::new(body),
+        Err(error) => {
+            use zeroize::Zeroize;
+            let mut bytes = error.into_bytes();
+            bytes.zeroize();
+            return Err("Google validation response was not valid UTF-8".to_string());
+        }
+    };
     Ok((status, body))
 }
 

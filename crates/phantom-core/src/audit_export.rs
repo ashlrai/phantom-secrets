@@ -7,8 +7,9 @@
 //!   secret name, operation type, or user (pid-based proxy).
 //! - **Compliance reports** with an access-frequency heatmap, a leak-incident
 //!   timeline, a rotation-timing audit, and a 1-page anomaly executive summary.
-//! - **Cloud sync** — when `PHANTOM_AUDIT_ENCRYPTION=cloud-signed` the report
-//!   is stored under `~/.phantom/reports/` and pushed to phm.dev.
+//!
+//! Saved reports are local-only artifacts. Network delivery requires a separate,
+//! explicitly authorized operation outside this exporter.
 //!
 //! ## Export schema
 //!
@@ -27,7 +28,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use crate::analytics::unix_to_iso8601;
@@ -446,31 +447,35 @@ impl AuditExporter {
         })
     }
 
-    /// Store a compliance report under `~/.phantom/reports/report-<ts>.json`
-    /// and optionally push it to phm.dev when CloudSigned mode is active.
+    /// Store a compliance report under `~/.phantom/reports/report-<ts>.json`.
+    ///
+    /// The reports directory must resolve through real directories and the
+    /// destination is created exactly once. Existing files are never followed
+    /// or overwritten, and this method never performs network I/O.
     ///
     /// Returns the path the report was saved to.
     pub fn save_report(&self, report: &ComplianceReport) -> std::io::Result<PathBuf> {
-        std::fs::create_dir_all(&self.reports_dir)?;
+        self.save_report_at(report, now_unix())
+    }
 
-        let ts = now_unix();
+    fn save_report_at(&self, report: &ComplianceReport, ts: u64) -> std::io::Result<PathBuf> {
         let filename = format!("report-{}.json", ts);
         let path = self.reports_dir.join(&filename);
 
         let json = serde_json::to_string_pretty(report)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(&path, json.as_bytes())?;
-
-        // Cloud push when CloudSigned mode is active.
-        if crate::audit::AuditEventEncryption::from_env()
-            == crate::audit::AuditEventEncryption::CloudSigned
+        crate::fs::ensure_real_parent(&path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
         {
-            // Best-effort, non-blocking.
-            let json_clone = json.clone();
-            std::thread::spawn(move || {
-                let _ = push_report_to_cloud(&json_clone);
-            });
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
+        let mut file = options.open(&path)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        crate::fs::sync_parent_dir(&self.reports_dir)?;
 
         Ok(path)
     }
@@ -741,27 +746,6 @@ impl AuditExporter {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Cloud push (best-effort)
-// ──────────────────────────────────────────────────────────────────────────────
-
-fn push_report_to_cloud(json: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()?;
-    let resp = client
-        .post("https://phm.dev/api/reports/ingest")
-        .header("Content-Type", "application/json")
-        .header("X-Phantom-Version", env!("CARGO_PKG_VERSION"))
-        .body(json.to_string())
-        .send()?;
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("HTTP {}", resp.status()).into())
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -884,7 +868,6 @@ fn parse_date_inner(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -1239,6 +1222,51 @@ mod tests {
         let listed = ex.list_reports().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0], path);
+    }
+
+    #[test]
+    fn save_report_never_overwrites_same_timestamp_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ex = make_exporter(tmp.path());
+        write_audit_log(
+            &ex.audit_log_path,
+            &[(1_750_000_000, "vault.retrieve", Some("KEY"))],
+        );
+        let report = ex.generate_compliance_report(0, 0).unwrap();
+        let first = ex.save_report_at(&report, 1_750_000_000).unwrap();
+        let before = std::fs::read(&first).unwrap();
+
+        let error = ex.save_report_at(&report, 1_750_000_000).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(first).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_report_refuses_symlinked_reports_directory() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let redirected = tmp.path().join("redirected");
+        std::fs::create_dir(&redirected).unwrap();
+        let reports = tmp.path().join("reports");
+        symlink(&redirected, &reports).unwrap();
+        let ex = AuditExporter::with_paths(
+            tmp.path().join("audit.log"),
+            tmp.path().join("incidents.jsonl"),
+            reports,
+        );
+        write_audit_log(
+            &ex.audit_log_path,
+            &[(1_750_000_000, "vault.retrieve", Some("KEY"))],
+        );
+        let report = ex.generate_compliance_report(0, 0).unwrap();
+
+        let error = ex.save_report(&report).unwrap_err();
+
+        assert!(error.to_string().contains("not a real directory"));
+        assert_eq!(std::fs::read_dir(redirected).unwrap().count(), 0);
     }
 
     // ── Test 12: severity classification ─────────────────────────────────────

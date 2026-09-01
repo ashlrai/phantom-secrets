@@ -78,6 +78,25 @@ pub struct SetupWorkspaceParams {
     /// Bearerless request identifier returned by request_apply.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// Required for phases that persist machine-local state (`propose` when the
+    /// plan-seal key has not been provisioned, and every `request_apply`).
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
+}
+
+/// Dual approval gate for tools whose only inputs are authority controls.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalParams {
+    /// Required. Must be true before the provider or persistent-state effect.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -157,14 +176,12 @@ pub struct RotateParams {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateWithExpiryParams {
-    /// Number of days until secrets expire. Each secret gets `expires_at` set to
-    /// `now + days_ttl * 86400` and a `rotation_policy` recording the TTL. After
-    /// this call, `phantom list --show-expiry` and `phantom doctor --expiry` will
-    /// report countdown status and warn when secrets approach expiry.
+    /// Deprecated compatibility field. Must be greater than zero, but a local
+    /// Phantom token remap does not renew credential TTL or lifecycle metadata.
     pub days_ttl: u64,
     /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. This rotates all phantom tokens (invalidating
-    /// any cached ones) and sets persistent expiry metadata in the vault.
+    /// before remapping all local Phantom tokens (invalidating cached
+    /// placeholders). Provider credentials and expiry metadata remain unchanged.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
@@ -198,12 +215,14 @@ pub struct CloudPushParams {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct CloudPullParams {
-    /// Overwrite existing local secrets (default: false)
+    /// Declare overwrite of existing local secrets (default: false). This does
+    /// not bypass confirmation or out-of-band approval. With false, skipped
+    /// entries retain the prior merge base and block push until reconciliation.
     #[serde(default)]
     pub force: bool,
     /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. A pull writes entries into the local vault
-    /// and (with force=true) overwrites existing values.
+    /// before invoking this tool. A pull writes entries into the local vault;
+    /// force declares which reviewed entries may be overwritten.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
@@ -219,7 +238,9 @@ pub struct CopySecretParams {
     /// `..` segments are rejected to prevent prompt-injected target-dir
     /// obfuscation; pass the full destination path explicitly.
     pub target_dir: String,
-    /// Optional new name for the secret in the target project
+    /// Optional new name for the secret in the target project. Copy refuses
+    /// if the target vault, lifecycle config, or managed dotenv already owns
+    /// this name; there is no overwrite mode.
     pub rename: Option<String>,
     /// Required. Must be true — the calling agent must confirm with the user
     /// before invoking this tool. Copying writes secrets into another vault,
@@ -327,6 +348,7 @@ pub struct TeamCreateParams {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TeamIdParams {
     /// Team identifier (UUID)
     pub team_id: String,
@@ -344,9 +366,10 @@ pub struct TeamInviteParams {
     pub team_id: String,
     /// GitHub username of the user to invite (no @ prefix)
     pub github_login: String,
-    /// Role to assign — "member", "admin", or "owner". Defaults to "member".
-    #[serde(default = "default_member_role")]
-    pub role: String,
+    /// Role to assign. Hosted invitations accept only `member` or `admin`;
+    /// ownership transfer is a separate lifecycle operation and is not exposed.
+    #[serde(default)]
+    pub role: TeamInviteRole,
     /// Required. Must be true — confirms the user wants to add this person
     /// to the team. Defends against prompt-injected instructions silently
     /// expanding team membership.
@@ -357,8 +380,23 @@ pub struct TeamInviteParams {
     pub approval_token: Option<String>,
 }
 
-fn default_member_role() -> String {
-    "member".to_string()
+#[derive(
+    Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum TeamInviteRole {
+    #[default]
+    Member,
+    Admin,
+}
+
+impl TeamInviteRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Member => "member",
+            Self::Admin => "admin",
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -385,10 +423,18 @@ pub struct ValidateSecretParams {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ValidateAllParams {
     /// Maximum number of concurrent validation jobs (default: 4, max: 16).
     #[serde(default = "default_validate_jobs")]
     pub jobs: usize,
+    /// Required because validation retrieves credentials, calls provider APIs,
+    /// and persists the value-free result metadata.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 fn default_validate_jobs() -> usize {
@@ -522,22 +568,12 @@ fn default_min_confidence() -> f64 {
 
 /// Parameters for `phantom_leak_incidents_realtime`.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LeakIncidentsRealtimeParams {
     /// Only return incidents whose confidence score is at or above this value
     /// (range 0.0–1.0). Defaults to 0.5 per spec (active incident threshold).
     #[serde(default = "default_realtime_min_confidence")]
     pub min_confidence: f64,
-    /// When true, automatically call `phantom rotate <secret>` for any incident
-    /// with confidence >= 0.9 and log the action.
-    /// AI agents MUST set `confirm: true` to enable auto-rotate — the approval
-    /// gate prevents unattended rotation without explicit user consent.
-    #[serde(default)]
-    pub auto_rotate_on_high: bool,
-    /// Required when `auto_rotate_on_high` is true. The calling agent must
-    /// obtain explicit user consent before auto-rotating secrets.
-    /// Defends against prompt-injected instructions silently rotating keys.
-    #[serde(default)]
-    pub confirm: bool,
 }
 
 fn default_realtime_min_confidence() -> f64 {
@@ -548,6 +584,7 @@ fn default_realtime_min_confidence() -> f64 {
 
 /// Parameters for `phantom_audit_alerts`.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AuditAlertsParams {
     /// Maximum number of recent alerts to return (default: 50).
     #[serde(default = "default_alerts_last")]
@@ -556,6 +593,13 @@ pub struct AuditAlertsParams {
     /// before returning the list. Default: false.
     #[serde(default)]
     pub backfill: bool,
+    /// Required when `backfill=true` because correlation state and alert
+    /// records may be persisted and notification backends may be called.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 fn default_alerts_last() -> usize {
@@ -566,6 +610,7 @@ fn default_alerts_last() -> usize {
 
 /// Parameters for `phantom_audit_export_report`.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AuditExportReportParams {
     /// Action: "export" to get raw rows as CSV/JSON, or "report" to get a
     /// full compliance report. Default: "report".
@@ -589,6 +634,12 @@ pub struct AuditExportReportParams {
     /// Save the compliance report to ~/.phantom/reports/ (report action only).
     #[serde(default)]
     pub save: bool,
+    /// Required when `save=true` because a report is persisted to disk.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 fn default_export_action() -> String {
@@ -604,6 +655,7 @@ fn default_export_format_for_report() -> String {
 /// Parameters for `phantom_audit_hotspot_alerts` — inspect and acknowledge
 /// per-secret access-velocity spike alerts.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AuditHotspotAlertsParams {
     /// If set, only return alerts for this specific secret name.
     #[serde(default)]
@@ -620,17 +672,30 @@ pub struct AuditHotspotAlertsParams {
     /// Default: false (only unacked alerts).
     #[serde(default)]
     pub include_acked: bool,
+    /// Required when `ack=true` because acknowledgement state is persisted.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 // ── Validation scheduler ──────────────────────────────────────────────
 
 /// Parameters for `phantom_validation_schedule` (get/set schedule).
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ValidationScheduleParams {
     /// New schedule interval to set: "hourly", "6h", "daily", "daily@2am",
     /// "weekly", "disabled". Omit to read the current schedule only.
     #[serde(default)]
     pub interval: Option<String>,
+    /// Required when `interval` is present because scheduler state is persisted.
+    #[serde(default)]
+    pub confirm: bool,
+    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    #[serde(default)]
+    pub approval_token: Option<String>,
 }
 
 /// Parameters for `phantom_validation_history`.
@@ -647,36 +712,31 @@ fn default_history_limit() -> usize {
 
 // ── Shadow rotation ───────────────────────────────────────────────────
 
-/// Parameters for `phantom_rotate_with_candidate`.
+/// Deprecated compatibility parameters for the hard-denied shadow path.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateWithCandidateParams {
-    /// Name of the secret to shadow-rotate (e.g. OPENAI_API_KEY).
+    /// Ignored compatibility field. No candidate is created.
     pub name: String,
-    /// Optional TTL in seconds after which the candidate automatically expires.
-    /// Omit for no automatic expiry (manual promotion only).
+    /// Ignored compatibility field. No candidate TTL is created.
     #[serde(default)]
     pub auto_promote_ttl_secs: Option<u64>,
-    /// Required. Must be true — creates a candidate credential and stores it
-    /// in the vault. The agent must confirm with the user before calling.
+    /// Ignored compatibility field. The tool is always denied.
     #[serde(default)]
     pub confirm: bool,
-    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    /// Ignored compatibility field. No approval can enable this tool.
     #[serde(default)]
     pub approval_token: Option<String>,
 }
 
-/// Parameters for `phantom_rotate_promote`.
+/// Deprecated compatibility parameters for the hard-denied promotion path.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotatePromoteParams {
-    /// Name of the secret whose shadow candidate should be promoted
-    /// (e.g. OPENAI_API_KEY).
+    /// Ignored compatibility field. No candidate is promoted.
     pub name: String,
-    /// Required. Must be true — promotes the candidate to primary, atomically
-    /// replacing the current live credential. The agent must confirm with the
-    /// user before calling.
+    /// Ignored compatibility field. The tool is always denied.
     #[serde(default)]
     pub confirm: bool,
-    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
+    /// Ignored compatibility field. No approval can enable this tool.
     #[serde(default)]
     pub approval_token: Option<String>,
 }
@@ -720,15 +780,16 @@ pub struct RotationScheduleNextParams {
 ///
 /// Scans the vault, identifies secrets whose TTL has expired, sets
 /// `vault_mode = ReadOnly` on each, and returns a list of affected secrets.
-/// This is the "demotion" step that prevents stale credentials from being
-/// injected by `phantom exec`.
+/// This is the demotion step that blocks future vault retrieval and new
+/// `phantom exec`/foreground `phantom start` mapped-secret preflight. It does
+/// not recall values already injected into or cached by running processes.
 ///
 /// Requires `confirm: true` because it writes metadata.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ApplyExpiryPolicyParams {
     /// Must be `true`.  The caller must obtain user consent before demoting
-    /// secrets to read-only mode, as it will break any running process that
-    /// relies on those secrets being injected by `phantom exec`.
+    /// secrets to read-only mode. New retrieval and process preflight fail;
+    /// already injected or cached values are not recalled.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
@@ -748,15 +809,17 @@ fn default_true_flag() -> bool {
 /// Parameters for `phantom_secrets_auto_rotate`.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AutoRotateParams {
-    /// Name of the secret to auto-rotate.
+    /// Name of the already-protected secret whose local `phm_` placeholder
+    /// should be remapped. The provider credential is not rotated.
     pub name: String,
-    /// If true, sync to all configured deployment platforms after rotation.
+    /// Deprecated compatibility field. `true` is rejected because token
+    /// remapping does not create a credential that can truthfully be synced.
     #[serde(default)]
     pub sync: bool,
     /// Required. Must be true — the calling agent must confirm with the user
-    /// before rotating credentials. Auto-rotation updates metadata and
-    /// rewrites phantom tokens; an attacker-injected call could disrupt
-    /// running services that cached the old token.
+    /// before remapping the local Phantom token. This rewrites `.env` and can
+    /// disrupt running services that cached the old placeholder, but it does
+    /// not alter provider credentials or lifecycle metadata.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
@@ -779,10 +842,10 @@ pub struct PhantomExpiryEnforceParams {
 
 /// Parameters for `phantom_rotate_provider`.
 ///
-/// Calls a vendor-specific rotation provider (Stripe, GitHub, AWS) to
-/// re-issue the credential server-side and stores the new value in the vault.
-/// The secret value is NEVER exposed in the MCP response — only status,
-/// provider name, and audit metadata are returned.
+/// Compatibility parameters for the shipped hard-denial boundary. Automated
+/// live provider issuance is disabled before credential or network access until
+/// a durable value-free recovery handle and verified abort path exist. No
+/// secret value is accepted or returned.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateProviderParams {
     /// Name of the secret to rotate (e.g. `STRIPE_SECRET_KEY`).

@@ -33,61 +33,62 @@ pub struct UserInfo {
 
 /// Initiate the device auth flow. Returns a code the user must enter in the browser.
 pub async fn initiate_device_flow(api_base: &str) -> Result<DeviceFlowResponse> {
-    let client = reqwest::Client::new();
+    let client = crate::cloud_http::client()?;
     let resp = client
         .post(format!("{api_base}/auth/device/initiate"))
         .json(&serde_json::json!({}))
         .send()
         .await
-        .map_err(|e| PhantomError::AuthError(format!("Failed to connect: {e}")))?;
+        .map_err(|_| PhantomError::AuthError("Failed to connect to Phantom Cloud".to_string()))?;
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(PhantomError::CloudError {
+        return Err(crate::cloud_http::response_error(
             status,
-            message: body,
-        });
+            "Device authorization initiation",
+            "Phantom Cloud rejected the request",
+        ));
     }
 
-    resp.json::<DeviceFlowResponse>()
-        .await
-        .map_err(|e| PhantomError::AuthError(format!("Invalid response: {e}")))
+    let status = resp.status().as_u16();
+    let bytes =
+        crate::cloud_http::read_bounded_response(resp, "Device authorization initiation").await?;
+    crate::cloud_http::parse_json(&bytes, status, "Device authorization initiation")
 }
 
 /// Poll for device approval. Returns the access token once approved.
 pub async fn poll_for_token(api_base: &str, device_code: &str) -> Result<PollResponse> {
-    let client = reqwest::Client::new();
+    let client = crate::cloud_http::client()?;
     let resp = client
         .post(format!("{api_base}/auth/device/poll"))
         .json(&serde_json::json!({ "device_code": device_code }))
         .send()
         .await
-        .map_err(|e| PhantomError::AuthError(format!("Poll failed: {e}")))?;
+        .map_err(|_| PhantomError::AuthError("Device authorization poll failed".to_string()))?;
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(PhantomError::CloudError {
+        return Err(crate::cloud_http::response_error(
             status,
-            message: body,
-        });
+            "Device authorization poll",
+            "Phantom Cloud rejected the request",
+        ));
     }
 
-    resp.json::<PollResponse>()
-        .await
-        .map_err(|e| PhantomError::AuthError(format!("Invalid poll response: {e}")))
+    let status = resp.status().as_u16();
+    let bytes = crate::cloud_http::read_bounded_response(resp, "Device authorization poll").await?;
+    crate::cloud_http::parse_json(&bytes, status, "Device authorization poll")
 }
 
 /// Get current user info from the API.
 pub async fn get_user_info(api_base: &str, token: &str) -> Result<UserInfo> {
-    let client = reqwest::Client::new();
+    let client = crate::cloud_http::client()?;
     let resp = client
         .get(format!("{api_base}/me"))
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|e| PhantomError::AuthError(format!("Failed to connect: {e}")))?;
+        .map_err(|_| PhantomError::AuthError("Failed to connect to Phantom Cloud".to_string()))?;
 
     if resp.status().as_u16() == 401 {
         return Err(PhantomError::AuthRequired);
@@ -95,16 +96,17 @@ pub async fn get_user_info(api_base: &str, token: &str) -> Result<UserInfo> {
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(PhantomError::CloudError {
+        return Err(crate::cloud_http::response_error(
             status,
-            message: body,
-        });
+            "Phantom Cloud account lookup",
+            "Phantom Cloud rejected the request",
+        ));
     }
 
-    resp.json::<UserInfo>()
-        .await
-        .map_err(|e| PhantomError::AuthError(format!("Invalid response: {e}")))
+    let status = resp.status().as_u16();
+    let bytes =
+        crate::cloud_http::read_bounded_response(resp, "Phantom Cloud account lookup").await?;
+    crate::cloud_http::parse_json(&bytes, status, "Phantom Cloud account lookup")
 }
 
 /// Store the access token in the OS keychain.

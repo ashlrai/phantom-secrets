@@ -92,20 +92,33 @@ pub fn build_setup_plan(inspection: &WorkspaceInspection) -> Result<SetupPlan> {
         }
     }
 
-    // A linked worktree stores `.git` as an indirection file. Its shared hook
-    // directory lives outside the workspace boundary and must not be smuggled
-    // into an otherwise contained setup transaction.
-    if inspection.git.is_some()
-        && std::path::Path::new(&inspection.workspace_root)
-            .join(".git")
-            .is_dir()
-    {
-        actions.push(action(
-            SetupActionKind::InstallPreCommitCheck,
-            ".git/hooks/pre-commit",
-            Vec::new(),
-            "Reject newly staged plaintext credentials before they enter Git history.",
-        ));
+    // Git owns hook-path resolution. Keep the transaction root-contained: an
+    // effective path outside the workspace (common for linked worktrees or an
+    // absolute core.hooksPath) is surfaced as an explicit trusted-terminal
+    // blocker instead of being silently skipped or rewritten.
+    if inspection.git.is_some() {
+        let root = std::path::Path::new(&inspection.workspace_root);
+        match phantom_core::precommit_hook::resolve_path(root) {
+            Ok(Some(hook_path)) => match hook_path.strip_prefix(root) {
+                Ok(relative) if relative.file_name().is_some() => actions.push(action(
+                    SetupActionKind::InstallPreCommitCheck,
+                    &relative.to_string_lossy().replace('\\', "/"),
+                    Vec::new(),
+                    "Reject newly staged plaintext credentials before they enter Git history.",
+                )),
+                _ => blockers.push(format!(
+                    "Git's effective pre-commit hook path is outside the workspace transaction boundary ({}); run `phantom doctor --fix` in a trusted terminal.",
+                    hook_path.display()
+                )),
+            },
+            Ok(None) => blockers.push(
+                "Git metadata was discovered, but Git no longer recognizes this workspace as a repository."
+                    .to_string(),
+            ),
+            Err(error) => blockers.push(format!(
+                "Git's effective pre-commit hook path could not be resolved: {error}"
+            )),
+        }
     }
 
     let place_target = inspection

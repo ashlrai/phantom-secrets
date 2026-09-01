@@ -31,10 +31,16 @@ for (const runtime of [
   { platform: "freebsd", arch: "x64" },
   { platform: "win32", arch: "ia32" },
 ]) {
-  assert.throws(
-    () => getPlatformTarget(runtime),
-    new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`)
-  );
+  assert.throws(() => getPlatformTarget(runtime), (error) => {
+    assert.match(error.message, new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`));
+    assert.match(error.message, /releases\/tag\/v0\.7\.4/);
+    assert.match(error.message, /checksum-verifiable/);
+    assert.doesNotMatch(error.message, /cargo install|npm install|npx |curl[^\n]*\|/i);
+    return true;
+  });
 }
+
+const wrapperSource = require("fs").readFileSync(require("path").join(__dirname, "..", "bin", "cli.js"), "utf8");
+assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-secrets/);
 
 console.log("npm CLI wrapper platform matrix tests passed");

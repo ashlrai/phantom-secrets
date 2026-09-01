@@ -144,9 +144,26 @@ pub struct ResponseScrubber {
 impl ResponseScrubber {
     /// Build from the token→secret mapping used by [`Interceptor::new`].
     pub fn from_token_map(token_to_secret: &HashMap<String, String>) -> Self {
-        let max_secret_len = token_to_secret.values().map(|v| v.len()).max().unwrap_or(0);
+        Self::from_token_secret_pairs(
+            token_to_secret
+                .iter()
+                .map(|(token, secret)| (token.as_str(), secret.as_str())),
+        )
+    }
+
+    pub(crate) fn from_token_secret_pairs<'a>(
+        pairs: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Self {
+        // Collect borrowed pairs so max-length calculation and analyzer
+        // construction share one view without another plaintext owner.
+        let pairs = pairs.into_iter().collect::<Vec<_>>();
+        let max_secret_len = pairs
+            .iter()
+            .map(|(_, secret)| secret.len())
+            .max()
+            .unwrap_or(0);
         Self {
-            analyzer: ResponseLeakAnalyzer::from_token_map(token_to_secret),
+            analyzer: ResponseLeakAnalyzer::from_token_secret_pairs(pairs.iter().copied()),
             max_secret_len,
         }
     }

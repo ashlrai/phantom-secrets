@@ -11,37 +11,41 @@ const TIERS = [
     pitch: "Local-first. Open source. Forever.",
     features: [
       "Local vault (OS keychain or encrypted file)",
-      "Proxy with full streaming support",
-      "MCP server for every editor",
-      "Unlimited local secrets · 1 cloud vault",
+      "Local proxy: requests are size-bounded and buffered; responses can stream",
+      "MCP server for supported clients",
+      "Unlimited local secrets",
     ],
     cta: { label: "Install free", href: "#install", primary: false },
   },
   {
     name: "Pro",
-    price: "$8",
-    cadence: "/mo",
-    pitch: "Cloud sync, multi-device, full backup.",
+    price: "Planned",
+    cadence: "",
+    pitch: "Join the pilot list for cloud-backup and team-vault evaluation.",
     featured: true,
     features: [
       "Everything in Free",
-      "Unlimited cloud vaults",
-      "Multi-device sync (E2E encrypted)",
-      "Team vaults & shared secrets",
-      "Vault backup & restore",
+      "Planned cloud-vault pilots",
+      "Planned cloud-key portability evaluation",
+      "Fixed-membership team-vault pilots",
+      "Commercial terms set before each pilot",
     ],
-    cta: { label: "Start with Pro", href: "/pricing", primary: true },
+    cta: {
+      label: "Join the Pro pilot list",
+      href: "mailto:mason@ashlr.ai?subject=Phantom%20Pro%20pilot",
+      primary: true,
+    },
   },
   {
     name: "Enterprise",
     price: "Custom",
     cadence: "",
-    pitch: "Teams, audit, SSO, dedicated support.",
+    pitch: "Scope a bounded evaluation before any commercial rollout.",
     features: [
-      "Everything in Pro",
-      "Audit log",
-      "SSO/SAML (planned)",
-      "Dedicated support",
+      "Written pilot scope and acceptance criteria",
+      "Evaluate local audit tooling",
+      "SSO/SAML not shipped",
+      "Support scope by written agreement",
     ],
     cta: { label: "Talk to us", href: "mailto:mason@ashlr.ai", primary: false },
   },
@@ -53,11 +57,12 @@ export function Pricing() {
       <div className="mx-auto max-w-[1100px] px-7">
         <div className="max-w-[640px] mb-12">
           <h2 className="text-[1.8rem] sm:text-[2.4rem] font-extrabold tracking-[-0.035em] leading-[1.08] text-white">
-            Free for you. Eight bucks for your team.
+            Open source today. Cloud pilots by agreement.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
             The CLI, vault, proxy, and MCP server are open source forever.
-            Cloud sync and multi-device cost what a coffee costs.
+            Pro billing and cloud entitlements are not commissioned; contact us
+            to scope a bounded pilot.
           </p>
         </div>
 
@@ -76,7 +81,7 @@ export function Pricing() {
               >
                 {featured && (
                   <span className="absolute -top-2.5 left-7 rounded-full border border-blue-d/40 bg-blue px-2.5 py-0.5 text-[0.7rem] font-bold uppercase tracking-[0.12em] text-white">
-                    Popular
+                    Pilot list
                   </span>
                 )}
 
@@ -134,7 +139,8 @@ export function Pricing() {
         </div>
 
         <p className="mt-8 text-center text-[0.78rem] text-t3">
-          End-to-end encrypted. Cancel any time. Open source forever.
+          No payment is collected from this page. Pilot access requires written
+          scope and commissioning.
         </p>
       </div>
     </section>

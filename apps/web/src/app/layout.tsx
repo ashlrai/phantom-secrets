@@ -18,9 +18,9 @@ const mono = JetBrains_Mono({
 });
 
 const SITE_URL = "https://phm.dev";
-const TITLE = "Phantom — Delegate everything to AI";
+const TITLE = "Phantom — Delegate credentialed API work to AI";
 const DESCRIPTION =
-  "Phantom hands AI a worthless token and injects the real API key at the network layer. Full access. Zero exposure. Works with Claude Code, Cursor, Windsurf, and Codex.";
+  "Phantom gives supported AI-agent workflows placeholders while an authenticated local proxy injects route-owned authentication only for exact configured routes. Works with Claude Code, Cursor, Windsurf, and Codex.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -64,7 +64,7 @@ export const metadata: Metadata = {
         url: "/og-image.png",
         width: 1200,
         height: 630,
-        alt: "Phantom — the blue ghost cradles your real API key (amber star) while handing AI a worthless phm_a8f2c4d9 phantom token.",
+        alt: "Phantom — the blue ghost holds a provider key while handing an AI workflow a phm_a8f2c4d9 placeholder.",
       },
     ],
   },
@@ -74,7 +74,7 @@ export const metadata: Metadata = {
     creator: "@ashlrai",
     title: TITLE,
     description:
-      "AI gets a phantom. Real keys never leave your machine. Open-source CLI for Claude Code, Cursor, Windsurf, Codex.",
+      "Supported AI workflows get placeholders. An authenticated local proxy injects route-owned authentication only for exact configured routes. Open-source CLI for Claude Code, Cursor, Windsurf, and Codex.",
     images: ["/og-image.png"],
   },
   icons: {
@@ -119,8 +119,6 @@ export default function RootLayout({
         {/* AI agents — point them at the canonical machine-readable docs */}
         <link rel="alternate" type="text/markdown" href="/llms.txt" title="Phantom — LLM context" />
         <link rel="alternate" type="text/markdown" href="/llms-full.txt" title="Phantom — full LLM reference" />
-        <link rel="alternate" type="application/json" href="/.well-known/ai-plugin.json" title="Phantom AI plugin manifest" />
-
         {/* JSON-LD: SoftwareApplication */}
         <script
           type="application/ld+json"
@@ -136,10 +134,11 @@ export default function RootLayout({
               url: SITE_URL,
               sameAs: [
                 "https://github.com/ashlrai/phantom-secrets",
-                "https://www.npmjs.com/package/phantom-secrets",
               ],
               license: "https://opensource.org/licenses/MIT",
               softwareVersion: "0.7.3",
+              downloadUrl:
+                "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3",
               description: DESCRIPTION,
               offers: {
                 "@type": "Offer",
@@ -179,27 +178,26 @@ export default function RootLayout({
               "@type": "HowTo",
               name: "Install Phantom Secrets",
               description:
-                "Set up Phantom so your AI coding tools never see real API keys.",
-              totalTime: "PT1M",
+                "Set up Phantom so supported AI-agent workflows receive placeholders instead of real API keys.",
               tool: [
-                { "@type": "HowToTool", name: "Node.js (for npx)" },
+                { "@type": "HowToTool", name: "Homebrew on macOS, or an exact v0.7.3 GitHub release asset" },
                 { "@type": "HowToTool", name: "Claude Code, Cursor, Windsurf, or Codex" },
               ],
               step: [
                 {
                   "@type": "HowToStep",
                   name: "Install Phantom and protect your .env",
-                  text: "Run `npx phantom-secrets init` in your project root. Phantom auto-detects API keys, moves them to your OS keychain, and rewrites the .env with phm_ tokens.",
+                  text: "Install the reviewed release from https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3. On macOS run `brew tap ashlrai/phantom`, `brew trust --formula ashlrai/phantom/phantom`, then the fully qualified install; on Linux or Windows, checksum-verify the exact v0.7.3 GitHub asset. Then run `phantom init` in the project root.",
                 },
                 {
                   "@type": "HowToStep",
                   name: "Register the MCP server with your editor",
-                  text: "Run `claude mcp add phantom-secrets-mcp -- npx -y phantom-secrets-mcp` for Claude Code, or paste the mcpServers JSON into Cursor / Windsurf MCP settings.",
+                  text: "Install both v0.7.3 binaries, then run `phantom setup --client claude`, `cursor`, `windsurf`, or `codex`. Released v0.7.3 normally registers its bundled `phantom mcp serve` runtime; it retains a legacy final `npx` fallback, so review the generated entry and keep the verified standalone `phantom-mcp` binary installed. Current main removes that network fallback and fails closed, but that change awaits a later release.",
                 },
                 {
                   "@type": "HowToStep",
                   name: "Run your code with the proxy injecting real keys",
-                  text: "Use `phantom exec -- <command>` to start a process whose API calls go through the local proxy. The proxy swaps phm_ tokens for real keys at the network layer.",
+                  text: "Use `phantom exec -- <command>` to launch a child process with authenticated base-URL overrides for Phantom's supported HTTP SDK routes. After an exact route match, the local proxy injects only that route's vault value into its fixed authentication header; client placeholders remain inert and unsupported connection strings fail closed.",
                 },
               ],
             }),
@@ -218,7 +216,7 @@ export default function RootLayout({
                   name: "Does Phantom slow down my AI requests?",
                   acceptedAnswer: {
                     "@type": "Answer",
-                    text: "About 0.5 ms of proxy overhead per request — not measurable in practice. The proxy is a Rust HTTP server bound to 127.0.0.1.",
+                    text: "Phantom adds a local Rust HTTP proxy bound to 127.0.0.1. Request bodies are processed under byte and time limits; measure overhead in your own latency-critical workload.",
                   },
                 },
                 {
@@ -226,7 +224,7 @@ export default function RootLayout({
                   name: "What does AI see when Phantom is installed?",
                   acceptedAnswer: {
                     "@type": "Answer",
-                    text: "The .env file contains phm_xxxxxxxx tokens instead of real values. AI tools read those tokens. The local proxy swaps them for real keys just before the outbound TLS connection.",
+                    text: "A managed .env file contains persistent phm_xxxxxxxx placeholders instead of provider credentials. phantom exec creates fresh child placeholders and a separate proxy bearer. The authenticated proxy injects route-owned authentication only after an exact supported route match; client placeholders remain inert.",
                   },
                 },
                 {
@@ -234,7 +232,7 @@ export default function RootLayout({
                   name: "What happens if a phm_ token leaks from AI logs?",
                   acceptedAnswer: {
                     "@type": "Answer",
-                    text: "Nothing. phm_ tokens are session-scoped placeholders that have no value outside your local proxy. The real key never left your machine.",
+                    text: "The managed .env phm_ placeholder persists until rotation and is not the provider credential. phantom exec separately creates fresh child placeholders and a fresh PHANTOM_PROXY_TOKEN; placeholders are never client-resolved, while the bearer stops working when that proxy session ends.",
                   },
                 },
                 {
@@ -250,7 +248,7 @@ export default function RootLayout({
                   name: "Which editors does Phantom work with?",
                   acceptedAnswer: {
                     "@type": "Answer",
-                    text: "Claude Code, Cursor, Windsurf, Codex via MCP. Any tool that reads .env files works automatically because Phantom rewrites the file.",
+                    text: "Phantom provides MCP setup for Claude Code, Cursor, Windsurf, and Codex. Other programs can run under phantom exec when their HTTP SDK accepts a supported base-URL override; protected database connection strings fail closed.",
                   },
                 },
                 {

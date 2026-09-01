@@ -46,7 +46,14 @@ individual is officially representing the community in public spaces.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the project maintainers at **mason@ashlr.ai**. All complaints will
-be reviewed and investigated promptly and fairly.
+be reviewed and investigated fairly and kept as private as practical. Reports
+of project vulnerabilities belong in the private channels described by
+[SECURITY.md](SECURITY.md), not the conduct channel.
+
+Maintainers may remove, edit, or reject comments, commits, code, issues, and
+other contributions that do not follow this Code of Conduct, and may
+temporarily or permanently restrict participation when appropriate. For usage
+questions and ordinary project support, see [SUPPORT.md](SUPPORT.md).
 
 ## Attribution
 

@@ -1,12 +1,23 @@
 # Phantom
 
-> Open-source CLI that protects API keys from AI coding agent leaks by replacing real secrets with worthless phantom tokens and injecting real credentials via a local HTTP proxy.
+> Open-source CLI that helps keep real API keys out of AI-agent context by replacing managed dotenv secrets with non-provider `phm_` tokens and proxying supported API routes through an authenticated local service.
 
 ## Install
 
+Reviewed release: `v0.7.3` at
+https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
+
+macOS:
 ```
-npx phantom-secrets init
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
 ```
+
+Linux and Windows: select the exact `v0.7.3` archive for your architecture from
+the release, download its adjacent `.sha256` sidecar, verify it, and put both
+release executables on PATH. Registry status verified 2026-08-31: npm and the
+MCP Registry publish older `0.6.0` packages; crates.io publishes `0.5.1`.
 
 ## MCP Server
 
@@ -17,7 +28,31 @@ Setup (recommended, one command per AI client):
 - Codex: `phantom setup --client codex` (writes ~/.codex/config.toml)
 - Generic: `phantom setup --client claude --print` (snippet to stdout)
 
-Falls back to `npx -y phantom-secrets-mcp` if `phantom-mcp` is not on PATH. Global registration alternative: `claude mcp add phantom-secrets-mcp -- npx phantom-secrets-mcp`.
+Install both `v0.7.3` release binaries first. Released `v0.7.3` normally records
+the running `phantom` executable with `mcp serve`; if that cannot be resolved, it
+looks for a local `phantom-mcp`. Its final legacy fallback is unpinned
+`npx -y phantom-secrets-mcp`, which resolves an older registry track. Keep both
+verified binaries installed and inspect the generated entry instead of relying
+on that fallback. Current main removes the network fallback and fails closed;
+that hardening is not in `v0.7.3` and awaits a later release.
+
+The runtime `tools/list` response is the canonical MCP parameter schema and is
+checked for exact parity with `mcp-registry/server.json`. Provider/network
+requests, credential retrieval/use, and persistent effects are disabled by
+default. Set `PHANTOM_MCP_EFFECTS=trusted-terminal` only outside agent
+authority to reach the `confirm: true` and one-use `approval_token` gates;
+conditional tools expose ungated inspection separately from effectful
+parameters. `phantom mcp-approve` requires attached stdin/stderr, shows the
+value-blind effect and exact parameters, and requires a fresh typed challenge.
+A same-user shell or agent-controlled PTY can defeat this ceremony, so leave
+effects disabled unless approval command and storage are outside agent
+authority. Advanced audit,
+validation, rotation, and expiry tools have distinct schemas; inspect
+`tools/list` rather than extrapolating these gates. `phantom_check` accepts
+`runtime`; staged index scanning is a CLI-only `phantom check --staged` option.
+
+`phantom_rotate_with_candidate` and `phantom_rotate_promote` are deprecated
+hard denials retained only for schema compatibility; they mutate nothing.
 
 Vault: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret_interactive, phantom_add_secret (deprecated; refuses plaintext), phantom_remove_secret, phantom_rotate, phantom_copy_secret
 
@@ -29,43 +64,84 @@ Teams: phantom_team_list, phantom_team_create, phantom_team_members, phantom_tea
 
 ## CLI surface (--help is grouped: Setup · Daily use · Sync & teams · Maintenance)
 
-init (--from <file>, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor / setup --dry-run|--apply), exec, start, stop, list (--json), add (--stdin; positional values rejected), remove, reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--dry-run --json, --only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy, export (hidden prompt or --passphrase-file; plaintext disabled), import (--from doppler|infisical|dotenvx|1password|env --file <path>), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull), open, upgrade, completion (bash/zsh/fish/powershell/elvish)
+init (--from <file>, --empty, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor / setup --dry-run|--apply), exec, start, stop, list (--json), add (--stdin; new names only; initialized project required; positional values rejected), remove (trusted-terminal exact removal), reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--dry-run --json, --only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy (trusted-terminal confirmation, no target overwrite), export (trusted-terminal hidden prompt only; passphrase files and plaintext disabled), import (--from doppler|infisical|dotenvx|1password|env --file <path>; trusted-terminal exact consent), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull/rotate-vault), validate (live/watch/schedule/history), expiry (set/enforce/rotate), open (closed alias catalog), upgrade (managed-owner routing; force denied), completion (bash/zsh/fish/powershell/elvish)
 
 ## Dashboard
 
-https://phm.dev/dashboard (read-only): list of cloud-backed projects, plan tier, team membership, billing portal link.
+https://phm.dev/dashboard: local/pilot access state and available cloud-backed project metadata. Hosted billing is not commissioned, and the dashboard does not start checkout or collect payment.
 
 ## Key Features
 
-- Phantom token proxy — replaces real secrets with `phm_` tokens, injects real keys at the network layer
-- Streaming token replacement — `text/*` and form request bodies processed frame-by-frame; JSON bodies buffered with field-level F9 scoping
-- Response scrubbing — prevents secrets from leaking in API responses back to the AI
+- Phantom token proxy — replaces managed dotenv values with `phm_` tokens and injects a matched route's real key only into its fixed authentication header
+- Inert client requests — no client-controlled header or body resolves a `phm_` token; bodies are accepted under a hard size cap, a missing route credential fails before upstream contact, and only route-owned auth injection can contain a real value
+- Response scrubbing — redacts configured vault values and recognized key formats from supported response paths before returning them to the caller
 - Public key awareness — detects and skips publishable/public keys that don't need protection
 - OS keychain storage — macOS Keychain, Linux Secret Service, Windows Credential Manager, encrypted file fallback. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
-- Cloud sync — E2E encrypted zero-knowledge vault sync via phm.dev
-- Multi-project scanner — `phantom init --all <DIR>` with `--jobs N` parallelism protects every git repo with a `.env` under `<DIR>` in one shot
+- Personal cloud backup — client-encrypted restore on the same keychain machine; cloud-key transfer and recovery are not shipped, and deployed service and account configuration remain separate gates
+- Multi-project scanner — `phantom init --all <DIR>` processes eligible repos found within five levels, stops below the first matching repo, and supports `--dry-run` plus `--jobs N`
 - Multi-IDE setup — `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool
 - Tamper-evident audit log — `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log` (secret name only). HMAC-SHA256 chain; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for access.
-- Competitor import — `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>` migrates secrets directly
-- Encrypted recovery — export/import use hidden terminal prompts or a private bounded `--passphrase-file`; plaintext export and argv passphrases are disabled
+- Competitor import — from an attached terminal outside agent authority, `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>` displays an exact value-blind source/target/name plan and requires its fresh typed challenge before storage; `--force` never bypasses consent
+- Encrypted recovery — export requires attached stdin/stdout/stderr, an exact value-blind challenge, and a hidden terminal passphrase; export passphrase files, plaintext, and argv passphrases are disabled. Import has the same terminal ceremony; only non-Windows import may additionally read a bounded private passphrase file.
 - Enriched diagnostics — `phantom doctor` reports install source, vault backend, audit-log status, Argon2 params, MCP wiring per client
-- Script wrapping — `phantom wrap` patches package.json so every npm script runs through the proxy
-- Watch mode — `phantom watch` monitors .env files for new unprotected secrets
+- Script wrapping — `phantom wrap` wraps selected runtime/build scripts and deliberately skips test, lint, type, and format scripts
+- Watch mode — `phantom watch` reports new unprotected secrets; legacy `--auto` hard-denies before mutation, so protection remains a reviewed transactional `phantom init`
 - Secret explainer — `phantom why <KEY>` explains detection heuristics
 - Cross-project copy — `phantom copy` shares secrets between project vaults
 - Doctor with auto-fix — `phantom doctor --fix` repairs configuration issues
-- Team vaults — shared vaults with role-based access control
-- Pre-commit hook — blocks commits containing unprotected secrets
+- Team vaults — fixed-membership encrypted sharing; invitation management is owner/admin-gated, vault access is member-wide, and offboarding rotation is not shipped
+- Pre-commit hook — runs a bounded staged dotenv/key-prefix check when Git invokes it; pair with CI and a broader scanner
 - Threat model — see THREAT_MODEL.md for assets, actors, mitigations, known gaps
+
+## Current source boundary
+
+- Governed project/config writers retain the acquisition-time directory,
+  reject outside-root and symlink/reparse traversal, require regular single-link
+  sensitive files, and compare exact identity plus bytes before replacement or
+  unlink. Rename-decoy tests verify that a swapped ambient path is not mutated.
+- Init retains the reviewed root and exact dotenv/config leaf identity, bytes,
+  and permissions before vault provisioning, then revalidates them under the
+  project lock before mutation. Byte-identical replacement leaves are drift.
+- `CommittedVerifiedButDurabilityUncertain` is committed, exactly verified
+  success with a value-free warning/receipt and no rollback or retry.
+  `CommittedButUncertain` is the distinct **Partial** result; reconcile before
+  retrying and do not infer rollback or a safe no-op.
+- Operations needing both vault and project authority resolve the
+  process-environment-dependent vault first, then acquire the project transaction lock,
+  compare the retained root identity, and reread exact config state. This
+  rejects a same-path replacement without inverting the shared lock order.
+- These controls are not a same-user sandbox. They coordinate Phantom writers
+  and preserve path identity while handles are retained; an equivalent
+  same-user process or agent-controlled terminal remains in the threat model.
+- Windows source establishes a protected current-user DACL on new private
+  files/directories before bytes and preserves the reviewed exact DACL and
+  inheritance state on replacement staging files before writing. Reparse,
+  handle, ACL, and Credential Manager behavior still await protected native
+  Windows CI acceptance. Current main is not evidence that `v0.7.4` is
+  published or deployed.
+- Implementation-security identity:
+  `5a3edad60634c78af3079f588bf51fefa0b69586`. Live GitHub governance observed
+  2026-09-01: the `release` environment required review and accepted only `v*`
+  tags; no-bypass immutability ruleset `21903888` was separate from creation
+  ruleset `21997435` with Mason-only bypass. Reverify before release.
+- Locus, broker, runtime, session, and externally trusted evidence remain
+  inactive and fail closed. Enterprise packaging is planned/commissioned only
+  through separate written and acceptance evidence.
+- Rama upstream main snapshot
+  https://github.com/plabayo/rama/commit/267e4790c899736e6f60d982c8a0932406d4079e
+  (reviewed 2026-09-01) is a pinned
+  benchmark for explicit stacks, modular crates, examples, and tiered platform
+  CI. It is not a dependency or parity claim.
 
 ## How AI Should Behave
 
 - NEVER show, log, or write real API key values into code files
-- The `.env` file contains `phm_...` tokens — these are safe placeholders, not broken keys
+- Managed dotenv values become `phm_...` placeholders rather than provider credentials. Client requests never resolve them, but keep dotenv reads denied and rotate exposed mappings because unmanaged entries remain possible and a process with the live proxy bearer can invoke configured routes.
 - Use `phantom_list_secrets` to see what secrets are available (never shows values)
 - Use `phantom_add_secret_interactive` to add new keys; the user types values only into the trusted terminal prompt
 - Use `phantom_init` to protect an unprotected `.env` file
 - Suggest `phantom exec -- <command>` to run code with real credentials injected
+- Never automate CLI login/logout, cloud reads/writes, team reads/mutations, remove, live validation, schedule/expiry writes, browser open, import/export, or eligible standalone upgrade through an agent-controlled PTY; their exact terminal ceremonies must remain outside agent authority
 
 ## Links
 

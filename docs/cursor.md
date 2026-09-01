@@ -4,7 +4,15 @@
 
 Cursor indexes your project files to power its AI completions and chat context. If your `.env` contains real API keys, those values flow directly into Cursor's context window and can appear in completions, inline suggestions, and chat transcripts.
 
-After `phantom init`, your `.env` contains only phantom tokens (`phm_...`). Cursor indexes the file, finds nothing sensitive, and cannot leak credentials. When your code makes an API call during a Cursor terminal session, the local Phantom proxy intercepts the request and injects the real value — over TLS, before the packet leaves your machine.
+After `phantom init`, managed dotenv secrets are replaced by `phm_` tokens.
+Those values are not accepted by providers, but they remain sensitive mappings
+until rotation. When supported API code runs in a Cursor process launched by
+`phantom exec`, the authenticated local proxy matches an exact reviewed route,
+discards client control of its auth header, and injects only the route-owned
+vault value there before sending the request over TLS. Client headers and bodies
+never resolve session tokens.
+Unmanaged files, unsupported protocols, and processes outside that environment
+remain outside this boundary.
 
 The MCP integration exposes the release-schema-verified catalog in Cursor Chat,
 so you can manage secrets without leaving the editor. The current release
@@ -16,11 +24,9 @@ contract enforces 54 unique tools; runtime `tools/list` is canonical.
 
 ### Step 1: install Phantom
 
-```bash
-npx phantom-secrets init
-```
-
-This installs the CLI and initializes your current project in one step.
+Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+verified path in [getting started](./getting-started.md#install), then run
+`phantom init` in the project.
 
 ### Step 2: wire up Cursor (one command)
 
@@ -41,7 +47,14 @@ This writes `~/.cursor/mcp.json` with the `phantom` MCP server entry:
 }
 ```
 
-If `phantom-mcp` is not on PATH, the command falls back to `npx -y phantom-secrets-mcp`. The config is global — it applies to every Cursor workspace.
+Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
+records the running `phantom` executable with `mcp serve`; if that cannot be
+resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is
+unpinned `npx -y phantom-secrets-mcp`, an older registry track, so keep both
+verified binaries installed and inspect the generated entry. Current main
+removes that network fallback and fails closed; this is not `v0.7.3` behavior
+and awaits a later release. The config is global and applies to every Cursor
+workspace.
 
 To see what would be written without modifying your config:
 
@@ -59,13 +72,13 @@ phantom exec -- cursor .
 
 This starts the Phantom proxy on `127.0.0.1`, sets `*_BASE_URL` environment variables for supported services (OpenAI, Anthropic, etc.), then launches Cursor. API calls made from Cursor's integrated terminal go through the proxy.
 
-Alternatively, start the proxy in the background and keep it running across sessions:
-
-```bash
-phantom start
-# ... work in Cursor normally ...
-phantom stop
-```
+For an explicitly supervised shared session, run `phantom start` in a trusted
+terminal and keep it open. Copy the printed exports into the terminal that
+launches Cursor, then press Ctrl-C in the original owning terminal to stop.
+Detached `--daemon` mode and current external process control fail closed;
+`phantom stop` authenticates legacy v0.7.3 state only to report manual
+migration guidance and never kills or deletes. Prefer
+`phantom exec -- cursor .` when one child process is sufficient.
 
 ---
 
@@ -82,7 +95,13 @@ Key tools for Cursor users:
 - `phantom_list_secrets` — see which secrets are loaded (names only, never values)
 - `phantom_add_secret_interactive` — start the terminal-based secret entry flow
 - `phantom_doctor` — validate config, `.gitignore`, `.env.example`, and pre-commit hook
-- `phantom_cloud_push` / `phantom_cloud_pull` — sync vault to/from Phantom Cloud
+- `phantom_cloud_push` / `phantom_cloud_pull` — dual-gated cloud effects. With
+  `force=false`, a partial pull blocks push until full reconciliation.
+
+Effectful MCP calls require `confirm: true` plus a one-use `approval_token`
+created through an attached-terminal `phantom mcp-approve` ceremony outside
+Cursor's shell and PTY authority. The same gates apply to authenticated
+provider reads such as cloud status and team list/members.
 
 ---
 
@@ -103,7 +122,7 @@ phantom doctor
 phantom cloud push
 ```
 
-Within a Cursor terminal session running under `phantom exec`, your existing code runs unmodified — `process.env.OPENAI_API_KEY` resolves to `phm_...` in the process environment, but the proxy replaces it with the real key before the HTTP request is sent.
+Within a Cursor terminal session running under `phantom exec`, your existing code runs unmodified — `process.env.OPENAI_API_KEY` holds `phm_...`, while the exact OpenAI proxy route injects its configured vault value into the upstream auth header. No client-controlled header or body is substituted.
 
 ---
 
@@ -117,7 +136,11 @@ Check that `~/.cursor/mcp.json` exists and contains the `phantom` entry:
 cat ~/.cursor/mcp.json
 ```
 
-If it looks correct, restart Cursor. Cursor reads MCP config on startup only. If `phantom-mcp` is not on PATH, the fallback command is `npx -y phantom-secrets-mcp` — npm must be installed for the fallback to work.
+If it looks correct, restart Cursor. Cursor reads MCP config on startup only. On
+current main, if setup reports that the local MCP runtime is missing, reinstall
+both verified binaries. That post-`v0.7.3` source fails closed instead of
+generating a registry-backed command. Released `v0.7.3` still has the legacy
+final `npx` fallback described above, so review its generated entry.
 
 **`phantom exec -- cursor .` opens Cursor but API calls fail**
 
@@ -125,7 +148,11 @@ The proxy sets `*_BASE_URL` variables only in the shell environment `phantom exe
 
 **Cursor AI sees `phm_...` tokens in code completions**
 
-This is expected and correct behavior. The phantom token is what belongs in source code and `.env`. The proxy swaps it for the real value at runtime. If the token appears in a completion, accept it — the value is safe to commit.
+Managed dotenv files contain project `phm_` mappings, but those mappings should
+not be copied into source or intentionally committed. If a token appears in a
+completion, remove it from generated code and rotate it with `phantom rotate`;
+client headers and bodies never resolve it. A stolen live proxy bearer can
+still authorize exact configured routes that inject their own credentials.
 
 ---
 

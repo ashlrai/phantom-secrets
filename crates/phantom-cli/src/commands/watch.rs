@@ -1,17 +1,26 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use phantom_core::audit;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{DotenvFile, SecretClassification};
-use phantom_core::rotation_strategy::overdue_description;
-use phantom_core::token::TokenMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Extended entry point used by the CLI `--auto-rotate` flag.
 pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
+    if auto_rotate {
+        anyhow::bail!(
+            "--auto-rotate is deprecated and disabled: the legacy watcher only remapped local phm_ placeholders and marked rotation schedules complete without rotating provider credentials. Automated live provider issuance is disabled in 0.7.4; rotate through the provider's trusted interface, then store the successor with trusted-terminal `phantom add`."
+        );
+    }
+    if auto {
+        anyhow::bail!(
+            "--auto is disabled before any mutation in 0.7.4: the legacy watcher could leave vault and dotenv state partially updated after a concurrent edit or write failure. Run `phantom watch` for detection, then review the file and run `phantom init` from a trusted terminal for transactional protection."
+        );
+    }
+
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -22,15 +31,12 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
         );
     }
 
-    let env_files = [".env", ".env.local", ".env.development"];
-    let watched: Vec<_> = env_files
-        .iter()
-        .filter(|f| project_dir.join(f).exists())
-        .collect();
+    let config = PhantomConfig::load(&config_path)?;
+    let watched = watched_dotenv_paths(&project_dir, &config)?;
 
     if watched.is_empty() {
         anyhow::bail!(
-            "No .env files found to watch.\n  {}",
+            "No managed or conventional dotenv files found to watch.\n  {}",
             crate::util::docs_url("getting-started")
         );
     }
@@ -40,25 +46,12 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
         "->".blue().bold(),
         watched
             .iter()
-            .map(|f| f.to_string())
+            .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", ")
             .cyan()
     );
-    if auto {
-        println!("   {} Auto-protect mode enabled", "!".yellow().bold());
-    } else {
-        println!(
-            "   New secrets will be reported. Use {} for auto-protect.",
-            "--auto".dimmed()
-        );
-    }
-    if auto_rotate {
-        println!(
-            "   {} Auto-rotate mode enabled (checks every 30 s)",
-            "!".yellow().bold()
-        );
-    }
+    println!("   New secrets will be reported; protection requires reviewed `phantom init`.");
     println!("   Press Ctrl+C to stop.\n");
 
     let (tx, rx) = mpsc::channel();
@@ -73,45 +66,31 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
     )
     .context("Failed to create file watcher")?;
 
-    for file in &watched {
-        let path = project_dir.join(file);
+    for path in &watched {
         watcher
-            .watch(&path, RecursiveMode::NonRecursive)
-            .context(format!("Failed to watch {}", file))?;
+            .watch(path, RecursiveMode::NonRecursive)
+            .with_context(|| format!("Failed to watch {}", path.display()))?;
     }
+    let watched: HashSet<PathBuf> = watched.into_iter().collect();
 
     // Debounce window for file-change events.
     let debounce = Duration::from_millis(200);
-    // How often to check the rotation schedule (30 s).
-    let rotation_check_interval = Duration::from_secs(30);
-    let mut last_rotation_check = Instant::now();
-
     loop {
-        // Perform a rotation-schedule check if auto_rotate is enabled and the
-        // interval has elapsed.
-        if auto_rotate && last_rotation_check.elapsed() >= rotation_check_interval {
-            last_rotation_check = Instant::now();
-            let env_path = project_dir.join(".env");
-            check_and_rotate(&config_path, &env_path);
-        }
-
         match rx.recv_timeout(Duration::from_secs(5)) {
             Ok(event) => {
                 let mut pending_paths: std::collections::HashSet<PathBuf> =
                     std::collections::HashSet::new();
-                collect_env_paths(&event, &mut pending_paths);
+                collect_env_paths(&event, &watched, &mut pending_paths);
 
                 while let Ok(extra) = rx.recv_timeout(debounce) {
-                    collect_env_paths(&extra, &mut pending_paths);
+                    collect_env_paths(&extra, &watched, &mut pending_paths);
                 }
 
                 for path in &pending_paths {
-                    handle_env_change(path, &config_path, auto);
+                    handle_env_change(path);
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Timeout is expected — loop back to check rotation schedule.
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(e) => {
                 eprintln!("{} Watch error: {}", "!".red().bold(), e);
                 break;
@@ -122,138 +101,54 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
     Ok(())
 }
 
-/// Check whether any secret is past its rotation schedule and, if so, rotate it.
-fn check_and_rotate(config_path: &Path, env_path: &Path) {
-    let config = match PhantomConfig::load(config_path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+fn watched_dotenv_paths(project_dir: &Path, config: &PhantomConfig) -> Result<Vec<PathBuf>> {
+    let mut candidates = vec![
+        project_dir.join(".env"),
+        project_dir.join(".env.local"),
+        project_dir.join(".env.development"),
+    ];
+    if let Some(configured) = config.phantom.dotenv_path.as_deref() {
+        let configured = phantom_core::managed_dotenv::validate_dotenv_basename(configured)?;
+        candidates.push(project_dir.join(configured));
+    }
 
-    let vault = phantom_vault::create_vault(config.local_project_id());
-    let names = match vault.list() {
-        Ok(n) => n,
-        Err(_) => return,
-    };
-
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let mut rotated_names: Vec<String> = Vec::new();
-
-    for name in &names {
-        let schedule = match config.get_rotation_schedule(name) {
-            Some(s) => s,
-            None => continue,
-        };
-
-        if !schedule.should_rotate_now(now_secs) {
+    let mut watched = Vec::new();
+    for path in candidates {
+        if watched.contains(&path) {
             continue;
         }
-
-        // Describe how overdue this secret is.
-        let overdue = overdue_description(&schedule, now_secs)
-            .unwrap_or_else(|| "at schedule boundary".to_string());
-
-        println!(
-            "{} Rotated {} ({}) — auto-rotate triggered",
-            "->".blue().bold(),
-            name.bold(),
-            overdue.yellow()
-        );
-
-        // Audit the rotation event.
-        audit::log("rotation.auto", Some(name));
-
-        rotated_names.push(name.clone());
-    }
-
-    if rotated_names.is_empty() {
-        return;
-    }
-
-    // Generate new phantom tokens for the rotated secrets and rewrite .env.
-    let mut token_map = TokenMap::new();
-    for name in &rotated_names {
-        token_map.insert(name.clone());
-    }
-
-    if env_path.exists() {
-        match DotenvFile::parse_file(env_path) {
-            Ok(dotenv) => {
-                if let Err(e) = dotenv.write_phantomized(&token_map, env_path) {
-                    eprintln!(
-                        "{} Failed to rewrite .env after auto-rotate: {}",
-                        "!".red().bold(),
-                        e
-                    );
-                } else {
-                    println!(
-                        "{} .env rewritten with {} new phantom token(s)",
-                        "ok".green().bold(),
-                        rotated_names.len()
-                    );
-                }
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                anyhow::bail!(
+                    "Refusing dotenv watch target that is not a regular, non-symlink file: {}",
+                    path.display()
+                )
             }
-            Err(e) => {
-                eprintln!("{} Failed to parse .env: {}", "!".red().bold(), e);
+            Ok(_) => watched.push(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("Failed to inspect {}", path.display()))
             }
         }
     }
-
-    // Update last_rotated in the config file so subsequent checks don't
-    // immediately re-trigger.
-    update_last_rotated(config_path, &rotated_names, now_secs);
+    Ok(watched)
 }
 
-/// Persist `last_rotated = now_secs` for each rotated secret's schedule entry
-/// in `.phantom.toml`. Updates both the global policy (if any) and any
-/// per-secret overrides.
-fn update_last_rotated(config_path: &Path, names: &[String], now_secs: u64) {
-    let mut config = match PhantomConfig::load(config_path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-
-    // Update global rotation_policy last_rotated.
-    if let Some(ref mut policy) = config.phantom.rotation_policy {
-        policy.last_rotated = Some(now_secs);
-    }
-
-    // Update per-secret overrides.
-    for name in names {
-        if let Some(ov) = config.phantom.secrets.get_mut(name) {
-            if let Some(ref mut sched) = ov.rotation_schedule {
-                sched.last_rotated = Some(now_secs);
-            }
-        }
-    }
-
-    if let Err(e) = config.save(config_path) {
-        eprintln!(
-            "{} Failed to update .phantom.toml after rotation: {}",
-            "!".red().bold(),
-            e
-        );
-    }
-}
-
-fn collect_env_paths(event: &Event, paths: &mut std::collections::HashSet<PathBuf>) {
+fn collect_env_paths(event: &Event, watched: &HashSet<PathBuf>, paths: &mut HashSet<PathBuf>) {
     if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
         for path in &event.paths {
-            if path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(".env"))
-            {
+            if watched.contains(path) {
                 paths.insert(path.clone());
             }
         }
     }
 }
 
-fn handle_env_change(env_path: &Path, config_path: &Path, auto: bool) {
+fn handle_env_change(env_path: &Path) {
+    match std::fs::symlink_metadata(env_path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {}
+        _ => return,
+    }
     let dotenv = match DotenvFile::parse_file(env_path) {
         Ok(d) => d,
         Err(_) => return,
@@ -285,38 +180,71 @@ fn handle_env_change(env_path: &Path, config_path: &Path, auto: bool) {
         println!("   {} {}", "+".cyan().bold(), entry.key.bold());
     }
 
-    if auto {
-        if let Ok(config) = PhantomConfig::load(config_path) {
-            let vault = phantom_vault::create_vault(config.local_project_id());
-            let mut token_map = TokenMap::new();
+    println!(
+        "   {} Review the file, then run {} from a trusted terminal",
+        "->".blue().bold(),
+        "phantom init".cyan().bold()
+    );
+}
 
-            for entry in &new_secrets {
-                token_map.insert(entry.key.clone());
-                let secret = zeroize::Zeroizing::new(entry.value.clone());
-                if let Err(e) = vault.store(&entry.key, &secret) {
-                    eprintln!(
-                        "   {} Failed to store {}: {}",
-                        "!".red().bold(),
-                        entry.key,
-                        e
-                    );
-                    return;
-                }
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::ModifyKind;
 
-            if let Ok(_originals) = dotenv.write_phantomized(&token_map, env_path) {
-                println!(
-                    "   {} Auto-protected {} secret(s)",
-                    "ok".green().bold(),
-                    new_secrets.len()
-                );
-            }
-        }
-    } else {
-        println!(
-            "   {} Run {} to protect them",
-            "->".blue().bold(),
-            "phantom init".cyan().bold()
-        );
+    #[test]
+    fn legacy_auto_rotation_fails_before_watcher_or_filesystem_mutation() {
+        let error = run_with_rotate(false, true).unwrap_err();
+        assert!(error.to_string().contains("deprecated and disabled"));
+        assert!(error
+            .to_string()
+            .contains("without rotating provider credentials"));
+    }
+
+    #[test]
+    fn legacy_auto_protect_fails_before_watcher_or_filesystem_mutation() {
+        let error = run_with_rotate(true, false).unwrap_err();
+        assert!(error.to_string().contains("--auto is disabled"));
+        assert!(error.to_string().contains("before any mutation"));
+        assert!(error.to_string().contains("phantom init"));
+    }
+
+    #[test]
+    fn configured_custom_dotenv_is_watched_and_collected() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("custom.env");
+        std::fs::write(&custom, "API_KEY=phm_placeholder\n").unwrap();
+        let mut config = PhantomConfig::new_with_defaults("watch-custom".to_string());
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+
+        let watched = watched_dotenv_paths(dir.path(), &config).unwrap();
+        assert_eq!(watched, vec![custom.clone()]);
+
+        let watched_set = HashSet::from([custom.clone()]);
+        let event = Event::new(EventKind::Modify(ModifyKind::Any)).add_path(custom.clone());
+        let mut collected = HashSet::new();
+        collect_env_paths(&event, &watched_set, &mut collected);
+        assert_eq!(collected, HashSet::from([custom]));
+    }
+
+    #[test]
+    fn configured_dotenv_traversal_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = PhantomConfig::new_with_defaults("watch-traversal".to_string());
+        config.phantom.dotenv_path = Some("../outside.env".to_string());
+        assert!(watched_dotenv_paths(dir.path(), &config).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_dotenv_symlink_is_rejected() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.env");
+        std::fs::write(&target, "API_KEY=real\n").unwrap();
+        symlink(&target, dir.path().join("custom.env")).unwrap();
+        let mut config = PhantomConfig::new_with_defaults("watch-symlink".to_string());
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        assert!(watched_dotenv_paths(dir.path(), &config).is_err());
     }
 }

@@ -1,28 +1,29 @@
-// Three-step "first 60 seconds" panel. Each step has the exact command,
-// click-to-copy, and the literal expected output. Reduces install friction
-// by removing every "wait what next?" moment.
+// Three-step quick-start panel. Each step has the exact command,
+// click-to-copy, and an explicitly illustrative output summary. Ports,
+// service routes, and vault backends vary by machine and configuration.
 
 import { CopyButton } from "./CopyButton";
 
 const STEPS = [
   {
     n: "01",
-    title: "Install",
-    body: "One command. Downloads the binary for your platform.",
-    cmd: "npx phantom-secrets init",
-    out: `$ npx phantom-secrets init
-->  Found 4 secrets in .env
-ok  vault initialized · macOS Keychain
-ok  .env rewritten with phm_ tokens
-ok  pre-commit hook installed
-ok  CLAUDE.md updated`,
+    title: "Install v0.7.3 on macOS",
+    body: "Use the reviewed Homebrew tap, trust, and fully qualified formula path.",
+    cmd: "brew tap ashlrai/phantom\nbrew trust --formula ashlrai/phantom/phantom\nbrew install ashlrai/phantom/phantom",
+    out: `$ phantom --version
+phantom 0.7.3
+$ phantom-mcp --version
+phantom-mcp 0.7.3`,
   },
   {
     n: "02",
-    title: "Verify agent readiness",
-    body: "One preflight for Claude Code, Codex, Cursor, Windsurf, and any other agent.",
-    cmd: "phantom agent doctor",
-    out: `$ phantom agent doctor
+    title: "Protect and verify",
+    body: "Initialize the project, then run the built-in readiness preflight.",
+    cmd: "phantom init && phantom agent doctor",
+    out: `$ phantom init
+ok  vault initialized · <selected backend>
+ok  .env rewritten with phm_ tokens
+$ phantom agent doctor
 ok  status: verified
 ok  vault accessible
 ok  env files protected
@@ -31,13 +32,13 @@ ok  Phantom MCP wiring detected`,
   {
     n: "03",
     title: "Code with AI normally",
-    body: "Your AI tool reads phm_ tokens. The proxy injects real keys at the network layer.",
+    body: "Supported HTTP SDK routes use fresh session tokens through the authenticated local proxy.",
     cmd: "phantom exec -- claude",
     out: `$ phantom exec -- claude
-->  proxy started on 127.0.0.1:8484
-->  intercepting api.openai.com, api.anthropic.com,
-    api.stripe.com (+10)
-->  launching claude with PHANTOM_PROXY env`,
+->  Starting proxy with <n> secret(s)...
+ok  Proxy running on 127.0.0.1:<ephemeral-port>
+->  <configured SDK base URL overrides>
+->  launching claude`,
   },
 ];
 
@@ -47,11 +48,13 @@ export function QuickStart() {
       <div className="mx-auto max-w-[1100px] px-7">
         <div className="max-w-[640px] mb-12">
           <h2 className="text-[1.8rem] sm:text-[2.4rem] font-extrabold tracking-[-0.035em] leading-[1.08] text-white">
-            Sixty seconds to a safe .env.
+            A bounded path to a protected .env.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            Three commands. Real output. Nothing hidden. If anything looks
-            different on your machine, run{" "}
+            Three commands with illustrative output; ports, routes, and vault
+            backends vary by configuration. Linux and Windows use the exact
+            v0.7.3 GitHub release assets linked in the repository. For exact
+            local state, run{" "}
             <code className="font-mono text-blue-b">phantom agent doctor</code>.
           </p>
         </div>

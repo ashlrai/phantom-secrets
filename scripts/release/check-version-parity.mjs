@@ -57,12 +57,24 @@ const cliWrapperVersion = requireMatch(
   /^const VERSION\s*=\s*"([^"]+)";/m,
   "npm CLI wrapper version"
 );
+const shellInstallerVersion = requireMatch(
+  read("scripts/install.sh"),
+  /^CANDIDATE_TAG="v([^"]+)"$/m,
+  "Unix installer candidate tag"
+);
+const powershellInstallerVersion = requireMatch(
+  read("scripts/install.ps1"),
+  /^\$CandidateTag\s*=\s*'v([^']+)'$/m,
+  "PowerShell installer candidate tag"
+);
 const versions = new Map([
   ["Cargo workspace", workspaceVersion],
   ["npm CLI package", npmCliVersion],
   ["npm MCP package", npmMcpVersion],
   ["npm CLI wrapper", cliWrapperVersion],
   ["npm MCP wrapper", wrapperVersion],
+  ["Unix direct installer", shellInstallerVersion],
+  ["PowerShell direct installer", powershellInstallerVersion],
   ["MCP registry server", registry.version],
   ["MCP registry npm package", registryPackage.version],
 ]);

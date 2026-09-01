@@ -3,9 +3,13 @@ mod util;
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::sync::Mutex;
+    pub(crate) use phantom_core::PROCESS_ENV_LOCK as ENV_LOCK;
 
-    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) fn canonical_tempdir_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        dir.path()
+            .canonicalize()
+            .expect("temporary directory should canonicalize")
+    }
 }
 
 use clap::{Parser, Subcommand};
@@ -15,13 +19,14 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(
     name = "phantom",
-    about = "Prevent AI coding agents from leaking your API keys",
-    long_about = "Phantom replaces real secrets in your .env with worthless phantom tokens.\n\
-                  A local proxy intercepts API calls, swaps in real credentials at the network layer.\n\
-                  The AI agent never sees a real secret.\n\n\
+    about = "Reduce API-key exposure in supported AI-agent workflows",
+    long_about = "Phantom replaces managed dotenv secrets with non-provider phantom placeholders.\n\
+                  Its authenticated local proxy matches exact routes and injects only route-owned authentication into each route's fixed header; client headers and bodies never resolve placeholders.\n\
+                  Agents confined to value-blind tools and supported proxy routes do not receive stored values.\n\
+                  Unmanaged files, same-user processes, arbitrary tools, and unsupported protocols remain outside this boundary.\n\n\
                   Commands are grouped (in display order):\n  \
                     Setup        init · agent · setup · doctor · completion · mcp\n  \
-                    Daily use    exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
+                    Daily use    exec · start · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance  upgrade · watch · rotate · open · audit",
     version
@@ -57,11 +62,11 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         all: Option<std::path::PathBuf>,
         /// With --all: scan and report what would change without modifying anything.
-        #[arg(long)]
+        #[arg(long, requires = "all")]
         dry_run: bool,
         /// With --all: number of repos to initialise concurrently.
         /// Defaults to PHANTOM_INIT_JOBS env var, then 4.
-        #[arg(long, short = 'j', value_name = "N")]
+        #[arg(long, short = 'j', value_name = "N", requires = "all")]
         jobs: Option<usize>,
         /// Create a valid .phantom.toml and empty vault without requiring a .env file.
         /// Use this to bootstrap a brand-new project before any secrets exist.
@@ -78,7 +83,7 @@ enum Commands {
         /// Print the config snippet to stdout instead of writing files
         #[arg(long)]
         print: bool,
-        /// Configure audit event encryption mode: none, local, or cloud-signed
+        /// Configure audit encryption: none/local; cloud-signed is reserved and refused
         #[arg(long, value_enum, value_name = "MODE")]
         audit_mode: Option<commands::setup::AuditMode>,
     },
@@ -153,22 +158,22 @@ enum Commands {
         cmd: Vec<String>,
     },
 
-    /// Start the proxy server
+    /// Start a foreground proxy owned by this terminal
     #[command(next_help_heading = "Daily use")]
     Start {
-        /// Run in background (daemon mode)
+        /// Reserved compatibility flag; detached mode is hard denied
         #[arg(short, long)]
         daemon: bool,
     },
 
-    /// Stop the background proxy server
+    /// TTY-only diagnostic and manual migration guidance for legacy v0.7.3 state
     #[command(next_help_heading = "Daily use")]
     Stop,
 
     /// Show proxy status and mapped secrets
     #[command(next_help_heading = "Daily use")]
     Status {
-        /// Compact one-line output for shell prompts (e.g., "3 secrets · proxy off")
+        /// Compact one-line output for shell prompts
         #[arg(long)]
         oneline: bool,
     },
@@ -199,7 +204,7 @@ enum Commands {
         min_anomaly_score: Option<u8>,
     },
 
-    /// Add a secret to the vault
+    /// Create a new secret name transactionally; existing names are never replaced
     #[command(next_help_heading = "Daily use")]
     Add {
         /// Secret name (e.g., OPENAI_API_KEY)
@@ -207,12 +212,12 @@ enum Commands {
         /// Legacy positional secret value; rejected because argv is observable
         #[arg(hide = true)]
         value: Option<String>,
-        /// Read the secret value from stdin (for piped use: echo "$VAL" | phantom add KEY --stdin)
+        /// Read one new-name value from stdin; existing names are denied before the read
         #[arg(long)]
         stdin: bool,
     },
 
-    /// Remove a secret from the vault
+    /// Remove a secret transactionally after an exact trusted-terminal challenge
     #[command(next_help_heading = "Daily use")]
     Remove {
         /// Secret name to remove
@@ -232,7 +237,7 @@ enum Commands {
         yes: bool,
     },
 
-    /// Copy a secret from this project's vault to another project
+    /// Copy a secret to an initialized target; existing target ownership is never overwritten
     #[command(next_help_heading = "Daily use")]
     Copy {
         /// Secret name in this project
@@ -261,22 +266,22 @@ enum Commands {
     },
 
     // ───────────────────────── Sync & teams ──────────────────────────
-    /// Log in to Phantom Cloud
+    /// Log in only after two exact trusted-terminal challenges
     #[command(next_help_heading = "Sync & teams")]
     Login,
 
-    /// Log out of Phantom Cloud
+    /// Log out only after an exact trusted-terminal challenge
     #[command(next_help_heading = "Sync & teams")]
     Logout,
 
-    /// Cloud vault sync commands
+    /// Cloud status plus trusted-terminal push/pull commands
     #[command(next_help_heading = "Sync & teams")]
     Cloud {
         #[command(subcommand)]
         action: CloudAction,
     },
 
-    /// Team vault management
+    /// Authenticated team reads and trusted-terminal team mutations
     #[command(next_help_heading = "Sync & teams")]
     Team {
         #[command(subcommand)]
@@ -322,7 +327,7 @@ enum Commands {
         force: bool,
     },
 
-    /// Export secrets to an encrypted backup file
+    /// Export to a new encrypted backup after an exact trusted-terminal challenge
     #[command(next_help_heading = "Sync & teams")]
     Export {
         /// New encrypted backup path (must not already exist)
@@ -331,7 +336,7 @@ enum Commands {
         /// Deprecated and rejected: argv can expose the passphrase
         #[arg(short, long, hide = true)]
         passphrase: Option<String>,
-        /// Read the passphrase from a private regular file (maximum 4096 bytes)
+        /// Deprecated and rejected for export: enter a dedicated passphrase at the trusted-terminal prompt
         #[arg(long, value_name = "FILE")]
         passphrase_file: Option<String>,
         /// Legacy plaintext mode; retained only to fail closed
@@ -342,11 +347,11 @@ enum Commands {
         allow_plaintext: bool,
     },
 
-    /// Import secrets from an encrypted backup or a competitor export
+    /// Import only after an exact trusted-terminal challenge; --force never bypasses it
     ///
     /// Phantom encrypted backup:
     ///   phantom import <FILE>
-    ///   phantom import <FILE> --passphrase-file <PRIVATE_FILE>
+    ///   phantom import <FILE> --passphrase-file <PRIVATE_FILE>  # non-Windows only
     ///
     /// Competitor migration (--from):
     ///   phantom import --from doppler    --file dump.json
@@ -365,7 +370,7 @@ enum Commands {
         /// Deprecated and rejected: argv can expose the passphrase
         #[arg(short, long, hide = true)]
         passphrase: Option<String>,
-        /// Read the backup passphrase from a private regular file (maximum 4096 bytes)
+        /// Read from a private regular file on non-Windows platforms (maximum 4096 bytes)
         #[arg(long, value_name = "FILE")]
         passphrase_file: Option<String>,
         /// Import source: doppler | infisical | dotenvx | 1password | env
@@ -374,7 +379,7 @@ enum Commands {
         /// Path to the export file (required with --from)
         #[arg(long = "file", alias = "file-path", value_name = "FILE", required_if_eq_all([("from", "doppler"), ("from", "infisical"), ("from", "dotenvx"), ("from", "1password"), ("from", "env")]))]
         file_path: Option<String>,
-        /// Overwrite existing secrets without prompting
+        /// Select overwrite policy for existing secrets; never bypasses the exact trusted-terminal ceremony
         #[arg(long)]
         force: bool,
     },
@@ -395,10 +400,10 @@ enum Commands {
     Unwrap,
 
     // ───────────────────────── Maintenance ───────────────────────────
-    /// Self-replace this binary with the latest GitHub release.
+    /// Check for updates; standalone installs may self-replace, while managed installs route to their owner.
     #[command(next_help_heading = "Maintenance")]
     Upgrade {
-        /// Skip confirmation prompt and upgrade immediately
+        /// Deprecated and rejected: cannot bypass the standalone replacement ceremonies
         #[arg(long)]
         force: bool,
         /// Print available version without modifying the binary
@@ -409,64 +414,46 @@ enum Commands {
     /// Watch .env files and auto-detect new unprotected secrets
     #[command(next_help_heading = "Maintenance")]
     Watch {
-        /// Auto-protect new secrets without prompting
+        /// Deprecated and disabled before mutation: use watch for detection,
+        /// then run `phantom init` for transactional protection.
         #[arg(long)]
         auto: bool,
-        /// Enable background rotation checks every 30 seconds. Rotates secrets
-        /// when their configured schedule boundary has passed and rewrites .env.
-        /// Requires a rotation_policy to be set (via `phantom rotate --schedule-strategy`).
-        #[arg(long)]
+        /// Deprecated and disabled: the legacy watcher remapped local phm_
+        /// placeholders but did not rotate provider credentials.
+        #[arg(long, hide = true)]
         auto_rotate: bool,
     },
 
-    /// Regenerate phantom tokens (invalidates old ones)
+    /// Regenerate all phantom tokens after an exact attached-terminal challenge
     #[command(next_help_heading = "Maintenance")]
     Rotate {
-        /// Also sync secrets to all configured deployment platforms after rotation
+        /// Sync a newly provider-rotated credential. Rejected for a local-only
+        /// Phantom token remap because the provider credential is unchanged.
         #[arg(long)]
         sync: bool,
-        /// Set a TTL (in days) on every secret after rotation. Sets expires_at and
-        /// rotation_policy on each vault entry. Use `phantom list --show-expiry`
-        /// and `phantom doctor --expiry` to monitor status.
-        #[arg(long, value_name = "DAYS")]
+        /// Deprecated and disabled for local token remaps: remapping a phm_
+        /// placeholder cannot renew a provider credential's TTL.
+        #[arg(long, value_name = "DAYS", hide = true)]
         with_expiry: Option<u64>,
-        /// Shadow mode: generate a candidate credential alongside the current
-        /// primary for staged validation before promotion. The current primary
-        /// remains active until `phantom validate <NAME> --promote` succeeds.
-        /// Requires a secret NAME when used with --shadow.
-        #[arg(long)]
+        /// Deprecated and disabled: legacy shadow mode generated only a local
+        /// phm_cand_ placeholder, not a provider-issued credential.
+        #[arg(long, hide = true)]
         shadow: bool,
-        /// Secret name to rotate. With --shadow: shadow-rotate this secret.
-        /// With --provider (or alone, when the secret has a rotation_provider
-        /// block in .phantom.toml): rotate the real credential at the vendor.
+        /// Secret name for the reserved provider-rotation surface. In 0.7.4,
+        /// every live provider path is denied before credential or network access.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
-        /// Persist a rotation schedule in .phantom.toml under [phantom.rotation_policy].
-        /// Accepted values: never | daily | weekly | monthly.
-        /// Use `phantom watch --auto-rotate` to enforce the schedule automatically.
-        #[arg(long, value_name = "STRATEGY", conflicts_with = "name")]
+        /// Deprecated and disabled: the legacy schedule only remapped local
+        /// Phantom placeholders and did not rotate provider credentials.
+        #[arg(long, value_name = "STRATEGY", conflicts_with = "name", hide = true)]
         schedule_strategy: Option<String>,
-        /// Use a vendor-specific rotation provider to re-issue the credential at
-        /// the vendor side. Accepted values: stripe | github | aws | google | vercel.
-        /// (sentry and supabase are recognized but report manual-rotation-required
-        /// with a dashboard link — those vendors expose no token-minting API.)
-        /// Requires --name <KEY> and the secret's rotation_provider config in
-        /// .phantom.toml under [phantom.secrets.<KEY>.rotation_provider].
-        /// May be omitted when that config block names the provider:
-        /// `phantom rotate --name <KEY>` resolves it from .phantom.toml.
-        /// The bootstrap credential named by api_key_env is read from the
-        /// environment first, then from the vault under the same name.
-        /// The new value is stored in the vault and never printed; pass the
-        /// global --json flag for a metadata-only JSON result.
-        /// Example: phantom rotate --provider stripe --name STRIPE_SECRET_KEY
+        /// Reserved vendor-specific rotation selector. All providers are hard
+        /// denied before bootstrap credential access and network I/O in 0.7.4.
         #[arg(long, value_name = "PROVIDER", conflicts_with_all = ["shadow", "schedule_strategy", "with_expiry", "batch"])]
         provider: Option<String>,
 
-        /// Scan vault for all secrets expiring within the rotation window and
-        /// rotate them in a single batched run.  Respects per-provider rate
-        /// limits (e.g. Stripe's 10-second post-rotation pause).
-        /// Emits a composite audit event with a shared batch_id.
-        /// Rotation window defaults to 30 days; override with --rotation-window-days.
+        /// Metadata-only discovery/manual guidance. Vendor execution is hard
+        /// denied before credential or network access in 0.7.4.
         #[arg(long, conflicts_with_all = ["shadow", "schedule_strategy", "provider"])]
         batch: bool,
 
@@ -476,8 +463,9 @@ enum Commands {
         rotation_window_days: u64,
     },
 
-    /// Bootstrap a durable credential via one human consent, then let Phantom
-    /// renew it forever (GitHub App manifest, OAuth PKCE/device grants).
+    /// Inspect configured grant metadata. Enrollment and remote revocation are
+    /// hard-denied in shipped 0.7.4; obtain credentials at the provider and
+    /// store them with trusted-terminal `phantom add`.
     ///
     /// Subcommands: `add`, `list`, `status`, `revoke`.
     #[command(next_help_heading = "Maintenance")]
@@ -486,7 +474,7 @@ enum Commands {
         action: GrantAction,
     },
 
-    /// Validate stored secrets against their target APIs (drift detection).
+    /// Validate stored secrets; live provider checks require exact trusted-terminal consent.
     ///
     /// Sub-commands: `schedule`, `history`
     #[command(next_help_heading = "Maintenance")]
@@ -499,9 +487,9 @@ enum Commands {
         /// Number of concurrent validation jobs (default: 4)
         #[arg(long, short = 'j', value_name = "N")]
         jobs: Option<usize>,
-        /// Validate the shadow candidate for NAME and atomically promote it to
-        /// primary if validation succeeds.
-        #[arg(long, value_name = "NAME", conflicts_with = "check_all")]
+        /// Deprecated and disabled: legacy candidates were local placeholders,
+        /// not provider-issued credentials, and cannot be promoted.
+        #[arg(long, value_name = "NAME", conflicts_with = "check_all", hide = true)]
         promote: Option<String>,
         /// Run as a background daemon, polling per-secret schedules and writing
         /// results to ~/.phantom/validation-report.json for MCP tools to consume.
@@ -518,9 +506,9 @@ enum Commands {
         action: AuditAction,
     },
 
-    /// Open a Phantom page in the browser. Defaults to the dashboard.
+    /// Open a closed-catalog Phantom page after an exact trusted-terminal challenge.
     /// Aliases: dashboard, billing, team, docs, pricing, github, issues, site.
-    /// Any other word becomes https://phm.dev/<word>; full URLs pass through.
+    /// Other words and arbitrary URLs are rejected before browser access.
     #[command(next_help_heading = "Maintenance")]
     Open {
         /// What to open. Defaults to the dashboard if omitted.
@@ -528,16 +516,17 @@ enum Commands {
         target: String,
     },
 
-    /// List secrets that are expired or expiring soon, with optional auto-rotate
+    /// List expired/expiring secrets; optionally remap their local Phantom tokens
     #[command(next_help_heading = "Maintenance")]
     SecretsExpiringSoon {
         /// Warn about secrets expiring within this many days (default: 7)
         #[arg(long, default_value_t = 7)]
         days: u64,
-        /// Automatically rotate expiring secrets (extend TTL + refresh phantom token)
+        /// Deprecated name: remap local phm_ placeholders only. Provider
+        /// credentials and expiry metadata remain unchanged.
         #[arg(long)]
         auto_rotate: bool,
-        /// After auto-rotate, sync to all configured deployment platforms
+        /// Deprecated and rejected: token remapping creates no credential to sync
         #[arg(long, requires = "auto_rotate")]
         sync: bool,
         /// Emit JSON instead of human-readable output
@@ -545,12 +534,12 @@ enum Commands {
         json: bool,
     },
 
-    /// TTL-based secret expiry management: set expiry, enforce in CI, rotate to reset timer
+    /// TTL metadata: exact-terminal set, read-only enforce, and deprecated local remap
     ///
     /// Subcommands:
     ///   phantom expiry set <KEY> <DAYS>      — mark a secret expiring in N days
     ///   phantom expiry enforce [--fail-closed] — exit 1 if any secret has expired
-    ///   phantom expiry rotate <KEY>          — generate fresh token + reset expiry timer
+    ///   phantom expiry rotate <KEY>          — deprecated local phm_ token remap only
     #[command(next_help_heading = "Maintenance")]
     Expiry {
         #[command(subcommand)]
@@ -589,8 +578,8 @@ enum ExpiryAction {
         #[arg(long)]
         json: bool,
     },
-    /// Generate a fresh phantom token and reset the expiry timer for a secret.
-    /// Uses the `rotation_window` days stored in .phantom.toml (default 30).
+    /// Deprecated compatibility command: remap the local phm_ token only.
+    /// Provider credentials and expiry metadata remain unchanged.
     Rotate {
         /// Secret name to rotate
         key: String,
@@ -599,7 +588,7 @@ enum ExpiryAction {
 
 #[derive(Subcommand)]
 enum ValidateAction {
-    /// Configure or show the background validation schedule.
+    /// Show or configure validation scheduling; writes require exact terminal consent.
     ///
     /// Examples:
     ///   phantom validate schedule hourly
@@ -664,17 +653,10 @@ enum WorkspaceCliAction {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum GrantAction {
-    /// Run the ONE human consent for a provider and vault the durable root.
-    ///
-    /// Examples:
-    ///   phantom grant add github-app --org ashlrai
-    ///   phantom grant add supabase --flow pkce --client-id <ID> --client-secret-env SUPA_SECRET
-    ///   phantom grant add github --flow device --client-id <ID>
-    ///   phantom grant add vercel-integration --client-id <ID> --client-secret-env VERCEL_SECRET --team <TEAM>
+    /// Compatibility command. Shipped 0.7.4 returns before project, vault,
+    /// environment, browser, loopback, or network access. No enrollment occurs.
     Add {
-        /// Provider: `github-app` (manifest bootstrap), `vercel-integration`
-        /// (connectable-account Integration), or an OAuth provider (`supabase`,
-        /// `sentry`, `github`, …) driven by `--flow`.
+        /// Provider identifier retained for source compatibility; never contacted.
         provider: String,
         /// Org selector: for github-app, create the App under this org instead
         /// of your account; for supabase, pre-select this `organization_slug` on
@@ -684,9 +666,7 @@ enum GrantAction {
         /// GitHub App only: the App name (must be globally unique on GitHub).
         #[arg(long)]
         name: Option<String>,
-        /// The vault secret the minted credential lands under and that the
-        /// rotation_provider block is written for (default: GITHUB_TOKEN for
-        /// github-app; the refresh-token name otherwise).
+        /// Reserved destination name; no credential is minted or stored.
         #[arg(long)]
         rotate_secret: Option<String>,
         /// Consent flow for a generic OAuth provider: pkce (loopback) or device.
@@ -695,8 +675,7 @@ enum GrantAction {
         /// The OAuth app's client id (required for --flow pkce|device).
         #[arg(long)]
         client_id: Option<String>,
-        /// Name of an env var holding the OAuth client secret (never read from
-        /// disk; used only if the provider requires a confidential client).
+        /// Reserved env-var name. Its value is not read in 0.7.4.
         #[arg(long, value_name = "ENV")]
         client_secret_env: Option<String>,
         /// Comma-separated OAuth scopes to request.
@@ -711,11 +690,10 @@ enum GrantAction {
         /// authoritative account comes back in the token exchange.
         #[arg(long)]
         account: Option<String>,
-        /// Do not open a browser; forces the device flow for OAuth providers and
-        /// prints the launch URL to paste for github-app.
+        /// Compatibility flag. No browser is opened in 0.7.4.
         #[arg(long)]
         no_browser: bool,
-        /// Emit metadata-only JSON (vaulted names, never values).
+        /// Emit the value-free denial as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -767,41 +745,41 @@ enum AgentAction {
 
 #[derive(Subcommand)]
 enum TeamAction {
-    /// List your teams
+    /// List teams after an exact trusted-terminal challenge authorizes provider access
     List,
-    /// Create a new team
+    /// Create a team after an exact trusted-terminal challenge
     Create {
         /// Team name
         name: String,
     },
-    /// List team members
+    /// List members after an exact trusted-terminal challenge authorizes provider access
     Members {
         /// Team ID
         team_id: String,
     },
-    /// Invite a member to a team
+    /// Invite a member after an exact trusted-terminal challenge
     Invite {
         /// Team ID
         team_id: String,
         /// GitHub username to invite
         github_login: String,
-        /// Role to assign (member, admin, owner)
+        /// Role to assign (member or admin; ownership transfer is not exposed)
         #[arg(long, default_value = "member")]
         role: String,
     },
-    /// Register your team-vault public key on a team you belong to.
+    /// Register your team-vault public key after an exact trusted-terminal challenge.
     /// Run this once per team before pushing or pulling vaults.
     KeyPublish {
         /// Team ID
         team_id: String,
     },
-    /// Push the current project's vault to a team (E2E encrypted to every
+    /// After an exact trusted-terminal challenge, push the current project's vault to a team (E2E encrypted to every
     /// member that has a registered public key).
     VaultPush {
         /// Team ID
         team_id: String,
     },
-    /// Pull the current project's team vault into your local vault.
+    /// Pull the current project's team vault after an exact trusted-terminal challenge.
     VaultPull {
         /// Team ID
         team_id: String,
@@ -817,7 +795,7 @@ enum TeamAction {
         #[arg(long, short = 'y', hide = true)]
         yes: bool,
     },
-    /// Proactively rotate the team vault's encryption key without removing any member.
+    /// After an exact trusted-terminal challenge, rotate the team vault key.
     ///
     /// Re-encrypts the vault with a fresh symmetric key and re-wraps it for
     /// all members that have a registered public key. Use this for scheduled
@@ -830,15 +808,15 @@ enum TeamAction {
 
 #[derive(Subcommand)]
 enum CloudAction {
-    /// Push local secrets to Phantom Cloud
+    /// Push after an exact trusted-terminal challenge; partial success must be reconciled
     Push,
-    /// Pull secrets from Phantom Cloud to local vault
+    /// Pull after an exact trusted-terminal challenge; partial merges block later push
     Pull {
-        /// Overwrite existing local secrets
+        /// Declare overwrites; never bypass the trusted-terminal ceremony
         #[arg(long)]
         force: bool,
     },
-    /// Show cloud sync status
+    /// Read cloud status after an exact trusted-terminal challenge authorizes provider access
     Status,
 }
 

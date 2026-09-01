@@ -1,6 +1,6 @@
 # Smithery configuration for phantom-secrets-mcp
 # Stop AI coding agents from leaking your API keys.
-# Local proxy + MCP server that swaps real secrets for phm_ tokens.
+# Value-blind MCP plus an authenticated local proxy with exact route-owned auth injection.
 startCommand:
   type: stdio
   configSchema:

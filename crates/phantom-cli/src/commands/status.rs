@@ -1,13 +1,12 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
-
-use super::proxy_state::{read_proxy_state, ProxyState};
+use phantom_core::dotenv::DotenvFile;
+use phantom_core::token::PhantomToken;
 
 pub fn run(oneline: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let pid_path = project_dir.join(".phantom.pid");
 
     if !config_path.exists() {
         if oneline {
@@ -23,17 +22,50 @@ pub fn run(oneline: bool) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
-    let names = vault.list().context("Failed to list secrets")?;
-    let proxy_state = read_proxy_state(&pid_path);
+    let legacy = super::legacy_proxy::inspect(&project_dir);
+    match &legacy {
+        super::legacy_proxy::LegacyState::Missing => {}
+        super::legacy_proxy::LegacyState::Authenticated(_) => {
+            eprintln!("warning: authenticated legacy v0.7.3 proxy state detected")
+        }
+        super::legacy_proxy::LegacyState::Unverified(_) => {
+            eprintln!("warning: unverified legacy v0.7.3 proxy state detected")
+        }
+        super::legacy_proxy::LegacyState::Unsafe(_) => {
+            eprintln!("warning: unsafe legacy v0.7.3 proxy state detected")
+        }
+    }
+    let managed = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
+    let names: Vec<String> = managed
+        .file
+        .iter()
+        .flat_map(DotenvFile::entries)
+        .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
+        .map(|entry| entry.key.clone())
+        .collect();
+    let proxy_lock = super::proxy_lifecycle::inspect(config.local_project_id())?;
 
     if oneline {
         // Compact output for shell prompts
+        let legacy_marker = match &legacy {
+            super::legacy_proxy::LegacyState::Missing => "no legacy state",
+            super::legacy_proxy::LegacyState::Authenticated(_) => {
+                "authenticated legacy v0.7.3 state"
+            }
+            super::legacy_proxy::LegacyState::Unverified(_) => "unverified legacy v0.7.3 state",
+            super::legacy_proxy::LegacyState::Unsafe(_) => "unsafe legacy v0.7.3 state",
+        };
         println!(
-            "{} secret{} · {}",
+            "{} managed placeholder{} · {} · {}",
             names.len(),
             if names.len() == 1 { "" } else { "s" },
-            proxy_oneline(&proxy_state)
+            match proxy_lock {
+                super::proxy_lifecycle::ProxyLockState::Held =>
+                    "lifecycle lock held (listener not authenticated)",
+                super::proxy_lifecycle::ProxyLockState::Missing
+                | super::proxy_lifecycle::ProxyLockState::Available => "no lifecycle lock held",
+            },
+            legacy_marker
         );
         return Ok(());
     }
@@ -41,13 +73,47 @@ pub fn run(oneline: bool) -> Result<()> {
     println!("{}", "Phantom Status".bold().underline());
     println!();
     println!("  Project ID:  {}", config.portable_project_id().dimmed());
-    println!("  Vault:       {}", vault.backend_name().cyan());
-    println!("  Secrets:     {}", names.len().to_string().green().bold());
-    println!("  Proxy:       {}", proxy_human(&proxy_state));
+    println!(
+        "  Vault:       {}",
+        "not opened by read-only status".dimmed()
+    );
+    println!(
+        "  Managed placeholders: {}",
+        names.len().to_string().green().bold()
+    );
+    println!(
+        "  Proxy:       {}",
+        match proxy_lock {
+            super::proxy_lifecycle::ProxyLockState::Held =>
+                "machine-local lifecycle lock held; this does not authenticate or identify a listener".yellow(),
+            super::proxy_lifecycle::ProxyLockState::Missing =>
+                "no machine-local lifecycle lock record (status did not create one)".dimmed(),
+            super::proxy_lifecycle::ProxyLockState::Available =>
+                "machine-local lifecycle lock is not held".dimmed(),
+        }
+    );
+
+    match legacy {
+        super::legacy_proxy::LegacyState::Missing => {}
+        super::legacy_proxy::LegacyState::Authenticated(proxy) => println!(
+            "  Legacy:      authenticated v0.7.3 proxy record for PID {}; run `phantom stop` in a trusted terminal",
+            proxy.pid
+        ),
+        super::legacy_proxy::LegacyState::Unverified(proxy) => println!(
+            "  Legacy:      unverified/stale-or-reused v0.7.3 record for PID {}; left untouched",
+            proxy.pid
+        ),
+        super::legacy_proxy::LegacyState::Unsafe(error) => println!(
+            "  Legacy:      unsafe or malformed .phantom.pid; left untouched ({error})"
+        ),
+    }
 
     if !names.is_empty() {
         println!();
-        println!("  {}", "Protected secrets:".dimmed());
+        println!(
+            "  {}",
+            "Managed dotenv placeholders (vault not inspected):".dimmed()
+        );
         for name in &names {
             println!("    {} {}", "-".dimmed(), name);
         }
@@ -72,36 +138,22 @@ pub fn run(oneline: bool) -> Result<()> {
             "    {} {} ({})",
             "-".dimmed(),
             svc.secret_key,
-            "env var injection".yellow()
+            "blocked for agentic execution; protocol-aware broker required".yellow()
         );
     }
 
     Ok(())
 }
 
-fn proxy_oneline(state: &ProxyState) -> String {
-    match state {
-        ProxyState::Running(pid) => format!("proxy on :{}", pid.port),
-        ProxyState::Stale(_) => "proxy stale".to_string(),
-        ProxyState::Malformed(_) => "proxy malformed".to_string(),
-        ProxyState::Unknown(pid) => format!("proxy unknown :{}", pid.port),
-        ProxyState::Missing => "proxy off".to_string(),
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn status_source_never_constructs_or_lists_a_vault() {
+        let source = include_str!("status.rs");
+        let constructor = ["try", "_create_vault"].concat();
+        let listing = ["vault", ".list"].concat();
+        assert!(!source.contains(&constructor));
+        assert!(!source.contains(&listing));
+        assert!(source.contains("not opened by read-only status"));
     }
-}
-
-fn proxy_human(state: &ProxyState) -> String {
-    match state {
-        ProxyState::Running(pid) => {
-            format!("running on 127.0.0.1:{} (PID {})", pid.port, pid.pid).green()
-        }
-        ProxyState::Stale(pid) => {
-            format!("stale pid file for PID {} on port {}", pid.pid, pid.port).yellow()
-        }
-        ProxyState::Malformed(reason) => format!("malformed pid file ({reason})").yellow(),
-        ProxyState::Unknown(pid) => {
-            format!("unknown state for 127.0.0.1:{} (PID {})", pid.port, pid.pid).yellow()
-        }
-        ProxyState::Missing => "not running".yellow(),
-    }
-    .to_string()
 }

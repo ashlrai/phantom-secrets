@@ -1,6 +1,7 @@
 # Shell Prompt Integration
 
-Show Phantom status in your shell prompt so you always know if secrets are protected.
+Show Phantom's local status in your shell prompt as a quick indicator. It is
+not proof that every secret, process, provider, or agent tool is protected.
 
 ## Starship
 

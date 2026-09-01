@@ -2,6 +2,7 @@ use crate::error::{PhantomError, Result};
 use crate::token::{PhantomToken, TokenMap};
 use std::collections::BTreeMap;
 use std::path::Path;
+use zeroize::Zeroize;
 
 /// Classification of an environment variable entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +29,25 @@ pub struct EnvEntry {
 pub struct DotenvFile {
     /// All lines in order. Non-KV lines (comments, blanks) stored as-is.
     lines: Vec<DotenvLine>,
+}
+
+impl Drop for DotenvFile {
+    fn drop(&mut self) {
+        // Parsed dotenv values and raw source lines can contain credentials.
+        // Scrub every application-owned buffer, including malformed/unparsed
+        // lines, rather than relying only on the original read buffer.
+        for line in &mut self.lines {
+            match line {
+                DotenvLine::Entry(entry, format) => {
+                    entry.value.zeroize();
+                    if let Some(format) = format {
+                        format.raw.zeroize();
+                    }
+                }
+                DotenvLine::Other(raw) => raw.zeroize(),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +265,48 @@ impl DotenvFile {
             .collect()
     }
 
+    /// Remove exactly one Phantom-owned mapping while preserving every other
+    /// safely round-trippable source line byte-for-byte. Plaintext entries,
+    /// duplicate keys, and unrelated entries whose raw representation cannot
+    /// be preserved are rejected rather than rewritten ambiguously.
+    pub fn remove_phantom_mapping(&self, name: &str, had_trailing_newline: bool) -> Result<String> {
+        let matches = self
+            .lines
+            .iter()
+            .filter(|line| matches!(line, DotenvLine::Entry(entry, _) if entry.key == name))
+            .count();
+        if matches != 1 {
+            return Err(PhantomError::DotenvParseError(format!(
+                "expected exactly one managed mapping for '{name}', found {matches}"
+            )));
+        }
+        let mut output = Vec::with_capacity(self.lines.len().saturating_sub(1));
+        for line in &self.lines {
+            match line {
+                DotenvLine::Entry(entry, _) if entry.key == name => {
+                    if !entry.is_phantom {
+                        return Err(PhantomError::DotenvParseError(format!(
+                            "refusing to remove plaintext or non-Phantom mapping '{name}'"
+                        )));
+                    }
+                }
+                DotenvLine::Entry(_, Some(format)) => output.push(format.raw.clone()),
+                DotenvLine::Entry(entry, None) => {
+                    return Err(PhantomError::DotenvParseError(format!(
+                        "cannot preserve the exact source representation of '{}'; no mapping was removed",
+                        entry.key
+                    )))
+                }
+                DotenvLine::Other(raw) => output.push(raw.clone()),
+            }
+        }
+        let mut content = output.join("\n");
+        if had_trailing_newline && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        Ok(content)
+    }
+
     /// Get entries that contain real secrets (not already phantom tokens).
     /// Uses heuristics to distinguish secrets from non-secret config values.
     pub fn real_secret_entries(&self) -> Vec<&EnvEntry> {
@@ -280,8 +342,13 @@ impl DotenvFile {
     ) -> String {
         let mut output_lines = vec![
             "# Environment variables for this project".to_string(),
-            "# Copy to .env and fill in real values, or use Phantom:".to_string(),
-            "#   npm install -g phantom-secrets && phantom init".to_string(),
+            "# Copy to .env and fill in real values, or use an installed local Phantom binary:"
+                .to_string(),
+            "#   phantom init".to_string(),
+            format!(
+                "# Reviewed release: https://github.com/ashlrai/phantom-secrets/releases/tag/v{}",
+                env!("CARGO_PKG_VERSION")
+            ),
             "#".to_string(),
             "# See https://phm.dev for details".to_string(),
             String::new(),
@@ -946,6 +1013,9 @@ KEY3=unquoted
         let content = "# Config\nOPENAI_API_KEY=sk-real-secret\nNEXT_PUBLIC_URL=https://app.example.com\nPORT=3000\n";
         let dotenv = DotenvFile::parse_str(content);
         let example = dotenv.generate_example_content(None);
+        assert!(example.contains("phantom init"));
+        assert!(example.contains("/releases/tag/v"));
+        assert!(!example.contains("npm install -g phantom-secrets"));
         // Secret should be a placeholder
         assert!(example.contains("OPENAI_API_KEY=your_openai_api_key_here"));
         // Public key should preserve actual value

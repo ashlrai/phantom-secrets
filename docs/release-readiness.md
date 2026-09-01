@@ -15,36 +15,71 @@ A `v*` tag starts `.github/workflows/release.yml`. The current workflow:
    schema/stdio smoke;
 3. builds six targets: macOS, GNU Linux, and Windows on `arm64`/`x64`;
 4. creates an archive containing exactly `phantom` and `phantom-mcp`;
-5. downloads the host-specific Syft 1.42.3 release archive, verifies its exact
+5. downloads each named build artifact onto a matching standard GitHub runner
+   (`macos-15-intel`, `macos-15`, `ubuntu-22.04`, `ubuntu-22.04-arm`,
+   `windows-latest`, or `windows-11-vs2026-arm`), re-verifies the closed archive
+   and extracted file set, asserts both the runner and Node runtime OS/architecture,
+   checks both binaries' exact tag-bound `--version`, and runs the MCP stdio
+   schema smoke against the extracted `phantom-mcp`;
+6. downloads the host-specific Syft 1.42.3 release archive, verifies its exact
    SHA-256 from Anchore's official checksum manifest, and invokes that verified
    binary to scan each exact archive into an SPDX 2.3 JSON SBOM;
-6. generates a SHA-256 sidecar for every archive plus an aggregate
+7. generates a SHA-256 sidecar for every archive plus an aggregate
    `SHA256SUMS`;
-7. verifies the exact archive, sidecar, SBOM, aggregate-checksum, member-name,
+8. verifies the exact archive, sidecar, SBOM, aggregate-checksum, member-name,
    and member-type contract;
-8. requests one GitHub build-provenance attestation covering the six exact
+9. requests one GitHub build-provenance attestation covering the six exact
    archive digests and one SBOM attestation binding each archive to its matching
    SPDX document; and
-9. re-verifies the preserved bundle before creating a non-overwriting GitHub
+10. re-verifies the preserved bundle before creating a non-overwriting GitHub
    release.
 
 Third-party actions are pinned. Build jobs use read-only repository permissions;
 only the attestation job receives `id-token: write` and `attestations: write`,
-and only the release job receives `contents: write`.
+and only the release job receives `contents: write`. That write-capable job
+targets the GitHub `release` environment. Repository administrators must
+configure that environment with a required human reviewer before creating a
+release tag; naming an environment in workflow source does not create a review
+rule by itself.
 
-Six matrix rows are packaging coverage, not six-target native acceptance. With
-GitHub's current hosted-runner mappings, macOS x64 and Linux arm64 are
-cross-target builds; the other four rows use a matching host architecture. None
-of the rows executes the exact packaged archive after creation.
+The build matrix may cross-compile, but it cannot authorize attestation directly.
+A separate six-row native-acceptance matrix downloads each exact build artifact
+onto the matching OS and architecture and must complete before attestation.
 
 The workflow source only requests SBOM and provenance attestations when a tag
-run executes successfully. This repository state does **not** prove an
-attestation exists, and attestations are not independent publisher signatures.
-The release workflow does not prove the web build, execute each packaged archive
-on its native target, perform macOS notarization or Windows Authenticode signing,
-or establish native acceptance. Those remain separate gates. Repository settings
-must also allow Actions OIDC/attestation writes and should protect the tag path;
-workflow source cannot activate those controls.
+run executes successfully. This repository state does **not** prove the native
+matrix ran or that an attestation exists, and attestations are not independent
+publisher signatures. A successful exact tag workflow supplies the native
+archive-execution receipt; source review alone does not. The release workflow
+does not perform macOS notarization or Windows Authenticode signing. Those remain
+separate gates. Repository settings must also allow Actions OIDC/attestation
+writes and should protect the tag path; workflow source cannot activate those
+controls.
+
+Before creating a `v*` tag, verify both external controls directly: the
+`release` environment has a required reviewer and the tag ruleset restricts
+creation as well as update and deletion. A ruleset that protects only existing
+tags does not govern who may start a new release run. If either control is
+missing, the candidate is not publication-ready even when every source gate is
+green.
+
+### Live GitHub governance snapshot — 2026-09-01
+
+The repository settings were inspected separately from workflow source on
+2026-09-01. At that point:
+
+- the `release` environment required a reviewer and limited deployments to
+  tags matching `v*`;
+- immutable tag ruleset `21903888` denied update, deletion, and non-fast-forward
+  changes with no bypass actor; and
+- separate creation ruleset `21997435` governed tag creation with a Mason-only
+  bypass.
+
+The creation bypass cannot bypass immutability: update, deletion, and
+non-fast-forward operations are evaluated by the separate no-bypass ruleset.
+This is a dated operator observation of live repository settings, not a source
+guarantee, authorization to create a tag, or evidence that a tag/release exists.
+Requery both rulesets and the environment immediately before any release.
 
 ## Source-candidate gates
 
@@ -79,11 +114,16 @@ workflow downloads cargo-deny and Gitleaks at fixed versions and verifies their
 release-archive hashes before use. Record ignored, skipped, unavailable, and
 externally blocked checks rather than treating them as passed.
 
-Provider-grant changes need focused CLI tests for the affected provider and an
-authorized throwaway-account acceptance plan. Source tests do not prove a
-provider application, consent screen, remote credential, renewal, or revoke
-operation is live. `phantom grant revoke` currently fails closed because remote
-revocation is not wired.
+Protected native Windows CI must exercise the exact candidate's no-follow,
+identity, current-user DACL establishment/preservation, pre-byte permission
+ordering, and both anchored effect outcomes. Source-contract tests and workflow
+configuration do not establish that native acceptance.
+
+Provider-grant changes must preserve the 0.7.4 universal denial before provider
+credential lookup and network access. Exact `cfg(test)` mocks prove only local
+transaction scaffolding. Any future activation additionally needs an authorized
+throwaway-account acceptance plan; source tests do not prove a provider
+application, consent screen, remote credential, renewal, or revoke operation.
 
 ## crates.io publication
 
@@ -106,14 +146,14 @@ publication tiers are:
 Run the non-publishing gate while preparing a candidate:
 
 ```bash
-./scripts/publish-crates.sh --verify-only --version 0.7.3
+./scripts/publish-crates.sh --verify-only --version 0.7.4
 ```
 
 Use `--allow-dirty` only for local development diagnostics. Before requesting
 publication authorization, perform the read-only crates.io reconciliation:
 
 ```bash
-./scripts/publish-crates.sh --dry-run --version 0.7.3
+./scripts/publish-crates.sh --dry-run --version 0.7.4
 ```
 
 The dry run builds each local `.crate`, queries the exact crates.io package
@@ -133,27 +173,33 @@ still fetch locked build dependencies that are absent from the local cache; use
 Cargo's normal offline controls when a fully disconnected run is required.
 
 Publishing is an irreversible external mutation. It requires separate approval
-of the exact version and source tag, a clean worktree at `v<version>`, exact
-local and canonical `origin` tag SHA parity, a completed non-prerelease GitHub
-Release containing the exact nineteen-asset release contract, Cargo's normal
-credentials or `CARGO_REGISTRY_TOKEN`, and an exact confirmation value:
+of the exact version and source tag, a clean worktree at `v<version>`, an
+annotated canonical `origin` tag whose peeled commit is both local `HEAD` and
+current `origin/main`, and an immutable non-prerelease GitHub Release containing
+the exact nineteen-asset release contract. Before any upload, the script
+downloads that hosted bundle, checks its exact archive/sidecar/SBOM structure
+and digests, and verifies both build-provenance and SPDX attestations for every
+archive against the release workflow, exact tag ref, and source SHA. Cargo's
+normal credentials or `CARGO_REGISTRY_TOKEN` and an exact confirmation value
+are also required:
 
 ```bash
-PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.7.3 \
-  ./scripts/publish-crates.sh --publish --version 0.7.3
+PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.7.4 \
+  ./scripts/publish-crates.sh --publish --version 0.7.4
 ```
 
 Do not place the registry token on the command line. The script removes registry
 and GitHub tokens from the general child-process environment before metadata,
 source gates, or packaging, then scopes each token only to its corresponding
-`cargo publish` or `gh release view` subprocess. It explicitly selects the
-`crates-io` Cargo registry, rechecks the source SHA, remote tag SHA, and clean
-worktree before every upload, polls crates.io rather than sleeping for a fixed
-index delay, verifies the published checksum before moving to a dependent
-crate, and accepts a concurrent publication race only if the resulting bytes
-are identical. A successful script run proves crates.io package publication
-only; npm, Homebrew, MCP Registry, signing, deployment, provider activation, and
-authenticated acceptance remain separate.
+`cargo publish` or GitHub receipt/download/attestation subprocess. It explicitly
+selects the `crates-io` Cargo registry, rechecks the source SHA, annotated remote
+tag SHA, current `origin/main`, and clean worktree before every upload, polls
+crates.io rather than sleeping for a fixed index delay, verifies the published
+checksum before moving to a dependent crate, and accepts a concurrent
+publication race only if the resulting bytes are identical. A successful script
+run proves crates.io package publication only; npm, Homebrew, MCP Registry,
+signing, deployment, provider activation, and authenticated acceptance remain
+separate.
 
 ## Artifact gates before publication
 
@@ -170,10 +216,11 @@ syntax, digest, exact member names and types, and absence of traversal, links,
 reparse points, nesting, and extras. For every SBOM, verify the exact name,
 bounded size, JSON parsing, SPDX
 2.3 identity, namespace, creation metadata, and packages-array shape. The
-workflow's source smoke verifies locally built binary versions and the MCP
-schema; native execution of every exact packaged archive is still a separate
-acceptance gate. Run packaged npm and MCP stdio smoke against staged local
-artifacts without downloading or publishing.
+`verify-source` job locally builds and schema-smokes `phantom-mcp`; it does not
+build `phantom` or execute either binary's `--version`. Exact tag-bound version
+execution for both binaries occurs in the native matrix after extraction from
+every build archive, and all six rows gate attestation. Run packaged npm and MCP
+stdio smoke against staged local artifacts without downloading or publishing.
 
 ## Supply-chain and native blockers
 
@@ -185,11 +232,19 @@ do not identify a publisher. Before a high-assurance release claim, verify:
 - independently verifiable signatures;
 - macOS code signing and notarization;
 - Windows Authenticode signing; and
-- exact-archive native acceptance for each supported OS and architecture.
+- a successful exact-tag native-acceptance matrix receipt for every supported OS
+  and architecture (workflow source alone is not an execution receipt).
 
 Linux package-repository metadata, Homebrew formula updates, npm publication,
 MCP Registry publication, and website deployment are separate distribution
 actions with their own authorization and receipts.
+
+The hosted build environment is not fully hermetic. Both macOS build rows use
+the moving `macos-latest` label, while the x64 Windows build and native-acceptance
+rows use `windows-latest`; GitHub also refreshes hosted runner images behind
+named labels. Preserve the resolved runner image metadata with the exact-tag
+workflow receipt. A successful native matrix proves execution on those resolved
+hosts, not bit-for-bit reproducibility on future runner images.
 
 GitHub documents the required attestation permissions, SBOM binding inputs,
 verification commands, and plan limitations in [Using artifact attestations to
@@ -227,8 +282,8 @@ Keep these claims separate:
 1. source implemented;
 2. source gates passed on an exact SHA;
 3. archives built and locally verified;
-4. provenance and SBOM attestations verified for the exact archive digests;
-5. exact artifacts passed native acceptance;
+4. exact artifacts passed native acceptance;
+5. provenance and SBOM attestations verified for the exact archive digests;
 6. GitHub/npm/Homebrew/MCP packages published;
 7. provider configuration or deployment activated; and
 8. an authenticated customer workflow accepted.

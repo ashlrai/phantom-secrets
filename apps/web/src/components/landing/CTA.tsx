@@ -12,7 +12,7 @@ export function CTA() {
         </h2>
 
         <div className="mt-8 mx-auto max-w-[440px]">
-          <CopyButton text="npx phantom-secrets init" />
+          <CopyButton text="brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom" />
         </div>
 
         <div className="mt-5 flex flex-wrap justify-center gap-x-4 gap-y-2 text-[0.84rem]">

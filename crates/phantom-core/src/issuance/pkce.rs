@@ -16,7 +16,7 @@ use base64::Engine as _;
 use zeroize::Zeroizing;
 
 use super::{
-    guard_mock_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
+    guard_test_only_issuance, random_state, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
     IssuanceMetadata, IssuanceOutcome, IssuanceRequest, IssuedMaterial, MaterialKind,
 };
 use crate::rotation_provider::{summarize_error_body, RotationProviderConfig};
@@ -43,13 +43,7 @@ impl ConsentEngine for LoopbackPkceEngine {
         req: &IssuanceRequest,
         deps: &IssuanceDeps,
     ) -> Result<IssuanceOutcome, IssuanceError> {
-        // Fail closed: overridden endpoints (a non-production host) may only be
-        // hit when mock issuance is explicitly enabled. This stops a
-        // prompt-injected agent from redirecting the exchange — and the
-        // refresh token it yields — to an attacker-controlled host.
-        if deps.endpoints.is_overridden() {
-            guard_mock_issuance()?;
-        }
+        guard_test_only_issuance(deps)?;
 
         let client_id = req
             .client_id
@@ -313,7 +307,7 @@ mod tests {
     /// lands in the audit test's log and corrupts its event count. Hold the
     /// crate-wide `ENV_LOCK` for the duration so these never overlap — the same
     /// serialization idiom used by the audit/rotation/validator tests.
-    fn issue_audit_guard() -> std::sync::MutexGuard<'static, ()> {
+    fn issue_audit_guard() -> crate::ProcessEnvGuard {
         crate::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner())

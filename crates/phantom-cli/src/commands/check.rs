@@ -3,6 +3,7 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::PhantomToken;
+use std::path::{Path, PathBuf};
 
 /// Check for unprotected secrets in .env files and staged git files.
 /// Returns exit code 1 if found. Designed to be used as a pre-commit hook.
@@ -22,35 +23,29 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
 
     // Check all .env files (skip when --staged flag is used for fast pre-commit)
     if !staged_only {
-        let env_files = [".env", ".env.local", ".env.development", ".env.production"];
+        for path in dotenv_scan_paths(&project_dir)? {
+            let dotenv = DotenvFile::parse_file(&path)?;
+            let real_secrets = dotenv.real_secret_entries();
 
-        for env_file in &env_files {
-            let path = project_dir.join(env_file);
-            if path.exists() {
-                let dotenv = DotenvFile::parse_file(&path)?;
-                let real_secrets = dotenv.real_secret_entries();
-
-                if !real_secrets.is_empty() {
-                    if issues == 0 {
-                        eprintln!(
-                            "\n{} Unprotected secrets detected!\n",
-                            "BLOCKED".red().bold()
-                        );
-                    }
-
+            if !real_secrets.is_empty() {
+                if issues == 0 {
                     eprintln!(
-                        "  {} {} has {} unprotected secret(s):",
-                        "!".red().bold(),
-                        env_file,
-                        real_secrets.len()
+                        "\n{} Unprotected secrets detected!\n",
+                        "BLOCKED".red().bold()
                     );
-
-                    for entry in &real_secrets {
-                        eprintln!("    {} {}", "-".dimmed(), entry.key.bold());
-                    }
-
-                    issues += real_secrets.len();
                 }
+
+                eprintln!(
+                    "  {} {} has unprotected secret name(s):",
+                    "!".red().bold(),
+                    path.display()
+                );
+
+                for entry in &real_secrets {
+                    eprintln!("    {} {}", "-".dimmed(), entry.key.bold());
+                }
+
+                issues += real_secrets.len();
             }
         }
     }
@@ -83,10 +78,9 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
                     }
 
                     eprintln!(
-                        "  {} staged {} has {} unprotected secret(s):",
+                        "  {} staged {} has unprotected secret name(s):",
                         "!".red().bold(),
-                        file,
-                        real_secrets.len()
+                        file
                     );
 
                     for entry in &real_secrets {
@@ -150,6 +144,42 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
 
     println!("{} No unprotected secrets found.", "ok".green().bold());
     Ok(())
+}
+
+fn dotenv_scan_paths(project_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut candidates = vec![
+        project_dir.join(".env"),
+        project_dir.join(".env.local"),
+        project_dir.join(".env.development"),
+        project_dir.join(".env.production"),
+    ];
+    let config_path = project_dir.join(".phantom.toml");
+    if config_path.exists() {
+        let config = PhantomConfig::load(&config_path)?;
+        if let Some(configured) = config.phantom.dotenv_path.as_deref() {
+            let configured = phantom_core::managed_dotenv::validate_dotenv_basename(configured)?;
+            candidates.push(project_dir.join(configured));
+        }
+    }
+
+    let mut paths = Vec::new();
+    for path in candidates {
+        if paths.contains(&path) {
+            continue;
+        }
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                anyhow::bail!(
+                    "Refusing dotenv scan target that is not a regular, non-symlink file: {}",
+                    path.display()
+                )
+            }
+            Ok(_) => paths.push(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(paths)
 }
 
 fn warn_on_config_risks(file: &str, content: &str) {
@@ -279,4 +309,52 @@ fn staged_added_lines(file: &str) -> Option<String> {
                 .collect::<Vec<_>>()
                 .join("\n")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_custom_dotenv_is_scanned_for_real_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("custom.env");
+        std::fs::write(&custom, "OPENAI_API_KEY=example-secret-value\n").unwrap();
+        let mut config = PhantomConfig::new_with_defaults("check-custom".to_string());
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        config.save(&dir.path().join(".phantom.toml")).unwrap();
+
+        let paths = dotenv_scan_paths(dir.path()).unwrap();
+        assert_eq!(paths, vec![custom.clone()]);
+        let dotenv = DotenvFile::parse_file(&custom).unwrap();
+        let names: Vec<_> = dotenv
+            .real_secret_entries()
+            .into_iter()
+            .map(|entry| entry.key.as_str())
+            .collect();
+        assert_eq!(names, vec!["OPENAI_API_KEY"]);
+    }
+
+    #[test]
+    fn configured_dotenv_traversal_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = PhantomConfig::new_with_defaults("check-traversal".to_string());
+        config.phantom.dotenv_path = Some("../outside.env".to_string());
+        config.save(&dir.path().join(".phantom.toml")).unwrap();
+        assert!(dotenv_scan_paths(dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_dotenv_symlink_is_rejected() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.env");
+        std::fs::write(&target, "OPENAI_API_KEY=example-secret-value\n").unwrap();
+        symlink(&target, dir.path().join("custom.env")).unwrap();
+        let mut config = PhantomConfig::new_with_defaults("check-symlink".to_string());
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        config.save(&dir.path().join(".phantom.toml")).unwrap();
+        assert!(dotenv_scan_paths(dir.path()).is_err());
+    }
 }

@@ -1,6 +1,6 @@
 {
   "name": "phantom-secrets-mcp",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Value-blind MCP tools and gated secret-lifecycle requests for Phantom Secrets.",
   "bin": {
     "phantom-secrets-mcp": "bin/cli.js",
@@ -37,7 +37,7 @@
     "url": "https://github.com/ashlrai/phantom-secrets/issues"
   },
   "engines": {
-    "node": ">=16"
+    "node": ">=22"
   },
   "os": [
     "darwin",

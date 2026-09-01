@@ -1,3 +1,4 @@
+use phantom_core::precommit_hook::{is_current, HOOK_BLOCK, HOOK_MARKER};
 use phantom_workspace::{
     apply_setup_plan, build_capability_card, build_sealed_setup_plan, build_setup_plan,
     inspect_workspace, rollback_workspace, AuthorityState, CapabilityScope, NoopSetupParticipant,
@@ -13,6 +14,32 @@ fn write(path: impl AsRef<Path>, content: &str) {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(path, content).unwrap();
+}
+
+fn git(workspace: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init_git(workspace: &Path) {
+    git(workspace, &["init", "--quiet"]);
+    git(workspace, &["config", "core.hooksPath", ".git/hooks"]);
+    git(
+        workspace,
+        &[
+            "config",
+            "remote.origin.url",
+            "git@github.com:acme/project.git",
+        ],
+    );
 }
 
 #[test]
@@ -332,23 +359,48 @@ fn sealed_plan_rejects_existing_config_namespace_drift() {
 
 #[cfg(unix)]
 #[test]
+fn workspace_transaction_targets_effective_in_workspace_hooks_path() {
+    let workspace = TempDir::new().unwrap();
+    init_git(workspace.path());
+    git(
+        workspace.path(),
+        &["config", "core.hooksPath", ".phantom-hooks"],
+    );
+
+    let key = seal_key();
+    let sealed = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+    let hook_action = sealed
+        .plan
+        .actions
+        .iter()
+        .find(|action| action.kind == SetupActionKind::InstallPreCommitCheck)
+        .unwrap();
+    assert_eq!(hook_action.target, ".phantom-hooks/pre-commit");
+
+    let applied = apply_setup_plan(&sealed, &key, &mut NoopSetupParticipant).unwrap();
+    let hook = workspace.path().join(".phantom-hooks/pre-commit");
+    assert!(is_current(&std::fs::read_to_string(&hook).unwrap()));
+    rollback_workspace(applied.snapshot).unwrap();
+    assert!(!hook.exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn filesystem_apply_is_atomic_idempotent_and_recoverable() {
     let workspace = TempDir::new().unwrap();
+    init_git(workspace.path());
     let secret = "sk-transaction-secret-sentinel";
     write(
         workspace.path().join(".env"),
         &format!("OPENAI_API_KEY={secret}\nPORT=3000\n"),
     );
-    write(
-        workspace.path().join(".git/config"),
-        "[remote \"origin\"]\nurl = git@github.com:acme/project.git\n",
-    );
     let original_ignore = "# keep this deny policy\n.env.production\n";
-    let original_hook = "#!/bin/sh\necho existing-check\n";
+    let original_hook_body = "echo existing-check\nexit 0\n";
+    let original_hook = format!("#!/bin/sh\n{original_hook_body}");
     write(workspace.path().join(".gitignore"), original_ignore);
     write(
         workspace.path().join(".git/hooks/pre-commit"),
-        original_hook,
+        &original_hook,
     );
     let client_config = r#"{"permissions":{"deny":["Read(.env*)"]},"custom":true}"#;
     write(
@@ -372,8 +424,19 @@ fn filesystem_apply_is_atomic_idempotent_and_recoverable() {
     let ignore = std::fs::read_to_string(workspace.path().join(".gitignore")).unwrap();
     assert!(ignore.starts_with(original_ignore));
     let hook = std::fs::read_to_string(workspace.path().join(".git/hooks/pre-commit")).unwrap();
-    assert!(hook.starts_with(original_hook));
-    assert!(hook.contains("phantom-secrets check --staged"));
+    assert!(is_current(&hook));
+    assert!(hook.starts_with(&format!("#!/bin/sh\n{HOOK_BLOCK}\n")));
+    assert!(hook.ends_with(original_hook_body));
+    assert!(hook.find(HOOK_BLOCK).unwrap() < hook.find("exit 0").unwrap());
+    assert_eq!(hook.matches(HOOK_MARKER).count(), 1);
+    assert!(hook.contains("command -v phantom"));
+    assert!(hook.contains("phantom check --staged || exit $?"));
+    assert!(hook.contains("exit 1"));
+    assert!(hook.contains("# End Phantom Secrets pre-commit hook"));
+    assert!(!hook.contains("npx"));
+    assert!(!hook.contains("npm"));
+    assert!(!hook.contains("curl"));
+    assert!(!hook.contains("wget"));
     assert_eq!(
         std::fs::read_to_string(workspace.path().join(".claude/settings.local.json")).unwrap(),
         client_config
@@ -400,8 +463,17 @@ fn filesystem_apply_is_atomic_idempotent_and_recoverable() {
     assert_eq!(ignore_after.matches(".env.local").count(), 1);
     let hook_after =
         std::fs::read_to_string(workspace.path().join(".git/hooks/pre-commit")).unwrap();
+    assert_eq!(hook_after, hook);
     assert_eq!(
-        hook_after.matches("phantom-secrets check --staged").count(),
+        hook_after
+            .matches("phantom check --staged || exit $?")
+            .count(),
+        1
+    );
+    assert_eq!(
+        hook_after
+            .matches("# Phantom Secrets pre-commit hook")
+            .count(),
         1
     );
 

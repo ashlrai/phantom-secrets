@@ -14,6 +14,7 @@ const {
   mkdtempSync,
   openSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   unlinkSync,
@@ -22,12 +23,14 @@ const {
 } = require("fs");
 const https = require("https");
 const { homedir } = require("os");
-const { dirname, isAbsolute, join, resolve } = require("path");
+const { basename, dirname, isAbsolute, join, resolve } = require("path");
 
-const VERSION = "0.7.3";
+const VERSION = "0.7.4";
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom-mcp";
-const INSTALL_FROM_SOURCE = "cargo install phantom-secrets-mcp";
+const REVIEWED_RELEASE_URL = `https://github.com/${REPO}/releases/tag/v${VERSION}`;
+const REVIEWED_RELEASE_GUIDANCE =
+  `Use the checksum-verifiable ${BINARY_NAME} assets from the reviewed release: ${REVIEWED_RELEASE_URL}`;
 const MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 5;
@@ -56,7 +59,7 @@ const SUPPORTED_TARGETS = Object.freeze({
 });
 
 function unsupportedPlatformMessage(runtime = process) {
-  return `Unsupported platform: ${runtime.platform}-${runtime.arch}. Install from source: ${INSTALL_FROM_SOURCE}`;
+  return `Unsupported platform: ${runtime.platform}-${runtime.arch}. ${REVIEWED_RELEASE_GUIDANCE}`;
 }
 
 function getPlatformTarget(runtime = process) {
@@ -88,8 +91,11 @@ function pathSet(cacheDir, platform = process.platform) {
     backupManifestPath: `${binaryPath}.manifest.previous`,
     // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed child of the validated private cache root.
     transactionPath: join(cacheDir, ".mcp-install-transaction.json"),
-    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed child of the validated private cache root.
-    lockPath: join(cacheDir, ".mcp-install.lock"),
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed sibling lock derived from the validated private cache root so direct and npm installers share ownership.
+    lockPath: join(dirname(cacheDir), `.${basename(cacheDir)}.install.lock`),
+    // Explicitly overrides a stale direct-installer receipt in the shared root.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed child of the resolved, ownership-checked, non-symlink private cache root.
+    sourceMarkerPath: join(cacheDir, ".phantom-install-source.npm-mcp"),
   };
 }
 
@@ -98,6 +104,7 @@ function sleep(ms) {
 }
 
 function validateOwnedPath(path, kind, platform = process.platform) {
+  validateWindowsPathAncestors(path, platform);
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) throw new Error(`${path} must not be a symbolic link`);
   if (kind === "directory" && !stat.isDirectory()) throw new Error(`${path} must be a directory`);
@@ -113,8 +120,55 @@ function validateOwnedPath(path, kind, platform = process.platform) {
   return stat;
 }
 
+function validateWindowsPathAncestors(path, platform = process.platform) {
+  if (platform !== "win32") return;
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- resolving the candidate is the first step in checking every ancestor for reparse points before any filesystem mutation.
+  const target = resolve(path);
+  const ancestors = [];
+  for (let cursor = target; ; cursor = dirname(cursor)) {
+    ancestors.push(cursor);
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+  }
+  ancestors.reverse();
+  let missing = false;
+  for (const ancestor of ancestors) {
+    let stat;
+    try {
+      stat = lstatSync(ancestor);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      missing = true;
+      continue;
+    }
+    if (missing) throw new Error(`${ancestor} appeared below a missing path ancestor`);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`${ancestor} must not be a Windows reparse point`);
+    }
+    if (ancestor !== target && !stat.isDirectory()) {
+      throw new Error(`${ancestor} must be a directory path ancestor`);
+    }
+    // On Windows, realpath resolves junctions and other name-surrogate reparse
+    // points that Node may not classify as symbolic links.
+    if (process.platform === "win32") {
+      const normalize = (value) => resolve(value)
+        .replace(/^\\\\\?\\/, "")
+        .replaceAll("/", "\\")
+        .replace(/\\+$/, "")
+        .toLowerCase();
+      const expected = normalize(ancestor);
+      const actual = normalize(realpathSync.native(ancestor));
+      if (actual !== expected) {
+        throw new Error(`${ancestor} must not resolve through a Windows reparse point`);
+      }
+    }
+  }
+}
+
 function ensurePrivateCacheDir(cacheDir, platform = process.platform) {
+  validateWindowsPathAncestors(cacheDir, platform);
   mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  validateWindowsPathAncestors(cacheDir, platform);
   const stat = lstatSync(cacheDir);
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     throw new Error(`${cacheDir} must be a real directory`);
@@ -179,6 +233,19 @@ function removeFileIfExists(path) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
+}
+
+function ensureNpmSourceMarker(path, platform = process.platform) {
+  try {
+    const contents = readFileSync(path, "utf8");
+    validateOwnedPath(path, "file", platform);
+    if (contents !== "npm\n") throw new Error("invalid npm install-source marker");
+    return;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  writePrivateFile(path, "npm\n", 0o600, platform);
+  fsyncDirectory(dirname(path), platform);
 }
 
 function sha256File(path) {
@@ -379,6 +446,14 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
         "$expected = @('phantom.exe','phantom-mcp.exe');",
         "if ($names.Count -ne 2 -or (@($names | Sort-Object) -join ',') -ne (@($expected | Sort-Object) -join ',')) { throw 'unexpected ZIP content' };",
         "$entry = $zip.GetEntry('phantom-mcp.exe');",
+        "foreach ($candidate in $zip.Entries) {",
+        "if ($candidate.Name -cne $candidate.FullName -or -not $candidate.Name) { throw 'ZIP contains a path or directory entry' };",
+        "$unixType = (($candidate.ExternalAttributes -shr 16) -band 0xF000);",
+        "$dosAttributes = ($candidate.ExternalAttributes -band 0xFFFF);",
+        "$isDirectory = (($dosAttributes -band [int][IO.FileAttributes]::Directory) -ne 0);",
+        "$isReparsePoint = (($dosAttributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0);",
+        "if (($unixType -ne 0 -and $unixType -ne 0x8000) -or $isDirectory -or $isReparsePoint) { throw 'ZIP contains a link or non-regular entry' };",
+        "}",
         "[IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $output, $false);",
         "} finally { $zip.Dispose() }",
         "}",
@@ -624,6 +699,7 @@ async function ensureBinary({
   const releaseLock = await acquireInstallLock(paths.lockPath, { ...lockOptions, platform: runtime.platform });
   const heartbeat = releaseLock.heartbeat;
   try {
+    ensureNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
     heartbeat();
     recoverInterruptedInstall(paths, runtime.platform);
     if (validateCachedBinary(paths.binaryPath, paths.manifestPath, {
@@ -707,7 +783,7 @@ async function main() {
   } catch (error) {
     if (!Number.isInteger(error.status) && !error.signal) {
       console.error(`phantom-mcp wrapper failed: ${error.message}`);
-      console.error(`Install from source: ${INSTALL_FROM_SOURCE}`);
+      console.error(REVIEWED_RELEASE_GUIDANCE);
     }
     propagateChildFailure(error);
   }
@@ -735,5 +811,6 @@ module.exports = {
   recoverInterruptedInstall,
   replaceCachedBinary,
   validateCachedBinary,
+  validateWindowsPathAncestors,
   writePrivateFile,
 };

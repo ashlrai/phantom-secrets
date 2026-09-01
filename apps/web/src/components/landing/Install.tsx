@@ -9,29 +9,29 @@ const TARGETS = [
     id: "claude",
     label: "Claude Code",
     Logo: ClaudeLogo,
-    cmd: "claude mcp add phantom-secrets-mcp -- npx -y phantom-secrets-mcp",
-    note: "One command. Claude registers the MCP server and discovers the live tool catalog.",
+    cmd: "phantom setup --client claude",
+    note: "Records the installed Phantom CLI's bundled MCP server and writes project-local Claude configuration.",
   },
   {
     id: "cursor",
     label: "Cursor",
     Logo: CursorLogo,
-    cmd: '{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}',
-    note: "Settings → MCP Servers → paste the JSON. Cursor restarts the server automatically.",
+    cmd: "phantom setup --client cursor",
+    note: "Records the installed Phantom CLI's bundled MCP server in Cursor's configuration.",
   },
   {
     id: "windsurf",
     label: "Windsurf",
     Logo: WindsurfLogo,
-    cmd: '{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}',
-    note: "Settings → MCP Configuration → paste. Same JSON, same protection.",
+    cmd: "phantom setup --client windsurf",
+    note: "Records the installed Phantom CLI's bundled MCP server in Windsurf's configuration.",
   },
   {
     id: "codex",
     label: "Codex",
     Logo: OpenAILogo,
-    cmd: '[mcp_servers.phantom]\ncommand = "npx"\nargs = ["-y", "phantom-secrets-mcp"]',
-    note: "Paste into ~/.codex/config.toml, then restart Codex.",
+    cmd: "phantom setup --client codex",
+    note: "Records the installed Phantom CLI's bundled MCP server in Codex's configuration.",
   },
 ];
 
@@ -44,10 +44,12 @@ export function Install() {
       <div className="mx-auto max-w-[1100px] px-7">
         <div className="max-w-[640px] mb-12">
           <h2 className="text-[1.8rem] sm:text-[2.4rem] font-extrabold tracking-[-0.035em] leading-[1.08] text-white">
-            Install in ten seconds.
+            Install and connect your client.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            One CLI, one MCP registration. Pick your editor.
+            After installing both reviewed v0.7.3 binaries, register the bundled
+            MCP server for a supported client and verify the resulting local
+            configuration. Setup never downloads a registry fallback.
           </p>
         </div>
 

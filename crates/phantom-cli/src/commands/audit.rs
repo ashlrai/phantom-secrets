@@ -8,13 +8,14 @@
 //!   phantom audit stats      [--json] [--top N] [--analytics] [--min-anomaly-score F]
 //!   phantom audit export     [--format csv|json] [--period 7d|30d] [--min-anomaly-score F]
 //!   phantom audit analytics  [--window DAYS] [--min-anomaly-score F] [--format json|csv]
-//!                            [--export PATH] [--auto-alert-on-anomaly]
+//!                            [--export FILE] [--auto-alert-on-anomaly]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use sha2::{Digest, Sha256};
+use std::io::{BufRead, BufReader, IsTerminal, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -97,8 +98,8 @@ pub enum AuditAction {
         /// Output format: json (default) or csv
         #[arg(long, default_value = "json")]
         format: String,
-        /// Write output to this file path instead of stdout
-        #[arg(long, value_name = "PATH")]
+        /// Create one new file in the current project (never overwrites)
+        #[arg(long, value_name = "FILE")]
         export: Option<String>,
         /// Exit with non-zero status if any secret exceeds the anomaly threshold (CI gate)
         #[arg(long)]
@@ -134,7 +135,7 @@ pub enum AuditAction {
     /// Examples:
     ///   phantom audit incidents
     ///   phantom audit incidents --min-confidence 0.5
-    ///   phantom audit incidents --auto-rotate-on-high
+    ///   phantom audit incidents
     Incidents {
         /// Only show incidents with confidence ≥ this value (default: 0.5)
         #[arg(long, default_value_t = 0.5, value_name = "SCORE")]
@@ -142,9 +143,10 @@ pub enum AuditAction {
         /// Emit raw JSON lines instead of human-readable output
         #[arg(long)]
         json: bool,
-        /// Automatically call `phantom rotate <secret>` for any incident with
-        /// confidence >= 0.9, and log the action to the audit log.
-        #[arg(long)]
+        /// Deprecated and disabled. Incident detection cannot prove or perform
+        /// provider credential rotation. Rotate at the provider and store the
+        /// replacement from a trusted terminal.
+        #[arg(long, hide = true)]
         auto_rotate_on_high: bool,
     },
 
@@ -816,6 +818,11 @@ pub fn run_analytics(
         ));
     }
 
+    // Bind an absent, project-local destination before reading the audit log.
+    // A path that appears while analytics are computed is then rejected by the
+    // exact-before publication below instead of being overwritten.
+    let export_plan = export.map(prepare_analytics_export).transpose()?;
+
     let period = match window {
         0 => Period::All,
         1..=7 => Period::Days7,
@@ -873,14 +880,22 @@ pub fn run_analytics(
         serde_json::to_string_pretty(&out)?
     };
 
+    const MAX_ANALYTICS_EXPORT_BYTES: usize = 64 * 1024 * 1024;
+    if output.len() > MAX_ANALYTICS_EXPORT_BYTES {
+        anyhow::bail!(
+            "Analytics export is {} bytes; refusing output larger than {} bytes",
+            output.len(),
+            MAX_ANALYTICS_EXPORT_BYTES
+        );
+    }
+
     // Write output.
-    if let Some(path) = export {
-        std::fs::write(path, &output)
-            .map_err(|e| anyhow::anyhow!("Failed to write export file '{path}': {e}"))?;
+    if let Some(plan) = export_plan {
+        plan.commit(output.as_bytes())?;
         eprintln!(
             "{}  Analytics exported to {}",
             "->".blue().bold(),
-            path.cyan()
+            plan.path.display().to_string().cyan()
         );
     } else {
         print!("{}", output);
@@ -911,6 +926,45 @@ pub fn run_analytics(
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct AnalyticsExportPlan {
+    path: std::path::PathBuf,
+}
+
+impl AnalyticsExportPlan {
+    fn commit(&self, output: &[u8]) -> Result<()> {
+        phantom_core::fs::atomic_write_if_unchanged(&self.path, None, output).with_context(|| {
+            format!(
+                "Refusing to overwrite analytics export destination {}",
+                self.path.display()
+            )
+        })
+    }
+}
+
+fn prepare_analytics_export(filename: &str) -> Result<AnalyticsExportPlan> {
+    let project_dir = std::env::current_dir().context("Failed to resolve the current project")?;
+    prepare_analytics_export_in(&project_dir, filename)
+}
+
+fn prepare_analytics_export_in(
+    project_dir: &std::path::Path,
+    filename: &str,
+) -> Result<AnalyticsExportPlan> {
+    phantom_core::fs::validate_project_filename(filename).context("Invalid --export filename")?;
+    let path = project_dir.join(filename);
+    if phantom_core::fs::read_regular_file(&path)
+        .with_context(|| format!("Refusing unsafe analytics export target {}", path.display()))?
+        .is_some()
+    {
+        anyhow::bail!(
+            "Analytics export destination already exists; refusing to overwrite {}",
+            path.display()
+        );
+    }
+    Ok(AnalyticsExportPlan { path })
 }
 
 /// `phantom audit anomalies [--realtime] [--threshold F]`
@@ -1111,13 +1165,17 @@ pub fn run_anomalies(
 pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool) -> Result<()> {
     use phantom_core::leak_correlation::LeakCorrelationEngine;
 
+    if auto_rotate_on_high {
+        anyhow::bail!(
+            "--auto-rotate-on-high is deprecated and disabled: remapping a local phm_ token does not rotate the leaked provider credential and must not clear an incident. Review the incident, rotate at the provider, then store the replacement from a trusted terminal. Automated live provider issuance is disabled."
+        );
+    }
+
     let engine = LeakCorrelationEngine::new()
         .map_err(|e| anyhow::anyhow!("Cannot initialise leak correlation engine: {e}"))?;
 
-    // Run correlation over the last 24 h of audit events (persists new incidents).
-    let _ = engine.run(); // best-effort; ignore new-incident errors
-
-    // Retrieve active incidents meeting the confidence threshold.
+    // This command is read-only. Correlation and incident persistence are an
+    // explicit backfill effect guarded by the audit terminal ceremony.
     let incidents = engine
         .active_incidents(min_confidence)
         .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;
@@ -1137,45 +1195,10 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
         return Ok(());
     }
 
-    // ── Auto-rotate high-confidence incidents ─────────────────────────────────
-    let mut rotated: Vec<String> = Vec::new();
-    if auto_rotate_on_high {
-        for inc in &incidents {
-            if inc.confidence < 0.9 {
-                continue;
-            }
-            // Call `phantom rotate` for this specific secret by re-using the
-            // rotate command's internal logic, then log the action.
-            match crate::commands::rotate::run_rotate_single(&inc.secret_name) {
-                Ok(()) => {
-                    phantom_core::audit::log("vault.auto_rotated_on_leak", Some(&inc.secret_name));
-                    rotated.push(inc.secret_name.clone());
-                    if !json {
-                        println!(
-                            "{}  auto-rotated {} (confidence={:.2})",
-                            "->".green().bold(),
-                            inc.secret_name.bold(),
-                            inc.confidence,
-                        );
-                    }
-                }
-                Err(e) => {
-                    if !json {
-                        eprintln!(
-                            "{}  failed to auto-rotate {}: {e}",
-                            "!!".red().bold(),
-                            inc.secret_name.bold(),
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     if json {
         let out = serde_json::json!({
             "incidents": incidents,
-            "rotated_secrets": rotated,
+            "provider_credentials_rotated": [],
         });
         let s = serde_json::to_string_pretty(&out)
             .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
@@ -1209,9 +1232,7 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
             format!("{:.2}", inc.confidence).yellow().to_string()
         };
 
-        let status = if rotated.contains(&inc.secret_name) {
-            "rotated".green().bold().to_string()
-        } else if inc.confidence >= 0.9 {
+        let status = if inc.confidence >= 0.9 {
             "CRITICAL".red().bold().to_string()
         } else {
             "active".yellow().to_string()
@@ -1228,25 +1249,15 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
     }
     println!();
 
-    // Remediation advice for unrotated high-confidence incidents.
+    // A provider credential must be replaced before the incident is resolved.
     for inc in &incidents {
-        if inc.confidence >= 0.9 && !rotated.contains(&inc.secret_name) {
+        if inc.confidence >= 0.9 {
             println!(
                 "  {}  {}",
                 "remediation:".yellow().bold(),
                 inc.remediation.dimmed(),
             );
         }
-    }
-
-    if !rotated.is_empty() {
-        println!();
-        println!(
-            "{}  Auto-rotated {} secret(s): {}",
-            "->".green().bold(),
-            rotated.len(),
-            rotated.join(", ").bold(),
-        );
     }
 
     Ok(())
@@ -1270,6 +1281,35 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
     let alerts_path = home.join(".phantom").join("leak-alerts.jsonl");
 
     if backfill {
+        let (config_path, config_before, alerting_config) =
+            load_alerting_config_from_project_exact()?;
+        let backend_kinds = alerting_config
+            .backends
+            .iter()
+            .map(|backend| match backend {
+                phantom_core::leak_correlation::AlertBackendConfig::Webhook { .. } => "webhook",
+                phantom_core::leak_correlation::AlertBackendConfig::Slack { .. } => "slack",
+                phantom_core::leak_correlation::AlertBackendConfig::PagerDuty { .. } => "pagerduty",
+            })
+            .collect::<Vec<_>>();
+        let backend_origins =
+            phantom_core::leak_correlation::alert_backend_review_origins(&alerting_config)
+                .context("Alerting configuration contains an unsafe destination")?;
+        let config_sha256 = exact_bytes_digest(config_before.as_deref());
+        let plan = serde_json::json!({
+            "action": "audit-alerts-backfill",
+            "project": std::env::current_dir()?.canonicalize().unwrap_or(std::env::current_dir()?),
+            "config_path": &config_path,
+            "config_sha256": config_sha256,
+            "alerting_enabled": alerting_config.enabled,
+            "backend_kinds": backend_kinds,
+            "backend_origins": backend_origins,
+            "alerts_path": &alerts_path,
+            "effect": "correlate audit events, dispatch value-free incident metadata to configured backends, and persist alert records",
+        });
+        require_trusted_terminal_audit_effect(&plan)?;
+        recheck_optional_regular_file(&config_path, config_before.as_deref())?;
+
         // Re-run correlation to pick up any new incidents.
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| anyhow::anyhow!("Cannot initialise leak correlation engine: {e}"))?;
@@ -1278,8 +1318,7 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("Correlation engine failed: {e}"))?;
 
         if !incidents.is_empty() {
-            // Load alerting config from .phantom.toml if present, else use defaults.
-            let alerting_config = load_alerting_config_from_project();
+            recheck_optional_regular_file(&config_path, config_before.as_deref())?;
             let alerter = LeakIncidentAlerter::with_path(
                 alerting_config,
                 alerts_path.clone(),
@@ -1371,17 +1410,86 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
 
 /// Load alerting config from the nearest `.phantom.toml`, falling back to
 /// a disabled default if no config file is found or it fails to parse.
-fn load_alerting_config_from_project() -> phantom_core::leak_correlation::AlertingConfig {
-    // Walk up from cwd looking for .phantom.toml
-    if let Ok(cwd) = std::env::current_dir() {
-        let config_path = cwd.join(".phantom.toml");
-        if config_path.exists() {
-            if let Ok(cfg) = phantom_core::config::PhantomConfig::load(&config_path) {
-                return cfg.alerting;
-            }
+fn load_alerting_config_from_project_exact() -> Result<(
+    PathBuf,
+    Option<Vec<u8>>,
+    phantom_core::leak_correlation::AlertingConfig,
+)> {
+    let config_path = std::env::current_dir()?.join(".phantom.toml");
+    let before = phantom_core::fs::read_regular_file(&config_path)
+        .context("Failed to safely read alerting configuration")?;
+    let alerting = match before.as_deref() {
+        Some(bytes) => {
+            let text = std::str::from_utf8(bytes).context(".phantom.toml is not valid UTF-8")?;
+            toml::from_str::<phantom_core::config::PhantomConfig>(text)
+                .context("Failed to parse .phantom.toml")?
+                .alerting
         }
+        None => phantom_core::leak_correlation::AlertingConfig::default(),
+    };
+    Ok((config_path, before, alerting))
+}
+
+fn recheck_optional_regular_file(path: &std::path::Path, expected: Option<&[u8]>) -> Result<()> {
+    if phantom_core::fs::read_regular_file(path)
+        .context("Failed to recheck alerting configuration")?
+        .as_deref()
+        != expected
+    {
+        anyhow::bail!(
+            "Alerting configuration changed after terminal review; no alert dispatch was attempted"
+        );
     }
-    phantom_core::leak_correlation::AlertingConfig::default()
+    Ok(())
+}
+
+fn exact_bytes_digest(bytes: Option<&[u8]>) -> String {
+    let mut hasher = Sha256::new();
+    match bytes {
+        Some(bytes) => {
+            hasher.update(b"present\0");
+            hasher.update(bytes);
+        }
+        None => hasher.update(b"absent\0"),
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn require_trusted_terminal_audit_effect(plan: &serde_json::Value) -> Result<()> {
+    let attached = std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal();
+    let stdin = std::io::stdin();
+    let stderr = std::io::stderr();
+    confirm_audit_effect(plan, attached, &mut stdin.lock(), &mut stderr.lock())
+}
+
+fn confirm_audit_effect(
+    plan: &serde_json::Value,
+    attached: bool,
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+) -> Result<()> {
+    if !attached {
+        anyhow::bail!(
+            "Audit network or persistence effects require stdin, stdout, and stderr attached to a trusted terminal; no network request was sent and no report or alert record was written"
+        );
+    }
+    let plan_json = serde_json::to_string_pretty(plan)?;
+    let challenge = format!(
+        "phantom audit authorize {:x}",
+        Sha256::digest(plan_json.as_bytes())
+    );
+    writeln!(writer, "Audit effect plan:\n{plan_json}")?;
+    writeln!(writer, "Approve only if this terminal is outside the requesting agent's authority; a same-user shell or agent-controlled PTY can automate this ceremony.")?;
+    write!(writer, "Type `{challenge}` to continue: ")?;
+    writer.flush()?;
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    if response.trim_end_matches(['\r', '\n']) != challenge {
+        anyhow::bail!("Audit effect cancelled: typed confirmation did not match");
+    }
+    Ok(())
 }
 
 /// A no-op alert dispatcher for read-only operations.
@@ -1504,6 +1612,20 @@ pub fn run_report(
     println!("{}", json);
 
     if save {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .map_err(|_| anyhow::anyhow!("Cannot resolve home directory"))?;
+        let plan = serde_json::json!({
+            "action": "audit-report-save",
+            "report_type": report_type,
+            "from": from,
+            "to": to,
+            "compact_stdout": compact,
+            "reports_directory": home.join(".phantom").join("reports"),
+            "effect": "create one new local compliance report; never overwrite and never perform network I/O",
+        });
+        require_trusted_terminal_audit_effect(&plan)?;
         let path = exporter
             .save_report(&report)
             .map_err(|e| anyhow::anyhow!("Failed to save report: {e}"))?;
@@ -1715,6 +1837,56 @@ mod tests {
     const LINE_MALFORMED: &str = r#"{"ts":not-valid-json"#;
 
     #[test]
+    fn incident_auto_rotation_flag_fails_before_correlation_or_mutation() {
+        let error = run_incidents(0.9, true, true).unwrap_err();
+        assert!(error.to_string().contains("deprecated and disabled"));
+        assert!(error
+            .to_string()
+            .contains("does not rotate the leaked provider credential"));
+    }
+
+    #[test]
+    fn analytics_export_refuses_paths_outside_project_root() {
+        let project = tempdir().unwrap();
+        for filename in [
+            "../report.json",
+            "/tmp/report.json",
+            "nested/report.json",
+            "a..b",
+        ] {
+            assert!(prepare_analytics_export_in(project.path(), filename).is_err());
+        }
+        assert!(!project.path().join("report.json").exists());
+    }
+
+    #[test]
+    fn analytics_export_refuses_concurrent_destination_without_overwrite() {
+        let project = tempdir().unwrap();
+        let plan = prepare_analytics_export_in(project.path(), "audit.json").unwrap();
+        std::fs::write(&plan.path, b"concurrent owner").unwrap();
+
+        let error = plan.commit(b"phantom report").unwrap_err();
+
+        assert!(error.to_string().contains("Refusing to overwrite"));
+        assert_eq!(std::fs::read(&plan.path).unwrap(), b"concurrent owner");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn analytics_export_refuses_symlink_destination() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempdir().unwrap();
+        let owner = project.path().join("owner.json");
+        let target = project.path().join("audit.json");
+        std::fs::write(&owner, b"owner").unwrap();
+        symlink(&owner, &target).unwrap();
+
+        assert!(prepare_analytics_export_in(project.path(), "audit.json").is_err());
+        assert_eq!(std::fs::read(owner).unwrap(), b"owner");
+    }
+
+    #[test]
     fn filter_by_op() {
         let tmp = tempdir().unwrap();
         let path = write_fixture(
@@ -1811,6 +1983,39 @@ mod tests {
     #[test]
     fn matches_filters_name_miss() {
         assert!(!matches_filters(LINE_STORE, None, Some("STRIPE_KEY")));
+    }
+
+    #[test]
+    fn audit_effect_refuses_headless_execution_before_prompt() {
+        let plan = serde_json::json!({"action": "audit-report-save"});
+        let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+        let mut writer = Vec::new();
+
+        let error = confirm_audit_effect(&plan, false, &mut reader, &mut writer).unwrap_err();
+
+        assert!(error.to_string().contains("trusted terminal"));
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    fn audit_effect_requires_exact_plan_bound_challenge() {
+        let plan = serde_json::json!({
+            "action": "audit-alerts-backfill",
+            "config_sha256": "abc",
+        });
+        let plan_json = serde_json::to_string_pretty(&plan).unwrap();
+        let challenge = format!(
+            "phantom audit authorize {:x}",
+            Sha256::digest(plan_json.as_bytes())
+        );
+        let mut reader = std::io::Cursor::new(format!("{challenge}\n").into_bytes());
+        let mut writer = Vec::new();
+
+        confirm_audit_effect(&plan, true, &mut reader, &mut writer).unwrap();
+
+        let prompt = String::from_utf8(writer).unwrap();
+        assert!(prompt.contains(&challenge));
+        assert!(prompt.contains("config_sha256"));
     }
 
     // ── run_analytics integration tests ───────────────────────────────

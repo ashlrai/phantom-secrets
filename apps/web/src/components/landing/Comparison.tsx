@@ -1,103 +1,56 @@
-// Comparison matrix — Phantom vs alternatives. Critical for security
-// buyers who need to justify the choice over what they already have.
+// Scoped comparison of Phantom's managed workflow with direct plaintext
+// dotenv access. This deliberately avoids unverified third-party claims.
 
 import { Check } from "./Icons";
 
 // Special tokens get icon rendering; any other string is rendered as-is.
-type Cell = "yes" | "no" | "n/a" | "limited" | string;
+type Cell = "yes" | "no" | "n/a" | string;
 
-type CompetitorKey =
-  | "phantom"
-  | "rawEnv"
-  | "doppler"
-  | "onePassword"
-  | "infisical"
-  | "awsSm";
+type PathKey = "phantom" | "rawEnv";
 
-type Row = { label: string } & Record<CompetitorKey, Cell>;
+type Row = { label: string } & Record<PathKey, Cell>;
 
 const ROWS: Row[] = [
   {
     label: "Value-blind managed agent path",
     phantom: "yes",
     rawEnv: "no",
-    doppler: "no",
-    onePassword: "no",
-    infisical: "no",
-    awsSm: "no",
   },
   {
     label: "Open source",
     phantom: "yes",
     rawEnv: "n/a",
-    doppler: "no",
-    onePassword: "no",
-    infisical: "yes",
-    awsSm: "no",
   },
   {
     label: "Local-first vault",
     phantom: "yes",
-    rawEnv: "yes",
-    doppler: "no",
-    onePassword: "yes",
-    infisical: "no",
-    awsSm: "no",
+    rawEnv: "n/a",
   },
   {
-    label: "MCP-native (every editor)",
+    label: "MCP-native (supported clients)",
     phantom: "yes",
     rawEnv: "no",
-    doppler: "no",
-    onePassword: "no",
-    infisical: "no",
-    awsSm: "no",
   },
   {
-    label: "Pre-commit secret scanning",
+    label: "Staged dotenv and prefix checks",
     phantom: "yes",
     rawEnv: "no",
-    doppler: "yes",
-    onePassword: "no",
-    infisical: "yes",
-    awsSm: "no",
   },
   {
-    label: "Free tier",
+    label: "Fresh proxy authorization per exec session",
     phantom: "yes",
     rawEnv: "n/a",
-    doppler: "limited",
-    onePassword: "no",
-    infisical: "yes",
-    awsSm: "limited",
   },
   {
-    label: "Setup time",
-    phantom: "10 seconds",
-    rawEnv: "—",
-    doppler: "minutes",
-    onePassword: "minutes",
-    infisical: "minutes",
-    awsSm: "hours",
-  },
-  {
-    label: "Cloud sync (E2E encrypted)",
+    label: "Configured-upstream boundary for supported HTTP routes",
     phantom: "yes",
     rawEnv: "no",
-    doppler: "yes",
-    onePassword: "yes",
-    infisical: "yes",
-    awsSm: "yes",
   },
 ];
 
-const COMPETITORS: { key: CompetitorKey; label: string; featured: boolean }[] = [
+const PATHS: { key: PathKey; label: string; featured: boolean }[] = [
   { key: "phantom", label: "Phantom", featured: true },
-  { key: "rawEnv", label: ".env file", featured: false },
-  { key: "doppler", label: "Doppler", featured: false },
-  { key: "onePassword", label: "1Password CLI", featured: false },
-  { key: "infisical", label: "Infisical", featured: false },
-  { key: "awsSm", label: "AWS Secrets Mgr", featured: false },
+  { key: "rawEnv", label: "Plaintext agent .env", featured: false },
 ];
 
 const CELL_BASE = "inline-flex items-center gap-1.5 text-[0.84rem]";
@@ -124,13 +77,6 @@ function CellRender({ value, isPhantom }: { value: Cell; isPhantom: boolean }) {
       );
     case "n/a":
       return <span className="text-[0.84rem] text-t3">—</span>;
-    case "limited":
-      return (
-        <span className={`${CELL_BASE} text-t3`}>
-          <Dash className={`${ICON_SIZE} text-t3/60`} />
-          Limited
-        </span>
-      );
     default:
       return (
         <span className={`text-[0.84rem] ${isPhantom ? "text-green font-medium" : "text-t2"}`}>
@@ -157,22 +103,6 @@ function Cross({ className }: { className?: string }) {
   );
 }
 
-function Dash({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.4"
-      strokeLinecap="round"
-      className={className}
-      aria-hidden
-    >
-      <path d="M5 12h14" />
-    </svg>
-  );
-}
-
 export function Comparison() {
   return (
     <section id="comparison" className="border-t border-border py-24 sm:py-28">
@@ -182,25 +112,25 @@ export function Comparison() {
             Why not just use what you have?
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            Every other secrets manager assumes the wrong threat model.
-            They protect secrets <em className="not-italic text-t1">at rest</em>{" "}
-            and <em className="not-italic text-t1">in transit</em> — but the
-            moment you give one to an AI tool, it leaks. Phantom protects
-            them <em className="not-italic text-t1">in context</em>.
+            Phantom addresses a narrow boundary: supported agent-driven HTTP
+            requests can use configured credentials without placing provider
+            values in the agent&apos;s dotenv context. This compares Phantom&apos;s
+            managed path with giving an agent a plaintext dotenv value; it is
+            not a vendor feature benchmark.
           </p>
         </div>
 
         <div className="overflow-x-auto -mx-7 px-7">
-          <div className="min-w-[820px] rounded-2xl border border-border bg-s1 overflow-hidden">
+          <div className="min-w-[620px] rounded-2xl border border-border bg-s1 overflow-hidden">
             <table className="w-full table-fixed border-collapse">
               <caption className="sr-only">
-                Capability comparison: Phantom vs five alternative secrets
-                managers.
+                Boundary comparison: Phantom&apos;s managed path versus direct
+                plaintext dotenv access.
               </caption>
               <colgroup>
-                <col style={{ width: "22%" }} />
-                {COMPETITORS.map((c) => (
-                  <col key={c.key} style={{ width: "13%" }} />
+                <col style={{ width: "48%" }} />
+                {PATHS.map((c) => (
+                  <col key={c.key} style={{ width: "26%" }} />
                 ))}
               </colgroup>
               <thead className="bg-s2/40">
@@ -211,7 +141,7 @@ export function Comparison() {
                   >
                     Capability
                   </th>
-                  {COMPETITORS.map((c) => (
+                  {PATHS.map((c) => (
                     <th
                       key={c.key}
                       scope="col"
@@ -237,7 +167,7 @@ export function Comparison() {
                     >
                       {row.label}
                     </th>
-                    {COMPETITORS.map((c) => (
+                    {PATHS.map((c) => (
                       <td
                         key={c.key}
                         className={
@@ -257,13 +187,6 @@ export function Comparison() {
             </table>
           </div>
         </div>
-
-        <p className="mt-6 text-[0.78rem] text-t3 max-w-[820px]">
-          Comparison reflects each tool&apos;s default tier and primary
-          use-case as of April 2026. Phantom is purpose-built for the
-          AI-coding-tool workflow; the others are general-purpose secrets
-          managers retrofitted to the same problem.
-        </p>
       </div>
     </section>
   );

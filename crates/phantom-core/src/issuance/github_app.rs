@@ -1,4 +1,7 @@
-//! GitHub App bootstrap — the north-star "FOUR clicks, ever" path.
+//! GitHub App bootstrap protocol foundation.
+//!
+//! Shipped 0.7.4 returns `NotSupported` before browser, loopback, credential,
+//! or network access. This flow executes only in crate-local tests.
 //!
 //! [`GithubAppManifestFlow`] registers a private, least-privilege GitHub App
 //! from a **manifest** (docs.github.com: "Registering a GitHub App from a
@@ -6,9 +9,9 @@
 //! that POSTs the manifest to `github.com/settings/apps/new` (a browser cannot
 //! POST a bare URL), captures the redirect `code`, and exchanges it at
 //! `POST /app-manifests/{code}/conversions` for the full app credential set —
-//! **App id, PEM private key, client id/secret, webhook secret**. The PEM is
-//! the perpetual root; every 1-hour `ghs_` installation token thereafter is
-//! minted by the shipped [`crate::rotation_provider::GitHubRotationProvider`].
+//! **App id, PEM private key, client id/secret, webhook secret**. The PEM is a
+//! prospective durable root. Shipped builds do not execute this enrollment or
+//! mint installation-token successors.
 //!
 //! This module also closes the grants-spec gap: [`mint_app_jwt`] signs the
 //! in-process RS256 App JWT from the vaulted PEM (`iss = client_id`, `exp` <10
@@ -16,7 +19,7 @@
 //! never an env var, never on disk, and is zeroized on drop.
 
 use super::{
-    guard_mock_issuance, issuance_mock_allowed, ConsentEngine, GrantType, IssuanceDeps,
+    guard_test_only_issuance, issuance_mock_allowed, ConsentEngine, GrantType, IssuanceDeps,
     IssuanceError, IssuanceMetadata, IssuanceOutcome, IssuanceRequest, IssuedMaterial,
     MaterialKind,
 };
@@ -26,9 +29,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 use zeroize::Zeroizing;
 
-/// Fixed vault names issuance writes and rotation reads. Keeping them fixed
-/// lets `phantom rotate --name <KEY> --provider github` locate the PEM +
-/// client id by convention (see the rotate wiring in `phantom-cli`).
+/// Reserved prospective vault names used by hermetic protocol tests. Shipped
+/// builds do not enroll the App or mint token successors.
 pub const GITHUB_APP_PEM_NAME: &str = "GITHUB_APP_PEM";
 /// Vault name for the App client id (non-sensitive; needed for JWT `iss`).
 pub const GITHUB_APP_CLIENT_ID_NAME: &str = "GITHUB_APP_CLIENT_ID";
@@ -123,12 +125,8 @@ impl ConsentEngine for GithubAppManifestFlow {
         req: &IssuanceRequest,
         deps: &IssuanceDeps,
     ) -> Result<IssuanceOutcome, IssuanceError> {
-        // Fail closed the moment endpoints are overridden to a non-production
-        // host: that is only ever the crate's unit-test harness.
-        let mock = deps.endpoints.is_overridden();
-        if mock {
-            guard_mock_issuance()?;
-        }
+        guard_test_only_issuance(deps)?;
+        let mock = true;
 
         let spec = req
             .app_manifest
@@ -213,8 +211,7 @@ impl ConsentEngine for GithubAppManifestFlow {
             ));
         } else {
             notes.push(format!(
-                "App installed on {} account(s). `phantom rotate --name <KEY>` now mints \
-                 1-hour ghs_ tokens unattended.",
+                "Protocol-test outcome recorded {} installation account(s); shipped builds do not mint token successors.",
                 installation_ids.len()
             ));
         }

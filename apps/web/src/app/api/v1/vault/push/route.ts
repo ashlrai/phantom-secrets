@@ -1,4 +1,5 @@
 import { requireAuth, requirePro } from "@/lib/auth";
+import { requireHostedService } from "@/lib/commissioning";
 import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
 
@@ -11,6 +12,9 @@ type VaultPushBody = {
 };
 
 export async function PUT(req: Request) {
+  const commissioningGate = requireHostedService("personal_vaults");
+  if (commissioningGate) return commissioningGate;
+
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
 

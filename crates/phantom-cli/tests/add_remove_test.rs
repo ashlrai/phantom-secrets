@@ -5,6 +5,8 @@
 ///
 /// All commands run in the same TempDir so they share the same `.phantom.toml`
 /// and therefore the same vault project_id.
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -35,7 +37,7 @@ fn phantom(dir: &TempDir) -> Command {
 
 #[test]
 fn add_then_list_shows_key() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     // Add a new secret
@@ -55,8 +57,8 @@ fn add_then_list_shows_key() {
 }
 
 #[test]
-fn remove_makes_key_disappear_from_list() {
-    let dir = TempDir::new().unwrap();
+fn headless_remove_is_denied_and_preserves_the_key() {
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     // Add the key first
@@ -66,36 +68,55 @@ fn remove_makes_key_disappear_from_list() {
         .assert()
         .success();
 
-    // Remove it
-    phantom(&dir).args(["remove", "MY_KEY"]).assert().success();
+    // Destructive removal requires a separately controlled attached terminal.
+    // A headless agent or script must fail before changing vault or dotenv state.
+    let denied = phantom(&dir).args(["remove", "MY_KEY"]).assert().failure();
+    assert!(String::from_utf8_lossy(&denied.get_output().stderr)
+        .contains("requires attached stdin, stdout, and stderr terminals"));
 
-    // List should no longer contain the key
-    let output = phantom(&dir).arg("list").assert();
+    // The key must remain after the denied headless attempt.
+    let output = phantom(&dir).arg("list").assert().success();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     assert!(
-        !stdout.contains("MY_KEY"),
-        "MY_KEY should not appear after removal, got: {stdout}"
+        stdout.contains("MY_KEY"),
+        "MY_KEY should remain after denied headless removal, got: {stdout}"
     );
+    let dotenv = fs::read_to_string(dir.path().join(".env")).unwrap();
+    assert!(dotenv.contains("MY_KEY=phm_"), "{dotenv}");
 }
 
 #[test]
-fn add_without_init_auto_inits() {
-    // No init — phantom add should auto-create .phantom.toml and succeed.
-    let dir = TempDir::new().unwrap();
+fn add_without_init_fails_before_project_mutation() {
+    let dir = common::canonical_tempdir();
+    let output = phantom(&dir)
+        .args(["add", "SOME_KEY", "--stdin"])
+        .write_stdin("some-value\n")
+        .assert()
+        .failure();
+    assert!(String::from_utf8_lossy(&output.get_output().stderr).contains("phantom init --empty"));
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn add_to_empty_initialized_project_persists_managed_dotenv_mapping() {
+    let dir = common::canonical_tempdir();
+    phantom(&dir).args(["init", "--empty"]).assert().success();
     phantom(&dir)
         .args(["add", "SOME_KEY", "--stdin"])
         .write_stdin("some-value\n")
         .assert()
         .success();
-    assert!(
-        dir.path().join(".phantom.toml").exists(),
-        ".phantom.toml should be auto-created by phantom add"
-    );
+
+    let config = fs::read_to_string(dir.path().join(".phantom.toml")).unwrap();
+    let dotenv = fs::read_to_string(dir.path().join(".env")).unwrap();
+    assert!(config.contains("dotenv_path = \".env\""), "{config}");
+    assert!(dotenv.contains("SOME_KEY=phm_"), "{dotenv}");
+    assert!(!dotenv.contains("some-value"));
 }
 
 #[test]
 fn list_shows_seed_secret_after_init() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     let output = phantom(&dir).arg("list").assert().success();
@@ -108,7 +129,7 @@ fn list_shows_seed_secret_after_init() {
 
 #[test]
 fn add_updates_env_file_with_phantom_token() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     phantom(&dir)

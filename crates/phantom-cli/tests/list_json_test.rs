@@ -3,6 +3,8 @@
 /// Verify that `phantom list --json` emits valid JSON, contains every secret
 /// name in the vault, never leaks secret values, and surfaces the detected
 /// service mapping when one is configured.
+mod common;
+
 use assert_cmd::Command;
 use serde_json::Value;
 use std::fs;
@@ -37,7 +39,7 @@ fn phantom(dir: &TempDir) -> Command {
 
 #[test]
 fn list_json_emits_valid_json_with_secret_names() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     let output = phantom(&dir).args(["list", "--json"]).assert().success();
@@ -63,7 +65,7 @@ fn list_json_emits_valid_json_with_secret_names() {
 
 #[test]
 fn list_json_never_leaks_secret_values() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     init_project(&dir);
 
     let output = phantom(&dir).args(["list", "--json"]).assert().success();
@@ -77,23 +79,14 @@ fn list_json_never_leaks_secret_values() {
 
 #[test]
 fn list_json_emits_empty_array_when_vault_has_no_secrets() {
-    let dir = TempDir::new().unwrap();
-
-    // init expects at least one secret-shaped entry, so seed a non-secret only
-    // and remove the imported key to leave the vault empty.
-    fs::write(dir.path().join(".env"), "OPENAI_API_KEY=sk-temp\n").expect("write seed .env");
+    let dir = common::canonical_tempdir();
 
     Command::cargo_bin("phantom")
         .expect("binary not found")
-        .args(["init", "--from", ".env"])
+        .args(["init", "--empty"])
         .current_dir(dir.path())
         .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
         .env("HOME", dir.path())
-        .assert()
-        .success();
-
-    phantom(&dir)
-        .args(["remove", "OPENAI_API_KEY"])
         .assert()
         .success();
 

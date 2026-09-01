@@ -23,14 +23,13 @@ const STEPS = [
   },
   {
     n: "3",
-    title: "Inject on the wire",
+    title: "Authenticate exact routes",
     body: (
       <>
-        AI calls APIs with the <code className="font-mono text-blue-b">phm_</code>{" "}
-        token. The proxy on{" "}
-        <code className="font-mono text-blue-b">127.0.0.1</code> swaps it for the
-        real key and forwards over TLS. Managed agent workflows receive only
-        placeholders and scrubbed responses.
+        Supported SDKs use the authenticated proxy on{" "}
+        <code className="font-mono text-blue-b">127.0.0.1</code>. It matches an
+        exact route and injects only that route&apos;s vault value into its fixed
+        auth header before forwarding over TLS. Client placeholders stay inert.
       </>
     ),
   },

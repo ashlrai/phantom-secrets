@@ -1,18 +1,28 @@
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{IsTerminal, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, IsTerminal, Write};
+use std::path::{Component, Path, PathBuf};
+
+#[cfg(not(windows))]
+use std::io::Read;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use rand::RngCore;
+use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 const MAX_PASSPHRASE_BYTES: u64 = 4 * 1024;
 const MIN_PASSPHRASE_BYTES: usize = 12;
 pub(crate) const MAX_ENCRYPTED_BACKUP_BYTES: u64 = 64 * 1024 * 1024;
 const TEMP_CREATE_ATTEMPTS: usize = 32;
+const MAX_CONSENT_NAMES: usize = 10_000;
+const MAX_CONSENT_NAME_BYTES: usize = 512;
+const MAX_CONSENT_SET_BYTES: usize = 32 * 1024;
+const MAX_CONSENT_TEXT_BYTES: usize = 256 * 1024;
+#[cfg(any(windows, test))]
+const WINDOWS_PASSPHRASE_FILE_ERROR: &str = "--passphrase-file is disabled on Windows because Phantom cannot yet verify a no-reparse opened handle and its effective private ACL safely. Omit --passphrase-file and enter the passphrase at the hidden terminal prompt.";
 
 #[derive(Clone, Copy)]
 pub(crate) enum PassphrasePurpose {
@@ -29,8 +39,8 @@ impl PassphrasePurpose {
     }
 }
 
-/// Export an encrypted backup. Passphrases come from a trusted terminal or a
-/// private bounded file; the legacy argv option is accepted only to fail closed.
+/// Export an encrypted backup after an informed trusted-terminal ceremony.
+/// Export passphrases are accepted only through the hidden terminal prompt.
 pub fn run(
     output: Option<&str>,
     legacy_passphrase: Option<String>,
@@ -44,9 +54,20 @@ pub fn run(
         return run_json(allow_plaintext);
     }
 
+    if passphrase_file.is_some() {
+        anyhow::bail!(
+            "--passphrase-file is disabled for export because it can make the resulting backup agent-decryptable. Omit it and enter a dedicated passphrase at the hidden trusted-terminal prompt."
+        );
+    }
+
     let output = output.unwrap_or("phantom-export.enc");
-    let passphrase = acquire_passphrase(passphrase_file, PassphrasePurpose::Export)?;
-    run_encrypted(output, passphrase.as_str())
+    require_attached_terminals("Encrypted backup export")?;
+    let plan = prepare_export(output)?;
+    require_trusted_terminal_effect(&plan.effect, &plan.challenge)?;
+    verify_export_plan(&plan)?;
+    let passphrase = acquire_passphrase(None, PassphrasePurpose::Export)?;
+    verify_export_plan(&plan)?;
+    run_encrypted(&plan, passphrase.as_str())
 }
 
 /// The argv form cannot be made confidential: even immediate zeroization cannot
@@ -55,7 +76,7 @@ pub(crate) fn reject_legacy_passphrase(legacy_passphrase: Option<String>) -> Res
     if let Some(mut passphrase) = legacy_passphrase {
         passphrase.zeroize();
         anyhow::bail!(
-            "--passphrase is no longer supported because command-line arguments can be exposed by process inspection. Omit it for a hidden terminal prompt, or use --passphrase-file with a private regular file."
+            "--passphrase is no longer supported because command-line arguments can be exposed by process inspection. Omit it for a hidden terminal prompt. Encrypted export also rejects --passphrase-file; import may use a private bounded file on supported platforms only after trusted-terminal consent."
         );
     }
     Ok(())
@@ -66,12 +87,22 @@ pub(crate) fn acquire_passphrase(
     purpose: PassphrasePurpose,
 ) -> Result<Zeroizing<String>> {
     if let Some(path) = passphrase_file {
+        if matches!(purpose, PassphrasePurpose::Export) {
+            anyhow::bail!(
+                "--passphrase-file is disabled for export because it can make the resulting backup agent-decryptable. Omit it and enter a dedicated passphrase at the hidden trusted-terminal prompt."
+            );
+        }
         return read_passphrase_file(Path::new(path));
     }
 
-    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+    if !terminals_attached() {
+        #[cfg(windows)]
         anyhow::bail!(
-            "A hidden passphrase prompt requires attached stdin and stderr terminals. For bounded automation, use --passphrase-file with a private regular file (mode 0600 on Unix)."
+            "A hidden passphrase prompt requires attached stdin, stdout, and stderr terminals. --passphrase-file is disabled on Windows; rerun from an attached trusted terminal."
+        );
+        #[cfg(not(windows))]
+        anyhow::bail!(
+            "A hidden passphrase prompt requires attached stdin, stdout, and stderr terminals. Import may use --passphrase-file with a private regular file (mode 0600 on Unix), but export requires terminal entry."
         );
     }
 
@@ -94,6 +125,18 @@ pub(crate) fn acquire_passphrase(
     Ok(passphrase)
 }
 
+#[cfg(windows)]
+fn read_passphrase_file(_path: &Path) -> Result<Zeroizing<String>> {
+    // CreateFileW's FILE_FLAG_OPEN_REPARSE_POINT covers only the final path
+    // component, while raw DACL enumeration cannot reliably establish
+    // effective read access for every conditional, callback, and object ACE.
+    // Until Phantom has a handle-relative no-reparse open plus a complete
+    // effective-access check, accepting secret-bearing files here would make
+    // a platform security promise that the implementation cannot uphold.
+    anyhow::bail!(WINDOWS_PASSPHRASE_FILE_ERROR)
+}
+
+#[cfg(not(windows))]
 fn read_passphrase_file(path: &Path) -> Result<Zeroizing<String>> {
     if path.as_os_str() == "-" {
         anyhow::bail!(
@@ -117,8 +160,17 @@ fn read_passphrase_file(path: &Path) -> Result<Zeroizing<String>> {
     }
     ensure_private_permissions(path, &before)?;
 
-    let mut file = File::open(path)
-        .with_context(|| format!("Failed to open passphrase file: {}", path.display()))?;
+    let mut file = match open_passphrase_file(path) {
+        Ok(file) => file,
+        #[cfg(unix)]
+        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
+            anyhow::bail!("Passphrase file must not be a symlink: {}", path.display())
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to open passphrase file: {}", path.display()))
+        }
+    };
     ensure_opened_same_file(path, &before, &file.metadata()?)?;
 
     let mut bytes = Zeroizing::new(Vec::with_capacity(before.len() as usize + 1));
@@ -146,6 +198,20 @@ fn read_passphrase_file(path: &Path) -> Result<Zeroizing<String>> {
     let text = std::str::from_utf8(&bytes).context("Passphrase file is not valid UTF-8")?;
     validate_passphrase(text)?;
     Ok(Zeroizing::new(text.to_owned()))
+}
+
+#[cfg(unix)]
+fn open_passphrase_file(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    options.open(path)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn open_passphrase_file(path: &Path) -> std::io::Result<File> {
+    File::open(path)
 }
 
 fn validate_passphrase(passphrase: &str) -> Result<()> {
@@ -179,7 +245,7 @@ fn ensure_private_permissions(path: &Path, metadata: &std::fs::Metadata) -> Resu
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 fn ensure_private_permissions(_path: &Path, _metadata: &std::fs::Metadata) -> Result<()> {
     Ok(())
 }
@@ -193,31 +259,6 @@ fn ensure_opened_same_file(
     use std::os::unix::fs::MetadataExt;
 
     if before.dev() != opened.dev() || before.ino() != opened.ino() || !opened.is_file() {
-        anyhow::bail!(
-            "Passphrase file changed while it was being opened: {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn ensure_opened_same_file(
-    path: &Path,
-    before: &std::fs::Metadata,
-    opened: &std::fs::Metadata,
-) -> Result<()> {
-    use std::os::windows::fs::MetadataExt;
-
-    // Rust 1.95 still keeps Windows volume_serial_number/file_index behind the
-    // unstable `windows_by_handle` feature. Compare several stable on-disk
-    // fingerprint field instead; a regular-file check alone would miss swaps.
-    if !opened.is_file()
-        || before.file_attributes() != opened.file_attributes()
-        || before.creation_time() != opened.creation_time()
-        || before.last_write_time() != opened.last_write_time()
-        || before.file_size() != opened.file_size()
-    {
         anyhow::bail!(
             "Passphrase file changed while it was being opened: {}",
             path.display()
@@ -259,31 +300,92 @@ impl Drop for SecretMap {
     }
 }
 
-fn run_encrypted(output: &str, passphrase: &str) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
+struct ExportPlan {
+    project_dir: PathBuf,
+    output_request: String,
+    config_path: PathBuf,
+    config_before: Vec<u8>,
+    local_project_id: String,
+    output_path: PathBuf,
+    names: Vec<String>,
+    names_digest: String,
+    effect: String,
+    challenge: String,
+}
+
+fn prepare_export(output: &str) -> Result<ExportPlan> {
+    let project_dir = std::env::current_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
-    let output_path = project_dir.join(output);
+    let config_before = phantom_core::fs::read_regular_file(&config_path)
+        .context("Failed to safely read .phantom.toml")?
+        .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run `phantom init` first."))?;
+    let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+        .context("Failed to parse the reviewed .phantom.toml snapshot")?;
+    recheck_exact_file(&config_path, &config_before, ".phantom.toml")?;
+    let local_project_id = config.local_project_id().to_string();
+    let output_path = resolve_export_destination(&project_dir, output)?;
+    let vault = phantom_vault::try_create_vault(&local_project_id)?;
+    let mut names = vault.list().context("Failed to list secrets")?;
+    names.sort();
+    names.dedup();
+    validate_consent_names(&names)?;
+    let names_digest = digest_names(&names);
+    let rendered_names = render_names(&names)?;
+    let config_digest = digest_bytes(&config_before);
+    let output_digest = digest_path(&output_path);
+    let effect = format!(
+        "Export {} secret name(s) (set sha256 {}) from project {} at {} to a new encrypted file {}. Exact secret-name set: {}. Passphrase source: hidden trusted-terminal entry only.",
+        names.len(), names_digest, local_project_id, project_dir.display(), output_path.display(), rendered_names
+    );
+    let challenge = format!(
+        "export {} {} {} {}",
+        local_project_id, config_digest, names_digest, output_digest
+    );
+    validate_consent_text(&challenge)?;
+    Ok(ExportPlan {
+        project_dir,
+        output_request: output.to_string(),
+        config_path,
+        config_before,
+        local_project_id,
+        output_path,
+        names,
+        names_digest,
+        effect,
+        challenge,
+    })
+}
 
-    validate_new_destination(&output_path)?;
-
-    if !config_path.exists() {
+fn verify_export_plan(plan: &ExportPlan) -> Result<()> {
+    recheck_exact_file(&plan.config_path, &plan.config_before, ".phantom.toml")?;
+    let current_output = resolve_export_destination(&plan.project_dir, &plan.output_request)?;
+    if current_output != plan.output_path {
+        anyhow::bail!("Backup output identity changed after export review; no backup was written");
+    }
+    let vault = phantom_vault::try_create_vault(&plan.local_project_id)?;
+    let mut current_names = vault.list().context("Failed to recheck secret names")?;
+    current_names.sort();
+    current_names.dedup();
+    validate_consent_names(&current_names)?;
+    if digest_names(&current_names) != plan.names_digest || current_names != plan.names {
         anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
+            "Vault secret-name set changed after export review; no secret values were read"
         );
     }
+    Ok(())
+}
 
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
-    let names = vault.list().context("Failed to list secrets")?;
-
-    if names.is_empty() {
+fn run_encrypted(plan: &ExportPlan, passphrase: &str) -> Result<()> {
+    if plan.names.is_empty() {
         println!("{} No secrets to export.", "!".yellow().bold());
         return Ok(());
     }
 
+    verify_export_plan(plan)?;
+    let vault = phantom_vault::try_create_vault(&plan.local_project_id)?;
+
     let mut secrets = SecretMap(BTreeMap::new());
-    for name in &names {
+    for name in &plan.names {
         let value = vault
             .retrieve(name)
             .with_context(|| format!("Failed to retrieve secret: {name}"))?;
@@ -302,24 +404,207 @@ fn run_encrypted(output: &str, passphrase: &str) -> Result<()> {
         );
     }
 
-    atomic_create_private(&output_path, &encrypted)
-        .with_context(|| format!("Failed to create backup file: {}", output_path.display()))?;
+    verify_export_plan(plan)?;
+    atomic_create_private(&plan.output_path, &encrypted).with_context(|| {
+        format!(
+            "Failed to create backup file: {}",
+            plan.output_path.display()
+        )
+    })?;
 
     phantom_core::audit::log_result("vault.export_encrypted", None).with_context(|| {
         format!(
             "Backup exists at {}, but its encrypted export audit event could not be written",
-            output_path.display()
+            plan.output_path.display()
         )
     })?;
 
     println!(
         "{} Exported {} secret(s) to {}",
         "ok".green().bold(),
-        names.len(),
-        output.bold()
+        plan.names.len(),
+        plan.output_path.display().to_string().bold()
     );
 
     Ok(())
+}
+
+fn terminals_attached() -> bool {
+    std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal()
+}
+
+pub(crate) fn require_attached_terminals(effect: &str) -> Result<()> {
+    if !terminals_attached() {
+        anyhow::bail!(
+            "{effect} requires stdin, stdout, and stderr attached to a trusted terminal before reading secret-bearing input or vault values"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn require_trusted_terminal_effect(effect: &str, challenge: &str) -> Result<()> {
+    require_attached_terminals(effect)?;
+    let stdin = std::io::stdin();
+    let stderr = std::io::stderr();
+    confirm_effect(
+        effect,
+        challenge,
+        true,
+        &mut stdin.lock(),
+        &mut stderr.lock(),
+    )
+}
+
+pub(crate) fn confirm_effect(
+    effect: &str,
+    challenge: &str,
+    attached: bool,
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+) -> Result<()> {
+    if !attached {
+        anyhow::bail!(
+            "This secret transfer requires stdin, stdout, and stderr attached to a trusted terminal before secret access"
+        );
+    }
+    validate_consent_text(effect)?;
+    validate_consent_text(challenge)?;
+    writeln!(writer, "Secret transfer: {effect}")?;
+    writeln!(writer, "Approve only if this terminal is outside the requesting agent's authority; a same-user shell or agent-controlled PTY can automate this ceremony.")?;
+    write!(writer, "Type `{challenge}` to continue: ")?;
+    writer.flush()?;
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    if response.trim_end_matches(['\r', '\n']) != challenge {
+        anyhow::bail!("Secret transfer cancelled: typed confirmation did not match");
+    }
+    Ok(())
+}
+
+fn validate_consent_text(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > MAX_CONSENT_TEXT_BYTES
+        || value.chars().any(char::is_control)
+    {
+        anyhow::bail!(
+            "Consent identifiers must be non-empty, bounded, and contain no control characters"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_consent_names(names: &[String]) -> Result<()> {
+    let total = names.iter().map(String::len).sum::<usize>();
+    if names.len() > MAX_CONSENT_NAMES
+        || total > MAX_CONSENT_SET_BYTES
+        || names.iter().any(|name| {
+            name.is_empty()
+                || name.len() > MAX_CONSENT_NAME_BYTES
+                || name.chars().any(char::is_control)
+        })
+    {
+        anyhow::bail!("Secret-name set is too large or contains unsafe consent text");
+    }
+    Ok(())
+}
+
+pub(crate) fn digest_names(names: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for name in names {
+        hasher.update((name.len() as u64).to_be_bytes());
+        hasher.update(name.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
+
+pub(crate) fn render_names(names: &[String]) -> Result<String> {
+    validate_consent_names(names)?;
+    serde_json::to_string(names).context("Failed to render the value-blind secret-name set")
+}
+
+pub(crate) fn digest_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+#[cfg(unix)]
+pub(crate) fn digest_path(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    digest_bytes(path.as_os_str().as_bytes())
+}
+
+#[cfg(windows)]
+pub(crate) fn digest_path(path: &Path) -> String {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut bytes = Vec::new();
+    for unit in path.as_os_str().encode_wide() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    digest_bytes(&bytes)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+pub(crate) fn digest_path(path: &Path) -> String {
+    digest_bytes(path.as_os_str().to_string_lossy().as_bytes())
+}
+
+fn recheck_exact_file(path: &Path, before: &[u8], label: &str) -> Result<()> {
+    if phantom_core::fs::read_regular_file(path)
+        .with_context(|| format!("Failed to safely recheck {label}"))?
+        .as_deref()
+        != Some(before)
+    {
+        anyhow::bail!("{label} changed during secret-transfer review; no transfer was committed");
+    }
+    Ok(())
+}
+
+fn resolve_export_destination(project_dir: &Path, output: &str) -> Result<PathBuf> {
+    validate_consent_text(output)?;
+    let relative = Path::new(output);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        anyhow::bail!(
+            "Backup output must be a relative path inside the current project without '..'"
+        );
+    }
+    let file_name = relative
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Backup output must name a file"))?;
+    let mut current = project_dir.to_path_buf();
+    if let Some(parent) = relative.parent() {
+        for component in parent.components() {
+            let Component::Normal(component) = component else {
+                continue;
+            };
+            current.push(component);
+            let metadata = std::fs::symlink_metadata(&current).with_context(|| {
+                format!(
+                    "Backup parent directory does not exist: {}",
+                    current.display()
+                )
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                anyhow::bail!(
+                    "Backup parent components must be real directories, not symlinks: {}",
+                    current.display()
+                );
+            }
+        }
+    }
+    let canonical_parent = current.canonicalize()?;
+    if !canonical_parent.starts_with(project_dir) {
+        anyhow::bail!("Backup output must remain inside the current project");
+    }
+    let path = canonical_parent.join(file_name);
+    validate_new_destination(&path)?;
+    Ok(path)
 }
 
 fn validate_new_destination(path: &Path) -> Result<()> {
@@ -463,6 +748,110 @@ mod tests {
     fn weak_backup_passphrase_is_rejected() {
         let err = validate_passphrase("short").unwrap_err();
         assert!(err.to_string().contains("at least 12 bytes"));
+    }
+
+    #[test]
+    fn export_passphrase_file_is_denied_before_path_access() {
+        let error = acquire_passphrase(
+            Some("/definitely/missing/agent-readable-passphrase"),
+            PassphrasePurpose::Export,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("disabled for export"));
+        assert!(error.to_string().contains("agent-decryptable"));
+    }
+
+    #[test]
+    fn headless_consent_fails_before_reading_a_response() {
+        let mut reader = std::io::Cursor::new(b"exact challenge\n");
+        let mut writer = Vec::new();
+        let error = confirm_effect(
+            "Export reviewed names",
+            "exact challenge",
+            false,
+            &mut reader,
+            &mut writer,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("trusted terminal"));
+        assert_eq!(reader.position(), 0, "headless denial must not read stdin");
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    fn consent_requires_the_exact_value_blind_challenge() {
+        let mut reader = std::io::Cursor::new(b"different challenge\n");
+        let mut writer = Vec::new();
+        let error = confirm_effect(
+            "Export one reviewed name",
+            "export project digest output",
+            true,
+            &mut reader,
+            &mut writer,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("did not match"));
+        let output = String::from_utf8(writer).unwrap();
+        assert!(output.contains("same-user shell"));
+        assert!(!output.contains("different challenge"));
+    }
+
+    #[test]
+    fn export_destination_must_be_new_and_inside_project() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        assert!(resolve_export_destination(&project, "../escape.enc").is_err());
+        assert!(resolve_export_destination(&project, "/tmp/escape.enc").is_err());
+
+        let nested = project.join("backups");
+        std::fs::create_dir(&nested).unwrap();
+        let resolved = resolve_export_destination(&project, "backups/safe.enc").unwrap();
+        assert_eq!(resolved, nested.canonicalize().unwrap().join("safe.enc"));
+        std::fs::write(&resolved, b"existing").unwrap();
+        assert!(resolve_export_destination(&project, "backups/safe.enc").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_destination_rejects_symlinked_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        symlink(outside.path(), dir.path().join("linked")).unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let error = resolve_export_destination(&project, "linked/escape.enc").unwrap_err();
+        assert!(error.to_string().contains("not symlinks"));
+        assert!(!outside.path().join("escape.enc").exists());
+    }
+
+    #[test]
+    fn name_digest_is_order_and_boundary_sensitive() {
+        assert_ne!(
+            digest_names(&["AB".to_string(), "C".to_string()]),
+            digest_names(&["A".to_string(), "BC".to_string()])
+        );
+        assert_ne!(
+            digest_names(&["A".to_string(), "B".to_string()]),
+            digest_names(&["B".to_string(), "A".to_string()])
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_passphrase_file_contract_is_fail_closed_and_actionable() {
+        assert!(WINDOWS_PASSPHRASE_FILE_ERROR.contains("disabled on Windows"));
+        assert!(WINDOWS_PASSPHRASE_FILE_ERROR.contains("no-reparse opened handle"));
+        assert!(WINDOWS_PASSPHRASE_FILE_ERROR.contains("effective private ACL"));
+        assert!(WINDOWS_PASSPHRASE_FILE_ERROR.contains("hidden terminal prompt"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_passphrase_file_fails_before_path_traversal() {
+        let err =
+            read_passphrase_file(Path::new(r"C:\\definitely-missing\\passphrase.txt")).unwrap_err();
+        assert_eq!(err.to_string(), WINDOWS_PASSPHRASE_FILE_ERROR);
     }
 
     #[test]

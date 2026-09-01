@@ -25,6 +25,7 @@ function fixture() {
   git(work, "add", "fixture.txt");
   git(work, "commit", "-qm", "fixture");
   git(work, "remote", "add", "origin", remote);
+  git(work, "push", "-q", "origin", "HEAD:refs/heads/main");
   return { remote, work, commit: git(work, "rev-parse", "HEAD") };
 }
 
@@ -64,4 +65,16 @@ test("rejects missing, lightweight, and moved remote tags", () => {
   git(moved.work, "tag", "-fa", "v0.7.3", "-m", "Moved tag", newCommit);
   git(moved.work, "push", "-q", "--force", "origin", "refs/tags/v0.7.3");
   assert.notEqual(verify(moved.work, "v0.7.3", moved.commit).status, 0);
+});
+
+test("rejects a tag whose commit is not the current protected main tip", () => {
+  const { work, commit } = fixture();
+  git(work, "tag", "-a", "v0.7.3", "-m", "Phantom v0.7.3", commit);
+  git(work, "push", "-q", "origin", "refs/tags/v0.7.3");
+  fs.appendFileSync(path.join(work, "fixture.txt"), "protected main advanced\n");
+  git(work, "add", "fixture.txt");
+  git(work, "commit", "-qm", "advance protected main");
+  git(work, "push", "-q", "origin", "HEAD:refs/heads/main");
+
+  assert.notEqual(verify(work, "v0.7.3", commit).status, 0);
 });

@@ -4,7 +4,231 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No user-facing changes have been recorded after 0.7.3.
+No unreleased changes are recorded after the `0.7.4` candidate.
+
+## [0.7.4] - 2026-09-01
+
+This release hardens local agent setup, transactional secret protection, MCP
+effect authorization, retained filesystem authority, Windows private-file
+permissions, and the default-closed hosted-service boundary. Publication
+remains gated on protected-branch CI and the tag-triggered immutable-release
+workflow. This source section is not evidence that the tag, release artifacts,
+Homebrew formula, npm packages, crates.io packages, MCP Registry entry, database
+migrations, web deployment, provider integrations, or customer acceptance exist
+or are active.
+
+### Security and filesystem integrity
+
+- Project transactions now retain the directory identity acquired with the
+  project lock. Before-image reads for governed mutations, compare-and-swap
+  writes, unlinks, permission changes, and parent creation resolve relative to
+  that retained capability, reject paths outside the governed root, and do not
+  follow symlink or Windows reparse-point components.
+- Sensitive anchored file updates require a regular, single-link target and an
+  exact identity-and-content before-image. This rejects hard-linked targets and
+  byte-for-byte replacement inodes, while rename-and-decoy tests verify that a
+  swapped ambient project path is not mutated.
+- Initialization admission now retains the reviewed project-root identity and
+  exact leaf snapshots before vault provisioning. After the project lock is
+  acquired, Phantom revalidates that root and each reviewed leaf's identity,
+  bytes, and permissions before mutation; a byte-identical rename decoy is
+  rejected as concurrent drift.
+- Anchored writes, unlinks, and directory creation return explicit effect
+  outcomes. `CommittedVerifiedButDurabilityUncertain` is a committed, exactly
+  verified success with a value-free warning/receipt when the platform cannot
+  prove directory crash durability; callers must not roll it back or retry it.
+  `CommittedButUncertain` remains a **Partial** result when post-publish
+  verification or durability is unresolved and requires reconciliation. Exact
+  creation receipts permit cleanup only of the directory identity Phantom
+  created.
+- On Windows, new private anchored files and directories establish and verify
+  a protected current-user DACL before secret bytes are written. Replacement
+  files receive and verify the reviewed file's exact DACL, inheritance state,
+  and read-only state before bytes are copied. These are source-level contracts;
+  protected native Windows CI acceptance remains pending.
+- Governed CLI and MCP project-file mutation paths now use the retained project
+  root for initialization, token remapping, wrapping, unwrapping, environment
+  selection, agent guidance, doctor repairs, rotation, and workspace
+  participation. Read-only check, status, audit, and proposal discovery remains
+  observational and is not a sealed mutation snapshot or authority grant.
+- Workflows that need both machine-local vault authority and a project lock now
+  retain the reviewed project identity, resolve vault/application authority
+  (which can take the process-environment guard), and only then acquire the
+  project transaction lock. They compare the acquired root identity with the
+  reviewed anchor and reread exact config state before use. This removes the
+  inverse environment-lock/project-lock order and rejects a same-path root
+  replacement during vault resolution.
+- Noninteractive `phantom mcp-approve` admission now fails before inspecting
+  approval state, generating a challenge, or reading stdin. The denial path
+  therefore does not strand a project-lock waiter behind a test or host
+  environment guard.
+  Rollback restores only verified transaction-owned effects and preserves
+  rename-replacement decoys.
+- Git-hook installation retains the effective hook parent resolved through
+  Git, including linked worktrees and `core.hooksPath`. Project-local hook
+  targets use the project capability; externally located hook targets require
+  their own explicitly authorized retained root and do not gain project-root
+  authority. CLI doctor repairs prepare one exact hook plan and require an
+  attached trusted-terminal authorization for global/system hook roots; MCP
+  repair refuses those external writes.
+- `phantom setup` distinguishes project-local Claude settings from explicitly
+  authorized global Cursor, Windsurf, and Codex configuration roots. Global
+  parents are traversed or created beneath a retained home-directory anchor,
+  exact directory receipts bound rollback, and setup coordination lives under
+  retained `~/.phantom` application state instead of an ambient home-root or a
+  rollback-owned client directory.
+
+### Architecture and evidence
+
+- Local filesystem authority, effect receipts, operator boundaries, and
+  source-contract versus native-platform evidence are now documented across
+  the architecture, threat model, platform matrix, audit index, onboarding,
+  troubleshooting, and machine-readable documentation surfaces.
+- Phantom uses Rama's upstream main snapshot
+  [`267e4790c899736e6f60d982c8a0932406d4079e`](https://github.com/plabayo/rama/commit/267e4790c899736e6f60d982c8a0932406d4079e),
+  reviewed 2026-09-01, as a benchmark for explicit stacks, modular crates,
+  runnable examples, and tiered platform CI. Rama is not a Phantom dependency,
+  and this comparison does not claim feature or platform parity.
+- Locus verification, broker leases, production engineering execution, and
+  externally trusted receipts remain inactive and fail closed. Enterprise
+  packaging remains a planned contract/commissioning path, not an activated or
+  customer-accepted service.
+
+### Breaking changes and migration
+
+- `phantom setup` and initialization no longer generate an unpinned `npx`
+  fallback when a local MCP runtime cannot be resolved. After the immutable
+  `0.7.4` release receipt exists, install both `phantom` and `phantom-mcp` from
+  that same release, then rerun setup; until then, `0.7.3` remains the reviewed
+  distribution. Existing legacy registry-backed entries are migrated only when
+  the local replacement can be resolved safely.
+- Initialization now requires a supported dry-run flag combination, an exact
+  canonical executable pre-commit hook, and a transaction that commits the
+  managed dotenv file last. Rerun `phantom init` from a trusted terminal to
+  repair stale setup. Partial failures roll back only transaction-owned state;
+  operators should still keep a separately protected recovery copy.
+- Legacy `phantom watch --auto-rotate` and scheduled placeholder-remap paths no
+  longer claim provider credential rotation. The MCP compatibility names
+  `phantom_secrets_auto_rotate` and `phantom_rotate_with_expiry` perform only
+  approved local `phm_` remaps and do not renew credential lifecycle metadata,
+  clear incidents, or sync. Rotate through the provider's trusted interface,
+  then store the successor with trusted-terminal `phantom add`.
+- `phantom watch --auto` now fails before vault or dotenv mutation. The legacy
+  watcher could leave partial state after a concurrent edit or nth write
+  failure. Use `phantom watch` for detection, review the change, and run
+  transactional `phantom init` from a trusted terminal.
+- All live vendor issuance/rotation execution is unavailable in 0.7.4. Batch,
+  single-provider CLI, MCP, enrollment exchange, additive issuance, and rolling
+  refresh paths fail before provider credential access and network I/O. Source
+  adapters and exact `cfg(test)` mocks are local transaction evidence only, not
+  provider activation or acceptance. Operators must rotate at the vendor and
+  then use Phantom's trusted local secret-entry path.
+- Hosted billing, personal cloud-vault, and team routes now return unavailable
+  unless their exact commissioning gates are enabled. Operators must separately
+  verify required migrations, environment variables, provider configuration,
+  rollback, and authenticated acceptance before enabling those gates.
+- Effectful advanced MCP tools are now disabled unless
+  `PHANTOM_MCP_EFFECTS=trusted-terminal` is configured outside the requesting
+  agent's authority. Approval requires an attached terminal, a displayed
+  value-blind effect and exact parameter summary, and a fresh typed challenge.
+  A same-user shell or agent-controlled PTY is not human-presence proof; leave
+  effects disabled when the approval command or storage is within agent scope.
+- Windows rejects `--passphrase-file` before path access because native
+  handle-bound owner/DACL verification is not yet implemented. Use the hidden
+  trusted-terminal prompt. Unix private regular files remain supported.
+- A live v0.7.3 standalone proxy cannot be stopped by the new binary because
+  v0.7.3 did not ship an authenticated remote-shutdown endpoint. Stop it with
+  Ctrl-C in its owning v0.7.3 terminal. If that terminal is unavailable, use a
+  checksum-verified v0.7.3 binary from a trusted terminal, or independently
+  verify that no process/listener owns the legacy record before manually
+  removing `.phantom.pid`; v0.7.4 never kills or deletes that state.
+- Legacy direct installs sharing the npm installation root may be ambiguous.
+  Reinstall with the reviewed direct installer to create a source receipt;
+  `phantom upgrade` now fails closed instead of guessing ownership.
+
+### Security
+
+- Serializes the full MCP terminal-approval and one-use consumption critical
+  sections across threads and processes, uses collision-safe atomic storage,
+  and gives approved tokens a fresh five-minute use window. Concurrent replay
+  of one approval now permits exactly one successful consumption.
+- Classifies all 54 current MCP tools by effect. Tools that write state,
+  retrieve or use credentials, or make provider/network requests require both
+  `confirm: true` and a matching out-of-band one-use approval token; conditional
+  tools require those gates whenever effectful parameters are supplied.
+- Keeps incident reads read-only, removes false auto-rotation behavior, rejects
+  unsupported team ownership invitation, and keeps stored secret values out of
+  approval and MCP response contracts.
+- Removes dummy `phm_cand_` shadow "credential" promotion. Candidate and
+  promotion compatibility paths now fail closed until a real provider-backed,
+  out-of-band candidate workflow exists.
+- Resolves the effective Git hook through Git, including linked worktrees and
+  `core.hooksPath`, and requires Phantom's canonical local check to be first and
+  executable before readiness passes.
+- Makes fallback vault provisioning fail closed unless a generated passphrase
+  is durably persisted and verified, serializes keychain index/metadata
+  transactions, compensates partial mutations (including legacy plaintext-name
+  migration), exposes a fallible public vault constructor, and propagates
+  backend errors instead of replacing missing encryption keys or panicking.
+- Makes standalone proxy lifecycle foreground-only and three-terminal-gated.
+  Its persistent advisory lock is stored in the OS user-data directory, keyed
+  by local project identity, contains no PID, port, or bearer, and is not
+  listener authentication. Unix permissions are restricted; Windows uses the
+  inherited user-data-directory ACL, which Phantom does not independently
+  verify. Detached `start --daemon` and all external shutdown fail closed;
+  `phantom stop` authenticates legacy v0.7.3 state only to report safe manual
+  migration guidance and never kills a process or deletes the record.
+- Removes the file-vault passphrase and ambient protected dotenv values from
+  both proxied and direct `phantom exec` child environments, inserts only fresh
+  session tokens for protected keys, scrubs configured service, connection,
+  rotation, sync, proxy-control, and built-in base-URL variables, and refuses
+  missing vault mappings or configured connection strings before child launch.
+- Persists one strictly validated dotenv-like filename beside `.phantom.toml`,
+  migrates conventional legacy dotenv names without path traversal or symlinks,
+  and refuses direct launch when protected state has no token-bearing managed file.
+- Disables all client-controlled token substitution in request headers and
+  bodies. Only the authenticated, exactly matched route injects its configured
+  vault value into its fixed authentication header; missing mappings fail before
+  any upstream call. Bodies remain byte-preserving under a hard size cap.
+  Credential-bearing upstream HTTP disables ambient forward-proxy discovery.
+
+### Reliability and authority boundaries
+
+- Makes initialization recoverable across vault, config, guidance, hook, and
+  dotenv updates using compare-and-swap checks, collision-safe atomic writes,
+  and rollback that never stores plaintext secret backups or journals.
+- Spans initialization and token-remap compare-and-swap checks with
+  cross-process project locks so concurrent writers cannot overwrite a newer
+  dotenv or vault state between verification and commit. All MCP token-remap
+  paths use the same locked before-image discipline.
+- Propagates vault inspection, credential-read, and provider-rotation metadata
+  failures across MCP and CLI flows instead of rendering an empty vault,
+  starting a partially mapped session, overwriting on an unknown destination
+  state, or reporting a false rotation success. Non-forced cloud pulls preflight
+  every overwrite decision before their first store.
+- Scopes competitor-import overwrite approval to the exact existing names the
+  user reviewed; a newly appearing duplicate remains untouched unless
+  `--force` is explicit.
+- Normalizes Pro access from an exact lowercase plan plus a strictly valid,
+  timezone-qualified future expiry. Billing lookup exhausts bounded Stripe
+  subscription pagination and fails closed on malformed or non-progressing
+  pages.
+- Keeps generated scripts and hooks on reviewed local executables, and aligns
+  current-source package metadata, MCP schemas, and documentation with shipped
+  behavior rather than uncommissioned pricing or hosted-service promises.
+- Serializes direct and npm installer promotion with owner/stale-recovery
+  locks, records distribution ownership transactionally, and verifies the
+  reviewed direct binaries before promotion. PowerShell no longer recommends
+  piping a network response into execution.
+- Builds GNU Linux archives on an explicit Ubuntu 22.04 baseline and rejects
+  either binary when ELF requirements exceed `GLIBC_2.35` or cannot be proven.
+  This is a symbol ceiling, not native archive acceptance. Shell exports use
+  quoted Bash, Fish, PowerShell, or cmd syntax with `PHANTOM_SHELL` available
+  for nested-shell overrides.
+- The authority, Locus-contract, broker, runtime, session, and evidence crates
+  remain fail-closed foundations. This release does not activate a Locus
+  verifier, issue broker leases, execute production engineering actions, or
+  create externally trusted execution receipts.
 
 ## [0.7.3] - 2026-08-31
 
@@ -168,7 +392,8 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.3
 [0.7.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.2
 [0.7.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.1

@@ -9,6 +9,7 @@ const {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -114,6 +115,15 @@ function fakeHttps(sequence) {
 
   const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-cli-hardening-"));
   try {
+    const windowsReal = join(realpathSync(fixtureDir), "windows-real");
+    const windowsLink = join(realpathSync(fixtureDir), "windows-link");
+    mkdirSync(windowsReal, { mode: 0o700 });
+    symlinkSync(windowsReal, windowsLink, "junction");
+    assert.throws(
+      () => ensurePrivateCacheDir(join(windowsLink, "bin"), "win32"),
+      /Windows reparse point/
+    );
+
     ensurePrivateCacheDir(fixtureDir);
     const paths = pathSet(fixtureDir);
     const release = await acquireInstallLock(paths.lockPath, {
@@ -208,7 +218,7 @@ function fakeHttps(sequence) {
       },
       execFileSyncImpl: (_path, _args, options) => {
         assert.ok(options.timeout > 0 && options.timeout < 120_000);
-        return Buffer.from("phantom 0.7.3\n");
+        return Buffer.from("phantom 0.7.4\n");
       },
     });
     assert.ok(dirname(observedArchivePath).startsWith(join(fixtureDir, ".install-")));
@@ -240,17 +250,21 @@ function fakeHttps(sequence) {
     propagateChildFailure({ status: 7 }, runtime);
     assert.strictEqual(runtime.exitCode, 7);
 
-    const windowsArchive = join(fixtureDir, "valid.zip");
+    const windowsFixtureDir = realpathSync(fixtureDir);
+    const windowsArchive = join(windowsFixtureDir, "valid.zip");
     writePrivateFile(windowsArchive, "zip-fixture", 0o600);
-    const windowsOutput = join(fixtureDir, "phantom-windows.exe");
+    const windowsOutput = join(windowsFixtureDir, "phantom-windows.exe");
     extractBinaryFromArchive(windowsArchive, windowsOutput, {
-      cacheDir: fixtureDir,
+      cacheDir: windowsFixtureDir,
       platform: "win32",
       execFileSyncImpl: (executable, args, options) => {
         assert.strictEqual(executable, "powershell");
         assert.ok(options.timeout > 0 && options.timeout < 120_000);
         assert.match(args[3], /phantom\.exe','phantom-mcp\.exe/);
         assert.match(args[3], /GetEntry\('phantom\.exe'\)/);
+        assert.match(args[3], /ExternalAttributes/);
+        assert.match(args[3], /ReparsePoint/);
+        assert.match(args[3], /non-regular entry/);
         writePrivateFile(args[args.length - 1], "cli-windows", 0o700, "win32");
       },
     });

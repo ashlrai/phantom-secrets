@@ -25,6 +25,31 @@ use rand::RngCore;
 use std::collections::{BTreeMap, HashMap};
 use zeroize::{Zeroize, Zeroizing};
 
+#[derive(serde::Deserialize)]
+struct ParsedSecretValue(String);
+
+impl ParsedSecretValue {
+    fn into_zeroizing(mut self) -> Zeroizing<String> {
+        Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for ParsedSecretValue {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+fn parse_secret_json(
+    bytes: &[u8],
+) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, serde_json::Error> {
+    let parsed: BTreeMap<String, ParsedSecretValue> = serde_json::from_slice(bytes)?;
+    Ok(parsed
+        .into_iter()
+        .map(|(name, value)| (name, value.into_zeroizing()))
+        .collect())
+}
+
 /// 12-byte ChaCha20-Poly1305 nonce.
 const NONCE_LEN: usize = 12;
 /// Minimum framed-blob length: nonce + Poly1305 tag (16) + at least 0
@@ -39,6 +64,62 @@ pub struct PushOutcome {
     /// and were therefore excluded from this push.
     pub skipped: usize,
     pub secret_count: usize,
+}
+
+#[derive(Clone, Copy, serde::Serialize)]
+struct PushStageReceipt {
+    caller_public_key: &'static str,
+    member_key_roster: &'static str,
+    remote_version_read: &'static str,
+    remote_ciphertext_push: &'static str,
+    failure_code: &'static str,
+}
+
+impl PushStageReceipt {
+    fn after_key_publication() -> Self {
+        Self {
+            caller_public_key: "succeeded",
+            member_key_roster: "not_attempted",
+            remote_version_read: "not_attempted",
+            remote_ciphertext_push: "not_attempted",
+            failure_code: "none",
+        }
+    }
+}
+
+fn push_failure_code(error: &PhantomError) -> &'static str {
+    match error {
+        PhantomError::AuthRequired => "authentication_required",
+        PhantomError::PlanRequired => "plan_required",
+        PhantomError::VersionConflict { .. } => "version_conflict",
+        PhantomError::CloudError { status: 0, .. } => "provider_unreachable",
+        PhantomError::CloudError { .. } => "provider_rejected",
+        PhantomError::ConfigNotFound(_)
+        | PhantomError::ConfigParseError(_)
+        | PhantomError::DotenvParseError(_)
+        | PhantomError::DotenvNotFound(_)
+        | PhantomError::SecretNotFound(_)
+        | PhantomError::SecretAlreadyExists(_)
+        | PhantomError::VaultError(_)
+        | PhantomError::ProxyError(_)
+        | PhantomError::AuthError(_)
+        | PhantomError::Io(_)
+        | PhantomError::Other(_) => "local_processing_error",
+    }
+}
+
+fn partial_push_error(
+    failed_stage: &str,
+    receipt: &PushStageReceipt,
+    error: PhantomError,
+) -> PhantomError {
+    let mut receipt = *receipt;
+    receipt.failure_code = push_failure_code(&error);
+    let receipt = serde_json::to_string(&receipt)
+        .unwrap_or_else(|_| "{\"receipt\":\"unavailable\"}".to_string());
+    PhantomError::Other(format!(
+        "Team vault push partially succeeded: caller public-key publication is durable, but {failed_stage} failed. stage_receipt: {receipt}. The remote ciphertext was not confirmed. Do not retry automatically; inspect the registered caller key and remote vault version first."
+    ))
 }
 
 /// Result of a pull.
@@ -56,7 +137,9 @@ pub struct PullOutcome {
 ///
 /// Always re-registers the caller's public key — cheap, keeps
 /// `team_members.public_key` in sync if it has rotated since the last
-/// push.
+/// push. If a later stage fails, the error contains a fixed-schema,
+/// value-blind stage receipt that makes the durable key publication explicit
+/// and prevents callers from treating the whole operation as effect-free.
 pub async fn push_for_project(
     api_base: &str,
     token: &str,
@@ -91,14 +174,33 @@ async fn push_inner(
     // Auto-register our key — keeps team_members.public_key in sync.
     teams::register_team_key(api_base, token, team_id, &kp.public_b64()).await?;
 
-    let members = teams::list_team_member_keys(api_base, token, team_id).await?;
+    let mut receipt = PushStageReceipt::after_key_publication();
+    let members = match teams::list_team_member_keys(api_base, token, team_id).await {
+        Ok(members) => {
+            receipt.member_key_roster = "succeeded";
+            members
+        }
+        Err(error) => {
+            receipt.member_key_roster = "failed";
+            return Err(partial_push_error(
+                "member public-key roster lookup",
+                &receipt,
+                error,
+            ));
+        }
+    };
     let recipients: Vec<&teams::TeamMemberKey> =
         members.iter().filter(|m| m.public_key.is_some()).collect();
     if recipients.is_empty() {
-        return Err(PhantomError::Other(format!(
-            "No team members have registered public keys yet. \
-             Each member should run `phantom team key-publish {team_id}` first."
-        )));
+        receipt.member_key_roster = "succeeded_no_recipients";
+        return Err(partial_push_error(
+            "recipient selection",
+            &receipt,
+            PhantomError::Other(format!(
+                "No team members have registered public keys yet. \
+                 Each member should run `phantom team key-publish {team_id}` first."
+            )),
+        ));
     }
     let skipped = members.len() - recipients.len();
 
@@ -109,8 +211,13 @@ async fn push_inner(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let mut plaintext = serde_json::to_string(&plaintext_view)
-        .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?;
+    let plaintext = Zeroizing::new(serde_json::to_string(&plaintext_view).map_err(|error| {
+        partial_push_error(
+            "local vault serialization",
+            &receipt,
+            PhantomError::Other(format!("Serialize failed: {error}")),
+        )
+    })?);
 
     // Per-push 32-byte symmetric key, never reused.
     let sym_key = team_crypto::generate_sym_key();
@@ -120,8 +227,13 @@ async fn push_inner(
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
-        .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-    plaintext.zeroize();
+        .map_err(|error| {
+            partial_push_error(
+                "local vault encryption",
+                &receipt,
+                PhantomError::Other(format!("Encrypt failed: {error}")),
+            )
+        })?;
 
     let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     framed.extend_from_slice(&nonce_bytes);
@@ -131,17 +243,32 @@ async fn push_inner(
     // Wrap the symmetric key for each recipient.
     let mut shares: HashMap<String, KeyShare> = HashMap::new();
     for m in &recipients {
-        let share = team_crypto::seal_sym_key(&sym_key, m.public_key.as_ref().unwrap())?;
+        let share = team_crypto::seal_sym_key(&sym_key, m.public_key.as_ref().unwrap())
+            .map_err(|error| partial_push_error("recipient key wrapping", &receipt, error))?;
         shares.insert(m.user_id.clone(), share);
     }
 
-    let expected_version =
-        match teams::pull_team_vault(api_base, token, team_id, project_id).await? {
-            Some(vault) => vault.version,
-            None => 0,
-        };
+    let expected_version = match teams::pull_team_vault(api_base, token, team_id, project_id).await
+    {
+        Ok(Some(vault)) => {
+            receipt.remote_version_read = "succeeded";
+            vault.version
+        }
+        Ok(None) => {
+            receipt.remote_version_read = "succeeded_absent";
+            0
+        }
+        Err(error) => {
+            receipt.remote_version_read = "failed";
+            return Err(partial_push_error(
+                "remote vault version lookup",
+                &receipt,
+                error,
+            ));
+        }
+    };
 
-    let new_version = teams::push_team_vault(
+    let new_version = match teams::push_team_vault(
         api_base,
         token,
         team_id,
@@ -150,7 +277,18 @@ async fn push_inner(
         Some(expected_version),
         shares,
     )
-    .await?;
+    .await
+    {
+        Ok(version) => version,
+        Err(error) => {
+            receipt.remote_ciphertext_push = "outcome_unknown";
+            return Err(partial_push_error(
+                "remote ciphertext push",
+                &receipt,
+                error,
+            ));
+        }
+    };
 
     Ok(PushOutcome {
         new_version,
@@ -196,20 +334,14 @@ pub async fn pull_for_project(
     let (nonce_bytes, ct) = framed.split_at(NONCE_LEN);
     let nonce = Nonce::from_slice(nonce_bytes);
     let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
-    let mut plaintext = cipher
-        .decrypt(nonce, ct)
-        .map_err(|e| PhantomError::Other(format!("Decrypt failed: {e}")))?;
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(nonce, ct)
+            .map_err(|e| PhantomError::Other(format!("Decrypt failed: {e}")))?,
+    );
 
-    let raw: BTreeMap<String, String> = serde_json::from_slice(&plaintext)
+    let secrets = parse_secret_json(&plaintext)
         .map_err(|e| PhantomError::Other(format!("Bad vault JSON: {e}")))?;
-    plaintext.zeroize();
-
-    // Move every value into Zeroizing so the secrets are scrubbed when
-    // the caller's map is dropped.
-    let secrets: BTreeMap<String, Zeroizing<String>> = raw
-        .into_iter()
-        .map(|(k, v)| (k, Zeroizing::new(v)))
-        .collect();
 
     Ok((secrets, pulled.version))
 }
@@ -226,21 +358,14 @@ pub struct RotateOutcome {
     pub secret_count: usize,
 }
 
-/// Revoke a member from the team vault and rotate the symmetric key.
+/// Compatibility boundary for team-member revocation.
 ///
-/// Steps performed atomically from the server's perspective:
-/// 1. Pull the current vault and decrypt it with `kp`.
-/// 2. Remove `revoked_github_login` from the recipient set.
-/// 3. Generate a fresh symmetric key and re-encrypt the vault plaintext.
-/// 4. Re-wrap the new key for every *remaining* member with a registered
-///    public key.
-/// 5. Push the rotated vault — server updates the member list server-side
-///    when the push succeeds.
-/// 6. Emit tamper-proof audit events for the rotation + revocation.
-///
-/// Fails if `revoked_github_login` is not a current member, or if the
-/// caller (`kp`) cannot decrypt the current vault (i.e. the caller does
-/// not have a valid share).
+/// Shipped 0.7.4 hard-denies before decrypt, roster lookup, network, audit, or
+/// mutation. Omitting a key share without atomically removing the server-side
+/// member would not revoke authorization, and the current key roster exposes
+/// an opaque `user_id` rather than a verified GitHub-login identity. A future
+/// implementation requires one authorized server transaction that removes the
+/// member and commits the rekey together.
 pub async fn revoke_member(
     api_base: &str,
     token: &str,
@@ -249,104 +374,18 @@ pub async fn revoke_member(
     revoked_github_login: &str,
     kp: &team_crypto::MemberKeypair,
 ) -> Result<RotateOutcome> {
-    // 1. Pull current vault and decrypt. This SINGLE pull supplies both the
-    //    plaintext for re-encryption AND the OCC expected_version for the push.
-    //    Do NOT pull a second time before pushing — a concurrent push between
-    //    two pulls would be silently overwritten (a revoked share could
-    //    re-appear). See TOCTOU fix below.
-    let (secrets, current_version) =
-        pull_for_project(api_base, token, team_id, project_id, kp).await?;
-
-    // 2. Fetch current members, excluding the revoked user.
-    let all_members = teams::list_team_member_keys(api_base, token, team_id).await?;
-    let remaining: Vec<&teams::TeamMemberKey> = all_members
-        .iter()
-        .filter(|m| {
-            // user_id on TeamMemberKey is typically the github login or an opaque
-            // server-side ID; we also check by excluding the revoked login from the
-            // public-key recipients list. The server enforces the actual removal —
-            // we just stop wrapping for that user here.
-            m.user_id != revoked_github_login
-        })
-        .collect();
-
-    if remaining.len() == all_members.len() {
-        // No member matched — either the user doesn't exist or already removed.
-        return Err(PhantomError::Other(format!(
-            "Member @{revoked_github_login} not found in team {team_id}. \
-             Check `phantom team members {team_id}` for valid logins."
-        )));
-    }
-
-    let recipients: Vec<&teams::TeamMemberKey> = remaining
-        .iter()
-        .filter(|m| m.public_key.is_some())
-        .copied()
-        .collect();
-    let skipped = remaining.len() - recipients.len();
-
-    // 3. Re-encrypt vault with a fresh symmetric key.
-    let plaintext_view: std::collections::BTreeMap<&str, &str> = secrets
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-    let mut plaintext = serde_json::to_string(&plaintext_view)
-        .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?;
-
-    let sym_key = team_crypto::generate_sym_key();
-    let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
-        .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-    plaintext.zeroize();
-
-    let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    framed.extend_from_slice(&nonce_bytes);
-    framed.extend_from_slice(&ciphertext);
-    let blob_b64 = B64.encode(&framed);
-
-    // 4. Re-wrap the new key for all remaining recipients.
-    let mut shares: HashMap<String, team_crypto::KeyShare> = HashMap::new();
-    for m in &recipients {
-        let share = team_crypto::seal_sym_key(&sym_key, m.public_key.as_ref().unwrap())?;
-        shares.insert(m.user_id.clone(), share);
-    }
-
-    // 5. Push the rotated vault using the version observed in step 1 as the OCC
-    //    expected_version. This guarantees the push fails (rather than silently
-    //    clobbering) if another writer mutated the vault after we decrypted it.
-    let expected_version = current_version;
-    let new_version = teams::push_team_vault(
+    let _ = (
         api_base,
         token,
         team_id,
         project_id,
-        &blob_b64,
-        Some(expected_version),
-        shares,
-    )
-    .await?;
-
-    // 6. Emit audit events (best-effort — never fail the rotation).
-    let remaining_logins: Vec<String> = remaining.iter().map(|m| m.user_id.clone()).collect();
-    crate::audit::log_team_member_revoked(
-        team_id,
         revoked_github_login,
-        &remaining_logins,
-        new_version,
+        kp,
     );
-    crate::audit::log_vault_key_rotated(team_id, project_id, new_version);
-
-    Ok(RotateOutcome {
-        new_version,
-        recipients: recipients.len(),
-        skipped,
-        revoked_user: Some(revoked_github_login.to_string()),
-        secret_count: secrets.len(),
-    })
+    Err(PhantomError::Other(
+        "Team member revocation is disabled before decrypt, network, audit, or mutation: Phantom Cloud lacks an atomic membership-removal plus vault-rekey transaction and the key roster does not expose a verified GitHub-login identity. No offboarding occurred. Do not retry automatically."
+            .to_string(),
+    ))
 }
 
 /// Proactively rotate the team vault's symmetric key without removing any
@@ -385,8 +424,10 @@ pub async fn rotate_vault(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let mut plaintext = serde_json::to_string(&plaintext_view)
-        .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?;
+    let plaintext = Zeroizing::new(
+        serde_json::to_string(&plaintext_view)
+            .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?,
+    );
 
     let sym_key = team_crypto::generate_sym_key();
     let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
@@ -396,7 +437,6 @@ pub async fn rotate_vault(
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
         .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-    plaintext.zeroize();
 
     let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     framed.extend_from_slice(&nonce_bytes);
@@ -449,8 +489,10 @@ pub fn encrypt_secrets_to_blob(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let mut plaintext = serde_json::to_string(&plaintext_view)
-        .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?;
+    let plaintext = Zeroizing::new(
+        serde_json::to_string(&plaintext_view)
+            .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?,
+    );
     let sym_key = team_crypto::generate_sym_key();
     let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
     let mut nonce_bytes = [0u8; NONCE_LEN];
@@ -459,7 +501,6 @@ pub fn encrypt_secrets_to_blob(
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
         .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-    plaintext.zeroize();
     let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     framed.extend_from_slice(&nonce_bytes);
     framed.extend_from_slice(&ciphertext);
@@ -482,26 +523,104 @@ pub fn decrypt_blob_with_key(
     let (nonce_bytes, ct) = framed.split_at(NONCE_LEN);
     let nonce = Nonce::from_slice(nonce_bytes);
     let cipher = ChaCha20Poly1305::new(sym_key.into());
-    let mut plaintext = cipher
-        .decrypt(nonce, ct)
-        .map_err(|e| PhantomError::Other(format!("Decrypt failed: {e}")))?;
-    let raw: BTreeMap<String, String> = serde_json::from_slice(&plaintext)
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(nonce, ct)
+            .map_err(|e| PhantomError::Other(format!("Decrypt failed: {e}")))?,
+    );
+    let secrets = parse_secret_json(&plaintext)
         .map_err(|e| PhantomError::Other(format!("Bad vault JSON: {e}")))?;
-    plaintext.zeroize();
-    Ok(raw
-        .into_iter()
-        .map(|(k, v)| (k, Zeroizing::new(v)))
-        .collect())
+    Ok(secrets)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     #[test]
     fn min_framed_len_matches_chacha_poly_overhead() {
         // 12-byte nonce + 16-byte Poly1305 tag.
         assert_eq!(MIN_FRAMED_LEN, 28);
+    }
+
+    #[tokio::test]
+    async fn push_reports_key_publication_when_later_roster_lookup_fails() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for response in [
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let read = stream.read(&mut request).unwrap();
+                requests.push(String::from_utf8_lossy(&request[..read]).into_owned());
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+            }
+            requests
+        });
+
+        let mut secrets = BTreeMap::new();
+        secrets.insert(
+            "API_KEY".to_string(),
+            Zeroizing::new("must-never-appear-in-receipt".to_string()),
+        );
+        let keypair = team_crypto::MemberKeypair::generate();
+        let result = push_for_project(
+            &format!("http://{address}"),
+            "bearer-must-never-appear-in-receipt",
+            "team-test",
+            "project-test",
+            secrets,
+            &keypair,
+        )
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("roster failure must not produce a push success receipt"),
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("Team vault push partially succeeded"));
+        assert!(message.contains("caller public-key publication is durable"));
+        assert!(message.contains(
+            r#"stage_receipt: {"caller_public_key":"succeeded","member_key_roster":"failed","remote_version_read":"not_attempted","remote_ciphertext_push":"not_attempted","failure_code":"provider_rejected"}"#
+        ));
+        assert!(message.contains("Do not retry automatically"));
+        assert!(!message.contains("must-never-appear-in-receipt"));
+        assert!(!message.contains("bearer-must-never-appear-in-receipt"));
+
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("POST /teams/team-test/key "));
+        assert!(requests[1].starts_with("GET /teams/team-test/key "));
+    }
+
+    #[test]
+    fn partial_push_receipt_classifies_remote_push_as_outcome_unknown() {
+        let mut receipt = PushStageReceipt::after_key_publication();
+        receipt.member_key_roster = "succeeded";
+        receipt.remote_version_read = "succeeded";
+        receipt.remote_ciphertext_push = "outcome_unknown";
+        let error = partial_push_error(
+            "remote ciphertext push",
+            &receipt,
+            PhantomError::VersionConflict {
+                local: 3,
+                remote: 4,
+            },
+        );
+        let message = error.to_string();
+
+        assert!(message.contains(
+            r#""remote_ciphertext_push":"outcome_unknown","failure_code":"version_conflict""#
+        ));
+        assert!(!message.contains("local version 3"));
+        assert!(!message.contains("remote version 4"));
     }
 
     // ── Rotation unit tests (pure crypto, no network) ──────────────────
@@ -625,5 +744,28 @@ mod tests {
         crate::audit::log_vault_key_rotated(team_id, project_id, version);
         crate::audit::log_team_member_revoked(team_id, "@carol", &remaining, version);
         crate::audit::log_team_vault_rotation_members(team_id, &remaining, version);
+    }
+
+    #[tokio::test]
+    async fn revoke_member_hard_denies_before_network_or_decrypt() {
+        let keypair = team_crypto::MemberKeypair::generate();
+        let result = revoke_member(
+            "http://127.0.0.1:1",
+            "token-must-not-be-used",
+            "team-test",
+            "project-test",
+            "member-test",
+            &keypair,
+        )
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("revocation must remain unavailable"),
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("disabled before decrypt, network, audit, or mutation"));
+        assert!(message.contains("No offboarding occurred"));
+        assert!(!message.contains("token-must-not-be-used"));
     }
 }

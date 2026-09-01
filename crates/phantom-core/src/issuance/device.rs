@@ -12,8 +12,8 @@
 
 use super::pkce::{map_oauth_error, now_unix, refresh_token_name};
 use super::{
-    guard_mock_issuance, ConsentEngine, GrantType, IssuanceDeps, IssuanceError, IssuanceMetadata,
-    IssuanceOutcome, IssuanceRequest, IssuedMaterial, MaterialKind,
+    guard_test_only_issuance, ConsentEngine, GrantType, IssuanceDeps, IssuanceError,
+    IssuanceMetadata, IssuanceOutcome, IssuanceRequest, IssuedMaterial, MaterialKind,
 };
 use crate::rotation_provider::{summarize_error_body, RotationProviderConfig};
 use std::time::{Duration, Instant};
@@ -36,9 +36,7 @@ impl ConsentEngine for DeviceFlowEngine {
         req: &IssuanceRequest,
         deps: &IssuanceDeps,
     ) -> Result<IssuanceOutcome, IssuanceError> {
-        if deps.endpoints.is_overridden() {
-            guard_mock_issuance()?;
-        }
+        guard_test_only_issuance(deps)?;
         if deps.endpoints.device_code.is_empty() || deps.endpoints.token.is_empty() {
             return Err(IssuanceError::NotSupported {
                 reason: format!(

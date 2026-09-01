@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Phantom — AI agents leak your API keys. Phantom stops them.</title>
-    <meta name="description" content="Let AI agents use your API keys without the security risk. Phantom replaces real secrets with worthless tokens and injects credentials at the network layer. Open-source CLI for Claude Code, Cursor, and Copilot.">
+    <title>Phantom — Delegate to AI without putting real keys in agent context</title>
+    <meta name="description" content="Phantom replaces managed secrets with non-provider tokens and uses an authenticated local proxy for reviewed API routes. Open-source CLI and value-blind MCP tools for AI coding agents.">
     <meta name="theme-color" content="#38bdf8">
     <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -- canonical metadata does not load a subresource -->
     <link rel="canonical" href="https://phm.dev/">
@@ -12,17 +12,17 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Anybody:wght@800;900&display=swap" rel="stylesheet">
-    <meta property="og:title" content="Phantom — AI agents leak your API keys. Phantom stops them.">
-    <meta property="og:description" content="Let AI agents use your API keys without the security risk. All the convenience of pasting secrets into Claude. None of the leaks.">
+    <meta property="og:title" content="Phantom — Keep real keys out of agent context">
+    <meta property="og:description" content="Delegate supported API work through scoped tokens, an authenticated local proxy, and value-blind MCP tools.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://phm.dev/">
     <meta property="og:image" content="https://phm.dev/og-image.png">
     <meta property="og:site_name" content="Phantom">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Phantom — AI agents leak your API keys. Phantom stops them.">
-    <meta name="twitter:description" content="Let AI agents use your API keys without the security risk. Open-source CLI.">
+    <meta name="twitter:title" content="Phantom — Keep real keys out of agent context">
+    <meta name="twitter:description" content="Scoped tokens, reviewed proxy routes, and value-blind MCP tools for AI coding agents.">
     <meta name="twitter:image" content="https://phm.dev/og-image.png">
-    <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Phantom","description":"Open-source CLI that prevents AI coding agents from leaking your API keys","url":"https://github.com/ashlrai/phantom-secrets","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux, Windows","license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Organization","name":"AshlrAI","url":"https://ashlr.ai"}}</script>
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Phantom","description":"Open-source CLI that helps keep real API keys out of AI-agent context","url":"https://github.com/ashlrai/phantom-secrets","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux, Windows","license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Organization","name":"AshlrAI","url":"https://ashlr.ai"}}</script>
     <style>
         /* ======================================================
            PHANTOM — phm.dev landing page
@@ -863,25 +863,25 @@
     <div class="hero-inner">
         <div class="sr hero-badge">
             <span class="hero-badge-dot"></span>
-            39.6M secrets leaked on GitHub in 2025
+            28.65M new hardcoded secrets in public GitHub commits in 2025
         </div>
 
         <h1 class="sr sr-d1">
-            AI agents leak<br>your API keys.<br>
-            <span class="accent">Phantom stops them.</span>
+            AI agents need<br>real integrations.<br>
+            <span class="accent">Keep real keys out of context.</span>
         </h1>
 
         <p class="sr sr-d2 hero-sub">
-            Phantom replaces real secrets with phantom tokens. A local proxy injects real credentials at the network layer. The AI never sees a real key.
+            Phantom replaces managed secrets with non-provider tokens. Supported API calls use reviewed routes through an authenticated local proxy, while agents use value-blind MCP tools.
         </p>
 
         <div class="sr sr-d3">
-            <div class="hero-install" onclick="copyCmd('npx phantom-secrets init')">
+            <div class="hero-install" onclick="copyCmd('phantom init')">
                 <span class="prompt">$</span>
-                <span class="cmd">npx phantom-secrets init</span>
+                <span class="cmd">phantom init</span>
                 <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </div>
-            <div class="hero-hint">One command. Protects your entire .env in seconds.</div>
+            <div class="hero-hint">After a verified v0.7.3 install, one command protects detected, managed dotenv secrets.</div>
         </div>
 
         <div class="sr sr-d3 hero-ctas">
@@ -899,7 +899,7 @@
                     <div class="flow-label">Your .env file</div>
                     <div class="flow-line"><span class="key">OPENAI_API_KEY=</span><span class="phm">phm_d9f1c1...</span></div>
                     <div class="flow-line"><span class="key">STRIPE_SECRET=</span><span class="phm">phm_2ccb5a...</span></div>
-                    <div class="flow-line"><span class="key">DATABASE_URL=</span><span class="phm">phm_99a8d2...</span></div>
+                    <div class="flow-line"><span class="key">ANTHROPIC_API_KEY=</span><span class="phm">phm_99a8d2...</span></div>
                 </div>
 
                 <div class="flow-conn">
@@ -912,7 +912,7 @@
                     <div class="flow-label">Phantom Proxy</div>
                     <div class="flow-line"><span class="phm">phm_d9f1c1...</span> <span class="arr">&rarr;</span> <span class="real">sk-proj-real...</span></div>
                     <div class="flow-line"><span class="phm">phm_2ccb5a...</span> <span class="arr">&rarr;</span> <span class="real">sk_live_real...</span></div>
-                    <div class="flow-line"><span class="phm">phm_99a8d2...</span> <span class="arr">&rarr;</span> <span class="real">postgres://...</span></div>
+                    <div class="flow-line"><span class="phm">phm_99a8d2...</span> <span class="arr">&rarr;</span> <span class="real">sk-ant-real...</span></div>
                 </div>
 
                 <div class="flow-conn">
@@ -925,10 +925,10 @@
                     <div class="flow-label">Upstream APIs</div>
                     <div class="flow-line"><span class="real">api.openai.com</span> <span class="ok">&#10003;</span></div>
                     <div class="flow-line"><span class="real">api.stripe.com</span> <span class="ok">&#10003;</span></div>
-                    <div class="flow-line"><span class="real">db.example.com</span> <span class="ok">&#10003;</span></div>
+                    <div class="flow-line"><span class="real">api.anthropic.com</span> <span class="ok">&#10003;</span></div>
                 </div>
             </div>
-            <div class="flow-caption"><span class="check">&#10003;</span> Real keys never enter the AI context window. Injected at the network layer only.</div>
+            <div class="flow-caption"><span class="check">&#10003;</span> On reviewed routes, Phantom MCP stays value-blind and the proxy sends the provider credential upstream.</div>
         </div>
     </div>
 </header>
@@ -937,7 +937,7 @@
 <section class="sec-border danger" id="problem">
     <div class="sec-header sr">
         <h2>You know this is dangerous</h2>
-        <p>Every API key in .env is exposed to any AI agent whose workspace permissions include that file.</p>
+        <p>An unprotected API key in a readable dotenv file can enter agent context, transcripts, tool logs, or generated files.</p>
     </div>
 
     <div class="danger-grid">
@@ -949,7 +949,7 @@
         <div class="danger-card sr sr-d1">
             <span class="danger-icon">&#128274;</span>
             <h3>Secrets in AI-generated commits</h3>
-            <p>AI assistants embed secrets in code, config files, and commit messages. 2x higher leak rate with AI-assisted commits.</p>
+            <p>AI-service secrets increased 81% year over year, a category-specific figure rather than the rate for all secrets.</p>
         </div>
         <div class="danger-card full sr">
             <span class="env-label">&#8595; What Claude sees in your project right now</span>
@@ -963,32 +963,33 @@
 
     <div class="stats-row sr" style="transition-delay:.1s">
         <div class="stat">
-            <div class="stat-num">39.6M</div>
-            <div class="stat-label">secrets leaked on GitHub in 2025</div>
+            <div class="stat-num">28.65M</div>
+            <div class="stat-label">new hardcoded secrets in public GitHub commits in 2025</div>
         </div>
         <div class="stat">
-            <div class="stat-num">2&times;</div>
-            <div class="stat-label">higher leak rate with AI-assisted commits</div>
+            <div class="stat-num">+34% year-over-year</div>
+            <div class="stat-label">increase across new hardcoded secrets</div>
         </div>
         <div class="stat">
-            <div class="stat-num">+81%</div>
-            <div class="stat-label">YoY increase in AI service key leaks</div>
+            <div class="stat-num">+81% AI-service</div>
+            <div class="stat-label">year-over-year increase for AI-service secrets specifically</div>
         </div>
     </div>
+    <p class="sr" style="margin-top:14px;text-align:center;font-size:.8rem;color:var(--t3)">Source: <a href="https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/">GitGuardian, State of Secrets Sprawl 2026</a>.</p>
 </section>
 
 <!-- ─── HOW IT WORKS ─── -->
 <section class="sec-border" id="how">
     <div class="sec-header sr">
-        <h2>Three steps. Zero code changes.</h2>
-        <p>Works underneath your existing workflow. Nothing to learn, nothing to configure.</p>
+        <h2>Three steps for supported API routes</h2>
+        <p>SDKs that honor Phantom's implemented base-URL overrides can use the proxy without source patches. Review the generated routes before delegating.</p>
     </div>
 
     <div class="steps-grid">
         <div class="step sr">
             <div class="step-num">1</div>
             <h3>Protect your secrets</h3>
-            <p>Run <code>phantom init</code>. Real secrets move to an encrypted vault (OS keychain or ChaCha20-Poly1305 file). Your .env is rewritten with worthless <code>phm_</code> tokens.</p>
+            <p>Run <code>phantom init</code>. Detected secrets move to an OS credential store or encrypted-file fallback. Managed dotenv values become <code>phm_</code> tokens that providers do not accept directly.</p>
         </div>
         <div class="step sr sr-d1">
             <div class="step-num">2</div>
@@ -997,8 +998,8 @@
         </div>
         <div class="step sr sr-d2">
             <div class="step-num">3</div>
-            <h3>Everything just works</h3>
-            <p>When code calls an API, the proxy swaps each phantom token for the real credential and forwards over TLS. Your code works. The AI never knew.</p>
+            <h3>Use reviewed routes</h3>
+            <p>For supported SDK calls, the proxy authenticates the local session, matches an exact route, and injects only that route's vault value into its fixed auth header before forwarding over TLS. Client placeholders remain inert. Unsupported protocols fail closed or need a separate approved workflow.</p>
         </div>
     </div>
 </section>
@@ -1007,7 +1008,7 @@
 <section class="sec-border">
     <div class="sec-header sr">
         <h2>See it in action</h2>
-        <p>From unprotected .env to fully secured in seconds.</p>
+        <p>From detected plaintext dotenv values to a guarded local workflow.</p>
     </div>
 
     <div class="terminal sr" id="demo-term">
@@ -1025,19 +1026,19 @@
 <section id="features">
     <div class="sec-header sr">
         <h2>Everything you need</h2>
-        <p>Agent readiness checks. 54 release-checked MCP tools. One goal: let AI do real work without leaking your keys.</p>
+        <p>Agent readiness checks. 54 release-checked MCP tools. One goal: let AI do supported API work while reducing credential exposure to agent context.</p>
     </div>
 
     <div class="feat-grid">
         <div class="feat sr">
             <span class="feat-icon">&#128272;</span>
-            <h3>Zero-knowledge vault</h3>
-            <p>ChaCha20-Poly1305 encryption with Argon2id key derivation. macOS Keychain and Linux Secret Service. Secrets never leave your machine.</p>
+            <h3>Local encrypted vault</h3>
+            <p>Native OS credential storage where available, with a ChaCha20-Poly1305 encrypted-file fallback using Argon2id. Optional personal cloud backup uploads ciphertext and restores only where the original OS-keychain cloud key is available; provider sync intentionally sends selected values to that provider.</p>
         </div>
         <div class="feat sr sr-d1">
             <span class="feat-icon">&#127760;</span>
-            <h3>Transparent proxy</h3>
-            <p>Works with any HTTP API &mdash; OpenAI, Anthropic, Stripe, Supabase, AWS, and more. No SDK patches, no wrapper libraries.</p>
+            <h3>Reviewed API proxy</h3>
+            <p>Built-in routes cover supported providers whose SDKs honor base-URL overrides. Repository-defined destinations are rejected, and database connection strings are not injected into agent child processes.</p>
         </div>
         <div class="feat sr sr-d2">
             <span class="feat-icon">&#129302;</span>
@@ -1051,13 +1052,13 @@
         </div>
         <div class="feat sr sr-d1">
             <span class="feat-icon">&#9729;&#65039;</span>
-            <h3>Cloud sync &amp; teams</h3>
-            <p>Push secrets to Vercel and Railway. Pull to onboard teammates. Team vaults with E2E encryption. One source of truth everywhere.</p>
+            <h3>Cloud backup &amp; teams</h3>
+            <p>Personal cloud snapshots require the original machine-local key to restore. Separately, preview and push selected secrets to Vercel or Railway, or use fixed-membership team vault workflows where the deployed service and account plan support them. Provider and customer acceptance remain separate gates.</p>
         </div>
         <div class="feat sr sr-d2">
             <span class="feat-icon">&#128737;</span>
             <h3>Pre-commit guard</h3>
-            <p><code style="background:var(--bg-inset);padding:1px 5px;border-radius:4px;font-size:.78rem;color:var(--cyan);border:1px solid var(--border);">phantom check</code> blocks commits containing unprotected secrets. Catches hardcoded keys before they reach GitHub.</p>
+            <p><code style="background:var(--bg-inset);padding:1px 5px;border-radius:4px;font-size:.78rem;color:var(--cyan);border:1px solid var(--border);">phantom check --staged</code> checks staged dotenv values and a bounded set of key prefixes when Git runs the hook. Pair it with CI and a broader scanner.</p>
         </div>
         <div class="feat sr">
             <span class="feat-icon">&#128269;</span>
@@ -1066,13 +1067,13 @@
         </div>
         <div class="feat sr sr-d1">
             <span class="feat-icon">&#128230;</span>
-            <h3>npm install</h3>
-            <p><code style="background:var(--bg-inset);padding:1px 5px;border-radius:4px;font-size:.78rem;color:var(--cyan);border:1px solid var(--border);">npx phantom-secrets init</code> downloads the right binary for your platform. No Rust toolchain needed. 10 seconds.</p>
+            <h3>Reviewed v0.7.3 distribution</h3>
+            <p>macOS uses the trusted Homebrew formula. Linux and Windows use the exact GitHub release archive and adjacent checksum for their architecture. npm/MCP Registry 0.6.0 and crates.io 0.5.1 are older distribution tracks.</p>
         </div>
         <div class="feat sr sr-d2">
             <span class="feat-icon">&#128736;</span>
             <h3>Built in Rust</h3>
-            <p>Fast, safe, zero-dependency binary. MIT licensed. Auditable source code. Works on macOS, Linux, and Windows. Free forever.</p>
+            <p>MIT-licensed Rust workspace with auditable source and release artifacts for documented macOS, Linux, and Windows architecture pairs. See the platform matrix for exact evidence and limitations.</p>
         </div>
     </div>
 </section>
@@ -1080,24 +1081,24 @@
 <!-- ─── INSTALL ─── -->
 <section class="sec-border">
     <div class="sec-header sr">
-        <h2>Install in 10 seconds</h2>
+        <h2>Choose an install path</h2>
     </div>
 
     <div class="install-grid sr">
         <div class="install-card">
-            <h3>npm (recommended)</h3>
-            <div class="install-cmd" onclick="copyCmd('npx phantom-secrets init')">$ npx phantom-secrets init</div>
-            <div class="install-sub">Downloads binary automatically</div>
+            <h3>Homebrew (macOS v0.7.3)</h3>
+            <div class="install-cmd" onclick="copyCmd('brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom')">$ brew tap ashlrai/phantom<br>$ brew trust --formula ashlrai/phantom/phantom<br>$ brew install ashlrai/phantom/phantom</div>
+            <div class="install-sub">Trusted, fully qualified third-party formula</div>
         </div>
         <div class="install-card">
-            <h3>Homebrew</h3>
-            <div class="install-cmd" onclick="copyCmd('brew tap ashlrai/phantom && brew install phantom')">$ brew tap ashlrai/phantom<br>$ brew install phantom</div>
-            <div class="install-sub">macOS</div>
+            <h3>Linux + Windows v0.7.3</h3>
+            <div class="install-cmd"><a href="https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3">Exact archives + .sha256 sidecars</a></div>
+            <div class="install-sub">Verify the selected asset before extraction</div>
         </div>
         <div class="install-card">
-            <h3>Cargo</h3>
-            <div class="install-cmd" onclick="copyCmd('cargo install phantom-secrets')">$ cargo install phantom-secrets</div>
-            <div class="install-sub">Build from source</div>
+            <h3>Exact source build</h3>
+            <div class="install-cmd" onclick="copyCmd('git checkout cffd0f29ab85a45358f011fdcfd40667d576c420 && cargo build --release --locked --bin phantom --bin phantom-mcp')">$ git checkout cffd0f29ab85a45358f011fdcfd40667d576c420<br>$ cargo build --release --locked --bin phantom --bin phantom-mcp</div>
+            <div class="install-sub">Source commit resolved by v0.7.3</div>
         </div>
     </div>
 </section>
@@ -1134,7 +1135,7 @@
 <!-- ─── CTA ─── -->
 <section class="sec-border cta">
     <h2 class="sr">Stop leaking secrets.<br>Start shipping with AI.</h2>
-    <p class="sr sr-d1">Two commands. Two minutes. Full AI delegation without the security risk.</p>
+    <p class="sr sr-d1">Start with scoped delegation for supported API work, then expand only as each control is verified.</p>
     <div class="hero-ctas sr sr-d2">
         <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-primary">Get started &mdash; it's free</a>
         <a href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md" class="btn btn-ghost">Read the docs</a>
@@ -1228,13 +1229,13 @@ const demoLines = [
     { out: '<span class="t-info">-></span> <span class="t-dim">Scanning .env...</span>' },
     { out: '<span class="t-dim">   </span><span class="t-ok">+</span> <span class="t-cmd">OPENAI_API_KEY</span> <span class="t-dim">(sk-proj-... -> phm_d9f1c1...)</span>', d: 50 },
     { out: '<span class="t-dim">   </span><span class="t-ok">+</span> <span class="t-cmd">STRIPE_SECRET</span> <span class="t-dim">(sk_live_... -> phm_2ccb5a...)</span>', d: 50 },
-    { out: '<span class="t-dim">   </span><span class="t-ok">+</span> <span class="t-cmd">DATABASE_URL</span> <span class="t-dim">(postgres://... -> phm_99a8d2...)</span>', d: 50 },
+    { out: '<span class="t-dim">   </span><span class="t-ok">+</span> <span class="t-cmd">ANTHROPIC_API_KEY</span> <span class="t-dim">(sk-ant-... -> phm_99a8d2...)</span>', d: 50 },
     { out: '<span class="t-dim">   </span><span class="t-dim">-</span> <span class="t-cmd">NODE_ENV</span> <span class="t-dim">(skipped, not a secret)</span>', d: 50 },
     { out: '<span class="t-ok">ok</span> <span class="t-dim">3 secrets protected, .env rewritten</span>', d: 400 },
     { cmd: 'phantom exec -- claude' },
     { out: '<span class="t-info">-></span> <span class="t-dim">Starting proxy on</span> <span class="t-info">127.0.0.1:9847</span>' },
     { out: '<span class="t-info">-></span> <span class="t-dim">Launching</span> <span class="t-cmd">claude</span><span class="t-dim">...</span>' },
-    { out: '<span class="t-ok">ok</span> <span class="t-dim">AI sees phantom tokens. Real keys injected at network layer.</span><span class="cursor-blink"></span>' },
+    { out: '<span class="t-ok">ok</span> <span class="t-dim">Supported SDK calls now use the authenticated local proxy.</span><span class="cursor-blink"></span>' },
 ];
 
 const termObserver = new IntersectionObserver(entries => {

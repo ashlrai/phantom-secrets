@@ -13,10 +13,12 @@ Unix workspace setup transaction is the only functional execution-kernel
 slice. Locus authority, the native broker, production engineering execution,
 and externally trusted execution receipts must remain inactive.
 
-The shipped `phantom grant` CLI is a provider-credential issuance surface.
-Its **provider grants** are vaulted credential and renewal state, not inactive
-execution-kernel **authority grants**. They do not activate Locus, a broker
-lease, or engineering execution.
+The shipped `phantom grant` CLI exposes value-free metadata and compatibility
+commands, not live provider issuance. Version 0.7.4 hard-denies enrollment,
+refresh, renewal, rotation, and remote revocation before credential access and
+network I/O. Historical **provider-grant** records are not execution-kernel
+**authority grants** and do not activate Locus, a broker lease, or engineering
+execution.
 
 That is a source-level decision. It does not attest to the deployed website,
 an unpublished artifact, a provider configuration, or a customer environment.
@@ -33,10 +35,78 @@ an unpublished artifact, a provider configuration, or a customer environment.
 | What blocks execution-kernel activation? | [Architecture](architecture.md) and [threat model](../THREAT_MODEL.md) |
 | How are contributors expected to build and test? | [Contributing guide](../CONTRIBUTING.md) |
 | What do CI and release automation enforce? | [`ci.yml`](../.github/workflows/ci.yml) and [`release.yml`](../.github/workflows/release.yml) |
-| What is the current provider-issuance contract? | [Provider-grant specification](grants-spec.md), with the [original design contract](../ISSUANCE_CONTRACT.md) retained separately |
+| What is the current provider-denial contract? | [Provider-grant specification](grants-spec.md), with the [historical, non-executable design contract](../ISSUANCE_CONTRACT.md) retained separately |
 | What changed between versions? | [Changelog](../CHANGELOG.md) and immutable Git history |
 | What dependencies and packages compose the Rust workspace? | [`Cargo.toml`](../Cargo.toml), [`Cargo.lock`](../Cargo.lock), and crate manifests |
 | What web dependencies and scripts are selected? | [`apps/web/package.json`](../apps/web/package.json) and [`apps/web/package-lock.json`](../apps/web/package-lock.json) |
+| Which external network-engineering benchmark is pinned? | [Rama-derived engineering standard](rama-design-standard.md), pinned to upstream main `267e4790c899736e6f60d982c8a0932406d4079e` as reviewed 2026-09-01 |
+
+## 2026-09-01 retained-filesystem source review
+
+This review documents the retained-root and exact-effect implementation. It is
+a source review, not an immutable release, native-platform, deployment,
+provider, or customer attestation.
+
+| Field | Value |
+|---|---|
+| Repository | `ashlrai/phantom-secrets` |
+| Branch | `codex/public-claim-truth` |
+| Implementation-security SHA | `5a3edad60634c78af3079f588bf51fefa0b69586` |
+| Documentation commit | The later commit containing this file; it records prose/manifest descriptions and must not be substituted for the implementation SHA above |
+| Working-tree boundary during reconciliation | `5a3edad60634c78af3079f588bf51fefa0b69586` is the implementation-security identity. Other concurrent uncommitted implementation, release-workflow/readiness, and documentation edits in the shared working tree are not part of that SHA or this source-review identity |
+| Reviewed implementation | Retained anchored effects, exact init root/leaf admission, Windows pre-byte ACL establishment/preservation, typed effect outcomes, CLI/MCP governed mutation paths, vault-before-project lock order, Git-hook authorization, and project/global editor setup |
+| Excluded evidence | No exact `0.7.4` archive, native Windows/macOS/Linux run, publication, deployment, provider activation, enterprise commissioning, or customer acceptance receipt was inspected |
+
+Primary source paths for this review:
+
+- [`anchored.rs`](../crates/phantom-core/src/fs/anchored.rs) — retained
+  directories/targets, identity-bound reads, single-link checks, exact writes
+  and unlinks, Windows ACL enforcement before content bytes, directory receipts,
+  and the three typed effect outcomes;
+- [`transaction_lock.rs`](../crates/phantom-vault/src/transaction_lock.rs) and
+  [`init_transaction.rs`](../crates/phantom-vault/src/init_transaction.rs) —
+  acquisition-time project-root authority, project-relative targets, exact
+  init leaf snapshots, and identity-bound rollback;
+- [`precommit_hook.rs`](../crates/phantom-core/src/precommit_hook.rs) — effective
+  Git hook authority and fail-closed external-root handling; and
+- [`setup.rs`](../crates/phantom-cli/src/commands/setup.rs) — separate project
+  and global client-config authorities, private parent receipts, and stable
+  setup coordination under Phantom application state;
+- [`workspace.rs`](../crates/phantom-cli/src/commands/workspace.rs),
+  [`rotate.rs`](../crates/phantom-cli/src/commands/rotate.rs), and
+  [`server.rs`](../crates/phantom-mcp/src/server.rs) — vault/application
+  authority before project-lock acquisition, retained root-identity comparison,
+  and exact post-lock config revalidation; and
+- [`mcp_approve.rs`](../crates/phantom-cli/src/commands/mcp_approve.rs) —
+  noninteractive terminal denial before approval inspection, challenge
+  generation, or stdin reads.
+
+Unix rename-and-decoy tests exercise path-swap behavior, including exact init
+root/leaf admission and byte-identical replacement leaves. Windows
+implementation and contract tests for protected current-user DACL
+establishment/preservation before bytes were inspected in source, but no exact
+Windows archive was run in protected native CI. Credential Manager and ACL
+behavior remain source contracts, not native acceptance.
+
+The earlier implementation SHA
+`1e6ce2fb7bfa1ce9c430f8d0bf704e159ed50834` reported 490/490 `phantom-cli`
+tests in the PTY harness, strict `phantom-cli` Clippy, workspace formatting, and
+diff checks passing. That result must not be relabeled as validation of the later
+security SHA `5a3edad60634c78af3079f588bf51fefa0b69586`. No immutable CI or
+native-archive log for `5a3edad` is embedded in this documentation, so source
+inspection and documentation gates remain distinct from publication, native
+acceptance, deployment, provider, and customer evidence.
+
+### Live repository-governance observation — 2026-09-01
+
+As separately inspected on 2026-09-01, the GitHub `release` environment had a
+required reviewer and a deployment policy limited to `v*` tags. Immutable tag
+ruleset `21903888` covered update, deletion, and non-fast-forward changes with
+no bypass. Separate creation ruleset `21997435` covered tag creation with a
+Mason-only bypass. Creation authority therefore cannot bypass the independent
+no-bypass immutability ruleset. This dated live-setting observation is not part
+of implementation SHA `5a3edad60634c78af3079f588bf51fefa0b69586`, does not
+authorize a release, and must be reverified before a tag is created.
 
 ## 2026-08-30 local documentation-review identity
 
@@ -74,6 +144,8 @@ Use the narrowest accurate claim in an audit report:
 | Design document | Proposed behavior and intended boundary. |
 | Source inspection | Behavior implemented in the inspected tree. |
 | Focused automated test | The named behavior passed in that harness and environment. |
+| Committed verified durability warning | `CommittedVerifiedButDurabilityUncertain` means the live namespace effect committed and exact post-publish verification succeeded, but directory crash durability is not provable. It is success with a value-free warning/receipt, not a rollback or retry signal. |
+| Partial effect receipt | `CommittedButUncertain` means the namespace effect may have committed, but durability or final verification remains unresolved. It requires reconciliation and is not proof of rollback or safe retry. |
 | Full locked CI | The configured suite passed for the recorded commit and runners. |
 | Built archive plus digest | The bytes were produced and integrity metadata matches. |
 | Native acceptance | The exact archive passed the named checks on one OS/architecture environment. |
@@ -94,14 +166,20 @@ Reviewers should pay particular attention to these unresolved boundaries:
 - no host-protected monotonic rollback anchor for replay state;
 - local HMAC integrity that does not resist a fully compromised same-user
   account and does not create externally trusted receipts;
-- provider remote revocation is not wired; `phantom grant revoke` fails closed
-  before local mutation;
-- source-level provider issuance does not prove live provider application,
-  consent, renewal, or customer acceptance; and
-- the published `v0.6.0` release has checksums but no per-artifact
-  SBOM/provenance evidence or Windows ARM archive; this source candidate defines
-  those workflow outputs but has not run them. Independent signatures, native
-  code signing/notarization, and six-target exact-archive acceptance remain open.
+- retained path capabilities protect governed operations from ambient
+  rename/decoy redirection but do not sandbox a process with equivalent
+  same-user filesystem or terminal authority;
+- verified effects without provable directory crash durability are committed
+  successes with explicit warnings, while `CommittedButUncertain` effects
+  require reconciliation;
+- provider enrollment, issuance, refresh, renewal, rotation, and remote
+  revocation are not active; shipped paths fail before credential or network
+  access, while exact test mocks prove local scaffolding only; and
+- the reviewed `v0.7.3` release is distinct from staged `0.7.4` source. The
+  staged workflow defines per-artifact checksums, SBOM/provenance bindings, and
+  a six-target candidate matrix, but those definitions do not prove that exact
+  archives ran or passed on native runners. Independent signatures, native code
+  signing/notarization, and six-target exact-archive acceptance remain open.
 
 The inactive components deny production use while these activation findings
 remain open. Do not work around that denial with test constructors, caller

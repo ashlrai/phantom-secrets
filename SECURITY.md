@@ -4,13 +4,15 @@ For the detailed technical threat model, see [THREAT_MODEL.md](./THREAT_MODEL.md
 
 ## Supported Versions
 
-Phantom is still pre-1.0, so security support is focused on the current release line and active development branch.
+Phantom is still pre-1.0, so security support is focused on the reviewed public
+release and active development branch. Repository version metadata can move
+ahead of published artifacts.
 
 | Version or surface | Security support | Notes |
 |--------------------|------------------|-------|
-| Latest release line, currently `0.7.x` | Supported | Security fixes are prioritized for the latest published CLI, MCP server, proxy, vault, npm wrappers, and web API surface. |
-| Active development branch | Supported for validation | Reports against unreleased code are welcome when the issue can affect an upcoming release or deployed service. |
-| Older release lines before `0.7.x` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
+| Reviewed public release, `v0.7.3` | Supported | Security fixes are prioritized for the immutable reviewed release and the separately deployed web surface where applicable. |
+| Staged `0.7.4` repository source | Supported for validation | Reports against unreleased source are welcome. Source and workflow definitions are not evidence of a published artifact or deployment. |
+| Releases before `v0.7.3` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
 | Forks, unofficial builds, or modified binaries | Not supported | Maintainers cannot verify the provenance or behavior of modified distributions. |
 
 ### Urgent 0.7.0 upgrade notice
@@ -40,7 +42,8 @@ Please include:
 - Affected component: CLI, provider issuance/grants, MCP server, local proxy, vault, Phantom Cloud/web API, npm wrapper, install script, release artifact, or documentation.
 - Affected version, commit, operating system, install method, and any relevant configuration flags.
 - Reproduction steps, proof of concept, expected impact, and whether you believe the issue is actively exploitable.
-- Logs or screenshots only after redacting secrets, tokens, vault contents, OAuth tokens, cookies, and personal data.
+- Logs or screenshots only after redacting secrets, tokens, vault contents,
+  OAuth tokens, cookies, personal data, and persistent `phm_` mappings.
 
 Use throwaway test credentials whenever possible. If you encounter a real credential, stop testing, redact it from your report, and rotate the credential.
 
@@ -65,7 +68,7 @@ In scope:
 - The MCP server and tools, especially paths that accept input from AI agents.
 - Local proxy authentication, request rewriting, response scrubbing, and secret injection behavior.
 - Local vault storage, keychain integration, encryption, import/export, and rotation flows.
-- Trusted-terminal provider issuance, provider endpoint selection, direct-to-vault credential handling, and value-free `phantom grant` lifecycle output.
+- The universal pre-credential/pre-network denial for provider issuance, enrollment, refresh, renewal, rotation, and revocation, plus value-free grant metadata.
 - Phantom Cloud, device auth, cloud sync, team vault APIs, billing/auth boundaries, and deployed `phm.dev` security controls.
 - npm packages, install scripts, release artifacts, checksums, and wrapper behavior when they affect install trust.
 - Documentation that could cause users to leak secrets or rely on a security property that Phantom does not provide.
@@ -99,23 +102,85 @@ Phantom does not operate a paid bug bounty program at this time. We may acknowle
 Phantom's security boundary is that secret values should not enter AI context, logs, telemetry, or cloud services in plaintext. Metadata may still be created by the product:
 
 - CLI audit logging is off by default. When `PHANTOM_AUDIT=1` or `PHANTOM_AUDIT=required` is set, Phantom writes JSONL audit events under `~/.phantom/` with operation names, timestamps, sequence/HMAC data, process metadata, PID, and secret names when an operation is tied to a specific secret. Audit events must never contain secret values.
-- `PHANTOM_AUDIT_ENCRYPTION=local` encrypts selected context metadata locally. `PHANTOM_AUDIT_ENCRYPTION=cloud-signed` signs audit events and attempts asynchronous upload to `phm.dev`; do not enable it unless you are comfortable sending that audit metadata to Phantom Cloud.
-- Audit analytics, anomaly detection, rate-limit events, and response-leak incidents are derived from the local audit log unless cloud-signed audit upload is explicitly enabled.
+- `PHANTOM_AUDIT_ENCRYPTION=local` encrypts selected context metadata locally. `cloud-signed` remains a protocol-only reserved value: setup refuses it before mutation, and legacy shell settings retain events with local encryption while making no audit-delivery network request.
+- Audit analytics, anomaly detection, rate-limit events, and response-leak incidents are derived from the local audit log. Central audit collection, retention, signer enrollment, and independent reviewer workflows are not commissioned in this release.
 - Phantom Cloud receives account, device, team, billing, project, encrypted-vault, and sync metadata needed to operate the service. Vault contents are intended to be encrypted client-side before upload; the server should not receive plaintext secret values.
 - The web application may send browser analytics events through PostHog when `NEXT_PUBLIC_POSTHOG_KEY` is configured. Current events include page views and high-level UI actions such as copied install commands or pricing/device-auth button clicks. These events should not include secret values or vault contents.
 
 Do not include real secrets in support requests, vulnerability reports, screenshots, telemetry examples, or reproduction repositories.
 
+For non-security questions, use the routes in [SUPPORT.md](SUPPORT.md). Project
+decision and escalation authority is described in
+[GOVERNANCE.md](GOVERNANCE.md).
+
 ## Known Limitations
 
-Phantom narrows the risk of AI agents seeing real secrets, but it is not a complete endpoint security product.
+Phantom narrows the risk of AI agents seeing real secrets, but it is not a
+complete endpoint security product. Its operator boundary is meaningful only
+when the trusted terminal, vault or native credential store, and user
+configuration roots are outside the agent's authority. Giving an agent
+equivalent same-user shell, filesystem, debugger, or terminal-control authority
+defeats that separation; Phantom does not convert a same-user process into a
+sandboxed principal.
 
 - A compromised operating system, root/admin attacker, malicious debugger, or replaced `phantom` binary can defeat local protections.
 - `PHANTOM_PROXY_TOKEN` is exposed to the `phantom exec` child process by design. A compromised child process can use the local proxy until the session ends.
+- `phantom exec` removes `PHANTOM_VAULT_PASSPHRASE`, inherited proxy session
+  controls/base URLs, every configured service credential, rotation bootstrap,
+  sync token, and connection-string variable from both proxied and direct child
+  environments before selectively adding fresh session tokens for protected API
+  keys. A command launched manually
+  outside `phantom exec` still inherits whatever its parent shell exports.
+- Standalone proxy lifecycle is foreground-only and requires all three standard
+  streams to be terminals before vault access. The stable exclusivity lock is
+  advisory state in the OS user-data directory keyed by the local project
+  identity and contains no PID, port, or bearer. Unix permissions are
+  restricted; on Windows Phantom relies on the inherited directory ACL and
+  does not independently verify its effectiveness. A held lock is not listener
+  authentication. Detached `--daemon` mode and external shutdown fail closed.
+  `phantom stop` authenticates legacy v0.7.3 state only to report migration
+  guidance; it never kills a process or deletes the record. Stop a current
+  proxy with Ctrl-C in its owning terminal.
+- Client-controlled request headers and bodies never resolve phantom tokens.
+  After authentication and exact route matching, the proxy injects only that
+  route's configured vault secret into its fixed authentication header; a
+  missing mapping fails before any upstream call. Connection-string tokens are
+  never registered. Credential-bearing upstream HTTP ignores inherited
+  `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY`; enterprise forward proxies are
+  intentionally unsupported until a separately reviewed trust configuration exists.
+- Zeroization is a partial defense in depth. Major vault retrieval,
+  serialization, and decrypted-file buffers use zeroizing containers, but some
+  proxy lookup copies and the file-vault passphrase remain ordinary strings.
 - `.phantom.toml` does not have cryptographic integrity protection. Agentic proxy execution therefore accepts only exact built-in service routes and binds the project ID to the config directory; custom route approval is not yet supported.
+- Governed project and client-configuration writers retain their acquisition-time
+  directory identity, reject outside-root and symlink/reparse traversal, reject
+  multiply linked sensitive files, and compare exact target identity plus bytes.
+  These controls prevent an ambient rename-and-decoy swap from redirecting the
+  governed operation; they do not exclude a process with equivalent same-user
+  authority before acquisition or after handles are released.
+- Vault-backed project mutations resolve process-environment-dependent
+  vault/application authority before acquiring the project transaction lock,
+  then compare the acquired directory identity and reread exact config state.
+  This avoids the inverse lock order and rejects a same-path root replacement
+  during vault resolution.
+- Initialization binds both the reviewed project-root identity and exact leaf
+  identity, bytes, and permissions before vault provisioning, then revalidates
+  them after acquiring the project lock and before mutation. A byte-identical
+  replacement leaf or same-path replacement root is rejected as drift.
+- `CommittedVerifiedButDurabilityUncertain` is a committed and exactly verified
+  success with a value-free warning/receipt; callers must not roll it back or
+  retry it. It is distinct from `CommittedButUncertain`, a **Partial** outcome
+  where post-publish verification or durability is unresolved and the operator
+  must reconcile before retrying.
+- On Windows, new private anchored files/directories establish and verify a
+  protected current-user DACL before bytes are written; replacements preserve
+  and verify the reviewed exact DACL, inheritance state, and read-only state
+  before writing. Windows no-follow, ACL, and shared-handle behavior is
+  source-contract tested, but protected native Windows filesystem and
+  Credential Manager acceptance remains pending.
 - Audit logging is opt-in and local by default. It cannot prove deletion of both the audit log and its local checkpoint without external evidence.
 - Team member removal does not retroactively revoke access to vault pushes that were encrypted to that member before removal. Rotate affected secrets after offboarding.
-- Provider-grant issuance requires a human provider-consent flow and separately configured provider application. Source and mock tests do not prove live provider, renewal, or customer acceptance.
+- All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.4. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.
 - `phantom grant revoke` currently fails closed before local mutation because remote revocation is not wired for the supported providers.
 - A provider grant is credential lifecycle state, not an execution-kernel authority grant. It cannot activate Locus verification, a broker lease, or production engineering execution.
 - GitHub immutable releases, checksums, archive-specific SPDX SBOMs, and GitHub attestations protect the published `v0.7.x` release artifacts. Installers and the self-updater verify checksums but do not yet verify attestations directly. Independent signatures, macOS notarization, Windows Authenticode, and exact-archive native acceptance remain open.

@@ -3,20 +3,34 @@
 ## TL;DR
 
 ```bash
-npx phantom-secrets init   # installs Phantom and protects your .env
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom   # reviewed v0.7.3 macOS release
+phantom init               # protects your .env
 phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code with real secrets injected by proxy
 ```
 
-That's it. Your AI tool never sees a real key again.
+That install example is for macOS. Linux and Windows users should select and
+verify the exact `v0.7.3` GitHub asset below.
+
+That's the local setup. Keep agent dotenv reads denied and launch supported API
+work through `phantom exec`; Phantom reduces credential exposure, but it does
+not control unmanaged files, other processes, provider logs, or every tool an
+agent may invoke.
 
 ---
 
 ## What Phantom actually does
 
-Phantom replaces real API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in your OS keychain. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`, service SDKs are redirected through `*_BASE_URL` environment variables, and the proxy session is authenticated with a fresh `PHANTOM_PROXY_TOKEN`. CLI-generated SDK URLs include the token as a local `/_phantom/<token>/` path segment so unmodified SDKs work; header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token` instead. The proxy removes its local auth token before forwarding, swaps phantom tokens for real credentials in request headers and body, then forwards over TLS to the actual API endpoint. Application and test processes load the placeholders; agents use value-blind MCP metadata and do not need dotenv read access.
+Phantom replaces detected API keys in your `.env` with random 256-bit tokens (`phm_...`) and stores the real values in the available OS credential store or encrypted-file fallback. When you run `phantom exec -- <cmd>`, a local HTTP reverse proxy starts on `127.0.0.1`, supported service SDKs are redirected through implemented `*_BASE_URL` variables, and the proxy session is authenticated with a fresh `PHANTOM_PROXY_TOKEN`. CLI-generated SDK URLs include the token as a local `/_phantom/<token>/` path segment; header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token` instead. The proxy removes its local auth token, matches an exact route, discards client control of that route's auth header, and injects only the route-owned vault value into that fixed header before forwarding over TLS. Client headers and bodies never resolve `phm_` tokens. Agents can use value-blind MCP metadata without dotenv read access.
 
-For `text/*` and `application/x-www-form-urlencoded` request bodies the proxy replaces tokens frame-by-frame without buffering the full payload (streaming token replacement). JSON bodies use a buffered path with field-level scoping to avoid substituting tokens that appear in non-secret fields such as `prompt` or `messages`. Full SSE/streaming responses (OpenAI, Anthropic) are preserved end-to-end.
+All request bodies are accepted into a bounded buffer before the upstream call,
+so an oversized body fails with HTTP 413 before any partial mutation reaches a
+provider. Every accepted client body is forwarded byte-for-byte, regardless of
+content type or field names. Client headers are also inert; only the matched
+route's fixed authentication header receives a route-owned credential.
+SSE/streaming responses remain streamed through content-aware response scrubbing.
 
 For a detailed breakdown of assets protected, threat actors, mitigations, and known gaps, see [THREAT_MODEL.md](../THREAT_MODEL.md).
 
@@ -24,31 +38,44 @@ For a detailed breakdown of assets protected, threat actors, mitigations, and kn
 
 ## Install
 
-### npx (recommended — no global install required)
-
-```bash
-npx phantom-secrets init
-```
-
-Downloads the correct platform binary and runs `phantom init` in one step.
-
-### npm global
-
-```bash
-npm install -g phantom-secrets
-phantom init
-```
-
-### Homebrew (macOS)
+### Homebrew (macOS, reviewed v0.7.3)
 
 ```bash
 brew tap ashlrai/phantom
-brew install phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
 ```
 
-### Direct binary download
+The formula installs both `phantom` and `phantom-mcp` from the immutable
+[`v0.7.3` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3).
 
-Download from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases), extract, and place `phantom` on your `$PATH`.
+### Exact GitHub assets (Linux and Windows)
+
+| Platform | `v0.7.3` archive | Published checksum |
+|---|---|---|
+| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
+| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip.sha256) |
+| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+
+Download the archive and its sidecar, then verify before extraction. Use
+`sha256sum -c <archive>.sha256` on Linux. On Windows, compare
+`Get-FileHash -Algorithm SHA256 <archive>` with the sidecar. Put both extracted
+executables on `PATH`.
+
+### Build the exact release source
+
+```bash
+git clone https://github.com/ashlrai/phantom-secrets.git
+cd phantom-secrets
+git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+cargo build --release --locked --bin phantom --bin phantom-mcp
+```
+
+The full SHA above is the source commit resolved by `v0.7.3`. Do not treat an
+unpinned registry install as that release. As verified on 2026-08-31, npm and
+the MCP Registry publish `0.6.0`, while crates.io publishes `0.5.1`; those are
+older distribution tracks.
 
 ### Verify
 
@@ -93,32 +120,67 @@ Non-secret values (`NODE_ENV`, `PORT`) are left untouched. If your `.env` is at 
 phantom init --from .env.local
 ```
 
+`phantom init` does not create a plaintext project backup. Keep an independent
+provider or password-manager recovery source, or use Phantom's encrypted
+export below. `phantom unwrap` is unrelated to secret recovery: it only restores
+`package.json` scripts previously changed by `phantom wrap`.
+
+Connection strings such as `DATABASE_URL` are detected, vaulted, and replaced
+in dotenv files, but they are **not proxied**. `phantom exec` fails closed when a
+protected connection string is present because injecting the real URL into the
+child environment would put the credential back inside the agent boundary. A
+protocol-aware database broker is planned; until then, split API-key work from
+database work or use a separately approved trusted-terminal workflow.
+
 ---
 
 ## Core commands
 
 ### `phantom init`
 
-Reads `.env`, stores real secrets in the OS keychain, rewrites `.env` with phantom tokens, creates `.phantom.toml`. Safe to re-run: new secrets are added, existing phantom tokens are preserved.
+Reads `.env`, stores real secrets in the OS keychain, rewrites `.env` with
+phantom tokens, and creates `.phantom.toml`. A completed run may be repeated
+from the same real project directory: new secrets are added and existing
+phantom tokens are preserved. Phantom retains that project directory while the
+transaction runs, so renaming its ambient path and replacing it with a decoy
+does not redirect the in-progress write.
+
+Do not blindly rerun after a `CommittedButUncertain`, durability, or **Partial**
+effect warning. A rename, unlink, or directory creation may already have
+committed before its final durability check failed. Run `phantom doctor`,
+inspect the intended project and current path from a trusted terminal, and
+reconcile the reported file before trying again.
 
 ```bash
 phantom init
 phantom init --from .env.local
 ```
 
-**Multi-project — protect every repo in a workspace at once:**
+**Multi-project — process eligible repos found by the bounded workspace scan:**
 
 ```bash
 phantom init --all ~/code --dry-run    # preview which repos would be touched
-phantom init --all ~/code              # run init in every git repo with a .env
+phantom init --all ~/code              # process the exact repos shown by dry-run
 phantom init --all ~/code --jobs 8     # run up to 8 repos concurrently (default: 4)
 ```
 
-`--all` walks the directory, finds every git repo with one of `.env`, `.env.local`, `.env.development`, `.env.production`, etc., and runs init in each. Skips repos that already have `.phantom.toml`, plus `node_modules`, `target`, `dist`, `build`, and dot-dirs. A progress bar shows live status. The parallelism default can also be set via the `PHANTOM_INIT_JOBS` environment variable.
+`--all` scans at most five directory levels for repositories containing a
+supported dotenv filename and stops descending below the first matching
+repository. It skips already-protected repositories, dot-directories, and
+known dependency/build directories. Always review `--dry-run`; deeper or
+nested repositories may require their own invocation. A progress bar shows
+live status, and `PHANTOM_INIT_JOBS` can set the default parallelism.
 
 ### `phantom add` / `phantom remove`
 
+`phantom add` requires an initialized project and never auto-creates config,
+gitignore, or vault state. In a new project with no dotenv file, run
+`phantom init --empty` once before the first add.
+
 ```bash
+# New project only:
+phantom init --empty
+
 # Interactive prompt — value is read silently from the terminal (no echo):
 phantom add STRIPE_SECRET_KEY
 
@@ -129,11 +191,27 @@ op read "op://Prod/Stripe/key" | phantom add STRIPE_SECRET_KEY --stdin
 phantom remove STRIPE_SECRET_KEY
 ```
 
-`add` stores the value and writes a phantom token to `.env`. It prompts silently so the secret never enters shell history or the process list. Positional secret values are rejected; use `--stdin` for non-interactive or CI input. `remove` deletes from the vault (`.env` token line is left; remove manually if desired).
+`add` creates a new protected name, stores its value, and writes a phantom token
+to `.env`. It prompts silently so the secret never enters shell history or the
+process list. Positional secret values are rejected; use `--stdin` only with a
+trusted producer. An existing protected name is denied from value-blind vault
+metadata before Phantom reads the prompt or stdin. `add` never replaces it.
+`remove` requires attached stdin/stdout/stderr plus an exact typed challenge,
+then transactionally removes the vault value, lifecycle config, and exact
+managed-dotenv mapping. Removing and later re-adding the same name is an
+explicit, non-atomic two-command workflow.
 
 ### `phantom rotate`
 
-Regenerates all phantom tokens without changing the real secrets. Use this if you suspect a token mapping was exposed (tokens are worthless without the proxy, but rotation is a clean reset).
+Regenerates all project phantom tokens without changing the real secrets. This
+invalidates every current mapping, so the command requires attached stdin,
+stdout, and stderr plus an exact typed challenge bound to the canonical project,
+exact config and managed-dotenv snapshots, and the sorted protected-name digest.
+Headless calls fail before vault access or mutation, and state drift after
+approval aborts the write. A `phm_` value is not accepted by the upstream
+provider and client requests never resolve it. Still rotate exposed mappings:
+unmanaged dotenv entries remain possible, and a process with the active proxy
+bearer can invoke configured provider routes using route-owned authentication.
 
 ```bash
 phantom rotate
@@ -141,13 +219,25 @@ phantom rotate
 
 ### `phantom cloud push` / `phantom cloud pull`
 
-Sync your vault across machines. End-to-end encrypted — the server never sees plaintext.
+Back up and restore your vault on the same keychain machine using client-side
+encryption. The cloud vault API receives ciphertext rather than decrypted secret
+values; client, endpoint, account, and OS-keychain security remain part of the
+trust boundary. Phantom does not currently transfer or recover the machine-local
+cloud encryption key.
 
 ```bash
 phantom login              # GitHub OAuth, once per device
 phantom cloud push         # upload encrypted vault
-phantom cloud pull         # download and decrypt on another machine
+phantom cloud pull         # restore where the original cloud key is available
 ```
+
+Run login and cloud writes only from a terminal outside the requesting agent's
+authority. Login has separate exact challenges before network access and before
+browser opening/polling/keychain persistence. Push and pull each show a
+value-blind effect and require their exact typed challenge before credential,
+vault-value, or network access. A `force=false` pull that skips any existing
+entry retains the prior merge base and blocks push until a fully reconciled,
+approved pull.
 
 ### `phantom sync` / `phantom pull`
 
@@ -166,7 +256,7 @@ phantom sync --platform vercel --project prj_abc123 --only "STRIPE_*" --only "*_
 # Preview without decrypting values or touching platform APIs
 phantom sync --platform vercel --project prj_abc123 --dry-run --json
 
-# Pull from Vercel on a new machine
+# Pull from Vercel with authorized provider access
 phantom pull --from vercel --project prj_abc123
 
 # Railway
@@ -186,7 +276,10 @@ only         = ["STRIPE_*", "SENDGRID_*"]   # never push DEV_* or DEBUG_* to pro
 
 ### `phantom check`
 
-Scans `.env` files for unprotected secrets. Use as a pre-commit hook.
+Scans supported dotenv files for heuristically detected secrets. With
+`--staged`, it also checks staged dotenv content and a bounded set of
+hardcoded-key prefixes on added lines. Use it as one pre-commit layer, not as a
+complete repository secret scanner.
 
 ```bash
 phantom check
@@ -256,7 +349,18 @@ phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-If `phantom-mcp` isn't on PATH, the writer falls back to `npx -y phantom-secrets-mcp` so the config still works on a fresh machine. For Claude Code, setup removes legacy Phantom-managed dotenv read grants and preserves deny rules; agents use value-blind MCP inventory instead. See [claude-code.md](./claude-code.md) for the full workflow. Runtime MCP `tools/list` is the canonical catalog.
+Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
+records the running `phantom` executable with `mcp serve`; if that executable
+cannot be resolved, it looks for the local standalone `phantom-mcp`. Its final
+legacy fallback is unpinned `npx -y phantom-secrets-mcp`, which currently
+resolves an older registry track. Do not rely on that path: keep both verified
+release binaries installed and inspect the generated entry. Current main removes
+the registry fallback and fails closed when neither local runtime is executable;
+that hardening is not part of `v0.7.3` and awaits a later release. For Claude
+Code, setup removes legacy Phantom-managed dotenv read grants and preserves deny
+rules; agents use value-blind MCP inventory instead. See
+[claude-code.md](./claude-code.md) for the full workflow. Runtime MCP `tools/list`
+is the canonical catalog.
 
 Restart the AI tool after running `phantom setup` so it picks up the new config.
 
@@ -300,23 +404,25 @@ Each log entry is chained with HMAC-SHA256 and a signed head checkpoint. `phanto
 
 ## Encrypted backup and recovery
 
-From an attached terminal, Phantom reads the backup passphrase without echoing
-it or placing it in command-line arguments. Export asks for confirmation;
-import reads the same passphrase once:
+With stdin, stdout, and stderr attached to a terminal outside agent authority,
+Phantom displays a value-blind plan and requires its fresh exact typed challenge
+before secret transfer. Export then reads a dedicated passphrase without echoing
+it or placing it in command-line arguments; import has a separate ceremony:
 
 ```bash
 phantom export --output phantom-backup.enc
 phantom import phantom-backup.enc
 ```
 
-For automation, provide a dedicated passphrase through a bounded private file.
-On Unix, the file must be mode `0600` or stricter; symlinks and non-regular
-files are rejected.
+Export rejects `--passphrase-file` on every platform because the invoking agent
+could retain the decryption material; use the attached hidden terminal prompt.
+For import only, non-Windows operators may provide the passphrase through a
+bounded private regular file after the terminal ceremony. On Unix, that file
+must be mode `0600` or stricter; symlinks and non-regular files are rejected.
+Import passphrase files fail closed on Windows.
 
 ```bash
 chmod 600 /secure/path/phantom-backup.pass
-phantom export --output phantom-backup.enc \
-  --passphrase-file /secure/path/phantom-backup.pass
 phantom import phantom-backup.enc \
   --passphrase-file /secure/path/phantom-backup.pass
 ```
@@ -353,7 +459,9 @@ phantom import --from env --file .env
 
 After importing, run `phantom init` to replace any remaining plaintext secrets in your `.env` with phantom tokens.
 
-Use `--force` to overwrite existing vault entries without prompting.
+Use `--force` to select existing vault entries for overwrite in the displayed
+exact plan. It never bypasses attached-terminal consent, and a source/config
+identity change invalidates the ceremony before storage.
 
 ---
 
@@ -366,6 +474,9 @@ You haven't initialized in this directory.
 ```bash
 phantom init
 ```
+
+For a new project with no dotenv file, use `phantom init --empty` before the
+first `phantom add`; `add` never auto-creates project state.
 
 ### API calls return 401 after setup
 
@@ -396,21 +507,34 @@ export PHANTOM_VAULT_PASSPHRASE="$(openssl rand -hex 32)"
 ```
 
 Store this passphrase as a CI secret. See `docs/ci-cd.md` for full GitHub Actions and Docker examples.
+`phantom exec` uses the passphrase only in its trusted parent process, then
+removes `PHANTOM_VAULT_PASSPHRASE` from both proxied and direct child
+environments. Commands launched manually from the same shell still inherit the
+export, so avoid launching agents outside `phantom exec` while it is set.
 
-### `npx phantom-secrets` fails to download
+### An older registry-based install command fails
 
-The binary ships from GitHub Releases. Check your internet connection, then:
+The reviewed binaries ship from the immutable `v0.7.3` GitHub Release, not the
+older registry tracks. Download and verify the platform asset above, or build
+the exact tagged source:
 
 ```bash
-# Fallback: install from source
-cargo install phantom-secrets
+git clone https://github.com/ashlrai/phantom-secrets.git
+cd phantom-secrets
+git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-Or download the binary directly from [github.com/ashlrai/phantom-secrets/releases](https://github.com/ashlrai/phantom-secrets/releases).
+The full SHA above is the source commit resolved by `v0.7.3`.
 
 ### Claude Code cannot read `.env` after setup — is this broken?
 
-No. Phantom tokens are meaningless without the authenticated proxy, but keeping dotenv reads denied also protects unmanaged sibling files and backups created by other tools. `phantom setup --client claude` wires MCP while removing legacy Phantom-managed dotenv read grants; agents use value-blind metadata instead.
+No. A `phm_` value is not a provider credential, but keeping dotenv reads
+denied also protects unmanaged sibling files and backups created by other
+tools. It also reduces exposure of mappings that an authenticated active
+Phantom proxy could resolve. `phantom setup --client claude` wires MCP while
+removing legacy Phantom-managed dotenv read grants; agents use value-blind
+metadata instead.
 
 ---
 
@@ -420,9 +544,14 @@ Once you've run `phantom login` and `phantom cloud push`, you can see your proje
 
 ```bash
 $ phantom open
-# Opens https://phm.dev/dashboard in your browser. Aliases:
+# After attached-terminal review and an exact typed challenge, opens
+# https://phm.dev/dashboard. Closed aliases only:
 # phantom open billing | team | docs | github | pricing
 ```
+
+`phantom open` also accepts `dashboard`, `issues`, and `site` (plus the documented
+`teams`, `repo`, and `home` synonyms). Arbitrary URLs, schemes, credentials,
+paths, and unknown aliases are rejected before browser access.
 
 ## Next steps
 

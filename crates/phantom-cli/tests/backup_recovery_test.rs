@@ -1,4 +1,8 @@
+mod common;
+
+use std::collections::BTreeMap;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -19,7 +23,7 @@ fn command(dir: &TempDir) -> Command {
 }
 
 fn setup_secret() -> TempDir {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     command(&dir).args(["init", "--empty"]).assert().success();
     command(&dir)
         .args(["add", "RECOVERY_TEST_SECRET", "--stdin"])
@@ -27,17 +31,6 @@ fn setup_secret() -> TempDir {
         .assert()
         .success();
     dir
-}
-
-fn write_private_passphrase(dir: &TempDir, name: &str) -> std::path::PathBuf {
-    let path = dir.path().join(name);
-    fs::write(&path, format!("{BACKUP_PASS}\n")).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    }
-    path
 }
 
 fn combined_output(output: &std::process::Output) -> String {
@@ -48,209 +41,112 @@ fn combined_output(output: &std::process::Output) -> String {
     )
 }
 
-fn assert_no_staging_files(dir: &TempDir) {
-    let entries = fs::read_dir(dir.path())
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    assert!(
-        entries
-            .iter()
-            .all(|name| !name.starts_with(".phantom-backup-")),
-        "backup staging file was not cleaned up: {entries:?}"
-    );
-}
-
-#[test]
-fn backup_commands_hide_and_reject_legacy_argv_passphrases() {
-    let dir = TempDir::new().unwrap();
-
-    for subcommand in ["export", "import"] {
-        let help = command(&dir).args([subcommand, "--help"]).output().unwrap();
-        assert!(help.status.success());
-        let stdout = String::from_utf8_lossy(&help.stdout);
-        assert!(stdout.contains("--passphrase-file"));
-        assert!(!stdout.contains("--passphrase "));
+fn snapshot_regular_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, current: &Path, snapshot: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(current).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            if metadata.is_dir() {
+                visit(root, &path, snapshot);
+            } else if metadata.is_file() {
+                snapshot.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
     }
 
-    let export = command(&dir)
-        .args(["export", "--passphrase", BACKUP_PASS])
-        .output()
-        .unwrap();
-    assert!(!export.status.success());
-    assert!(combined_output(&export).contains("no longer supported"));
-    assert!(!combined_output(&export).contains(BACKUP_PASS));
-
-    let import = command(&dir)
-        .args(["import", "missing.enc", "--passphrase", BACKUP_PASS])
-        .output()
-        .unwrap();
-    assert!(!import.status.success());
-    assert!(combined_output(&import).contains("no longer supported"));
-    assert!(!combined_output(&import).contains(BACKUP_PASS));
+    let mut snapshot = BTreeMap::new();
+    visit(root, root, &mut snapshot);
+    snapshot
 }
 
 #[test]
-fn backup_commands_fail_closed_without_an_attached_terminal() {
-    let dir = TempDir::new().unwrap();
+fn backup_commands_hide_argv_passphrases_and_describe_current_policy() {
+    let dir = common::canonical_tempdir();
 
-    let export = command(&dir).arg("export").output().unwrap();
-    assert!(!export.status.success());
-    assert!(combined_output(&export).contains("attached stdin and stderr terminals"));
+    let export_help = command(&dir).args(["export", "--help"]).output().unwrap();
+    assert!(export_help.status.success());
+    let export_help = String::from_utf8_lossy(&export_help.stdout);
+    assert!(export_help.contains("--passphrase-file"));
+    assert!(export_help.contains("rejected for export"));
+    assert!(export_help.contains("trusted-terminal"));
+    assert!(!export_help.contains("--passphrase "));
 
-    let import = command(&dir)
-        .args(["import", "missing.enc"])
+    let import_help = command(&dir).args(["import", "--help"]).output().unwrap();
+    assert!(import_help.status.success());
+    let import_help = String::from_utf8_lossy(&import_help.stdout);
+    assert!(import_help.contains("--passphrase-file"));
+    assert!(import_help.contains("non-Windows"));
+    assert!(import_help.contains("never bypasses the exact trusted-terminal ceremony"));
+    assert!(!import_help.contains("--passphrase "));
+
+    for subcommand in ["export", "import"] {
+        let mut args = vec![subcommand];
+        if subcommand == "import" {
+            args.push("missing.enc");
+        }
+        args.extend(["--passphrase", BACKUP_PASS]);
+        let output = command(&dir).args(args).output().unwrap();
+        assert!(!output.status.success());
+        assert!(combined_output(&output).contains("no longer supported"));
+        assert!(!combined_output(&output).contains(BACKUP_PASS));
+    }
+}
+
+#[test]
+fn export_passphrase_file_is_denied_before_path_access() {
+    let dir = common::canonical_tempdir();
+    let missing = dir.path().join("missing-passphrase");
+    let output = command(&dir)
+        .args(["export", "--passphrase-file"])
+        .arg(&missing)
         .output()
         .unwrap();
-    assert!(!import.status.success());
-    assert!(combined_output(&import).contains("attached stdin and stderr terminals"));
+    assert!(!output.status.success());
+    let message = combined_output(&output);
+    assert!(message.contains("--passphrase-file is disabled for export"));
+    assert!(message.contains("agent-decryptable"));
+    assert!(!message.contains(BACKUP_PASS));
     assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
 }
 
-#[cfg(unix)]
 #[test]
-fn passphrase_file_must_be_private_regular_and_not_a_symlink() {
-    use std::os::unix::fs::{symlink, PermissionsExt};
+fn headless_export_fails_before_backup_or_vault_mutation() {
+    let source = setup_secret();
+    let before = snapshot_regular_files(source.path());
 
-    let dir = TempDir::new().unwrap();
-    let exposed = dir.path().join("exposed-passphrase");
-    fs::write(&exposed, BACKUP_PASS).unwrap();
-    fs::set_permissions(&exposed, fs::Permissions::from_mode(0o644)).unwrap();
-
-    let output = command(&dir)
-        .args(["export", "--passphrase-file"])
-        .arg(&exposed)
+    let output = command(&source)
+        .args(["export", "--output", "backup.enc"])
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(combined_output(&output).contains("expected 0600 or stricter"));
-    assert!(!combined_output(&output).contains(BACKUP_PASS));
-
-    fs::set_permissions(&exposed, fs::Permissions::from_mode(0o600)).unwrap();
-    let link = dir.path().join("passphrase-link");
-    symlink(&exposed, &link).unwrap();
-    let output = command(&dir)
-        .args(["export", "--passphrase-file"])
-        .arg(&link)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(combined_output(&output).contains("must not be a symlink"));
-    assert!(!combined_output(&output).contains(BACKUP_PASS));
+    let message = combined_output(&output);
+    assert!(message.contains("stdin, stdout, and stderr attached to a trusted terminal"));
+    assert!(!message.contains(SECRET_VALUE));
+    assert!(!source.path().join("backup.enc").exists());
+    assert_eq!(snapshot_regular_files(source.path()), before);
 }
 
-#[cfg(unix)]
 #[test]
-fn encrypted_backup_is_private_atomic_no_overwrite_and_recoverable() {
-    use std::os::unix::fs::{symlink, PermissionsExt};
+fn headless_import_fails_before_source_read_or_vault_mutation() {
+    let target = setup_secret();
+    let source_path = target.path().join("unreadable.enc");
+    fs::write(&source_path, b"not actually encrypted").unwrap();
+    let before = snapshot_regular_files(target.path());
 
-    let source = setup_secret();
-    let passphrase_file = write_private_passphrase(&source, "backup.pass");
-    let backup = source.path().join("backup.enc");
-
-    let export = command(&source)
-        .args(["export", "--output"])
-        .arg(&backup)
-        .arg("--passphrase-file")
-        .arg(&passphrase_file)
-        .output()
-        .unwrap();
-    assert!(export.status.success(), "{}", combined_output(&export));
-    assert!(!combined_output(&export).contains(SECRET_VALUE));
-    assert!(!combined_output(&export).contains(BACKUP_PASS));
-    let encrypted = fs::read(&backup).unwrap();
-    assert!(!encrypted
-        .windows(SECRET_VALUE.len())
-        .any(|window| window == SECRET_VALUE.as_bytes()));
-    assert!(!encrypted
-        .windows(BACKUP_PASS.len())
-        .any(|window| window == BACKUP_PASS.as_bytes()));
-    assert_eq!(
-        fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    assert_no_staging_files(&source);
-
-    let original = encrypted.clone();
-    let overwrite = command(&source)
-        .args(["export", "--output"])
-        .arg(&backup)
-        .arg("--passphrase-file")
-        .arg(&passphrase_file)
-        .output()
-        .unwrap();
-    assert!(!overwrite.status.success());
-    assert!(combined_output(&overwrite).contains("refusing to overwrite"));
-    assert_eq!(fs::read(&backup).unwrap(), original);
-    assert_no_staging_files(&source);
-
-    let blocked_audit_path = source.path().join(".phantom/audit.log");
-    fs::create_dir_all(&blocked_audit_path).unwrap();
-    let audit_failure_backup = source.path().join("audit-failure.enc");
-    let audit_failure = command(&source)
-        .env("PHANTOM_AUDIT", "required")
-        .args(["export", "--output"])
-        .arg(&audit_failure_backup)
-        .arg("--passphrase-file")
-        .arg(&passphrase_file)
-        .output()
-        .unwrap();
-    assert!(!audit_failure.status.success());
-    assert!(combined_output(&audit_failure).contains("Backup exists at"));
-    assert!(audit_failure_backup.is_file());
-    assert!(!combined_output(&audit_failure).contains(SECRET_VALUE));
-    assert!(!combined_output(&audit_failure).contains(BACKUP_PASS));
-    assert_no_staging_files(&source);
-
-    let victim = source.path().join("victim");
-    let backup_link = source.path().join("backup-link.enc");
-    fs::write(&victim, b"untouched").unwrap();
-    symlink(&victim, &backup_link).unwrap();
-    let symlink_export = command(&source)
-        .args(["export", "--output"])
-        .arg(&backup_link)
-        .arg("--passphrase-file")
-        .arg(&passphrase_file)
-        .output()
-        .unwrap();
-    assert!(!symlink_export.status.success());
-    assert!(combined_output(&symlink_export).contains("symlink"));
-    assert_eq!(fs::read(&victim).unwrap(), b"untouched");
-    assert_no_staging_files(&source);
-
-    let recovery = TempDir::new().unwrap();
-    command(&recovery)
-        .args(["init", "--empty"])
-        .assert()
-        .success();
-    let recovery_passphrase = write_private_passphrase(&recovery, "recovery.pass");
-    let import = command(&recovery)
+    let output = command(&target)
         .arg("import")
-        .arg(&backup)
-        .arg("--passphrase-file")
-        .arg(&recovery_passphrase)
+        .arg(&source_path)
+        .arg("--force")
         .output()
         .unwrap();
-    assert!(import.status.success(), "{}", combined_output(&import));
-    assert!(!combined_output(&import).contains(SECRET_VALUE));
-    assert!(!combined_output(&import).contains(BACKUP_PASS));
-
-    let list = command(&recovery).arg("list").output().unwrap();
-    assert!(list.status.success());
-    assert!(String::from_utf8_lossy(&list.stdout).contains("RECOVERY_TEST_SECRET"));
-    assert!(!combined_output(&list).contains(SECRET_VALUE));
-
-    let backup_symlink = recovery.path().join("backup-symlink.enc");
-    symlink(&backup, &backup_symlink).unwrap();
-    let symlink_import = command(&recovery)
-        .arg("import")
-        .arg(&backup_symlink)
-        .arg("--passphrase-file")
-        .arg(&recovery_passphrase)
-        .output()
-        .unwrap();
-    assert!(!symlink_import.status.success());
-    assert!(combined_output(&symlink_import).contains("must not be a symlink"));
-    assert!(!combined_output(&symlink_import).contains(SECRET_VALUE));
-    assert!(!combined_output(&symlink_import).contains(BACKUP_PASS));
+    assert!(!output.status.success());
+    let message = combined_output(&output);
+    assert!(message.contains("stdin, stdout, and stderr attached to a trusted terminal"));
+    assert!(!message.contains(SECRET_VALUE));
+    assert!(!message.contains("wrong passphrase"));
+    assert_eq!(snapshot_regular_files(target.path()), before);
 }

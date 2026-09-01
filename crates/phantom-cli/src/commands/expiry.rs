@@ -1,14 +1,16 @@
 //! `phantom secrets-expiring-soon` and `phantom expiry` — TTL-based expiry enforcement.
 //!
 //! `phantom secrets-expiring-soon` returns a table/JSON of secrets near expiry (default 7d).
-//! `phantom expiry set <KEY> <DAYS>` — store `expires_at` in `.phantom.toml`.
+//! `phantom expiry set <KEY> <DAYS>` — store lifecycle policy in vault metadata.
 //! `phantom expiry enforce [--fail-closed]` — exit 1 if any secret is expired.
-//! `phantom expiry rotate <KEY>` — reset expiry timer + bump rotation counter.
+//! `phantom expiry rotate <KEY>` — deprecated compatibility token remap.
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::io::{IsTerminal, Write};
 
 /// One entry in the expiry report.
 #[derive(Debug, Serialize)]
@@ -27,12 +29,17 @@ pub struct ExpiryEntry {
 ///
 /// * `warn_days`    — warn about secrets expiring within this many days
 ///   (default 7; 0 means only report already-expired secrets)
-/// * `auto_rotate`  — if `true`, regenerate phantom tokens and update TTL
-///   for each expiring/expired secret
-/// * `sync_after`   — if `true` (and `auto_rotate` is also `true`), push to
-///   all configured deployment platforms after rotating
+/// * `auto_rotate`  — legacy name; if `true`, remap the local phantom tokens
+///   for each expiring/expired secret without changing credentials or TTLs
+/// * `sync_after`   — legacy option; rejected because no credential changes
 /// * `json`         — emit machine-readable JSON instead of coloured table
 pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> Result<()> {
+    if auto_rotate && sync_after {
+        anyhow::bail!(
+            "--sync is not valid with the deprecated --auto-rotate token remap: provider credentials are unchanged. Rotate at the provider, store the replacement from a trusted terminal, then run an explicitly reviewed sync; automated live provider issuance is disabled."
+        );
+    }
+
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -44,7 +51,7 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     let entries = vault
         .list_with_metadata()
@@ -81,7 +88,7 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
     }
 
     if auto_rotate && !expiring.is_empty() {
-        run_auto_rotate(&expiring, sync_after, &config, json)?;
+        run_token_remap(&expiring, &config, json)?;
     }
 
     Ok(())
@@ -132,129 +139,69 @@ fn print_human_table(expiring: &[ExpiryEntry], warn_days: u64) {
 
     println!();
     println!(
-        "  {} Run {} to rotate expiring secrets.",
+        "  {} Run a configured provider rotation to replace an expiring credential. The legacy {} flag only remaps local phm_ placeholders.",
         "Tip:".dimmed(),
         "phantom secrets-expiring-soon --auto-rotate".cyan()
     );
 }
 
-/// Rotate every expiring secret in-place and optionally sync platforms.
-///
-/// Rotation here means:
-///   1. Record a new rotation timestamp on the secret's metadata.
-///   2. Extend `expires_at` using the existing `days_ttl` from the rotation
-///      policy (or `warn_days` as a fallback so we don't shrink the TTL).
-///   3. Rewrite the .env with fresh phantom tokens for rotated secrets.
-fn run_auto_rotate(
-    expiring: &[ExpiryEntry],
-    sync_after: bool,
-    config: &PhantomConfig,
-    json: bool,
-) -> Result<()> {
-    use phantom_core::dotenv::DotenvFile;
-    use phantom_core::token::TokenMap;
-    use phantom_vault::metadata::{now_secs, RotationPolicy, SecretMetadata};
-
-    let vault = phantom_vault::create_vault(config.local_project_id());
+/// Remap local placeholders for expiring secrets without changing the
+/// underlying provider credentials or their lifecycle metadata.
+fn run_token_remap(expiring: &[ExpiryEntry], config: &PhantomConfig, json: bool) -> Result<()> {
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let project_dir = std::env::current_dir()?;
-    let env_path = project_dir.join(".env");
+    let names = expiring
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect::<Vec<_>>();
+    let vault_names = vault.list().context("Failed to list protected secrets")?;
+    let env_path =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, config, &vault_names)?.path;
 
-    let mut rotated: Vec<String> = Vec::new();
-    let mut failed: Vec<(String, String)> = Vec::new();
+    // Read metadata before and after the file transaction to make the invariant
+    // explicit and regression-testable: a token remap cannot renew TTL state.
+    let metadata_before = names
+        .iter()
+        .map(|name| {
+            vault
+                .get_metadata(name)
+                .with_context(|| format!("Failed to read metadata for {name}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-    for entry in expiring {
-        // Retrieve existing metadata to preserve days_ttl.
-        let existing_meta = vault.get_metadata(&entry.name).unwrap_or(None);
-        let days_ttl = existing_meta
-            .as_ref()
-            .and_then(|m| m.rotation_policy.as_ref())
-            .map(|p| p.days_ttl)
-            .unwrap_or(30); // sensible default if no policy was set
+    crate::commands::rotate::remap_phantom_tokens(&env_path, &names)?;
 
-        // Build fresh metadata: extend expiry from now.
-        let now = now_secs();
-        let new_meta = SecretMetadata {
-            created_at: existing_meta
-                .as_ref()
-                .and_then(|m| m.created_at)
-                .or(Some(now)),
-            rotated_at: Some(now),
-            expires_at: Some(now + days_ttl * 86_400),
-            rotation_policy: Some(RotationPolicy {
-                days_ttl,
-                auto_rotate: true,
-            }),
-            vault_mode: phantom_vault::metadata::VaultMode::ReadWrite,
-        };
-
-        match vault.set_metadata(&entry.name, new_meta) {
-            Ok(()) => {
-                phantom_core::audit::log("secret.auto_rotated", Some(&entry.name));
-                rotated.push(entry.name.clone());
-            }
-            Err(e) => {
-                failed.push((entry.name.clone(), e.to_string()));
-            }
-        }
+    let metadata_after = names
+        .iter()
+        .map(|name| {
+            vault
+                .get_metadata(name)
+                .with_context(|| format!("Failed to re-read metadata for {name}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if metadata_before != metadata_after {
+        anyhow::bail!("Token remap invariant failed: credential lifecycle metadata changed.");
     }
-
-    // Rewrite .env with fresh phantom tokens for all rotated secrets.
-    if !rotated.is_empty() && env_path.exists() {
-        let mut token_map = TokenMap::new();
-        for name in &rotated {
-            token_map.insert(name.clone());
-        }
-        if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
-            let _ = dotenv.write_phantomized(&token_map, &env_path);
-        }
+    for name in &names {
+        phantom_core::audit::log("secret.token_remapped", Some(name));
     }
 
     if json {
         let result = serde_json::json!({
-            "auto_rotated": rotated,
-            "failed": failed.iter().map(|(n, e)| serde_json::json!({"name": n, "error": e})).collect::<Vec<_>>(),
+            "tokens_remapped": names,
+            "provider_credentials_rotated": 0,
+            "expiry_metadata_changed": false,
         });
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        if !rotated.is_empty() {
-            println!(
-                "\n{} Auto-rotated {} secret(s):",
-                "ok".green().bold(),
-                rotated.len()
-            );
-            for name in &rotated {
-                println!("   {} {}", "+".green(), name.bold());
-            }
-        }
-        if !failed.is_empty() {
-            println!(
-                "\n{} Failed to rotate {} secret(s):",
-                "!".red().bold(),
-                failed.len()
-            );
-            for (name, err) in &failed {
-                println!("   {} {}: {}", "x".red(), name.bold(), err);
-            }
-        }
-    }
-
-    // Optionally sync to deployment platforms.
-    if sync_after && !rotated.is_empty() {
-        if !json {
-            println!(
-                "\n{} Syncing to deployment platforms...",
-                "->".blue().bold()
-            );
-        }
-        crate::commands::sync::run(None, None, vec![], false, false)
-            .context("Sync after auto-rotate failed")?;
-    }
-
-    if !failed.is_empty() {
-        anyhow::bail!(
-            "Auto-rotate completed with {} error(s). See output above.",
-            failed.len()
+        println!(
+            "\n{} Remapped {} local Phantom token(s). Provider credentials and expiry metadata are unchanged:",
+            "ok".green().bold(),
+            names.len()
         );
+        for name in &names {
+            println!("   {} {}", "+".green(), name.bold());
+        }
     }
 
     Ok(())
@@ -264,13 +211,10 @@ fn run_auto_rotate(
 
 /// `phantom expiry set <KEY> <DAYS>` — mark a secret as expiring in N days from now.
 ///
-/// Stores `expires_at` (Unix timestamp) and `rotation_window` in the
-/// per-secret `[phantom.secrets.{name}]` section of `.phantom.toml`.
+/// Stores `expires_at` and the rotation policy atomically with the secret's
+/// existing lifecycle metadata.
 pub fn run_set(key: &str, days: u64) -> Result<()> {
-    use phantom_core::rotation_strategy::compute_new_expires_at;
-    use phantom_vault::metadata::now_secs;
-
-    let project_dir = std::env::current_dir()?;
+    let project_dir = std::env::current_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -280,32 +224,45 @@ pub fn run_set(key: &str, days: u64) -> Result<()> {
         );
     }
 
-    let mut config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-
-    let now = now_secs();
-    let expires_at = compute_new_expires_at(days, now);
-
-    // Ensure the secret exists in the vault (advisory; don't block if vault unavailable).
-    let vault = phantom_vault::create_vault(config.local_project_id());
-    match vault.list() {
-        Ok(names) if !names.contains(&key.to_string()) => {
-            eprintln!(
-                "{} Secret '{}' is not in the vault — storing expiry config anyway.",
-                "warn:".yellow().bold(),
-                key
-            );
-        }
-        _ => {}
+    let config_before =
+        phantom_core::fs::read_regular_file(&config_path)?.context("Project is not initialized")?;
+    let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+        .context("Failed to load exact .phantom.toml snapshot")?;
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    if !vault
+        .exists(key)
+        .with_context(|| format!("Failed to check whether '{key}' exists in the vault"))?
+    {
+        anyhow::bail!(
+            "Secret '{}' not found in vault; no policy was written.",
+            key
+        );
     }
-
-    // Upsert the per-secret override.
-    let entry = config.phantom.secrets.entry(key.to_string()).or_default();
-    entry.expires_at = Some(expires_at);
-    entry.rotation_window = Some(days);
-
-    config
-        .save(&config_path)
-        .context("Failed to save .phantom.toml")?;
+    let before = vault
+        .get_metadata(key)
+        .context("Failed to snapshot expiry metadata")?;
+    require_trusted_terminal_expiry_set(
+        &project_dir,
+        config.local_project_id(),
+        &config_before,
+        key,
+        days,
+        before.as_ref(),
+    )?;
+    let mut after = before.clone().unwrap_or_default();
+    after.rotation_policy = Some(phantom_vault::RotationPolicy {
+        days_ttl: days,
+        auto_rotate: false,
+    });
+    let expires_at =
+        phantom_vault::metadata::now_secs().saturating_add(days.saturating_mul(86_400));
+    after.expires_at = Some(expires_at);
+    if !vault
+        .compare_and_swap_metadata(key, before.as_ref(), Some(after))
+        .context("Failed to atomically persist expiry policy")?
+    {
+        anyhow::bail!("Expiry metadata changed concurrently; no policy was written.");
+    }
 
     println!(
         "{} Set expiry for '{}': expires in {} day(s) (at Unix timestamp {}).",
@@ -316,6 +273,43 @@ pub fn run_set(key: &str, days: u64) -> Result<()> {
     );
     println!("  Run {} to check status.", "phantom expiry enforce".cyan());
 
+    Ok(())
+}
+
+fn require_trusted_terminal_expiry_set(
+    project_dir: &std::path::Path,
+    project_id: &str,
+    config_before: &[u8],
+    key: &str,
+    days: u64,
+    metadata_before: Option<&phantom_vault::SecretMetadata>,
+) -> Result<()> {
+    if !std::io::stdin().is_terminal()
+        || !std::io::stdout().is_terminal()
+        || !std::io::stderr().is_terminal()
+    {
+        anyhow::bail!("`phantom expiry set` requires attached stdin, stdout, and stderr terminals; no expiry policy was written");
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"phantom-expiry-set-v1\0");
+    digest.update(config_before);
+    digest.update(serde_json::to_vec(&metadata_before)?);
+    let challenge = format!(
+        "SET EXPIRY {} DAYS {} IN {} ID {} DIGEST {}",
+        key,
+        days,
+        project_dir.display(),
+        project_id,
+        hex::encode(digest.finalize())
+    );
+    eprintln!("This changes persistent local credential lifecycle policy.\nType this exact challenge to continue:\n{challenge}");
+    eprint!("> ");
+    std::io::stderr().flush()?;
+    let mut response = String::new();
+    std::io::stdin().read_line(&mut response)?;
+    if response.trim_end_matches(['\r', '\n']) != challenge {
+        anyhow::bail!("Expiry confirmation did not match exactly; no policy was written");
+    }
     Ok(())
 }
 
@@ -332,7 +326,7 @@ pub struct EnforceEntry {
 
 /// `phantom expiry enforce [--fail-closed]`
 ///
-/// Scans `.phantom.toml` per-secret `expires_at` fields and exits with status 1
+/// Scans vault lifecycle metadata and exits with status 1
 /// if ANY secret has passed its expiry timestamp. Intended for pre-commit hooks
 /// and CI pipelines to block deployments.
 ///
@@ -354,14 +348,18 @@ pub fn run_enforce(fail_closed: bool, json: bool) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let now = now_secs();
 
     let mut expired: Vec<EnforceEntry> = Vec::new();
     let mut ok_count: usize = 0;
     let mut no_expiry_count: usize = 0;
 
-    for (name, override_cfg) in &config.phantom.secrets {
-        match override_cfg.expires_at {
+    for (name, metadata) in vault
+        .list_with_metadata()
+        .context("Failed to read vault lifecycle metadata")?
+    {
+        match metadata.and_then(|metadata| metadata.expires_at) {
             None => {
                 no_expiry_count += 1;
             }
@@ -375,7 +373,7 @@ pub fn run_enforce(fail_closed: bool, json: bool) -> Result<()> {
                         _ => 0,
                     };
                     expired.push(EnforceEntry {
-                        name: name.clone(),
+                        name,
                         expires_at,
                         secs_overdue,
                         status: status.label(),
@@ -429,7 +427,7 @@ pub fn run_enforce(fail_closed: bool, json: bool) -> Result<()> {
                 );
             }
             eprintln!(
-                "\nRun {} to reset the expiry timer.",
+                "\nRun a configured provider rotation to replace expired credentials. {} only remaps the local phm_ placeholder and does not reset expiry.",
                 "phantom expiry rotate <KEY>".cyan()
             );
         }
@@ -445,20 +443,13 @@ pub fn run_enforce(fail_closed: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-// ── phantom expiry rotate <KEY> ───────────────────────────────────────────────
+// ── phantom expiry rotate <KEY> (deprecated token remap) ─────────────────────
 
 /// `phantom expiry rotate <KEY>`
 ///
-/// Generates a fresh phantom token, bumps the rotation counter on the vault
-/// metadata, and resets the expiry timer to `NOW + rotation_window` days
-/// (where `rotation_window` is stored in `.phantom.toml`; defaults to 30 days
-/// if unset).  Also rewrites the `.env` file with the new phantom token.
+/// Deprecated compatibility command. Remaps the local Phantom token only; the
+/// provider credential and all expiry/rotation metadata remain unchanged.
 pub fn run_rotate(key: &str) -> Result<()> {
-    use phantom_core::dotenv::DotenvFile;
-    use phantom_core::rotation_strategy::compute_new_expires_at;
-    use phantom_core::token::TokenMap;
-    use phantom_vault::metadata::{now_secs, RotationPolicy, SecretMetadata};
-
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -469,82 +460,62 @@ pub fn run_rotate(key: &str) -> Result<()> {
         );
     }
 
-    let mut config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Ensure the secret exists.
-    if !vault.exists(key).unwrap_or(false) {
+    if !vault
+        .exists(key)
+        .with_context(|| format!("Failed to check whether '{key}' exists in the vault"))?
+    {
         anyhow::bail!("Secret '{}' not found in vault.", key);
     }
 
-    let now = now_secs();
-
-    // Determine rotation_window from per-secret config or default to 30 days.
-    let rotation_window = config
-        .phantom
-        .secrets
-        .get(key)
-        .and_then(|ov| ov.rotation_window)
-        .unwrap_or(30);
-
-    let new_expires_at = compute_new_expires_at(rotation_window, now);
-
-    // Update vault metadata: bump rotation counter, reset expiry.
-    let existing_meta = vault.get_metadata(key).unwrap_or(None);
-    let rotation_count = existing_meta
-        .as_ref()
-        .and_then(|m| m.rotation_policy.as_ref())
-        .map(|_| 1u64) // We don't have a counter field; record the rotation via rotated_at
-        .unwrap_or(0);
-    let _ = rotation_count; // used for audit semantics; rotated_at captures the event
-
-    let new_meta = SecretMetadata {
-        created_at: existing_meta
-            .as_ref()
-            .and_then(|m| m.created_at)
-            .or(Some(now)),
-        rotated_at: Some(now),
-        expires_at: Some(new_expires_at),
-        rotation_policy: Some(RotationPolicy {
-            days_ttl: rotation_window,
-            auto_rotate: false,
-        }),
-        vault_mode: phantom_vault::metadata::VaultMode::ReadWrite,
-    };
-
-    vault
-        .set_metadata(key, new_meta)
-        .context("Failed to update vault metadata")?;
-
-    phantom_core::audit::log("secret.expiry_rotated", Some(key));
-
-    // Rewrite `.env` with a fresh phantom token for this key.
-    let env_path = project_dir.join(".env");
-    if env_path.exists() {
-        let mut token_map = TokenMap::new();
-        token_map.insert(key.to_string());
-        if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
-            dotenv
-                .write_phantomized(&token_map, &env_path)
-                .context("Failed to rewrite .env with new phantom token")?;
-        }
+    let metadata_before = vault
+        .get_metadata(key)
+        .context("Failed to read vault metadata")?;
+    let vault_names = vault.list().context("Failed to list protected secrets")?;
+    let env_path =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?.path;
+    crate::commands::rotate::remap_phantom_tokens(&env_path, &[key.to_string()])?;
+    let metadata_after = vault
+        .get_metadata(key)
+        .context("Failed to re-read vault metadata")?;
+    if metadata_before != metadata_after {
+        anyhow::bail!("Token remap invariant failed: credential lifecycle metadata changed.");
     }
-
-    // Reset the expires_at in .phantom.toml as well.
-    let entry = config.phantom.secrets.entry(key.to_string()).or_default();
-    entry.expires_at = Some(new_expires_at);
-    entry.rotation_window = Some(rotation_window);
-    config
-        .save(&config_path)
-        .context("Failed to save updated .phantom.toml")?;
+    phantom_core::audit::log("secret.token_remapped", Some(key));
 
     println!(
-        "{} Rotated '{}': new phantom token generated, expiry reset to {} day(s) from now (Unix timestamp {}).",
+        "{} Remapped the local Phantom token for '{}'. Provider credential and expiry metadata are unchanged; this command is deprecated for credential rotation.",
         "ok".green().bold(),
-        key.bold(),
-        rotation_window,
-        new_expires_at
+        key.bold()
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headless_expiry_consent_denies_without_write_authority() {
+        if !std::io::stdin().is_terminal()
+            || !std::io::stdout().is_terminal()
+            || !std::io::stderr().is_terminal()
+        {
+            let error = require_trusted_terminal_expiry_set(
+                std::path::Path::new("/tmp/project"),
+                "local-id",
+                b"config",
+                "API_KEY",
+                30,
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("no expiry policy was written"));
+        }
+    }
 }

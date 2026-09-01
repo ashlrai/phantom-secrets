@@ -1,56 +1,32 @@
 use anyhow::Result;
-use colored::Colorize;
-
-use super::proxy_state::{read_proxy_state, ProxyState};
+use std::io::IsTerminal;
 
 pub fn run() -> Result<()> {
+    if !(std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal())
+    {
+        anyhow::bail!(
+            "`phantom stop` is only a trusted-terminal diagnostic for legacy v0.7.3 state; stdin, stdout, and stderr must all be terminals"
+        );
+    }
     let project_dir = std::env::current_dir()?;
-    let pid_path = project_dir.join(".phantom.pid");
-
-    match read_proxy_state(&pid_path) {
-        ProxyState::Missing => {
-            println!("{} No running proxy found.", "!".yellow().bold());
-            return Ok(());
-        }
-        ProxyState::Stale(pid) => {
-            let _ = std::fs::remove_file(&pid_path);
-            println!(
-                "{} Removed stale proxy PID file (PID {}).",
-                "ok".green().bold(),
-                pid.pid
-            );
-            return Ok(());
-        }
-        ProxyState::Malformed(_) => {
-            let _ = std::fs::remove_file(&pid_path);
-            println!("{} Removed malformed proxy PID file.", "ok".green().bold());
-            return Ok(());
-        }
-        ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
-            // Send stop signal to the proxy process
-            #[cfg(unix)]
-            {
-                let _ = std::process::Command::new("kill")
-                    .arg(pid.pid.to_string())
-                    .status();
-            }
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &pid.pid.to_string(), "/F"])
-                    .status();
-            }
-            println!(
-                "{} Sent stop signal to proxy (PID {})",
-                "ok".green().bold(),
-                pid.pid
-            );
+    match super::legacy_proxy::inspect(&project_dir) {
+        super::legacy_proxy::LegacyState::Missing => anyhow::bail!(
+            "No legacy v0.7.3 proxy state exists. Current foreground proxies must be stopped from their owning terminal with Ctrl-C."
+        ),
+        super::legacy_proxy::LegacyState::Unsafe(error) => anyhow::bail!(
+            "Unsafe or malformed legacy .phantom.pid state was left untouched: {error}"
+        ),
+        super::legacy_proxy::LegacyState::Unverified(proxy) => anyhow::bail!(
+            "Refusing to stop PID {} because it did not authenticate as the recorded legacy proxy. The record was left untouched.",
+            proxy.pid
+        ),
+        super::legacy_proxy::LegacyState::Authenticated(proxy) => {
+            anyhow::bail!(
+                "Authenticated legacy v0.7.3 proxy state exists for PID {}. v0.7.3 did not ship an authenticated remote-shutdown endpoint, so this binary will not kill it or delete .phantom.pid. Stop it with Ctrl-C in its owning v0.7.3 terminal; if that is unavailable, use a checksum-verified v0.7.3 binary from a trusted terminal, or independently verify that no process/listener owns the record before manually removing .phantom.pid.",
+                proxy.pid
+            )
         }
     }
-
-    // Clean up PID file
-    let _ = std::fs::remove_file(&pid_path);
-    println!("{} Proxy stopped.", "ok".green().bold());
-
-    Ok(())
 }

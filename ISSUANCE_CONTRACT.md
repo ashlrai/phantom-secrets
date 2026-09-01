@@ -1,19 +1,28 @@
 # Phantom Credential Issuance — Implementation Contract
 
-Bootstrapping the *first* credential (durable root) via sanctioned human
-consent, complementing the shipped `RotationProvider` (which renews from a root
-that already exists). Issuance produces what rotation consumes.
+Historical design for bootstrapping a *first* credential (durable root) through
+sanctioned human consent and composing it with a future provider-rotation
+transaction. Neither issuance nor live provider rotation is active in 0.7.4.
 
-Status: historical implementation contract. The current shipped behavior is
-documented in `docs/grants-spec.md` and governed by the code and tests; this
-file is retained as design history and must not be used as an operations
-runbook.
+> **HISTORICAL ONLY — NOT A 0.7.4 OPERATIONS OR CAPABILITY DOCUMENT.** Every
+> later use of “shipped,” every command example, provider table, and every
+> present-tense workflow statement is superseded by this banner. None is an
+> executable or commissioned 0.7.4 feature.
+
+Status: historical implementation contract. Phantom 0.7.4 hard-denies every
+live provider issuance, enrollment exchange, refresh, renewal, rotation, and
+revocation path before provider credential access and before network I/O.
+Nothing below is a shipped capability, command guide, activation claim, or
+provider acceptance result. Exact `cfg(test)` mocks are local transaction
+evidence only. Current behavior is documented in `docs/grants-spec.md` and
+governed by code and tests; this file must not be used as an operations runbook.
+The remaining content is preserved only as design history for reviewers.
 
 ---
 
 ## 0. Orientation — what already exists (studied, reused, not duplicated)
 
-| Shipped surface | File | What issuance reuses |
+| Historical/design surface | File | Intended reuse (not active in 0.7.4) |
 |---|---|---|
 | `RotationProvider` trait, `default_rotation_providers()`, `GitHubRotationProvider` (mints installation tokens from a *pre-minted* App JWT), `VercelRotationProvider` | `crates/phantom-core/src/rotation_provider.rs` | Issuance writes the `rotation_provider` block these consume; issuance produces the PEM/refresh-token that these renew from. |
 | `RotationProviderConfig` (`provider`, `api_key_env`, `account_id`, `region`, `timeout_secs`, `enabled`), `#[serde(deny_unknown_fields)]` | same | Issuance *emits* this config so `phantom rotate` / `watch --auto-rotate` work unchanged. |

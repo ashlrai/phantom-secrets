@@ -1,4 +1,5 @@
 import { requireAuth, requirePro } from "@/lib/auth";
+import { requireHostedService } from "@/lib/commissioning";
 import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
 
@@ -49,9 +50,12 @@ export async function GET(
   req: Request,
   { params }: { params: Promise<{ team_id: string; project_id: string }> }
 ) {
-  const { team_id, project_id } = await params;
+  const commissioningGate = requireHostedService("teams");
+  if (commissioningGate) return commissioningGate;
+
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
+  const { team_id, project_id } = await params;
 
   const supabase = createServiceClient();
 
@@ -134,9 +138,12 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ team_id: string; project_id: string }> }
 ) {
-  const { team_id, project_id } = await params;
+  const commissioningGate = requireHostedService("teams");
+  if (commissioningGate) return commissioningGate;
+
   const authResult = await requireAuth(req);
   if (authResult instanceof Response) return authResult;
+  const { team_id, project_id } = await params;
   const proGate = requirePro(authResult);
   if (proGate) return proGate;
 

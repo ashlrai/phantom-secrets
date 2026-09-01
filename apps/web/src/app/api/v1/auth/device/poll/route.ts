@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase-server";
 import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
+import { effectivePlan } from "@/lib/plan";
 import { createHash, randomBytes } from "crypto";
 
 const CLI_TOKEN_TTL_DAYS = 90;
@@ -81,7 +82,7 @@ export async function POST(req: Request) {
     // Get user info
     const { data: user } = await supabase
       .from("users")
-      .select("github_login, email, plan")
+      .select("github_login, email, plan, plan_expires_at")
       .eq("id", token.user_id)
       .single();
 
@@ -92,7 +93,7 @@ export async function POST(req: Request) {
         ? {
             github_login: user.github_login,
             email: user.email,
-            plan: user.plan,
+            plan: effectivePlan(user),
           }
         : null,
     });

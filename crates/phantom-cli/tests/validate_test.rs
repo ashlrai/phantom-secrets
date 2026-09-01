@@ -4,6 +4,8 @@
 //! end-to-end: HTTP-based validation, timeout resilience, partial failure handling,
 //! metadata persistence, and audit trail.
 
+mod common;
+
 use phantom_core::validator::{
     default_validators, run_validation_pipeline, run_validation_pipeline_parallel,
     AnthropicValidator, GenericHttpValidator, GitHubValidator, OpenAiValidator, SecretValidator,
@@ -12,7 +14,6 @@ use phantom_core::validator::{
 };
 use phantom_vault::VaultBackend;
 use std::time::Duration;
-use tempfile::TempDir;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -505,7 +506,7 @@ fn pipeline_report_timestamps_are_recent() {
 
 #[test]
 fn file_vault_validation_metadata_round_trip() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     // Use file vault directly
     let vault = phantom_vault::file::FileVault::new(
         dir.path(),
@@ -537,7 +538,7 @@ fn file_vault_validation_metadata_round_trip() {
 fn file_vault_validation_metadata_invalid_persisted() {
     let vault = phantom_vault::file::FileVault::new(
         &{
-            let d = TempDir::new().unwrap();
+            let d = common::canonical_tempdir();
             let p = d.path().to_path_buf();
             std::mem::forget(d);
             p
@@ -564,7 +565,7 @@ fn file_vault_validation_metadata_invalid_persisted() {
 fn file_vault_validation_metadata_cleared_on_delete() {
     let vault = phantom_vault::file::FileVault::new(
         &{
-            let d = TempDir::new().unwrap();
+            let d = common::canonical_tempdir();
             let p = d.path().to_path_buf();
             std::mem::forget(d);
             p
@@ -599,7 +600,7 @@ fn file_vault_validation_metadata_cleared_on_delete() {
 fn file_vault_validation_metadata_nonexistent_secret_errors() {
     let vault = phantom_vault::file::FileVault::new(
         &{
-            let d = TempDir::new().unwrap();
+            let d = common::canonical_tempdir();
             let p = d.path().to_path_buf();
             std::mem::forget(d);
             p
@@ -617,7 +618,7 @@ fn file_vault_validation_metadata_nonexistent_secret_errors() {
 #[test]
 fn file_vault_validation_metadata_survives_reload() {
     // Verify that metadata is persisted to disk and survives vault reload.
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let path = dir.path().to_path_buf();
 
     {
@@ -651,7 +652,7 @@ fn pipeline_emits_audit_events_when_enabled() {
     use std::sync::Mutex;
 
     // Set up a temp HOME with audit enabled so events get written.
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     static ENV_LOCK: Mutex<()> = Mutex::new(());
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let prev_home = std::env::var("HOME").ok();

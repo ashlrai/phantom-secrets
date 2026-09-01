@@ -1,68 +1,49 @@
+use anyhow::Result;
 use colored::Colorize;
 use std::path::Path;
 
-/// Auto-configure Claude Code MCP server and .env permissions if Claude Code is detected.
-pub fn auto_setup_claude_code(project_dir: &Path, cwd: &Path) {
-    // .claude dir is typically at the repo root, not in a subdirectory
-    let claude_dir = if project_dir.join(".claude").exists() {
-        project_dir.join(".claude")
-    } else if cwd.join(".claude").exists() {
-        cwd.join(".claude")
-    } else {
-        return; // No .claude dir found anywhere
-    };
+/// A preflighted Claude Code update. Runtime resolution, config parsing, and
+/// serialization all finish before `phantom init` mutates the vault or .env.
+pub struct PreparedClaudeSetup {
+    mcp: crate::commands::setup::McpCommand,
+    plan: crate::commands::setup::ClaudeSettingsPlan,
+}
+
+impl PreparedClaudeSetup {
+    pub fn transaction_file(&self) -> Option<phantom_vault::InitFile> {
+        self.plan.transaction_file()
+    }
+}
+
+/// Prepare Claude Code MCP configuration when a project-local `.claude`
+/// directory is present. This uses the exact local-runtime and settings merge
+/// implementation behind `phantom setup --client claude`.
+pub fn prepare_auto_setup_claude_code(project_dir: &Path) -> Result<Option<PreparedClaudeSetup>> {
+    prepare_auto_setup_with(project_dir, crate::commands::setup::mcp_command_spec)
+}
+
+fn prepare_auto_setup_with<F>(
+    project_dir: &Path,
+    resolve_mcp: F,
+) -> Result<Option<PreparedClaudeSetup>>
+where
+    F: FnOnce() -> Result<crate::commands::setup::McpCommand>,
+{
+    let claude_dir = project_dir.join(".claude");
+    if !claude_dir.exists() {
+        return Ok(None); // No project-local .claude directory.
+    }
     let settings_path = claude_dir.join("settings.local.json");
+    let mcp = resolve_mcp()?;
+    let plan = crate::commands::setup::prepare_claude_settings(&settings_path, &mcp)?;
+    Ok(Some(PreparedClaudeSetup { mcp, plan }))
+}
 
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        match std::fs::read_to_string(&settings_path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or(serde_json::json!({})),
-            Err(_) => return,
-        }
-    } else {
-        serde_json::json!({})
-    };
-
-    let obj = match settings.as_object_mut() {
-        Some(o) => o,
-        None => return,
-    };
-
-    let mut changed = false;
-
-    // Add MCP server (use npx for portability)
-    let mcp_servers = obj
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}));
-    if let Some(servers) = mcp_servers.as_object_mut() {
-        if !servers.contains_key("phantom") {
-            servers.insert(
-                "phantom".to_string(),
-                serde_json::json!({
-                    "command": "npx",
-                    "args": ["phantom-secrets-mcp"]
-                }),
-            );
-            println!("{} Configured Claude Code MCP server", "ok".green().bold());
-            changed = true;
-        }
-    }
-
-    // Remove legacy Phantom-managed dotenv read grants. Tokens are worthless,
-    // but dotenv siblings can contain plaintext backups or tool-generated data.
-    let permissions = obj
-        .entry("permissions")
-        .or_insert_with(|| serde_json::json!({}));
-    if let Some(perms) = permissions.as_object_mut() {
-        if crate::commands::setup::remove_legacy_dotenv_read_grants(perms) {
-            changed = true;
-            println!("{} Removed legacy dotenv read grants", "ok".green().bold());
-        }
-    }
-
-    if changed {
-        if let Ok(content) = serde_json::to_string_pretty(&settings) {
-            let _ = std::fs::write(&settings_path, content);
-        }
+/// Report a Claude settings update that was committed by the init transaction.
+pub fn finish_auto_setup_claude_code(prepared: &PreparedClaudeSetup) {
+    crate::commands::setup::print_claude_changes(&prepared.plan, &prepared.mcp);
+    if prepared.plan.transaction_file().is_some() {
+        println!("{} Configured Claude Code MCP server", "ok".green().bold());
     }
 }
 
@@ -99,5 +80,43 @@ pub fn detect_platforms(project_dir: &Path, cwd: &Path) {
             "   Configure sync: {}",
             "phantom sync --platform <name>".dimmed()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn missing_runtime_does_not_mutate_existing_config() {
+        let tmp = tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let settings_path = claude_dir.join("settings.local.json");
+        let original = br#"{"theme":"dark"}"#;
+        std::fs::write(&settings_path, original).unwrap();
+
+        let result = prepare_auto_setup_with(tmp.path(), || {
+            anyhow::bail!("Phantom MCP runtime not found")
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&settings_path).unwrap(), original);
+    }
+
+    #[test]
+    fn child_project_does_not_claim_parent_claude_configuration() {
+        let parent = tempdir().unwrap();
+        std::fs::create_dir(parent.path().join(".claude")).unwrap();
+        let project = parent.path().join("child");
+        std::fs::create_dir(&project).unwrap();
+
+        let prepared = prepare_auto_setup_with(&project, || {
+            panic!("a parent-only .claude directory must not trigger project setup")
+        })
+        .unwrap();
+
+        assert!(prepared.is_none());
     }
 }

@@ -25,11 +25,14 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     a: (
       <>
         Your <Tok>.env</Tok> file contains <Tok>phm_xxxxxxxx</Tok> tokens
-        instead of real values. Every AI tool (Claude Code, Cursor,
-        Windsurf, Codex, anything else that reads .env) reads those tokens
-        and only those tokens in the managed workflow. The local proxy swaps
-        them just before the outbound TLS connection. Human plaintext reveal
-        is a separate trusted-terminal action with no noninteractive bypass.
+        instead of real values. In the managed workflow, supported clients
+        read those placeholders rather than provider values from the rewritten
+        dotenv file. <Tok>phantom exec</Tok> gives the child fresh placeholders
+        and a separate proxy bearer. On an exact supported route, the proxy
+        injects only that route&apos;s vault value into its fixed auth header;
+        client headers and bodies never resolve placeholders. Other files and
+        unmanaged processes remain outside that boundary. Human plaintext reveal is a separate
+        trusted-terminal action with no noninteractive bypass.
       </>
     ),
   },
@@ -37,10 +40,12 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "What if a phm_ token leaks from AI logs?",
     a: (
       <>
-        Nothing happens. <Tok>phm_</Tok> tokens are session-scoped
-        placeholders that have no value outside your local proxy. The real
-        key never left your machine. Rotate the token with{" "}
-        <Tok>phantom rotate</Tok> and the leaked one becomes inert.
+        A managed <Tok>.env</Tok> placeholder persists until you rotate it; it
+        is not the provider credential and is not sufficient by itself to use
+        the authenticated local proxy. <Tok>phantom exec</Tok> separately
+        creates fresh session <Tok>phm_</Tok> values and a fresh{" "}
+        <Tok>PHANTOM_PROXY_TOKEN</Tok> for the child process. Treat a leaked
+        placeholder as sensitive metadata and run <Tok>phantom rotate</Tok>.
       </>
     ),
   },
@@ -52,8 +57,10 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
         Encrypted file fallback for CI and Docker, using ChaCha20-Poly1305
         with Argon2id key derivation. Vault retrieval returns{" "}
         <Tok>Zeroizing&lt;String&gt;</Tok> so plaintext is scrubbed from
-        RAM by Drop. No plaintext ever touches disk outside the encrypted
-        vault file.
+        RAM by Drop. Phantom&apos;s managed init path writes the vault before
+        atomically replacing dotenv values and does not create a plaintext
+        project-local backup. Existing backups, logs, and unmanaged tools are
+        outside that boundary.
       </>
     ),
   },
@@ -61,10 +68,11 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "Can the proxy be tricked into revealing the real key?",
     a: (
       <>
-        Supported proxy paths replace configured values and redact recognized
-        credential formats in response headers and bodies before returning
-        them. This reduces accidental exposure; it is not a substitute for
-        provider scoping, rotation, or OS user-presence controls. Proxy session
+        The proxy discards client control of the matched route&apos;s auth header
+        and injects only that route&apos;s vault value there; client headers and
+        bodies never resolve placeholders. It redacts recognized credential
+        formats in responses. This reduces accidental exposure; it is not a
+        substitute for provider scoping, rotation, or OS user-presence controls. Proxy session
         tokens use constant-time comparison.
       </>
     ),
@@ -73,10 +81,10 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "What about secrets in HTTP request bodies, not just headers?",
     a: (
       <>
-        The proxy scans supported request headers and body fields for
-        <Tok>phm_</Tok> tokens. Bodies are collected under explicit byte/time
-        limits before replacement. General upstream query-parameter
-        substitution is not supported.
+        Client headers and bodies never resolve <Tok>phm_</Tok> placeholders.
+        Bodies are collected under explicit byte/time limits and forwarded
+        byte-for-byte. Only an exact matched route can inject its own vault
+        value into its fixed authentication header.
       </>
     ),
   },
@@ -84,9 +92,13 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "Can my team share secrets without sharing the .env?",
     a: (
       <>
-        Yes — Pro tier ships shared cloud vaults with envelope encryption.
-        Each team member has their own keypair; the vault is encrypted to
-        every member&apos;s public key. We never see plaintext.
+        The repository includes Pro-gated team-vault source with envelope
+        encryption for fixed-membership pilots. Each member has their own
+        keypair; the vault is encrypted to every member&apos;s public key, and the
+        service path accepts ciphertext. Hosted availability still requires a
+        commissioned Phantom Cloud deployment. Member removal and automatic
+        vault-key rotation are not shipped, so do not treat this as an
+        offboarding control.
       </>
     ),
   },
@@ -94,10 +106,12 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
     q: "What if I want to leave Phantom?",
     a: (
       <>
-        Your original <Tok>.env</Tok> is backed up automatically on init.
-        Run <Tok>phantom unwrap</Tok> to restore it. Delete{" "}
-        <Tok>.phantom.toml</Tok> and Phantom is gone — no lock-in, no
-        migration scripts.
+        Phantom intentionally does not leave a plaintext <Tok>.env</Tok>
+        backup during init. Keep an independent provider recovery path before
+        migrating. <Tok>phantom unwrap</Tok> only reverses package-script
+        wrapping; it does not restore dotenv values. To leave, recover or
+        rotate credentials through the provider, update your dotenv file in a
+        trusted terminal, then remove Phantom configuration.
       </>
     ),
   },

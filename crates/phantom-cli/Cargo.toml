@@ -8,7 +8,7 @@ homepage.workspace = true
 authors.workspace = true
 publish.workspace = true
 readme = "../../README.md"
-description = "Open-source CLI that prevents AI coding agents from leaking your API keys"
+description = "Open-source CLI that reduces API-key exposure on supported AI-agent workflows"
 keywords = ["secrets", "api-keys", "ai-safety", "claude-code", "mcp"]
 categories = ["command-line-utilities", "development-tools", "cryptography"]
 
@@ -35,6 +35,7 @@ zeroize = { workspace = true }
 open = "5"
 which = "6"
 dirs = "5"
+directories = "5"
 arboard = { version = "3", default-features = false }
 indicatif = "0.18"
 base64 = { workspace = true }
@@ -44,6 +45,14 @@ self_update = { version = "1.2", default-features = false, features = ["reqwest"
 toml = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
+sha2 = "0.10"
+fs2 = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 assert_cmd = "2"

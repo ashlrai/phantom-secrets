@@ -1,27 +1,22 @@
-//! Credential **issuance** — bootstrapping the durable ROOT credential that the
-//! shipped [`crate::rotation_provider`] later renews from.
+//! Credential-issuance protocol foundations.
 //!
-//! Issuance is the *writer* of the `[phantom.secrets.<name>.rotation_provider]`
-//! block; rotation is the *reader*. A [`ConsentEngine`] runs the ONE human
-//! consent (a browser click, a device code) and returns the durable root(s) —
-//! a GitHub App private-key PEM, an OAuth refresh token — inside
-//! [`zeroize::Zeroizing`]. It never touches the vault: exactly like
-//! `rotation_provider.rs`, the dependency direction is vault → core, so
-//! `issue()` returns an [`IssuanceOutcome`] and the **CLI/MCP layer** performs
-//! every `vault.store(...)`.
+//! Shipped 0.7.4 hard-denies every [`ConsentEngine::issue`] before request
+//! inspection, browser, loopback, environment, or network effects. The protocol
+//! implementations execute only in crate-local tests against explicit
+//! overridden endpoints. They are foundations for a future compensated
+//! enrollment transaction, not evidence of live enrollment capability.
 //!
 //! # Security
 //!
-//! - Every root value is a [`zeroize::Zeroizing<String>`] end to end and is
+//! - Application-owned root buffers are [`zeroize::Zeroizing<String>`] and are
 //!   **never** logged, printed, returned to the model, emitted in `--json`, or
 //!   carried in an MCP response. It travels vendor → core → CLI → vault only.
 //! - [`IssuanceOutcome`] / [`IssuedMaterial`] carry a **redacting `Debug`**
 //!   (values render as `[redacted]`), mirroring `AutoSyncOutcome`.
 //! - Vendor error bodies only ever surface through
 //!   [`crate::rotation_provider::summarize_error_body`] (type/code/status only).
-//! - Production endpoints are compile-time constants. Endpoint injection and
-//!   mock issuance are available only to this crate's unit tests, so an
-//!   agent-controlled environment cannot redirect an exchange.
+//! - Endpoint injection and protocol execution are available only to this
+//!   crate's unit tests. Shipped builds return `NotSupported` first.
 
 pub mod browser;
 pub mod device;
@@ -380,6 +375,22 @@ pub fn default_consent_engines() -> Vec<Box<dyn ConsentEngine>> {
 /// libraries contain no environment-variable escape hatch.
 pub fn issuance_mock_allowed() -> bool {
     cfg!(test)
+}
+
+/// Admit only crate-local, overridden-endpoint issuance tests.
+///
+/// Shipped library builds hard-deny every consent engine before request
+/// inspection or browser, loopback, environment, and network effects. Unit
+/// tests may exercise the protocol foundations only through the explicit
+/// endpoint-override seam, which is unavailable to downstream builds.
+pub(crate) fn guard_test_only_issuance(deps: &IssuanceDeps<'_>) -> Result<(), IssuanceError> {
+    if !issuance_mock_allowed() || !deps.endpoints.is_overridden() {
+        return Err(IssuanceError::NotSupported {
+            reason: "live credential enrollment is disabled in shipped 0.7.4 until a durable compensated persistence and recovery transaction exists; obtain the credential at the provider and store it from a trusted terminal"
+                .to_string(),
+        });
+    }
+    guard_mock_issuance()
 }
 
 /// Build the blocking HTTP client used by the issuance engines. Lives in core

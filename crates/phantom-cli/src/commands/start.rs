@@ -2,31 +2,32 @@ use anyhow::Result;
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
+use phantom_core::env_scope::DEFAULT_ENV;
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
-
-use super::proxy_state::{cleanup_if_stale_or_malformed, read_proxy_state, ProxyState};
+use std::io::IsTerminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellSyntax {
     Bash,
+    Fish,
     PowerShell,
     #[cfg_attr(not(windows), allow(dead_code))]
     Cmd,
 }
 
 fn detect_shell_syntax() -> ShellSyntax {
-    // POSIX shells (incl. Git Bash on Windows, WSL, macOS, Linux) set $SHELL.
-    if let Ok(sh) = std::env::var("SHELL") {
-        let lower = sh.to_lowercase();
-        if lower.contains("bash")
-            || lower.contains("zsh")
-            || lower.contains("fish")
-            || lower.ends_with("/sh")
-        {
-            return ShellSyntax::Bash;
+    // PHANTOM_SHELL is the explicit override for nested shells. SHELL usually
+    // names the login shell and is only a fallback hint.
+    if let Ok(shell) = std::env::var("PHANTOM_SHELL") {
+        if let Some(syntax) = shell_syntax_from_name(&shell) {
+            return syntax;
+        }
+    }
+    if let Ok(shell) = std::env::var("SHELL") {
+        if let Some(syntax) = shell_syntax_from_name(&shell) {
+            return syntax;
         }
     }
     // $PSModulePath is set by PowerShell on Windows and nowhere else.
@@ -43,22 +44,45 @@ fn detect_shell_syntax() -> ShellSyntax {
     }
 }
 
+fn shell_syntax_from_name(shell: &str) -> Option<ShellSyntax> {
+    let lower = shell.to_lowercase();
+    if lower.contains("fish") {
+        Some(ShellSyntax::Fish)
+    } else if lower.contains("powershell") || lower.contains("pwsh") {
+        Some(ShellSyntax::PowerShell)
+    } else if lower == "cmd" || lower.ends_with("cmd.exe") {
+        Some(ShellSyntax::Cmd)
+    } else if lower.contains("bash") || lower.contains("zsh") || lower.ends_with("/sh") {
+        Some(ShellSyntax::Bash)
+    } else {
+        None
+    }
+}
+
 fn format_export(syntax: ShellSyntax, var: &str, value: &str) -> String {
     match syntax {
-        ShellSyntax::Bash => format!("  export {}={}", var, value),
-        ShellSyntax::PowerShell => format!("  $env:{} = \"{}\"", var, value),
+        ShellSyntax::Bash => format!("  export {}='{}'", var, quote_posix_single(value)),
+        ShellSyntax::Fish => format!("  set -gx {} '{}'", var, quote_fish_single(value)),
+        ShellSyntax::PowerShell => format!("  $env:{} = '{}'", var, value.replace('\'', "''")),
         ShellSyntax::Cmd => format!("  set {}={}", var, value),
     }
 }
 
+fn quote_posix_single(value: &str) -> String {
+    value.replace('\'', "'\\''")
+}
+
+fn quote_fish_single(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
 fn shell_hint(syntax: ShellSyntax) -> &'static str {
     match syntax {
-        ShellSyntax::Bash => {
-            "  # Detected bash/zsh/fish. PowerShell: `$env:X = \"Y\"`. cmd: `set X=Y`."
-        }
-        ShellSyntax::PowerShell => "  # Detected PowerShell. bash: `export X=Y`. cmd: `set X=Y`.",
+        ShellSyntax::Bash => "  # Selected bash/zsh syntax from PHANTOM_SHELL or the login-shell hint. For a different nested shell, set PHANTOM_SHELL explicitly.",
+        ShellSyntax::Fish => "  # Selected fish syntax from PHANTOM_SHELL or the login-shell hint. For a different nested shell, set PHANTOM_SHELL explicitly.",
+        ShellSyntax::PowerShell => "  # Selected PowerShell syntax. For a different nested shell, set PHANTOM_SHELL explicitly.",
         ShellSyntax::Cmd => {
-            "  # Assuming cmd.exe. PowerShell: `$env:X = \"Y\"`. bash: `export X=Y`."
+            "  # Selected cmd.exe syntax. For a different nested shell, set PHANTOM_SHELL explicitly."
         }
     }
 }
@@ -74,152 +98,25 @@ fn header_auth_only() -> bool {
 
 pub fn run(daemon: bool) -> Result<()> {
     if daemon {
-        return run_daemon();
+        anyhow::bail!(
+            "Detached proxy mode is disabled: Phantom will not persist a live proxy bearer or external process-control state in the workspace. Use `phantom exec -- <command>` or run `phantom start` in a trusted terminal and keep that terminal open."
+        );
+    }
+    if !(std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal())
+    {
+        anyhow::bail!(
+            "Standalone `phantom start` requires stdin, stdout, and stderr to each be attached to a terminal. Headless start is denied before vault access or bearer generation; terminal attachment does not prove who controls a PTY, so use only a trusted terminal. Use `phantom exec -- <command>` for owned automation."
+        );
     }
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_async())
 }
 
-/// Spawn a detached `phantom start` subprocess (without `--daemon`) and wait
-/// for it to write the PID file. Once the PID file appears we read the port
-/// and proxy token from it, print the export commands, and exit.
-fn run_daemon() -> Result<()> {
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-    let pid_path = project_dir.join(".phantom.pid");
-
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
-    }
-
-    match read_proxy_state(&pid_path) {
-        ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
-            eprintln!(
-                "{} Proxy may already be running on 127.0.0.1:{} (PID {}). Run {} or {} first.",
-                "!".yellow().bold(),
-                pid.port,
-                pid.pid,
-                "phantom status".cyan().bold(),
-                "phantom stop".cyan().bold()
-            );
-            return Ok(());
-        }
-        ProxyState::Stale(_) | ProxyState::Malformed(_) => {
-            cleanup_if_stale_or_malformed(&pid_path)?;
-        }
-        ProxyState::Missing => {}
-    }
-
-    let exe = std::env::current_exe()?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("start")
-        .current_dir(&project_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null());
-
-    // Detach the child so it survives the parent exiting.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
-    }
-
-    cmd.spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn daemon process: {e}"))?;
-
-    // Wait for the child to write the PID file (up to 5 seconds).
-    let mut attempts = 0;
-    while !pid_path.exists() {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        attempts += 1;
-        if attempts > 50 {
-            anyhow::bail!("Timed out waiting for daemon to start (no PID file after 5s)");
-        }
-    }
-
-    // Small extra delay to let the child finish writing.
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-    let pid_info = std::fs::read_to_string(&pid_path)?;
-    let parts: Vec<&str> = pid_info.trim().split(':').collect();
-    if parts.len() < 3 {
-        anyhow::bail!("PID file has unexpected format: {}", pid_info.trim());
-    }
-    let pid = parts[0];
-    let port: u16 = parts[1]
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid port in PID file"))?;
-    let proxy_token = parts[2];
-
-    // Load config to build the export commands.
-    let config = PhantomConfig::load(&config_path)?;
-    config.validate_agentic_proxy_routes()?;
-    let registry = ServiceRegistry::from_config(&config.services);
-
-    println!(
-        "{} Proxy started on {} (PID {})",
-        "ok".green().bold(),
-        format!("127.0.0.1:{port}").cyan(),
-        pid,
-    );
-
-    // Print export commands
-    println!(
-        "\n{} Set these env vars in your shell:\n",
-        "->".blue().bold()
-    );
-    let syntax = detect_shell_syntax();
-    let header_auth_only = header_auth_only();
-    let overrides = if header_auth_only {
-        registry.base_url_overrides(port)
-    } else {
-        registry.base_url_overrides_with_token(port, Some(proxy_token))
-    };
-    for (env_var, url) in &overrides {
-        println!("{}", format_export(syntax, env_var, url));
-    }
-    println!(
-        "{}",
-        format_export(syntax, "PHANTOM_PROXY_PORT", &port.to_string())
-    );
-    println!(
-        "{}",
-        format_export(syntax, "PHANTOM_PROXY_TOKEN", proxy_token)
-    );
-    if header_auth_only {
-        println!("  # Header-only mode: clients must send x-phantom-proxy-token.");
-    } else {
-        println!(
-            "  # SDK-compatible URLs include /_phantom/TOKEN/. Set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 for header-only mode."
-        );
-    }
-    println!("\n{}", shell_hint(syntax));
-
-    println!(
-        "\n{} Running in background. Use {} to stop.",
-        "ok".green().bold(),
-        "phantom stop".cyan().bold()
-    );
-
-    Ok(())
-}
-
 async fn run_async() -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let env_path = project_dir.join(".env");
-    let pid_path = project_dir.join(".phantom.pid");
 
     if !config_path.exists() {
         anyhow::bail!(
@@ -228,41 +125,64 @@ async fn run_async() -> Result<()> {
         );
     }
 
-    // Check if already running.
-    match read_proxy_state(&pid_path) {
-        ProxyState::Running(pid) | ProxyState::Unknown(pid) => {
-            eprintln!(
-                "{} Proxy may already be running on 127.0.0.1:{} (PID {}). Run {} or {} first.",
-                "!".yellow().bold(),
-                pid.port,
-                pid.pid,
-                "phantom status".cyan().bold(),
-                "phantom stop".cyan().bold()
-            );
-            return Ok(());
-        }
-        ProxyState::Stale(_) | ProxyState::Malformed(_) => {
-            cleanup_if_stale_or_malformed(&pid_path)?;
-        }
-        ProxyState::Missing => {}
-    }
-
     let config = PhantomConfig::load(&config_path)?;
     config.validate_agentic_proxy_routes()?;
-    let vault = phantom_vault::create_vault(config.local_project_id());
+
+    let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
+    let preflight_protected_keys: std::collections::HashSet<&str> = preflight
+        .file
+        .iter()
+        .flat_map(DotenvFile::entries)
+        .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
+        .map(|entry| entry.key.as_str())
+        .collect();
+    let blocked_connection_strings: Vec<&str> = config
+        .connection_string_services()
+        .into_iter()
+        .filter_map(|(_, service)| {
+            (preflight_protected_keys.contains(service.secret_key.as_str())
+                || std::env::var_os(&service.secret_key).is_some())
+            .then_some(service.secret_key.as_str())
+        })
+        .collect();
+    if !blocked_connection_strings.is_empty() {
+        anyhow::bail!(
+            "Refusing standalone proxy start for configured connection-string credential(s): {}. Ambient values and phantom tokens require a protocol-aware broker.",
+            blocked_connection_strings.join(", ")
+        );
+    }
+
+    super::legacy_proxy::refuse_start_with_legacy_state(&project_dir)?;
+
+    // This machine-local stable lock is held from preflight through graceful
+    // shutdown and is never unlinked. It stores no PID, port, or bearer.
+    let proxy_lock = super::proxy_lifecycle::try_acquire(config.local_project_id())?;
+    let Some(_proxy_lock) = proxy_lock else {
+        anyhow::bail!(
+            "Another foreground Phantom proxy session already owns {}. Stop it from its owning terminal with Ctrl-C; external process control is disabled.",
+            project_dir.display()
+        );
+    };
+
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault_names = vault.list().map_err(|error| {
+        anyhow::anyhow!("Failed to list protected vault entries before proxy start: {error}")
+    })?;
+    let resolved =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
 
     // Build token mapping
-    let mut token_to_secret: HashMap<String, String> = HashMap::new();
+    let mut token_to_secret: HashMap<String, (String, String)> = HashMap::new();
     let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
-    if env_path.exists() {
-        let dotenv = DotenvFile::parse_file(&env_path)?;
+    if let Some(dotenv) = resolved.file {
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
-                if let Ok(real_value) = vault.retrieve(&entry.key) {
-                    token_to_secret.insert(entry.value.clone(), String::from(real_value.as_str()));
-                    secret_name_to_value
-                        .insert(entry.key.clone(), String::from(real_value.as_str()));
-                }
+                let real_value = retrieve_required_default_secret(vault.as_ref(), &entry.key)?;
+                token_to_secret.insert(
+                    entry.value.clone(),
+                    (entry.key.clone(), String::from(real_value.as_str())),
+                );
+                secret_name_to_value.insert(entry.key.clone(), String::from(real_value.as_str()));
             }
         }
     }
@@ -275,7 +195,7 @@ async fn run_async() -> Result<()> {
     }
 
     let registry = ServiceRegistry::from_config(&config.services);
-    let interceptor = Interceptor::new_with_named(token_to_secret.clone(), secret_name_to_value);
+    let interceptor = Interceptor::new_scoped(token_to_secret.clone(), secret_name_to_value);
     let proxy_token = ProxyServer::generate_proxy_token();
 
     let proxy = ProxyServer::start(
@@ -292,15 +212,6 @@ async fn run_async() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("Failed to start proxy: {e}"))?;
 
     let port = proxy.port();
-
-    // Write PID file atomically. The PID file contains the proxy auth token,
-    // so the tempfile must have restrictive permissions from the moment of
-    // creation — not set afterward. phantom_core::fs::atomic_write stages
-    // through `tempfile::NamedTempFile` which creates with mode 0o600 on POSIX
-    // before the first byte is written, then renames over the target atomically.
-    // Fixes F8 from the 0.5.1 security audit (world-readable race window).
-    let pid_info = format!("{}:{}:{}", std::process::id(), port, proxy_token);
-    phantom_core::fs::atomic_write(&pid_path, pid_info.as_bytes())?;
 
     println!(
         "{} Proxy started on {}",
@@ -345,14 +256,116 @@ async fn run_async() -> Result<()> {
     }
     println!("\n{}", shell_hint(syntax));
 
-    println!("\n{} Press Ctrl-C to stop the proxy.\n", "->".blue().bold());
+    println!(
+        "\n{} Keep this trusted terminal open. Press Ctrl-C here to stop the proxy; detached mode and external stop are disabled.\n",
+        "->".blue().bold()
+    );
     tokio::signal::ctrl_c().await?;
     println!();
 
-    // Cleanup
-    let _ = std::fs::remove_file(&pid_path);
     proxy.shutdown().await;
     println!("{} Proxy stopped.", "ok".green().bold());
 
     Ok(())
+}
+
+fn retrieve_required_default_secret(
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+) -> Result<zeroize::Zeroizing<String>> {
+    let namespaced = phantom_core::env_scope::namespaced_key(DEFAULT_ENV, name);
+    match vault.retrieve_for_injection(&namespaced) {
+        Ok(value) => Ok(value),
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => {
+            vault
+                .retrieve_for_injection(name)
+                .map_err(|error| match error {
+                phantom_core::error::PhantomError::SecretNotFound(_) => anyhow::anyhow!(
+                    "Protected dotenv key '{name}' has no vault entry for the default environment; refusing to start a partial proxy"
+                ),
+                other => anyhow::anyhow!(
+                    "Failed to read legacy default secret '{name}' from the vault: {other}"
+                ),
+                })
+        }
+        Err(error) => Err(anyhow::anyhow!(
+            "Failed to read default secret '{namespaced}' from the vault: {error}"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+    use phantom_core::error::{PhantomError, Result as PhantomResult};
+    use zeroize::Zeroizing;
+
+    struct MissingVault;
+
+    impl phantom_vault::VaultBackend for MissingVault {
+        fn store(&self, _name: &str, _value: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            Err(PhantomError::SecretNotFound(name.to_string()))
+        }
+
+        fn delete(&self, _name: &str) -> PhantomResult<()> {
+            Ok(())
+        }
+
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn backend_name(&self) -> &str {
+            "missing"
+        }
+    }
+
+    #[test]
+    fn fish_exports_use_native_syntax_and_escape_values() {
+        assert_eq!(
+            format_export(ShellSyntax::Fish, "PHANTOM_PROXY_TOKEN", "a'b\\c"),
+            "  set -gx PHANTOM_PROXY_TOKEN 'a\\'b\\\\c'"
+        );
+        assert!(shell_hint(ShellSyntax::Fish).contains("Selected fish"));
+        assert_eq!(
+            shell_syntax_from_name("/opt/homebrew/bin/fish"),
+            Some(ShellSyntax::Fish)
+        );
+        assert_eq!(
+            shell_syntax_from_name("pwsh"),
+            Some(ShellSyntax::PowerShell)
+        );
+    }
+
+    #[test]
+    fn posix_and_powershell_exports_quote_values() {
+        assert_eq!(
+            format_export(ShellSyntax::Bash, "X", "a'b"),
+            "  export X='a'\\''b'"
+        );
+        assert_eq!(
+            format_export(ShellSyntax::PowerShell, "X", "a'b"),
+            "  $env:X = 'a''b'"
+        );
+    }
+
+    #[test]
+    fn daemon_mode_fails_closed_before_runtime_creation() {
+        let error = run(true).unwrap_err().to_string();
+        assert!(error.contains("Detached proxy mode is disabled"));
+        assert!(error.contains("will not persist a live proxy bearer"));
+    }
+
+    #[test]
+    fn foreground_start_rejects_a_missing_protected_vault_entry() {
+        let error = retrieve_required_default_secret(&MissingVault, "OPENAI_API_KEY")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("has no vault entry"));
+        assert!(error.contains("refusing to start a partial proxy"));
+    }
 }

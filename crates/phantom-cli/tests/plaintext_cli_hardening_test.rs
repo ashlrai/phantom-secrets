@@ -1,3 +1,5 @@
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -16,7 +18,7 @@ fn command(dir: &TempDir) -> Command {
 }
 
 fn setup_secret() -> TempDir {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     command(&dir).args(["init", "--empty"]).assert().success();
     command(&dir)
         .args(["add", "TEST_SECRET", "--stdin"])
@@ -37,7 +39,7 @@ fn directory_entries(dir: &TempDir) -> Vec<String> {
 
 #[test]
 fn reveal_yes_is_rejected_before_project_or_vault_access() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let output = command(&dir)
         .args(["reveal", "TEST_SECRET", "--yes"])
         .output()
@@ -64,7 +66,7 @@ fn reveal_requires_attached_input_and_error_terminals() {
 
 #[test]
 fn plaintext_json_export_is_disabled_even_with_legacy_acknowledgement() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let output = command(&dir)
         .args(["export", "--json", "--allow-plaintext"])
         .output()
@@ -78,7 +80,7 @@ fn plaintext_json_export_is_disabled_even_with_legacy_acknowledgement() {
 
 #[test]
 fn team_revoke_fails_before_auth_network_or_local_mutation() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     let before = directory_entries(&dir);
     let output = command(&dir)
         .args(["team", "revoke", "team-test", "member-test", "--yes"])
@@ -93,7 +95,7 @@ fn team_revoke_fails_before_auth_network_or_local_mutation() {
 
 #[test]
 fn help_hides_legacy_plaintext_and_revocation_flags() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
 
     let reveal = command(&dir).args(["reveal", "--help"]).output().unwrap();
     assert!(reveal.status.success());
@@ -112,7 +114,7 @@ fn help_hides_legacy_plaintext_and_revocation_flags() {
 
 #[test]
 fn exec_refuses_protected_connection_strings_before_launching_child() {
-    let dir = TempDir::new().unwrap();
+    let dir = common::canonical_tempdir();
     fs::write(
         dir.path().join(".env"),
         "DATABASE_URL=postgresql://agent:must-not-leak@db.example.test/app\n",

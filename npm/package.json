@@ -1,7 +1,7 @@
 {
   "name": "phantom-secrets",
-  "version": "0.7.3",
-  "description": "Prevent AI coding agents from leaking your API keys. Replaces real secrets with phantom tokens; a local proxy swaps them back at the network layer.",
+  "version": "0.7.4",
+  "description": "Reduce API-key exposure in supported AI-agent workflows with managed placeholders, value-blind tools, and exact route-owned proxy authentication.",
   "bin": {
     "phantom-secrets": "bin/cli.js",
     "phantom": "bin/cli.js"
@@ -40,7 +40,7 @@
     "url": "https://github.com/ashlrai/phantom-secrets/issues"
   },
   "engines": {
-    "node": ">=16"
+    "node": ">=22"
   },
   "os": [
     "darwin",

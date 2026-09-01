@@ -4,7 +4,7 @@
 
 Windsurf's Cascade AI reads files in your workspace to understand context. A `.env` file containing real API keys is visible to Cascade and can surface in suggestions, explanations, and generated code.
 
-After `phantom init`, your `.env` holds only phantom tokens (`phm_...`). Cascade reads the tokens, not the real values. When your code makes an outbound API call during development, the local Phantom proxy replaces the token with the real value before the request leaves your machine.
+After `phantom init`, successfully managed dotenv entries hold phantom tokens (`phm_...`). Cascade reads the tokens, not the real values. For a supported outbound API call, the authenticated proxy matches an exact route and injects only its route-owned vault value into the fixed auth header. Client-controlled headers and bodies never resolve tokens.
 
 The MCP integration exposes the release-schema-verified catalog in Windsurf's
 Cascade chat. The current release contract enforces 54 unique tools; runtime
@@ -16,11 +16,9 @@ Cascade chat. The current release contract enforces 54 unique tools; runtime
 
 ### Step 1: install Phantom
 
-```bash
-npx phantom-secrets init
-```
-
-This installs the CLI and initializes your current project in one step.
+Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+verified path in [getting started](./getting-started.md#install), then run
+`phantom init` in the project.
 
 ### Step 2: wire up Windsurf (one command)
 
@@ -41,7 +39,14 @@ This writes `~/.codeium/windsurf/mcp_config.json` with the `phantom` MCP server 
 }
 ```
 
-If `phantom-mcp` is not on PATH, the command falls back to `npx -y phantom-secrets-mcp`. The config is global — it applies to every Windsurf workspace.
+Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
+records the running `phantom` executable with `mcp serve`; if that cannot be
+resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is
+unpinned `npx -y phantom-secrets-mcp`, an older registry track, so keep both
+verified binaries installed and inspect the generated entry. Current main
+removes that network fallback and fails closed; this is not `v0.7.3` behavior
+and awaits a later release. The config is global and applies to every Windsurf
+workspace.
 
 To preview what would be written without modifying the file:
 
@@ -59,13 +64,12 @@ phantom exec -- windsurf .
 
 This starts the Phantom proxy, sets `*_BASE_URL` environment variables, then launches Windsurf. API calls from the integrated terminal flow through the proxy.
 
-For longer-running sessions, use the background proxy instead:
-
-```bash
-phantom start
-# ... work in Windsurf ...
-phantom stop
-```
+For an explicitly supervised longer session, run `phantom start` in a trusted
+terminal and keep it open. Copy the printed exports into the terminal that
+launches Windsurf, then press Ctrl-C in the original owning terminal to stop.
+Detached `--daemon` mode and current external process control fail closed;
+`phantom stop` authenticates legacy v0.7.3 state only to report manual
+migration guidance and never kills a process or deletes the record.
 
 ---
 
@@ -103,7 +107,7 @@ phantom doctor
 phantom sync --platform vercel --project prj_abc123
 ```
 
-Inside a session started with `phantom exec`, your application code runs normally. The `phm_...` token in `process.env.MY_KEY` is swapped for the real value by the proxy before HTTP requests are made.
+Inside a session started with `phantom exec`, your application code runs normally. `process.env.MY_KEY` may hold a `phm_...` token, while an exact supported proxy route injects its own configured vault value into the upstream auth header. The token itself is never swapped in a client header or body.
 
 ---
 
@@ -123,9 +127,14 @@ If the file is missing, re-run `phantom setup --client windsurf`. If the file is
 
 `phantom exec` sets environment variables in the shell that spawns Windsurf. If Windsurf was already running before you ran `phantom exec`, new terminal tabs inherit the original environment, not the proxy environment. Quit Windsurf completely and relaunch via `phantom exec -- windsurf .`.
 
-**`phantom setup` writes `npx` as the command instead of `phantom-mcp`**
+**`phantom setup` says the local MCP runtime is missing**
 
-This means `phantom-mcp` was not found on PATH at setup time. The `npx` fallback is functional but adds startup latency on the first call. To switch to the binary, install it (`npm install -g phantom-secrets-mcp` or the Rust install path), then re-run `phantom setup --client windsurf`.
+On current main, this means setup did not find a runnable bundled server or
+executable local standalone server. Install both verified binaries using the
+platform-specific path in [getting started](./getting-started.md#install), then
+re-run `phantom setup --client windsurf`. The fail-closed diagnostic is
+post-`v0.7.3` hardening and awaits a later release; released `v0.7.3` still has
+the legacy final `npx` fallback described above.
 
 ---
 

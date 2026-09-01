@@ -111,6 +111,7 @@ function makeHarness(options = {}) {
   writeFileSync(releaseReceiptPath, JSON.stringify({
     tagName: `v${version}`,
     isDraft: false,
+    isImmutable: !options.mutableRelease,
     isPrerelease: false,
     url: `https://github.com/ashlrai/phantom-secrets/releases/tag/v${version}`,
     assets: assetNames.map((name) => ({ name, size: 100 })),
@@ -149,7 +150,15 @@ set -eu
 case "$1" in
   status) [ "\${PHANTOM_TEST_DIRTY:-0}" = 1 ] && printf ' M fixture\\n'; exit 0 ;;
   remote) printf '%s\\n' "$PHANTOM_TEST_ORIGIN_URL" ;;
-  ls-remote) printf '%s\\trefs/tags/v${version}\\n' "$PHANTOM_TEST_REMOTE_SHA" ;;
+  ls-remote)
+    if [ "\${PHANTOM_TEST_LIGHTWEIGHT_TAG:-0}" = 1 ]; then
+      printf '%s\\trefs/tags/v${version}\\n' "$PHANTOM_TEST_REMOTE_SHA"
+    else
+      printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\trefs/tags/v${version}\\n'
+      printf '%s\\trefs/tags/v${version}^{}\\n' "$PHANTOM_TEST_REMOTE_SHA"
+    fi
+    printf '%s\\trefs/heads/main\\n' "$PHANTOM_TEST_MAIN_SHA"
+    ;;
   rev-parse)
     case "$*" in
       *--show-toplevel*) printf '%s\\n' "$PHANTOM_TEST_REPO" ;;
@@ -164,7 +173,32 @@ esac
 set -eu
 if [ -n "\${GH_TOKEN:-}" ]; then token_state=present; else token_state=absent; fi
 printf '%s\\t%s\\n' "$*" "$token_state" >> "$PHANTOM_TEST_GH_LOG"
-cat "$PHANTOM_TEST_RELEASE_RECEIPT"
+case "$1 $2" in
+  'release view') cat "$PHANTOM_TEST_RELEASE_RECEIPT" ;;
+  'release download')
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --dir) download_dir="$2"; shift 2 ;; *) shift ;; esac
+    done
+    mkdir -p "$download_dir"
+    for archive in ${archives.join(' ')}; do : > "$download_dir/$archive"; done
+    ;;
+  'attestation verify')
+    [ "\${PHANTOM_TEST_ATTEST_FAIL:-0}" != 1 ] || exit 81
+    case "$*" in
+      *'--predicate-type https://spdx.dev/Document/v2.3'*)
+        [ "\${PHANTOM_TEST_SPDX_ATTEST_FAIL:-0}" != 1 ] || exit 84
+        ;;
+    esac
+    ;;
+  *) exit 82 ;;
+esac
+`);
+
+  const nodeLog = join(root, 'node.log');
+  const node = executable(join(bin, 'node'), `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$PHANTOM_TEST_NODE_LOG"
+[ "\${PHANTOM_TEST_ARTIFACT_FAIL:-0}" != 1 ] || exit 83
 `);
 
   const curl = executable(join(bin, 'curl'), `#!/bin/sh
@@ -201,6 +235,7 @@ printf '200'
     tokenLog,
     curlLog,
     ghLog,
+    nodeLog,
     run(args, env = {}) {
       return spawnSync('/bin/bash', [script, ...args], {
         cwd: repo,
@@ -222,11 +257,15 @@ printf '200'
           PHANTOM_TEST_STATE: state,
           PHANTOM_TEST_REPO: repo,
           PHANTOM_TEST_REMOTE_SHA: options.remoteSha ?? sourceSha,
+          PHANTOM_TEST_MAIN_SHA: options.mainSha ?? sourceSha,
+          PHANTOM_TEST_LIGHTWEIGHT_TAG: options.lightweightTag ? '1' : '0',
           PHANTOM_TEST_ORIGIN_URL: options.originUrl ?? 'https://github.com/ashlrai/phantom-secrets.git',
+          PHANTOM_TEST_NODE_LOG: nodeLog,
           PHANTOM_PUBLISH_POLL_INTERVAL_SECONDS: '1',
           PHANTOM_PUBLISH_TIMEOUT_SECONDS: '5',
           CARGO_REGISTRY_TOKEN: 'fixture-secret-never-log-this-value',
           GH_TOKEN: 'fixture-github-token-never-log-this-value',
+          NODE: node,
           ...env,
         },
       });
@@ -308,10 +347,20 @@ test('publish requires exact authorization and uploads every missing crate in or
   const tokenStates = readFileSync(harness.tokenLog, 'utf8').trim().split('\n');
   assert.equal(tokenStates.filter((line) => line === 'publish\tpresent').length, 12);
   assert.equal(tokenStates.filter((line) => line !== 'publish\tpresent' && line.endsWith('\tpresent')).length, 0);
-  assert.match(readFileSync(harness.ghLog, 'utf8'), /release view v0\.7\.3.*\tpresent/);
+  const ghLog = readFileSync(harness.ghLog, 'utf8');
+  assert.match(ghLog, /release view v0\.7\.3.*isImmutable.*\tpresent/);
+  assert.match(ghLog, /release download v0\.7\.3.*\tpresent/);
+  assert.equal(ghLog.match(/^attestation verify /gm)?.length, 12);
+  assert.equal(ghLog.match(/--predicate-type https:\/\/spdx\.dev\/Document\/v2\.3/g)?.length, 6);
+  assert.equal(ghLog.match(/--source-ref refs\/tags\/v0\.7\.3/g)?.length, 12);
+  assert.equal(ghLog.match(new RegExp(`--source-digest ${sourceSha}`, 'g'))?.length, 12);
+  assert.match(
+    readFileSync(harness.nodeLog, 'utf8'),
+    /scripts\/release\/verify-release-artifacts\.mjs .*hosted-release/,
+  );
 });
 
-test('publish requires remote tag parity and the exact completed GitHub release assets', () => {
+test('publish requires canonical origin, an annotated current-main tag, and exact immutable release assets', () => {
   const wrongOrigin = makeHarness({ originUrl: 'https://github.com/example/fork.git' });
   const wrong = wrongOrigin.run(
     ['--publish', '--version', version],
@@ -320,13 +369,32 @@ test('publish requires remote tag parity and the exact completed GitHub release 
   assert.notEqual(wrong.status, 0);
   assert.match(wrong.stderr, /origin is not the canonical/);
 
-  const movedTag = makeHarness({ remoteSha: 'ffffffffffffffffffffffffffffffffffffffff' });
+  const movedTag = makeHarness({
+    remoteSha: 'ffffffffffffffffffffffffffffffffffffffff',
+    mainSha: 'ffffffffffffffffffffffffffffffffffffffff',
+  });
   const moved = movedTag.run(
     ['--publish', '--version', version],
     { PHANTOM_PUBLISH_CONFIRM: `publish-phantom-secrets-${version}` },
   );
   assert.notEqual(moved.status, 0);
   assert.match(moved.stderr, /origin tag .* does not resolve to local HEAD/);
+
+  const lightweightTag = makeHarness({ lightweightTag: true });
+  const lightweight = lightweightTag.run(
+    ['--publish', '--version', version],
+    { PHANTOM_PUBLISH_CONFIRM: `publish-phantom-secrets-${version}` },
+  );
+  assert.notEqual(lightweight.status, 0);
+  assert.match(lightweight.stderr, /must exist and be annotated/);
+
+  const staleMain = makeHarness({ mainSha: 'ffffffffffffffffffffffffffffffffffffffff' });
+  const stale = staleMain.run(
+    ['--publish', '--version', version],
+    { PHANTOM_PUBLISH_CONFIRM: `publish-phantom-secrets-${version}` },
+  );
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.stderr, /refs\/heads\/main is at/);
 
   const incompleteRelease = makeHarness({ missingReleaseAsset: true });
   const incomplete = incompleteRelease.run(
@@ -344,6 +412,53 @@ test('publish requires remote tag parity and the exact completed GitHub release 
   );
   assert.notEqual(extra.status, 0);
   assert.match(extra.stderr, /GitHub release asset set mismatch/);
+
+  const mutableRelease = makeHarness({ mutableRelease: true });
+  const mutable = mutableRelease.run(
+    ['--publish', '--version', version],
+    { PHANTOM_PUBLISH_CONFIRM: `publish-phantom-secrets-${version}` },
+  );
+  assert.notEqual(mutable.status, 0);
+  assert.match(mutable.stderr, /GitHub release is not immutable/);
+  assert.doesNotMatch(readFileSync(mutableRelease.cargoLog, 'utf8'), /^publish /m);
+});
+
+test('publish verifies hosted artifact digests and both attestation predicates before upload', () => {
+  const badArtifacts = makeHarness();
+  const artifactResult = badArtifacts.run(
+    ['--publish', '--version', version],
+    {
+      PHANTOM_PUBLISH_CONFIRM: `publish-phantom-secrets-${version}`,
+      PHANTOM_TEST_ARTIFACT_FAIL: '1',
+    },
+  );
+  assert.notEqual(artifactResult.status, 0);
+  assert.match(artifactResult.stderr, /failed exact digest and structure verification/);
+  assert.doesNotMatch(readFileSync(badArtifacts.cargoLog, 'utf8'), /^publish /m);
+
+  const badAttestation = makeHarness();
+  const attestationResult = badAttestation.run(
+    ['--publish', '--version', version],
+    {
+      PHANTOM_PUBLISH_CONFIRM: `publish-phantom-secrets-${version}`,
+      PHANTOM_TEST_ATTEST_FAIL: '1',
+    },
+  );
+  assert.notEqual(attestationResult.status, 0);
+  assert.match(attestationResult.stderr, /build-provenance attestation verification failed/);
+  assert.doesNotMatch(readFileSync(badAttestation.cargoLog, 'utf8'), /^publish /m);
+
+  const badSpdxAttestation = makeHarness();
+  const spdxResult = badSpdxAttestation.run(
+    ['--publish', '--version', version],
+    {
+      PHANTOM_PUBLISH_CONFIRM: `publish-phantom-secrets-${version}`,
+      PHANTOM_TEST_SPDX_ATTEST_FAIL: '1',
+    },
+  );
+  assert.notEqual(spdxResult.status, 0);
+  assert.match(spdxResult.stderr, /SPDX attestation verification failed/);
+  assert.doesNotMatch(readFileSync(badSpdxAttestation.cargoLog, 'utf8'), /^publish /m);
 });
 
 test('metadata drift aborts before source gates or packaging', () => {

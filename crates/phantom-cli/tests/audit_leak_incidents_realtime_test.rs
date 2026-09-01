@@ -4,12 +4,13 @@
 //! These tests exercise the public API surface that both the CLI subcommand
 //! and the MCP tool share: `LeakCorrelationEngine::active_incidents` with the
 //! `min_confidence=0.5` default, the structured incident summaries, and the
-//! auto-rotate-on-high gate.
+//! read-only incident contract. Rotation is a separate approved operation.
+
+mod common;
 
 use phantom_core::leak_correlation::{LeakCorrelationEngine, LeakIncident};
 use std::io::Write as _;
 use std::sync::Mutex;
-use tempfile::tempdir;
 
 // Serialise tests that mutate HOME.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -77,7 +78,7 @@ fn append_incident(incidents_path: &std::path::Path, inc: &LeakIncident) {
 #[test]
 fn realtime_default_confidence_returns_single_event_incident() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, audit_path, _) = make_engine(tmp.path());
@@ -104,7 +105,7 @@ fn realtime_default_confidence_returns_single_event_incident() {
 #[test]
 fn realtime_incident_has_all_required_summary_fields() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
     let base = (now / 3600) * 3600;
 
@@ -149,7 +150,7 @@ fn realtime_incident_has_all_required_summary_fields() {
 #[test]
 fn realtime_incidents_ordered_by_confidence_descending() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
     let base = (now / 3600) * 3600;
 
@@ -191,7 +192,7 @@ fn realtime_incidents_ordered_by_confidence_descending() {
 #[test]
 fn realtime_excludes_incidents_older_than_24h() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, _, incidents_path) = make_engine(tmp.path());
@@ -232,7 +233,7 @@ fn realtime_excludes_incidents_older_than_24h() {
 #[test]
 fn realtime_rotation_clears_incident() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, audit_path, incidents_path) = make_engine(tmp.path());
@@ -268,7 +269,7 @@ fn realtime_rotation_clears_incident() {
 #[test]
 fn realtime_exactly_0_5_confidence_is_included() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, _, incidents_path) = make_engine(tmp.path());
@@ -294,14 +295,14 @@ fn realtime_exactly_0_5_confidence_is_included() {
     );
 }
 
-// ── Test 7: auto_rotate clears incident via vault.store audit event ────────────
+// ── Test 7: a separately completed rotation clears the incident ──────────────
 
 #[test]
-fn realtime_auto_rotate_audit_event_clears_incident() {
-    // Verifies that writing a vault.store event (as run_rotate_single does)
-    // causes the incident to be cleared in subsequent active_incidents calls.
+fn realtime_persisted_rotation_event_clears_incident() {
+    // A separately approved rotation records vault.store. Read-only incident
+    // inspection then omits the remediated incident without performing a write.
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, audit_path, incidents_path) = make_engine(tmp.path());
@@ -322,7 +323,7 @@ fn realtime_auto_rotate_audit_event_clears_incident() {
     let before = engine.active_incidents(0.5).unwrap();
     assert_eq!(before.len(), 1);
 
-    // Simulate auto-rotate writing a vault.store event (as run_rotate_single does).
+    // Simulate a separately completed rotation writing vault.store.
     write_audit_log(
         &audit_path,
         &[(now - 100, "vault.store", Some("HIGH_CONF_KEY"))],
@@ -332,23 +333,21 @@ fn realtime_auto_rotate_audit_event_clears_incident() {
     let after = engine.active_incidents(0.5).unwrap();
     assert!(
         after.is_empty(),
-        "auto-rotate clears the high-confidence incident"
+        "a later persisted rotation clears the high-confidence incident"
     );
 }
 
-// ── Test 8: auto_rotate gate — high-confidence threshold is exactly 0.9 ───────
+// ── Test 8: high confidence never implies automatic rotation ─────────────────
 
 #[test]
-fn realtime_auto_rotate_threshold_is_0_9() {
-    // The spec requires auto-rotate to trigger at confidence >= 0.9.
-    // Verify that confidence=0.89 does NOT cross the threshold.
+fn realtime_high_confidence_does_not_imply_rotation() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, _, incidents_path) = make_engine(tmp.path());
 
-    // incident at 0.89 — below threshold.
+    // Two active incidents with different confidence scores.
     let low_inc = LeakIncident {
         incident_id: "low_conf_gate_id".to_string(),
         secret_name: "JUST_BELOW_KEY".to_string(),
@@ -361,7 +360,6 @@ fn realtime_auto_rotate_threshold_is_0_9() {
     };
     append_incident(&incidents_path, &low_inc);
 
-    // incident at 0.90 — at threshold.
     let high_inc = LeakIncident {
         incident_id: "at_thresh_gate_id".to_string(),
         secret_name: "AT_THRESHOLD_KEY".to_string(),
@@ -375,52 +373,38 @@ fn realtime_auto_rotate_threshold_is_0_9() {
     append_incident(&incidents_path, &high_inc);
 
     let active = engine.active_incidents(0.5).unwrap();
-    let would_auto_rotate: Vec<_> = active.iter().filter(|i| i.confidence >= 0.9).collect();
-    let would_not_rotate: Vec<_> = active.iter().filter(|i| i.confidence < 0.9).collect();
-
-    assert_eq!(would_auto_rotate.len(), 1);
-    assert_eq!(would_auto_rotate[0].secret_name, "AT_THRESHOLD_KEY");
-    assert_eq!(would_not_rotate.len(), 1);
-    assert_eq!(would_not_rotate[0].secret_name, "JUST_BELOW_KEY");
+    assert_eq!(active.len(), 2);
+    assert!(active.iter().any(|i| i.secret_name == "AT_THRESHOLD_KEY"));
+    assert!(active.iter().any(|i| i.secret_name == "JUST_BELOW_KEY"));
+    assert!(
+        !tmp.path().join(".phantom/audit.log").exists(),
+        "read-only incident inspection must not synthesize a rotation event"
+    );
 }
 
-// ── Test 9: MCP confirm gate — params struct has correct defaults ──────────────
+// ── Test 9: MCP params expose inspection only ────────────────────────────────
 
 #[test]
-fn mcp_confirm_gate_blocks_auto_rotate_without_confirm() {
-    // The MCP tool `phantom_leak_incidents_realtime` must call require_confirm
-    // when auto_rotate_on_high=true.  We test the params struct's contract:
-    // confirm defaults to false, so callers MUST explicitly set it to true.
+fn mcp_realtime_params_reject_legacy_auto_rotation_fields() {
     use phantom_mcp::LeakIncidentsRealtimeParams;
 
-    // Default params: confirm=false, auto_rotate_on_high=false.
+    // The current schema is read-only and contains only the confidence filter.
     let default_params: LeakIncidentsRealtimeParams = serde_json::from_str(r#"{}"#).unwrap();
-    assert!(!default_params.confirm, "confirm must default to false");
-    assert!(
-        !default_params.auto_rotate_on_high,
-        "auto_rotate_on_high must default to false"
-    );
     assert!(
         (default_params.min_confidence - 0.5).abs() < 1e-9,
         "min_confidence must default to 0.5"
     );
 
-    // With auto_rotate_on_high=true and confirm=false, the gate should reject.
-    let risky_params: LeakIncidentsRealtimeParams =
-        serde_json::from_str(r#"{"auto_rotate_on_high": true, "confirm": false}"#).unwrap();
-    assert!(risky_params.auto_rotate_on_high);
-    assert!(
-        !risky_params.confirm,
-        "confirm=false must block auto-rotate"
-    );
-
-    // Only confirm=true should pass the gate.
-    let approved_params: LeakIncidentsRealtimeParams =
-        serde_json::from_str(r#"{"auto_rotate_on_high": true, "confirm": true}"#).unwrap();
-    assert!(
-        approved_params.confirm,
-        "confirm=true is required to allow auto-rotate"
-    );
+    for legacy in [
+        r#"{"auto_rotate_on_high": true}"#,
+        r#"{"confirm": true}"#,
+        r#"{"auto_rotate_on_high": true, "confirm": true}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<LeakIncidentsRealtimeParams>(legacy).is_err(),
+            "legacy simulated-rotation fields must fail closed: {legacy}"
+        );
+    }
 }
 
 // ── Test 10: multiple incidents all get structured summaries ──────────────────
@@ -428,7 +412,7 @@ fn mcp_confirm_gate_blocks_auto_rotate_without_confirm() {
 #[test]
 fn realtime_multiple_incidents_all_summarised() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempdir().unwrap();
+    let tmp = common::canonical_tempdir();
     let now = now_unix();
 
     let (engine, _, incidents_path) = make_engine(tmp.path());

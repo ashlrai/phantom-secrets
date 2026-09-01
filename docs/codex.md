@@ -4,7 +4,13 @@
 
 OpenAI Codex runs in a sandboxed environment and executes tasks autonomously. It reads files in your repository — including `.env` — to understand the project. Real API keys in `.env` would be visible to the agent and present in its working context throughout the task.
 
-After `phantom init`, your `.env` contains only phantom tokens (`phm_...`). Codex reads the tokens, not the real values. When code under test makes API calls, the local Phantom proxy replaces tokens with real credentials before requests leave your machine — Codex never needs the real values to write, test, or integrate code that uses them.
+After `phantom init`, managed dotenv secrets are replaced by `phm_` tokens, so
+Codex can use value-blind metadata instead of real values. For supported HTTP
+API routes in a process launched by `phantom exec`, the authenticated local
+proxy matches an exact route and injects only its route-owned vault value into
+the fixed auth header; client headers and bodies never resolve tokens.
+Connection strings and unsupported protocols fail closed or require
+a separately approved workflow; unmanaged files remain outside this boundary.
 
 The MCP integration registers Phantom's release-schema-verified catalog in
 Codex. The current release contract enforces 54 unique tools; runtime
@@ -17,11 +23,9 @@ audit, import/export, cloud sync, team vaults, and safe MCP setup for Codex.
 
 ### Step 1: install Phantom
 
-```bash
-npx phantom-secrets init
-```
-
-This installs the CLI and initializes your current project in one step.
+Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+verified path in [getting started](./getting-started.md#install), then run
+`phantom init` in the project.
 
 ### Step 2: wire up Codex (one command)
 
@@ -37,7 +41,13 @@ command = "phantom-mcp"
 args = []
 ```
 
-If `phantom-mcp` is not on PATH, the command falls back to `npx -y phantom-secrets-mcp`.
+Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
+records the running `phantom` executable with `mcp serve`; if that cannot be
+resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is
+unpinned `npx -y phantom-secrets-mcp`, an older registry track, so keep both
+verified binaries installed and inspect the generated entry. Current main
+removes that network fallback and fails closed; this is not `v0.7.3` behavior
+and awaits a later release.
 
 To preview the snippet without modifying your config:
 
@@ -62,16 +72,16 @@ phantom agent report --json
 phantom exec -- codex "add Stripe checkout to checkout.ts"
 ```
 
-This starts the Phantom proxy, sets `*_BASE_URL` environment variables, then hands off to Codex. Any API calls Codex makes while testing or executing code flow through the proxy.
+This starts the Phantom proxy, sets the implemented `*_BASE_URL` overrides,
+then hands off to Codex. Calls made by SDKs that honor those overrides use the
+proxy; arbitrary network clients and unsupported protocols do not.
 
-For interactive sessions or repeated Codex runs, start the proxy once and leave it running:
-
-```bash
-phantom start
-codex "refactor auth module"
-codex "add tests for payment flow"
-phantom stop
-```
+For explicitly supervised repeated runs, start `phantom start` in a trusted
+terminal and keep it open. Copy the printed exports into a second terminal,
+launch Codex there, and press Ctrl-C in the original owning terminal to stop.
+Detached `--daemon` mode and current external process control fail closed;
+`phantom stop` authenticates legacy v0.7.3 state only to report manual
+migration guidance and never kills a process or deletes the record.
 
 ---
 
@@ -111,7 +121,14 @@ phantom exec -- codex "finish the Resend integration"
 phantom cloud push
 ```
 
-Codex writes code that references `process.env.RESEND_API_KEY` (or equivalent). That variable holds `phm_...` in the environment. When Codex executes a test call, the proxy swaps the token for the real key. The generated code is correct and works in production without modification.
+Codex writes code that references `process.env.RESEND_API_KEY` (or equivalent).
+Under `phantom exec`, that variable holds a fresh-session `phm_...` token. For a
+supported HTTP SDK route, the local proxy discards client control of the route
+auth header and injects its configured vault value when Codex makes a test call.
+The generated environment-variable lookup can remain unchanged, but
+the production runtime must be provisioned separately with the corresponding
+credential or an approved secret-manager integration. Phantom's local proxy
+does not deploy or authorize production credentials.
 
 ---
 
@@ -129,11 +146,14 @@ If missing, re-run `phantom setup --client codex`. If present, restart Codex —
 
 **Phantom proxy not active during Codex task execution**
 
-Codex tasks must be launched from a shell where `phantom exec` has set the proxy environment. Launching Codex from a GUI shortcut or a separate terminal bypasses the proxy. Always use `phantom exec -- codex <task>` or confirm `phantom start` has been run in the current shell session.
+Codex tasks must be launched from a shell where `phantom exec` set the proxy
+environment or where you explicitly copied the exports printed by an active
+foreground `phantom start`. Launching Codex from a GUI shortcut or an unrelated
+terminal bypasses the proxy. Prefer `phantom exec -- codex <task>`.
 
-**Token in `.env` is not being replaced during test calls**
+**Supported API call is not receiving route-owned authentication**
 
-The proxy only intercepts requests sent to URLs that match configured service mappings (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, etc.). If your code uses a hardcoded URL rather than the `*_BASE_URL` environment variable, it bypasses the proxy. Check `phantom status` to see which service URLs are rewritten, and update your code to use the env var.
+The proxy only injects authentication for requests sent to URLs that match configured service mappings (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, etc.). If your code uses a hardcoded URL rather than the `*_BASE_URL` environment variable, it bypasses the proxy. Check `phantom status` to see which service URLs are rewritten, and update your code to use the env var.
 
 ---
 

@@ -621,11 +621,10 @@ impl LeakCorrelationEngine {
 
     fn load_existing_incident_ids(&self) -> std::io::Result<std::collections::HashSet<String>> {
         let mut ids = std::collections::HashSet::new();
-        if !self.incidents_path.exists() {
+        let Some(bytes) = crate::fs::read_regular_file(&self.incidents_path)? else {
             return Ok(ids);
-        }
-        let file = std::fs::File::open(&self.incidents_path)?;
-        let reader = std::io::BufReader::new(file);
+        };
+        let reader = std::io::BufReader::new(bytes.as_slice());
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
@@ -643,11 +642,10 @@ impl LeakCorrelationEngine {
     }
 
     fn load_all_incidents(&self) -> std::io::Result<Vec<LeakIncident>> {
-        if !self.incidents_path.exists() {
+        let Some(bytes) = crate::fs::read_regular_file(&self.incidents_path)? else {
             return Ok(vec![]);
-        }
-        let file = std::fs::File::open(&self.incidents_path)?;
-        let reader = std::io::BufReader::new(file);
+        };
+        let reader = std::io::BufReader::new(bytes.as_slice());
         let mut incidents = Vec::new();
         for line in reader.lines() {
             let line = match line {
@@ -667,17 +665,19 @@ impl LeakCorrelationEngine {
     }
 
     fn append_incident(&self, incident: &LeakIncident) -> std::io::Result<()> {
-        if let Some(parent) = self.incidents_path.parent() {
-            std::fs::create_dir_all(parent)?;
+        crate::fs::ensure_real_parent(&self.incidents_path)?;
+        let before = crate::fs::read_regular_file(&self.incidents_path)?;
+        let mut contents = before.clone().unwrap_or_default();
+        if contents.len() > 64 * 1024 * 1024 {
+            return Err(std::io::Error::other(
+                "leak incident log exceeds the 64 MiB mutation limit",
+            ));
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.incidents_path)?;
         let mut line = serde_json::to_vec(incident)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         line.push(b'\n');
-        file.write_all(&line)
+        contents.extend_from_slice(&line);
+        crate::fs::atomic_write_if_unchanged(&self.incidents_path, before.as_deref(), &contents)
     }
 
     /// Load the most-recent `vault.store` timestamp for each secret name that
@@ -898,6 +898,35 @@ pub enum AlertBackendConfig {
     },
 }
 
+/// Render value-blind destination origins for human approval. URL paths,
+/// queries, userinfo, and PagerDuty routing keys are deliberately excluded.
+pub fn alert_destination_origins(backends: &[AlertBackendConfig]) -> std::io::Result<Vec<String>> {
+    let mut origins = Vec::with_capacity(backends.len());
+    for backend in backends {
+        let origin = match backend {
+            AlertBackendConfig::Webhook { url } | AlertBackendConfig::Slack { url } => {
+                let parsed = reqwest::Url::parse(url)
+                    .map_err(|_| std::io::Error::other("alert destination URL is invalid"))?;
+                if parsed.scheme() != "https"
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                    || parsed.host_str().is_none()
+                {
+                    return Err(std::io::Error::other(
+                        "alert destinations must be credential-free absolute HTTPS URLs",
+                    ));
+                }
+                parsed.origin().ascii_serialization()
+            }
+            AlertBackendConfig::PagerDuty { .. } => "https://events.pagerduty.com".to_string(),
+        };
+        origins.push(origin);
+    }
+    origins.sort();
+    origins.dedup();
+    Ok(origins)
+}
+
 /// `[alerting]` section of `.phantom.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -927,6 +956,38 @@ impl Default for AlertingConfig {
             backends: Vec::new(),
         }
     }
+}
+
+/// Return the value-blind network origins an operator should review before
+/// authorizing alert delivery. Webhook paths and queries can contain bearer
+/// material, so only backend kind plus HTTPS origin is exposed.
+pub fn alert_backend_review_origins(config: &AlertingConfig) -> std::io::Result<Vec<String>> {
+    config
+        .backends
+        .iter()
+        .map(|backend| match backend {
+            AlertBackendConfig::Webhook { url } => reviewed_alert_origin("webhook", url),
+            AlertBackendConfig::Slack { url } => reviewed_alert_origin("slack", url),
+            AlertBackendConfig::PagerDuty { .. } => {
+                Ok("pagerduty:https://events.pagerduty.com".to_string())
+            }
+        })
+        .collect()
+}
+
+fn reviewed_alert_origin(kind: &str, raw_url: &str) -> std::io::Result<String> {
+    let parsed = reqwest::Url::parse(raw_url)
+        .map_err(|_| std::io::Error::other("alert backend has an invalid URL"))?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.host_str().is_none()
+    {
+        return Err(std::io::Error::other(
+            "alert destinations must be credential-free absolute HTTPS URLs",
+        ));
+    }
+    Ok(format!("{kind}:{}", parsed.origin().ascii_serialization()))
 }
 
 /// Trait for alert dispatch — one method per backend type.
@@ -968,21 +1029,58 @@ impl AlertDispatch for HttpAlertDispatch {
 }
 
 fn send_http_post(url: &str, payload: &serde_json::Value) -> std::io::Result<()> {
+    use std::net::ToSocketAddrs;
+
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|error| std::io::Error::other(format!("invalid alert URL: {error}")))?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.host_str().is_none()
+    {
+        return Err(std::io::Error::other(
+            "alert destinations must be credential-free absolute HTTPS URLs",
+        ));
+    }
+    let host = parsed.host_str().expect("checked above").to_string();
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let resolved = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|error| std::io::Error::other(format!("cannot resolve alert host: {error}")))?
+        .collect::<Vec<_>>();
+    if resolved.is_empty()
+        || resolved
+            .iter()
+            .any(|address| !is_public_alert_ip(address.ip()))
+    {
+        return Err(std::io::Error::other(
+            "alert destination resolved to a non-public address",
+        ));
+    }
+    let pinned = resolved[0];
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .resolve(&host, pinned)
         .build()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     let resp = client
-        .post(url)
+        .post(parsed)
         .header("Content-Type", "application/json")
         .json(payload)
         .send()
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+        .map_err(|_| {
+            std::io::Error::other("alert request failed before a response was received")
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
-        return Err(std::io::Error::other(format!("HTTP {status} from {url}")));
+        return Err(std::io::Error::other(format!(
+            "HTTP {status} from alert destination"
+        )));
     }
     Ok(())
 }
@@ -1156,14 +1254,14 @@ impl LeakIncidentAlerter {
             let mut backends_notified = Vec::new();
 
             for backend in &self.config.backends {
-                let result = match backend {
+                let (backend_kind, result) = match backend {
                     AlertBackendConfig::Webhook { url } => {
                         let payload = webhook_payload(incident);
                         let r = self.dispatch.send_webhook(url, &payload);
                         if r.is_ok() {
                             backends_notified.push("webhook".to_string());
                         }
-                        r
+                        ("webhook", r)
                     }
                     AlertBackendConfig::Slack { url } => {
                         let payload = slack_payload(incident);
@@ -1171,7 +1269,7 @@ impl LeakIncidentAlerter {
                         if r.is_ok() {
                             backends_notified.push("slack".to_string());
                         }
-                        r
+                        ("slack", r)
                     }
                     AlertBackendConfig::PagerDuty { integration_key } => {
                         let payload = pagerduty_payload(incident, integration_key);
@@ -1179,15 +1277,14 @@ impl LeakIncidentAlerter {
                         if r.is_ok() {
                             backends_notified.push("pagerduty".to_string());
                         }
-                        r
+                        ("pagerduty", r)
                     }
                 };
                 // Log backend errors to stderr but don't abort — other backends
                 // should still be notified.
                 if let Err(ref e) = result {
                     eprintln!(
-                        "phantom WARNING: alert dispatch failed for backend {:?}: {e}",
-                        backend
+                        "phantom WARNING: alert dispatch failed for {backend_kind} backend: {e}"
                     );
                 }
             }
@@ -1212,11 +1309,10 @@ impl LeakIncidentAlerter {
 
     /// Load all alerts persisted in `~/.phantom/leak-alerts.jsonl`.
     pub fn load_all_alerts(&self) -> std::io::Result<Vec<LeakAlert>> {
-        if !self.alerts_path.exists() {
+        let Some(bytes) = crate::fs::read_regular_file(&self.alerts_path)? else {
             return Ok(vec![]);
-        }
-        let file = std::fs::File::open(&self.alerts_path)?;
-        let reader = std::io::BufReader::new(file);
+        };
+        let reader = std::io::BufReader::new(bytes.as_slice());
         let mut alerts = Vec::new();
         for line in reader.lines() {
             let line = match line {
@@ -1248,11 +1344,10 @@ impl LeakIncidentAlerter {
 
     fn load_alerted_incident_ids(&self) -> std::io::Result<std::collections::HashSet<String>> {
         let mut ids = std::collections::HashSet::new();
-        if !self.alerts_path.exists() {
+        let Some(bytes) = crate::fs::read_regular_file(&self.alerts_path)? else {
             return Ok(ids);
-        }
-        let file = std::fs::File::open(&self.alerts_path)?;
-        let reader = std::io::BufReader::new(file);
+        };
+        let reader = std::io::BufReader::new(bytes.as_slice());
         let now = now_unix();
         let hour_start = (now / 3600) * 3600;
 
@@ -1276,17 +1371,53 @@ impl LeakIncidentAlerter {
     }
 
     fn append_alert(&self, alert: &LeakAlert) -> std::io::Result<()> {
-        if let Some(parent) = self.alerts_path.parent() {
-            std::fs::create_dir_all(parent)?;
+        crate::fs::ensure_real_parent(&self.alerts_path)?;
+        let before = crate::fs::read_regular_file(&self.alerts_path)?;
+        let mut contents = before.clone().unwrap_or_default();
+        if contents.len() > 64 * 1024 * 1024 {
+            return Err(std::io::Error::other(
+                "leak alert log exceeds the 64 MiB mutation limit",
+            ));
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.alerts_path)?;
         let mut line = serde_json::to_vec(alert)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         line.push(b'\n');
-        file.write_all(&line)
+        contents.extend_from_slice(&line);
+        crate::fs::atomic_write_if_unchanged(&self.alerts_path, before.as_deref(), &contents)
+    }
+}
+
+fn is_public_alert_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || octets[0] == 0
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
+                || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+                || octets[0] >= 240)
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_public_alert_ip(std::net::IpAddr::V4(mapped));
+            }
+            let segments = ip.segments();
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] & 0xffc0) == 0xfec0
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+        }
     }
 }
 
@@ -2069,5 +2200,116 @@ mod tests {
         let filtered = engine.active_incidents(0.7).unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].secret_name, "HIGH_KEY");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incident_and_alert_writes_refuse_symlink_destinations() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempdir().unwrap();
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, b"owner-data").unwrap();
+        let incident_path = tmp.path().join("incidents.jsonl");
+        let alert_path = tmp.path().join("alerts.jsonl");
+        symlink(&victim, &incident_path).unwrap();
+        symlink(&victim, &alert_path).unwrap();
+        let engine = LeakCorrelationEngine::with_paths(tmp.path().join("audit.log"), incident_path);
+        let incident = make_incident("SAFE_KEY", 0.95, 4);
+        let alerter = LeakIncidentAlerter::with_path(
+            AlertingConfig::default(),
+            alert_path,
+            Box::new(SpyDispatch::default()),
+        );
+        let alert = LeakAlert {
+            incident_id: incident.incident_id.clone(),
+            secret_name: incident.secret_name.clone(),
+            location_label: incident.location_label.clone(),
+            confidence: incident.confidence,
+            event_count: incident.event_count,
+            alerted_at: now_unix(),
+            backends_notified: vec![],
+            remediation: incident.remediation.clone(),
+        };
+
+        assert!(engine.append_incident(&incident).is_err());
+        assert!(alerter.append_alert(&alert).is_err());
+        assert_eq!(std::fs::read(victim).unwrap(), b"owner-data");
+    }
+
+    #[test]
+    fn alert_destination_ip_policy_rejects_local_and_reserved_networks() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        assert!(!is_public_alert_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(!is_public_alert_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(!is_public_alert_ip(IpAddr::V4(Ipv4Addr::new(
+            169, 254, 169, 254
+        ))));
+        assert!(!is_public_alert_ip(IpAddr::V4(Ipv4Addr::new(
+            100, 64, 0, 1
+        ))));
+        assert!(!is_public_alert_ip(IpAddr::V4(Ipv4Addr::new(
+            198, 18, 0, 1
+        ))));
+        assert!(!is_public_alert_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(!is_public_alert_ip(IpAddr::V6("fc00::1".parse().unwrap())));
+        assert!(!is_public_alert_ip(IpAddr::V6(
+            "::ffff:127.0.0.1".parse().unwrap()
+        )));
+        assert!(is_public_alert_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(is_public_alert_ip(IpAddr::V6(
+            "2606:4700:4700::1111".parse().unwrap()
+        )));
+    }
+
+    #[test]
+    fn alert_review_origins_hide_webhook_paths_queries_and_keys() {
+        let config = AlertingConfig {
+            enabled: true,
+            min_confidence: 0.7,
+            backends: vec![
+                AlertBackendConfig::Webhook {
+                    url: "https://alerts.example:8443/private/bearer?token=secret".to_string(),
+                },
+                AlertBackendConfig::Slack {
+                    url: "https://hooks.slack.com/services/T/B/secret".to_string(),
+                },
+                AlertBackendConfig::PagerDuty {
+                    integration_key: "pager-secret".to_string(),
+                },
+            ],
+        };
+
+        let origins = alert_backend_review_origins(&config).unwrap();
+
+        assert_eq!(
+            origins,
+            vec![
+                "webhook:https://alerts.example:8443",
+                "slack:https://hooks.slack.com",
+                "pagerduty:https://events.pagerduty.com",
+            ]
+        );
+        let rendered = format!("{origins:?}");
+        assert!(!rendered.contains("private"));
+        assert!(!rendered.contains("secret"));
+    }
+
+    #[test]
+    fn alert_review_origins_reject_credentialed_or_non_https_urls() {
+        for url in [
+            "http://example.com/hook",
+            "https://user:pass@example.com/hook",
+        ] {
+            let config = AlertingConfig {
+                enabled: true,
+                min_confidence: 0.7,
+                backends: vec![AlertBackendConfig::Webhook {
+                    url: url.to_string(),
+                }],
+            };
+            assert!(alert_backend_review_origins(&config).is_err());
+        }
     }
 }

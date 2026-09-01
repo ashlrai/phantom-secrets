@@ -32,7 +32,7 @@
         .back{margin-top:24px;color:#65657a;font-size:.82rem}
         .back a{color:#60a5fa;text-decoration:none}
         .back a:hover{text-decoration:underline}
-        #success{display:none;padding:16px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:8px;color:#22c55e;font-weight:600;margin-bottom:16px}
+        #mail-status{display:none;padding:16px;background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.2);border-radius:8px;color:#93c5fd;font-weight:600;margin-bottom:16px}
     </style>
 </head>
 <body>
@@ -41,25 +41,26 @@
     <h1>Phantom <em>Pro</em></h1>
     <p class="sub">Cloud-synced vaults, team sharing, audit logs, and deployment platform integration. Be the first to know when it launches.</p>
 
-    <div id="success">You're on the list! We'll email you when Pro launches.</div>
+    <div id="mail-status" role="status">A mail app was requested. This page has no waitlist backend and submitted nothing. Send the draft yourself to request early access.</div>
 
     <form id="waitlist" onsubmit="return submitWaitlist(event)">
         <input type="email" name="email" placeholder="your@email.com" required>
-        <button type="submit">Join waitlist</button>
+        <button type="submit">Draft request email</button>
     </form>
-    <p class="note">No spam. Just one email when Pro is ready.</p>
+    <p class="note">This page sends no request; your mail app must send the email.</p>
 
     <div class="features">
-        <h3>What's coming in Pro ($8/user/month)</h3>
+        <h3>Planned Pro capabilities</h3>
+        <p class="note">Hosted-plan eligibility, team limits, and pricing are still to be determined and are confirmed during pilot onboarding.</p>
         <ul>
-            <li>Cloud-synced vault across all your machines</li>
-            <li>Team vault sharing (up to 10 users)</li>
+            <li>Encrypted cloud backup with planned key-portability evaluation</li>
+            <li>Team vault sharing</li>
             <li>phantom sync to Vercel and Railway with local platform tokens</li>
-            <li>phantom pull for instant new machine onboarding</li>
+            <li>phantom pull workflow for new-machine onboarding</li>
             <li>Versioned cloud vault backups</li>
-            <li>Audit log — who accessed what, when</li>
+            <li>Central audit reporting (planned; identity and retention design TBD)</li>
             <li>CI/CD integration</li>
-            <li>Priority support</li>
+            <li>Priority support (planned)</li>
         </ul>
     </div>
 
@@ -70,12 +71,11 @@
 function submitWaitlist(e) {
     e.preventDefault();
     const email = e.target.email.value;
-    // For now, open mailto — replace with real API later
+    // No backend is connected: compose an explicit user-sent email request.
     const subject = encodeURIComponent('Phantom Pro Waitlist');
     const body = encodeURIComponent('I want early access to Phantom Pro.\n\nEmail: ' + email);
-    window.open('mailto:mason@ashlr.ai?subject=' + subject + '&body=' + body, '_blank');
-    document.getElementById('success').style.display = 'block';
-    e.target.style.display = 'none';
+    window.location.href = 'mailto:mason@ashlr.ai?subject=' + subject + '&body=' + body;
+    document.getElementById('mail-status').style.display = 'block';
     return false;
 }
 </script>

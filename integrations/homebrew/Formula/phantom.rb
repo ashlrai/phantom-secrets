@@ -11,7 +11,7 @@
 # pull request automatically.
 
 class Phantom < Formula
-  desc "Stop AI coding agents from leaking your API keys"
+  desc "Reduce API-key exposure when working with AI coding agents"
   homepage "https://phm.dev"
   license "MIT"
 

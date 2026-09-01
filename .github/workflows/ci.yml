@@ -152,16 +152,25 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-      - name: Test and inspect primary CLI wrapper
+      - name: Test and inspect primary CLI wrapper on Node 22
         working-directory: npm
         run: |
           npm test
           npm pack --dry-run
-      - name: Test and inspect MCP wrapper
+      - name: Test and inspect MCP wrapper on Node 22
         working-directory: npm-mcp
         run: |
           npm test
           npm pack --dry-run
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Test primary CLI wrapper on Node 24
+        working-directory: npm
+        run: npm test
+      - name: Test MCP wrapper on Node 24
+        working-directory: npm-mcp
+        run: npm test
 
   web:
     name: Web security, tests, and build
@@ -198,6 +207,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Fetch canonical origin heads for history policy
+        run: git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
       - name: Install pinned Gitleaks
         env:
           GITLEAKS_VERSION: 8.30.0
@@ -215,6 +227,14 @@ jobs:
           "$install_dir/gitleaks" version
       - name: Scan current source with the reviewed fixture policy
         run: /tmp/phantom-gitleaks-bin/gitleaks dir . --config .gitleaks.toml --redact --no-banner --max-target-megabytes 5 --timeout 60
+
+      - name: Validate exact candidate and canonical-origin history policy
+        run: |
+          node --test scripts/release/validate-gitleaks-ignore.test.mjs
+          node scripts/release/validate-gitleaks-ignore.mjs .gitleaksignore HEAD
+
+      - name: Scan candidate and canonical origin ancestry against reviewed fingerprints
+        run: /tmp/phantom-gitleaks-bin/gitleaks git . --log-opts='HEAD --remotes=origin' --config .gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact --no-banner --max-target-megabytes 5 --timeout 120
 
   crate-publication-contract:
     name: Crate publication contract
@@ -234,6 +254,10 @@ jobs:
         with:
           node-version: 22
       - name: Test fail-closed publication and release receipts
-        run: node --test scripts/publish-crates.test.js scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs
+        run: node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs
+      - name: Install checksum-verified MCP Registry publisher
+        run: bash scripts/release/install-mcp-publisher.sh
+      - name: Validate the staged MCP Registry manifest
+        run: /tmp/phantom-mcp-publisher-bin/mcp-publisher validate mcp-registry/server.json
       - name: Package every crates.io crate in dependency order
         run: ./scripts/publish-crates.sh --verify-only

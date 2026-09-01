@@ -4,6 +4,8 @@ use crate::{inspect_workspace, Result, SetupAction, SetupActionKind, SetupPlan, 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use phantom_core::config::PhantomConfig;
+use phantom_core::fs::FileIdentity;
+use phantom_core::precommit_hook;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -27,8 +29,6 @@ const TRANSACTION_SCHEMA_VERSION: u8 = 1;
 const JOURNAL_SCHEMA_VERSION: u8 = 1;
 const JOURNAL_AAD_DOMAIN: &[u8] = b"phantom.workspace-transaction-journal.v1\0";
 const ENV_IGNORE_PATTERNS: &[&str] = &[".env", ".env.local", ".env.*.local", ".env.backup"];
-const HOOK_MARKER: &str = "# Phantom Secrets pre-commit hook";
-const HOOK_COMMAND: &str = "npx phantom-secrets check --staged";
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static PROCESS_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -150,6 +150,13 @@ impl fmt::Debug for ParticipantPreparation {
 /// read exact approved dotenv targets, stage vault state, and return tokenized
 /// file replacements. It must retain enough private state for `rollback`.
 pub trait SetupTransactionParticipant {
+    /// Identity of a project root retained by this participant, when it owns
+    /// project-root-relative authority. The engine compares this to its own
+    /// already-open root descriptor before inspecting or preparing any state.
+    fn retained_root_identity(&self) -> Option<FileIdentity> {
+        None
+    }
+
     fn prepare(
         &mut self,
         plan: &SetupPlan,
@@ -496,6 +503,20 @@ fn apply_setup_plan_inner<P: SetupTransactionParticipant>(
             path: canonical_root.clone(),
             source,
         })?;
+        let engine_root_identity =
+            FileIdentity::from_std_file(&root_directory).map_err(|source| WorkspaceError::Io {
+                path: canonical_root.clone(),
+                source,
+            })?;
+        if participant
+            .retained_root_identity()
+            .is_some_and(|identity| identity != engine_root_identity)
+        {
+            return Err(abort_participant(
+                participant,
+                WorkspaceError::UnsafeTarget(canonical_root.clone()),
+            ));
+        }
         let inspection = inspect_workspace(&canonical_root)?;
         let current_plan = build_setup_plan(&inspection)?;
         validate_sealed_state(
@@ -612,7 +633,7 @@ fn apply_setup_plan_inner<P: SetupTransactionParticipant>(
         };
         let write_result = apply_mutations(&canonical_root, &mutations, &mut snapshot);
         if let Err(error) = write_result {
-            let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
+            let filesystem_rolled_back = restore_snapshot_checked(&snapshot).is_ok();
             let participant_rolled_back = participant.rollback().is_ok();
             if filesystem_rolled_back && participant_rolled_back {
                 if let Some(journal) = journal.as_mut() {
@@ -627,7 +648,7 @@ fn apply_setup_plan_inner<P: SetupTransactionParticipant>(
         }
 
         if let Err(error) = finalize_snapshot(&mut snapshot) {
-            let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
+            let filesystem_rolled_back = restore_snapshot_checked(&snapshot).is_ok();
             let participant_rolled_back = participant.rollback().is_ok();
             return if filesystem_rolled_back && participant_rolled_back {
                 Err(error)
@@ -640,7 +661,7 @@ fn apply_setup_plan_inner<P: SetupTransactionParticipant>(
             journal.set_phase(JournalPhase::ParticipantCommitStarted, None)?;
         }
         if let Err(error) = participant.commit() {
-            let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
+            let filesystem_rolled_back = restore_snapshot_checked(&snapshot).is_ok();
             let participant_rolled_back = participant.rollback().is_ok();
             return if filesystem_rolled_back && participant_rolled_back {
                 Err(WorkspaceError::Participant {
@@ -897,16 +918,7 @@ pub fn recover_setup_plan_journal<P: SetupTransactionParticipant>(
         let mut filesystem_ok = true;
         for (file, parent) in journal.record.files.iter().zip(parents.iter()).rev() {
             let path = root.join(&file.target);
-            let restored = match &file.before {
-                Some(content) => {
-                    let permissions = file.before_mode.map(|mode| {
-                        use std::os::unix::fs::PermissionsExt;
-                        Permissions::from_mode(mode)
-                    });
-                    write_at(parent, &path, content, permissions, false)
-                }
-                None => unlink_at(parent, &path, 0),
-            };
+            let restored = restore_journal_file_checked(file, parent, &path);
             if restored.is_err() {
                 filesystem_ok = false;
             }
@@ -917,6 +929,36 @@ pub fn recover_setup_plan_journal<P: SetupTransactionParticipant>(
         journal.set_phase(JournalPhase::RolledBack, None)?;
         Ok(JournalRecovery::RolledBack)
     }
+}
+
+#[cfg(unix)]
+fn restore_journal_file_checked(
+    file: &JournalFile,
+    parent: &SecureParent,
+    path: &Path,
+) -> Result<()> {
+    let current = read_at(parent, path)?.map(|(content, _)| content);
+    if current.as_ref() == file.before.as_ref() {
+        return Ok(());
+    }
+    if current.as_deref() != Some(file.after.as_slice()) {
+        return Err(WorkspaceError::RollbackDrift(path.to_path_buf()));
+    }
+    match &file.before {
+        Some(content) => {
+            let permissions = file.before_mode.map(|mode| {
+                use std::os::unix::fs::PermissionsExt;
+                Permissions::from_mode(mode)
+            });
+            write_at(parent, path, content, permissions, false)?;
+        }
+        None => unlink_at(parent, path, 0)?,
+    }
+    let verified = read_at(parent, path)?.map(|(content, _)| content);
+    if verified.as_ref() != file.before.as_ref() {
+        return Err(WorkspaceError::RollbackDrift(path.to_path_buf()));
+    }
+    Ok(())
 }
 
 /// Delete an already-terminal encrypted journal after its value-free receipt
@@ -947,20 +989,7 @@ pub fn rollback_workspace(snapshot: WorkspaceSnapshot) -> Result<()> {
         return Err(WorkspaceError::InvalidPlan);
     }
     let _lock = acquire_workspace_lock(&snapshot.workspace_root)?;
-    for file in &snapshot.files {
-        #[cfg(unix)]
-        let current = read_at(
-            file.parent.as_ref().ok_or(WorkspaceError::InvalidPlan)?,
-            &file.path,
-        )?
-        .map(|(content, _)| content);
-        #[cfg(not(unix))]
-        let current = read_optional(&file.path)?;
-        if current != file.after {
-            return Err(WorkspaceError::RollbackDrift(file.path.clone()));
-        }
-    }
-    restore_snapshot_unchecked(&snapshot)
+    restore_snapshot_checked(&snapshot)
 }
 
 fn validate_preparation(
@@ -1040,11 +1069,10 @@ fn build_filesystem_mutations(
                 root.join(&action.target),
             )?),
             SetupActionKind::GenerateEnvExample => Some(value_free_example(inspection)),
-            SetupActionKind::InstallPreCommitCheck if root.join(".git").is_dir() => {
-                Some(ensure_pre_commit_hook(
-                    secure_read_target(root, root_directory, &action.target)?.unwrap_or_default(),
-                ))
-            }
+            SetupActionKind::InstallPreCommitCheck => Some(ensure_pre_commit_hook(
+                secure_read_target(root, root_directory, &action.target)?.unwrap_or_default(),
+                &action.target,
+            )?),
             _ => None,
         };
         let Some(content) = desired else {
@@ -1125,21 +1153,12 @@ fn value_free_example(inspection: &WorkspaceInspection) -> Vec<u8> {
     content.into_bytes()
 }
 
-fn ensure_pre_commit_hook(existing: Vec<u8>) -> Vec<u8> {
-    if existing
-        .windows(HOOK_COMMAND.len())
-        .any(|window| window == HOOK_COMMAND.as_bytes())
-    {
-        return existing;
-    }
-    let mut content = existing;
-    if content.is_empty() {
-        content.extend_from_slice(b"#!/bin/sh\n");
-    } else if !content.ends_with(b"\n") {
-        content.push(b'\n');
-    }
-    content.extend_from_slice(format!("\n{HOOK_MARKER}\n{HOOK_COMMAND}\n").as_bytes());
-    content
+fn ensure_pre_commit_hook(existing: Vec<u8>, target: &str) -> Result<Vec<u8>> {
+    let content = String::from_utf8(existing).map_err(|error| WorkspaceError::Io {
+        path: PathBuf::from(target),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+    })?;
+    Ok(precommit_hook::ensure(&content).content.into_bytes())
 }
 
 fn ensure_unique_targets(mutations: &mut [FileMutation]) -> Result<()> {
@@ -1570,6 +1589,11 @@ fn apply_mutations(
                 FileState::Present { permissions, .. } => Some(permissions.clone()),
                 FileState::Missing => None,
             };
+            let current = read_at(parent, &file.path)?.map(|(content, _)| content);
+            if !file_before_matches(file, current.as_deref()) {
+                return Err(WorkspaceError::RollbackDrift(file.path.clone()));
+            }
+            file.after = Some(mutation.content.clone());
             write_at(
                 parent,
                 &file.path,
@@ -1577,6 +1601,10 @@ fn apply_mutations(
                 previous_permissions,
                 mutation.executable,
             )?;
+            let current = read_at(parent, &file.path)?.map(|(content, _)| content);
+            if current.as_deref() != Some(mutation.content.as_slice()) {
+                return Err(WorkspaceError::RollbackDrift(file.path.clone()));
+            }
         }
         Ok(())
     }
@@ -1619,15 +1647,41 @@ fn finalize_snapshot(snapshot: &mut WorkspaceSnapshot) -> Result<()> {
             path: file.path.clone(),
             source,
         })?;
-        file.after = Some(content);
+        if file.after.as_deref() != Some(content.as_slice()) {
+            return Err(WorkspaceError::RollbackDrift(file.path.clone()));
+        }
     }
     snapshot.finalized = true;
     Ok(())
 }
 
-fn restore_snapshot_unchecked(snapshot: &WorkspaceSnapshot) -> Result<()> {
+fn restore_snapshot_checked(snapshot: &WorkspaceSnapshot) -> Result<()> {
     let mut first_error = None;
     for file in snapshot.files.iter().rev() {
+        #[cfg(unix)]
+        let current = read_at(
+            file.parent.as_ref().ok_or(WorkspaceError::InvalidPlan)?,
+            &file.path,
+        )?
+        .map(|(content, _)| content);
+        #[cfg(not(unix))]
+        let current = read_optional(&file.path)?;
+        let before_matches = file_before_matches(file, current.as_deref());
+        if before_matches {
+            continue;
+        }
+        let Some(after) = file.after.as_deref() else {
+            if first_error.is_none() {
+                first_error = Some(WorkspaceError::RollbackDrift(file.path.clone()));
+            }
+            continue;
+        };
+        if current.as_deref() != Some(after) {
+            if first_error.is_none() {
+                first_error = Some(WorkspaceError::RollbackDrift(file.path.clone()));
+            }
+            continue;
+        }
         #[cfg(unix)]
         let restored = {
             let parent = file.parent.as_ref().ok_or(WorkspaceError::InvalidPlan)?;
@@ -1662,6 +1716,18 @@ fn restore_snapshot_unchecked(snapshot: &WorkspaceSnapshot) -> Result<()> {
         };
         if restored.is_err() && first_error.is_none() {
             first_error = restored.err();
+            continue;
+        }
+        #[cfg(unix)]
+        let verified = read_at(
+            file.parent.as_ref().ok_or(WorkspaceError::InvalidPlan)?,
+            &file.path,
+        )?
+        .map(|(content, _)| content);
+        #[cfg(not(unix))]
+        let verified = read_optional(&file.path)?;
+        if !file_before_matches(file, verified.as_deref()) && first_error.is_none() {
+            first_error = Some(WorkspaceError::RollbackDrift(file.path.clone()));
         }
     }
     #[cfg(unix)]
@@ -1707,6 +1773,13 @@ fn restore_snapshot_unchecked(snapshot: &WorkspaceSnapshot) -> Result<()> {
     }
 }
 
+fn file_before_matches(file: &FileSnapshot, current: Option<&[u8]>) -> bool {
+    match &file.before {
+        FileState::Missing => current.is_none(),
+        FileState::Present { content, .. } => current == Some(content.as_slice()),
+    }
+}
+
 fn build_receipt(
     plan: &SetupPlan,
     replayed_plan: bool,
@@ -1730,9 +1803,7 @@ fn build_receipt(
             } else if matches!(
                 action.kind,
                 SetupActionKind::ProtectEnvFile | SetupActionKind::ReviewPlaceBinding
-            ) || (action.kind == SetupActionKind::InstallPreCommitCheck
-                && !Path::new(&plan.workspace_root).join(".git").is_dir())
-            {
+            ) {
                 ActionOutcomeState::Deferred
             } else {
                 ActionOutcomeState::AlreadySatisfied
@@ -2100,6 +2171,31 @@ fn acquire_workspace_lock(root: &Path) -> Result<WorkspaceLock> {
         _process: process,
         _file: lock,
     })
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_generator_repairs_legacy_hook_with_canonical_local_command() {
+        let legacy = b"#!/bin/sh\necho before\n# Phantom Secrets pre-commit hook\nnpx phantom-secrets check --staged\nexit $?\necho after\n".to_vec();
+
+        let generated =
+            String::from_utf8(ensure_pre_commit_hook(legacy, ".git/hooks/pre-commit").unwrap())
+                .unwrap();
+
+        assert!(precommit_hook::is_current(&generated));
+        assert!(generated.contains("echo before"));
+        assert!(generated.contains("echo after"));
+        assert!(!generated.contains("npx phantom-secrets"));
+    }
+
+    #[test]
+    fn workspace_generator_rejects_non_utf8_hook_instead_of_overwriting_it() {
+        let error = ensure_pre_commit_hook(vec![0xff], ".git/hooks/pre-commit").unwrap_err();
+        assert!(matches!(error, WorkspaceError::Io { .. }));
+    }
 }
 
 #[cfg(all(test, unix))]
