@@ -44,14 +44,18 @@ fn validate_logout_terminals(stdin: bool, stdout: bool, stderr: bool) -> Result<
 }
 
 fn require_trusted_terminal_logout(plan: &LogoutPlan) -> Result<()> {
-    let mut nonce_bytes = [0_u8; 8];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = hex::encode(nonce_bytes);
+    let nonce = fresh_confirmation_nonce();
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     prompt_logout(plan, &nonce, &mut reader, &mut stdout, &mut stderr)
+}
+
+fn fresh_confirmation_nonce() -> String {
+    let mut nonce_bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    hex::encode(nonce_bytes)
 }
 
 fn prompt_logout(
@@ -125,17 +129,17 @@ mod tests {
     #[test]
     fn exact_logout_challenge_allows_reviewed_plan_only() {
         let plan = plan();
-        let nonce = "0011223344556677";
-        let input = format!("{}\n", challenge(&plan, nonce));
+        let nonce = fresh_confirmation_nonce();
+        let input = format!("{}\n", challenge(&plan, &nonce));
         let mut reader = std::io::Cursor::new(input);
         let mut prompt = Vec::new();
         let mut diagnostic = Vec::new();
 
-        prompt_logout(&plan, nonce, &mut reader, &mut prompt, &mut diagnostic).unwrap();
+        prompt_logout(&plan, &nonce, &mut reader, &mut prompt, &mut diagnostic).unwrap();
 
         let shown = String::from_utf8(diagnostic).unwrap();
         assert!(shown.contains("delete-persistent-phantom-cloud-auth"));
-        assert!(shown.contains(&challenge(&plan, nonce)));
+        assert!(shown.contains(&challenge(&plan, &nonce)));
     }
 
     #[test]
@@ -145,13 +149,13 @@ mod tests {
             consequence: "different consequence",
             ..plan()
         };
-        let nonce = "0011223344556677";
-        let input = format!("{}\n", challenge(&reviewed, nonce));
+        let nonce = fresh_confirmation_nonce();
+        let input = format!("{}\n", challenge(&reviewed, &nonce));
         let mut reader = std::io::Cursor::new(input);
 
         assert!(prompt_logout(
             &changed,
-            nonce,
+            &nonce,
             &mut reader,
             &mut Vec::new(),
             &mut Vec::new()

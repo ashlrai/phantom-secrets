@@ -76,14 +76,18 @@ fn validate_open_terminals(stdin: bool, stdout: bool, stderr: bool) -> Result<()
 }
 
 fn require_trusted_terminal_open(plan: &OpenPlan<'_>) -> Result<()> {
-    let mut nonce_bytes = [0_u8; 8];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = hex::encode(nonce_bytes);
+    let nonce = fresh_confirmation_nonce();
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     prompt_open(plan, &nonce, &mut reader, &mut stdout, &mut stderr)
+}
+
+fn fresh_confirmation_nonce() -> String {
+    let mut nonce_bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    hex::encode(nonce_bytes)
 }
 
 fn prompt_open(
@@ -205,7 +209,7 @@ mod tests {
             normalized_https_destination: "https://github.com/ashlrai/phantom-secrets",
             ..reviewed.clone()
         };
-        let nonce = "0011223344556677";
+        let nonce = fresh_confirmation_nonce();
         let reviewed_json = serde_json::to_string_pretty(&reviewed).unwrap();
         let expected = format!(
             "open {nonce} {}",
@@ -215,7 +219,7 @@ mod tests {
 
         assert!(prompt_open(
             &changed,
-            nonce,
+            &nonce,
             &mut reader,
             &mut Vec::new(),
             &mut Vec::new()

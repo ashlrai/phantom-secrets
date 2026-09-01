@@ -41,8 +41,10 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -175,6 +177,76 @@ fn acquire_storage_lock() -> std::io::Result<ApprovalStorageLock> {
 
 // ── Data types ─────────────────────────────────────────────────────────────────
 
+/// A cryptographically random approval nonce.
+///
+/// The persisted, user-facing, and HMAC representation remains 64 lowercase
+/// hex characters. Keeping nonce text in a validated type makes the
+/// cryptographic boundary explicit: paths, effect summaries, and other record
+/// strings cannot be mistaken for nonce material.
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct ApprovalNonce {
+    encoded: String,
+    bytes: [u8; 32],
+}
+
+impl ApprovalNonce {
+    fn generate() -> Self {
+        let mut bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        Self {
+            encoded: hex::encode(bytes),
+            bytes,
+        }
+    }
+
+    fn parse(encoded: &str) -> Result<Self, &'static str> {
+        if encoded.len() != 64 || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("approval nonce must be exactly 64 hexadecimal characters");
+        }
+        let decoded = hex::decode(encoded).map_err(|_| "approval nonce is not valid hex")?;
+        let bytes: [u8; 32] = decoded
+            .try_into()
+            .map_err(|_| "approval nonce must decode to exactly 32 bytes")?;
+        Ok(Self {
+            encoded: hex::encode(bytes),
+            bytes,
+        })
+    }
+}
+
+impl Deref for ApprovalNonce {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.encoded
+    }
+}
+
+impl fmt::Display for ApprovalNonce {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.encoded)
+    }
+}
+
+impl Serialize for ApprovalNonce {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.encoded)
+    }
+}
+
+impl<'de> Deserialize<'de> for ApprovalNonce {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        Self::parse(&encoded).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A pending (or approved) MCP approval record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRecord {
@@ -208,6 +280,28 @@ pub struct ApprovalRecord {
     pub approved_at: Option<u64>,
 }
 
+/// On-disk representation with a typed nonce boundary. Keeping this type
+/// private preserves the public `ApprovalRecord` API while ensuring serde and
+/// storage flows cannot conflate ordinary record strings with nonce material.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredApprovalRecord {
+    nonce: ApprovalNonce,
+    tool_name: String,
+    arg_hash: String,
+    project_id: String,
+    #[serde(default)]
+    effect_summary: String,
+    #[serde(default)]
+    parameter_summary: String,
+    created_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<u64>,
+    #[serde(default)]
+    approved: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approved_at: Option<u64>,
+}
+
 impl ApprovalRecord {
     /// True if the record is no longer usable. Missing expiry metadata fails
     /// closed, including legacy approved records that previously lived forever.
@@ -224,9 +318,52 @@ impl ApprovalRecord {
         self.expires_at
             .map(|expires_at| expires_at.saturating_sub(now_unix()))
     }
+}
+
+impl StoredApprovalRecord {
+    fn is_expired(&self) -> bool {
+        self.expires_at
+            .is_none_or(|expires_at| now_unix() >= expires_at)
+    }
 
     fn has_informed_summary(&self) -> bool {
         !self.effect_summary.is_empty() && !self.parameter_summary.is_empty()
+    }
+}
+
+impl From<StoredApprovalRecord> for ApprovalRecord {
+    fn from(record: StoredApprovalRecord) -> Self {
+        Self {
+            nonce: record.nonce.to_string(),
+            tool_name: record.tool_name,
+            arg_hash: record.arg_hash,
+            project_id: record.project_id,
+            effect_summary: record.effect_summary,
+            parameter_summary: record.parameter_summary,
+            created_at: record.created_at,
+            expires_at: record.expires_at,
+            approved: record.approved,
+            approved_at: record.approved_at,
+        }
+    }
+}
+
+impl TryFrom<ApprovalRecord> for StoredApprovalRecord {
+    type Error = &'static str;
+
+    fn try_from(record: ApprovalRecord) -> Result<Self, Self::Error> {
+        Ok(Self {
+            nonce: ApprovalNonce::parse(&record.nonce)?,
+            tool_name: record.tool_name,
+            arg_hash: record.arg_hash,
+            project_id: record.project_id,
+            effect_summary: record.effect_summary,
+            parameter_summary: record.parameter_summary,
+            created_at: record.created_at,
+            expires_at: record.expires_at,
+            approved: record.approved,
+            approved_at: record.approved_at,
+        })
     }
 }
 
@@ -539,7 +676,7 @@ pub fn generate_pending_approval(
     records.retain(|record| !record.is_expired());
 
     let nonce = loop {
-        let candidate = hex::encode(generate_32_bytes());
+        let candidate = ApprovalNonce::generate();
         if records.iter().all(|record| record.nonce != candidate) {
             break candidate;
         }
@@ -547,7 +684,7 @@ pub fn generate_pending_approval(
     let arg_hash = compute_arg_hash(params_json, &key);
     let now = now_unix();
 
-    let record = ApprovalRecord {
+    let record = StoredApprovalRecord {
         nonce: nonce.clone(),
         tool_name: tool_name.to_string(),
         arg_hash,
@@ -562,7 +699,7 @@ pub fn generate_pending_approval(
 
     records.push(record);
     rewrite_records(&path, &records)?;
-    Ok(nonce)
+    Ok(nonce.to_string())
 }
 
 // ── Approval token computation ─────────────────────────────────────────────────
@@ -574,6 +711,15 @@ pub fn generate_pending_approval(
 pub fn compute_approval_token(nonce: &str, arg_hash: &str, key: &[u8]) -> String {
     let message = format!("{nonce}:{arg_hash}");
     hmac_sha256_hex(key, message.as_bytes())
+}
+
+fn compute_typed_approval_token(nonce: &ApprovalNonce, arg_hash: &str, key: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key size");
+    let nonce_hex = hex::encode(nonce.bytes);
+    mac.update(nonce_hex.as_bytes());
+    mac.update(b":");
+    mac.update(arg_hash.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
 }
 
 // ── CLI: approve a nonce ───────────────────────────────────────────────────────
@@ -594,6 +740,7 @@ pub struct ApprovalOutcome {
 /// Verifies the nonce exists, has not expired, marks it approved, logs the
 /// event, and returns the approval token.
 pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
+    let nonce = ApprovalNonce::parse(nonce_hex).map_err(invalid_approval_input)?;
     let _lock = acquire_storage_lock()?;
     let key = load_or_create_approval_key_locked()?;
     let path = approvals_path()?;
@@ -607,7 +754,7 @@ pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
 
     // Load all records, find and validate target.
     let mut records = load_all_records(&path)?;
-    let idx = records.iter().position(|r| r.nonce == nonce_hex);
+    let idx = records.iter().position(|record| record.nonce == nonce);
 
     let idx = idx.ok_or_else(|| {
         std::io::Error::new(
@@ -660,7 +807,7 @@ pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
         Some(&format!("{tool_name}:{nonce_hex}")),
     );
 
-    let approval_token = compute_approval_token(nonce_hex, &arg_hash, &key);
+    let approval_token = compute_typed_approval_token(&nonce, &arg_hash, &key);
 
     Ok(ApprovalOutcome {
         approval_token,
@@ -673,6 +820,7 @@ pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
 /// call this before requesting confirmation, then call [`approve_nonce`] only
 /// after the operator types the fresh challenge.
 pub fn inspect_pending_approval(nonce_hex: &str) -> std::io::Result<ApprovalRecord> {
+    let nonce = ApprovalNonce::parse(nonce_hex).map_err(invalid_approval_input)?;
     let _lock = acquire_storage_lock()?;
     let path = approvals_path()?;
     if !path.exists() {
@@ -684,7 +832,7 @@ pub fn inspect_pending_approval(nonce_hex: &str) -> std::io::Result<ApprovalReco
     let records = load_all_records(&path)?;
     let record = records
         .into_iter()
-        .find(|record| record.nonce == nonce_hex)
+        .find(|record| record.nonce == nonce)
         .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -709,7 +857,7 @@ pub fn inspect_pending_approval(nonce_hex: &str) -> std::io::Result<ApprovalReco
             "Pending approval predates the informed-consent record format; generate a fresh request.",
         ));
     }
-    Ok(record)
+    Ok(record.into())
 }
 
 // ── MCP server: validate approval token ───────────────────────────────────────
@@ -733,6 +881,7 @@ pub fn validate_and_consume_approval(
     params_json: &str,
     project_id: &str,
 ) -> Result<(), String> {
+    let nonce = ApprovalNonce::parse(nonce_hex).map_err(str::to_string)?;
     let _lock =
         acquire_storage_lock().map_err(|e| format!("Failed to lock approval storage: {e}"))?;
     let key = load_or_create_approval_key_locked()
@@ -751,7 +900,7 @@ pub fn validate_and_consume_approval(
 
     let idx = records
         .iter()
-        .position(|r| r.nonce == nonce_hex)
+        .position(|record| record.nonce == nonce)
         .ok_or_else(|| {
             format!(
                 "Nonce '{nonce_hex}' not found. It may have expired or been consumed. \
@@ -811,7 +960,7 @@ pub fn validate_and_consume_approval(
         }
 
         // Verify the approval token.
-        let expected_token = compute_approval_token(nonce_hex, &rec.arg_hash, &key);
+        let expected_token = compute_typed_approval_token(&nonce, &rec.arg_hash, &key);
         if !constant_time_eq(approval_token.as_bytes(), expected_token.as_bytes()) {
             crate::audit::log(
                 "mcp.approval.invalid_token",
@@ -843,11 +992,12 @@ fn append_record(record: &ApprovalRecord) -> std::io::Result<()> {
     let _lock = acquire_storage_lock()?;
     let path = approvals_path()?;
     let mut records = load_records_if_present(&path)?;
-    records.push(record.clone());
+    let stored = StoredApprovalRecord::try_from(record.clone()).map_err(invalid_approval_input)?;
+    records.push(stored);
     rewrite_records(&path, &records)
 }
 
-fn load_records_if_present(path: &Path) -> std::io::Result<Vec<ApprovalRecord>> {
+fn load_records_if_present(path: &Path) -> std::io::Result<Vec<StoredApprovalRecord>> {
     require_regular_file_if_present(path, "MCP approval records")?;
     if path.exists() {
         load_all_records(path)
@@ -856,7 +1006,7 @@ fn load_records_if_present(path: &Path) -> std::io::Result<Vec<ApprovalRecord>> 
     }
 }
 
-fn load_all_records(path: &Path) -> std::io::Result<Vec<ApprovalRecord>> {
+fn load_all_records(path: &Path) -> std::io::Result<Vec<StoredApprovalRecord>> {
     require_regular_file_if_present(path, "MCP approval records")?;
     let f = File::open(path)?;
     let reader = BufReader::new(f);
@@ -867,7 +1017,7 @@ fn load_all_records(path: &Path) -> std::io::Result<Vec<ApprovalRecord>> {
         if trimmed.is_empty() {
             continue;
         }
-        let record = serde_json::from_str::<ApprovalRecord>(trimmed).map_err(|error| {
+        let record = serde_json::from_str::<StoredApprovalRecord>(trimmed).map_err(|error| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("invalid MCP approval record on line {}: {error}", index + 1),
@@ -878,7 +1028,7 @@ fn load_all_records(path: &Path) -> std::io::Result<Vec<ApprovalRecord>> {
     Ok(records)
 }
 
-fn rewrite_records(path: &Path, records: &[ApprovalRecord]) -> std::io::Result<()> {
+fn rewrite_records(path: &Path, records: &[StoredApprovalRecord]) -> std::io::Result<()> {
     require_regular_file_if_present(path, "MCP approval records")?;
     let mut contents = Vec::new();
     for record in records {
@@ -935,6 +1085,7 @@ pub fn list_pending_approvals() -> std::io::Result<Vec<ApprovalRecord>> {
     Ok(records
         .into_iter()
         .filter(|r| !r.approved && !r.is_expired())
+        .map(ApprovalRecord::from)
         .collect())
 }
 
@@ -946,7 +1097,7 @@ pub fn prune_stale_approvals() -> std::io::Result<usize> {
         return Ok(0);
     }
     let records = load_all_records(&path)?;
-    let kept: Vec<ApprovalRecord> = records
+    let kept: Vec<StoredApprovalRecord> = records
         .iter()
         .filter(|r| !r.is_expired())
         .cloned()
@@ -980,6 +1131,10 @@ mod tests {
             Some(p) => std::env::set_var("HOME", p),
             None => std::env::remove_var("HOME"),
         }
+    }
+
+    fn test_nonce() -> ApprovalNonce {
+        ApprovalNonce::generate()
     }
 
     #[test]
@@ -1052,8 +1207,9 @@ mod tests {
     #[test]
     fn legacy_pending_record_cannot_be_approved_without_informed_summary() {
         with_temp_home(|| {
+            let nonce = test_nonce();
             let record = ApprovalRecord {
-                nonce: "legacy-nonce".to_string(),
+                nonce: nonce.to_string(),
                 tool_name: "phantom_rotate".to_string(),
                 arg_hash: "deadbeef".to_string(),
                 project_id: "proj".to_string(),
@@ -1066,9 +1222,9 @@ mod tests {
             };
             append_record(&record).unwrap();
 
-            let inspect_error = inspect_pending_approval("legacy-nonce").unwrap_err();
+            let inspect_error = inspect_pending_approval(&nonce).unwrap_err();
             assert_eq!(inspect_error.kind(), std::io::ErrorKind::InvalidData);
-            let approve_error = approve_nonce("legacy-nonce").unwrap_err();
+            let approve_error = approve_nonce(&nonce).unwrap_err();
             assert_eq!(approve_error.kind(), std::io::ErrorKind::InvalidData);
             assert!(!load_all_records(&approvals_path().unwrap()).unwrap()[0].approved);
         });
@@ -1108,7 +1264,7 @@ mod tests {
             let mut records = load_all_records(&path).unwrap();
             let record = records
                 .iter_mut()
-                .find(|record| record.nonce == nonce)
+                .find(|record| record.nonce.encoded == nonce)
                 .expect("approved record exists");
             let approved_at = record.approved_at.expect("approval timestamp");
             assert_eq!(
@@ -1134,7 +1290,7 @@ mod tests {
     fn test_ttl_expiration() {
         // Build a record that expired 1 second ago.
         let expired = ApprovalRecord {
-            nonce: "deadbeef".to_string(),
+            nonce: test_nonce().to_string(),
             tool_name: "test_tool".to_string(),
             arg_hash: "aabbcc".to_string(),
             project_id: "test-project".to_string(),
@@ -1190,6 +1346,83 @@ mod tests {
             // Different params should produce different hash.
             let h3 = compute_arg_hash(r#"{"a":1,"b":3}"#, &key);
             assert_ne!(h1, h3);
+        });
+    }
+
+    #[test]
+    fn typed_nonce_preserves_approval_token_wire_compatibility() {
+        let nonce = test_nonce();
+        let key = generate_32_bytes();
+        let arg_hash = hex::encode(generate_32_bytes());
+        let legacy_message = format!("{nonce}:{arg_hash}");
+
+        assert_eq!(
+            compute_typed_approval_token(&nonce, &arg_hash, &key),
+            hmac_sha256_hex(&key, legacy_message.as_bytes())
+        );
+        assert_eq!(
+            compute_approval_token(&nonce, &arg_hash, &key),
+            compute_typed_approval_token(&nonce, &arg_hash, &key)
+        );
+    }
+
+    #[test]
+    fn typed_nonce_rejects_wrong_length_and_canonicalizes_hex() {
+        let nonce = test_nonce();
+        assert!(ApprovalNonce::parse(&nonce[..63]).is_err());
+
+        let uppercase = nonce.to_uppercase();
+        assert_eq!(ApprovalNonce::parse(&uppercase).unwrap(), nonce);
+    }
+
+    #[test]
+    fn public_record_api_and_typed_storage_keep_the_same_wire_shape() {
+        let public = ApprovalRecord {
+            nonce: test_nonce().to_string(),
+            tool_name: "phantom_rotate".to_string(),
+            arg_hash: hex::encode(generate_32_bytes()),
+            project_id: "project".to_string(),
+            effect_summary: "effect".to_string(),
+            parameter_summary: "{}".to_string(),
+            created_at: now_unix(),
+            expires_at: Some(now_unix() + APPROVAL_TTL_SECS),
+            approved: false,
+            approved_at: None,
+        };
+        let stored = StoredApprovalRecord::try_from(public.clone()).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&public).unwrap(),
+            serde_json::to_value(&stored).unwrap()
+        );
+        assert_eq!(ApprovalRecord::from(stored).nonce, public.nonce);
+        assert_eq!(
+            compute_approval_token(&public.nonce, &public.arg_hash, &generate_32_bytes()).len(),
+            64
+        );
+    }
+
+    #[test]
+    fn malformed_nonce_record_fails_the_store_closed() {
+        with_temp_home(|| {
+            let path = approvals_path().unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let record = serde_json::json!({
+                "nonce": "z".repeat(64),
+                "tool_name": "phantom_rotate",
+                "arg_hash": hex::encode(generate_32_bytes()),
+                "project_id": "project",
+                "effect_summary": "effect",
+                "parameter_summary": "{}",
+                "created_at": now_unix(),
+                "expires_at": now_unix() + APPROVAL_TTL_SECS,
+                "approved": false
+            });
+            std::fs::write(&path, format!("{record}\n")).unwrap();
+
+            let error = load_all_records(&path).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains("approval nonce"));
         });
     }
 
@@ -1250,8 +1483,9 @@ mod tests {
             // Write an expired record directly.
             let path = approvals_path().unwrap();
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let nonce = test_nonce();
             let record = ApprovalRecord {
-                nonce: "expirednonce1234".to_string(),
+                nonce: nonce.to_string(),
                 tool_name: "phantom_rotate".to_string(),
                 arg_hash: "aabbcc".to_string(),
                 project_id: "proj".to_string(),
@@ -1264,7 +1498,7 @@ mod tests {
             };
             append_record(&record).unwrap();
 
-            let result = approve_nonce("expirednonce1234");
+            let result = approve_nonce(&nonce);
             assert!(result.is_err());
             let msg = result.unwrap_err().to_string();
             assert!(msg.contains("expired"), "expected expiry error, got: {msg}");
@@ -1437,7 +1671,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
 
             let expired = ApprovalRecord {
-                nonce: "oldnonce".to_string(),
+                nonce: test_nonce().to_string(),
                 tool_name: "t".to_string(),
                 arg_hash: "h".to_string(),
                 project_id: "p".to_string(),
@@ -1449,8 +1683,9 @@ mod tests {
                 approved_at: None,
             };
             let future_ts = now_unix() + 9999;
+            let valid_nonce = test_nonce();
             let valid = ApprovalRecord {
-                nonce: "freshnoce".to_string(),
+                nonce: valid_nonce.to_string(),
                 expires_at: Some(future_ts),
                 created_at: now_unix(),
                 ..expired.clone()
@@ -1464,7 +1699,7 @@ mod tests {
 
             let remaining = load_all_records(&path).unwrap();
             assert_eq!(remaining.len(), 1);
-            assert_eq!(remaining[0].nonce, "freshnoce");
+            assert_eq!(remaining[0].nonce, valid_nonce);
         });
     }
 }
