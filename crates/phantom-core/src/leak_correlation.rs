@@ -1329,6 +1329,7 @@ impl LeakIncidentAlerter {
 fn is_public_alert_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ip) => {
+            let octets = ip.octets();
             !(ip.is_private()
                 || ip.is_loopback()
                 || ip.is_link_local()
@@ -1336,16 +1337,24 @@ fn is_public_alert_ip(ip: std::net::IpAddr) -> bool {
                 || ip.is_documentation()
                 || ip.is_unspecified()
                 || ip.is_multicast()
-                || ip.octets()[0] == 0
-                || ip.octets()[0] >= 240)
+                || octets[0] == 0
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
+                || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+                || octets[0] >= 240)
         }
         std::net::IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_public_alert_ip(std::net::IpAddr::V4(mapped));
+            }
             let segments = ip.segments();
             !(ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_multicast()
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] & 0xffc0) == 0xfec0
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8))
         }
     }
@@ -2176,8 +2185,17 @@ mod tests {
         assert!(!is_public_alert_ip(IpAddr::V4(Ipv4Addr::new(
             169, 254, 169, 254
         ))));
+        assert!(!is_public_alert_ip(IpAddr::V4(Ipv4Addr::new(
+            100, 64, 0, 1
+        ))));
+        assert!(!is_public_alert_ip(IpAddr::V4(Ipv4Addr::new(
+            198, 18, 0, 1
+        ))));
         assert!(!is_public_alert_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
         assert!(!is_public_alert_ip(IpAddr::V6("fc00::1".parse().unwrap())));
+        assert!(!is_public_alert_ip(IpAddr::V6(
+            "::ffff:127.0.0.1".parse().unwrap()
+        )));
         assert!(is_public_alert_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
         assert!(is_public_alert_ip(IpAddr::V6(
             "2606:4700:4700::1111".parse().unwrap()
