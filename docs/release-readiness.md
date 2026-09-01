@@ -173,10 +173,15 @@ still fetch locked build dependencies that are absent from the local cache; use
 Cargo's normal offline controls when a fully disconnected run is required.
 
 Publishing is an irreversible external mutation. It requires separate approval
-of the exact version and source tag, a clean worktree at `v<version>`, exact
-local and canonical `origin` tag SHA parity, a completed non-prerelease GitHub
-Release containing the exact nineteen-asset release contract, Cargo's normal
-credentials or `CARGO_REGISTRY_TOKEN`, and an exact confirmation value:
+of the exact version and source tag, a clean worktree at `v<version>`, an
+annotated canonical `origin` tag whose peeled commit is both local `HEAD` and
+current `origin/main`, and an immutable non-prerelease GitHub Release containing
+the exact nineteen-asset release contract. Before any upload, the script
+downloads that hosted bundle, checks its exact archive/sidecar/SBOM structure
+and digests, and verifies both build-provenance and SPDX attestations for every
+archive against the release workflow, exact tag ref, and source SHA. Cargo's
+normal credentials or `CARGO_REGISTRY_TOKEN` and an exact confirmation value
+are also required:
 
 ```bash
 PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.7.4 \
@@ -186,14 +191,15 @@ PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.7.4 \
 Do not place the registry token on the command line. The script removes registry
 and GitHub tokens from the general child-process environment before metadata,
 source gates, or packaging, then scopes each token only to its corresponding
-`cargo publish` or `gh release view` subprocess. It explicitly selects the
-`crates-io` Cargo registry, rechecks the source SHA, remote tag SHA, and clean
-worktree before every upload, polls crates.io rather than sleeping for a fixed
-index delay, verifies the published checksum before moving to a dependent
-crate, and accepts a concurrent publication race only if the resulting bytes
-are identical. A successful script run proves crates.io package publication
-only; npm, Homebrew, MCP Registry, signing, deployment, provider activation, and
-authenticated acceptance remain separate.
+`cargo publish` or GitHub receipt/download/attestation subprocess. It explicitly
+selects the `crates-io` Cargo registry, rechecks the source SHA, annotated remote
+tag SHA, current `origin/main`, and clean worktree before every upload, polls
+crates.io rather than sleeping for a fixed index delay, verifies the published
+checksum before moving to a dependent crate, and accepts a concurrent
+publication race only if the resulting bytes are identical. A successful script
+run proves crates.io package publication only; npm, Homebrew, MCP Registry,
+signing, deployment, provider activation, and authenticated acceptance remain
+separate.
 
 ## Artifact gates before publication
 
@@ -276,8 +282,8 @@ Keep these claims separate:
 1. source implemented;
 2. source gates passed on an exact SHA;
 3. archives built and locally verified;
-4. provenance and SBOM attestations verified for the exact archive digests;
-5. exact artifacts passed native acceptance;
+4. exact artifacts passed native acceptance;
+5. provenance and SBOM attestations verified for the exact archive digests;
 6. GitHub/npm/Homebrew/MCP packages published;
 7. provider configuration or deployment activated; and
 8. an authenticated customer workflow accepted.

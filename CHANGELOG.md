@@ -4,9 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-These entries describe the current source tree after the `0.7.4` candidate.
-They are not evidence that `0.7.4`, or any later build, has been published,
-deployed, commissioned, or accepted by a customer.
+No unreleased changes are recorded after the `0.7.4` candidate.
+
+## [0.7.4] - 2026-09-01
+
+This release hardens local agent setup, transactional secret protection, MCP
+effect authorization, retained filesystem authority, Windows private-file
+permissions, and the default-closed hosted-service boundary. Publication
+remains gated on protected-branch CI and the tag-triggered immutable-release
+workflow. This source section is not evidence that the tag, release artifacts,
+Homebrew formula, npm packages, crates.io packages, MCP Registry entry, database
+migrations, web deployment, provider integrations, or customer acceptance exist
+or are active.
 
 ### Security and filesystem integrity
 
@@ -19,11 +28,24 @@ deployed, commissioned, or accepted by a customer.
   exact identity-and-content before-image. This rejects hard-linked targets and
   byte-for-byte replacement inodes, while rename-and-decoy tests verify that a
   swapped ambient project path is not mutated.
+- Initialization admission now retains the reviewed project-root identity and
+  exact leaf snapshots before vault provisioning. After the project lock is
+  acquired, Phantom revalidates that root and each reviewed leaf's identity,
+  bytes, and permissions before mutation; a byte-identical rename decoy is
+  rejected as concurrent drift.
 - Anchored writes, unlinks, and directory creation return explicit effect
-  outcomes. A namespace change followed by a failed durability check is
-  reported as `CommittedButUncertain` (a **Partial** result), never collapsed
-  into either success or a safe-to-retry pre-commit failure. Exact creation
-  receipts permit cleanup only of the directory identity Phantom created.
+  outcomes. `CommittedVerifiedButDurabilityUncertain` is a committed, exactly
+  verified success with a value-free warning/receipt when the platform cannot
+  prove directory crash durability; callers must not roll it back or retry it.
+  `CommittedButUncertain` remains a **Partial** result when post-publish
+  verification or durability is unresolved and requires reconciliation. Exact
+  creation receipts permit cleanup only of the directory identity Phantom
+  created.
+- On Windows, new private anchored files and directories establish and verify
+  a protected current-user DACL before secret bytes are written. Replacement
+  files receive and verify the reviewed file's exact DACL, inheritance state,
+  and read-only state before bytes are copied. These are source-level contracts;
+  protected native Windows CI acceptance remains pending.
 - Governed CLI and MCP project-file mutation paths now use the retained project
   root for initialization, token remapping, wrapping, unwrapping, environment
   selection, agent guidance, doctor repairs, rotation, and workspace
@@ -71,16 +93,6 @@ deployed, commissioned, or accepted by a customer.
   externally trusted receipts remain inactive and fail closed. Enterprise
   packaging remains a planned contract/commissioning path, not an activated or
   customer-accepted service.
-
-## [0.7.4] - 2026-08-31
-
-This release hardens local agent setup, transactional secret protection, MCP
-effect authorization, and the default-closed hosted-service boundary.
-Publication remains gated on protected-branch CI and the tag-triggered
-immutable-release workflow. This source section is not evidence that the tag,
-release artifacts, Homebrew formula, npm packages, crates.io packages, MCP
-Registry entry, database migrations, web deployment, provider integrations, or
-customer acceptance exist or are active.
 
 ### Breaking changes and migration
 

@@ -52,7 +52,7 @@ fn reviewed_release_url(version: &str) -> String {
 fn permission_denied_guidance(source: InstallSource, version: &str) -> String {
     match source {
         InstallSource::Homebrew => "Use the reviewed tap and fully qualified formula:\n\
-             brew upgrade ashlrai/tap/phantom-secrets"
+             brew upgrade ashlrai/phantom/phantom"
             .to_string(),
         _ => format!(
             "Use the checksum-verifiable assets from the reviewed release: {}",
@@ -266,7 +266,7 @@ pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
             );
             println!(
                 "  {}",
-                "Use the reviewed owner command: brew upgrade ashlrai/tap/phantom-secrets"
+                "Use the reviewed owner command: brew upgrade ashlrai/phantom/phantom"
                     .cyan()
                     .bold()
             );
@@ -911,7 +911,8 @@ mod tests {
         }
 
         let brew = permission_denied_guidance(InstallSource::Homebrew, "0.7.3");
-        assert!(brew.contains("brew upgrade ashlrai/tap/phantom-secrets"));
+        assert!(brew.contains("brew upgrade ashlrai/phantom/phantom"));
+        assert!(!brew.contains("ashlrai/tap/phantom-secrets"));
         assert!(!brew.contains("brew upgrade phantom\n"));
     }
 
