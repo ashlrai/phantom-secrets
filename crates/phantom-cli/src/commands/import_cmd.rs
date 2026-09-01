@@ -260,6 +260,7 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
         }
     }
 
+    let mut approved_existing = std::collections::BTreeSet::new();
     if !existing.is_empty() && !force {
         println!(
             "{} {} secret(s) already exist in the vault:",
@@ -279,6 +280,7 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
             println!("{} Import cancelled.", "!".yellow().bold());
             return Ok(());
         }
+        approved_existing.extend(existing);
     }
 
     let mut imported = 0usize;
@@ -286,9 +288,10 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
     let mut failed: Vec<String> = Vec::new();
 
     for (name, value) in &secrets {
-        if !force && destination_secret_exists(vault.as_ref(), name)? {
-            // This branch is only reached if the user declined the interactive prompt above
-            // or if a new duplicate appears mid-iteration (shouldn't happen, but be safe).
+        let exists_now = !force && destination_secret_exists(vault.as_ref(), name)?;
+        if !competitor_import_store_allowed(force, &approved_existing, name, exists_now) {
+            // A duplicate that appeared after the reviewed preflight was not
+            // part of the operator's approval and must not be overwritten.
             skipped += 1;
             continue;
         }
@@ -358,6 +361,15 @@ fn destination_secret_exists(vault: &dyn phantom_vault::VaultBackend, name: &str
     })
 }
 
+fn competitor_import_store_allowed(
+    force: bool,
+    approved_existing: &std::collections::BTreeSet<String>,
+    name: &str,
+    exists_now: bool,
+) -> bool {
+    force || !exists_now || approved_existing.contains(name)
+}
+
 #[cfg(test)]
 mod fail_closed_tests {
     use super::*;
@@ -400,5 +412,33 @@ mod fail_closed_tests {
         assert!(error
             .to_string()
             .contains("injected destination listing failure"));
+    }
+
+    #[test]
+    fn affirmative_import_approval_is_scoped_to_reviewed_existing_names() {
+        let approved_existing = std::collections::BTreeSet::from(["REVIEWED".to_string()]);
+
+        assert!(competitor_import_store_allowed(
+            false,
+            &approved_existing,
+            "REVIEWED",
+            true,
+        ));
+        assert!(
+            !competitor_import_store_allowed(false, &approved_existing, "NEW_DUPLICATE", true),
+            "a concurrently introduced duplicate was never reviewed"
+        );
+        assert!(competitor_import_store_allowed(
+            false,
+            &approved_existing,
+            "NEW_VALUE",
+            false,
+        ));
+        assert!(competitor_import_store_allowed(
+            true,
+            &std::collections::BTreeSet::new(),
+            "FORCED",
+            true,
+        ));
     }
 }

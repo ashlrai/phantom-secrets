@@ -4202,16 +4202,17 @@ fn apply_cloud_pull_secrets(
     secrets: &std::collections::BTreeMap<String, String>,
     force: bool,
 ) -> Result<(usize, usize), McpError> {
-    let mut added = 0;
+    let mut pending = Vec::new();
     let mut skipped = 0;
     for (name, value) in secrets {
-        if !force {
+        if force {
+            pending.push((name, value));
+        } else {
             match vault.exists(name) {
                 Ok(true) => {
                     skipped += 1;
-                    continue;
                 }
-                Ok(false) => {}
+                Ok(false) => pending.push((name, value)),
                 Err(error) => {
                     return Err(internal_err(format!(
                         "Failed to inspect local secret '{name}' before cloud pull: {error}"
@@ -4219,6 +4220,10 @@ fn apply_cloud_pull_secrets(
                 }
             }
         }
+    }
+
+    let mut added = 0;
+    for (name, value) in pending {
         vault.store(name, value).map_err(|error| {
             internal_err(format!("Failed to store pulled secret '{name}': {error}"))
         })?;
@@ -4381,6 +4386,11 @@ mod tests {
         store_calls: AtomicUsize,
     }
 
+    struct SecondInspectionFailureVault {
+        inspection_calls: AtomicUsize,
+        store_calls: AtomicUsize,
+    }
+
     impl BackendFailureVault {
         fn new() -> Self {
             Self {
@@ -4423,6 +4433,38 @@ mod tests {
             Err(phantom_core::error::PhantomError::VaultError(
                 "injected metadata write failure".to_string(),
             ))
+        }
+    }
+
+    impl phantom_vault::VaultBackend for SecondInspectionFailureVault {
+        fn store(&self, _name: &str, _value: &str) -> phantom_core::error::Result<()> {
+            self.store_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            Err(phantom_core::error::PhantomError::SecretNotFound(
+                name.to_string(),
+            ))
+        }
+
+        fn delete(&self, _name: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            let inspection = self.inspection_calls.fetch_add(1, Ordering::SeqCst);
+            if inspection == 0 {
+                Ok(Vec::new())
+            } else {
+                Err(phantom_core::error::PhantomError::VaultError(
+                    "injected second inspection failure".to_string(),
+                ))
+            }
+        }
+
+        fn backend_name(&self) -> &str {
+            "second-inspection-failure"
         }
     }
 
@@ -4477,6 +4519,30 @@ mod tests {
         assert!(error.message.contains("Failed to inspect local secret"));
         assert!(error.message.contains("injected vault listing failure"));
         assert_eq!(vault.store_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn cloud_pull_preflights_every_non_overwrite_check_before_first_store() {
+        let vault = SecondInspectionFailureVault {
+            inspection_calls: AtomicUsize::new(0),
+            store_calls: AtomicUsize::new(0),
+        };
+        let secrets = std::collections::BTreeMap::from([
+            ("A_FIRST".to_string(), "first-value".to_string()),
+            ("B_SECOND".to_string(), "second-value".to_string()),
+        ]);
+
+        let error = apply_cloud_pull_secrets(&vault, &secrets, false)
+            .expect_err("the second inspection failure must abort the whole preflight");
+
+        assert!(error.message.contains("B_SECOND"));
+        assert!(error.message.contains("injected second inspection failure"));
+        assert_eq!(vault.inspection_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            vault.store_calls.load(Ordering::SeqCst),
+            0,
+            "no store may start until every force=false inspection succeeds"
+        );
     }
 
     struct TestHome {
