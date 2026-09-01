@@ -395,10 +395,10 @@ enum Commands {
     Unwrap,
 
     // ───────────────────────── Maintenance ───────────────────────────
-    /// Self-replace this binary with the latest GitHub release.
+    /// Check for updates; standalone installs may self-replace, while managed installs route to their owner.
     #[command(next_help_heading = "Maintenance")]
     Upgrade {
-        /// Skip confirmation prompt and upgrade immediately
+        /// Skip the standalone self-replacement confirmation prompt
         #[arg(long)]
         force: bool,
         /// Print available version without modifying the binary

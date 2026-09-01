@@ -358,15 +358,23 @@ phantom init
 
 This replaces any plaintext secrets in `.env` with phantom tokens.
 
-### `phantom upgrade` says "use npm" instead of upgrading
+### `phantom upgrade` identifies a direct, npm, or legacy shared-root install
 
-This is intentional. When phantom is installed via npm (binary cached at `~/.phantom-secrets/bin/phantom`), running `phantom upgrade` directly would be reverted by the next `npm install`. Use the npm path instead:
+The direct installers and npm wrappers both use `~/.phantom-secrets/bin`. New direct installs include a private `.phantom-install-source.json` receipt, while npm wrappers create an explicit npm ownership marker; `phantom upgrade` can therefore distinguish ownership without guessing from the path. All installers coordinate on the same sibling owner lock. A direct install owns `phantom` and `phantom-mcp` as one versioned pair, so the single-binary updater refuses to split their versions. Download the installer from the exact reviewed release, compare its published checksum, inspect the local file, and run that local file to upgrade both binaries transactionally.
+
+An npm-owned binary is also not replaced in place because the wrapper would overwrite it on its next run. Use an exact, reviewed npm package version only after that package is published and independently verified; the GitHub release does not prove npm publication.
+
+Older shared-root installs may have no receipt. Phantom recognizes a structurally valid legacy npm manifest, but otherwise reports an ambiguous legacy install and fails closed. Re-running a checksum-verified direct installer establishes the receipt without relying on a path guess.
+
+For Homebrew installs, use the reviewed tap and fully qualified formula:
 
 ```bash
-npm i -g phantom-secrets@latest
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew upgrade ashlrai/phantom/phantom
 ```
 
-For brew installs, use `brew upgrade phantom`. For curl-installed binaries (`~/.local/bin/phantom`) or cargo-installed (`~/.cargo/bin/phantom`), `phantom upgrade` is the right command.
+Cargo-owned and otherwise unshared standalone binaries can continue to use `phantom upgrade`. A successful source build or GitHub release does not by itself prove that a crate, npm package, or Homebrew formula has been published.
 
 ### npm wrapper feels "stuck on an old version"
 

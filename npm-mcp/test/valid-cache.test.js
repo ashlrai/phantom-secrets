@@ -2,7 +2,7 @@ const assert = require("assert");
 const crypto = require("crypto");
 const { mkdtempSync, readFileSync, rmSync } = require("fs");
 const { tmpdir } = require("os");
-const { join } = require("path");
+const { basename, dirname, join } = require("path");
 
 const { ensureBinary, pathSet, writePrivateFile } = require("../bin/cli.js");
 
@@ -10,6 +10,7 @@ const { ensureBinary, pathSet, writePrivateFile } = require("../bin/cli.js");
   const cacheDir = mkdtempSync(join(tmpdir(), "phantom-mcp-valid-cache-"));
   try {
     const paths = pathSet(cacheDir);
+    assert.strictEqual(paths.lockPath, join(dirname(cacheDir), `.${basename(cacheDir)}.install.lock`));
     const contents = "known-valid-cache";
     writePrivateFile(paths.binaryPath, contents, 0o700);
     const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
@@ -34,6 +35,7 @@ const { ensureBinary, pathSet, writePrivateFile } = require("../bin/cli.js");
     assert.strictEqual(resolved, paths.binaryPath);
     assert.strictEqual(executions, 1);
     assert.strictEqual(readFileSync(paths.binaryPath, "utf8"), contents);
+    assert.strictEqual(readFileSync(paths.sourceMarkerPath, "utf8"), "npm\n");
   } finally {
     rmSync(cacheDir, { recursive: true, force: true });
   }

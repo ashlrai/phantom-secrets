@@ -26,11 +26,44 @@ stage_root=""
 backup_path=""
 old_moved=0
 new_moved=0
+lock_path=""
+lock_token=""
+lock_owned=0
+lock_heartbeat_pid=""
+
+release_install_lock() {
+  local current=""
+  if [ -n "$lock_heartbeat_pid" ]; then
+    kill "$lock_heartbeat_pid" 2>/dev/null || true
+    wait "$lock_heartbeat_pid" 2>/dev/null || true
+    lock_heartbeat_pid=""
+  fi
+  if [ "$lock_owned" -eq 1 ] && [ -d "$lock_path" ] && [ ! -L "$lock_path" ]; then
+    if [ -f "$lock_path/owner" ] && [ ! -L "$lock_path/owner" ]; then
+      current="$(sed -n '1p' "$lock_path/owner" 2>/dev/null || true)"
+    fi
+    if [ "$current" = "$lock_token" ]; then
+      rm -rf -- "$lock_path"
+    fi
+  fi
+  lock_owned=0
+}
+
+install_lock_is_owned() {
+  [ "$lock_owned" -eq 1 ] \
+    && [ -d "$lock_path" ] && [ ! -L "$lock_path" ] \
+    && [ -f "$lock_path/owner" ] && [ ! -L "$lock_path/owner" ] \
+    && [ "$(sed -n '1p' "$lock_path/owner" 2>/dev/null || true)" = "$lock_token" ]
+}
+
+assert_install_lock_owned() {
+  install_lock_is_owned || die "installer lock ownership was lost"
+}
 
 cleanup() {
   local rc=$?
   trap - EXIT HUP INT TERM
-  if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -ne 0 ] && install_lock_is_owned; then
     if [ "$new_moved" -eq 1 ] && [ -e "$INSTALL_DIR" ]; then
       mv "$INSTALL_DIR" "$stage_root/failed-live" 2>/dev/null || true
     fi
@@ -41,6 +74,7 @@ cleanup() {
   if [ -n "$stage_root" ] && [ -d "$stage_root" ]; then
     rm -rf -- "$stage_root"
   fi
+  release_install_lock
   exit "$rc"
 }
 trap cleanup EXIT
@@ -87,6 +121,80 @@ verify_binary_version() {
   [ -f "$binary" ] && [ ! -L "$binary" ] || die "$product is not a regular file"
   output="$("$binary" --version 2>&1)" || die "$product --version failed"
   [ "$output" = "$product $expected" ] || die "$product reported an unexpected version"
+}
+
+file_mtime_epoch() {
+  stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null
+}
+
+acquire_install_lock() {
+  local wait_seconds="${PHANTOM_INSTALL_LOCK_WAIT_SECONDS:-30}"
+  local stale_seconds="${PHANTOM_INSTALL_LOCK_STALE_SECONDS:-300}"
+  local heartbeat_seconds="${PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS:-5}"
+  local deadline now mtime age stale_path current
+  [[ "$wait_seconds" =~ ^[1-9][0-9]*$ ]] || die "install lock wait must be a positive integer"
+  [[ "$stale_seconds" =~ ^[1-9][0-9]*$ ]] || die "install lock stale timeout must be a positive integer"
+  [[ "$heartbeat_seconds" =~ ^[1-9][0-9]*$ ]] || die "install lock heartbeat must be a positive integer"
+  [ "$heartbeat_seconds" -lt "$stale_seconds" ] \
+    || die "install lock heartbeat must be shorter than stale timeout"
+
+  lock_path="$install_parent/.${install_name}.install.lock"
+  lock_token="$$-$(date +%s)-${RANDOM}-${RANDOM}"
+  deadline=$(($(date +%s) + wait_seconds))
+  while :; do
+    if mkdir -m 700 "$lock_path" 2>/dev/null; then
+      printf '%s\n' "$lock_token" > "$lock_path/owner"
+      chmod 600 "$lock_path/owner"
+      lock_owned=1
+      (
+        heartbeat_sleep_pid=""
+        stop_heartbeat() {
+          if [ -n "$heartbeat_sleep_pid" ]; then
+            kill "$heartbeat_sleep_pid" 2>/dev/null || true
+            wait "$heartbeat_sleep_pid" 2>/dev/null || true
+          fi
+          exit 0
+        }
+        trap stop_heartbeat HUP INT TERM
+        while :; do
+          sleep "$heartbeat_seconds" &
+          heartbeat_sleep_pid=$!
+          wait "$heartbeat_sleep_pid" || exit 0
+          heartbeat_sleep_pid=""
+          [ -f "$lock_path/owner" ] && [ ! -L "$lock_path/owner" ] || exit 0
+          current="$(sed -n '1p' "$lock_path/owner" 2>/dev/null || true)"
+          [ "$current" = "$lock_token" ] || exit 0
+          touch "$lock_path/owner" || exit 0
+        done
+      ) &
+      lock_heartbeat_pid=$!
+      return 0
+    fi
+
+    [ -e "$lock_path" ] || die "could not create install lock"
+    [ -d "$lock_path" ] && [ ! -L "$lock_path" ] \
+      || die "install lock is not a regular directory"
+    if [ -e "$lock_path/owner" ]; then
+      [ -f "$lock_path/owner" ] && [ ! -L "$lock_path/owner" ] \
+        || die "install lock owner is not a regular file"
+      mtime="$(file_mtime_epoch "$lock_path/owner")" \
+        || die "could not inspect install lock owner"
+    else
+      mtime="$(file_mtime_epoch "$lock_path")" \
+        || die "could not inspect install lock"
+    fi
+    now="$(date +%s)"
+    age=$((now - mtime))
+    if [ "$age" -gt "$stale_seconds" ]; then
+      stale_path="$install_parent/.${install_name}.install.lock.stale.${lock_token}"
+      if mv "$lock_path" "$stale_path" 2>/dev/null; then
+        rm -rf -- "$stale_path"
+        continue
+      fi
+    fi
+    [ "$now" -lt "$deadline" ] || die "timed out waiting for another Phantom installer"
+    sleep 1
+  done
 }
 
 add_to_user_path() {
@@ -137,6 +245,8 @@ install_parent="$(cd "$install_parent" && pwd -P)"
 INSTALL_DIR="$install_parent/$install_name"
 [ "$INSTALL_DIR" != "/" ] || die "refusing to install into filesystem root"
 [ ! -L "$INSTALL_DIR" ] || die "refusing symlink install directory"
+
+acquire_install_lock
 
 stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")"
 chmod 700 "$stage_root"
@@ -204,19 +314,29 @@ tar -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release a
 chmod 755 "$candidate_dir/phantom" "$candidate_dir/phantom-mcp"
 verify_binary_version "$candidate_dir/phantom" "phantom" "$expected_version"
 verify_binary_version "$candidate_dir/phantom-mcp" "phantom-mcp" "$expected_version"
+receipt='{"schema_version":1,"source":"direct","version":"'"$expected_version"'","target":"'"$target"'"}'
+printf '%s\n' "$receipt" > "$candidate_dir/.phantom-install-source.json"
+chmod 600 "$candidate_dir/.phantom-install-source.json"
 say "archive identity verified"
 
 backup_path="$install_parent/.${install_name}.backup.${stage_root##*.}"
 [ ! -e "$backup_path" ] || die "private backup path already exists"
+assert_install_lock_owned
 if [ -e "$INSTALL_DIR" ]; then
   [ -d "$INSTALL_DIR" ] || die "install path exists and is not a directory"
   mv "$INSTALL_DIR" "$backup_path"
   old_moved=1
 fi
+assert_install_lock_owned
 mv "$candidate_dir" "$INSTALL_DIR"
 new_moved=1
 verify_binary_version "$INSTALL_DIR/phantom" "phantom" "$expected_version"
 verify_binary_version "$INSTALL_DIR/phantom-mcp" "phantom-mcp" "$expected_version"
+[ -f "$INSTALL_DIR/.phantom-install-source.json" ] \
+  && [ ! -L "$INSTALL_DIR/.phantom-install-source.json" ] \
+  && [ "$(sed -n '1p' "$INSTALL_DIR/.phantom-install-source.json")" = "$receipt" ] \
+  || die "install source receipt failed final validation"
+assert_install_lock_owned
 if [ "$old_moved" -eq 1 ]; then
   mv "$backup_path" "$stage_root/previous-live"
   old_moved=0

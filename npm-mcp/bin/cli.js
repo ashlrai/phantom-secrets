@@ -22,7 +22,7 @@ const {
 } = require("fs");
 const https = require("https");
 const { homedir } = require("os");
-const { dirname, isAbsolute, join, resolve } = require("path");
+const { basename, dirname, isAbsolute, join, resolve } = require("path");
 
 const VERSION = "0.7.4";
 const REPO = "ashlrai/phantom-secrets";
@@ -90,8 +90,10 @@ function pathSet(cacheDir, platform = process.platform) {
     backupManifestPath: `${binaryPath}.manifest.previous`,
     // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed child of the validated private cache root.
     transactionPath: join(cacheDir, ".mcp-install-transaction.json"),
-    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed child of the validated private cache root.
-    lockPath: join(cacheDir, ".mcp-install.lock"),
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed sibling lock derived from the validated private cache root so direct and npm installers share ownership.
+    lockPath: join(dirname(cacheDir), `.${basename(cacheDir)}.install.lock`),
+    // Explicitly overrides a stale direct-installer receipt in the shared root.
+    sourceMarkerPath: join(cacheDir, ".phantom-install-source.npm-mcp"),
   };
 }
 
@@ -181,6 +183,19 @@ function removeFileIfExists(path) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
+}
+
+function ensureNpmSourceMarker(path, platform = process.platform) {
+  try {
+    const contents = readFileSync(path, "utf8");
+    validateOwnedPath(path, "file", platform);
+    if (contents !== "npm\n") throw new Error("invalid npm install-source marker");
+    return;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  writePrivateFile(path, "npm\n", 0o600, platform);
+  fsyncDirectory(dirname(path), platform);
 }
 
 function sha256File(path) {
@@ -626,6 +641,7 @@ async function ensureBinary({
   const releaseLock = await acquireInstallLock(paths.lockPath, { ...lockOptions, platform: runtime.platform });
   const heartbeat = releaseLock.heartbeat;
   try {
+    ensureNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
     heartbeat();
     recoverInterruptedInstall(paths, runtime.platform);
     if (validateCachedBinary(paths.binaryPath, paths.manifestPath, {

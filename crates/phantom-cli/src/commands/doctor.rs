@@ -305,7 +305,9 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
             InstallSource::Npm => "npm (phantom-secrets package)",
             InstallSource::Homebrew => "Homebrew",
             InstallSource::Cargo => "Cargo (cargo install)",
-            InstallSource::Curl => "curl installer (~/.local/bin)",
+            InstallSource::Direct => "direct checksum-verifying installer",
+            InstallSource::Curl => "legacy standalone installer (~/.local/bin)",
+            InstallSource::LegacySharedRoot => "ambiguous legacy shared installer root",
             InstallSource::Unknown => "unknown",
         };
         check_info(&format!("Install source: {label}"));
@@ -618,7 +620,10 @@ fn check_fixed(msg: &str) {
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::upgrade::{detect_install_source, InstallSource};
+    use crate::commands::upgrade::{
+        detect_install_source, detect_install_source_from, InstallSource,
+    };
+    use std::path::Path;
 
     /// Smoke test — detect_install_source() must be stable across two calls.
     #[test]
@@ -628,52 +633,25 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    /// Verify that a binary path under ~/.phantom-secrets/bin/ is classified
-    /// as Npm by replicating the detection logic with a synthetic path.
-    #[test]
-    fn npm_path_detected_via_home_prefix() {
-        let home = dirs::home_dir().expect("need home dir for this test");
-        let npm_root = home.join(".phantom-secrets").join("bin");
-        let fake_exe = npm_root.join("phantom");
-
-        // Replicate the npm branch from detect_install_source().
-        let detected = if fake_exe.starts_with(&npm_root) {
-            InstallSource::Npm
-        } else {
-            InstallSource::Unknown
-        };
-        assert_eq!(detected, InstallSource::Npm);
-    }
-
-    /// Verify Homebrew path strings are classified correctly.
     #[test]
     fn homebrew_paths_detected() {
-        for path_str in &[
+        for path in [
             "/usr/local/Cellar/phantom/1.0/bin/phantom",
             "/opt/homebrew/bin/phantom",
             "/home/linuxbrew/.linuxbrew/bin/phantom",
         ] {
-            let detected = if path_str.contains("/Cellar/")
-                || path_str.contains("/homebrew/")
-                || path_str.contains("/linuxbrew/")
-            {
+            assert_eq!(
+                detect_install_source_from(Path::new(path), None),
                 InstallSource::Homebrew
-            } else {
-                InstallSource::Unknown
-            };
-            assert_eq!(detected, InstallSource::Homebrew, "path: {path_str}");
+            );
         }
     }
 
-    /// Verify Cargo path strings are classified correctly.
     #[test]
     fn cargo_path_detected() {
-        let path_str = "/home/user/.cargo/bin/phantom";
-        let detected = if path_str.contains("/.cargo/bin/") {
+        assert_eq!(
+            detect_install_source_from(Path::new("/home/user/.cargo/bin/phantom"), None),
             InstallSource::Cargo
-        } else {
-            InstallSource::Unknown
-        };
-        assert_eq!(detected, InstallSource::Cargo);
+        );
     }
 }

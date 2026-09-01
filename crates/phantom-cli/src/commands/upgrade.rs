@@ -1,4 +1,11 @@
 use colored::Colorize;
+use std::path::Path;
+
+const INSTALL_SOURCE_RECEIPT: &str = ".phantom-install-source.json";
+const NPM_SOURCE_MARKERS: [&str; 2] = [
+    ".phantom-install-source.npm-cli",
+    ".phantom-install-source.npm-mcp",
+];
 
 /// Where each install method roots its binaries. Used to give an actionable
 /// hint when self-update isn't the right path (e.g. npm-installed phantom
@@ -8,7 +15,9 @@ pub(crate) enum InstallSource {
     Npm,
     Homebrew,
     Cargo,
+    Direct,
     Curl,
+    LegacySharedRoot,
     Unknown,
 }
 
@@ -49,18 +58,88 @@ fn permission_denied_guidance(source: InstallSource, version: &str) -> String {
     }
 }
 
-pub(crate) fn detect_install_source() -> InstallSource {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(_) => return InstallSource::Unknown,
+fn regular_small_file(path: &Path) -> Option<String> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > 4096 {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+fn shared_root_source(exe: &Path) -> InstallSource {
+    let Some(root) = exe.parent() else {
+        return InstallSource::LegacySharedRoot;
     };
+    for marker_name in NPM_SOURCE_MARKERS {
+        let marker = root.join(marker_name);
+        match std::fs::symlink_metadata(&marker) {
+            Ok(_) => {
+                return if regular_small_file(&marker).as_deref() == Some("npm\n") {
+                    InstallSource::Npm
+                } else {
+                    InstallSource::LegacySharedRoot
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return InstallSource::LegacySharedRoot,
+        }
+    }
+    if let Some(contents) = regular_small_file(&root.join(INSTALL_SOURCE_RECEIPT)) {
+        let receipt = serde_json::from_str::<serde_json::Value>(&contents).ok();
+        let schema = receipt
+            .as_ref()
+            .and_then(|value| value.get("schema_version"))
+            .and_then(serde_json::Value::as_u64);
+        let source = receipt
+            .as_ref()
+            .and_then(|value| value.get("source"))
+            .and_then(serde_json::Value::as_str);
+        return match (schema, source) {
+            (Some(1), Some("direct")) => InstallSource::Direct,
+            (Some(1), Some("npm")) => InstallSource::Npm,
+            _ => InstallSource::LegacySharedRoot,
+        };
+    }
+
+    // npm wrappers published before the source receipt maintain a bounded
+    // per-binary manifest. Treat only a structurally valid legacy manifest as
+    // npm; a bare shared-root binary is ambiguous and therefore fails closed.
+    let manifest_path = exe.with_file_name(format!(
+        "{}.manifest.json",
+        exe.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    if let Some(contents) = regular_small_file(&manifest_path) {
+        if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&contents) {
+            let version_ok = manifest
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|version| !version.is_empty() && version.len() <= 128);
+            let digest_ok = manifest
+                .get("sha256")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|digest| {
+                    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                });
+            if manifest.as_object().is_some_and(|object| object.len() == 2)
+                && version_ok
+                && digest_ok
+            {
+                return InstallSource::Npm;
+            }
+        }
+    }
+    InstallSource::LegacySharedRoot
+}
+
+pub(crate) fn detect_install_source_from(exe: &Path, home: Option<&Path>) -> InstallSource {
     let path = exe.to_string_lossy();
 
-    // npm wrapper caches the binary under ~/.phantom-secrets/bin/phantom
-    if let Some(home) = dirs::home_dir() {
-        let npm_root = home.join(".phantom-secrets").join("bin");
-        if exe.starts_with(&npm_root) {
-            return InstallSource::Npm;
+    // Direct installers and npm wrappers intentionally share this private
+    // root. A source receipt (or a legacy npm manifest) disambiguates them.
+    if let Some(home) = home {
+        let shared_root = home.join(".phantom-secrets").join("bin");
+        if exe.parent() == Some(shared_root.as_path()) {
+            return shared_root_source(exe);
         }
     }
     if path.contains("/Cellar/") || path.contains("/homebrew/") || path.contains("/linuxbrew/") {
@@ -75,25 +154,69 @@ pub(crate) fn detect_install_source() -> InstallSource {
     InstallSource::Unknown
 }
 
+pub(crate) fn detect_install_source() -> InstallSource {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(_) => return InstallSource::Unknown,
+    };
+    let home = dirs::home_dir();
+    detect_install_source_from(&exe, home.as_deref())
+}
+
 pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     let source = detect_install_source();
 
-    if matches!(source, InstallSource::Npm) {
-        println!(
-            "{} phantom was installed via the npm wrapper, which this command cannot replace safely.",
-            "->".blue().bold(),
-        );
-        println!(
-            "  {}",
-            format!(
-                "Install the reviewed release: {}",
-                reviewed_release_url(current)
-            )
-            .cyan()
-            .bold()
-        );
-        return Ok(());
+    match source {
+        InstallSource::Npm => {
+            println!(
+                "{} phantom is managed by the npm wrapper; a direct binary replacement would be reverted.",
+                "->".blue().bold(),
+            );
+            println!(
+                "  {}",
+                format!(
+                    "Use a reviewed npm package when one is published, or switch both binaries with the checksum-verifiable release installer: {}",
+                    reviewed_release_url(current)
+                )
+                .cyan()
+                .bold()
+            );
+            return Ok(());
+        }
+        InstallSource::Direct => {
+            println!(
+                "{} phantom is managed by the direct installer as a phantom + phantom-mcp pair.",
+                "->".blue().bold(),
+            );
+            println!(
+                "  {}",
+                format!(
+                    "Download, checksum, inspect, and run the installer from the reviewed release to upgrade both binaries together: {}",
+                    reviewed_release_url(current)
+                )
+                .cyan()
+                .bold()
+            );
+            return Ok(());
+        }
+        InstallSource::LegacySharedRoot => {
+            println!(
+                "{} phantom is in the shared installer root, but its install source receipt is missing or invalid.",
+                "->".blue().bold(),
+            );
+            println!(
+                "  {}",
+                format!(
+                    "Refusing an ambiguous in-place update. Re-run a checksum-verified reviewed installer to restore a source receipt: {}",
+                    reviewed_release_url(current)
+                )
+                .cyan()
+                .bold()
+            );
+            return Ok(());
+        }
+        _ => {}
     }
 
     let target = self_update::get_target();
@@ -217,7 +340,9 @@ mod tests {
         for source in [
             InstallSource::Npm,
             InstallSource::Cargo,
+            InstallSource::Direct,
             InstallSource::Curl,
+            InstallSource::LegacySharedRoot,
             InstallSource::Unknown,
         ] {
             let guide = permission_denied_guidance(source, "0.7.3");
@@ -233,5 +358,76 @@ mod tests {
         assert!(brew.contains("brew trust --formula ashlrai/phantom/phantom"));
         assert!(brew.contains("brew upgrade ashlrai/phantom/phantom"));
         assert!(!brew.contains("brew upgrade phantom\n"));
+    }
+
+    #[test]
+    fn direct_installer_receipt_disambiguates_the_shared_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let root = home.join(".phantom-secrets").join("bin");
+        std::fs::create_dir_all(&root).unwrap();
+        let exe = root.join(if cfg!(windows) {
+            "phantom.exe"
+        } else {
+            "phantom"
+        });
+        std::fs::write(&exe, b"binary").unwrap();
+        std::fs::write(
+            root.join(INSTALL_SOURCE_RECEIPT),
+            br#"{"schema_version":1,"source":"direct","version":"0.7.4","target":"test"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_install_source_from(&exe, Some(home)),
+            InstallSource::Direct
+        );
+
+        std::fs::write(root.join(NPM_SOURCE_MARKERS[0]), b"npm\n").unwrap();
+        assert_eq!(
+            detect_install_source_from(&exe, Some(home)),
+            InstallSource::Npm
+        );
+    }
+
+    #[test]
+    fn shared_root_detection_is_backward_safe_and_fail_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let root = home.join(".phantom-secrets").join("bin");
+        std::fs::create_dir_all(&root).unwrap();
+        let exe = root.join(if cfg!(windows) {
+            "phantom.exe"
+        } else {
+            "phantom"
+        });
+        std::fs::write(&exe, b"binary").unwrap();
+
+        assert_eq!(
+            detect_install_source_from(&exe, Some(home)),
+            InstallSource::LegacySharedRoot
+        );
+
+        std::fs::write(
+            exe.with_file_name(format!(
+                "{}.manifest.json",
+                exe.file_name().unwrap().to_string_lossy()
+            )),
+            format!(
+                "{{\"version\":\"0.7.3\",\"sha256\":\"{}\"}}",
+                "a".repeat(64)
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            detect_install_source_from(&exe, Some(home)),
+            InstallSource::Npm
+        );
+
+        std::fs::write(root.join(INSTALL_SOURCE_RECEIPT), b"not-json").unwrap();
+        assert_eq!(
+            detect_install_source_from(&exe, Some(home)),
+            InstallSource::LegacySharedRoot
+        );
     }
 }

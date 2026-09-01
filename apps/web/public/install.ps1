@@ -1,6 +1,9 @@
-# Phantom Secrets -- Windows one-liner installer.
+# Phantom Secrets -- checksum-verifying Windows release installer.
 #
-#   irm https://phm.dev/install.ps1 | iex
+# 1. Download install.ps1 from an exact, reviewed release tag to a local file.
+# 2. Compare Get-FileHash -Algorithm SHA256 with the checksum published for
+#    that exact source, then inspect the local script.
+# 3. Run the reviewed local file: & .\install.ps1
 #
 # Downloads a bounded HTTPS release, verifies its exact checksum/archive
 # identity and both binary versions, then promotes a private sibling candidate
@@ -63,6 +66,7 @@ function Invoke-PhDownload {
         [Parameter(Mandatory)][string]$OutFile,
         [Parameter(Mandatory)][long]$MaxBytes
     )
+    Update-InstallLockHeartbeat
     $current = $Uri
     for ($redirects = 0; $redirects -le 3; $redirects++) {
         if (-not (Test-AllowedDownloadUri -Uri $current)) {
@@ -98,6 +102,7 @@ function Invoke-PhDownload {
                     $total += $count
                     if ($total -gt $MaxBytes) { throw "download exceeded the $MaxBytes-byte limit" }
                     $output.Write($buffer, 0, $count)
+                    Update-InstallLockHeartbeat
                 }
                 $output.Flush($true)
             } finally {
@@ -129,6 +134,116 @@ function New-PrivateDirectory {
     )
     $acl.AddAccessRule($rule) | Out-Null
     Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Get-PositiveInstallerSetting {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][int]$Default
+    )
+    $raw = [Environment]::GetEnvironmentVariable($Name)
+    if (-not $raw) { return $Default }
+    [int]$parsed = 0
+    if (-not [int]::TryParse($raw, [ref]$parsed) -or $parsed -lt 1) {
+        throw "$Name must be a positive integer"
+    }
+    return $parsed
+}
+
+function Update-InstallLockHeartbeat {
+    if (-not $script:InstallLock) { return }
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes("$($script:InstallLock.Token)`n")
+    $stream = $script:InstallLock.Stream
+    $stream.Position = 0
+    $stream.SetLength(0)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+}
+
+function Acquire-InstallLock {
+    param(
+        [Parameter(Mandatory)][string]$Parent,
+        [Parameter(Mandatory)][string]$Name
+    )
+    $waitSeconds = Get-PositiveInstallerSetting -Name 'PHANTOM_INSTALL_LOCK_WAIT_SECONDS' -Default 30
+    $staleSeconds = Get-PositiveInstallerSetting -Name 'PHANTOM_INSTALL_LOCK_STALE_SECONDS' -Default 300
+    $heartbeatSeconds = Get-PositiveInstallerSetting -Name 'PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS' -Default 5
+    if ($heartbeatSeconds -ge $staleSeconds) {
+        throw 'install lock heartbeat must be shorter than stale timeout'
+    }
+    $lockPath = Join-Path $Parent ".$Name.install.lock"
+    $ownerPath = Join-Path $lockPath 'owner'
+    $token = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
+    $deadline = [DateTime]::UtcNow.AddSeconds($waitSeconds)
+
+    while ($true) {
+        if (Test-Path -LiteralPath $lockPath) {
+            $lockItem = Get-Item -LiteralPath $lockPath
+            if (-not $lockItem.PSIsContainer -or
+                (($lockItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw 'install lock is not a regular directory'
+            }
+        } else {
+            New-PrivateDirectory -Path $lockPath
+        }
+
+        try {
+            $stream = [System.IO.File]::Open(
+                $ownerPath,
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None
+            )
+            $script:InstallLock = [PSCustomObject]@{
+                Path = $lockPath
+                OwnerPath = $ownerPath
+                Token = $token
+                Stream = $stream
+            }
+            Update-InstallLockHeartbeat
+            return
+        } catch [System.IO.IOException] {
+            if (-not (Test-Path -LiteralPath $ownerPath)) {
+                Start-Sleep -Milliseconds 50
+                continue
+            }
+            $ownerItem = Get-Item -LiteralPath $ownerPath
+            if ($ownerItem.PSIsContainer -or
+                (($ownerItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw 'install lock owner is not a regular file'
+            }
+            $ageSeconds = ([DateTime]::UtcNow - $ownerItem.LastWriteTimeUtc).TotalSeconds
+            if ($ageSeconds -gt $staleSeconds) {
+                $stalePath = "$lockPath.stale.$token"
+                try {
+                    Move-Item -LiteralPath $lockPath -Destination $stalePath -ErrorAction Stop
+                    Remove-Item -LiteralPath $stalePath -Recurse -Force
+                    continue
+                } catch {
+                    # An active owner keeps the file open without sharing; it cannot be stolen.
+                }
+            }
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw 'timed out waiting for another Phantom installer'
+            }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+}
+
+function Release-InstallLock {
+    if (-not $script:InstallLock) { return }
+    $owned = $script:InstallLock
+    $script:InstallLock = $null
+    $owned.Stream.Dispose()
+    try {
+        if ((Test-Path -LiteralPath $owned.OwnerPath) -and
+            ((Get-Content -LiteralPath $owned.OwnerPath -Raw).Trim() -ceq $owned.Token)) {
+            Remove-Item -LiteralPath $owned.Path -Recurse -Force
+        }
+    } catch {
+        Write-PhWarn 'could not remove the completed installer lock; it can be recovered after its stale timeout'
+    }
 }
 
 function Assert-ExactVersion {
@@ -202,15 +317,19 @@ $backupPath = Join-Path $installParent ".$installName.backup.$([Guid]::NewGuid()
 $oldMoved = $false
 $newMoved = $false
 $installed = $false
-
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$handler = New-Object System.Net.Http.HttpClientHandler
-$handler.AllowAutoRedirect = $false
-$script:HttpClient = New-Object -TypeName System.Net.Http.HttpClient -ArgumentList @($handler)
-$script:HttpClient.Timeout = [TimeSpan]::FromSeconds(120)
-$script:HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('phantom-installer/1')
+$script:InstallLock = $null
+$handler = $null
+$script:HttpClient = $null
 
 try {
+    Acquire-InstallLock -Parent $installParent -Name $installName
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $false
+    $script:HttpClient = New-Object -TypeName System.Net.Http.HttpClient -ArgumentList @($handler)
+    $script:HttpClient.Timeout = [TimeSpan]::FromSeconds(120)
+    $script:HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('phantom-installer/1')
+
     New-PrivateDirectory -Path $stageRoot
     $downloadDir = Join-Path $stageRoot 'download'
     $candidateDir = Join-Path $stageRoot 'candidate'
@@ -290,6 +409,18 @@ try {
         -Product 'phantom' -ExpectedVersion $expectedVersion
     Assert-ExactVersion -Binary (Join-Path $candidateDir 'phantom-mcp.exe') `
         -Product 'phantom-mcp' -ExpectedVersion $expectedVersion
+    $receipt = [ordered]@{
+        schema_version = 1
+        source = 'direct'
+        version = $expectedVersion
+        target = $target
+    } | ConvertTo-Json -Compress
+    $receiptPath = Join-Path $candidateDir '.phantom-install-source.json'
+    [System.IO.File]::WriteAllText(
+        $receiptPath,
+        "$receipt`n",
+        (New-Object System.Text.UTF8Encoding($false))
+    )
     Write-PhSay 'archive identity verified'
 
     try {
@@ -303,6 +434,13 @@ try {
             -Product 'phantom' -ExpectedVersion $expectedVersion
         Assert-ExactVersion -Binary (Join-Path $InstallDir 'phantom-mcp.exe') `
             -Product 'phantom-mcp' -ExpectedVersion $expectedVersion
+        $liveReceiptPath = Join-Path $InstallDir '.phantom-install-source.json'
+        $liveReceiptItem = Get-Item -LiteralPath $liveReceiptPath
+        if ($liveReceiptItem.PSIsContainer -or
+            (($liveReceiptItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) -or
+            ((Get-Content -LiteralPath $liveReceiptPath -Raw).Trim() -cne $receipt)) {
+            throw 'install source receipt failed final validation'
+        }
     } catch {
         if ($newMoved -and (Test-Path -LiteralPath $InstallDir)) {
             Move-Item -LiteralPath $InstallDir -Destination (Join-Path $stageRoot 'failed-live')
@@ -324,11 +462,12 @@ try {
 } catch {
     Write-PhDie $_.Exception.Message
 } finally {
-    $script:HttpClient.Dispose()
-    $handler.Dispose()
+    if ($script:HttpClient) { $script:HttpClient.Dispose() }
+    if ($handler) { $handler.Dispose() }
     if (Test-Path -LiteralPath $stageRoot) {
         Remove-Item -LiteralPath $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
+    Release-InstallLock
 }
 
 if (-not $installed) { exit 1 }

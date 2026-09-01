@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -12,28 +12,30 @@ const psInstaller = join(repo, 'scripts', 'install.ps1');
 const tag = 'v1.2.3';
 const version = '1.2.3';
 
-function executable(product, pathSensitive = false) {
+function executable(product, reportedVersion = version, pathSensitive = false) {
   const output = pathSensitive
-    ? `case "$0" in *.install.*) echo '${product} ${version}' ;; *) echo '${product} 9.9.9' ;; esac`
-    : `echo '${product} ${version}'`;
+    ? `case "$0" in *.install.*) echo '${product} ${reportedVersion}' ;; *) echo '${product} 9.9.9' ;; esac`
+    : `echo '${product} ${reportedVersion}'`;
   return `#!/bin/sh\n[ "$1" = --version ] || exit 2\n${output}\n`;
 }
 
 function makeArchive(root, target = 'x86_64-apple-darwin', options = {}) {
-  const fixture = join(root, 'fixture');
-  const payload = join(root, 'payload');
+  const reportedVersion = options.version ?? version;
+  const fixtureName = options.fixtureName ?? `fixture-${reportedVersion}`;
+  const fixture = join(root, fixtureName);
+  const payload = join(root, `payload-${fixtureName}`);
   mkdirSync(fixture, { recursive: true });
   mkdirSync(payload, { recursive: true });
   const phantom = join(payload, 'phantom');
   const mcp = join(payload, 'phantom-mcp');
   if (options.symlink) {
-    writeFileSync(join(payload, 'target'), executable('phantom'));
+    writeFileSync(join(payload, 'target'), executable('phantom', reportedVersion));
     symlinkSync('target', phantom);
   } else {
-    writeFileSync(phantom, executable('phantom', options.pathSensitive));
+    writeFileSync(phantom, executable('phantom', reportedVersion, options.pathSensitive));
     chmodSync(phantom, 0o755);
   }
-  writeFileSync(mcp, executable('phantom-mcp', options.pathSensitive));
+  writeFileSync(mcp, executable('phantom-mcp', reportedVersion, options.pathSensitive));
   chmodSync(mcp, 0o755);
   const members = ['phantom', 'phantom-mcp'];
   if (options.extra) {
@@ -66,6 +68,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 name="${'${url##*/}'}"
+[ -z "$PHANTOM_TEST_CURL_DELAY_SECONDS" ] || sleep "$PHANTOM_TEST_CURL_DELAY_SECONDS"
 cp "$PHANTOM_TEST_FIXTURE_DIR/$name" "$out" || exit 22
 printf '%s' "$url"
 `);
@@ -79,13 +82,13 @@ case "$1" in -s) printf '%s\\n' "$PHANTOM_TEST_UNAME_S" ;; -m) printf '%s\\n' "$
 }
 
 function runInstaller(options = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'phantom-installer-test-'));
+  const root = options.root ?? mkdtempSync(join(tmpdir(), 'phantom-installer-test-'));
   const target = options.target ?? 'x86_64-apple-darwin';
   const fixture = makeArchive(root, target, options);
-  const shims = makeShims(root);
-  const home = join(root, 'home');
-  const install = join(root, 'live', 'bin');
-  mkdirSync(home);
+  const shims = options.shims ?? makeShims(root);
+  const home = options.home ?? join(root, 'home');
+  const install = options.install ?? join(root, 'live', 'bin');
+  mkdirSync(home, { recursive: true });
   if (options.existing) {
     mkdirSync(install, { recursive: true });
     writeFileSync(join(install, 'old-install'), 'preserve-me');
@@ -98,15 +101,40 @@ function runInstaller(options = {}) {
       HOME: home,
       SHELL: '/bin/bash',
       PATH: `${shims}:${process.env.PATH}`,
-      PHANTOM_TAG: tag,
+      PHANTOM_TAG: `v${options.version ?? version}`,
       PHANTOM_INSTALL_DIR: install,
       PHANTOM_TEST_FIXTURE_DIR: fixture,
       PHANTOM_TEST_CURL_LOG: log,
       PHANTOM_TEST_UNAME_S: options.unameS ?? 'Darwin',
       PHANTOM_TEST_UNAME_M: options.unameM ?? 'x86_64',
+      PHANTOM_TEST_CURL_DELAY_SECONDS: options.curlDelaySeconds ?? '',
+      PHANTOM_INSTALL_LOCK_WAIT_SECONDS: options.lockWaitSeconds ?? '30',
+      PHANTOM_INSTALL_LOCK_STALE_SECONDS: options.lockStaleSeconds ?? '300',
+      PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS: options.lockHeartbeatSeconds ?? '5',
     },
   });
   return { root, install, log, result };
+}
+
+function waitForChild(child) {
+  return new Promise((resolvePromise, reject) => {
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (status) => resolvePromise({ status, stdout, stderr }));
+  });
+}
+
+async function waitForPath(path, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+  }
 }
 
 test('canonical installers exactly match the public mirrors', () => {
@@ -139,12 +167,104 @@ test('Unix installer uses bounded HTTPS downloads and promotes both exact binari
   assert.equal(result.status, 0, result.stderr);
   assert.match(readFileSync(join(install, 'phantom'), 'utf8'), /phantom 1\.2\.3/);
   assert.match(readFileSync(join(install, 'phantom-mcp'), 'utf8'), /phantom-mcp 1\.2\.3/);
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(install, '.phantom-install-source.json'), 'utf8')),
+    { schema_version: 1, source: 'direct', version: '1.2.3', target: 'x86_64-apple-darwin' },
+  );
   const curlLog = readFileSync(log, 'utf8');
   for (const option of ['--proto =https', '--proto-redir =https', '--max-redirs 3', '--connect-timeout 10', '--max-time 120', '--max-filesize']) {
     assert.match(curlLog, new RegExp(option.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
   assert.doesNotMatch(curlLog, /http:\/\//);
   assert.equal(readdirSync(dirname(install)).filter((name) => name.includes('.bin.install.')).length, 0);
+});
+
+test('Unix installer serializes concurrent versions under one owner lock', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'phantom-installer-concurrent-'));
+  const shims = makeShims(root);
+  const home = join(root, 'home');
+  const install = join(root, 'live', 'bin');
+  const log = join(root, 'curl.log');
+  mkdirSync(home, { recursive: true });
+  const firstFixture = makeArchive(root, 'x86_64-apple-darwin', {
+    version: '1.2.3', fixtureName: 'fixture-first',
+  });
+  const secondFixture = makeArchive(root, 'x86_64-apple-darwin', {
+    version: '1.2.4', fixtureName: 'fixture-second',
+  });
+  const baseEnv = {
+    ...process.env,
+    HOME: home,
+    SHELL: '/bin/bash',
+    PATH: `${shims}:${process.env.PATH}`,
+    PHANTOM_INSTALL_DIR: install,
+    PHANTOM_TEST_CURL_LOG: log,
+    PHANTOM_TEST_UNAME_S: 'Darwin',
+    PHANTOM_TEST_UNAME_M: 'x86_64',
+    PHANTOM_INSTALL_LOCK_WAIT_SECONDS: '15',
+    PHANTOM_INSTALL_LOCK_STALE_SECONDS: '3',
+    PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS: '1',
+  };
+
+  const first = spawn('/bin/bash', [shellInstaller], {
+    env: {
+      ...baseEnv,
+      PHANTOM_TAG: 'v1.2.3',
+      PHANTOM_TEST_FIXTURE_DIR: firstFixture,
+      PHANTOM_TEST_CURL_DELAY_SECONDS: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const lockOwner = join(dirname(install), '.bin.install.lock', 'owner');
+  await waitForPath(lockOwner);
+  const second = spawn('/bin/bash', [shellInstaller], {
+    env: {
+      ...baseEnv,
+      PHANTOM_TAG: 'v1.2.4',
+      PHANTOM_TEST_FIXTURE_DIR: secondFixture,
+      PHANTOM_TEST_CURL_DELAY_SECONDS: '',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  const [firstResult, secondResult] = await Promise.all([
+    waitForChild(first), waitForChild(second),
+  ]);
+  assert.equal(firstResult.status, 0, firstResult.stderr);
+  assert.equal(secondResult.status, 0, secondResult.stderr);
+  assert.match(readFileSync(join(install, 'phantom'), 'utf8'), /phantom 1\.2\.4/);
+  assert.match(readFileSync(join(install, 'phantom-mcp'), 'utf8'), /phantom-mcp 1\.2\.4/);
+  assert.equal(
+    JSON.parse(readFileSync(join(install, '.phantom-install-source.json'), 'utf8')).version,
+    '1.2.4',
+  );
+  assert.equal(existsSync(join(dirname(install), '.bin.install.lock')), false);
+});
+
+test('Unix installer recovers an abandoned stale owner lock', () => {
+  const root = mkdtempSync(join(tmpdir(), 'phantom-installer-stale-'));
+  const shims = makeShims(root);
+  const install = join(root, 'live', 'bin');
+  const lock = join(dirname(install), '.bin.install.lock');
+  mkdirSync(lock, { recursive: true, mode: 0o700 });
+  const owner = join(lock, 'owner');
+  writeFileSync(owner, 'abandoned-owner\n', { mode: 0o600 });
+  const old = new Date(Date.now() - 10_000);
+  utimesSync(owner, old, old);
+
+  const { result } = runInstaller({
+    root,
+    shims,
+    install,
+    home: join(root, 'home'),
+    fixtureName: 'fixture-recovery',
+    lockWaitSeconds: '5',
+    lockStaleSeconds: '2',
+    lockHeartbeatSeconds: '1',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(lock), false);
+  assert.match(readFileSync(join(install, 'phantom'), 'utf8'), /phantom 1\.2\.3/);
 });
 
 test('Unix installer preserves the prior live install on malformed checksum', () => {
@@ -192,12 +312,17 @@ test('installers retain the closed six-target mapping', () => {
 
 test('PowerShell installer has a strict offline-verifiable security contract', () => {
   const source = readFileSync(psInstaller, 'utf8');
+  assert.doesNotMatch(source, /\b(?:irm|Invoke-RestMethod)\b[^\n]*\|\s*iex\b/i);
+  assert.match(source, /Get-FileHash -Algorithm SHA256/);
+  assert.match(source, /Run the reviewed local file/);
   assert.doesNotMatch(source, /Unblock-File.*-ErrorAction\s+SilentlyContinue/);
   assert.match(source, /AllowAutoRedirect\s*=\s*\$false/);
   assert.match(source, /ResponseHeadersRead/);
   assert.match(source, /release archive must contain exactly phantom\.exe and phantom-mcp\.exe/);
   assert.match(source, /Assert-ExactVersion[\s\S]+phantom-mcp/);
   assert.match(source, /Move-Item[\s\S]+backupPath[\s\S]+failed-live/);
+  assert.match(source, /FileMode\]::CreateNew/);
+  assert.match(source, /install source receipt failed final validation/);
   assert.ok(source.indexOf('archive identity verified') < source.indexOf('run Unblock-File manually'));
 });
 
