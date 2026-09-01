@@ -6,7 +6,6 @@
 //! the ACL is user-only, so same-user or otherwise-authorized processes remain
 //! outside the coordination guarantee.
 
-use fs2::FileExt;
 use phantom_core::error::{PhantomError, Result};
 use sha2::{Digest, Sha256};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -75,60 +74,6 @@ fn lock_path(project_dir: &Path) -> Result<(PathBuf, PathBuf)> {
     lock_path_at(project_dir, &lock_root())
 }
 
-fn directory_is_unsafe(metadata: &std::fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes()
-            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-            != 0
-        {
-            return true;
-        }
-    }
-    false
-}
-
-/// Create only missing lock-root components, refusing every existing unsafe
-/// ancestor. This deliberately avoids `create_dir_all`: that API follows an
-/// attacker-controlled symlink/junction before Phantom can inspect it.
-fn ensure_lock_parent(parent: &Path) -> Result<()> {
-    let mut components = parent.ancestors().collect::<Vec<_>>();
-    components.reverse();
-    for component in components {
-        match std::fs::symlink_metadata(component) {
-            Ok(metadata) => {
-                if directory_is_unsafe(&metadata) {
-                    return Err(PhantomError::VaultError(format!(
-                        "Project transaction lock ancestor is not a real directory: {}",
-                        component.display()
-                    )));
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match std::fs::create_dir(component) {
-                    Ok(()) => {}
-                    Err(create_error)
-                        if create_error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                    Err(create_error) => return Err(create_error.into()),
-                }
-                let metadata = std::fs::symlink_metadata(component)?;
-                if directory_is_unsafe(&metadata) {
-                    return Err(PhantomError::VaultError(format!(
-                        "Project transaction lock ancestor became unsafe: {}",
-                        component.display()
-                    )));
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
-}
-
 /// Acquire the process-local and cross-process lock for one canonical project.
 pub fn acquire_project_transaction_lock(project_dir: &Path) -> Result<ProjectTransactionLock> {
     let (identity, path) = lock_path(project_dir)?;
@@ -140,139 +85,12 @@ fn acquire_project_transaction_lock_at(
     path: PathBuf,
 ) -> Result<ProjectTransactionLock> {
     let process = process_lock_for(&identity);
-    let parent = path.parent().expect("transaction lock path has a parent");
-    ensure_lock_parent(parent)?;
-    let parent_metadata = std::fs::symlink_metadata(parent)?;
-    if directory_is_unsafe(&parent_metadata) {
-        return Err(PhantomError::VaultError(format!(
-            "Project transaction lock directory is not a real directory: {}",
-            parent.display()
-        )));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-    }
-
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).read(true).write(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = options.open(&path).map_err(|error| {
-        PhantomError::VaultError(format!(
-            "Cannot open project transaction lock {}: {error}",
-            path.display()
-        ))
-    })?;
-    if !file.metadata()?.is_file() {
-        return Err(PhantomError::VaultError(format!(
-            "Project transaction lock is not a regular file: {}",
-            path.display()
-        )));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        use std::os::unix::fs::PermissionsExt;
-        if file.metadata()?.nlink() != 1 {
-            return Err(PhantomError::VaultError(format!(
-                "Project transaction lock is not a single-link owner file: {}",
-                path.display()
-            )));
-        }
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    file.lock_exclusive().map_err(|error| {
-        PhantomError::VaultError(format!(
-            "Cannot acquire project transaction lock {}: {error}",
-            path.display()
-        ))
-    })?;
-    #[cfg(windows)]
-    ensure_windows_lock_identity(&file, &path)?;
+    let file =
+        crate::lock_file::acquire_exclusive_lock_file(&path, "project transaction lock", true)?;
     Ok(ProjectTransactionLock {
         _process: process,
         _file: file,
     })
-}
-
-#[cfg(windows)]
-fn windows_file_information(
-    file: &std::fs::File,
-) -> Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
-    use std::os::windows::io::AsRawHandle;
-
-    let mut information =
-        windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION::default();
-    let status = unsafe {
-        windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle(
-            file.as_raw_handle(),
-            &mut information,
-        )
-    };
-    if status == 0 {
-        return Err(PhantomError::VaultError(format!(
-            "Cannot inspect Windows transaction lock handle: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
-    Ok(information)
-}
-
-#[cfg(windows)]
-fn ensure_windows_lock_identity(file: &std::fs::File, path: &Path) -> Result<()> {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    let original = windows_file_information(file)?;
-    if original.dwFileAttributes
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-    {
-        return Err(PhantomError::VaultError(format!(
-            "Transaction lock is a Windows reparse point: {}",
-            path.display()
-        )));
-    }
-    if original.nNumberOfLinks != 1 {
-        return Err(PhantomError::VaultError(format!(
-            "Transaction lock is not a single-link owner file: {}",
-            path.display()
-        )));
-    }
-    let current = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-        .map_err(|error| {
-            PhantomError::VaultError(format!(
-                "Cannot verify Windows transaction lock {}: {error}",
-                path.display()
-            ))
-        })?;
-    let current = windows_file_information(&current)?;
-    if current.dwFileAttributes
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-        || original.dwVolumeSerialNumber != current.dwVolumeSerialNumber
-        || original.nFileIndexHigh != current.nFileIndexHigh
-        || original.nFileIndexLow != current.nFileIndexLow
-    {
-        return Err(PhantomError::VaultError(format!(
-            "Windows transaction lock path changed while being acquired: {}",
-            path.display()
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -310,7 +128,7 @@ mod tests {
 
     #[test]
     fn windows_lock_contract_opens_reparse_point_and_checks_handle_identity() {
-        let source = include_str!("transaction_lock.rs");
+        let source = include_str!("lock_file.rs");
         assert!(source.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
         assert!(source.contains("FILE_ATTRIBUTE_REPARSE_POINT"));
         assert!(source.contains("GetFileInformationByHandle"));
@@ -319,6 +137,11 @@ mod tests {
         assert!(source.contains("nFileIndexLow"));
         assert!(source.contains("nNumberOfLinks"));
         assert!(source.contains("file_attributes"));
+        let transaction_source = include_str!("transaction_lock.rs");
+        assert!(transaction_source.contains("crate::lock_file::acquire_exclusive_lock_file"));
+        assert!(transaction_source.contains("project transaction lock"));
+        assert!(transaction_source.contains("true"));
+        let source = include_str!("transaction_lock.rs");
         assert!(source.contains("does not claim that\n//! the ACL is user-only"));
     }
 
@@ -333,7 +156,11 @@ mod tests {
         std::fs::create_dir(&owner).unwrap();
         let sentinel = owner.join("sentinel");
         std::fs::write(&sentinel, b"owner-state").unwrap();
-        let redirected = container.path().join("transaction-locks");
+        let redirected = container
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("transaction-locks");
         symlink(&owner, &redirected).unwrap();
         let (identity, path) = lock_path_at(project.path(), &redirected).unwrap();
 
@@ -352,9 +179,10 @@ mod tests {
 
         let project = tempdir().unwrap();
         let lock_root = tempdir().unwrap();
-        let victim = lock_root.path().join("owner-state");
+        let root = lock_root.path().canonicalize().unwrap();
+        let victim = root.join("owner-state");
         std::fs::write(&victim, b"preserve").unwrap();
-        let (identity, path) = lock_path_at(project.path(), lock_root.path()).unwrap();
+        let (identity, path) = lock_path_at(project.path(), &root).unwrap();
         symlink(&victim, &path).unwrap();
 
         assert!(acquire_project_transaction_lock_at(identity, path).is_err());
@@ -368,10 +196,11 @@ mod tests {
 
         let project = tempdir().unwrap();
         let lock_root = tempdir().unwrap();
-        let victim = lock_root.path().join("owner-state");
+        let root = lock_root.path().canonicalize().unwrap();
+        let victim = root.join("owner-state");
         std::fs::write(&victim, b"preserve").unwrap();
         std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let (identity, path) = lock_path_at(project.path(), lock_root.path()).unwrap();
+        let (identity, path) = lock_path_at(project.path(), &root).unwrap();
         std::fs::hard_link(&victim, &path).unwrap();
 
         assert!(acquire_project_transaction_lock_at(identity, path).is_err());

@@ -53,39 +53,14 @@ fn project_lock_path(project_id: &str) -> PathBuf {
 
 fn acquire_project_lock_at(project_id: &str, path: &Path) -> Result<ProjectLock> {
     let process = process_lock_for(project_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-        }
-    }
-
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).read(true).write(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = options.open(path).map_err(|error| {
-        PhantomError::VaultError(format!(
-            "Cannot open per-project keychain lock {}: {error}",
-            path.display()
-        ))
-    })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    fs2::FileExt::lock_exclusive(&file).map_err(|error| {
-        PhantomError::VaultError(format!(
-            "Cannot acquire per-project keychain lock {}: {error}",
-            path.display()
-        ))
-    })?;
+    let file =
+        crate::lock_file::acquire_exclusive_lock_file(path, "per-project keychain lock", true)
+            .map_err(|error| {
+                PhantomError::VaultError(format!(
+                    "Cannot acquire per-project keychain lock {}: {error}",
+                    path.display()
+                ))
+            })?;
     Ok(ProjectLock {
         _process: process,
         _file: file,
@@ -1186,8 +1161,9 @@ mod tests {
     fn project_lock_serializes_sidecar_read_modify_write_without_lost_names() {
         const WRITERS: usize = 24;
         let directory = tempdir().unwrap();
-        let lock_path = directory.path().join("project.lock");
-        let sidecar_path = directory.path().join("project.meta.json");
+        let root = directory.path().canonicalize().unwrap();
+        let lock_path = root.join("locks").join("project.lock");
+        let sidecar_path = root.join("project.meta.json");
         let barrier = Arc::new(Barrier::new(WRITERS));
         let mut workers = Vec::new();
 
@@ -1236,10 +1212,40 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempdir().unwrap();
-        let path = directory.path().join("owner-only.lock");
+        let path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("locks")
+            .join("owner-only.lock");
         let _lock = acquire_project_lock_at("owner-only", &path).unwrap();
-        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        let lock_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let parent_mode = std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(lock_mode, 0o600);
+        assert_eq!(parent_mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_lock_rejects_permissive_existing_parent_without_chmod() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let parent = directory.path().canonicalize().unwrap().join("locks");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = parent.join("owner-only.lock");
+
+        assert!(acquire_project_lock_at("owner-only", &path).is_err());
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::metadata(parent).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
     }
 
     #[test]

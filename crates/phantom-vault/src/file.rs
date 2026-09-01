@@ -1,7 +1,6 @@
 use crate::crypto;
 use crate::metadata::SecretMetadata;
 use crate::traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
-use fs2::FileExt;
 use phantom_core::error::{PhantomError, Result};
 use phantom_core::validator::ValidationMetadata;
 use serde::{Deserialize, Serialize};
@@ -33,7 +32,7 @@ impl FileVault {
     pub fn new(base_dir: &Path, project_id: &str, passphrase: String) -> Result<Self> {
         validate_project_id(project_id)?;
         let vault_dir = base_dir.join("vaults");
-        std::fs::create_dir_all(&vault_dir)?;
+        crate::lock_file::ensure_safe_directory(&vault_dir, "encrypted vault directory", false)?;
 
         let vault = Self {
             vault_path: vault_dir.join(format!("{project_id}.vault")),
@@ -106,15 +105,8 @@ impl FileVault {
     /// duration of the critical section — dropping it releases the lock.
     fn lock_file(&self) -> Result<std::fs::File> {
         let lock_path = self.vault_path.with_extension("lock");
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&lock_path)
-            .map_err(|e| PhantomError::VaultError(format!("Cannot open lock file: {e}")))?;
-        file.lock_exclusive()
-            .map_err(|e| PhantomError::VaultError(format!("Cannot acquire vault lock: {e}")))?;
-        Ok(file)
+        crate::lock_file::acquire_exclusive_lock_file(&lock_path, "encrypted vault lock", false)
+            .map_err(|e| PhantomError::VaultError(format!("Cannot acquire vault lock: {e}")))
     }
 
     fn save(&self, data: &VaultData) -> Result<()> {
@@ -402,10 +394,18 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn canonical_temp_root(dir: &TempDir) -> PathBuf {
+        dir.path().canonicalize().unwrap()
+    }
+
     fn test_vault() -> (FileVault, TempDir) {
         let dir = TempDir::new().unwrap();
-        let vault =
-            FileVault::new(dir.path(), "test-project", "test-passphrase".to_string()).unwrap();
+        let vault = FileVault::new(
+            &canonical_temp_root(&dir),
+            "test-project",
+            "test-passphrase".to_string(),
+        )
+        .unwrap();
         (vault, dir)
     }
 
@@ -439,9 +439,48 @@ mod tests {
     fn test_project_id_accepts_portable_legacy_identifiers() {
         for project_id in ["0123456789abcdef", "test-project", "project_name-42"] {
             let dir = TempDir::new().unwrap();
-            FileVault::new(dir.path(), project_id, "passphrase".to_string())
-                .expect("portable project ID should be accepted");
+            FileVault::new(
+                &canonical_temp_root(&dir),
+                project_id,
+                "passphrase".to_string(),
+            )
+            .expect("portable project ID should be accepted");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn constructor_rejects_symlinked_base_without_creating_in_target() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TempDir::new().unwrap();
+        let root = canonical_temp_root(&directory);
+        let target = root.join("owner-state");
+        std::fs::create_dir(&target).unwrap();
+        let redirected = root.join("redirected");
+        symlink(&target, &redirected).unwrap();
+
+        assert!(FileVault::new(&redirected, "test-project", "passphrase".into()).is_err());
+        assert!(!target.join("vaults").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_lock_symlink_is_rejected_without_mutating_target() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let (vault, _directory) = test_vault();
+        let victim = vault.vault_path.with_extension("owner-state");
+        std::fs::write(&victim, b"preserve").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&victim, vault.vault_path.with_extension("lock")).unwrap();
+
+        assert!(vault.store("API_KEY", "secret").is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"preserve");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
     }
 
     #[test]
@@ -626,15 +665,15 @@ mod tests {
     #[test]
     fn test_wrong_passphrase_fails() {
         let dir = TempDir::new().unwrap();
+        let root = canonical_temp_root(&dir);
 
         // Create vault with one passphrase
         let vault1 =
-            FileVault::new(dir.path(), "test-project", "correct-passphrase".to_string()).unwrap();
+            FileVault::new(&root, "test-project", "correct-passphrase".to_string()).unwrap();
         vault1.store("KEY", "secret").unwrap();
 
         // Try to read with wrong passphrase
-        let vault2 =
-            FileVault::new(dir.path(), "test-project", "wrong-passphrase".to_string()).unwrap();
+        let vault2 = FileVault::new(&root, "test-project", "wrong-passphrase".to_string()).unwrap();
         let result = vault2.retrieve("KEY");
         assert!(result.is_err());
     }
@@ -642,7 +681,8 @@ mod tests {
     #[test]
     fn test_migrate_from_json() {
         let dir = TempDir::new().unwrap();
-        let vault_dir = dir.path().join("vaults");
+        let root = canonical_temp_root(&dir);
+        let vault_dir = root.join("vaults");
         std::fs::create_dir_all(&vault_dir).unwrap();
 
         // Create a legacy unencrypted JSON vault
@@ -650,8 +690,7 @@ mod tests {
         std::fs::write(vault_dir.join("test-project.json"), legacy_data).unwrap();
 
         // Create new encrypted vault — should auto-migrate
-        let vault =
-            FileVault::new(dir.path(), "test-project", "my-passphrase".to_string()).unwrap();
+        let vault = FileVault::new(&root, "test-project", "my-passphrase".to_string()).unwrap();
 
         // Old secret should be accessible through encrypted vault
         assert_eq!(
@@ -802,9 +841,9 @@ mod tests {
         use std::sync::Arc;
 
         let dir = TempDir::new().unwrap();
-        let vault = Arc::new(
-            FileVault::new(dir.path(), "stress-project", "stress-pass".to_string()).unwrap(),
-        );
+        let root = canonical_temp_root(&dir);
+        let vault =
+            Arc::new(FileVault::new(&root, "stress-project", "stress-pass".to_string()).unwrap());
 
         const N: usize = 10;
         let handles: Vec<_> = (0..N)

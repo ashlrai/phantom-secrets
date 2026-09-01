@@ -825,7 +825,12 @@ mod tests {
     }
 
     fn vault(dir: &TempDir) -> FileVault {
-        FileVault::new(dir.path(), "init-test", "passphrase".to_string()).unwrap()
+        FileVault::new(
+            &dir.path().canonicalize().unwrap(),
+            "init-test",
+            "passphrase".to_string(),
+        )
+        .unwrap()
     }
 
     #[test]

@@ -2,6 +2,7 @@ pub mod crypto;
 pub mod file;
 pub mod init_transaction;
 pub mod keychain;
+mod lock_file;
 pub mod managed_remove;
 pub mod metadata;
 pub mod shadowing;
@@ -268,8 +269,8 @@ mod tests {
     #[test]
     fn backend_set_failure_is_repeatable_and_cannot_strand_an_existing_vault() {
         let directory = tempdir().unwrap();
-        let vault =
-            file::FileVault::new(directory.path(), "project", "durable-key".to_string()).unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let vault = file::FileVault::new(&root, "project", "durable-key".to_string()).unwrap();
         vault.store("API_KEY", "existing-value").unwrap();
         let vault_path = directory.path().join("vaults/project.vault");
         let before = std::fs::read(&vault_path).unwrap();
@@ -297,8 +298,8 @@ mod tests {
     #[test]
     fn missing_passphrase_for_existing_vault_never_generates_a_replacement() {
         let directory = tempdir().unwrap();
-        let vault =
-            file::FileVault::new(directory.path(), "project", "durable-key".to_string()).unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let vault = file::FileVault::new(&root, "project", "durable-key".to_string()).unwrap();
         vault.store("API_KEY", "existing-value").unwrap();
         let vault_path = directory.path().join("vaults/project.vault");
         let before = std::fs::read(&vault_path).unwrap();

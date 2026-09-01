@@ -175,7 +175,12 @@ mod tests {
             format!("PUBLIC=yes\nAPI_KEY={}\n", PhantomToken::generate()).as_bytes(),
         )
         .unwrap();
-        let vault = FileVault::new(dir.path(), "remove-test", "passphrase".into()).unwrap();
+        let vault = FileVault::new(
+            &dir.path().canonicalize().unwrap(),
+            "remove-test",
+            "passphrase".into(),
+        )
+        .unwrap();
         vault.store("API_KEY", "secret-value").unwrap();
         (dir, vault, "API_KEY".to_string())
     }
