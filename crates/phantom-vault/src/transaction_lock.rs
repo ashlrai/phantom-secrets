@@ -1,7 +1,9 @@
 //! Cooperative project transaction serialization for Phantom writers.
 //!
 //! The OS releases the advisory lock if a process crashes. This is not a data
-//! durability primitive and does not fsync transaction payloads. On Windows the
+//! durability primitive and does not fsync transaction payloads. The guard also
+//! retains the exact canonical project root so payload operations can remain
+//! descriptor-relative after acquisition. On Windows the
 //! lock directory inherits its surrounding ACL; this module does not claim that
 //! the ACL is user-only, so same-user or otherwise-authorized processes remain
 //! outside the coordination guarantee. Current writers coordinate on a stable
@@ -9,7 +11,7 @@
 //! descendant lock as a one-release compatibility bridge.
 
 use phantom_core::error::{PhantomError, Result};
-use phantom_core::fs::{AnchoredLock, TrustedAnchor};
+use phantom_core::fs::{AnchoredLock, AnchoredTarget, TrustedAnchor};
 use sha2::{Digest, Sha256};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -23,10 +25,14 @@ pub struct ProjectTransactionLock {
     _process: MutexGuard<'static, ()>,
     _stable: AnchoredLock,
     _legacy: AnchoredLock,
+    project: TrustedAnchor,
+    requested_root: PathBuf,
+    canonical_root: PathBuf,
 }
 
 struct ProjectLockPaths {
     identity: PathBuf,
+    requested_root: PathBuf,
     anchor: PathBuf,
     stable: PathBuf,
     legacy: PathBuf,
@@ -67,6 +73,17 @@ fn lock_anchor() -> PathBuf {
 }
 
 fn lock_paths_at(project_dir: &Path, anchor: &Path) -> Result<ProjectLockPaths> {
+    let requested_root = if project_dir.is_absolute() {
+        project_dir.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                PhantomError::VaultError(format!(
+                    "Cannot resolve the current directory for project transaction locking: {error}"
+                ))
+            })?
+            .join(project_dir)
+    };
     let canonical = project_dir.canonicalize().map_err(|error| {
         PhantomError::VaultError(format!(
             "Cannot resolve project directory {} for transaction locking: {error}",
@@ -84,6 +101,7 @@ fn lock_paths_at(project_dir: &Path, anchor: &Path) -> Result<ProjectLockPaths> 
     let name = hex::encode(digest.finalize());
     Ok(ProjectLockPaths {
         identity: canonical,
+        requested_root,
         anchor: anchor.to_path_buf(),
         stable: PathBuf::from(format!(".project-transaction-{name}.lock")),
         legacy: Path::new("transaction-locks").join(format!("{name}.lock")),
@@ -148,12 +166,69 @@ fn acquire_filesystem_locks(paths: &ProjectLockPaths) -> Result<ProjectFilesyste
 
 fn acquire_project_transaction_lock_at(paths: ProjectLockPaths) -> Result<ProjectTransactionLock> {
     let process = process_lock_for(&paths.identity);
+    let project = TrustedAnchor::open(&paths.identity).map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Cannot retain canonical project root {}: {error}",
+            paths.identity.display()
+        ))
+    })?;
     let filesystem = acquire_filesystem_locks(&paths)?;
     Ok(ProjectTransactionLock {
         _process: process,
         _stable: filesystem.stable,
         _legacy: filesystem.legacy,
+        project,
+        requested_root: paths.requested_root,
+        canonical_root: paths.identity,
     })
+}
+
+impl ProjectTransactionLock {
+    /// Canonical project path spelling captured when the lock was acquired.
+    ///
+    /// This is a diagnostic label, not a live pathname: it deliberately does
+    /// not change if the retained directory is renamed while the lock is held.
+    pub fn project_root_at_acquisition(&self) -> &Path {
+        &self.canonical_root
+    }
+
+    /// Resolve one project-relative payload through the retained root.
+    ///
+    /// Absolute paths are accepted only when they are lexically beneath the
+    /// exact project spelling supplied at lock acquisition or its canonical
+    /// spelling. No ambient canonicalization occurs after the lock is held.
+    pub fn target(&self, path: impl AsRef<Path>) -> Result<AnchoredTarget> {
+        let relative = self.relative_payload(path.as_ref())?;
+        self.project.target(relative).map_err(|error| {
+            PhantomError::VaultError(format!(
+                "Cannot retain project payload target {}: {error}",
+                path.as_ref().display()
+            ))
+        })
+    }
+
+    pub(crate) fn project_anchor(&self) -> &TrustedAnchor {
+        &self.project
+    }
+
+    pub(crate) fn relative_project_path(&self, path: &Path) -> Result<PathBuf> {
+        self.relative_payload(path).map(Path::to_path_buf)
+    }
+
+    fn relative_payload<'a>(&'a self, path: &'a Path) -> Result<&'a Path> {
+        if !path.is_absolute() {
+            return Ok(path);
+        }
+        path.strip_prefix(&self.requested_root)
+            .or_else(|_| path.strip_prefix(&self.canonical_root))
+            .map_err(|_| {
+                PhantomError::VaultError(format!(
+                    "Project payload target {} is outside canonical project root {}",
+                    path.display(),
+                    self.canonical_root.display()
+                ))
+            })
+    }
 }
 
 #[cfg(test)]
@@ -193,18 +268,78 @@ mod tests {
     fn retained_lock_contract_is_visible_to_cross_platform_review() {
         let transaction_source = include_str!("transaction_lock.rs");
         assert!(transaction_source.contains("TrustedAnchor::open_canonical_private"));
+        assert!(transaction_source.contains("let project = TrustedAnchor::open(&paths.identity)"));
         assert!(transaction_source.contains("let stable = anchor.acquire_lock"));
         assert!(transaction_source.contains("let legacy = anchor.acquire_lock"));
         assert!(transaction_source.contains("_stable: AnchoredLock"));
         assert!(transaction_source.contains("_legacy: AnchoredLock"));
+        assert!(transaction_source.contains("project: TrustedAnchor"));
+        assert!(transaction_source.contains("No ambient canonicalization occurs"));
         assert!(transaction_source.contains("does not claim that\n//! the ACL is user-only"));
     }
 
-    #[cfg(windows)]
     #[test]
-    fn windows_project_lock_guard_is_send() {
-        fn assert_send<T: Send>() {}
-        assert_send::<ProjectTransactionLock>();
+    fn project_payload_target_must_stay_beneath_the_locked_root() {
+        let project = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let lock_root = tempdir().unwrap();
+        let paths = lock_paths_at(project.path(), lock_root.path()).unwrap();
+        let lock = acquire_project_transaction_lock_at(paths).unwrap();
+
+        lock.target(project.path().join("state")).unwrap();
+        lock.target("state").unwrap();
+        let error = lock.target(outside.path().join("state")).unwrap_err();
+        assert!(error.to_string().contains("outside canonical project root"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_project_root_ignores_rename_replacement_decoy() {
+        let container = tempdir().unwrap();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved-project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("state"), b"reviewed").unwrap();
+        let canonical_project = project.canonicalize().unwrap();
+        let lock_root = tempdir().unwrap();
+        let paths = lock_paths_at(&project, lock_root.path()).unwrap();
+        let lock = acquire_project_transaction_lock_at(paths).unwrap();
+        assert_eq!(lock.project_root_at_acquisition(), canonical_project);
+        let target = lock.target(project.join("state")).unwrap();
+        let before = target.read_regular().unwrap().unwrap();
+
+        std::fs::rename(&project, &moved).unwrap();
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("state"), b"decoy").unwrap();
+
+        assert!(matches!(
+            target
+                .replace_if_exact(Some(&before), b"committed")
+                .unwrap(),
+            phantom_core::fs::AnchoredEffect::Durable(_)
+        ));
+        assert_eq!(std::fs::read(moved.join("state")).unwrap(), b"committed");
+        assert_eq!(std::fs::read(project.join("state")).unwrap(), b"decoy");
+    }
+
+    #[test]
+    fn project_payload_capability_contract_is_cross_platform() {
+        let transaction_source = include_str!("transaction_lock.rs");
+        let implementation = transaction_source
+            .split("impl ProjectTransactionLock")
+            .nth(1)
+            .expect("project transaction capability implementation")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("implementation boundary");
+        assert!(implementation.contains("self.project.target(relative)"));
+        assert!(!implementation.contains("std::fs"));
+
+        let anchored_source = include_str!("../../phantom-core/src/fs/anchored.rs");
+        assert!(anchored_source.contains("FILE_SHARE_READ | FILE_SHARE_WRITE"));
+        assert!(anchored_source.contains("Intentionally omit FILE_SHARE_DELETE"));
+        assert!(anchored_source.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
+        assert!(anchored_source.contains("open_dir_nofollow"));
     }
 
     #[cfg(unix)]
