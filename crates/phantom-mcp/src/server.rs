@@ -1,5 +1,6 @@
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{classify, is_public_key, DotenvFile, SecretClassification};
+use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget};
 use phantom_core::precommit_hook::{self, HookChange};
 use phantom_core::token::{PhantomToken, TokenMap};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -26,8 +27,6 @@ use crate::tools::params::{
     ValidateAllParams, ValidateSecretParams, ValidationHistoryParams, ValidationScheduleParams,
     WhyParams, WrapParams,
 };
-use crate::tools::pkg_json::{read_package_scripts, write_package_json};
-
 // ── MCP Server ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -91,6 +90,25 @@ impl PhantomMcpServer {
         &self,
     ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
         let config = self.load_config().map_err(internal_err)?;
+        let vault = phantom_vault::try_create_vault(config.local_project_id())
+            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        Ok((config, vault))
+    }
+
+    fn load_config_and_vault_anchored(
+        &self,
+        transaction_lock: &phantom_vault::ProjectTransactionLock,
+    ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
+        let config_path = self.config_path();
+        let config_target = transaction_lock
+            .target(&config_path)
+            .map_err(|error| internal_err(format!("Failed to retain Phantom config: {error}")))?;
+        let config_before = config_target
+            .read_regular()
+            .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?
+            .ok_or_else(|| internal_err("Not initialized. Run `phantom init` first."))?;
+        let config = PhantomConfig::load_from_bytes(&config_path, config_before.bytes())
+            .map_err(|error| internal_err(format!("Failed to load config: {error}")))?;
         let vault = phantom_vault::try_create_vault(config.local_project_id())
             .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
         Ok((config, vault))
@@ -724,7 +742,11 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<RotateParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_rotate", params.confirm)?;
-        let (config, vault) = self.load_config_and_vault()?;
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .map_err(|error| {
+            internal_err(format!("Failed to acquire project lock: {error}"))
+        })?;
+        let (config, vault) = self.load_config_and_vault_anchored(&transaction_lock)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_rotate",
@@ -740,10 +762,9 @@ impl PhantomMcpServer {
             return text_result("No secrets to rotate.");
         }
 
-        let env_path = self.resolve_env_path(&config, &names)?;
-        if env_path.exists() {
-            remap_phantom_tokens(&env_path, &names)?;
-        }
+        let env_path =
+            resolve_env_path_anchored(&transaction_lock, &self.project_dir, &config, &names)?;
+        remap_phantom_tokens_locked(&transaction_lock, &env_path, &names)?;
 
         text_result(format!(
             "Rotated {} phantom token(s). Old tokens are now invalid.",
@@ -813,14 +834,14 @@ impl PhantomMcpServer {
         // This coordinates Phantom writers; an uncooperative same-user process
         // can still mutate provider or filesystem state and is detected by the
         // exact value checks before metadata and cleanup.
-        let _rotation_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+        let rotation_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
             .map_err(|error| {
                 internal_err(format!(
                     "Failed to acquire provider-rotation transaction lock: {error}"
                 ))
             })?;
 
-        let (config, vault) = self.load_config_and_vault()?;
+        let (config, vault) = self.load_config_and_vault_anchored(&rotation_lock)?;
 
         // Verify the secret exists in the vault.
         if !vault
@@ -938,22 +959,27 @@ impl PhantomMcpServer {
                 // Refresh the phm_ token for this secret in .env — same flow
                 // as the CLI — so a client that captured the pre-rotation
                 // phm_ token cannot resolve it to the new credential.
-                let env_path =
-                    self.resolve_env_path(&config, std::slice::from_ref(&params.name))?;
-                let mut env_token_refreshed = false;
-                if env_path.exists() {
-                    remap_phantom_tokens_locked(&env_path, std::slice::from_ref(&params.name))
-                        .map_err(|error| {
-                            provider_rotation_partial_error(
-                                &params.name,
-                                "local Phantom-token remap",
-                                &error.message,
-                                &stages,
-                            )
-                        })?;
-                    env_token_refreshed = true;
-                    stages.token_remapped = true;
-                }
+                let env_path = resolve_env_path_anchored(
+                    &rotation_lock,
+                    &self.project_dir,
+                    &config,
+                    std::slice::from_ref(&params.name),
+                )?;
+                remap_phantom_tokens_locked(
+                    &rotation_lock,
+                    &env_path,
+                    std::slice::from_ref(&params.name),
+                )
+                .map_err(|error| {
+                    provider_rotation_partial_error(
+                        &params.name,
+                        "local Phantom-token remap",
+                        &error.message,
+                        &stages,
+                    )
+                })?;
+                let env_token_refreshed = true;
+                stages.token_remapped = true;
 
                 // Persist rotation metadata (rotated_at + recomputed
                 // expires_at). GitHub App installation tokens expire in 1 h.
@@ -1932,16 +1958,21 @@ impl PhantomMcpServer {
             &self.project_id(),
         )?;
         let pkg_path = self.project_dir.join("package.json");
-        let _transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
-            .map_err(|error| internal_err(format!("Failed to acquire project lock: {error}")))?;
-        let (mut pkg, before) = read_package_scripts(&pkg_path)?;
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .map_err(|error| {
+            internal_err(format!("Failed to acquire project lock: {error}"))
+        })?;
+        let pkg_target = transaction_lock
+            .target(&pkg_path)
+            .map_err(|error| internal_err(format!("Failed to retain package.json: {error}")))?;
+        let (mut pkg, before) = read_package_scripts_anchored(&pkg_target)?;
         let wrapped = wrap_package_scripts(&mut pkg, &params.only, &params.skip)
             .map_err(invalid_params_err)?;
 
         if wrapped.is_empty() {
             return text_result("No scripts matched for wrapping.");
         }
-        write_package_json(&pkg_path, &pkg, &before)?;
+        write_package_json_anchored(&pkg_target, &pkg, &before)?;
 
         let mut output = format!("Wrapped {} script(s):\n", wrapped.len());
         for name in &wrapped {
@@ -1969,9 +2000,14 @@ impl PhantomMcpServer {
             &self.project_id(),
         )?;
         let pkg_path = self.project_dir.join("package.json");
-        let _transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
-            .map_err(|error| internal_err(format!("Failed to acquire project lock: {error}")))?;
-        let (mut pkg, before) = read_package_scripts(&pkg_path)?;
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .map_err(|error| {
+            internal_err(format!("Failed to acquire project lock: {error}"))
+        })?;
+        let pkg_target = transaction_lock
+            .target(&pkg_path)
+            .map_err(|error| internal_err(format!("Failed to retain package.json: {error}")))?;
+        let (mut pkg, before) = read_package_scripts_anchored(&pkg_target)?;
         let restored = unwrap_package_scripts(&mut pkg);
         if restored.is_empty() {
             return text_result(
@@ -1979,7 +2015,7 @@ impl PhantomMcpServer {
             );
         }
 
-        write_package_json(&pkg_path, &pkg, &before)?;
+        write_package_json_anchored(&pkg_target, &pkg, &before)?;
 
         let mut output = format!("Unwrapped {} script(s):\n", restored.len());
         for name in &restored {
@@ -2111,9 +2147,15 @@ impl PhantomMcpServer {
         phantom_core::fs::validate_project_filename(&params.output)
             .map_err(|error| invalid_params_err(error.to_string()))?;
         let output_path = self.project_dir.join(&params.output);
-        let _transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
-            .map_err(|error| internal_err(format!("Failed to acquire project lock: {error}")))?;
-        if phantom_core::fs::read_regular_file(&output_path)
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .map_err(|error| {
+            internal_err(format!("Failed to acquire project lock: {error}"))
+        })?;
+        let output_target = transaction_lock
+            .target(&output_path)
+            .map_err(|error| internal_err(format!("Refusing unsafe output target: {error}")))?;
+        if output_target
+            .read_regular()
             .map_err(|error| internal_err(format!("Refusing unsafe output target: {error}")))?
             .is_some()
         {
@@ -2122,22 +2164,31 @@ impl PhantomMcpServer {
                 params.output
             )));
         }
-        let env_path = self.env_path()?;
-
-        let dotenv = DotenvFile::parse_file(&env_path)
-            .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
-
-        let config = self.load_config().ok();
-
-        let content = dotenv.generate_example_content(config.as_ref());
-
-        phantom_core::fs::atomic_write_if_unchanged(&output_path, None, content.as_bytes())
-            .map_err(|error| {
+        let (config, vault) = self.load_config_and_vault_anchored(&transaction_lock)?;
+        let vault_names = vault
+            .list()
+            .map_err(|error| internal_err(format!("Failed to list vault secrets: {error}")))?;
+        let env_path =
+            resolve_env_path_anchored(&transaction_lock, &self.project_dir, &config, &vault_names)?;
+        let env_target = transaction_lock
+            .target(&env_path)
+            .map_err(|error| internal_err(format!("Failed to retain managed dotenv: {error}")))?;
+        let env_before = env_target
+            .read_regular()
+            .map_err(|error| internal_err(format!("Failed to safely read .env: {error}")))?
+            .ok_or_else(|| {
                 internal_err(format!(
-                    "Output target changed while generating {}; no file was overwritten: {error}",
-                    params.output
+                    "Managed dotenv does not exist: {}",
+                    env_path.display()
                 ))
             })?;
+        let env_text = std::str::from_utf8(env_before.bytes())
+            .map_err(|_| internal_err("Failed to read .env: managed dotenv is not valid UTF-8"))?;
+        let dotenv = DotenvFile::parse_str(env_text);
+
+        let content = dotenv.generate_example_content(Some(&config));
+
+        write_new_anchored_output(&output_target, &params.output, content.as_bytes())?;
 
         let entry_count = dotenv.entries().len();
         let secret_count = dotenv.real_secret_entries().len()
@@ -2600,7 +2651,11 @@ impl PhantomMcpServer {
             return Err(invalid_params_err("days_ttl must be > 0"));
         }
 
-        let (config, vault) = self.load_config_and_vault()?;
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .map_err(|error| {
+            internal_err(format!("Failed to acquire project lock: {error}"))
+        })?;
+        let (config, vault) = self.load_config_and_vault_anchored(&transaction_lock)?;
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
@@ -2609,35 +2664,9 @@ impl PhantomMcpServer {
             return text_result("No Phantom tokens to remap.");
         }
 
-        let env_path = self.resolve_env_path(&config, &names)?;
-        if !env_path.exists() {
-            return Err(invalid_params_err(format!(
-                "Cannot remap Phantom tokens: {} does not exist.",
-                env_path.display()
-            )));
-        }
-        let dotenv = phantom_core::dotenv::DotenvFile::parse_file(&env_path)
-            .map_err(|e| internal_err(format!("Failed to parse {}: {e}", env_path.display())))?;
-        for name in &names {
-            let entry = dotenv
-                .entries()
-                .into_iter()
-                .find(|entry| entry.key == *name)
-                .ok_or_else(|| {
-                    invalid_params_err(format!(
-                        "Cannot remap '{name}': it is not present in {}.",
-                        env_path.display()
-                    ))
-                })?;
-            if !entry.is_phantom {
-                return Err(invalid_params_err(format!(
-                    "Cannot remap '{name}': its value in {} is not a protected phm_ token.",
-                    env_path.display()
-                )));
-            }
-        }
-
-        remap_phantom_tokens(&env_path, &names)?;
+        let env_path =
+            resolve_env_path_anchored(&transaction_lock, &self.project_dir, &config, &names)?;
+        remap_phantom_tokens_locked(&transaction_lock, &env_path, &names)?;
         for name in &names {
             phantom_core::audit::log("secret.token_remapped", Some(name));
         }
@@ -4358,7 +4387,11 @@ impl PhantomMcpServer {
             ));
         }
 
-        let (config, vault) = self.load_config_and_vault()?;
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .map_err(|error| {
+            internal_err(format!("Failed to acquire project lock: {error}"))
+        })?;
+        let (config, vault) = self.load_config_and_vault_anchored(&transaction_lock)?;
 
         // Confirm the secret exists.
         if !vault
@@ -4371,36 +4404,17 @@ impl PhantomMcpServer {
             )));
         }
 
-        let env_path = self.resolve_env_path(&config, std::slice::from_ref(&params.name))?;
-        if !env_path.exists() {
-            return Err(invalid_params_err(format!(
-                "Cannot remap '{}': {} does not exist.",
-                params.name,
-                env_path.display()
-            )));
-        }
-        let dotenv = phantom_core::dotenv::DotenvFile::parse_file(&env_path)
-            .map_err(|e| internal_err(format!("Failed to parse {}: {e}", env_path.display())))?;
-        let entry = dotenv
-            .entries()
-            .into_iter()
-            .find(|entry| entry.key == params.name)
-            .ok_or_else(|| {
-                invalid_params_err(format!(
-                    "Cannot remap '{}': it is not present in {}.",
-                    params.name,
-                    env_path.display()
-                ))
-            })?;
-        if !entry.is_phantom {
-            return Err(invalid_params_err(format!(
-                "Cannot remap '{}': its value in {} is not a protected phm_ token.",
-                params.name,
-                env_path.display()
-            )));
-        }
-
-        remap_phantom_tokens(&env_path, std::slice::from_ref(&params.name))?;
+        let env_path = resolve_env_path_anchored(
+            &transaction_lock,
+            &self.project_dir,
+            &config,
+            std::slice::from_ref(&params.name),
+        )?;
+        remap_phantom_tokens_locked(
+            &transaction_lock,
+            &env_path,
+            std::slice::from_ref(&params.name),
+        )?;
 
         phantom_core::audit::log("secret.token_remapped", Some(&params.name));
 
@@ -4699,6 +4713,76 @@ impl PhantomMcpServer {
             serde_json::to_string_pretty(&out)
                 .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
         )
+    }
+}
+
+fn read_package_scripts_anchored(
+    target: &AnchoredTarget,
+) -> Result<(serde_json::Value, AnchoredRead), McpError> {
+    let before = target
+        .read_regular()
+        .map_err(|error| internal_err(format!("Failed to safely read package.json: {error}")))?
+        .ok_or_else(|| internal_err("No package.json found in project directory."))?;
+    let package = serde_json::from_slice(before.bytes())
+        .map_err(|error| internal_err(format!("Failed to parse package.json: {error}")))?;
+    Ok((package, before))
+}
+
+fn write_package_json_anchored(
+    target: &AnchoredTarget,
+    package: &serde_json::Value,
+    before: &AnchoredRead,
+) -> Result<(), McpError> {
+    write_package_json_anchored_with(target, package, before, || {})
+}
+
+fn write_package_json_anchored_with(
+    target: &AnchoredTarget,
+    package: &serde_json::Value,
+    before: &AnchoredRead,
+    before_commit: impl FnOnce(),
+) -> Result<(), McpError> {
+    let pretty = serde_json::to_string_pretty(package)
+        .map_err(|error| internal_err(format!("Failed to serialize package.json: {error}")))?;
+    before_commit();
+    match target.replace_if_exact_with_permissions(
+        Some(before),
+        format!("{pretty}\n").as_bytes(),
+        before.permissions(),
+    ) {
+        Ok(AnchoredEffect::Durable(_)) => Ok(()),
+        Ok(AnchoredEffect::CommittedButUncertain { error, .. }) => Err(internal_err(format!(
+            "package.json replacement committed, but durability or post-publish verification is uncertain: {error}. Do not assume the write had no effect; reopen package.json before retrying"
+        ))),
+        Err(error) => Err(internal_err(format!(
+            "package.json changed after it was read; refusing to overwrite it: {error}"
+        ))),
+    }
+}
+
+fn write_new_anchored_output(
+    target: &AnchoredTarget,
+    display_name: &str,
+    content: &[u8],
+) -> Result<(), McpError> {
+    write_new_anchored_output_with(target, display_name, content, || {})
+}
+
+fn write_new_anchored_output_with(
+    target: &AnchoredTarget,
+    display_name: &str,
+    content: &[u8],
+    before_commit: impl FnOnce(),
+) -> Result<(), McpError> {
+    before_commit();
+    match target.replace_if_exact(None, content) {
+        Ok(AnchoredEffect::Durable(_)) => Ok(()),
+        Ok(AnchoredEffect::CommittedButUncertain { error, .. }) => Err(internal_err(format!(
+            "Generated {display_name} was published, but durability or post-publish verification is uncertain: {error}. Do not assume the write had no effect; reopen the output before retrying"
+        ))),
+        Err(error) => Err(internal_err(format!(
+            "Output target changed while generating {display_name}; no file was overwritten: {error}"
+        ))),
     }
 }
 
@@ -5396,58 +5480,160 @@ fn ensure_cloud_push_allowed_mcp(config: &PhantomConfig) -> Result<(), McpError>
     Ok(())
 }
 
-/// Replace protected placeholders while holding Phantom's cooperative
-/// per-project transaction lock. The before-image check detects changes visible
-/// before commit; an uncooperative same-user pathname swap after that check is
-/// outside the guarantee of portable filesystem APIs.
-fn remap_phantom_tokens(env_path: &Path, names: &[String]) -> Result<(), McpError> {
-    remap_phantom_tokens_with(env_path, names, || {})
+fn resolve_env_path_anchored(
+    transaction_lock: &phantom_vault::ProjectTransactionLock,
+    project_dir: &Path,
+    config: &PhantomConfig,
+    vault_names: &[String],
+) -> Result<PathBuf, McpError> {
+    fn read_candidate(
+        transaction_lock: &phantom_vault::ProjectTransactionLock,
+        path: &Path,
+    ) -> Result<Option<DotenvFile>, McpError> {
+        let target = transaction_lock.target(path).map_err(|error| {
+            internal_err(format!(
+                "Failed to retain managed dotenv candidate {}: {error}",
+                path.display()
+            ))
+        })?;
+        let Some(read) = target.read_regular().map_err(|error| {
+            internal_err(format!(
+                "Failed to safely read managed dotenv candidate {}: {error}",
+                path.display()
+            ))
+        })?
+        else {
+            return Ok(None);
+        };
+        let text = std::str::from_utf8(read.bytes()).map_err(|_| {
+            internal_err(format!(
+                "Managed dotenv candidate {} is not valid UTF-8",
+                path.display()
+            ))
+        })?;
+        Ok(Some(DotenvFile::parse_str(text)))
+    }
+
+    fn has_tokens(dotenv: &DotenvFile) -> bool {
+        dotenv.entries().iter().any(|entry| entry.is_phantom)
+    }
+
+    let protected_state = !vault_names.is_empty() || !config.phantom.secrets.is_empty();
+    if let Some(configured) = config.phantom.dotenv_path.as_deref() {
+        let basename = phantom_core::managed_dotenv::validate_dotenv_basename(configured)
+            .map_err(|error| internal_err(error.to_string()))?;
+        let path = project_dir.join(basename);
+        let dotenv = read_candidate(transaction_lock, &path)?.ok_or_else(|| {
+            internal_err(format!(
+                "Configured protected dotenv does not exist: {}",
+                path.display()
+            ))
+        })?;
+        if protected_state && !has_tokens(&dotenv) {
+            return Err(internal_err(format!(
+                "Protected vault/config state exists, but {} contains no phantom tokens; refusing an unprotected operation",
+                path.display()
+            )));
+        }
+        return Ok(path);
+    }
+
+    let mut existing = Vec::new();
+    let mut token_bearing = Vec::new();
+    for name in [
+        ".env",
+        ".env.local",
+        ".env.development",
+        ".env.development.local",
+    ] {
+        let path = project_dir.join(name);
+        if let Some(dotenv) = read_candidate(transaction_lock, &path)? {
+            if has_tokens(&dotenv) {
+                token_bearing.push(path.clone());
+            }
+            existing.push(path);
+        }
+    }
+    match token_bearing.len() {
+        1 => return Ok(token_bearing.pop().expect("length checked")),
+        count if count > 1 => {
+            return Err(internal_err(format!(
+                "Legacy config has {count} token-bearing dotenv files; rerun `phantom init --from <file>` to persist one explicit filename"
+            )));
+        }
+        _ => {}
+    }
+    if protected_state {
+        return Err(internal_err(
+            "Protected vault/config state exists, but no token-bearing dotenv file could be resolved; refusing an unprotected operation. Rerun `phantom init --from <file>` to persist the protected filename",
+        ));
+    }
+    Ok(existing
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| project_dir.join(".env")))
 }
 
+/// Replace protected placeholders through a retained project capability and
+/// an exact effect receipt held under Phantom's project transaction lock.
+#[cfg(test)]
 fn remap_phantom_tokens_with(
+    project_dir: &Path,
     env_path: &Path,
     names: &[String],
     before_commit: impl FnOnce(),
 ) -> Result<(), McpError> {
-    let project_dir = env_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let _transaction_lock =
+    let transaction_lock =
         phantom_vault::acquire_project_transaction_lock(project_dir).map_err(|error| {
             internal_err(format!(
                 "Failed to acquire transaction lock for {}: {error}",
                 project_dir.display()
             ))
         })?;
-    remap_phantom_tokens_locked_with(env_path, names, before_commit)
+    remap_phantom_tokens_locked_with(&transaction_lock, env_path, names, before_commit)
 }
 
-fn remap_phantom_tokens_locked(env_path: &Path, names: &[String]) -> Result<(), McpError> {
-    remap_phantom_tokens_locked_with(env_path, names, || {})
+fn remap_phantom_tokens_locked(
+    transaction_lock: &phantom_vault::ProjectTransactionLock,
+    env_path: &Path,
+    names: &[String],
+) -> Result<(), McpError> {
+    remap_phantom_tokens_locked_with(transaction_lock, env_path, names, || {})
 }
 
 fn remap_phantom_tokens_locked_with(
+    transaction_lock: &phantom_vault::ProjectTransactionLock,
     env_path: &Path,
     names: &[String],
     before_commit: impl FnOnce(),
 ) -> Result<(), McpError> {
-    if !env_path.exists() {
-        return Err(invalid_params_err(format!(
-            "Cannot remap Phantom tokens: {} does not exist.",
-            env_path.display()
-        )));
-    }
-
-    let before = std::fs::read(env_path).map_err(|error| {
+    let target = transaction_lock.target(env_path).map_err(|error| {
         internal_err(format!(
-            "Failed to snapshot {}: {error}",
+            "Failed to retain managed dotenv {}: {error}",
             env_path.display()
         ))
     })?;
-    let dotenv = DotenvFile::parse_file(env_path).map_err(|error| {
-        internal_err(format!("Failed to parse {}: {error}", env_path.display()))
+    let before = target
+        .read_regular()
+        .map_err(|error| {
+            internal_err(format!(
+                "Failed to snapshot {} through the retained project root: {error}",
+                env_path.display()
+            ))
+        })?
+        .ok_or_else(|| {
+            invalid_params_err(format!(
+                "Cannot remap Phantom tokens: {} does not exist.",
+                env_path.display()
+            ))
+        })?;
+    let env_text = std::str::from_utf8(before.bytes()).map_err(|_| {
+        internal_err(format!(
+            "Failed to parse {}: managed dotenv is not valid UTF-8",
+            env_path.display()
+        ))
     })?;
+    let dotenv = DotenvFile::parse_str(env_text);
     for name in names {
         let entry = dotenv
             .entries()
@@ -5478,25 +5664,21 @@ fn remap_phantom_tokens_locked_with(
     originals.clear();
 
     before_commit();
-    let current = std::fs::read(env_path).map_err(|error| {
-        internal_err(format!(
-            "Failed to verify {} before commit: {error}",
+    match target.replace_if_exact_with_permissions(
+        Some(&before),
+        rewritten.as_bytes(),
+        before.permissions(),
+    ) {
+        Ok(AnchoredEffect::Durable(_)) => Ok(()),
+        Ok(AnchoredEffect::CommittedButUncertain { error, .. }) => Err(internal_err(format!(
+            "Managed dotenv replacement committed for {}, but durability or post-publish verification is uncertain: {error}. Do not assume the remap had no effect; reopen the dotenv before retrying",
             env_path.display()
-        ))
-    })?;
-    if current != before {
-        return Err(internal_err(format!(
-            "Cannot remap Phantom tokens: {} changed after it was read; no Phantom write was committed.",
+        ))),
+        Err(error) => Err(internal_err(format!(
+            "Cannot remap Phantom tokens: {} changed after it was read; no Phantom write was committed: {error}",
             env_path.display()
-        )));
+        ))),
     }
-    phantom_core::fs::atomic_write(env_path, rewritten.as_bytes()).map_err(|error| {
-        internal_err(format!(
-            "Failed to atomically rewrite {}: {error}",
-            env_path.display()
-        ))
-    })?;
-    Ok(())
 }
 
 /// Convert a Unix timestamp to a minimal ISO-8601 string (UTC, no external deps).
@@ -5602,6 +5784,83 @@ mod tests {
         assert_eq!(package["scripts"]["build"], "next build");
         assert!(package["scripts"].get("build:raw").is_none());
         assert_eq!(package["scripts"]["dev:raw"], "user-owned");
+    }
+
+    #[test]
+    fn mcp_project_targets_reject_paths_outside_the_retained_root() {
+        let container = canonical_temp_dir();
+        let project = container.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let outside = container.path().join("outside.json");
+        std::fs::write(&outside, b"{}\n").unwrap();
+
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&project).unwrap();
+        let error = transaction_lock.target(&outside).unwrap_err();
+
+        assert!(error.to_string().contains("outside"));
+        assert_eq!(std::fs::read(&outside).unwrap(), b"{}\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mcp_package_write_follows_retained_root_across_a_rename_decoy() {
+        let container = canonical_temp_dir();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        let package_path = project.join("package.json");
+        std::fs::write(&package_path, br#"{"scripts":{"build":"next build"}}"#).unwrap();
+
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&project).unwrap();
+        let target = transaction_lock.target(&package_path).unwrap();
+        let (mut package, before) = read_package_scripts_anchored(&target).unwrap();
+        package["scripts"]["build"] = serde_json::json!("phantom exec -- next build");
+
+        write_package_json_anchored_with(&target, &package, &before, || {
+            std::fs::rename(&project, &moved).unwrap();
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(
+                project.join("package.json"),
+                br#"{"scripts":{"build":"decoy"}}"#,
+            )
+            .unwrap();
+        })
+        .unwrap();
+
+        let published: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(moved.join("package.json")).unwrap()).unwrap();
+        let decoy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(project.join("package.json")).unwrap()).unwrap();
+        assert_eq!(published["scripts"]["build"], "phantom exec -- next build");
+        assert_eq!(decoy["scripts"]["build"], "decoy");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mcp_new_output_follows_retained_root_across_a_rename_decoy() {
+        let container = canonical_temp_dir();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        let output_path = project.join(".env.example");
+
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&project).unwrap();
+        let target = transaction_lock.target(&output_path).unwrap();
+        write_new_anchored_output_with(&target, ".env.example", b"SAFE=example\n", || {
+            std::fs::rename(&project, &moved).unwrap();
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(project.join(".env.example"), b"DECOY=owner\n").unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(moved.join(".env.example")).unwrap(),
+            b"SAFE=example\n"
+        );
+        assert_eq!(
+            std::fs::read(project.join(".env.example")).unwrap(),
+            b"DECOY=owner\n"
+        );
     }
 
     fn cloud_test_config(version: u64) -> PhantomConfig {
@@ -6260,15 +6519,78 @@ mod tests {
         let old = format!("phm_{}", "a".repeat(64));
         std::fs::write(&env_path, format!("TARGET={old}\n")).unwrap();
 
-        let error = remap_phantom_tokens_with(&env_path, &["TARGET".to_string()], || {
-            std::fs::write(&env_path, b"TARGET=concurrent-owner\n").unwrap();
-        })
-        .unwrap_err();
+        let error =
+            remap_phantom_tokens_with(dir.path(), &env_path, &["TARGET".to_string()], || {
+                std::fs::write(&env_path, b"TARGET=concurrent-owner\n").unwrap();
+            })
+            .unwrap_err();
 
         assert!(error.message.contains("changed after it was read"));
         assert_eq!(
             std::fs::read(&env_path).unwrap(),
             b"TARGET=concurrent-owner\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mcp_remap_follows_retained_root_across_a_rename_decoy() {
+        let container = canonical_temp_dir();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        let env_path = project.join(".env");
+        let old = format!("phm_{}", "a".repeat(64));
+        std::fs::write(&env_path, format!("TARGET={old}\n")).unwrap();
+
+        remap_phantom_tokens_with(&project, &env_path, &["TARGET".to_string()], || {
+            std::fs::rename(&project, &moved).unwrap();
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(project.join(".env"), b"TARGET=decoy-owner\n").unwrap();
+        })
+        .unwrap();
+
+        let moved_env = std::fs::read_to_string(moved.join(".env")).unwrap();
+        assert!(moved_env.starts_with("TARGET=phm_"));
+        assert!(!moved_env.contains(&old));
+        assert_eq!(
+            std::fs::read(project.join(".env")).unwrap(),
+            b"TARGET=decoy-owner\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mcp_managed_dotenv_resolution_uses_the_retained_root_not_a_decoy() {
+        let container = canonical_temp_dir();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        let old = format!("phm_{}", "a".repeat(64));
+        std::fs::write(project.join(".env"), format!("TARGET={old}\n")).unwrap();
+        let mut config = PhantomConfig::new_with_defaults("a".repeat(64));
+        config.phantom.dotenv_path = Some(".env".to_string());
+
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&project).unwrap();
+        std::fs::rename(&project, &moved).unwrap();
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join(".env"), b"TARGET=decoy-owner\n").unwrap();
+
+        let env_path = resolve_env_path_anchored(
+            &transaction_lock,
+            &project,
+            &config,
+            &["TARGET".to_string()],
+        )
+        .unwrap();
+        remap_phantom_tokens_locked(&transaction_lock, &env_path, &["TARGET".to_string()]).unwrap();
+
+        let moved_env = std::fs::read_to_string(moved.join(".env")).unwrap();
+        assert!(moved_env.starts_with("TARGET=phm_"));
+        assert!(!moved_env.contains(&old));
+        assert_eq!(
+            std::fs::read(project.join(".env")).unwrap(),
+            b"TARGET=decoy-owner\n"
         );
     }
 
