@@ -2114,6 +2114,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "indicatif",
+ "libc",
  "notify",
  "open",
  "phantom-secrets-core",
@@ -2132,6 +2133,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "which",
+ "windows-sys 0.61.2",
  "wiremock",
  "zeroize",
 ]

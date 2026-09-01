@@ -80,6 +80,22 @@ fn header_auth_only() -> bool {
     )
 }
 
+fn remove_owned_pid_file(pid_path: &std::path::Path, expected: &[u8]) -> std::io::Result<bool> {
+    let current = match std::fs::read(pid_path) {
+        Ok(current) => current,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if current != expected {
+        return Ok(false);
+    }
+    match std::fs::remove_file(pid_path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn run(daemon: bool) -> Result<()> {
     if daemon {
         return run_daemon();
@@ -366,9 +382,11 @@ async fn run_async() -> Result<()> {
     }
     println!();
 
-    // Cleanup
-    let _ = std::fs::remove_file(&pid_path);
+    // The daemon is the sole owner of unlinking its authenticated PID record.
+    // Stop clients treat the authenticated acknowledgment as success and do
+    // not race this cleanup.
     proxy.shutdown().await;
+    remove_owned_pid_file(&pid_path, pid_info.as_bytes())?;
     println!("{} Proxy stopped.", "ok".green().bold());
 
     Ok(())
@@ -397,5 +415,18 @@ mod shell_tests {
             format_export(ShellSyntax::PowerShell, "X", "a'b"),
             "  $env:X = 'a''b'"
         );
+    }
+
+    #[test]
+    fn daemon_removes_only_its_exact_pid_record() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let pid_path = temp.path().join(".phantom.pid");
+        std::fs::write(&pid_path, b"owned").unwrap();
+        assert!(remove_owned_pid_file(&pid_path, b"owned").unwrap());
+        assert!(!pid_path.exists());
+
+        std::fs::write(&pid_path, b"replacement").unwrap();
+        assert!(!remove_owned_pid_file(&pid_path, b"owned").unwrap());
+        assert_eq!(std::fs::read(&pid_path).unwrap(), b"replacement");
     }
 }

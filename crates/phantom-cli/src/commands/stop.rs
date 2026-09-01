@@ -35,7 +35,6 @@ pub fn run() -> Result<()> {
         }
         ProxyState::Running(pid) => {
             request_authenticated_shutdown(&pid).map_err(anyhow::Error::msg)?;
-            std::fs::remove_file(&pid_path)?;
             println!(
                 "{} Authenticated proxy shutdown accepted (PID {}).",
                 "ok".green().bold(),

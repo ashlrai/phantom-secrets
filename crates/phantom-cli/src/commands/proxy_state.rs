@@ -73,6 +73,9 @@ fn parse_pid_file(contents: &str) -> Result<ProxyPid, String> {
     let pid = parts[0]
         .parse::<u32>()
         .map_err(|_| "invalid pid".to_string())?;
+    if pid == 0 {
+        return Err("invalid pid".to_string());
+    }
     let port = parts[1]
         .parse::<u16>()
         .map_err(|_| "invalid port".to_string())?;
@@ -139,6 +142,7 @@ fn authenticated_control_request(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Liveness {
     Alive,
     Dead,
@@ -148,33 +152,61 @@ enum Liveness {
 fn process_liveness(pid: u32) -> Liveness {
     #[cfg(unix)]
     {
-        match std::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .status()
-        {
-            Ok(status) if status.success() => Liveness::Alive,
-            Ok(_) => Liveness::Dead,
-            Err(_) => Liveness::Unknown,
+        let Ok(native_pid) = libc::pid_t::try_from(pid) else {
+            return Liveness::Unknown;
+        };
+        // SAFETY: signal 0 never delivers a signal. `native_pid` is a checked
+        // scalar process identifier and no pointers cross the FFI boundary.
+        if unsafe { libc::kill(native_pid, 0) } == 0 {
+            return Liveness::Alive;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ESRCH) => Liveness::Dead,
+            // A permissions failure proves that the PID exists even though
+            // this user cannot inspect or signal it.
+            Some(libc::EPERM) => Liveness::Alive,
+            _ => Liveness::Unknown,
         }
     }
 
     #[cfg(windows)]
     {
-        match std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}")])
-            .output()
-        {
-            Ok(output) if !output.status.success() => Liveness::Unknown,
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if stdout.contains(&pid.to_string()) {
-                    Liveness::Alive
-                } else {
-                    Liveness::Dead
-                }
-            }
-            Err(_) => Liveness::Unknown,
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0,
+            WAIT_TIMEOUT,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+
+        // SAFETY: OpenProcess receives a numeric PID and requests only query
+        // and synchronization access. Every non-null handle is closed once.
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,
+                0,
+                pid,
+            )
+        };
+        if handle.is_null() {
+            // SAFETY: GetLastError is read immediately after the failed call.
+            return match unsafe { GetLastError() } {
+                ERROR_INVALID_PARAMETER => Liveness::Dead,
+                ERROR_ACCESS_DENIED => Liveness::Alive,
+                _ => Liveness::Unknown,
+            };
+        }
+
+        // SAFETY: waiting for zero milliseconds is a non-blocking state query;
+        // the process handle includes synchronization access and stays valid.
+        let wait_state = unsafe { WaitForSingleObject(handle, 0) };
+        // SAFETY: `handle` is the unique non-null handle returned above.
+        let _ = unsafe { CloseHandle(handle) };
+        match wait_state {
+            WAIT_TIMEOUT => Liveness::Alive,
+            WAIT_OBJECT_0 => Liveness::Dead,
+            _ => Liveness::Unknown,
         }
     }
 
@@ -203,6 +235,35 @@ mod tests {
         assert!(parse_pid_file("123:bad:token").is_err());
         assert!(parse_pid_file("123:4567").is_err());
         assert!(parse_pid_file("123:4567:not-hex").is_err());
+        assert!(parse_pid_file(&format!("0:4567:{}", "a".repeat(64))).is_err());
+    }
+
+    #[test]
+    fn current_process_is_alive_via_native_api() {
+        assert_eq!(process_liveness(std::process::id()), Liveness::Alive);
+    }
+
+    #[test]
+    fn exited_child_is_dead_via_native_api() {
+        let test_binary = std::env::current_exe().unwrap();
+        let mut child = std::process::Command::new(test_binary)
+            .args(["--exact", "proxy_state_nonexistent_test_filter"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(process_liveness(pid), Liveness::Dead);
+    }
+
+    #[test]
+    fn liveness_implementation_has_no_ambient_process_tools() {
+        let source = include_str!("proxy_state.rs");
+        let command = ["Command", "::new"].concat();
+        assert!(!source.contains(&format!(r#"{command}("{}")"#, "kill")));
+        assert!(!source.contains(&format!(r#"{command}("{}")"#, "tasklist")));
     }
 
     #[test]
