@@ -3,18 +3,23 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use colored::Colorize;
 use phantom_core::{auth, cloud, config::PhantomConfig};
 use std::collections::BTreeMap;
+use std::io::{BufRead, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, Zeroizing};
 
 pub fn run_push() -> Result<()> {
-    let config = PhantomConfig::load(std::path::Path::new(".phantom.toml"))
-        .context("No .phantom.toml found. Run `phantom init` first.")?;
+    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let (config_path, config_before, config) = load_cloud_config_exact(&project_dir)?;
     ensure_cloud_push_allowed(&config)?;
-    // Refuse an unreconciled push before reading cloud credentials.
+    require_trusted_terminal_cloud(&cloud_consent_plan("push", &project_dir, &config, false)?)?;
+    // Refuse an unreconciled push and require terminal consent before reading
+    // cloud credentials or any vault value.
     let api_base = auth::api_base_url()?;
-    let token = auth::require_token()?;
+    let token = Zeroizing::new(auth::require_token()?);
 
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let secret_names = vault.list()?;
+    let mut secret_names = vault.list()?;
+    secret_names.sort();
 
     if secret_names.is_empty() {
         println!("{}  No secrets to push", "warn".yellow().bold());
@@ -26,8 +31,14 @@ pub fn run_push() -> Result<()> {
 
     // Collect all secrets into a BTreeMap (sorted for deterministic encryption)
     let mut secrets = BTreeMap::new();
+    let mut guards = Vec::with_capacity(secret_names.len());
     for name in &secret_names {
         let value = vault.retrieve(name)?;
+        guards.push(phantom_vault::InitSecret::replace_if_unchanged(
+            name,
+            Some(value.as_str().to_string()),
+            value.as_str(),
+        ));
         secrets.insert(name.clone(), String::from(value.as_str()));
     }
 
@@ -52,24 +63,57 @@ pub fn run_push() -> Result<()> {
     );
 
     let rt = tokio::runtime::Runtime::new()?;
-    let new_version = rt.block_on(cloud::push(
-        &api_base,
-        &token,
-        config.portable_project_id(),
-        &blob_b64,
-        expected_version,
-    ))?;
+    let new_version = rt
+        .block_on(cloud::push(
+            &api_base,
+            &token,
+            config.portable_project_id(),
+            &blob_b64,
+            expected_version,
+        ))
+        .context(
+            "Cloud push did not return a success receipt; the remote outcome is unknown. Do not retry automatically until remote state is inspected",
+        )?;
 
-    // Update local version in config
+    // Update local version only if the exact config and every exported vault
+    // value are still owned by this transaction. The remote write cannot be
+    // rolled back, so any local reconciliation failure is explicit partial
+    // success and must never be retried automatically.
+    let mut current_names = vault.list().with_context(|| {
+        format!(
+            "Cloud push succeeded remotely at version {new_version}, but the local vault name set could not be verified. Do not retry automatically; reconcile remote and local state first"
+        )
+    })?;
+    current_names.sort();
+    if current_names != secret_names {
+        anyhow::bail!(
+            "Cloud push succeeded remotely at version {new_version}, but the local vault name set changed before reconciliation. Do not retry automatically; reconcile the remote version and local vault first"
+        );
+    }
     let mut config = config;
     record_cloud_push_success(&mut config, new_version);
-    config
-        .save(std::path::Path::new(".phantom.toml"))
+    let config_after = toml::to_string_pretty(&config)
         .with_context(|| {
             format!(
-                "Cloud push succeeded remotely at version {new_version}, but local sync metadata could not be saved. Do not retry automatically: reconcile the remote version and local .phantom.toml first"
+                "Cloud push succeeded remotely at version {new_version}, but local reconciliation metadata could not be serialized. Do not retry automatically"
             )
-        })?;
+        })?
+        .into_bytes();
+    phantom_vault::commit_init(
+        &project_dir,
+        vault.as_ref(),
+        guards,
+        vec![phantom_vault::InitFile::replace_if_unchanged(
+            &config_path,
+            Some(config_before),
+            config_after,
+        )],
+    )
+    .with_context(|| {
+        format!(
+            "Cloud push succeeded remotely at version {new_version}, but exact local reconciliation failed. Do not retry automatically: reconcile the remote version, local vault, and .phantom.toml first"
+        )
+    })?;
 
     println!(
         "{}  {} secret(s) synced to cloud (v{})",
@@ -82,15 +126,11 @@ pub fn run_push() -> Result<()> {
 }
 
 pub fn run_pull(force: bool) -> Result<()> {
+    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let (config_path, config_before, config) = load_cloud_config_exact(&project_dir)?;
+    require_trusted_terminal_cloud(&cloud_consent_plan("pull", &project_dir, &config, force)?)?;
     let api_base = auth::api_base_url()?;
-    let token = auth::require_token()?;
-
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-    let config_before = std::fs::read(&config_path)
-        .context("Failed to snapshot .phantom.toml before cloud pull")?;
-    let config = PhantomConfig::load(&config_path)
-        .context("No .phantom.toml found. Run `phantom init` first.")?;
+    let token = Zeroizing::new(auth::require_token()?);
 
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
@@ -152,6 +192,104 @@ pub fn run_pull(force: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CloudConsentPlan {
+    effect: String,
+    challenge: String,
+}
+
+fn cloud_consent_plan(
+    action: &str,
+    project_dir: &Path,
+    config: &PhantomConfig,
+    force: bool,
+) -> Result<CloudConsentPlan> {
+    let project = config.portable_project_id();
+    if project.is_empty() || project.len() > 256 || project.chars().any(char::is_control) {
+        anyhow::bail!(
+            "Cloud project identifiers must be non-empty, bounded, and contain no control characters"
+        );
+    }
+    let reviewed_project =
+        serde_json::to_string(project).context("Failed to encode the cloud consent challenge")?;
+    let path = project_dir.to_string_lossy();
+    if path.is_empty() || path.len() > 1024 || path.chars().any(char::is_control) {
+        anyhow::bail!(
+            "Cloud project paths must be non-empty, bounded, and contain no control characters"
+        );
+    }
+    let reviewed_path =
+        serde_json::to_string(path.as_ref()).context("Failed to encode cloud project path")?;
+    Ok(match action {
+        "push" => CloudConsentPlan {
+            effect: format!(
+                "encrypt every local vault value from {reviewed_path} and overwrite the authenticated cloud vault for project {reviewed_project}"
+            ),
+            challenge: format!("cloud push {reviewed_project} from {reviewed_path}"),
+        },
+        "pull" => CloudConsentPlan {
+            effect: format!(
+                "download, decrypt, and transactionally write the cloud vault for project {reviewed_project} into {reviewed_path}; force={force}"
+            ),
+            challenge: format!("cloud pull {reviewed_project} into {reviewed_path} force={force}"),
+        },
+        _ => unreachable!("closed cloud action"),
+    })
+}
+
+fn require_trusted_terminal_cloud(plan: &CloudConsentPlan) -> Result<()> {
+    let attached = std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal();
+    let stdin = std::io::stdin();
+    let stderr = std::io::stderr();
+    confirm_cloud_effect(plan, attached, &mut stdin.lock(), &mut stderr.lock())
+}
+
+fn confirm_cloud_effect(
+    plan: &CloudConsentPlan,
+    attached: bool,
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+) -> Result<()> {
+    if !attached {
+        anyhow::bail!(
+            "Cloud vault effects require stdin, stdout, and stderr attached to a trusted terminal before credential, vault-value, or network access"
+        );
+    }
+    writeln!(writer, "Cloud effect: {}", plan.effect)?;
+    writeln!(
+        writer,
+        "Approve only if this terminal is outside the requesting agent's authority; a same-user shell or agent-controlled PTY can automate this ceremony."
+    )?;
+    write!(writer, "Type `{}` to continue: ", plan.challenge)?;
+    writer.flush()?;
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    if response.trim() != plan.challenge {
+        anyhow::bail!("Cloud effect cancelled: typed confirmation did not match");
+    }
+    Ok(())
+}
+
+fn load_cloud_config_exact(project_dir: &Path) -> Result<(PathBuf, Vec<u8>, PhantomConfig)> {
+    let path = project_dir.join(".phantom.toml");
+    let before = phantom_core::fs::read_regular_file(&path)
+        .context("Failed to safely read .phantom.toml")?
+        .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run `phantom init` first."))?;
+    let config = PhantomConfig::load(&path).context("Failed to load .phantom.toml")?;
+    if phantom_core::fs::read_regular_file(&path)
+        .context("Failed to recheck .phantom.toml")?
+        .as_deref()
+        != Some(before.as_slice())
+    {
+        anyhow::bail!(
+            ".phantom.toml changed during cloud preflight; no cloud effect was attempted"
+        );
+    }
+    Ok((path, before, config))
 }
 
 #[derive(serde::Deserialize)]
@@ -456,6 +594,34 @@ mod tests {
     }
 
     #[test]
+    fn config_drift_blocks_cloud_pull_before_any_vault_write() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = cloud_test_config(4);
+        let before = write_config(&config_path, &config);
+        let concurrent = [before.as_slice(), b"\n# concurrent owner\n"].concat();
+        std::fs::write(&config_path, &concurrent).unwrap();
+        let vault = file_vault(&dir, "cli-cloud-config-drift");
+
+        assert!(apply_cloud_pull_transaction(
+            dir.path(),
+            &config_path,
+            config,
+            before,
+            &vault,
+            &sensitive(&[("NEW", "new")]),
+            true,
+            11,
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&config_path).unwrap(), concurrent);
+        assert!(matches!(
+            vault.retrieve("NEW"),
+            Err(phantom_core::error::PhantomError::SecretNotFound(_))
+        ));
+    }
+
+    #[test]
     fn successful_push_clears_stale_reconciliation_marker() {
         let mut config = cloud_test_config(4);
         let cloud = config.cloud.get_or_insert_default();
@@ -468,5 +634,38 @@ mod tests {
         assert_eq!(cloud.version, 12);
         assert!(!cloud.reconciliation_required);
         assert_eq!(cloud.reconciliation_remote_version, None);
+    }
+
+    #[test]
+    fn cloud_consent_binds_project_action_and_force_policy() {
+        let config = cloud_test_config(0);
+        let path = Path::new("/reviewed/project");
+        let push = cloud_consent_plan("push", path, &config, false).unwrap();
+        let pull = cloud_consent_plan("pull", path, &config, true).unwrap();
+
+        assert_eq!(
+            push.challenge,
+            "cloud push \"cloud-test-project\" from \"/reviewed/project\""
+        );
+        assert_eq!(
+            pull.challenge,
+            "cloud pull \"cloud-test-project\" into \"/reviewed/project\" force=true"
+        );
+        assert!(push.effect.contains("overwrite"));
+        assert!(pull.effect.contains("transactionally write"));
+    }
+
+    #[test]
+    fn headless_cloud_consent_fails_before_reading_confirmation() {
+        let config = cloud_test_config(0);
+        let plan =
+            cloud_consent_plan("push", Path::new("/reviewed/project"), &config, false).unwrap();
+        let mut reader = std::io::Cursor::new(plan.challenge.as_bytes());
+        let mut output = Vec::new();
+
+        let error = confirm_cloud_effect(&plan, false, &mut reader, &mut output).unwrap_err();
+        assert!(error.to_string().contains("trusted terminal"));
+        assert_eq!(reader.position(), 0);
+        assert!(output.is_empty());
     }
 }
