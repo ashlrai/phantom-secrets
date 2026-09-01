@@ -12,6 +12,23 @@ fn doctor_can_open_vault(_fix: bool) -> bool {
     false
 }
 
+fn commit_precommit_repair(project_dir: &std::path::Path) -> Result<Option<HookChange>> {
+    let Some(plan) = precommit_hook::prepare_install_plan(project_dir)? else {
+        return Ok(None);
+    };
+    let authorization = if plan.change() != HookChange::Unchanged && plan.authority().is_external()
+    {
+        precommit_hook::authorize_external_install_from_terminal(project_dir)?
+    } else {
+        None
+    };
+    Ok(Some(precommit_hook::commit_prepared_install(
+        project_dir,
+        &plan,
+        authorization.as_ref(),
+    )?))
+}
+
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
 pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
@@ -291,8 +308,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 check_fix("Run: phantom init (will add a local Phantom check to the hook)");
             }
             if fix && !mutation_applied {
-                let _lock = phantom_vault::acquire_project_transaction_lock(&project_dir)?;
-                let change = precommit_hook::install(&project_dir)?
+                let change = commit_precommit_repair(&project_dir)?
                     .expect("Git hook state already established a repository");
                 let message = match change {
                     HookChange::Installed => {
@@ -311,8 +327,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
             check_warn("No pre-commit hook installed");
             check_fix("Run: phantom init (will install a local Phantom check)");
             if fix && !mutation_applied {
-                let _lock = phantom_vault::acquire_project_transaction_lock(&project_dir)?;
-                precommit_hook::install(&project_dir)?;
+                commit_precommit_repair(&project_dir)?;
                 check_fixed("Installed pre-commit hook");
                 fixed += 1;
             } else {
@@ -725,6 +740,7 @@ fn check_fixed(msg: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::{precommit_hook, HookChange};
     use crate::commands::upgrade::{
         detect_install_source, detect_install_source_from, InstallSource,
     };
@@ -831,5 +847,39 @@ mod tests {
             std::fs::read(project.join(".gitignore")).unwrap(),
             b"decoy\n"
         );
+    }
+
+    #[test]
+    fn doctor_hook_repair_uses_exact_hook_plan_without_project_lock() {
+        let project = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(project.path())
+            .status()
+            .unwrap()
+            .success());
+        let hook = project.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho stale\n").unwrap();
+
+        assert_eq!(
+            super::commit_precommit_repair(project.path()).unwrap(),
+            Some(HookChange::Installed)
+        );
+        assert!(precommit_hook::is_current(
+            &std::fs::read_to_string(hook).unwrap()
+        ));
+
+        let source = include_str!("doctor.rs");
+        let helper = source
+            .split("fn commit_precommit_repair")
+            .nth(1)
+            .unwrap()
+            .split("/// Run the full doctor suite")
+            .next()
+            .unwrap();
+        assert!(helper.contains("prepare_install_plan"));
+        assert!(helper.contains("authorize_external_install_from_terminal"));
+        assert!(helper.contains("commit_prepared_install"));
+        assert!(!helper.contains("acquire_project_transaction_lock"));
     }
 }

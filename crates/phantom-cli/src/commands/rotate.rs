@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
-use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget};
+use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget, FileIdentity, TrustedAnchor};
 use phantom_core::token::TokenMap;
 use phantom_vault::VaultBackend;
 use sha2::{Digest, Sha256};
@@ -20,8 +20,31 @@ const ROTATE_DOTENV_NAMES: &[&str] = &[
     ".env.development.local",
 ];
 
+fn acquire_reviewed_project_lock(
+    project_root: &Path,
+    reviewed_project: &TrustedAnchor,
+    before_project_lock: impl FnOnce(),
+    operation: &str,
+) -> Result<phantom_vault::ProjectTransactionLock> {
+    before_project_lock();
+    let transaction_lock = phantom_vault::acquire_project_transaction_lock(project_root)
+        .with_context(|| format!("Failed to acquire project transaction lock for {operation}"))?;
+    if transaction_lock.project_root_at_acquisition() != project_root {
+        anyhow::bail!(
+            "Project root changed while acquiring the {operation} lock; no project state was used."
+        );
+    }
+    if transaction_lock.project_identity_at_acquisition() != reviewed_project.identity() {
+        anyhow::bail!(
+            "Project root was replaced while opening the {operation} vault; no project state was used."
+        );
+    }
+    Ok(transaction_lock)
+}
+
 struct LocalTokenRemapPlan {
     project_dir: PathBuf,
+    project_identity: FileIdentity,
     config_path: PathBuf,
     config_before: Vec<u8>,
     config_digest: String,
@@ -56,14 +79,10 @@ impl LocalTokenRemapPlan {
     }
 
     fn commit(&self) -> Result<()> {
-        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
-            .with_context(|| {
-                format!(
-                    "Failed to acquire transaction lock for {}",
-                    self.project_dir.display()
-                )
-            })?;
+        self.commit_with_before_project_lock(|| {})
+    }
 
+    fn commit_with_before_project_lock(&self, before_project_lock: impl FnOnce()) -> Result<()> {
         let current_project = std::env::current_dir()?
             .canonicalize()
             .context("Failed to re-resolve project directory before token remap")?;
@@ -72,19 +91,32 @@ impl LocalTokenRemapPlan {
                 "Cannot remap Phantom tokens: the current project changed after approval; no Phantom write was committed."
             );
         }
+        let reviewed_project = TrustedAnchor::open(&current_project)
+            .context("Failed to retain the approved project root before token remap")?;
+        if reviewed_project.identity() != self.project_identity {
+            anyhow::bail!(
+                "Cannot remap Phantom tokens: the approved project root identity changed; no Phantom write was committed."
+            );
+        }
+        let current_local_project_id = PhantomConfig::project_id_from_path(&current_project);
+        if current_local_project_id != self.local_project_id {
+            anyhow::bail!(
+                "Cannot remap Phantom tokens: the local project identity changed after approval; no Phantom write was committed."
+            );
+        }
 
-        let config_target = transaction_lock
-            .target(&self.config_path)
+        let reviewed_config_target = reviewed_project
+            .target(".phantom.toml")
             .context("Failed to retain the approved project config target")?;
-        let config_current = config_target
+        let reviewed_config = reviewed_config_target
             .read_regular()?
             .context("Project config disappeared after approval")?;
-        if config_current.bytes() != self.config_before {
+        if reviewed_config.bytes() != self.config_before {
             anyhow::bail!(
                 "Cannot remap Phantom tokens: .phantom.toml changed after approval; no Phantom write was committed."
             );
         }
-        let config = PhantomConfig::load_from_bytes(&self.config_path, config_current.bytes())
+        let config = PhantomConfig::load_from_bytes(&self.config_path, reviewed_config.bytes())
             .context("Failed to reload exact .phantom.toml snapshot before token remap")?;
         if config.local_project_id() != self.local_project_id {
             anyhow::bail!(
@@ -92,8 +124,32 @@ impl LocalTokenRemapPlan {
             );
         }
 
-        let vault = phantom_vault::try_create_vault(&self.local_project_id)
+        // Vault construction may take PROCESS_ENV_LOCK, so it must complete
+        // before the project transaction lock is acquired.
+        let vault = phantom_vault::try_create_vault(&current_local_project_id)
             .context("Failed to re-open vault before token remap")?;
+        let transaction_lock = acquire_reviewed_project_lock(
+            &current_project,
+            &reviewed_project,
+            before_project_lock,
+            "token remap",
+        )?;
+
+        let config_target = transaction_lock
+            .target(&self.config_path)
+            .context("Failed to retain the approved project config target")?;
+        let config_current = config_target
+            .read_regular()?
+            .context("Project config disappeared after approval")?;
+        if config_current.identity() != reviewed_config.identity()
+            || config_current.bytes() != reviewed_config.bytes()
+            || config_current.permissions() != reviewed_config.permissions()
+        {
+            anyhow::bail!(
+                "Cannot remap Phantom tokens: .phantom.toml changed after approval; no Phantom write was committed."
+            );
+        }
+
         self.commit_with_verified_config(&transaction_lock, &config, vault.as_ref())
     }
 
@@ -211,6 +267,9 @@ fn prepare_local_token_remap(project_dir: &Path) -> Result<Option<LocalTokenRema
     let project_dir = project_dir
         .canonicalize()
         .context("Failed to resolve project directory")?;
+    let project_anchor = TrustedAnchor::open(&project_dir)
+        .context("Failed to retain project directory for token-remap review")?;
+    let project_identity = project_anchor.identity();
     let config_path = project_dir.join(".phantom.toml");
     let config_before = phantom_core::fs::read_regular_file(&config_path)?
         .context("No .phantom.toml found. Run `phantom init` first.")?;
@@ -235,6 +294,7 @@ fn prepare_local_token_remap(project_dir: &Path) -> Result<Option<LocalTokenRema
 
     Ok(Some(LocalTokenRemapPlan {
         project_dir,
+        project_identity,
         config_path,
         config_digest: digest_bytes(b"phantom-local-token-remap-config-v1\0", &config_before),
         config_before,
@@ -727,26 +787,63 @@ pub fn run_with_provider(
         auto_sync_rotation_with_bootstrap, default_rotation_providers,
     };
 
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-    let transaction_lock = phantom_vault::acquire_project_transaction_lock(&project_dir)
-        .context("Failed to acquire project transaction lock for provider rotation")?;
-    let config_target = transaction_lock
-        .target(&config_path)
+    let reviewed_project_root = std::env::current_dir()?
+        .canonicalize()
+        .context("Failed to resolve canonical project root for provider rotation")?;
+    let reviewed_project = TrustedAnchor::open(&reviewed_project_root)
+        .context("Failed to retain project root before provider rotation")?;
+    let reviewed_local_project_id = PhantomConfig::project_id_from_path(&reviewed_project_root);
+    let config_path = reviewed_project_root.join(".phantom.toml");
+    let reviewed_config_target = reviewed_project
+        .target(".phantom.toml")
         .context("Failed to retain .phantom.toml for provider rotation")?;
-    let config_before = config_target.read_regular()?.ok_or_else(|| {
+    let reviewed_config = reviewed_config_target.read_regular()?.ok_or_else(|| {
         anyhow::anyhow!(
             "No .phantom.toml found. Run {} first.",
             "phantom init".cyan().bold()
         )
     })?;
-    let config = PhantomConfig::load_from_bytes(&config_path, config_before.bytes())
+    let config = PhantomConfig::load_from_bytes(&config_path, reviewed_config.bytes())
         .context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())
+    if config.local_project_id() != reviewed_local_project_id {
+        anyhow::bail!(
+            "Reviewed config did not bind to the canonical local project identity; no provider or project payload was used."
+        );
+    }
+    // Vault construction may take PROCESS_ENV_LOCK, so it must complete before
+    // the project transaction lock is acquired.
+    let vault = phantom_vault::try_create_vault(&reviewed_local_project_id)
         .context("Failed to initialize vault")?;
+    let transaction_lock = acquire_reviewed_project_lock(
+        &reviewed_project_root,
+        &reviewed_project,
+        || {},
+        "provider rotation",
+    )?;
+    let config_target = transaction_lock
+        .target(&config_path)
+        .context("Failed to retain .phantom.toml for provider rotation")?;
+    let retained_config = config_target.read_regular()?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No .phantom.toml found. Run {} first.",
+            "phantom init".cyan().bold()
+        )
+    })?;
+    if retained_config.identity() != reviewed_config.identity()
+        || retained_config.bytes() != reviewed_config.bytes()
+        || retained_config.permissions() != reviewed_config.permissions()
+    {
+        anyhow::bail!(
+            "Project config changed while opening the provider-rotation vault; no provider or project payload was used."
+        );
+    }
     let vault_names = vault.list().context("Failed to list secrets")?;
-    let env_path =
-        resolve_managed_dotenv_path(&transaction_lock, &project_dir, &config, &vault_names)?;
+    let env_path = resolve_managed_dotenv_path(
+        &transaction_lock,
+        &reviewed_project_root,
+        &config,
+        &vault_names,
+    )?;
 
     // Resolve provider config from .phantom.toml.
     let provider_config = config
@@ -883,7 +980,12 @@ pub fn run_with_provider(
         }
     };
 
-    if config_target.read_regular()?.as_ref() != Some(&config_before) {
+    let config_at_provider_edge = config_target.read_regular()?;
+    if config_at_provider_edge.as_ref().is_none_or(|current| {
+        current.identity() != reviewed_config.identity()
+            || current.bytes() != reviewed_config.bytes()
+            || current.permissions() != reviewed_config.permissions()
+    }) {
         anyhow::bail!(
             ".phantom.toml changed after provider rotation was planned; no provider call was made"
         );
@@ -1282,6 +1384,9 @@ mod token_remap_tests {
             format!("A=phm_{}\nB=phm_{}\n", "a".repeat(64), "b".repeat(64)).into_bytes();
         let names = vec!["A".to_string(), "B".to_string()];
         LocalTokenRemapPlan {
+            project_identity: TrustedAnchor::open_canonical(std::env::current_dir().unwrap())
+                .unwrap()
+                .identity(),
             config_path: project_dir.join(".phantom.toml"),
             config_digest: digest_bytes(b"phantom-local-token-remap-config-v1\0", &config_before),
             config_before,
@@ -1335,6 +1440,7 @@ mod token_remap_tests {
         let env_path = env_path.canonicalize().unwrap();
         let names = vec!["A".to_string(), "B".to_string()];
         let plan = LocalTokenRemapPlan {
+            project_identity: TrustedAnchor::open(&project_dir).unwrap().identity(),
             project_dir,
             config_path,
             config_digest: digest_bytes(b"phantom-local-token-remap-config-v1\0", &config_before),
@@ -1448,6 +1554,69 @@ mod token_remap_tests {
             .unwrap_err();
         assert!(error.to_string().contains("managed dotenv changed"));
         assert_eq!(std::fs::read(&plan.env_path).unwrap(), concurrent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reviewed_project_lock_rejects_same_path_replacement() {
+        let container = tempdir().unwrap();
+        let container = container.path().canonicalize().unwrap();
+        let project = container.join("project");
+        let moved = container.join("moved");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join(".phantom.toml"), b"approved\n").unwrap();
+        let reviewed = TrustedAnchor::open(&project).unwrap();
+
+        let error = acquire_reviewed_project_lock(
+            &project,
+            &reviewed,
+            || {
+                std::fs::rename(&project, &moved).unwrap();
+                std::fs::create_dir(&project).unwrap();
+                std::fs::write(project.join(".phantom.toml"), b"decoy\n").unwrap();
+            },
+            "provider rotation",
+        )
+        .err()
+        .expect("same-path replacement must be rejected");
+
+        assert!(error.to_string().contains("Project root was replaced"));
+        assert_eq!(
+            std::fs::read(moved.join(".phantom.toml")).unwrap(),
+            b"approved\n"
+        );
+        assert_eq!(
+            std::fs::read(project.join(".phantom.toml")).unwrap(),
+            b"decoy\n"
+        );
+    }
+
+    #[test]
+    fn vault_resolution_precedes_project_lock_source_contract() {
+        let source = include_str!("rotate.rs");
+        let provider = source
+            .split("pub fn run_with_provider")
+            .nth(1)
+            .unwrap()
+            .split("pub fn")
+            .next()
+            .unwrap();
+        let anchor = provider.find("TrustedAnchor::open").unwrap();
+        let vault = provider.find("try_create_vault").unwrap();
+        let project_lock = provider.find("acquire_reviewed_project_lock").unwrap();
+        assert!(anchor < vault && vault < project_lock);
+
+        let commit = source
+            .split("fn commit_with_before_project_lock")
+            .nth(1)
+            .unwrap()
+            .split("fn commit_with_verified_config")
+            .next()
+            .unwrap();
+        let approved_identity = commit.find("self.project_identity").unwrap();
+        let vault = commit.find("try_create_vault").unwrap();
+        let project_lock = commit.find("acquire_reviewed_project_lock").unwrap();
+        assert!(approved_identity < vault && vault < project_lock);
     }
 
     #[test]

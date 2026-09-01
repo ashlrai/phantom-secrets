@@ -1,6 +1,6 @@
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{classify, is_public_key, DotenvFile, SecretClassification};
-use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget};
+use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget, TrustedAnchor};
 use phantom_core::precommit_hook::{self, HookChange};
 use phantom_core::token::{PhantomToken, TokenMap};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -27,6 +27,29 @@ use crate::tools::params::{
     ValidateAllParams, ValidateSecretParams, ValidationHistoryParams, ValidationScheduleParams,
     WhyParams, WrapParams,
 };
+
+fn commit_mcp_precommit_repair(project_dir: &Path) -> Result<Option<HookChange>, McpError> {
+    let Some(plan) = precommit_hook::prepare_install_plan(project_dir).map_err(|error| {
+        internal_err(format!(
+            "Failed to prepare the exact effective Git pre-commit hook repair: {error}"
+        ))
+    })?
+    else {
+        return Ok(None);
+    };
+    if plan.change() != HookChange::Unchanged && plan.authority().is_external() {
+        return Err(invalid_params_err(
+            "MCP cannot authorize writes to an external effective Git hook. Run `phantom doctor --fix` in an attached trusted terminal to review and authorize the exact global/system core.hooksPath; no hook was changed.",
+        ));
+    }
+    precommit_hook::commit_prepared_install(project_dir, &plan, None)
+        .map(Some)
+        .map_err(|error| {
+            internal_err(format!(
+                "Failed to commit the exact effective Git pre-commit hook repair: {error}"
+            ))
+        })
+}
 // ── MCP Server ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -97,21 +120,88 @@ impl PhantomMcpServer {
 
     fn load_config_and_vault_anchored(
         &self,
-        transaction_lock: &phantom_vault::ProjectTransactionLock,
-    ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
-        let config_path = self.config_path();
-        let config_target = transaction_lock
-            .target(&config_path)
+    ) -> Result<
+        (
+            phantom_vault::ProjectTransactionLock,
+            PhantomConfig,
+            Box<dyn phantom_vault::VaultBackend>,
+        ),
+        McpError,
+    > {
+        self.load_config_and_vault_anchored_with(|| {})
+    }
+
+    fn load_config_and_vault_anchored_with(
+        &self,
+        before_project_lock: impl FnOnce(),
+    ) -> Result<
+        (
+            phantom_vault::ProjectTransactionLock,
+            PhantomConfig,
+            Box<dyn phantom_vault::VaultBackend>,
+        ),
+        McpError,
+    > {
+        // Vault construction may take PROCESS_ENV_LOCK while resolving the
+        // backend. Finish that process-global work before the per-project lock
+        // so no caller can invert the shared lock order.
+        let reviewed_project_root = self.project_dir.canonicalize().map_err(|error| {
+            internal_err(format!("Failed to resolve canonical project root: {error}"))
+        })?;
+        let reviewed_project = TrustedAnchor::open(&reviewed_project_root).map_err(|error| {
+            internal_err(format!("Failed to retain reviewed project root: {error}"))
+        })?;
+        let reviewed_local_project_id = PhantomConfig::project_id_from_path(&reviewed_project_root);
+        let config_path = reviewed_project_root.join(".phantom.toml");
+        let reviewed_config_target = reviewed_project
+            .target(".phantom.toml")
             .map_err(|error| internal_err(format!("Failed to retain Phantom config: {error}")))?;
-        let config_before = config_target
+        let reviewed_config = reviewed_config_target
             .read_regular()
             .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?
             .ok_or_else(|| internal_err("Not initialized. Run `phantom init` first."))?;
-        let config = PhantomConfig::load_from_bytes(&config_path, config_before.bytes())
+        let config = PhantomConfig::load_from_bytes(&config_path, reviewed_config.bytes())
             .map_err(|error| internal_err(format!("Failed to load config: {error}")))?;
-        let vault = phantom_vault::try_create_vault(config.local_project_id())
+        if config.local_project_id() != reviewed_local_project_id {
+            return Err(internal_err(
+                "Reviewed config did not bind to the canonical local project identity; no project payload was used.",
+            ));
+        }
+        let vault = phantom_vault::try_create_vault(&reviewed_local_project_id)
             .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
-        Ok((config, vault))
+
+        before_project_lock();
+        let transaction_lock = phantom_vault::acquire_project_transaction_lock(
+            &reviewed_project_root,
+        )
+        .map_err(|error| internal_err(format!("Failed to acquire project lock: {error}")))?;
+        if transaction_lock.project_root_at_acquisition() != reviewed_project_root {
+            return Err(internal_err(
+                "Project root changed while acquiring the project lock; no retained project payload was used.",
+            ));
+        }
+        if transaction_lock.project_identity_at_acquisition() != reviewed_project.identity() {
+            return Err(internal_err(
+                "Project root was replaced while opening its vault; no retained project payload was used.",
+            ));
+        }
+
+        let config_target = transaction_lock
+            .target(&config_path)
+            .map_err(|error| internal_err(format!("Failed to retain Phantom config: {error}")))?;
+        let retained_config = config_target
+            .read_regular()
+            .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?
+            .ok_or_else(|| internal_err("Not initialized. Run `phantom init` first."))?;
+        if retained_config.identity() != reviewed_config.identity()
+            || retained_config.bytes() != reviewed_config.bytes()
+            || retained_config.permissions() != reviewed_config.permissions()
+        {
+            return Err(internal_err(
+                "Phantom config changed while opening its vault; no retained project payload was used.",
+            ));
+        }
+        Ok((transaction_lock, config, vault))
     }
 
     fn save_cloud_version(
@@ -742,11 +832,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<RotateParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_rotate", params.confirm)?;
-        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
-            .map_err(|error| {
-            internal_err(format!("Failed to acquire project lock: {error}"))
-        })?;
-        let (config, vault) = self.load_config_and_vault_anchored(&transaction_lock)?;
+        let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_rotate",
@@ -762,8 +848,8 @@ impl PhantomMcpServer {
             return text_result("No secrets to rotate.");
         }
 
-        let env_path =
-            resolve_env_path_anchored(&transaction_lock, &self.project_dir, &config, &names)?;
+        let project_root = transaction_lock.project_root_at_acquisition();
+        let env_path = resolve_env_path_anchored(&transaction_lock, project_root, &config, &names)?;
         remap_phantom_tokens_locked(&transaction_lock, &env_path, &names)?;
 
         text_result(format!(
@@ -834,14 +920,7 @@ impl PhantomMcpServer {
         // This coordinates Phantom writers; an uncooperative same-user process
         // can still mutate provider or filesystem state and is detected by the
         // exact value checks before metadata and cleanup.
-        let rotation_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
-            .map_err(|error| {
-                internal_err(format!(
-                    "Failed to acquire provider-rotation transaction lock: {error}"
-                ))
-            })?;
-
-        let (config, vault) = self.load_config_and_vault_anchored(&rotation_lock)?;
+        let (rotation_lock, config, vault) = self.load_config_and_vault_anchored()?;
 
         // Verify the secret exists in the vault.
         if !vault
@@ -961,7 +1040,7 @@ impl PhantomMcpServer {
                 // phm_ token cannot resolve it to the new credential.
                 let env_path = resolve_env_path_anchored(
                     &rotation_lock,
-                    &self.project_dir,
+                    rotation_lock.project_root_at_acquisition(),
                     &config,
                     std::slice::from_ref(&params.name),
                 )?;
@@ -1720,12 +1799,7 @@ impl PhantomMcpServer {
                     lines.push("warn: Git pre-commit hook exists but no phantom check".to_string());
                 }
                 if params.fix {
-                    let change = precommit_hook::install(&self.project_dir)
-                        .map_err(|error| {
-                            internal_err(format!(
-                                "Failed to repair the effective Git pre-commit hook: {error}"
-                            ))
-                        })?
+                    let change = commit_mcp_precommit_repair(&self.project_dir)?
                         .expect("Git hook state already established a repository");
                     let message = match change {
                         HookChange::Installed => {
@@ -1744,11 +1818,7 @@ impl PhantomMcpServer {
             precommit_hook::HookState::Missing { .. } => {
                 lines.push("warn: No pre-commit hook installed".to_string());
                 if params.fix {
-                    precommit_hook::install(&self.project_dir).map_err(|error| {
-                        internal_err(format!(
-                            "Failed to install the effective Git pre-commit hook: {error}"
-                        ))
-                    })?;
+                    commit_mcp_precommit_repair(&self.project_dir)?;
                     lines.push("  Fixed: Installed pre-commit hook".to_string());
                     fixed += 1;
                     hook_changed = true;
@@ -2146,11 +2216,9 @@ impl PhantomMcpServer {
         )?;
         phantom_core::fs::validate_project_filename(&params.output)
             .map_err(|error| invalid_params_err(error.to_string()))?;
-        let output_path = self.project_dir.join(&params.output);
-        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
-            .map_err(|error| {
-            internal_err(format!("Failed to acquire project lock: {error}"))
-        })?;
+        let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
+        let project_root = transaction_lock.project_root_at_acquisition();
+        let output_path = project_root.join(&params.output);
         let output_target = transaction_lock
             .target(&output_path)
             .map_err(|error| internal_err(format!("Refusing unsafe output target: {error}")))?;
@@ -2164,12 +2232,11 @@ impl PhantomMcpServer {
                 params.output
             )));
         }
-        let (config, vault) = self.load_config_and_vault_anchored(&transaction_lock)?;
         let vault_names = vault
             .list()
             .map_err(|error| internal_err(format!("Failed to list vault secrets: {error}")))?;
         let env_path =
-            resolve_env_path_anchored(&transaction_lock, &self.project_dir, &config, &vault_names)?;
+            resolve_env_path_anchored(&transaction_lock, project_root, &config, &vault_names)?;
         let env_target = transaction_lock
             .target(&env_path)
             .map_err(|error| internal_err(format!("Failed to retain managed dotenv: {error}")))?;
@@ -2651,11 +2718,7 @@ impl PhantomMcpServer {
             return Err(invalid_params_err("days_ttl must be > 0"));
         }
 
-        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
-            .map_err(|error| {
-            internal_err(format!("Failed to acquire project lock: {error}"))
-        })?;
-        let (config, vault) = self.load_config_and_vault_anchored(&transaction_lock)?;
+        let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
@@ -2664,8 +2727,8 @@ impl PhantomMcpServer {
             return text_result("No Phantom tokens to remap.");
         }
 
-        let env_path =
-            resolve_env_path_anchored(&transaction_lock, &self.project_dir, &config, &names)?;
+        let project_root = transaction_lock.project_root_at_acquisition();
+        let env_path = resolve_env_path_anchored(&transaction_lock, project_root, &config, &names)?;
         remap_phantom_tokens_locked(&transaction_lock, &env_path, &names)?;
         for name in &names {
             phantom_core::audit::log("secret.token_remapped", Some(name));
@@ -4387,11 +4450,7 @@ impl PhantomMcpServer {
             ));
         }
 
-        let transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
-            .map_err(|error| {
-            internal_err(format!("Failed to acquire project lock: {error}"))
-        })?;
-        let (config, vault) = self.load_config_and_vault_anchored(&transaction_lock)?;
+        let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
 
         // Confirm the secret exists.
         if !vault
@@ -4406,7 +4465,7 @@ impl PhantomMcpServer {
 
         let env_path = resolve_env_path_anchored(
             &transaction_lock,
-            &self.project_dir,
+            transaction_lock.project_root_at_acquisition(),
             &config,
             std::slice::from_ref(&params.name),
         )?;
@@ -5799,6 +5858,70 @@ mod tests {
 
         assert!(error.to_string().contains("outside"));
         assert_eq!(std::fs::read(&outside).unwrap(), b"{}\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn anchored_loader_rejects_project_replacement_during_vault_open() {
+        let _environment = TestEnvironment::new();
+        let home = canonical_temp_dir();
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var(
+                "PHANTOM_VAULT_PASSPHRASE",
+                "test-passphrase-do-not-use-in-prod",
+            );
+        }
+        let container = canonical_temp_dir();
+        let project = container.path().join("project");
+        let moved = container.path().join("moved");
+        std::fs::create_dir(&project).unwrap();
+        PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&project))
+            .save(&project.join(".phantom.toml"))
+            .unwrap();
+        let approved = std::fs::read(project.join(".phantom.toml")).unwrap();
+        let server = PhantomMcpServer::with_dir(project.clone());
+
+        let error = server
+            .load_config_and_vault_anchored_with(|| {
+                std::fs::rename(&project, &moved).unwrap();
+                std::fs::create_dir(&project).unwrap();
+                std::fs::write(
+                    project.join(".phantom.toml"),
+                    b"[phantom]\nversion = \"1\"\nproject_id = \"decoy\"\n",
+                )
+                .unwrap();
+            })
+            .err()
+            .expect("same-path replacement must be rejected");
+
+        assert!(error.message.contains("Project root was replaced"));
+        assert_eq!(
+            std::fs::read(moved.join(".phantom.toml")).unwrap(),
+            approved
+        );
+        assert!(std::fs::read_to_string(project.join(".phantom.toml"))
+            .unwrap()
+            .contains("decoy"));
+    }
+
+    #[test]
+    fn anchored_loader_lock_order_source_contract() {
+        let source = include_str!("server.rs");
+        let loader = source
+            .split("fn load_config_and_vault_anchored_with")
+            .nth(1)
+            .unwrap()
+            .split("fn save_cloud_version")
+            .next()
+            .unwrap();
+        let anchor = loader.find("TrustedAnchor::open").unwrap();
+        let vault = loader.find("try_create_vault").unwrap();
+        let project_lock = loader.find("acquire_project_transaction_lock").unwrap();
+        let identity = loader.find("project_identity_at_acquisition").unwrap();
+        let config_read = identity + loader[identity..].find("read_regular").unwrap();
+        assert!(anchor < vault && vault < project_lock);
+        assert!(project_lock < identity && identity < config_read);
     }
 
     #[cfg(unix)]
@@ -7333,6 +7456,44 @@ mod tests {
         assert!(precommit_hook::is_current(&repaired));
         assert!(repaired.find("phantom check").unwrap() < repaired.find("exit 0").unwrap());
         assert!(!dir.path().join(".git/hooks/pre-commit").exists());
+    }
+
+    #[test]
+    fn mcp_doctor_cannot_authorize_global_external_hook_write() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        let home = dir.path().join("operator-home");
+        let external = canonical_temp_dir();
+        let hooks = external.path().join("operator-hooks");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&hooks).unwrap();
+        unsafe { std::env::set_var("HOME", &home) };
+        std::fs::write(
+            home.join(".gitconfig"),
+            format!("[core]\n\thooksPath = {}\n", hooks.display()),
+        )
+        .unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success());
+        let hook = hooks.join("pre-commit");
+        let original = b"#!/bin/sh\necho operator-owned\n";
+        std::fs::write(&hook, original).unwrap();
+
+        let error = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: true,
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap_err();
+
+        assert!(error.message.contains("MCP cannot authorize writes"));
+        assert!(error.message.contains("attached trusted terminal"));
+        assert_eq!(std::fs::read(hook).unwrap(), original);
     }
 
     #[test]
