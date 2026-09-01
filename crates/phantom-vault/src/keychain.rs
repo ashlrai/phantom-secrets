@@ -261,6 +261,152 @@ fn compensated_error(
     }
 }
 
+/// Narrow adapter for the read-time F13 legacy migration. Keeping the
+/// transaction independent from the concrete keyring backend lets tests inject
+/// ambiguous failures after each mutation and verify the compensation order.
+trait LegacyMigrationBackend {
+    fn read_hashed(&self) -> Result<Option<Zeroizing<String>>>;
+    fn write_hashed(&self, value: &str) -> Result<()>;
+    fn remove_hashed(&self) -> Result<()>;
+    fn load_index(&self) -> Result<Vec<String>>;
+    fn save_index(&self, names: &[String]) -> Result<()>;
+    fn read_legacy(&self) -> Result<Option<Zeroizing<String>>>;
+    fn write_legacy(&self, value: &str) -> Result<()>;
+    fn remove_legacy(&self) -> Result<()>;
+}
+
+struct KeychainLegacyMigration<'a> {
+    vault: &'a KeychainVault,
+    hashed: &'a keyring::Entry,
+    legacy: &'a keyring::Entry,
+}
+
+impl LegacyMigrationBackend for KeychainLegacyMigration<'_> {
+    fn read_hashed(&self) -> Result<Option<Zeroizing<String>>> {
+        read_credential(self.hashed, "hashed secret")
+    }
+
+    fn write_hashed(&self, value: &str) -> Result<()> {
+        self.hashed.set_password(value).map_err(|error| {
+            PhantomError::VaultError(format!("Failed to migrate legacy secret: {error}"))
+        })
+    }
+
+    fn remove_hashed(&self) -> Result<()> {
+        remove_credential(self.hashed, "migrated hashed secret")
+    }
+
+    fn load_index(&self) -> Result<Vec<String>> {
+        self.vault.load_index()
+    }
+
+    fn save_index(&self, names: &[String]) -> Result<()> {
+        self.vault.save_index(names)
+    }
+
+    fn read_legacy(&self) -> Result<Option<Zeroizing<String>>> {
+        read_credential(self.legacy, "legacy secret")
+    }
+
+    fn write_legacy(&self, value: &str) -> Result<()> {
+        self.legacy.set_password(value).map_err(|error| {
+            PhantomError::VaultError(format!("Failed to restore legacy secret: {error}"))
+        })
+    }
+
+    fn remove_legacy(&self) -> Result<()> {
+        remove_credential(self.legacy, "legacy secret")
+    }
+}
+
+fn migrate_legacy_transaction(
+    backend: &dyn LegacyMigrationBackend,
+    name: &str,
+) -> Result<Zeroizing<String>> {
+    // A concurrent process may have completed migration while this caller was
+    // waiting for the project lock. In that case the hashed entry is already
+    // authoritative and no migration mutations are necessary.
+    if let Some(value) = backend.read_hashed()? {
+        return Ok(value);
+    }
+
+    let legacy_value = backend
+        .read_legacy()?
+        .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
+    let before_index = backend.load_index()?;
+    let mut after_index = before_index.clone();
+    if !after_index.iter().any(|indexed| indexed == name) {
+        after_index.push(name.to_string());
+        after_index.sort();
+    }
+    let index_changed = after_index != before_index;
+
+    if let Err(error) = backend.write_hashed(legacy_value.as_str()) {
+        // A backend may report an error after persisting the credential. The
+        // legacy entry is still untouched, so remove any ambiguous hashed copy.
+        return Err(compensated_error(
+            "legacy keychain migration",
+            error,
+            [backend.remove_hashed()],
+        ));
+    }
+
+    if index_changed {
+        if let Err(error) = backend.save_index(&after_index) {
+            // The legacy entry is still authoritative. Restore the index and
+            // remove the new entry even when the failed save may have applied.
+            return Err(compensated_error(
+                "legacy keychain migration",
+                error,
+                [backend.save_index(&before_index), backend.remove_hashed()],
+            ));
+        }
+    }
+
+    if let Err(error) = backend.remove_legacy() {
+        // Deletion failures are ambiguous. First prove the legacy copy exists
+        // again. Until that succeeds, retain the indexed hashed copy so the
+        // credential cannot be lost or stranded by an attempted rollback.
+        let mut compensations = Vec::new();
+        match backend.write_legacy(legacy_value.as_str()) {
+            Ok(()) => compensations.push(Ok(())),
+            Err(restore_error) => {
+                compensations.push(Err(restore_error));
+                return Err(compensated_error(
+                    "legacy keychain migration",
+                    error,
+                    compensations,
+                ));
+            }
+        }
+
+        if index_changed {
+            match backend.save_index(&before_index) {
+                Ok(()) => compensations.push(Ok(())),
+                Err(restore_error) => {
+                    // Keep the hashed credential because the post-migration
+                    // index may still be the only discoverable copy.
+                    compensations.push(Err(restore_error));
+                    return Err(compensated_error(
+                        "legacy keychain migration",
+                        error,
+                        compensations,
+                    ));
+                }
+            }
+        }
+
+        compensations.push(backend.remove_hashed());
+        return Err(compensated_error(
+            "legacy keychain migration",
+            error,
+            compensations,
+        ));
+    }
+
+    Ok(legacy_value)
+}
+
 impl KeychainVault {
     /// Create a new keychain vault for a project.
     /// Returns an error if the keychain is not available.
@@ -507,57 +653,20 @@ impl VaultBackend for KeychainVault {
             }
             Err(keyring::Error::NoEntry) => {
                 let _lock = acquire_project_lock(&self.project_id)?;
-                // Another process may have completed migration while this one
-                // waited for the lock. Recheck the authoritative entry first.
-                match entry.get_password() {
-                    Ok(value) => {
-                        phantom_core::audit::log("vault.retrieve", Some(name));
-                        return Ok(zeroize::Zeroizing::new(value));
-                    }
-                    Err(keyring::Error::NoEntry) => {}
-                    Err(error) => {
-                        return Err(PhantomError::VaultError(format!(
-                            "Failed to recheck secret while holding the project lock: {error}"
-                        )));
-                    }
-                }
                 // F13 migration: older phantom versions stored entries under
-                // the plaintext name. If we find one, return its value and
-                // silently re-store at the hashed location so future reads
-                // hit the new path.
-                if let Some(legacy) = self.legacy_entry_for(name) {
-                    match legacy.get_password() {
-                        Ok(value) => {
-                            let new_entry = self.entry_for(name)?;
-                            new_entry.set_password(&value).map_err(|error| {
-                                PhantomError::VaultError(format!(
-                                    "Failed to migrate legacy secret: {error}"
-                                ))
-                            })?;
-                            let mut index = self.load_index()?;
-                            if !index.iter().any(|indexed| indexed == name) {
-                                index.push(name.to_string());
-                                index.sort();
-                                self.save_index(&index)?;
-                            }
-                            legacy.delete_credential().map_err(|error| {
-                                PhantomError::VaultError(format!(
-                                    "Migrated secret but could not delete legacy entry: {error}"
-                                ))
-                            })?;
-                            phantom_core::audit::log("vault.retrieve", Some(name));
-                            Ok(zeroize::Zeroizing::new(value))
-                        }
-                        Err(keyring::Error::NoEntry) => {
-                            Err(PhantomError::SecretNotFound(name.to_string()))
-                        }
-                        Err(e) => Err(PhantomError::VaultError(format!(
-                            "Failed to retrieve secret: {e}"
-                        ))),
-                    }
-                } else {
-                    Err(PhantomError::SecretNotFound(name.to_string()))
-                }
+                // the plaintext name. The migration spans the hashed entry,
+                // index, and legacy deletion as one compensated transaction.
+                let legacy = self
+                    .legacy_entry_for(name)
+                    .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
+                let migration = KeychainLegacyMigration {
+                    vault: self,
+                    hashed: &entry,
+                    legacy: &legacy,
+                };
+                let value = migrate_legacy_transaction(&migration, name)?;
+                phantom_core::audit::log("vault.retrieve", Some(name));
+                Ok(value)
             }
             Err(e) => Err(PhantomError::VaultError(format!(
                 "Failed to retrieve secret: {e}"
@@ -704,8 +813,106 @@ impl VaultBackend for KeychainVault {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
     use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
+
+    const MIGRATION_NAME: &str = "API_KEY";
+    const MIGRATION_VALUE: &str = "test-legacy-value";
+
+    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    enum MigrationFault {
+        HashedWrite,
+        IndexCommit,
+        LegacyDelete,
+        LegacyRestore,
+        IndexRestore,
+        HashedRemove,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct MigrationState {
+        hashed: Option<String>,
+        legacy: Option<String>,
+        index: Vec<String>,
+    }
+
+    struct ScriptedMigration {
+        state: RefCell<MigrationState>,
+        faults: RefCell<BTreeSet<MigrationFault>>,
+    }
+
+    impl ScriptedMigration {
+        fn new(faults: impl IntoIterator<Item = MigrationFault>) -> Self {
+            Self {
+                state: RefCell::new(MigrationState {
+                    hashed: None,
+                    legacy: Some(MIGRATION_VALUE.to_string()),
+                    index: vec!["EXISTING_KEY".to_string()],
+                }),
+                faults: RefCell::new(faults.into_iter().collect()),
+            }
+        }
+
+        fn trip(&self, fault: MigrationFault) -> Result<()> {
+            if self.faults.borrow_mut().remove(&fault) {
+                Err(PhantomError::VaultError(format!(
+                    "injected {fault:?} failure after mutation"
+                )))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn snapshot(&self) -> MigrationState {
+            self.state.borrow().clone()
+        }
+    }
+
+    impl LegacyMigrationBackend for ScriptedMigration {
+        fn read_hashed(&self) -> Result<Option<Zeroizing<String>>> {
+            Ok(self.state.borrow().hashed.clone().map(Zeroizing::new))
+        }
+
+        fn write_hashed(&self, value: &str) -> Result<()> {
+            self.state.borrow_mut().hashed = Some(value.to_string());
+            self.trip(MigrationFault::HashedWrite)
+        }
+
+        fn remove_hashed(&self) -> Result<()> {
+            self.state.borrow_mut().hashed = None;
+            self.trip(MigrationFault::HashedRemove)
+        }
+
+        fn load_index(&self) -> Result<Vec<String>> {
+            Ok(self.state.borrow().index.clone())
+        }
+
+        fn save_index(&self, names: &[String]) -> Result<()> {
+            self.state.borrow_mut().index = names.to_vec();
+            let fault = if names.iter().any(|name| name == MIGRATION_NAME) {
+                MigrationFault::IndexCommit
+            } else {
+                MigrationFault::IndexRestore
+            };
+            self.trip(fault)
+        }
+
+        fn read_legacy(&self) -> Result<Option<Zeroizing<String>>> {
+            Ok(self.state.borrow().legacy.clone().map(Zeroizing::new))
+        }
+
+        fn write_legacy(&self, value: &str) -> Result<()> {
+            self.state.borrow_mut().legacy = Some(value.to_string());
+            self.trip(MigrationFault::LegacyRestore)
+        }
+
+        fn remove_legacy(&self) -> Result<()> {
+            self.state.borrow_mut().legacy = None;
+            self.trip(MigrationFault::LegacyDelete)
+        }
+    }
 
     #[test]
     fn compensation_result_distinguishes_complete_and_incomplete_rollback() {
@@ -726,6 +933,76 @@ mod tests {
         );
         assert!(incomplete.to_string().contains("rollback was incomplete"));
         assert!(incomplete.to_string().contains("index restore failed"));
+    }
+
+    #[test]
+    fn legacy_migration_commits_hashed_value_index_and_deletion_together() {
+        let backend = ScriptedMigration::new([]);
+
+        let migrated = migrate_legacy_transaction(&backend, MIGRATION_NAME).unwrap();
+
+        assert_eq!(migrated.as_str(), MIGRATION_VALUE);
+        assert_eq!(
+            backend.snapshot(),
+            MigrationState {
+                hashed: Some(MIGRATION_VALUE.to_string()),
+                legacy: None,
+                index: vec!["API_KEY".to_string(), "EXISTING_KEY".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_migration_compensates_ambiguous_hashed_write_failure() {
+        let backend = ScriptedMigration::new([MigrationFault::HashedWrite]);
+        let before = backend.snapshot();
+
+        let error = migrate_legacy_transaction(&backend, MIGRATION_NAME).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("prior keychain state was restored"));
+        assert_eq!(backend.snapshot(), before);
+    }
+
+    #[test]
+    fn legacy_migration_compensates_ambiguous_index_failure() {
+        let backend = ScriptedMigration::new([MigrationFault::IndexCommit]);
+        let before = backend.snapshot();
+
+        let error = migrate_legacy_transaction(&backend, MIGRATION_NAME).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("prior keychain state was restored"));
+        assert_eq!(backend.snapshot(), before);
+    }
+
+    #[test]
+    fn legacy_migration_compensates_ambiguous_legacy_delete_failure() {
+        let backend = ScriptedMigration::new([MigrationFault::LegacyDelete]);
+        let before = backend.snapshot();
+
+        let error = migrate_legacy_transaction(&backend, MIGRATION_NAME).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("prior keychain state was restored"));
+        assert_eq!(backend.snapshot(), before);
+    }
+
+    #[test]
+    fn legacy_migration_retains_committed_copy_when_legacy_restore_is_ambiguous() {
+        let backend =
+            ScriptedMigration::new([MigrationFault::LegacyDelete, MigrationFault::LegacyRestore]);
+
+        let error = migrate_legacy_transaction(&backend, MIGRATION_NAME).unwrap_err();
+        let after = backend.snapshot();
+
+        assert!(error.to_string().contains("rollback was incomplete"));
+        assert_eq!(after.hashed.as_deref(), Some(MIGRATION_VALUE));
+        assert_eq!(after.legacy.as_deref(), Some(MIGRATION_VALUE));
+        assert!(after.index.iter().any(|name| name == MIGRATION_NAME));
     }
 
     #[test]

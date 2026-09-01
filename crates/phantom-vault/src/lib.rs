@@ -35,12 +35,8 @@ const PASSPHRASE_SERVICE: &str = "phantom-secrets-vault";
 /// is exhausted partway through a large test run (`QuotaExceeded`).
 /// `PHANTOM_REQUIRE_KEYCHAIN=1` wins over the passphrase: it is the
 /// security-strict flag and keeps its hard-fail contract.
-pub fn create_vault(project_id: &str) -> Box<dyn VaultBackend> {
-    try_create_vault(project_id).unwrap_or_else(|error| {
-        panic!(
-            "Phantom vault initialization failed closed: {error}. Set PHANTOM_VAULT_PASSPHRASE to a durable secret value and retry."
-        )
-    })
+pub fn create_vault(project_id: &str) -> Result<Box<dyn VaultBackend>> {
+    try_create_vault(project_id)
 }
 
 /// Fallible vault construction for workflows such as `phantom init` that must
@@ -213,6 +209,11 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
     use tempfile::tempdir;
+
+    #[test]
+    fn public_vault_constructor_is_fallible() {
+        let _constructor: fn(&str) -> Result<Box<dyn VaultBackend>> = create_vault;
+    }
 
     struct ScriptedPassphraseStore {
         gets: Mutex<VecDeque<std::result::Result<Option<String>, String>>>,
