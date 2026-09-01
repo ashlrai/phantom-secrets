@@ -55,8 +55,14 @@ validate_install_dir_override() {
 }
 
 file_identity() {
-  stat -f '%d:%i:%l:%p' "$1" 2>/dev/null \
-    || stat -c '%d:%i:%h:%f' "$1" 2>/dev/null
+  local identity
+  if identity="$(stat -c '%d:%i:%h:%f' "$1" 2>/dev/null)"; then
+    [[ "$identity" =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9A-Fa-f]+$ ]] || return 1
+  else
+    identity="$(stat -f '%d:%i:%l:%p' "$1" 2>/dev/null)" || return 1
+    [[ "$identity" =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+$ ]] || return 1
+  fi
+  printf '%s\n' "$identity"
 }
 
 release_install_lock() {
@@ -152,7 +158,14 @@ verify_binary_version() {
 }
 
 file_mtime_epoch() {
-  stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null
+  local mtime
+  if mtime="$(stat -c '%Y' "$1" 2>/dev/null)"; then
+    :
+  else
+    mtime="$(stat -f '%m' "$1" 2>/dev/null)" || return 1
+  fi
+  [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$mtime"
 }
 
 acquire_install_lock() {

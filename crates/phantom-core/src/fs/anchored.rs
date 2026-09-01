@@ -1377,7 +1377,15 @@ fn repair_private_directory(directory: &Dir) -> io::Result<()> {
     let secured = directory.try_clone()?.into_std_file();
     let before = std_file_identity(&secured)?;
     let dacl = windows_private_user_dacl(true)?;
-    windows_set_dacl(&secured, &dacl)?;
+    // Setting an already-exact inheritable DACL is not a harmless no-op on
+    // Windows: the security subsystem may propagate it to descendants. Two
+    // unrelated project writers share Phantom's `vaults` parent, so repeatedly
+    // applying that parent ACL can race a sibling writer that is securing a
+    // newly-created lock file. Avoid the namespace-wide side effect when the
+    // retained directory already has the exact private DACL.
+    if windows_file_dacl_std(&secured)? != dacl {
+        windows_set_dacl(&secured, &dacl)?;
+    }
     if std_file_identity(&secured)? != before || windows_file_dacl_std(&secured)? != dacl {
         return Err(io::Error::other(
             "Windows directory identity or DACL changed while being established",
@@ -2569,6 +2577,26 @@ mod tests {
             .into_std_file();
         assert_eq!(
             windows_file_dacl_std(&existing).unwrap(),
+            windows_private_user_dacl(true).unwrap()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_exact_private_directory_repair_does_not_require_write_dac() {
+        let dir = TempDir::new().unwrap();
+        let private = TrustedAnchor::open_private(dir.path()).unwrap();
+        drop(private);
+
+        // Reopen without the private/WRITE_DAC access requested by
+        // `open_anchor_directory(..., true)`. An exact private directory must
+        // verify successfully without another SetSecurityInfo call.
+        let read_only = open_anchor_directory(dir.path(), false).unwrap();
+        let retained = Dir::from_std_file(read_only);
+        repair_private_directory(&retained).unwrap();
+        let retained = retained.into_std_file();
+        assert_eq!(
+            windows_file_dacl_std(&retained).unwrap(),
             windows_private_user_dacl(true).unwrap()
         );
     }

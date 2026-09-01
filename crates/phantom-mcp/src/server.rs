@@ -7120,7 +7120,7 @@ mod tests {
 
     struct TestEnvironment {
         _guard: phantom_core::ProcessEnvGuard,
-        previous: [(&'static str, Option<std::ffi::OsString>); 5],
+        previous: [(&'static str, Option<std::ffi::OsString>); 7],
     }
 
     impl TestEnvironment {
@@ -7142,6 +7142,11 @@ mod tests {
                 (
                     "PHANTOM_MCP_EFFECTS",
                     std::env::var_os("PHANTOM_MCP_EFFECTS"),
+                ),
+                ("GIT_CONFIG_GLOBAL", std::env::var_os("GIT_CONFIG_GLOBAL")),
+                (
+                    "GIT_CONFIG_NOSYSTEM",
+                    std::env::var_os("GIT_CONFIG_NOSYSTEM"),
                 ),
             ];
             Self {
@@ -7493,9 +7498,10 @@ mod tests {
         std::fs::create_dir(&hooks).unwrap();
         unsafe { std::env::set_var("HOME", &home) };
         unsafe { std::env::set_var("USERPROFILE", &home) };
+        unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", home.join(".gitconfig")) };
+        unsafe { std::env::set_var("GIT_CONFIG_NOSYSTEM", "1") };
         assert!(std::process::Command::new("git")
-            .args(["config", "--file"])
-            .arg(home.join(".gitconfig"))
+            .args(["config", "--global"])
             .arg("core.hooksPath")
             .arg(&hooks)
             .status()
@@ -7519,8 +7525,16 @@ mod tests {
             }))
             .unwrap_err();
 
-        assert!(error.message.contains("MCP cannot authorize writes"));
-        assert!(error.message.contains("attached trusted terminal"));
+        assert!(
+            error.message.contains("MCP cannot authorize writes"),
+            "unexpected doctor error: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("attached trusted terminal"),
+            "unexpected doctor error: {}",
+            error.message
+        );
         assert_eq!(std::fs::read(hook).unwrap(), original);
     }
 
