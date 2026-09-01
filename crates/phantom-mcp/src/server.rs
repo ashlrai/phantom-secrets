@@ -4229,7 +4229,7 @@ fn provider_rotation_partial_error(
     error: impl std::fmt::Display,
 ) -> McpError {
     internal_err(format!(
-        "Provider rotation for '{name}' partially succeeded: the provider issued a new credential and Phantom stored it in the local vault, but {failed_stage} failed. Provider cleanup was not attempted. Do not retry automatically: first reconcile the provider credential, local vault, Phantom token, and rotation metadata. Cause: {error}"
+        "Provider rotation for '{name}' partially succeeded: the provider issued a new credential, but {failed_stage} failed. Local and provider state may now differ; provider cleanup was not attempted. Do not retry automatically: first reconcile the provider credential, local vault, Phantom token, and rotation metadata. Cause: {error}"
     ))
 }
 
@@ -4686,7 +4686,11 @@ mod tests {
 
         assert!(error.message.contains("partially succeeded"));
         assert!(error.message.contains("changed concurrently"));
+        assert!(error
+            .message
+            .contains("Local and provider state may now differ"));
         assert!(error.message.contains("Do not retry automatically"));
+        assert!(!error.message.contains("stored it in the local vault"));
         assert!(!error.message.contains("provider-issued-new"));
         assert_eq!(
             phantom_vault::VaultBackend::retrieve(&vault, "TARGET")
@@ -4705,7 +4709,11 @@ mod tests {
 
         assert!(error.message.contains("partially succeeded"));
         assert!(error.message.contains("local vault persistence"));
+        assert!(error
+            .message
+            .contains("Local and provider state may now differ"));
         assert!(error.message.contains("Do not retry automatically"));
+        assert!(!error.message.contains("stored it in the local vault"));
         assert!(!error.message.contains("provider-issued-new"));
         assert_eq!(vault.store_calls.load(Ordering::SeqCst), 0);
     }
