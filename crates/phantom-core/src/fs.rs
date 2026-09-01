@@ -269,6 +269,7 @@ fn atomic_write_with_permissions(
     contents: &[u8],
     permissions: Option<std::fs::Permissions>,
 ) -> io::Result<()> {
+    ensure_real_parent(path)?;
     let dir = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,

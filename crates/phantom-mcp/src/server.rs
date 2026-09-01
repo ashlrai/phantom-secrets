@@ -5378,6 +5378,15 @@ mod tests {
                 "injected metadata write failure".to_string(),
             ))
         }
+
+        fn compare_and_swap_metadata_batch(
+            &self,
+            _changes: &[phantom_vault::MetadataCas],
+        ) -> phantom_core::error::Result<bool> {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "injected metadata write failure".to_string(),
+            ))
+        }
     }
 
     impl phantom_vault::VaultBackend for ConcurrentCreateVault {

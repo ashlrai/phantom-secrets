@@ -307,19 +307,21 @@ fn retrieve_required_secret(
     bare: &str,
     active_env: &str,
 ) -> Result<zeroize::Zeroizing<String>> {
-    match vault.retrieve(namespaced) {
+    match vault.retrieve_for_injection(namespaced) {
         Ok(value) => Ok(value),
         Err(phantom_core::error::PhantomError::SecretNotFound(_))
             if active_env == DEFAULT_ENV =>
         {
-            vault.retrieve(bare).map_err(|error| match error {
+            vault
+                .retrieve_for_injection(bare)
+                .map_err(|error| match error {
                 phantom_core::error::PhantomError::SecretNotFound(_) => anyhow::anyhow!(
                     "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'; refusing to launch the child"
                 ),
                 other => anyhow::anyhow!(
                     "Failed to read legacy session secret '{bare}' from the vault: {other}"
                 ),
-            })
+                })
         }
         Err(phantom_core::error::PhantomError::SecretNotFound(_)) => Err(anyhow::anyhow!(
             "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'; refusing to launch the child"

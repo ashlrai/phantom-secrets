@@ -722,6 +722,17 @@ impl VaultBackend for KeychainVault {
         }
     }
 
+    fn retrieve_for_injection(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
+        let _lock = acquire_project_lock(&self.project_id)?;
+        let metadata = load_meta_map(&self.project_id)?;
+        crate::traits::ensure_secret_injectable(name, metadata.get(name))?;
+        let value = self
+            .current_value_locked(name)?
+            .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
+        phantom_core::audit::log("vault.retrieve_for_injection", Some(name));
+        Ok(value)
+    }
+
     fn delete(&self, name: &str) -> Result<()> {
         let _lock = acquire_project_lock(&self.project_id)?;
         self.delete_locked(name)?;

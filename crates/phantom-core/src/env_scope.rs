@@ -46,9 +46,25 @@ pub fn read_active_env(project_dir: &Path) -> String {
 
 /// Write `env_name` as the active environment to `.phantom/env`.
 pub fn write_active_env(project_dir: &Path, env_name: &str) -> crate::error::Result<()> {
-    let dir = project_dir.join(".phantom");
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("env"), format!("{env_name}\n"))?;
+    let env_file = project_dir.join(".phantom").join("env");
+    let before = crate::fs::read_regular_file(&env_file)?;
+    write_active_env_if_unchanged(project_dir, before.as_deref(), env_name)
+}
+
+/// Atomically write the active environment only when the selector still has
+/// the exact reviewed before-image. The shared filesystem primitive rejects
+/// symlink/reparse targets and unsafe parent components on every platform.
+pub fn write_active_env_if_unchanged(
+    project_dir: &Path,
+    expected_before: Option<&[u8]>,
+    env_name: &str,
+) -> crate::error::Result<()> {
+    let env_file = project_dir.join(".phantom").join("env");
+    crate::fs::atomic_write_if_unchanged(
+        &env_file,
+        expected_before,
+        format!("{env_name}\n").as_bytes(),
+    )?;
     Ok(())
 }
 
@@ -165,5 +181,33 @@ mod tests {
         write_active_env(dir.path(), "staging").unwrap();
         assert_eq!(resolve_env(dir.path(), Some("prod")), "prod");
         assert_eq!(resolve_env(dir.path(), None), "staging");
+    }
+
+    #[test]
+    fn exact_active_env_write_rejects_concurrent_change() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_active_env(dir.path(), "dev").unwrap();
+        let before = crate::fs::read_regular_file(&dir.path().join(".phantom/env"))
+            .unwrap()
+            .unwrap();
+        write_active_env(dir.path(), "concurrent").unwrap();
+
+        assert!(write_active_env_if_unchanged(dir.path(), Some(&before), "prod").is_err());
+        assert_eq!(read_active_env(dir.path()), "concurrent");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_env_write_rejects_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".phantom")).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::write(&outside, "owner\n").unwrap();
+        symlink(&outside, dir.path().join(".phantom/env")).unwrap();
+
+        assert!(write_active_env(dir.path(), "prod").is_err());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "owner\n");
     }
 }

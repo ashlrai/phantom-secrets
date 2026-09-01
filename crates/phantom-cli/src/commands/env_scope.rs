@@ -9,10 +9,12 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::env_scope::{
     known_envs_from_keys, namespaced_key, resolve_env, split_key, validate_env_name,
-    write_active_env, DEFAULT_ENV,
+    write_active_env_if_unchanged, DEFAULT_ENV,
 };
 use phantom_vault::{InitFile, InitSecret, VaultBackend};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, IsTerminal, Write};
+use std::path::PathBuf;
 use zeroize::Zeroizing;
 
 #[derive(Debug)]
@@ -21,12 +23,26 @@ struct EnvironmentCopyPlan {
     copied_names: Vec<String>,
 }
 
+#[derive(Debug)]
+struct EnvironmentUsePlan {
+    project_dir: PathBuf,
+    config_path: PathBuf,
+    config_before: Vec<u8>,
+    env_before: Option<Vec<u8>>,
+    name: String,
+    effect: String,
+    challenge: String,
+}
+
 /// `phantom env use <name>` — set the active environment.
 pub fn run_use(name: &str) -> Result<()> {
-    validate_env_name(name).map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    let project_dir = std::env::current_dir()?;
-    write_active_env(&project_dir, name).context("Failed to write active environment")?;
+    let plan = prepare_environment_use(&std::env::current_dir()?, name)?;
+    let attached = std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal();
+    let mut input = std::io::BufReader::new(std::io::stdin().lock());
+    let mut output = std::io::stderr().lock();
+    apply_environment_use(&plan, attached, &mut input, &mut output)?;
 
     println!(
         "{} Active environment set to {}",
@@ -38,6 +54,85 @@ pub fn run_use(name: &str) -> Result<()> {
         "->".blue().bold(),
         name.cyan()
     );
+    Ok(())
+}
+
+fn prepare_environment_use(
+    project_dir: &std::path::Path,
+    name: &str,
+) -> Result<EnvironmentUsePlan> {
+    validate_env_name(name).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let project_dir = project_dir
+        .canonicalize()
+        .context("Failed to resolve the canonical project directory")?;
+    let config_path = project_dir.join(".phantom.toml");
+    let config_before = phantom_core::fs::read_regular_file(&config_path)
+        .context("Failed to safely snapshot .phantom.toml")?
+        .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run phantom init first."))?;
+    let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+        .context("Failed to load the exact .phantom.toml snapshot")?;
+    let env_path = project_dir.join(".phantom").join("env");
+    let env_before = phantom_core::fs::read_regular_file(&env_path)
+        .context("Failed to safely snapshot the active environment selector")?;
+    let project_digest = super::export_cmd::digest_path(&project_dir);
+    let config_digest = super::export_cmd::digest_bytes(&config_before);
+    let before_digest = env_before
+        .as_deref()
+        .map(super::export_cmd::digest_bytes)
+        .unwrap_or_else(|| "absent".to_string());
+    let effect = format!(
+        "Set active Phantom environment to '{name}' for project SHA-256 {project_digest} and local vault {} (config SHA-256 {config_digest}; selector before {before_digest})",
+        config.local_project_id()
+    );
+    let challenge = format!(
+        "USE PHANTOM ENV {name} PROJECT {project_digest} VAULT {} CONFIG {config_digest} BEFORE {before_digest}",
+        config.local_project_id()
+    );
+    Ok(EnvironmentUsePlan {
+        project_dir,
+        config_path,
+        config_before,
+        env_before,
+        name: name.to_string(),
+        effect,
+        challenge,
+    })
+}
+
+fn apply_environment_use(
+    plan: &EnvironmentUsePlan,
+    attached: bool,
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+) -> Result<()> {
+    if !attached {
+        anyhow::bail!(
+            "`phantom env use` requires attached stdin, stdout, and stderr terminals; the active environment was not changed"
+        );
+    }
+    writeln!(writer, "Persistent environment selection: {}", plan.effect)?;
+    writeln!(writer, "Approve only if this terminal is outside the requesting agent's authority; a same-user shell or agent-controlled PTY can automate this ceremony.")?;
+    write!(writer, "Type `{}` to continue: ", plan.challenge)?;
+    writer.flush()?;
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    if response.trim_end_matches(['\r', '\n']) != plan.challenge {
+        anyhow::bail!(
+            "Environment selection confirmation did not match exactly; the active environment was not changed"
+        );
+    }
+
+    let _lock = phantom_vault::acquire_project_transaction_lock(&plan.project_dir)
+        .context("Failed to acquire the project transaction lock")?;
+    let current_config = phantom_core::fs::read_regular_file(&plan.config_path)
+        .context("Failed to verify the .phantom.toml before-image")?;
+    if current_config.as_deref() != Some(plan.config_before.as_slice()) {
+        anyhow::bail!(
+            ".phantom.toml changed after environment selection was reviewed; the active environment was not changed"
+        );
+    }
+    write_active_env_if_unchanged(&plan.project_dir, plan.env_before.as_deref(), &plan.name)
+        .context("Failed to atomically update the active environment")?;
     Ok(())
 }
 
@@ -304,6 +399,86 @@ mod tests {
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use phantom_vault::file::FileVault;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn environment_use_plan(name: &str) -> (tempfile::TempDir, EnvironmentUsePlan) {
+        let dir = tempfile::tempdir().unwrap();
+        PhantomConfig::new_with_defaults("portable-env-use".to_string())
+            .save(&dir.path().join(".phantom.toml"))
+            .unwrap();
+        let plan = prepare_environment_use(dir.path(), name).unwrap();
+        (dir, plan)
+    }
+
+    #[test]
+    fn environment_use_headless_denial_makes_no_write() {
+        let (dir, plan) = environment_use_plan("prod");
+        let error = apply_environment_use(
+            &plan,
+            false,
+            &mut std::io::Cursor::new(Vec::<u8>::new()),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("requires attached"));
+        assert!(!dir.path().join(".phantom/env").exists());
+    }
+
+    #[test]
+    fn environment_use_mismatched_challenge_makes_no_write() {
+        let (dir, plan) = environment_use_plan("prod");
+        let error = apply_environment_use(
+            &plan,
+            true,
+            &mut std::io::Cursor::new(b"USE SOMETHING ELSE\n"),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("did not match exactly"));
+        assert!(!dir.path().join(".phantom/env").exists());
+    }
+
+    #[test]
+    fn environment_use_rejects_selector_drift_after_confirmation() {
+        let (dir, plan) = environment_use_plan("prod");
+        write_active_env_if_unchanged(dir.path(), None, "concurrent").unwrap();
+        let response = format!("{}\n", plan.challenge);
+        let error = apply_environment_use(
+            &plan,
+            true,
+            &mut std::io::Cursor::new(response.as_bytes()),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("atomically update"));
+        assert_eq!(
+            phantom_core::env_scope::read_active_env(dir.path()),
+            "concurrent"
+        );
+    }
+
+    #[test]
+    fn environment_use_rejects_config_drift_after_confirmation() {
+        let (dir, plan) = environment_use_plan("prod");
+        std::fs::write(
+            dir.path().join(".phantom.toml"),
+            b"[phantom]\nversion = \"1\"\nproject_id = \"changed\"\n",
+        )
+        .unwrap();
+        let response = format!("{}\n", plan.challenge);
+        let error = apply_environment_use(
+            &plan,
+            true,
+            &mut std::io::Cursor::new(response.as_bytes()),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed after"));
+        assert!(!dir.path().join(".phantom/env").exists());
+    }
 
     struct FailingCasVault {
         inner: FileVault,

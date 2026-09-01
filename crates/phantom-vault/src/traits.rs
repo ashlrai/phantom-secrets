@@ -26,6 +26,15 @@ pub trait VaultBackend: Send + Sync {
     /// secret is scrubbed from memory on drop — callers cannot forget to zeroize.
     fn retrieve(&self, name: &str) -> Result<Zeroizing<String>>;
 
+    /// Retrieve a secret for runtime injection after enforcing its lifecycle
+    /// access mode. Real backends override this method so the metadata check
+    /// and value read share one backend lock; the default remains fail-closed
+    /// for custom backends that expose lifecycle metadata.
+    fn retrieve_for_injection(&self, name: &str) -> Result<Zeroizing<String>> {
+        ensure_secret_injectable(name, self.get_metadata(name)?.as_ref())?;
+        self.retrieve(name)
+    }
+
     /// Delete a secret by name.
     fn delete(&self, name: &str) -> Result<()>;
 
@@ -230,4 +239,16 @@ pub trait VaultBackend: Send + Sync {
             replacement,
         }])
     }
+}
+
+pub(crate) fn ensure_secret_injectable(
+    name: &str,
+    metadata: Option<&SecretMetadata>,
+) -> Result<()> {
+    if metadata.is_some_and(|metadata| metadata.vault_mode.is_read_only()) {
+        return Err(phantom_core::error::PhantomError::VaultError(format!(
+            "secret '{name}' is read-only under its lifecycle policy; rotate or promote it before runtime injection"
+        )));
+    }
+    Ok(())
 }

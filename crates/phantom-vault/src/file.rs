@@ -198,6 +198,19 @@ impl VaultBackend for FileVault {
         Ok(zeroize::Zeroizing::new(value))
     }
 
+    fn retrieve_for_injection(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
+        let _lock = self.lock_file()?;
+        let data = self.load()?;
+        crate::traits::ensure_secret_injectable(name, data.metadata.get(name))?;
+        let value = data
+            .secrets
+            .get(name)
+            .cloned()
+            .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
+        phantom_core::audit::log("vault.retrieve_for_injection", Some(name));
+        Ok(zeroize::Zeroizing::new(value))
+    }
+
     fn delete(&self, name: &str) -> Result<()> {
         let _lock = self.lock_file()?;
         let mut data = self.load()?;
@@ -741,6 +754,30 @@ mod tests {
         assert!(a_entry.1.is_some(), "A should have metadata");
         let a_meta = a_entry.1.as_ref().unwrap();
         assert!(a_meta.expires_at.is_some());
+    }
+
+    #[test]
+    fn runtime_injection_rejects_read_only_and_rotation_restores_access() {
+        let (vault, _dir) = test_vault();
+        vault.store("API_KEY", "provider-secret").unwrap();
+        let mut metadata = vault.get_metadata("API_KEY").unwrap().unwrap();
+        metadata.vault_mode = crate::metadata::VaultMode::ReadOnly;
+        vault.set_metadata("API_KEY", metadata.clone()).unwrap();
+
+        assert_eq!(
+            vault.retrieve("API_KEY").unwrap().as_str(),
+            "provider-secret",
+            "read-only lifecycle mode must preserve explicit inspection access"
+        );
+        let error = vault.retrieve_for_injection("API_KEY").unwrap_err();
+        assert!(error.to_string().contains("read-only"));
+
+        metadata.record_rotation();
+        vault.set_metadata("API_KEY", metadata).unwrap();
+        assert_eq!(
+            vault.retrieve_for_injection("API_KEY").unwrap().as_str(),
+            "provider-secret"
+        );
     }
 
     #[test]

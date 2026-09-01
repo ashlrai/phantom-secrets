@@ -274,17 +274,19 @@ fn retrieve_required_default_secret(
     name: &str,
 ) -> Result<zeroize::Zeroizing<String>> {
     let namespaced = phantom_core::env_scope::namespaced_key(DEFAULT_ENV, name);
-    match vault.retrieve(&namespaced) {
+    match vault.retrieve_for_injection(&namespaced) {
         Ok(value) => Ok(value),
         Err(phantom_core::error::PhantomError::SecretNotFound(_)) => {
-            vault.retrieve(name).map_err(|error| match error {
+            vault
+                .retrieve_for_injection(name)
+                .map_err(|error| match error {
                 phantom_core::error::PhantomError::SecretNotFound(_) => anyhow::anyhow!(
                     "Protected dotenv key '{name}' has no vault entry for the default environment; refusing to start a partial proxy"
                 ),
                 other => anyhow::anyhow!(
                     "Failed to read legacy default secret '{name}' from the vault: {other}"
                 ),
-            })
+                })
         }
         Err(error) => Err(anyhow::anyhow!(
             "Failed to read default secret '{namespaced}' from the vault: {error}"
