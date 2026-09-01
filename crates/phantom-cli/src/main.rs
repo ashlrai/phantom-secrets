@@ -418,7 +418,7 @@ enum Commands {
         auto_rotate: bool,
     },
 
-    /// Regenerate phantom tokens (invalidates old ones)
+    /// Regenerate all phantom tokens after an exact attached-terminal challenge
     #[command(next_help_heading = "Maintenance")]
     Rotate {
         /// Sync a newly provider-rotated credential. Rejected for a local-only

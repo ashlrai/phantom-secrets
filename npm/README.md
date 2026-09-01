@@ -118,7 +118,7 @@ runtime `tools/list` response from the installed binary is canonical.
 | `phantom add <NAME>` | Create a new protected name in an initialized project; existing names are denied before value input and never replaced |
 | `phantom reveal <NAME>` | Intentionally disclose a stored value to the terminal or clipboard |
 | `phantom check [--staged]` | Scan selected content for unprotected secret candidates |
-| `phantom rotate` | Replace Phantom mappings; it does not rotate provider credentials |
+| `phantom rotate` | After an exact attached-terminal challenge, replace all Phantom mappings; headless use is denied and provider credentials are unchanged |
 | `phantom wrap [--only <scripts>]` | Wrap scripts selected by its heuristic or explicit filter, preserving `:raw` variants |
 | `phantom setup --client <client>` | Write local MCP configuration for a supported client |
 | `phantom cloud push` / `pull` | Transfer a client-encrypted personal-vault payload |

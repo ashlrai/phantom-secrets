@@ -120,6 +120,10 @@ Options: --clipboard (auto-clears after 30s). Attached terminals and exact typed
 
 ### phantom rotate
 Regenerate all persistent `phm_` mappings in .env. Real secrets in vault are unchanged; old mappings become invalid.
+Requires attached stdin, stdout, and stderr plus an exact challenge bound to the
+canonical project, exact config and dotenv snapshots, and sorted protected-name
+digest. Headless use fails before vault access or mutation; post-approval drift
+aborts without writing.
 `--sync` is a deprecated compatibility flag and is rejected. Provider-side
 credentials are unchanged; rotate them in the provider's trusted interface and
 add the replacement credential from a trusted terminal.
@@ -681,7 +685,7 @@ Do not commit:
 7. Team onboarding: phantom env generates .env.example with placeholders
 8. CI/CD: use phantom check in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
 9. Pre-commit safety: `phantom check --staged` checks staged dotenv content with Phantom's heuristics and added lines in other staged files for a bounded credential-prefix set
-10. Rotate mappings: phantom rotate remaps local placeholders. Provider-side credential rotation remains hard-denied; rotate at the provider and add the replacement credential from a trusted terminal.
+10. Rotate mappings from an attached trusted terminal: phantom rotate requires an exact snapshot-bound challenge before remapping every local placeholder; headless calls are denied. Provider-side credential rotation remains hard-denied; rotate at the provider and add the replacement credential from a trusted terminal.
 11. Monorepo: phantom init in each subdirectory — each gets its own vault and config
 12. Multi-IDE team: same MCP server works across Claude Code, Cursor, Windsurf, and Codex
 13. Migrate from Doppler/Infisical/dotenvx/1Password: phantom import --from <source> --file <path>

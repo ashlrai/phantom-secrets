@@ -192,11 +192,15 @@ explicit, non-atomic two-command workflow.
 
 ### `phantom rotate`
 
-Regenerates all project phantom tokens without changing the real secrets. A
-`phm_` value is not accepted by the upstream provider and client requests never
-resolve it. Still rotate exposed mappings: unmanaged dotenv entries remain
-possible, and a process with the active proxy bearer can invoke configured
-provider routes using route-owned authentication.
+Regenerates all project phantom tokens without changing the real secrets. This
+invalidates every current mapping, so the command requires attached stdin,
+stdout, and stderr plus an exact typed challenge bound to the canonical project,
+exact config and managed-dotenv snapshots, and the sorted protected-name digest.
+Headless calls fail before vault access or mutation, and state drift after
+approval aborts the write. A `phm_` value is not accepted by the upstream
+provider and client requests never resolve it. Still rotate exposed mappings:
+unmanaged dotenv entries remain possible, and a process with the active proxy
+bearer can invoke configured provider routes using route-owned authentication.
 
 ```bash
 phantom rotate

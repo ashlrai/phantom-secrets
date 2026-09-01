@@ -4,7 +4,264 @@ use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::TokenMap;
 use phantom_vault::VaultBackend;
+use sha2::{Digest, Sha256};
+use std::io::{BufRead, IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
+
+const MAX_TERMINAL_PATH_BYTES: usize = 4096;
+const MAX_ROTATE_CHALLENGE_BYTES: usize = 12 * 1024;
+const MAX_RENDERED_NAMES_BYTES: usize = 4096;
+
+struct LocalTokenRemapPlan {
+    project_dir: PathBuf,
+    config_path: PathBuf,
+    config_before: Vec<u8>,
+    config_digest: String,
+    local_project_id: String,
+    env_path: PathBuf,
+    env_before: Vec<u8>,
+    env_digest: String,
+    names: Vec<String>,
+    names_digest: String,
+}
+
+impl LocalTokenRemapPlan {
+    fn challenge(&self) -> Result<String> {
+        let project = terminal_safe_path(&self.project_dir, "project")?;
+        let dotenv = terminal_safe_path(&self.env_path, "managed dotenv")?;
+        let challenge = format!(
+            "REMAP {} PHANTOM TOKENS IN {} ID {} CONFIG {} DOTENV {} DIGEST {} NAMES {}",
+            self.names.len(),
+            project,
+            self.local_project_id,
+            self.config_digest,
+            dotenv,
+            self.env_digest,
+            self.names_digest
+        );
+        if challenge.len() > MAX_ROTATE_CHALLENGE_BYTES {
+            anyhow::bail!(
+                "Cannot render a bounded token-remap challenge for these project paths; no state changed."
+            );
+        }
+        Ok(challenge)
+    }
+
+    fn commit(&self) -> Result<()> {
+        let _transaction_lock = phantom_vault::acquire_project_transaction_lock(&self.project_dir)
+            .with_context(|| {
+                format!(
+                    "Failed to acquire transaction lock for {}",
+                    self.project_dir.display()
+                )
+            })?;
+
+        let current_project = std::env::current_dir()?
+            .canonicalize()
+            .context("Failed to re-resolve project directory before token remap")?;
+        if current_project != self.project_dir {
+            anyhow::bail!(
+                "Cannot remap Phantom tokens: the current project changed after approval; no Phantom write was committed."
+            );
+        }
+
+        let config_current = phantom_core::fs::read_regular_file(&self.config_path)?
+            .context("Project config disappeared after approval")?;
+        if config_current != self.config_before {
+            anyhow::bail!(
+                "Cannot remap Phantom tokens: .phantom.toml changed after approval; no Phantom write was committed."
+            );
+        }
+        let config = PhantomConfig::load_from_bytes(&self.config_path, &config_current)
+            .context("Failed to reload exact .phantom.toml snapshot before token remap")?;
+        if config.local_project_id() != self.local_project_id {
+            anyhow::bail!(
+                "Cannot remap Phantom tokens: the local project identity changed after approval; no Phantom write was committed."
+            );
+        }
+
+        let vault = phantom_vault::try_create_vault(&self.local_project_id)
+            .context("Failed to re-open vault before token remap")?;
+        self.commit_with_verified_config(&config, vault.as_ref())
+    }
+
+    fn commit_with_verified_config(
+        &self,
+        config: &PhantomConfig,
+        vault: &dyn VaultBackend,
+    ) -> Result<()> {
+        let names = sorted_names(vault)?;
+        if names != self.names || names_digest(&names) != self.names_digest {
+            anyhow::bail!(
+                "Cannot remap Phantom tokens: the protected-name set changed after approval; no Phantom write was committed."
+            );
+        }
+
+        let resolved =
+            phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, config, &names)?;
+        let env_current = phantom_core::fs::read_regular_file(&resolved.path)?
+            .context("Managed dotenv disappeared after approval")?;
+        let env_path = resolved
+            .path
+            .canonicalize()
+            .context("Failed to re-resolve managed dotenv before token remap")?;
+        if env_path != self.env_path || env_current != self.env_before {
+            anyhow::bail!(
+                "Cannot remap Phantom tokens: the managed dotenv changed after approval; no Phantom write was committed."
+            );
+        }
+
+        remap_phantom_tokens_from_snapshot(&self.env_path, &self.names, &self.env_before, || {})
+    }
+}
+
+fn terminal_safe_path(path: &Path, label: &str) -> Result<String> {
+    let rendered = path.to_str().with_context(|| {
+        format!("Cannot render non-UTF-8 {label} path in a trusted-terminal challenge")
+    })?;
+    if rendered.chars().any(char::is_control) {
+        anyhow::bail!(
+            "Cannot render control characters from the {label} path in a trusted-terminal challenge"
+        );
+    }
+    let rendered = rendered
+        .chars()
+        .flat_map(char::escape_default)
+        .collect::<String>();
+    if rendered.len() > MAX_TERMINAL_PATH_BYTES {
+        anyhow::bail!(
+            "Cannot render {label} path longer than {MAX_TERMINAL_PATH_BYTES} bytes in a trusted-terminal challenge"
+        );
+    }
+    Ok(rendered)
+}
+
+fn digest_bytes(domain: &[u8], bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(domain);
+    digest.update(bytes);
+    hex::encode(digest.finalize())
+}
+
+fn names_digest(names: &[String]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"phantom-local-token-remap-names-v1\0");
+    for name in names {
+        digest.update((name.len() as u64).to_be_bytes());
+        digest.update(name.as_bytes());
+    }
+    hex::encode(digest.finalize())
+}
+
+fn sorted_names(vault: &dyn VaultBackend) -> Result<Vec<String>> {
+    let mut names = vault.list().context("Failed to list protected names")?;
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+fn require_attached_rotate_terminals() -> Result<()> {
+    if !std::io::stdin().is_terminal()
+        || !std::io::stdout().is_terminal()
+        || !std::io::stderr().is_terminal()
+    {
+        anyhow::bail!(
+            "`phantom rotate` requires attached stdin, stdout, and stderr terminals and cannot run headlessly. No vault values were read and no project file was changed."
+        );
+    }
+    Ok(())
+}
+
+fn prepare_local_token_remap(project_dir: &Path) -> Result<Option<LocalTokenRemapPlan>> {
+    let project_dir = project_dir
+        .canonicalize()
+        .context("Failed to resolve project directory")?;
+    let config_path = project_dir.join(".phantom.toml");
+    let config_before = phantom_core::fs::read_regular_file(&config_path)?
+        .context("No .phantom.toml found. Run `phantom init` first.")?;
+    let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+        .context("Failed to load exact .phantom.toml snapshot")?;
+    let local_project_id = config.local_project_id().to_string();
+    let vault =
+        phantom_vault::try_create_vault(&local_project_id).context("Failed to initialize vault")?;
+    let names = sorted_names(vault.as_ref())?;
+    if names.is_empty() {
+        return Ok(None);
+    }
+
+    let resolved = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &names)?;
+    let env_before = phantom_core::fs::read_regular_file(&resolved.path)?
+        .context("Managed dotenv does not exist")?;
+    let env_path = resolved
+        .path
+        .canonicalize()
+        .context("Failed to resolve managed dotenv")?;
+    validate_protected_placeholders(&env_path, &names, &env_before)?;
+
+    Ok(Some(LocalTokenRemapPlan {
+        project_dir,
+        config_path,
+        config_digest: digest_bytes(b"phantom-local-token-remap-config-v1\0", &config_before),
+        config_before,
+        local_project_id,
+        env_path,
+        env_digest: digest_bytes(b"phantom-local-token-remap-dotenv-v1\0", &env_before),
+        env_before,
+        names_digest: names_digest(&names),
+        names,
+    }))
+}
+
+fn require_trusted_terminal_rotate_with(
+    plan: &LocalTokenRemapPlan,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<()> {
+    let challenge = plan.challenge()?;
+    let project = terminal_safe_path(&plan.project_dir, "project")?;
+    let dotenv = terminal_safe_path(&plan.env_path, "managed dotenv")?;
+    let escaped_names = plan
+        .names
+        .iter()
+        .map(|name| {
+            name.chars()
+                .flat_map(char::escape_default)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let rendered_names = serde_json::to_string(&escaped_names)?;
+    let rendered_names = if rendered_names.len() <= MAX_RENDERED_NAMES_BYTES {
+        rendered_names
+    } else {
+        format!(
+            "<{} names; review sorted-name digest {} in the challenge>",
+            plan.names.len(),
+            plan.names_digest
+        )
+    };
+    writeln!(
+        output,
+        "This invalidates every current persistent phm_ mapping for the project. Provider credentials are unchanged.\nProject: {}\nManaged dotenv: {}\nProtected names (sorted, JSON escaped): {}\nType this exact challenge to continue:\n{}",
+        project,
+        dotenv,
+        rendered_names,
+        challenge
+    )?;
+    write!(output, "> ")?;
+    output.flush()?;
+    let mut response = String::new();
+    (&mut *input)
+        .take((challenge.len() + 2) as u64)
+        .read_line(&mut response)
+        .context("Failed to read trusted-terminal token-remap confirmation")?;
+    if response.trim_end_matches(['\r', '\n']) != challenge {
+        anyhow::bail!(
+            "Token-remap confirmation did not match exactly. No vault value was read and no project file was changed."
+        );
+    }
+    Ok(())
+}
 
 /// Remap all local phantom tokens without changing provider credentials.
 ///
@@ -23,36 +280,29 @@ pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()>
         );
     }
 
+    // This check deliberately precedes config, dotenv, and vault access. An
+    // agent-controlled headless process never gets far enough to exercise a
+    // backend or alter token availability.
+    require_attached_rotate_terminals()?;
     let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())
-        .context("Failed to initialize vault")?;
-    let names = vault.list().context("Failed to list secrets")?;
-    let env_path =
-        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &names)?.path;
-
-    if names.is_empty() {
+    let Some(plan) = prepare_local_token_remap(&project_dir)? else {
         println!("{} No Phantom tokens to remap.", "!".yellow().bold());
         return Ok(());
-    }
+    };
 
-    remap_phantom_tokens(&env_path, &names)?;
-    for name in &names {
+    require_trusted_terminal_rotate_with(
+        &plan,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stderr().lock(),
+    )?;
+    plan.commit()?;
+    for name in &plan.names {
         phantom_core::audit::log("secret.token_remapped", Some(name));
     }
     println!(
         "{} Remapped {} Phantom token(s) in .env. Provider credentials and expiry metadata are unchanged.",
         "ok".green().bold(),
-        names.len()
+        plan.names.len()
     );
 
     Ok(())
@@ -111,17 +361,19 @@ fn remap_phantom_tokens_locked_with(
     names: &[String],
     before_commit: impl FnOnce(),
 ) -> Result<()> {
-    if !env_path.exists() {
-        anyhow::bail!(
+    let before = phantom_core::fs::read_regular_file(env_path)?.with_context(|| {
+        format!(
             "Cannot remap Phantom tokens: {} does not exist.",
             env_path.display()
-        );
-    }
+        )
+    })?;
+    remap_phantom_tokens_from_snapshot(env_path, names, &before, before_commit)
+}
 
-    let before = std::fs::read(env_path)
-        .with_context(|| format!("Failed to snapshot {}", env_path.display()))?;
-    let dotenv = DotenvFile::parse_file(env_path)
-        .with_context(|| format!("Failed to parse {}", env_path.display()))?;
+fn validate_protected_placeholders(env_path: &Path, names: &[String], before: &[u8]) -> Result<()> {
+    let content = std::str::from_utf8(before)
+        .with_context(|| format!("Failed to parse {} as UTF-8", env_path.display()))?;
+    let dotenv = DotenvFile::parse_str(content);
     for name in names {
         let entry = dotenv
             .entries()
@@ -140,6 +392,19 @@ fn remap_phantom_tokens_locked_with(
             );
         }
     }
+    Ok(())
+}
+
+fn remap_phantom_tokens_from_snapshot(
+    env_path: &Path,
+    names: &[String],
+    before: &[u8],
+    before_commit: impl FnOnce(),
+) -> Result<()> {
+    validate_protected_placeholders(env_path, names, before)?;
+    let content = std::str::from_utf8(before)
+        .with_context(|| format!("Failed to parse {} as UTF-8", env_path.display()))?;
+    let dotenv = DotenvFile::parse_str(content);
 
     let mut token_map = TokenMap::new();
     for name in names {
@@ -152,16 +417,13 @@ fn remap_phantom_tokens_locked_with(
     originals.clear();
 
     before_commit();
-    let current = std::fs::read(env_path)
-        .with_context(|| format!("Failed to verify {} before commit", env_path.display()))?;
-    if current != before {
-        anyhow::bail!(
-            "Cannot remap Phantom tokens: {} changed after it was read; no Phantom write was committed.",
-            env_path.display()
-        );
-    }
-    phantom_core::fs::atomic_write(env_path, rewritten.as_bytes())
-        .with_context(|| format!("Failed to atomically rewrite {}", env_path.display()))?;
+    phantom_core::fs::atomic_write_if_unchanged(env_path, Some(before), rewritten.as_bytes())
+        .with_context(|| {
+            format!(
+                "Cannot remap Phantom tokens because {} changed after it was read; no Phantom write was committed",
+                env_path.display()
+            )
+        })?;
     Ok(())
 }
 
@@ -900,6 +1162,175 @@ mod token_remap_tests {
     use phantom_vault::SecretMetadata;
     use tempfile::tempdir;
     use zeroize::Zeroizing;
+
+    fn sample_plan() -> LocalTokenRemapPlan {
+        let project_dir = PathBuf::from("/canonical/project");
+        let config_before = b"[phantom]\nversion = \"1\"\n".to_vec();
+        let env_before =
+            format!("A=phm_{}\nB=phm_{}\n", "a".repeat(64), "b".repeat(64)).into_bytes();
+        let names = vec!["A".to_string(), "B".to_string()];
+        LocalTokenRemapPlan {
+            config_path: project_dir.join(".phantom.toml"),
+            config_digest: digest_bytes(b"phantom-local-token-remap-config-v1\0", &config_before),
+            config_before,
+            local_project_id: "local-project-id".to_string(),
+            env_path: project_dir.join(".env"),
+            env_digest: digest_bytes(b"phantom-local-token-remap-dotenv-v1\0", &env_before),
+            env_before,
+            names_digest: names_digest(&names),
+            names,
+            project_dir,
+        }
+    }
+
+    struct ListOnlyVault {
+        names: Vec<String>,
+    }
+
+    impl VaultBackend for ListOnlyVault {
+        fn store(&self, _name: &str, _value: &str) -> PhantomResult<()> {
+            unreachable!("token-remap verification must not store a vault value")
+        }
+        fn retrieve(&self, _name: &str) -> PhantomResult<Zeroizing<String>> {
+            unreachable!("token-remap verification must not retrieve a vault value")
+        }
+        fn delete(&self, _name: &str) -> PhantomResult<()> {
+            unreachable!("token-remap verification must not delete a vault value")
+        }
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            Ok(self.names.clone())
+        }
+        fn backend_name(&self) -> &str {
+            "list-only"
+        }
+    }
+
+    fn filesystem_plan() -> (tempfile::TempDir, LocalTokenRemapPlan, PhantomConfig) {
+        let dir = tempdir().unwrap();
+        let project_dir = dir.path().canonicalize().unwrap();
+        let config_path = project_dir.join(".phantom.toml");
+        PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&project_dir))
+            .save(&config_path)
+            .unwrap();
+        let config_before = phantom_core::fs::read_regular_file(&config_path)
+            .unwrap()
+            .unwrap();
+        let config = PhantomConfig::load_from_bytes(&config_path, &config_before).unwrap();
+        let env_path = project_dir.join(".env");
+        let env_before =
+            format!("A=phm_{}\nB=phm_{}\n", "a".repeat(64), "b".repeat(64)).into_bytes();
+        std::fs::write(&env_path, &env_before).unwrap();
+        let env_path = env_path.canonicalize().unwrap();
+        let names = vec!["A".to_string(), "B".to_string()];
+        let plan = LocalTokenRemapPlan {
+            project_dir,
+            config_path,
+            config_digest: digest_bytes(b"phantom-local-token-remap-config-v1\0", &config_before),
+            config_before,
+            local_project_id: config.local_project_id().to_string(),
+            env_path,
+            env_digest: digest_bytes(b"phantom-local-token-remap-dotenv-v1\0", &env_before),
+            env_before,
+            names_digest: names_digest(&names),
+            names,
+        };
+        (dir, plan, config)
+    }
+
+    #[test]
+    fn trusted_terminal_challenge_is_exact_and_snapshot_bound() {
+        let plan = sample_plan();
+        let challenge = plan.challenge().unwrap();
+        let mut input = std::io::Cursor::new(format!("{challenge}\n"));
+        let mut output = Vec::new();
+        require_trusted_terminal_rotate_with(&plan, &mut input, &mut output).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains(&challenge));
+        assert!(rendered.contains("Protected names (sorted, JSON escaped): [\"A\",\"B\"]"));
+
+        let mut changed_config = sample_plan();
+        changed_config.config_before.push(b'#');
+        changed_config.config_digest = digest_bytes(
+            b"phantom-local-token-remap-config-v1\0",
+            &changed_config.config_before,
+        );
+        assert_ne!(challenge, changed_config.challenge().unwrap());
+
+        let mut changed_dotenv = sample_plan();
+        changed_dotenv.env_before.push(b'\n');
+        changed_dotenv.env_digest = digest_bytes(
+            b"phantom-local-token-remap-dotenv-v1\0",
+            &changed_dotenv.env_before,
+        );
+        assert_ne!(challenge, changed_dotenv.challenge().unwrap());
+
+        let mut changed_names = sample_plan();
+        changed_names.names.push("C".to_string());
+        changed_names.names_digest = names_digest(&changed_names.names);
+        assert_ne!(challenge, changed_names.challenge().unwrap());
+    }
+
+    #[test]
+    fn trusted_terminal_challenge_rejects_non_exact_response() {
+        let plan = sample_plan();
+        let mut input = std::io::Cursor::new(format!("{} \n", plan.challenge().unwrap()));
+        let error =
+            require_trusted_terminal_rotate_with(&plan, &mut input, &mut Vec::new()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("confirmation did not match exactly"));
+    }
+
+    #[test]
+    fn trusted_terminal_challenge_rejects_control_bearing_paths() {
+        let mut plan = sample_plan();
+        plan.project_dir = PathBuf::from("/tmp/project\nFORGED CHALLENGE");
+        let error = plan.challenge().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("control characters from the project path"));
+
+        let mut plan = sample_plan();
+        plan.env_path = PathBuf::from("/tmp/.env\u{1b}[2J");
+        let error = plan.challenge().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("control characters from the managed dotenv path"));
+    }
+
+    #[test]
+    fn approved_plan_rejects_name_set_drift_before_dotenv_mutation() {
+        let (_dir, plan, config) = filesystem_plan();
+        let dotenv_before = std::fs::read(&plan.env_path).unwrap();
+        let error = plan
+            .commit_with_verified_config(
+                &config,
+                &ListOnlyVault {
+                    names: vec!["A".to_string(), "C".to_string()],
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("protected-name set changed"));
+        assert_eq!(std::fs::read(&plan.env_path).unwrap(), dotenv_before);
+    }
+
+    #[test]
+    fn approved_plan_rejects_dotenv_drift_and_preserves_other_writer() {
+        let (_dir, plan, config) = filesystem_plan();
+        let concurrent =
+            format!("A=phm_{}\nB=phm_{}\n", "c".repeat(64), "d".repeat(64)).into_bytes();
+        std::fs::write(&plan.env_path, &concurrent).unwrap();
+        let error = plan
+            .commit_with_verified_config(
+                &config,
+                &ListOnlyVault {
+                    names: plan.names.clone(),
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("managed dotenv changed"));
+        assert_eq!(std::fs::read(&plan.env_path).unwrap(), concurrent);
+    }
 
     #[test]
     fn remap_changes_only_requested_protected_placeholder() {

@@ -349,7 +349,10 @@ What to do:
 1. Note the tampered line numbers from the output: `phantom audit verify` prints them to stderr.
 2. Compare against a backup copy if available.
 3. Treat the log as unreliable for the period covered by tampered entries.
-4. If you suspect a security incident, revoke affected secrets via `phantom rotate` and re-add them.
+4. If you suspect a security incident, revoke affected credentials in each
+   upstream provider, then store replacements through Phantom's trusted-terminal
+   workflow. `phantom rotate` only invalidates local `phm_` mappings and does not
+   revoke or replace provider credentials.
 
 Note: entries written before HMAC chaining was introduced (pre-PR #62) are counted as `legacy` in the verify output and do not fail the check.
 
