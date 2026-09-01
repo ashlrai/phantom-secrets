@@ -215,12 +215,14 @@ pub struct CloudPushParams {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct CloudPullParams {
-    /// Overwrite existing local secrets (default: false)
+    /// Declare overwrite of existing local secrets (default: false). This does
+    /// not bypass confirmation or out-of-band approval. With false, skipped
+    /// entries retain the prior merge base and block push until reconciliation.
     #[serde(default)]
     pub force: bool,
     /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. A pull writes entries into the local vault
-    /// and (with force=true) overwrites existing values.
+    /// before invoking this tool. A pull writes entries into the local vault;
+    /// force declares which reviewed entries may be overwritten.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
@@ -778,15 +780,16 @@ pub struct RotationScheduleNextParams {
 ///
 /// Scans the vault, identifies secrets whose TTL has expired, sets
 /// `vault_mode = ReadOnly` on each, and returns a list of affected secrets.
-/// This is the "demotion" step that prevents stale credentials from being
-/// injected by `phantom exec`.
+/// This is the demotion step that blocks future vault retrieval and new
+/// `phantom exec`/foreground `phantom start` mapped-secret preflight. It does
+/// not recall values already injected into or cached by running processes.
 ///
 /// Requires `confirm: true` because it writes metadata.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ApplyExpiryPolicyParams {
     /// Must be `true`.  The caller must obtain user consent before demoting
-    /// secrets to read-only mode, as it will break any running process that
-    /// relies on those secrets being injected by `phantom exec`.
+    /// secrets to read-only mode. New retrieval and process preflight fail;
+    /// already injected or cached values are not recalled.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.

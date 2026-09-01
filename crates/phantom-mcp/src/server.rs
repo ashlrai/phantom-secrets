@@ -642,9 +642,9 @@ impl PhantomMcpServer {
         ))
     }
 
-    /// Remove a secret from the vault.
+    /// Remove a secret and its managed local ownership records.
     #[tool(
-        description = "Remove a secret from the Phantom vault by name. DESTRUCTIVE — the secret is permanently deleted (after a successful cloud pull it is recoverable, otherwise not). Requires `confirm: true`; the agent must ask the user for explicit consent before calling. See the `confirm` parameter docs for the threat model."
+        description = "Transactionally remove a secret's vault value, lifecycle configuration, and exact managed-dotenv mapping. DESTRUCTIVE — a successful removal is recoverable only from a separately retained backup. Uses exact before-images and rolls back only transaction-owned changes. Requires `confirm: true` plus an out-of-band `approval_token`; review the exact value-blind effect before approval."
     )]
     fn phantom_remove_secret(
         &self,
@@ -1130,7 +1130,7 @@ impl PhantomMcpServer {
 
     /// Pull vault from Phantom Cloud.
     #[tool(
-        description = "Pull vault from Phantom Cloud to local machine. Decrypts client-side. Use force=true to overwrite existing secrets. DESTRUCTIVE — writes entries into the local vault and (with force=true) overwrites values. Requires `confirm: true`; the agent must ask the user for explicit consent before calling."
+        description = "Pull and decrypt a personal-vault snapshot from Phantom Cloud. DESTRUCTIVE — writes local vault entries; force=true declares overwrites but never bypasses approval. With force=false, existing entries are skipped; any partial result preserves the prior merge base, records a durable reconciliation requirement, and blocks cloud push until a fully reconciled pull. Requires `confirm: true` plus an out-of-band `approval_token`."
     )]
     async fn phantom_cloud_pull(
         &self,
@@ -4375,8 +4375,8 @@ impl PhantomMcpServer {
     #[tool(
         description = "Scan the vault, apply read-only demotion to secrets whose TTL has expired, \
             and (optionally) re-promote secrets that were demoted but have since been rotated. \
-            This is the background enforcement step that prevents stale credentials from being \
-            injected by `phantom exec`. \
+            This blocks future vault retrieval and new `phantom exec`/foreground `phantom start` \
+            mapped-secret preflight; it does not recall values already injected or cached. \
             Returns: { demoted: [{ name, expires_at, secs_overdue }], \
             promoted: [{ name }], skipped_count, total_scanned }. \
             Requires confirm:true because it writes vault metadata."

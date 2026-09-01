@@ -105,7 +105,8 @@ export default function ProjectDetailClient() {
           </li>
           <li>
             <code className="font-mono text-blue-b">phantom reveal &lt;KEY&gt;</code>{" "}
-            — print one secret value
+            — from an attached trusted terminal, review and type the exact
+            challenge before showing one value
           </li>
           <li>
             <code className="font-mono text-blue-b">phantom rotate</code> —
@@ -113,7 +114,8 @@ export default function ProjectDetailClient() {
           </li>
           <li>
             <code className="font-mono text-blue-b">phantom cloud pull</code>{" "}
-            — download the latest version into your local vault
+            — from an attached trusted terminal, review the exact pull; a
+            partial non-forced pull blocks push until full reconciliation
           </li>
         </ul>
       </section>

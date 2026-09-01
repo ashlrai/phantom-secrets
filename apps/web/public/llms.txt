@@ -69,11 +69,11 @@ Read-only, or read-only by default where noted:
 - `phantom_check` — scan supported dotenv files; parameter: `runtime` only (the CLI separately supports `phantom check --staged`)
 - `phantom_doctor` — diagnostic checks; parameters: `fix`, `confirm`, `approval_token`, with both gates required only for `fix=true`
 - `phantom_why` — explain a token's origin; parameter: `key`
-- `phantom_cloud_status` — cloud sync state
 - `phantom_sync` — preview platform sync; parameters: optional `platform`, optional `project_id`
 
 Init / scaffolding (mutating; require `confirm` and `approval_token`):
-- `phantom_init` — parameters: `env_path`, `confirm`, `approval_token`
+- `phantom_init` — exact-before transaction across config, dotenv, gitignore,
+  hook, client files, and vault; parameters: `env_path`, `confirm`, `approval_token`
 - `phantom_env` — parameters: `output`, `confirm`, `approval_token`; writes an env example file
 - `phantom_wrap` — parameters: `only`, `skip`, `confirm`, `approval_token`; selectively wraps runtime/build `package.json` scripts and leaves test, lint, type, and format scripts unchanged
 - `phantom_unwrap` — parameters: `confirm`, `approval_token`; restores scripts from `:raw` variants
@@ -82,17 +82,30 @@ Init / scaffolding (mutating; require `confirm` and `approval_token`):
 
 Other mutating tools (also require `confirm` and `approval_token`):
 - `phantom_add_secret_interactive`: `name`, `confirm`, `approval_token`
-- `phantom_remove_secret`: `name`, `confirm`, `approval_token`; `phantom_rotate`: `confirm`, `approval_token`
-- `phantom_cloud_push`: `confirm`, `approval_token`; `phantom_cloud_pull`: `force`, `confirm`, `approval_token`
-- `phantom_copy_secret`: `name`, `target_dir`, optional `rename`, `confirm`, `approval_token`
+- `phantom_remove_secret`: exact vault/lifecycle/managed-dotenv transaction;
+  `name`, `confirm`, `approval_token`; `phantom_rotate`: `confirm`, `approval_token`
+- `phantom_cloud_push`: `confirm`, `approval_token`; `phantom_cloud_pull`:
+  `force`, `confirm`, `approval_token`. A non-forced partial pull preserves the
+  prior merge base and blocks push until full reconciliation.
+- `phantom_copy_secret`: refuses an existing target and transactionally commits
+  the target vault/config/dotenv mapping; `name`, `target_dir`, optional
+  `rename`, `confirm`, `approval_token`
+- `phantom_cloud_status`: authenticated provider read; `confirm`, `approval_token`
+
+Expiry enforcement: `phantom_apply_expiry_policy` requires both gates and
+demotes expired entries to `VaultMode::ReadOnly`; vault retrieval and
+`phantom exec`/foreground `phantom start` mapped-secret preflight then fail until
+a verified lifecycle promotion restores access. Already injected or cached
+values are not recalled.
 
 Teams (multi-developer fixed-membership shared vaults — planned Pro pilot):
 - Current vault access is member-wide: every team member can read and write the shared vault; roles do not provide per-vault access control.
-- `phantom_team_list` — read-only, list teams the user belongs to
-- `phantom_team_members` — read-only; `team_id` plus optional, ignored `confirm` and `approval_token` fields exposed by its shared schema
+- `phantom_team_list` — authenticated provider read; `confirm`, `approval_token`
+- `phantom_team_members` — authenticated provider read; `team_id`, `confirm`, `approval_token`
 - `phantom_team_key_publish` — `team_id`, `confirm`, `approval_token`; registers the user's X25519 pubkey (private key stays in the OS keychain)
 - `phantom_team_create` — `name`, `confirm`, `approval_token`; the authenticated creator becomes owner
-- `phantom_team_invite` — `team_id`, `github_login`, `role`, `confirm`, `approval_token`; invitation management is owner/admin-gated
+- `phantom_team_invite` — `team_id`, `github_login`, `role` (`member` or
+  `admin`), `confirm`, `approval_token`; invitation management is owner/admin-gated
 - `phantom_team_vault_push`, `phantom_team_vault_pull` — each takes `team_id`, `confirm`, `approval_token`. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305). Server only stores ciphertext.
 
 Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control. Pro is a planned hosted plan, not a generally purchasable or commissioned entitlement evidenced by this repository.
@@ -112,8 +125,19 @@ Recently-added flags worth knowing:
 - `phantom list --json` emits a JSON array of `{name, detected_service}` for scripting; values are never included.
 - `phantom sync --only PATTERN` (repeatable; OR-ed) limits which keys get pushed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`.
 - `phantom check --staged` reads from the git index (including staged `.env` files) and is suitable for pre-commit hooks.
-- `phantom export` creates a new encrypted backup using a hidden prompt; `--passphrase-file` supports bounded private-file automation. Plaintext export and argv passphrases are disabled.
-- `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>` imports secrets from a competitor export file. Use `--force` to overwrite existing entries.
+- `phantom export` requires attached stdin/stdout/stderr, an exact typed
+  challenge, and a hidden passphrase prompt. Export `--passphrase-file`,
+  plaintext export, argv passphrases, existing targets, symlinks, and output
+  paths outside the project are rejected.
+- `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>`
+  requires attached stdin/stdout/stderr and an exact typed import plan before
+  secrets are committed. `--force` declares overwrites but never bypasses the
+  ceremony. Encrypted-backup passphrase files are allowed only on non-Windows
+  systems and do not make import headless.
+- `phantom login`, `logout`, cloud status/push/pull, team reads/mutations, remove,
+  validation/schedule/expiry mutations, closed-catalog browser opens, and an
+  eligible standalone upgrade require their own exact trusted-terminal
+  ceremonies. Do not automate them from an agent-controlled shell or PTY.
 - `phantom audit show [--last N] [--op OP] [--name NAME] [--json]` — print recent audit events.
 - `phantom audit tail [--op OP] [--name NAME]` — follow the audit log live.
 - `phantom audit path` — print the absolute path to the log file.

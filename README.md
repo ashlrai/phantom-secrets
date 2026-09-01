@@ -260,6 +260,9 @@ decrypted secret values; endpoint, client, account, and OS-keychain security
 remain part of the trust boundary. The cloud encryption key is generated and
 stored in the local OS keychain. Phantom does not currently ship key transfer or
 recovery, so account sign-in without that key cannot decrypt this backup.
+Login, logout, cloud push/pull, and browser open are not headless agent actions:
+run them with stdin, stdout, and stderr attached to a terminal outside the
+requesting agent's authority and complete each fresh exact typed challenge.
 
 ```bash
 $ phantom login
@@ -291,6 +294,10 @@ service path stores ciphertext plus per-member encrypted key shares. Team roles
 gate invitation management, but all members can read and write the shared vault;
 member removal and atomic offboarding rotation are not shipped. Treat this as a
 pilot capability until the hosted service and account entitlement are commissioned.
+CLI team mutations require the same attached trusted-terminal ceremony before
+credential, keypair, vault-value, or network access. MCP team reads and writes
+are provider requests and remain disabled by default behind `confirm` plus a
+one-use out-of-band approval token.
 
 ```bash
 $ phantom team create "engineering"
@@ -325,8 +332,8 @@ Team memberships and member lists are visible in the read-only dashboard at [phm
 | `phantom start --daemon` / `phantom stop` | Detached start fails closed; stop is a TTY-only legacy-state diagnostic that never kills or deletes, not current process control |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
 | `phantom add <KEY>` | Add a secret transactionally to an initialized project through a hidden trusted-terminal prompt; run `phantom init --empty` first in a new project and use `--stdin` only with a trusted producer |
-| `phantom remove <KEY>` | Remove a secret from the vault |
-| `phantom reveal <KEY>` | Print a secret value (or `--clipboard` to copy) |
+| `phantom remove <KEY>` | After exact trusted-terminal confirmation, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping; headless use fails before value access or mutation |
+| `phantom reveal <KEY>` | From an attached trusted terminal, review and type the exact challenge before printing one value or copying it for an auto-cleared 30-second clipboard window |
 | `phantom status` | Show vault/mapping state and whether the machine-local lifecycle lock is held; a held lock does not authenticate or identify a listener |
 | `phantom rotate` | Regenerate local phantom tokens (old mappings become invalid). Provider-backed `--name`/`--provider` execution is hard-denied before credential or network access in 0.7.4. |
 | `phantom grant add <provider>` | Reserved provider-enrollment surface; hard-denied before credential or network access in 0.7.4. See [Provider grants](#provider-grants). |
@@ -344,27 +351,29 @@ Team memberships and member lists are visible in the read-only dashboard at [phm
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
 | `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, or `codex`. Add `--print` to emit the config snippet to stdout |
 | `phantom env` | Generate `.env.example` for team onboarding |
-| `phantom export` | Export to a new encrypted backup with a hidden terminal prompt, or on non-Windows platforms use `--passphrase-file <PRIVATE_FILE>` for bounded automation; Windows passphrase files fail closed; plaintext export and argv passphrases are disabled |
-| `phantom import` | Restore an encrypted backup with a hidden prompt or, on non-Windows platforms, `--passphrase-file <PRIVATE_FILE>`; Windows passphrase files fail closed. Migrate with `--from doppler\|infisical\|dotenvx\|1password\|env --file <path>`; add `--force` to overwrite existing secrets |
+| `phantom export` | From an attached trusted terminal, review an exact value-blind plan, type its fresh challenge, and enter a dedicated passphrase through the hidden prompt. Export `--passphrase-file`, plaintext export, argv passphrases, existing targets, symlinks, and paths outside the project fail closed. |
+| `phantom import` | From an attached trusted terminal, review and type the exact source/target/name/overwrite challenge before restoring a backup or importing Doppler, Infisical, dotenvx, 1Password, or env data. `--force` selects the reviewed overwrite set but never bypasses consent. A bounded private passphrase file is accepted only on non-Windows platforms and still requires the terminal ceremony. |
 | `phantom audit show` | Print recent audit events (`--last N`, `--op OP`, `--name NAME`, `--json`). Requires `PHANTOM_AUDIT=1` |
 | `phantom audit tail` | Follow the audit log live (`--op`, `--name` filters) |
 | `phantom audit path` | Print the absolute path to the audit log file |
 | `phantom audit verify` | Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected |
-| `phantom login` | Authenticate with Phantom Cloud via GitHub OAuth |
-| `phantom logout` | Clear cloud credentials |
-| `phantom cloud push` | Push encrypted vault to Phantom Cloud |
-| `phantom cloud pull` | Pull and decrypt vault from Phantom Cloud |
+| `phantom login` | From an attached trusted terminal, approve an exact network plan, then separately approve browser opening/polling and keychain persistence |
+| `phantom logout` | From an attached trusted terminal, approve deletion of persistent cloud authorization from the OS keychain |
+| `phantom cloud push` | After exact trusted-terminal confirmation, push a client-encrypted vault. A remote success followed by local reconciliation failure is partial success and must not be retried automatically. |
+| `phantom cloud pull` | After exact trusted-terminal confirmation, pull and decrypt a vault. With `force=false`, skipped existing entries preserve the prior merge base and block later push until a fully reconciled approved pull. |
+| `phantom cloud status` | Authenticated provider read; requires attached trusted terminals and an exact challenge before stored-bearer or network access |
 | `phantom wrap` | Wrap package.json scripts with `phantom exec` automatically |
 | `phantom unwrap` | Restore original package.json scripts |
 | `phantom watch` | Watch managed dotenv files and report new unprotected secrets. `--auto` hard-denies before mutation in 0.7.4; use transactional `phantom init`. |
 | `phantom why <KEY>` | Explain why a key is or is not protected |
 | `phantom copy <KEY>` | Copy a secret to an initialized target after exact trusted-terminal confirmation; refuses existing target vault, config, or managed-dotenv ownership rather than overwriting |
-| `phantom team list/create/members/invite` | Team vault management |
-| `phantom team key-publish <id>` | Register your X25519 pubkey on a team (once per team) |
-| `phantom team vault-push <id>` | Push current project to shared team vault (E2E encrypted per-member) |
-| `phantom team vault-pull <id>` | Pull team vault into local vault |
-| `phantom open [page]` | Open phm.dev pages in browser (dashboard, billing, team, docs, github, …) |
-| `phantom upgrade` | Self-replace this binary with the latest GitHub release (`--check-only` to inspect first) |
+| `phantom team list/members` | Authenticated, value-blind provider reads. CLI requires attached trusted terminals and an exact challenge before bearer/network access; MCP requires `confirm` plus out-of-band approval. |
+| `phantom team create/invite/key-publish/vault-push/vault-pull/rotate-vault` | Run CLI team effects only from an attached trusted terminal and complete the exact challenge before credential, keypair, vault-value, or network access. Invites assign only `member` or `admin`. |
+| `phantom validate` / `--watch` | Send selected credentials to configured validators only after exact trusted-terminal consent; watch authorization ends when config or the vault name set changes |
+| `phantom validate schedule` | Read status without mutation; setting or disabling persistent scheduler policy requires attached terminals and an exact typed challenge |
+| `phantom expiry set` | Persist lifecycle policy only after attached-terminal confirmation; `expiry enforce` is read-only, while `expiry rotate` is only a deprecated local token remap |
+| `phantom open [page]` | From an attached trusted terminal, open only the reviewed aliases `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, or `site`; arbitrary URLs, paths, and unknown aliases are rejected |
+| `phantom upgrade` | `--check-only` performs a read-only version lookup only for an eligible standalone install. Live standalone replacement requires attached terminals and two exact challenges; managed installs route to their owner, ambiguous installs fail closed, and `--force` is rejected. |
 | `phantom completion <shell>` | Print a shell-completion script (bash, zsh, fish, powershell, elvish) |
 
 ## Rotating real provider credentials

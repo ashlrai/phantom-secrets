@@ -68,6 +68,7 @@ const repositoryGuidanceClaims = {
   "integrations/github-actions/example-workflow.yml": readRepo(
     "integrations/github-actions/example-workflow.yml",
   ),
+  "integrations/railway/README.md": readRepo("integrations/railway/README.md"),
   ...staticDocumentationClaims,
   ...publishedPackageDocumentationClaims,
   ...Object.fromEntries(
@@ -268,6 +269,50 @@ test("machine-readable guidance rejects absolute security guarantees", () => {
       assert.doesNotMatch(source, claim, file);
     }
   }
+});
+
+test("authority-sensitive command guidance stays fail-closed and value-blind", () => {
+  const canonicalGuides = {
+    "README.md": repositoryGuidanceClaims["README.md"],
+    "AGENTS.md": repositoryGuidanceClaims["AGENTS.md"],
+    "docs/llms.txt": machineReadableClaims["docs/llms.txt"],
+    "docs/llms-full.txt": machineReadableClaims["docs/llms-full.txt"],
+    "apps/web/public/llms.txt": repositoryGuidanceClaims["apps/web/public/llms.txt"],
+    "apps/web/public/llms-full.txt":
+      repositoryGuidanceClaims["apps/web/public/llms-full.txt"],
+  };
+
+  for (const [file, source] of Object.entries(canonicalGuides)) {
+    assert.match(source, /export[\s\S]{0,300}passphrase[- ]file[\s\S]{0,180}(?:reject|disable)|export[^\n]{0,220}(?:reject|disable)[^\n]*passphrase[- ]file/i, file);
+    assert.match(source, /import[\s\S]{0,700}(?:exact|typed)[^\n]*(?:challenge|consent|ceremon|plan)/i, file);
+    assert.match(source, /--force[^\n]{0,120}(?:never|does not|cannot)[^\n]{0,80}(?:bypass|skip)/i, file);
+    assert.doesNotMatch(source, /export[^\n]{0,180}passphrase[- ]file[^\n]*(?:automation|headless)/i, file);
+    assert.doesNotMatch(source, /import[^\n]{0,180}--force[^\n]*(?:without prompt|skip confirmation)/i, file);
+  }
+
+  const machineCatalog = machineReadableClaims["apps/web/public/llms-full.txt"];
+  assert.match(machineCatalog, /phantom_cloud_status[\s\S]{0,180}confirm[\s\S]{0,100}approval_token/i);
+  assert.match(machineCatalog, /phantom_team_list[\s\S]{0,180}confirm[\s\S]{0,100}approval_token/i);
+  assert.match(machineCatalog, /phantom_team_members[\s\S]{0,180}confirm[\s\S]{0,100}approval_token/i);
+  assert.doesNotMatch(machineCatalog, /role \("member" \| "admin" \| "owner"\)/i);
+  assert.doesNotMatch(machineCatalog, /Any other word becomes|full URLs pass through/i);
+  assert.match(machineCatalog, /phantom cloud status[\s\S]{0,180}attached[\s\S]{0,120}exact[\s\S]{0,120}challenge/i);
+  assert.match(machineCatalog, /CLI `list` and `members`[\s\S]{0,220}attached[\s\S]{0,120}exact typed challenge/i);
+  assert.match(machineCatalog, /phantom_apply_expiry_policy[\s\S]{0,360}does not recall/i);
+  assert.doesNotMatch(machineCatalog, /advisory `VaultMode`/i);
+
+  const cli = readRepo("crates/phantom-cli/src/main.rs");
+  assert.doesNotMatch(cli, /Skip the standalone self-replacement confirmation prompt/i);
+  assert.doesNotMatch(cli, /Role to assign \(member, admin, owner\)/i);
+  assert.match(cli, /cannot bypass the standalone replacement ceremonies/i);
+  assert.match(cli, /ownership transfer is not exposed/i);
+});
+
+test("Railway guidance separates deployment sync from encrypted cloud backup", () => {
+  const railway = repositoryGuidanceClaims["integrations/railway/README.md"];
+  assert.match(railway, /sends selected values directly to the\s+Railway API/i);
+  assert.match(railway, /phantom cloud push[\s\S]{0,160}never deploys or auto-syncs Railway/i);
+  assert.doesNotMatch(railway, /cloud push[^\n]*auto-syncs to Railway/i);
 });
 
 test("CLI and crate metadata state bounded credential-exposure claims", () => {

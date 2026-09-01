@@ -180,7 +180,7 @@ op read "op://Prod/Stripe/key" | phantom add STRIPE_SECRET_KEY --stdin
 phantom remove STRIPE_SECRET_KEY
 ```
 
-`add` stores the value and writes a phantom token to `.env`. It prompts silently so the secret never enters shell history or the process list. Positional secret values are rejected; use `--stdin` for non-interactive or CI input. `remove` deletes from the vault (`.env` token line is left; remove manually if desired).
+`add` stores the value and writes a phantom token to `.env`. It prompts silently so the secret never enters shell history or the process list. Positional secret values are rejected; use `--stdin` only with a trusted producer. `remove` requires attached stdin/stdout/stderr plus an exact typed challenge, then transactionally removes the vault value, lifecycle config, and exact managed-dotenv mapping.
 
 ### `phantom rotate`
 
@@ -207,6 +207,14 @@ phantom login              # GitHub OAuth, once per device
 phantom cloud push         # upload encrypted vault
 phantom cloud pull         # restore where the original cloud key is available
 ```
+
+Run login and cloud writes only from a terminal outside the requesting agent's
+authority. Login has separate exact challenges before network access and before
+browser opening/polling/keychain persistence. Push and pull each show a
+value-blind effect and require their exact typed challenge before credential,
+vault-value, or network access. A `force=false` pull that skips any existing
+entry retains the prior merge base and blocks push until a fully reconciled,
+approved pull.
 
 ### `phantom sync` / `phantom pull`
 
@@ -373,25 +381,25 @@ Each log entry is chained with HMAC-SHA256 and a signed head checkpoint. `phanto
 
 ## Encrypted backup and recovery
 
-From an attached terminal, Phantom reads the backup passphrase without echoing
-it or placing it in command-line arguments. Export asks for confirmation;
-import reads the same passphrase once:
+With stdin, stdout, and stderr attached to a terminal outside agent authority,
+Phantom displays a value-blind plan and requires its fresh exact typed challenge
+before secret transfer. Export then reads a dedicated passphrase without echoing
+it or placing it in command-line arguments; import has a separate ceremony:
 
 ```bash
 phantom export --output phantom-backup.enc
 phantom import phantom-backup.enc
 ```
 
-For automation on non-Windows platforms, provide a dedicated passphrase through
-a bounded private file. On Unix, the file must be mode `0600` or stricter;
-symlinks and non-regular files are rejected. `--passphrase-file` fails closed on
-Windows pending no-reparse handle and effective private-ACL verification; use
-the attached hidden terminal prompt there.
+Export rejects `--passphrase-file` on every platform because the invoking agent
+could retain the decryption material; use the attached hidden terminal prompt.
+For import only, non-Windows operators may provide the passphrase through a
+bounded private regular file after the terminal ceremony. On Unix, that file
+must be mode `0600` or stricter; symlinks and non-regular files are rejected.
+Import passphrase files fail closed on Windows.
 
 ```bash
 chmod 600 /secure/path/phantom-backup.pass
-phantom export --output phantom-backup.enc \
-  --passphrase-file /secure/path/phantom-backup.pass
 phantom import phantom-backup.enc \
   --passphrase-file /secure/path/phantom-backup.pass
 ```
@@ -428,7 +436,9 @@ phantom import --from env --file .env
 
 After importing, run `phantom init` to replace any remaining plaintext secrets in your `.env` with phantom tokens.
 
-Use `--force` to overwrite existing vault entries without prompting.
+Use `--force` to select existing vault entries for overwrite in the displayed
+exact plan. It never bypasses attached-terminal consent, and a source/config
+identity change invalidates the ceremony before storage.
 
 ---
 
@@ -511,9 +521,14 @@ Once you've run `phantom login` and `phantom cloud push`, you can see your proje
 
 ```bash
 $ phantom open
-# Opens https://phm.dev/dashboard in your browser. Aliases:
+# After attached-terminal review and an exact typed challenge, opens
+# https://phm.dev/dashboard. Closed aliases only:
 # phantom open billing | team | docs | github | pricing
 ```
+
+`phantom open` also accepts `dashboard`, `issues`, and `site` (plus the documented
+`teams`, `repo`, and `home` synonyms). Arbitrary URLs, schemes, credentials,
+paths, and unknown aliases are rejected before browser access.
 
 ## Next steps
 

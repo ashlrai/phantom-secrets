@@ -250,13 +250,12 @@ as separate recovery material:
 # Interactive: hidden prompt + confirmation on an attached terminal
 phantom export --output phantom-backup.enc
 
-# Non-Windows automation: bounded private file, never argv
-chmod 600 /secure/path/phantom-backup.pass
-phantom export --output phantom-backup.enc \
-  --passphrase-file /secure/path/phantom-backup.pass
+# Export never accepts passphrase files. Review the exact value-blind plan,
+# type its fresh challenge, and enter a dedicated passphrase at the hidden prompt.
 ```
 
-Recover into an initialized Phantom project with the symmetric input method:
+Recover into an initialized Phantom project from attached stdin/stdout/stderr
+after reviewing and typing the exact source/target/name/overwrite challenge:
 
 ```bash
 phantom import phantom-backup.enc
@@ -264,10 +263,11 @@ phantom import phantom-backup.enc \
   --passphrase-file /secure/path/phantom-backup.pass
 ```
 
-Passphrase files on non-Windows platforms must be regular files, not symlinks,
-and are limited to 4096 bytes. On Unix they must be mode `0600` or stricter.
-`--passphrase-file` fails closed on Windows pending no-reparse handle and
-effective private-ACL verification; use the attached hidden terminal prompt.
+Export rejects `--passphrase-file` on every platform. Import passphrase files on
+non-Windows platforms must be regular files, not symlinks, and are limited to
+4096 bytes; on Unix they must be mode `0600` or stricter. Import passphrase files
+fail closed on Windows. A passphrase file never makes import headless: all three
+standard streams and exact typed consent are still required.
 Export refuses existing targets and symlinks; it creates a `0600` staging file
 on Unix (or uses the containing directory's inherited ACL on Windows), flushes
 it, and publishes it without overwriting. Store neither the encrypted backup
@@ -375,7 +375,9 @@ If the file format is wrong, the importer returns a parse error. Re-export from 
 
 ### Existing secrets not overwritten during import
 
-By default, `phantom import --from` prompts before overwriting existing vault entries. Pass `--force` to skip the prompt:
+By default, `phantom import --from` excludes existing vault entries from its
+reviewed destination set. `--force` selects them for overwrite, but never skips
+the attached-terminal exact-consent ceremony:
 
 ```bash
 phantom import --from doppler --file dump.json --force
@@ -408,6 +410,12 @@ brew upgrade ashlrai/phantom/phantom
 ```
 
 Cargo-owned and otherwise unshared standalone binaries can continue to use `phantom upgrade`. A successful source build or GitHub release does not by itself prove that a crate, npm package, or Homebrew formula has been published.
+
+`phantom upgrade --force` is disabled. An eligible standalone replacement
+requires stdin, stdout, and stderr attached to a trusted terminal, one fresh
+exact challenge before release-metadata access, and a second challenge bound to
+the verified replacement plan. `--check-only` is read-only; managed installs
+route to their package owner and ambiguous ownership fails closed.
 
 ### npm wrapper feels "stuck on an old version"
 

@@ -85,22 +85,26 @@ catalog. The following table highlights the core workflows; use MCP
 
 | Tool | What it does |
 |------|-------------|
-| `phantom_init` | Read `.env`, store real secrets in vault, rewrite `.env` with phantom tokens, write `.phantom.toml`. |
+| `phantom_init` | Apply one exact-before transaction across config, managed dotenv, gitignore, hook, generated client files, and vault CAS operations. |
 | `phantom_env` | Generate `.env.example` from current `.env` — secrets replaced with placeholders, non-secrets preserved. |
 
-### Destructive — require `confirm: true`
+### Effectful — require `confirm: true` and out-of-band approval
 
-Claude must ask for explicit user consent before calling any of these. Calling without `confirm: true` returns an error.
+Claude must ask for explicit user consent before calling any of these. Calling
+without `confirm: true` and a valid one-use `approval_token` returns an error.
+The token comes from a separate attached-terminal `phantom mcp-approve`
+ceremony that displays the exact value-blind effect; keep that command outside
+Claude's shell and PTY authority.
 
 | Tool | What it does |
 |------|-------------|
 | `phantom_add_secret_interactive` | Return a terminal command for adding a new secret out-of-band, so the real value is typed only into a trusted terminal prompt. |
 | `phantom_add_secret` | Deprecated compatibility tool. Refuses plaintext values passed through MCP. |
-| `phantom_remove_secret` | Permanently delete a secret from the vault. Not recoverable unless you have a cloud backup. |
+| `phantom_remove_secret` | Transactionally remove the vault value, lifecycle record, and exact managed-dotenv mapping. |
 | `phantom_rotate` | Regenerate all phantom tokens in `.env`. Old tokens become invalid immediately — any running dev server that cached them will break until it reloads. Real secrets are unchanged. |
 | `phantom_cloud_push` | Encrypt and upload the local vault to Phantom Cloud. Overwrites the existing cloud copy. Requires `phantom login` first. |
-| `phantom_cloud_pull` | Download and decrypt a vault from Phantom Cloud. Writes secrets into the local vault. Pass `force=true` to overwrite existing entries. |
-| `phantom_copy_secret` | Copy a secret from this project's vault to another phantom-initialized project without exposing the value. Path traversal (`..`) is rejected. |
+| `phantom_cloud_pull` | Download and decrypt a vault from Phantom Cloud. With `force=false`, skipped entries preserve the prior merge base and block push until full reconciliation; `force=true` declares overwrites but does not bypass approval. |
+| `phantom_copy_secret` | Copy into another initialized project using exact config/vault/managed-dotenv before-images. Existing target ownership and traversal are refused. |
 | `phantom_wrap` | Wrap `package.json` scripts with the installed local `phantom exec --` runtime so secrets are injected at runtime. Saves originals as `script:raw` variants. |
 | `phantom_unwrap` | Reverse `phantom_wrap` — restore original scripts from `:raw` variants and remove the `:raw` entries. |
 
@@ -126,8 +130,9 @@ Here is a typical conversation that shows how the tools compose in practice.
 ```
 You: I need to add a Stripe secret key to this project.
 
-Claude: I'll start the safe add flow. [calls phantom_add_secret_interactive
-        with confirm: true after asking you to confirm]
+Claude: I'll start the safe add flow after you approve its exact value-blind
+        effect out of band. [calls phantom_add_secret_interactive with
+        confirm: true and the one-use approval_token]
 
 You: yes, go ahead
 
@@ -142,8 +147,9 @@ Claude: [calls phantom_doctor]
 
 You: back up this vault to cloud so I can restore it on this keychain machine later
 
-Claude: I'll push to Phantom Cloud — this overwrites the existing cloud copy. 
-        Confirm? [calls phantom_cloud_push with confirm: true after your yes]
+Claude: I'll push to Phantom Cloud — this overwrites the existing cloud copy.
+        Approve the exact effect outside my shell authority. [calls
+        phantom_cloud_push with confirm: true and the one-use approval_token]
         Pushed 4 secrets (v7). End-to-end encrypted.
 ```
 
@@ -153,7 +159,7 @@ Claude: I'll push to Phantom Cloud — this overwrites the existing cloud copy.
 
 ### Integrating a new third-party API
 
-1. Tell Claude the secret name, not the value. Claude calls `phantom_add_secret_interactive` (with confirmation), then you enter the value at the terminal prompt.
+1. Tell Claude the secret name, not the value. After the separate MCP approval ceremony, Claude calls `phantom_add_secret_interactive` with both gates, then you enter the value at the terminal prompt.
 2. Claude writes the integration code using the env var name (`process.env.MY_API_KEY`).
 3. `phantom exec -- claude` ensures API test calls during the session go through the proxy.
 
@@ -197,13 +203,14 @@ interactive entry happens in the trusted terminal. This is a statement about
 the Phantom MCP surface, not about unrelated files, shell commands, providers,
 or tools that may grant the agent broader access.
 
-**Cannot call listed mutating tools without `confirm: true`.** `phantom_init`,
+**Cannot call listed effectful tools without both gates.** `phantom_init`,
 `phantom_add_secret_interactive`, `phantom_remove_secret`, `phantom_rotate`,
 `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_copy_secret`,
 `phantom_env`, `phantom_wrap`, `phantom_unwrap`, `phantom_doctor` (when
-`fix=true`), and team write tools hard-fail if confirmation is absent. This is
-a useful mutation gate, not a general prompt-injection defense; review the
-exact action and keep deployment/provider authority separately constrained.
+`fix=true`), authenticated provider reads, and team write tools hard-fail if
+`confirm: true` or the one-use out-of-band approval is absent. These are tool
+gates, not a general prompt-injection defense; keep the approval command and
+deployment/provider authority outside the agent's control.
 
 **Cannot receive real secret values through MCP.** Plaintext values passed to `phantom_add_secret` are rejected. New secrets must be entered through the terminal prompt started by `phantom_add_secret_interactive`.
 

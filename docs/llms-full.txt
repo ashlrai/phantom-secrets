@@ -40,13 +40,13 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom agent doctor` — Human-readable view of the same readiness policy. Status values: unsafe, protected, verified, team-ready, compliance-ready.
 - `phantom agent setup --dry-run|--apply` — Preview or apply safe defaults for agent use, including MCP wiring and .env.example generation.
 - `phantom exec -- <cmd>` — Start an authenticated proxy, run command, shut down proxy on exit.
-- `phantom login` — Sign in to Phantom Cloud via GitHub OAuth (device code flow).
-- `phantom logout` — Sign out of Phantom Cloud.
-- `phantom cloud push` — Push encrypted vault to Phantom Cloud (end-to-end encrypted).
-- `phantom cloud pull` — Restore a personal-vault snapshot on the machine that holds the original OS-keychain cloud encryption key; login without that key is insufficient.
+- `phantom login` — From attached stdin/stdout/stderr, approve an exact network plan, then separately approve browser opening/polling and OS-keychain persistence for the GitHub device flow.
+- `phantom logout` — From attached stdin/stdout/stderr, approve the exact deletion of persistent cloud authorization from the OS keychain.
+- `phantom cloud push` — After exact trusted-terminal consent, push a client-encrypted vault. Remote success followed by local reconciliation failure is partial success and must not be retried automatically.
+- `phantom cloud pull` — After exact trusted-terminal consent, restore on the machine holding the original cloud key. With `force=false`, skipped entries preserve the prior merge base and block later push until full reconciliation.
 - `phantom cloud status` — Check cloud auth and sync status.
-- `phantom export --output <file>` — Export the vault to a new encrypted backup using a hidden terminal prompt. On non-Windows platforms, bounded automation may use `--passphrase-file <private-file>`; Windows hard-denies that option until Phantom can verify a no-reparse handle and effective private ACL safely. Plaintext export and argv passphrases are disabled.
-- `phantom import <file>` — Restore an encrypted backup using a hidden terminal prompt. On non-Windows platforms, bounded automation may instead use `--passphrase-file <private-file>`; Windows hard-denies it. `--from doppler|infisical|dotenvx|1password|env --file <path>` imports from another format; add `--force` to overwrite existing entries.
+- `phantom export --output <file>` — Requires attached stdin/stdout/stderr, an exact value-blind typed challenge, and a hidden terminal passphrase before vault-value access. Export passphrase files, plaintext, argv passphrases, existing targets, symlinks, and paths outside the project are rejected.
+- `phantom import <file>` — Requires attached stdin/stdout/stderr and exact typed consent bound to source identity/digest, target project/vault, destination names, and overwrite set. `--force` selects that reviewed overwrite set but never bypasses consent. A bounded private passphrase file is accepted only for non-Windows import and remains terminal-gated.
 - `phantom audit show [--last N] [--op OP] [--name NAME] [--json]` — Print recent audit events. Requires `PHANTOM_AUDIT=1`.
 - `phantom audit tail` — Follow the audit log live.
 - `phantom audit path` — Print the absolute path to the audit log file.
@@ -54,9 +54,9 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom start` — Run a foreground proxy only when stdin/stdout/stderr are terminals; keep the trusted owning terminal open and press Ctrl-C there to stop. `--daemon` and current external control fail closed; `phantom stop` authenticates legacy v0.7.3 state only to report manual migration guidance and never kills or deletes.
 - `phantom list` — Show secret names stored in vault (never shows values). Add `--json` to emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded.
 - `phantom add <KEY>` — Transactionally add a secret to an initialized project through a hidden terminal prompt. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Positional values are rejected; for piped/CI use, pass `--stdin` and provide one line on stdin: `echo "$VAL" | phantom add KEY --stdin`.
-- `phantom remove <KEY>` — Remove a secret from the vault.
+- `phantom remove <KEY>` — After exact trusted-terminal consent, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping.
 - `phantom reveal <KEY>` — View a secret value only from attached terminals after exact typed confirmation; there is no non-interactive bypass.
-- `phantom rotate` — Regenerate all phantom tokens in .env. Supports `--sync` to push updated tokens to deployment platforms.
+- `phantom rotate` — Regenerate local phantom mappings without changing provider credentials. `--sync` is rejected for a local-only remap; rotate at the provider, store the successor from a trusted terminal, then run a separately reviewed sync.
 - `phantom status` — Show project ID, vault backend, secret count, service mappings.
 - `phantom doctor` — Health check: config, vault, .env, .gitignore, Claude Code MCP, cloud auth.
 - `phantom check` — Heuristically scans supported `.env` files for unprotected real secrets. Exit code 1 if found. `--staged` reads dotenv content from the index and checks a bounded set of hardcoded-key prefixes on added lines. `--runtime` detects phantom tokens in selected environment variables when the proxy is not running. It is not a complete repository secret scanner.
@@ -69,9 +69,12 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom copy <KEY> --to <DIR> [--rename NEW]` — After exact trusted-terminal confirmation, copy a secret from this initialized project to an initialized target without printing the value. Optional rename in the target project. It refuses an existing target vault entry, config ownership, or managed-dotenv key rather than overwriting it.
 - `phantom wrap [--only A,B] [--skip X,Y]` — Wrap `package.json` scripts with `phantom exec` so npm scripts get real credentials at runtime. Originals are preserved as `script:raw` variants.
 - `phantom unwrap` — Reverse `phantom wrap`, restoring originals from `:raw` variants.
-- `phantom team list / create / members / invite / key-publish / vault-push / vault-pull` — Source-backed fixed-membership shared-vault workflow intended for a planned hosted Pro pilot. Pilot eligibility, team and vault limits, and pricing are TBD; no self-serve checkout is commissioned. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305); the server only ever stores ciphertext.
-- `phantom open [target]` — Open a Phantom page in the browser. Aliases: `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, `site`. Any other word becomes `https://phm.dev/<word>`; full URLs pass through.
-- `phantom upgrade [--check-only] [--force]` — Self-replace this binary with the latest GitHub release.
+- `phantom cloud status` / `phantom team list` / `phantom team members` — Authenticated CLI provider reads that require attached terminals and an exact typed challenge before stored-bearer or network access. MCP equivalents require `confirm` plus out-of-band approval.
+- Team mutations require an attached trusted terminal and an exact typed challenge before credential, keypair, vault-value, or network access.
+- `phantom team create / invite / key-publish / vault-push / vault-pull / rotate-vault` — Source-backed fixed-membership pilot effects; invite roles are only `member` or `admin`. Push wraps a fresh symmetric key per registered recipient and stores ciphertext remotely.
+- `phantom validate` / `--watch` — Live provider checks require attached terminals and exact consent before credential retrieval. Schedule status/history are read-only; schedule updates and expiry-policy writes require their own exact terminal challenges.
+- `phantom open [target]` — From an attached trusted terminal, open only the closed aliases `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, or `site`; unknown words, paths, and arbitrary URLs are rejected before browser access.
+- `phantom upgrade [--check-only]` — Managed installs route to their owner and ambiguous installs fail closed. An eligible standalone replacement requires attached terminals and two exact challenges; `--force` is rejected.
 - `phantom completion <bash|zsh|fish|powershell|elvish>` — Print a shell-completion script to stdout.
 
 ## Installation
@@ -156,18 +159,25 @@ hard denials retained for schema compatibility. They create or promote nothing;
 `phantom_rotate_provider` is also a hard denial in 0.7.4; no MCP approval can
 activate live provider issuance.
 
+`phantom_apply_expiry_policy` demotes expired entries to `VaultMode::ReadOnly`.
+Vault backends refuse value retrieval while that mode is set, and
+`phantom exec`/foreground `phantom start` fail their mapped-secret preflight
+instead of injecting the expired value. A later verified lifecycle promotion
+restores read access. Demotion does not recall a value already injected into or
+cached by a running process.
+
 **Secret Management:**
-- `phantom_init` — Initialize Phantom and protect .env. Reads .env, stores real secrets in vault, rewrites with phm_ tokens, saves .phantom.toml config. Params: env_path (default `.env`), confirm, approval_token.
+- `phantom_init` — Exact-before transaction: read a safe project-local dotenv, compare-and-swap vault entries, persist config, and rewrite the dotenv last. Concurrent drift aborts. Params: env_path (default `.env`), confirm, approval_token.
 - `phantom_list_secrets` — List secret names with service mappings (never values).
 - `phantom_status` — Show vault and config status (project ID, backend, secret count).
 - `phantom_add_secret_interactive` — Return a command that prompts for a new value in a trusted terminal, outside MCP. Params: name, confirm, approval_token.
 - `phantom_add_secret` — Deprecated compatibility tool; refuses plaintext values passed through MCP. Params: name, confirm, approval_token.
-- `phantom_remove_secret` — Remove a secret from the vault. Params: name, confirm, approval_token.
+- `phantom_remove_secret` — Transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping. Params: name, confirm, approval_token.
 - `phantom_rotate` — Regenerate all phantom tokens in .env. Params: confirm, approval_token.
 
 **Personal Cloud Backup:**
 - `phantom_cloud_push` — Push a client-encrypted ChaCha20-Poly1305 vault payload to Phantom Cloud. Params: confirm, approval_token. The vault API receives ciphertext rather than decrypted secret values; client, account, endpoint, and deployment security remain in scope.
-- `phantom_cloud_pull` — Pull vault from Phantom Cloud. Params: force, confirm, approval_token. Downloads and decrypts vault, stores secrets locally.
+- `phantom_cloud_pull` — Pull vault from Phantom Cloud. Params: force, confirm, approval_token. With `force=false`, skipped existing entries retain the prior merge base and block push until full reconciliation.
 - `phantom_cloud_status` — Dual-gated authenticated provider request for cloud auth status, plan, and last sync version. Params: confirm, approval_token.
 
 **Diagnostics & Cross-Project:**
@@ -176,7 +186,7 @@ activate live provider issuance.
 - `phantom_check` — Run Phantom's bounded detector. Params: runtime. With `runtime=true`, checks selected environment variables for phantom tokens without a proxy; otherwise it scans supported dotenv files in the working tree. The CLI, separately, supports `phantom check --staged` for index-aware checks.
 - `phantom_env` — Generate a .env.example file from .env. Params: output (default `.env.example`), confirm, approval_token. Secrets become descriptive placeholders; non-secret config values are preserved.
 - `phantom_sync` — Show sync configuration and what secrets would be pushed to deployment platforms (Vercel, Railway). Params: platform (optional), project_id (optional). Informational; it does not execute a sync.
-- `phantom_copy_secret` — Copy a secret from this project's vault to another project's vault without returning the value. Params: name, target_dir, rename (optional), confirm, approval_token.
+- `phantom_copy_secret` — Exact-before target transaction that refuses existing vault/config/dotenv ownership and creates the vault entry plus managed-dotenv mapping without returning the value. Params: name, target_dir, rename (optional), confirm, approval_token.
 
 **Package.json wrapping:**
 - `phantom_wrap` — Wrap `package.json` scripts with the installed local `phantom exec --` runtime so secrets are injected via the proxy. Originals are saved as `script:raw` variants. Heuristically picks dev/start/build/serve/deploy scripts and skips lint/test/format scripts. Params: only, skip, confirm, approval_token.
@@ -272,12 +282,12 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 3. **Same-keychain-machine backup**: `phantom login`, `phantom cloud push`, then `phantom cloud pull` where the original cloud encryption key remains available
 4. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
 5. **Provider-backed machine setup**: `phantom pull --from vercel --project prj_xxx` (requires Vercel credentials)
-6. **Vault backup**: `phantom export --output backup.enc` then `phantom import backup.enc`; both use hidden terminal prompts. Non-Windows automation may use the same private `--passphrase-file` for both commands; Windows hard-denies that option until safe no-reparse/ACL verification is implemented.
+6. **Vault backup**: from a terminal outside agent authority, run `phantom export --output backup.enc`, review/type its exact challenge, and enter a hidden passphrase. Export rejects passphrase files. Import requires its own exact terminal ceremony; only non-Windows import may read a bounded private passphrase file.
 6b. **Migrate from Doppler/Infisical/dotenvx/1Password**: `phantom import --from doppler --file dump.json`
 6c. **Audit trail**: `PHANTOM_AUDIT=1` + `phantom audit show/tail/verify` for compliance and forensics
 7. **Team onboarding**: `phantom env` generates .env.example with placeholders
 8. **CI/CD**: Use `phantom check` as a bounded dotenv/key-prefix gate and pair it with a broader repository scanner; preview selected provider sync targets before applying
 9. **Pre-commit safety**: Add `phantom check --staged` to hooks while remembering hooks can be skipped or bypassed
-10. **Rotate with sync**: `phantom rotate --sync` regenerates tokens and pushes to deployment platforms
+10. **Provider rotation and sync**: rotate through the provider's trusted interface, store the successor with trusted-terminal `phantom add`, then run a separately reviewed deployment sync. Local token remaps never authorize sync.
 11. **Monorepo**: Run `phantom init` in each subdirectory — each gets its own vault and config
 12. **Multi-IDE team**: Same MCP server works across Claude Code, Cursor, Windsurf, and Codex

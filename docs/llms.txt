@@ -64,7 +64,7 @@ Teams: phantom_team_list, phantom_team_create, phantom_team_members, phantom_tea
 
 ## CLI surface (--help is grouped: Setup · Daily use · Sync & teams · Maintenance)
 
-init (--from <file>, --empty, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor / setup --dry-run|--apply), exec, start, stop, list (--json), add (--stdin; initialized project required, positional values rejected), remove, reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--dry-run --json, --only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy (trusted-terminal confirmation, no target overwrite), export (hidden prompt or non-Windows --passphrase-file; plaintext disabled), import (--from doppler|infisical|dotenvx|1password|env --file <path>), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull), open, upgrade, completion (bash/zsh/fish/powershell/elvish)
+init (--from <file>, --empty, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor / setup --dry-run|--apply), exec, start, stop, list (--json), add (--stdin; initialized project required, positional values rejected), remove (trusted-terminal exact removal), reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--dry-run --json, --only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy (trusted-terminal confirmation, no target overwrite), export (trusted-terminal hidden prompt only; passphrase files and plaintext disabled), import (--from doppler|infisical|dotenvx|1password|env --file <path>; trusted-terminal exact consent), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull/rotate-vault), validate (live/watch/schedule/history), expiry (set/enforce/rotate), open (closed alias catalog), upgrade (managed-owner routing; force denied), completion (bash/zsh/fish/powershell/elvish)
 
 ## Dashboard
 
@@ -81,8 +81,8 @@ https://phm.dev/dashboard: local/pilot access state and available cloud-backed p
 - Multi-project scanner — `phantom init --all <DIR>` processes eligible repos found within five levels, stops below the first matching repo, and supports `--dry-run` plus `--jobs N`
 - Multi-IDE setup — `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool
 - Tamper-evident audit log — `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log` (secret name only). HMAC-SHA256 chain; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for access.
-- Competitor import — `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>` migrates secrets directly
-- Encrypted recovery — export/import use hidden terminal prompts; non-Windows automation may use a private bounded `--passphrase-file`, while Windows hard-denies that option until safe no-reparse/ACL verification is implemented. Plaintext export and argv passphrases are disabled
+- Competitor import — from an attached terminal outside agent authority, `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>` displays an exact value-blind source/target/name plan and requires its fresh typed challenge before storage; `--force` never bypasses consent
+- Encrypted recovery — export requires attached stdin/stdout/stderr, an exact value-blind challenge, and a hidden terminal passphrase; export passphrase files, plaintext, and argv passphrases are disabled. Import has the same terminal ceremony; only non-Windows import may additionally read a bounded private passphrase file.
 - Enriched diagnostics — `phantom doctor` reports install source, vault backend, audit-log status, Argon2 params, MCP wiring per client
 - Script wrapping — `phantom wrap` wraps selected runtime/build scripts and deliberately skips test, lint, type, and format scripts
 - Watch mode — `phantom watch` reports new unprotected secrets; legacy `--auto` hard-denies before mutation, so protection remains a reviewed transactional `phantom init`
@@ -101,6 +101,7 @@ https://phm.dev/dashboard: local/pilot access state and available cloud-backed p
 - Use `phantom_add_secret_interactive` to add new keys; the user types values only into the trusted terminal prompt
 - Use `phantom_init` to protect an unprotected `.env` file
 - Suggest `phantom exec -- <command>` to run code with real credentials injected
+- Never automate CLI login/logout, cloud reads/writes, team reads/mutations, remove, live validation, schedule/expiry writes, browser open, import/export, or eligible standalone upgrade through an agent-controlled PTY; their exact terminal ceremonies must remain outside agent authority
 
 ## Links
 

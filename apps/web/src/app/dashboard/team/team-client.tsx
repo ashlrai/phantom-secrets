@@ -61,7 +61,8 @@ export default function TeamPageClient() {
         <TeamCard key={m.team_id} membership={m} />
       ))}
       <section className="rounded-xl border border-border bg-s1 px-5 py-4 text-[0.85rem] text-t2 leading-[1.65] max-w-[760px]">
-        For a commissioned pilot, mutations remain CLI-only:{" "}
+        For a commissioned pilot, run mutations only from an attached trusted
+        terminal and type each command&apos;s exact challenge:{" "}
         <code className="font-mono text-blue-b">phantom team create</code>,{" "}
         <code className="font-mono text-blue-b">phantom team invite</code>,{" "}
         <code className="font-mono text-blue-b">phantom team key-publish</code>.
@@ -126,7 +127,9 @@ function TeamCard({ membership }: { membership: TeamMembership }) {
             </div>
             {keyCount < members.length && (
               <div className="mt-3 rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-[0.84rem] text-yellow-200">
-                Members without a key cannot decrypt team vaults. Ask them to run{" "}
+                Members without a key cannot decrypt team vaults. Ask them to
+                run this from an attached trusted terminal and complete its
+                exact challenge:{" "}
                 <code className="font-mono text-yellow-100">
                   phantom team key-publish {membership.team_id}
                 </code>

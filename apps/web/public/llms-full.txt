@@ -110,7 +110,9 @@ Example (interactive, hidden input): phantom add STRIPE_SECRET_KEY
 Options: --stdin (read one line from a piped stdin; CI-friendly: `echo "$VAL" | phantom add KEY --stdin`)
 
 ### phantom remove <KEY>
-Remove a secret from the vault permanently.
+From an attached trusted terminal, review and type the exact removal challenge.
+The transaction removes the vault value, lifecycle record, and exact managed-
+dotenv mapping together or rolls back transaction-owned changes.
 
 ### phantom reveal <KEY>
 View a real secret value. Blocked in non-interactive contexts by default.
@@ -118,7 +120,9 @@ Options: --clipboard (auto-clears after 30s). Attached terminals and exact typed
 
 ### phantom rotate
 Regenerate all persistent `phm_` mappings in .env. Real secrets in vault are unchanged; old mappings become invalid.
-Options: --sync (push updated tokens to deployment platforms simultaneously)
+`--sync` is a deprecated compatibility flag and is rejected. Provider-side
+credentials are unchanged; rotate them in the provider's trusted interface and
+add the replacement credential from a trusted terminal.
 
 ### phantom status
 Show project ID, vault backend, secret count, service mappings, proxy state.
@@ -155,25 +159,36 @@ Configure Claude Code MCP server and permissions automatically.
 Writes to .claude/settings.local.json.
 
 ### phantom login
-Sign in to Phantom Cloud via GitHub OAuth (device code flow).
+Sign in through a GitHub device flow. Requires attached stdin/stdout/stderr,
+then exact typed challenges before provider access and before browser/polling/
+keychain effects.
 
 ### phantom logout
-Sign out of Phantom Cloud.
+Delete the stored cloud token only after an exact trusted-terminal challenge.
 
 ### phantom cloud push
-Encrypt vault client-side and upload to Phantom Cloud. Server never sees plaintext.
+After an exact trusted-terminal challenge, encrypt the vault client-side and
+upload ciphertext to Phantom Cloud. A config-save failure after upload is an
+explicit partial success that must be reconciled; do not retry automatically.
 
 ### phantom cloud pull
 Download and decrypt a personal-vault snapshot from Phantom Cloud. Decryption
 requires the cloud encryption key in the original OS keychain; login alone on a
 different machine is insufficient.
-Options: --force (overwrite existing local secrets)
+Requires an exact trusted-terminal challenge. With `force=false`, skipped local
+entries preserve the prior merge base, set a durable reconciliation marker,
+and block a later push until a full pull is applied. `--force` declares local
+overwrites but never bypasses the ceremony.
 
 ### phantom cloud status
-Check cloud auth status, plan, and last sync version.
+Authenticated provider read requiring attached stdin/stdout/stderr and an exact
+typed challenge before stored-bearer or network access.
 
 ### phantom export
-Export the vault to a new encrypted backup. Omit passphrase flags for a hidden terminal prompt, or use `--passphrase-file PRIVATE_FILE` for bounded automation. Plaintext export and argv passphrases are disabled.
+Export the vault to a new encrypted backup only from attached stdin/stdout/
+stderr after an exact value-blind typed challenge and hidden passphrase prompt.
+Export `--passphrase-file`, plaintext export, argv passphrases, existing targets,
+symlinks, and output paths outside the project are rejected.
 
 ### phantom import
 Restore secrets from an encrypted backup, or import from a competitor export file.
@@ -188,7 +203,11 @@ Competitor migration (--from):
   phantom import --from dotenvx   --file .env
   phantom import --from 1password  --file 1p-export.json
   phantom import --from env        --file .env
-Options: --force (overwrite existing secrets without prompting)
+Import requires attached stdin/stdout/stderr and an exact typed plan bound to
+the source digest, target identity, destination names, and overwrite set.
+`--force` declares overwrites but never bypasses this ceremony. Encrypted-backup
+passphrase files are accepted only on non-Windows systems and do not enable a
+headless import.
 
 Note: dotenvx encrypted .env.vault files are not supported — run
   `dotenvx decrypt --stdout > .env` first, then import the plain .env.
@@ -233,21 +252,27 @@ After exact trusted-terminal confirmation, copy a secret to another phantom-init
 Options: --rename <newname>
 
 ### phantom team list / create / members / invite / key-publish / vault-push / vault-pull
-Multi-developer fixed-membership shared-vault commands for a planned Pro pilot. Current vault access is member-wide: every team member can read and write the shared vault, and roles do not provide per-vault access control. `list` and `members` are read-only. `create`, `invite`, `key-publish`, `vault-push`, and `vault-pull` are mutating and require explicit user consent plus the MCP confirmation and out-of-band approval gates. The authenticated creator becomes owner, and invitation management is owner/admin-gated. `key-publish` registers this device's X25519 public key with the team — pubkey only, the private key stays in the OS keychain. `vault-push` wraps the project's secrets with a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305) and uploads ciphertext only; `vault-pull` is the corresponding download/decrypt.
+Multi-developer fixed-membership shared-vault commands for a planned Pro pilot. Current vault access is member-wide: every team member can read and write the shared vault, and roles do not provide per-vault access control. CLI `list` and `members` are authenticated provider reads requiring attached stdin/stdout/stderr and an exact typed challenge before bearer/network access. CLI team mutations require the same terminal ceremony before provider access. MCP team reads and mutations instead require both `confirm: true` and an out-of-band `approval_token`. The authenticated creator becomes owner; invitations may assign only `member` or `admin`, and invitation management is owner/admin-gated. `key-publish` registers this device's X25519 public key with the team — pubkey only, the private key stays in the OS keychain. `vault-push` wraps the project's secrets with a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305) and uploads ciphertext only; `vault-pull` is the corresponding download/decrypt.
 
 Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control. Pro is a planned hosted plan, not a generally purchasable or commissioned entitlement evidenced by this repository.
 
 ### phantom open [target]
-Open a Phantom page in the browser. Aliases: `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, `site`. Any other word becomes `https://phm.dev/<word>`; full URLs pass through.
+Open one closed-catalog Phantom destination only after an exact trusted-terminal
+challenge. Accepted aliases are `dashboard`, `billing`, `team`/`teams`, `docs`,
+`pricing`, `github`/`repo`, `issues`, and `site`/`home`; arbitrary paths and URLs
+are rejected.
 
 ### phantom upgrade [--check-only] [--force]
-Self-replace this binary with the latest GitHub release.
+Check-only is read-only. An eligible standalone binary may self-replace only
+after two exact trusted-terminal challenges bound to the signed release plan.
+Managed installations route to their package manager; ambiguous ownership and
+the deprecated `--force` flag fail closed.
 
 ### phantom completion <bash|zsh|fish|powershell|elvish>
 Print a shell-completion script to stdout. Source from your shell rc; see the README for per-shell paths.
 
 
-## MCP server — release-checked catalog
+## MCP server — selected release-checked tools
 
 Setup: install both reviewed `v0.7.3` binaries, then run `phantom setup --client claude`
 
@@ -266,7 +291,8 @@ phantom_status
   Returns: formatted status report.
 
 phantom_cloud_status
-  Check Phantom Cloud auth status, plan tier, and last sync version.
+  Authenticated provider read of Phantom Cloud auth status, plan tier, and last sync version.
+  Params: confirm (bool, must be true), approval_token (string)
   Returns: login status, plan, vault count if logged in.
 
 phantom_why
@@ -293,7 +319,9 @@ phantom_doctor
 ### Initialization tools
 
 phantom_init
-  Read .env, store real secrets in vault, rewrite with persistent sensitive `phm_` mappings, write .phantom.toml.
+  Apply one exact-before transaction across config, dotenv, gitignore, hook,
+  generated client files, and vault CAS operations. Conflicts roll back only
+  transaction-owned changes.
   Params: env_path (string, default: ".env"), confirm (bool, must be true), approval_token (string)
   Returns: list of protected secrets.
 
@@ -319,7 +347,7 @@ phantom_add_secret
   Params: name (string), confirm (bool, must be true), approval_token (string). There is no value parameter.
 
 phantom_remove_secret
-  Permanently delete a secret from the vault.
+  Transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping.
   Params: name (string), confirm (bool, must be true), approval_token (string)
   Effect: secret is gone — not recoverable unless cloud backup exists.
 
@@ -337,10 +365,13 @@ phantom_cloud_push
 phantom_cloud_pull
   Download and decrypt vault from Phantom Cloud.
   Params: force (bool), confirm (bool, must be true), approval_token (string)
-  Effect: writes secrets into local vault. force=true overwrites existing entries.
+  Effect: writes secrets into local vault. With force=false, any skipped entries
+  preserve the prior merge base and block push until full reconciliation.
+  force=true declares overwrites but never bypasses the two gates.
 
 phantom_copy_secret
-  Copy a secret from this vault to another phantom-initialized project.
+  Copy a secret into another initialized project using exact config/vault/
+  managed-dotenv before-images. Existing target ownership is refused.
   Params: name (string), target_dir (string), rename (string, optional), confirm (bool, must be true), approval_token (string)
   Effect: writes into target vault. .. path traversal is rejected.
 
@@ -354,17 +385,25 @@ phantom_unwrap
   Params: confirm (bool, must be true), approval_token (string)
   Effect: restores and removes :raw entries.
 
+phantom_apply_expiry_policy
+  Demote expired entries to `VaultMode::ReadOnly`. Vault backends then refuse
+  value retrieval, and `phantom exec`/foreground `phantom start` fail mapped-
+  secret preflight instead of injecting an expired value. A later verified
+  lifecycle promotion restores access. Demotion does not recall a value already
+  injected into or cached by a running process.
+  Params: promote_rotated, confirm (bool, must be true), approval_token (string)
+
 ### Team tools (planned Pro pilot, multi-developer fixed-membership shared vaults)
 
 Current vault access is member-wide: every team member can read and write the shared vault. Invitation management is owner/admin-gated; roles do not provide per-vault access control.
 
 phantom_team_list
   List teams the authenticated user belongs to. Returns team id, name, and the user's role for each.
-  Read-only.
+  Authenticated provider request. Params: confirm (bool, must be true), approval_token (string)
 
 phantom_team_members
   List members of a team by team_id. Returns GitHub login, email, and role for each.
-  Read-only. Params: team_id, optional confirm, optional approval_token. The reused schema exposes the two gate fields, but this read-only handler ignores them.
+  Authenticated provider request. Params: team_id, confirm (bool, must be true), approval_token (string)
 
 phantom_team_key_publish
   One-time setup: register this device's X25519 public key with the team so encrypted vaults can be addressed to it.
@@ -377,7 +416,7 @@ phantom_team_create
 
 phantom_team_invite
   Invite someone to a team by GitHub username. Requires owner or admin role.
-  Params: team_id, github_login, role ("member" | "admin" | "owner"), confirm (bool, must be true), approval_token (string)
+  Params: team_id, github_login, role ("member" | "admin"), confirm (bool, must be true), approval_token (string)
 
 phantom_team_vault_push
   Push this project's secrets to the shared team vault so all members can pull them.
@@ -638,11 +677,11 @@ Do not commit:
 3. Same-keychain-machine backup: phantom login, phantom cloud push, then phantom cloud pull where the original cloud encryption key remains available
 4. Deploy to Vercel: phantom sync --platform vercel --project prj_xxx
 5. Provider-backed machine setup: phantom pull --from vercel --project prj_xxx (requires Vercel credentials)
-6. Vault backup (encrypted): phantom export --output backup.enc / phantom import backup.enc (hidden prompts; use a private --passphrase-file for automation)
+6. Vault backup (encrypted): phantom export --output backup.enc / phantom import backup.enc (separate exact trusted-terminal ceremonies; export passphrase files are rejected)
 7. Team onboarding: phantom env generates .env.example with placeholders
 8. CI/CD: use phantom check in GitHub Actions; sync deploy secrets to Vercel or Railway before builds
 9. Pre-commit safety: `phantom check --staged` checks staged dotenv content with Phantom's heuristics and added lines in other staged files for a bounded credential-prefix set
-10. Rotate with sync: phantom rotate --sync regenerates tokens and pushes to deployment platforms
+10. Rotate mappings: phantom rotate remaps local placeholders. Provider-side credential rotation remains hard-denied; rotate at the provider and add the replacement credential from a trusted terminal.
 11. Monorepo: phantom init in each subdirectory — each gets its own vault and config
 12. Multi-IDE team: same MCP server works across Claude Code, Cursor, Windsurf, and Codex
 13. Migrate from Doppler/Infisical/dotenvx/1Password: phantom import --from <source> --file <path>

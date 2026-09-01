@@ -211,7 +211,7 @@ enum Commands {
         stdin: bool,
     },
 
-    /// Remove a secret from the vault
+    /// Remove a secret transactionally after an exact trusted-terminal challenge
     #[command(next_help_heading = "Daily use")]
     Remove {
         /// Secret name to remove
@@ -260,22 +260,22 @@ enum Commands {
     },
 
     // ───────────────────────── Sync & teams ──────────────────────────
-    /// Log in to Phantom Cloud
+    /// Log in only after two exact trusted-terminal challenges
     #[command(next_help_heading = "Sync & teams")]
     Login,
 
-    /// Log out of Phantom Cloud
+    /// Log out only after an exact trusted-terminal challenge
     #[command(next_help_heading = "Sync & teams")]
     Logout,
 
-    /// Cloud vault sync commands
+    /// Cloud status plus trusted-terminal push/pull commands
     #[command(next_help_heading = "Sync & teams")]
     Cloud {
         #[command(subcommand)]
         action: CloudAction,
     },
 
-    /// Team vault management
+    /// Authenticated team reads and trusted-terminal team mutations
     #[command(next_help_heading = "Sync & teams")]
     Team {
         #[command(subcommand)]
@@ -321,7 +321,7 @@ enum Commands {
         force: bool,
     },
 
-    /// Export secrets to an encrypted backup file
+    /// Export to a new encrypted backup after an exact trusted-terminal challenge
     #[command(next_help_heading = "Sync & teams")]
     Export {
         /// New encrypted backup path (must not already exist)
@@ -341,7 +341,7 @@ enum Commands {
         allow_plaintext: bool,
     },
 
-    /// Import secrets from an encrypted backup or a competitor export
+    /// Import only after an exact trusted-terminal challenge; --force never bypasses it
     ///
     /// Phantom encrypted backup:
     ///   phantom import <FILE>
@@ -397,7 +397,7 @@ enum Commands {
     /// Check for updates; standalone installs may self-replace, while managed installs route to their owner.
     #[command(next_help_heading = "Maintenance")]
     Upgrade {
-        /// Skip the standalone self-replacement confirmation prompt
+        /// Deprecated and rejected: cannot bypass the standalone replacement ceremonies
         #[arg(long)]
         force: bool,
         /// Print available version without modifying the binary
@@ -468,7 +468,7 @@ enum Commands {
         action: GrantAction,
     },
 
-    /// Validate stored secrets against their target APIs (drift detection).
+    /// Validate stored secrets; live provider checks require exact trusted-terminal consent.
     ///
     /// Sub-commands: `schedule`, `history`
     #[command(next_help_heading = "Maintenance")]
@@ -500,7 +500,7 @@ enum Commands {
         action: AuditAction,
     },
 
-    /// Open a Phantom page in the browser. Defaults to the dashboard.
+    /// Open a closed-catalog Phantom page after an exact trusted-terminal challenge.
     /// Aliases: dashboard, billing, team, docs, pricing, github, issues, site.
     /// Other words and arbitrary URLs are rejected before browser access.
     #[command(next_help_heading = "Maintenance")]
@@ -528,7 +528,7 @@ enum Commands {
         json: bool,
     },
 
-    /// TTL-based expiry management: set/enforce TTLs and remap local tokens
+    /// TTL metadata: exact-terminal set, read-only enforce, and deprecated local remap
     ///
     /// Subcommands:
     ///   phantom expiry set <KEY> <DAYS>      — mark a secret expiring in N days
@@ -582,7 +582,7 @@ enum ExpiryAction {
 
 #[derive(Subcommand)]
 enum ValidateAction {
-    /// Configure or show the background validation schedule.
+    /// Show or configure validation scheduling; writes require exact terminal consent.
     ///
     /// Examples:
     ///   phantom validate schedule hourly
@@ -739,41 +739,41 @@ enum AgentAction {
 
 #[derive(Subcommand)]
 enum TeamAction {
-    /// List your teams
+    /// List teams after an exact trusted-terminal challenge authorizes provider access
     List,
-    /// Create a new team
+    /// Create a team after an exact trusted-terminal challenge
     Create {
         /// Team name
         name: String,
     },
-    /// List team members
+    /// List members after an exact trusted-terminal challenge authorizes provider access
     Members {
         /// Team ID
         team_id: String,
     },
-    /// Invite a member to a team
+    /// Invite a member after an exact trusted-terminal challenge
     Invite {
         /// Team ID
         team_id: String,
         /// GitHub username to invite
         github_login: String,
-        /// Role to assign (member, admin, owner)
+        /// Role to assign (member or admin; ownership transfer is not exposed)
         #[arg(long, default_value = "member")]
         role: String,
     },
-    /// Register your team-vault public key on a team you belong to.
+    /// Register your team-vault public key after an exact trusted-terminal challenge.
     /// Run this once per team before pushing or pulling vaults.
     KeyPublish {
         /// Team ID
         team_id: String,
     },
-    /// Push the current project's vault to a team (E2E encrypted to every
+    /// After an exact trusted-terminal challenge, push the current project's vault to a team (E2E encrypted to every
     /// member that has a registered public key).
     VaultPush {
         /// Team ID
         team_id: String,
     },
-    /// Pull the current project's team vault into your local vault.
+    /// Pull the current project's team vault after an exact trusted-terminal challenge.
     VaultPull {
         /// Team ID
         team_id: String,
@@ -789,7 +789,7 @@ enum TeamAction {
         #[arg(long, short = 'y', hide = true)]
         yes: bool,
     },
-    /// Proactively rotate the team vault's encryption key without removing any member.
+    /// After an exact trusted-terminal challenge, rotate the team vault key.
     ///
     /// Re-encrypts the vault with a fresh symmetric key and re-wraps it for
     /// all members that have a registered public key. Use this for scheduled
@@ -802,15 +802,15 @@ enum TeamAction {
 
 #[derive(Subcommand)]
 enum CloudAction {
-    /// Push local secrets to Phantom Cloud
+    /// Push after an exact trusted-terminal challenge; partial success must be reconciled
     Push,
-    /// Pull secrets from Phantom Cloud to local vault
+    /// Pull after an exact trusted-terminal challenge; partial merges block later push
     Pull {
-        /// Overwrite existing local secrets
+        /// Declare overwrites; never bypass the trusted-terminal ceremony
         #[arg(long)]
         force: bool,
     },
-    /// Show cloud sync status
+    /// Read cloud status after an exact trusted-terminal challenge authorizes provider access
     Status,
 }
 

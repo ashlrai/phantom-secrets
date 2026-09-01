@@ -76,10 +76,10 @@
     },
     {
       "name": "phantom_apply_expiry_policy",
-      "description": "Scan the vault, apply read-only demotion to secrets whose TTL has expired, and (optionally) re-promote secrets that were demoted but have since been rotated. This is the background enforcement step that prevents stale credentials from being injected by `phantom exec`. Returns: { demoted: [{ name, expires_at, secs_overdue }], promoted: [{ name }], skipped_count, total_scanned }. Requires confirm:true because it writes vault metadata.",
+      "description": "Scan the vault, apply read-only demotion to secrets whose TTL has expired, and (optionally) re-promote secrets that were demoted but have since been rotated. This blocks future vault retrieval and new `phantom exec`/foreground `phantom start` mapped-secret preflight; it does not recall values already injected or cached. Returns: { demoted: [{ name, expires_at, secs_overdue }], promoted: [{ name }], skipped_count, total_scanned }. Requires confirm:true because it writes vault metadata.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_apply_expiry_policy`.\n\nScans the vault, identifies secrets whose TTL has expired, sets\n`vault_mode = ReadOnly` on each, and returns a list of affected secrets.\nThis is the \"demotion\" step that prevents stale credentials from being\ninjected by `phantom exec`.\n\nRequires `confirm: true` because it writes metadata.",
+        "description": "Parameters for `phantom_apply_expiry_policy`.\n\nScans the vault, identifies secrets whose TTL has expired, sets\n`vault_mode = ReadOnly` on each, and returns a list of affected secrets.\nThis is the demotion step that blocks future vault retrieval and new\n`phantom exec`/foreground `phantom start` mapped-secret preflight. It does\nnot recall values already injected into or cached by running processes.\n\nRequires `confirm: true` because it writes metadata.",
         "properties": {
           "also_promote_rotated": {
             "default": true,
@@ -96,7 +96,7 @@
           },
           "confirm": {
             "default": false,
-            "description": "Must be `true`.  The caller must obtain user consent before demoting\nsecrets to read-only mode, as it will break any running process that\nrelies on those secrets being injected by `phantom exec`.",
+            "description": "Must be `true`.  The caller must obtain user consent before demoting\nsecrets to read-only mode. New retrieval and process preflight fail;\nalready injected or cached values are not recalled.",
             "type": "boolean"
           }
         },
@@ -470,7 +470,7 @@
     },
     {
       "name": "phantom_cloud_pull",
-      "description": "Pull vault from Phantom Cloud to local machine. Decrypts client-side. Use force=true to overwrite existing secrets. DESTRUCTIVE — writes entries into the local vault and (with force=true) overwrites values. Requires `confirm: true`; the agent must ask the user for explicit consent before calling.",
+      "description": "Pull and decrypt a personal-vault snapshot from Phantom Cloud. DESTRUCTIVE — writes local vault entries; force=true declares overwrites but never bypasses approval. With force=false, existing entries are skipped; any partial result preserves the prior merge base, records a durable reconciliation requirement, and blocks cloud push until a fully reconciled pull. Requires `confirm: true` plus an out-of-band `approval_token`.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -484,12 +484,12 @@
           },
           "confirm": {
             "default": false,
-            "description": "Required. Must be true — the calling agent must confirm with the user\nbefore invoking this tool. A pull writes entries into the local vault\nand (with force=true) overwrites existing values.",
+            "description": "Required. Must be true — the calling agent must confirm with the user\nbefore invoking this tool. A pull writes entries into the local vault;\nforce declares which reviewed entries may be overwritten.",
             "type": "boolean"
           },
           "force": {
             "default": false,
-            "description": "Overwrite existing local secrets (default: false)",
+            "description": "Declare overwrite of existing local secrets (default: false). This does\nnot bypass confirmation or out-of-band approval. With false, skipped\nentries retain the prior merge base and block push until reconciliation.",
             "type": "boolean"
           }
         },
@@ -558,7 +558,7 @@
     },
     {
       "name": "phantom_copy_secret",
-      "description": "Copy a secret from this project's vault to another project's vault. The secret value is never exposed — it transfers directly between encrypted vaults. The target project must be phantom-initialized. DESTRUCTIVE — writes a secret into another vault (exfiltration primitive if misdirected); requires `confirm: true`; the agent must ask the user for explicit consent before calling.",
+      "description": "Copy a secret into a distinct initialized target through one exact-before target transaction. Refuses existing target vault, lifecycle-config, or managed-dotenv ownership; never overwrites. On success it creates both the target vault entry and managed-dotenv phantom mapping, with dotenv committed last. This is an exfiltration-capable cross-project write and requires confirm plus an out-of-band approval token before any source value retrieval.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -580,7 +580,7 @@
             "type": "string"
           },
           "rename": {
-            "description": "Optional new name for the secret in the target project",
+            "description": "Optional new name for the secret in the target project. Copy refuses\nif the target vault, lifecycle config, or managed dotenv already owns\nthis name; there is no overwrite mode.",
             "type": [
               "string",
               "null"
@@ -845,7 +845,7 @@
     },
     {
       "name": "phantom_init",
-      "description": "Initialize Phantom: read .env file, store real secrets in the vault, and rewrite .env with phantom tokens. The AI agent will only see phantom tokens after this.",
+      "description": "Initialize Phantom through one exact-before project transaction: read a safe project-local dotenv, compare-and-swap every vault entry, persist config, and rewrite the dotenv with phantom tokens last. Concurrent file or vault changes abort and transaction-owned writes are rolled back where verifiable. Requires confirm plus out-of-band approval.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -917,7 +917,7 @@
     },
     {
       "name": "phantom_remove_secret",
-      "description": "Remove a secret from the Phantom vault by name. DESTRUCTIVE — the secret is permanently deleted (after a successful cloud pull it is recoverable, otherwise not). Requires `confirm: true`; the agent must ask the user for explicit consent before calling. See the `confirm` parameter docs for the threat model.",
+      "description": "Transactionally remove a secret's vault value, lifecycle configuration, and exact managed-dotenv mapping. DESTRUCTIVE — a successful removal is recoverable only from a separately retained backup. Uses exact before-images and rolls back only transaction-owned changes. Requires `confirm: true` plus an out-of-band `approval_token`; review the exact value-blind effect before approval.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
