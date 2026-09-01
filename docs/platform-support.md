@@ -5,20 +5,26 @@ wrapper mapping, and native acceptance. One does not prove the next.
 
 ## Current matrix
 
-| Target | Release build host and mode | GitHub release workflow | Primary npm wrapper | Shell installer | Native acceptance in this repository |
+| Target | Release build host and mode | GitHub release workflow | Primary npm wrapper | Shell installer | Configured native acceptance / current evidence |
 |---|---:|---:|---:|---:|---:|
-| macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build, no archive execution | Archive + SBOM configured | Mapped | Mapped | Not recorded for the exact candidate archive |
-| macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host; no Intel execution | Archive + SBOM configured | Mapped | Mapped | Not recorded for the exact candidate archive |
-| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04; no ARM execution | Archive + SBOM configured; GLIBC symbol ceiling enforced | Mapped | Mapped | Not recorded for the exact candidate archive |
-| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04, no archive execution | Archive + SBOM configured; GLIBC symbol ceiling enforced | Mapped | Mapped | Not recorded for the exact candidate archive |
-| Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest`, no archive execution | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | Not recorded for the exact candidate archive |
-| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm`, no archive execution | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | Not recorded for the exact candidate archive |
+| macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build | Archive + SBOM configured | Mapped | Mapped | Configured on `macos-15` ARM64: exact archive, OS/arch, both versions, and MCP smoke; no exact v0.7.4 candidate receipt recorded |
+| macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host | Archive + SBOM configured | Mapped | Mapped | Configured on `macos-15-intel` X64: exact archive, OS/arch, both versions, and MCP smoke; no exact v0.7.4 candidate receipt recorded |
+| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04 | Archive + SBOM configured; GLIBC symbol ceiling enforced | Mapped | Mapped | Configured on `ubuntu-22.04-arm` ARM64: exact archive, OS/arch, both versions, and MCP smoke; no exact v0.7.4 candidate receipt recorded |
+| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04 | Archive + SBOM configured; GLIBC symbol ceiling enforced | Mapped | Mapped | Configured on `ubuntu-22.04` X64: exact archive, OS/arch, both versions, and MCP smoke; no exact v0.7.4 candidate receipt recorded |
+| Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest` | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | Configured on `windows-latest` X64: exact archive, OS/arch, both versions, and MCP smoke; no exact v0.7.4 candidate receipt recorded |
+| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm` | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | Configured on `windows-11-vs2026-arm` ARM64: exact archive, OS/arch, both versions, and MCP smoke; no exact v0.7.4 candidate receipt recorded |
 
 The current workflow defines six target archives, each containing `phantom`
 and `phantom-mcp`: four Unix `.tar.gz` files and two Windows `.zip` files. Both
 npm wrappers and the direct installers share that six-target lookup contract.
-A mapping or workflow definition is not evidence that a corresponding release
-artifact exists, is signed, or passed native acceptance.
+The `native-acceptance` matrix is configured to download each exact build
+artifact on its matching runner, reject extra or unsafe archive members, verify
+archive integrity through extraction, assert the runner OS and architecture,
+run both binaries' exact tagged `--version`, and complete the MCP stdio schema
+smoke. Attestation cannot begin until all six jobs succeed. That workflow
+definition is not evidence that a corresponding release artifact exists, is
+signed, or passed a particular run: no exact v0.7.4 candidate receipt is
+recorded yet.
 
 GitHub's current [hosted-runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 maps `windows-latest` to x64 and `macos-latest` to arm64. GNU/Linux release
@@ -26,8 +32,9 @@ builds use the explicit `ubuntu-22.04` x64 image rather than a moving
 `ubuntu-latest` label. The workflow's Windows ARM64 jobs use the literal
 `windows-11-vs2026-arm` label. Runner labels and images can change, so the run
 log and image metadata are the source of truth for a particular release. A
-native-architecture compilation host is still not native acceptance because the
-workflow packages but does not execute the exact resulting archive.
+native-architecture compilation host is not native acceptance on its own. The
+separate matrix is configured to execute the exact resulting archive; only a
+retained successful run establishes that evidence for a particular candidate.
 
 ## GNU/Linux compatibility baseline
 
@@ -39,10 +46,13 @@ target, the workflow reads the ELF version requirements of both `phantom` and
 encounters an unknown GLIBC requirement.
 
 This is a deterministic symbol-version ceiling, not a claim that every Linux
-distribution with GLIBC 2.35 is compatible. It does not test the packaged
-archive, ARM64 execution, the kernel, loader, native credential store, proxy, or
-MCP behavior and does not constitute native runtime acceptance. Those remain
-part of the exact-archive acceptance process below.
+distribution with GLIBC 2.35 is compatible. The GLIBC build gate itself does
+not test the packaged archive, ARM64 execution, the kernel, loader, native
+credential store, proxy, or MCP behavior. It does not constitute native runtime acceptance.
+The separate native matrix is configured to cover exact-archive
+execution and MCP schema initialization on Linux x64 and ARM64, but its source
+definition is not a successful candidate receipt and it does not cover the
+remaining operating-system integrations below.
 
 ## Feature-specific boundaries
 
@@ -76,7 +86,7 @@ acceptance and never place provider client secrets on the command line.
 - The Homebrew formula is a manually reviewed distribution surface. The
   repository's release workflow does not automatically update a tap.
 
-## Required native acceptance
+## Configured and additional native acceptance
 
 Before claiming a target as release-ready, test the exact archive and digest on
 that target:
@@ -89,4 +99,9 @@ that target:
 6. exercise supported shells and editor setup; and
 7. record code-signing, notarization, or platform trust results separately.
 
-No repository-local source test is a substitute for that evidence.
+The release workflow automates steps 1 and 2 plus MCP schema initialization from
+step 5 on all six native runners. Installer and upgrade behavior, credential
+stores, an authenticated proxy request, shells and editors, and platform trust
+still require separately retained evidence. No repository-local source test or
+workflow definition is a substitute for a successful exact-candidate run and
+those additional receipts.

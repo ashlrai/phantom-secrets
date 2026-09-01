@@ -19,6 +19,7 @@ import {
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflow = readFileSync(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
+const platformSupport = readFileSync(resolve(repoRoot, "docs/platform-support.md"), "utf8");
 const fixtureTarget = "x86_64-unknown-linux-gnu";
 const fixtureEnv = Object.freeze({ RUNNER_OS: "Linux", RUNNER_ARCH: "X64" });
 const fixtureRuntime = Object.freeze({ platform: "linux", arch: "x64" });
@@ -356,4 +357,25 @@ test("attestation cannot begin before every build and native acceptance succeeds
   assert.match(attestJob, /\n    needs: \[build, native-acceptance\]\n/);
   assert.doesNotMatch(attestJob, /continue-on-error:/);
   assert.doesNotMatch(job("native-acceptance", "attest"), /continue-on-error:/);
+});
+
+test("platform documentation distinguishes configured native gates from candidate evidence", () => {
+  for (const [target, values] of Object.entries(expected)) {
+    const [, , runner, , runnerArch] = values;
+    const row = platformSupport
+      .split("\n")
+      .find((line) => line.includes(`(\`${target}\`)`));
+    assert.ok(row, `missing platform documentation row for ${target}`);
+    assert.ok(
+      row.includes(`\`${runner}\` ${runnerArch}`),
+      `platform documentation must bind ${target} to ${runner} ${runnerArch}`,
+    );
+  }
+
+  assert.match(platformSupport, /no exact v0\.7\.4 candidate receipt is\s+recorded yet/i);
+  assert.match(platformSupport, /Attestation cannot begin until all six jobs succeed/);
+  assert.match(platformSupport, /only a\s+retained successful run establishes that evidence/i);
+  assert.match(platformSupport, /Installer and upgrade behavior[\s\S]*still require separately retained evidence/);
+  assert.doesNotMatch(platformSupport, /workflow packages but does not execute the exact resulting archive/i);
+  assert.doesNotMatch(platformSupport, /no archive execution/i);
 });
