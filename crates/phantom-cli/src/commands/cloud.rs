@@ -413,6 +413,10 @@ fn update_cloud_reconciliation(config: &mut PhantomConfig, remote_version: u64, 
 }
 
 pub fn run_status() -> Result<()> {
+    require_trusted_terminal_cloud(&CloudConsentPlan {
+        effect: "read the stored Phantom bearer and send an authenticated request for cloud account and vault status".to_string(),
+        challenge: "cloud status authenticated".to_string(),
+    })?;
     let api_base = auth::api_base_url()?;
 
     match auth::load_token() {

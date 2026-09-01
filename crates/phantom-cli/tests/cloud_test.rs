@@ -3,8 +3,8 @@
 /// What *is* tested unconditionally:
 ///   - `phantom cloud push` / `pull` exit non-zero before authentication or
 ///     network access when the exact terminal ceremony cannot be completed.
-///   - `phantom cloud status` succeeds and reports "not logged in" when no
-///     token is present.
+///   - `phantom cloud status` is denied headlessly before stored-bearer or
+///     network access.
 ///   - Lower-level HTTP client tests cover explicit mock origins with
 ///     test-only bearers; the production CLI intentionally has no API-origin
 ///     override because it loads a real bearer from the OS keychain.
@@ -55,23 +55,16 @@ fn cloud_pull_fails_without_auth_token() {
 }
 
 #[test]
-fn cloud_status_succeeds_and_reports_not_logged_in() {
-    // cloud status should always exit 0 and print a message — even without a
-    // token it reports "not logged in" rather than erroring out.
+fn cloud_status_fails_closed_headlessly_before_authentication() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
 
-    let output = phantom(&dir).args(["cloud", "status"]).assert().success();
+    let output = phantom(&dir).args(["cloud", "status"]).assert().failure();
 
-    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
-    // Either "not logged in" or "logged in" — both are valid depending on
-    // whether a real token is present in the developer's keychain.
-    let has_expected_text = stdout.contains("not logged in")
-        || stdout.contains("logged in")
-        || stdout.contains("Cloud:");
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
     assert!(
-        has_expected_text,
-        "cloud status should report login state, got: {stdout}"
+        stderr.contains("trusted terminal"),
+        "unexpected denial: {stderr}"
     );
 }
 

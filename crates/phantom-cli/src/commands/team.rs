@@ -7,6 +7,11 @@ use std::path::PathBuf;
 use zeroize::Zeroizing;
 
 pub fn run_list() -> Result<()> {
+    require_trusted_terminal_team(&team_consent_plan(
+        "list",
+        &[],
+        "read the stored Phantom bearer and send an authenticated request for the caller's remote team list",
+    )?)?;
     let token = Zeroizing::new(auth::require_token()?);
     let api_base = auth::api_base_url()?;
 
@@ -63,6 +68,11 @@ pub fn run_create(name: &str) -> Result<()> {
 }
 
 pub fn run_members(team_id: &str) -> Result<()> {
+    require_trusted_terminal_team(&team_consent_plan(
+        "members",
+        &[team_id],
+        "read the stored Phantom bearer and send an authenticated request for the selected team's member roster",
+    )?)?;
     let token = Zeroizing::new(auth::require_token()?);
     let api_base = auth::api_base_url()?;
 
