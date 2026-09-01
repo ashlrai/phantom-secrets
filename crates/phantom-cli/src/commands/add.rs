@@ -305,7 +305,12 @@ mod tests {
             .save(&config_path)
             .unwrap();
         let (config, before) = load_config_exact(&config_path).unwrap();
-        let vault = FileVault::new(dir.path(), "add-test", "passphrase".to_string()).unwrap();
+        let vault = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(dir),
+            "add-test",
+            "passphrase".to_string(),
+        )
+        .unwrap();
         (config_path, config, before, vault)
     }
 

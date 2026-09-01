@@ -589,8 +589,12 @@ mod tests {
         symlink(&outside, &env_path).unwrap();
         let config_path = dir.path().join(".phantom.toml");
         let config = PhantomConfig::new_with_defaults("pull-symlink-test".to_string());
-        let vault =
-            FileVault::new(dir.path(), "pull-symlink-test", "passphrase".to_string()).unwrap();
+        let vault = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "pull-symlink-test",
+            "passphrase".to_string(),
+        )
+        .unwrap();
         let pulled = BTreeMap::from([(
             "NEW_SECRET".to_string(),
             Zeroizing::new("provider-value".to_string()),
@@ -627,8 +631,12 @@ mod tests {
         std::fs::write(&config_path, &config_before).unwrap();
         std::fs::write(&config_path, b"[phantom]\nproject_id = \"changed\"\n").unwrap();
         let env_path = dir.path().join(".env");
-        let vault =
-            FileVault::new(dir.path(), "pull-config-drift", "passphrase".to_string()).unwrap();
+        let vault = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "pull-config-drift",
+            "passphrase".to_string(),
+        )
+        .unwrap();
         let pulled = BTreeMap::from([(
             "NEW_SECRET".to_string(),
             Zeroizing::new("provider-value".to_string()),
@@ -666,7 +674,12 @@ mod tests {
         let env_before = b"OWNER=before\n".to_vec();
         std::fs::write(&env_path, &env_before).unwrap();
         std::fs::write(&env_path, b"OWNER=concurrent\n").unwrap();
-        let vault = FileVault::new(dir.path(), "pull-env-drift", "passphrase".to_string()).unwrap();
+        let vault = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "pull-env-drift",
+            "passphrase".to_string(),
+        )
+        .unwrap();
         let pulled = BTreeMap::from([(
             "NEW_SECRET".to_string(),
             Zeroizing::new("provider-value".to_string()),

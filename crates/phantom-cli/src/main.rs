@@ -4,6 +4,12 @@ mod util;
 #[cfg(test)]
 pub(crate) mod test_support {
     pub(crate) use phantom_core::PROCESS_ENV_LOCK as ENV_LOCK;
+
+    pub(crate) fn canonical_tempdir_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        dir.path()
+            .canonicalize()
+            .expect("temporary directory should canonicalize")
+    }
 }
 
 use clap::{Parser, Subcommand};

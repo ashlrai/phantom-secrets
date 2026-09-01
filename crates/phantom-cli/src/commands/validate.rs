@@ -538,7 +538,12 @@ mod tests {
     #[test]
     fn stale_validation_before_image_commits_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let vault = FileVault::new(dir.path(), "validate-cas", "passphrase".into()).unwrap();
+        let vault = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "validate-cas",
+            "passphrase".into(),
+        )
+        .unwrap();
         vault.store("A", "secret").unwrap();
         vault.store("B", "secret").unwrap();
         let expected = snapshot_validation_metadata(&vault, &["A".into(), "B".into()]).unwrap();

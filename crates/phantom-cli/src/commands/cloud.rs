@@ -497,7 +497,12 @@ mod tests {
     }
 
     fn file_vault(dir: &TempDir, project: &str) -> phantom_vault::file::FileVault {
-        phantom_vault::file::FileVault::new(dir.path(), project, "passphrase".to_string()).unwrap()
+        phantom_vault::file::FileVault::new(
+            &crate::test_support::canonical_tempdir_path(dir),
+            project,
+            "passphrase".to_string(),
+        )
+        .unwrap()
     }
 
     #[test]

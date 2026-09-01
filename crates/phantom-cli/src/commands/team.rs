@@ -539,7 +539,12 @@ mod tests {
         fail_retrieve: Option<&str>,
     ) -> FaultVault {
         FaultVault {
-            inner: FileVault::new(dir.path(), "team-pull", "passphrase".to_string()).unwrap(),
+            inner: FileVault::new(
+                &crate::test_support::canonical_tempdir_path(dir),
+                "team-pull",
+                "passphrase".to_string(),
+            )
+            .unwrap(),
             cas_calls: AtomicUsize::new(0),
             fail_cas,
             fail_retrieve: fail_retrieve.map(str::to_string),

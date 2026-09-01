@@ -731,7 +731,12 @@ mod tests {
 
     fn vault(fail_at: Option<usize>) -> (tempfile::TempDir, FailingCasVault) {
         let dir = tempfile::tempdir().unwrap();
-        let inner = FileVault::new(dir.path(), "env-copy", "passphrase".to_string()).unwrap();
+        let inner = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "env-copy",
+            "passphrase".to_string(),
+        )
+        .unwrap();
         (
             dir,
             FailingCasVault {

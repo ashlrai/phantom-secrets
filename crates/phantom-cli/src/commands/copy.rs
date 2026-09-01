@@ -263,8 +263,12 @@ mod tests {
             .save(&config_path)
             .unwrap();
         let (config, config_before) = load_config_exact(&config_path).unwrap();
-        let vault =
-            FileVault::new(dir.path(), "copy-target-test", "passphrase".to_string()).unwrap();
+        let vault = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "copy-target-test",
+            "passphrase".to_string(),
+        )
+        .unwrap();
         let env_path = target.join(".env");
         let plan = prepare_target_plan(
             &target,

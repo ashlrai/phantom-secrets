@@ -516,7 +516,7 @@ mod tests {
         std::fs::write(&config_path, &config_before).unwrap();
         std::fs::write(&env_path, &env_before).unwrap();
         let vault = FileVault::new(
-            directory.path(),
+            &crate::test_support::canonical_tempdir_path(&directory),
             "init-config-drift",
             "passphrase".to_string(),
         )
@@ -563,7 +563,7 @@ mod tests {
         let env_before = b"A=source-a\nB=source-b\n".to_vec();
         std::fs::write(&env_path, &env_before).unwrap();
         let inner = FileVault::new(
-            directory.path(),
+            &crate::test_support::canonical_tempdir_path(&directory),
             "init-nth-failure",
             "passphrase".to_string(),
         )

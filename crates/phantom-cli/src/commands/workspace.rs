@@ -873,7 +873,9 @@ mod tests {
     fn test_vault(directory: &Path, project_id: &str) -> Box<dyn VaultBackend> {
         Box::new(
             FileVault::new(
-                directory,
+                &directory
+                    .canonicalize()
+                    .expect("temporary vault directory should canonicalize"),
                 project_id,
                 "workspace-test-passphrase".to_string(),
             )
@@ -915,7 +917,7 @@ mod tests {
         assert_eq!(root_token, web_token);
         assert!(root_token.starts_with("phm_"));
         let verify = FileVault::new(
-            vault_dir.path(),
+            &crate::test_support::canonical_tempdir_path(&vault_dir),
             "same-value",
             "workspace-test-passphrase".to_string(),
         )
@@ -954,7 +956,7 @@ mod tests {
             web_content
         );
         let verify = FileVault::new(
-            vault_dir.path(),
+            &crate::test_support::canonical_tempdir_path(&vault_dir),
             "divergent",
             "workspace-test-passphrase".to_string(),
         )
@@ -969,7 +971,7 @@ mod tests {
         let original_env = "OPENAI_API_KEY=sk-new-workspace-value\nNEW_SECRET=sk-new-entry\n";
         write(workspace.path().join(".env"), original_env);
         let vault = FileVault::new(
-            vault_dir.path(),
+            &crate::test_support::canonical_tempdir_path(&vault_dir),
             "rollback",
             "workspace-test-passphrase".to_string(),
         )
@@ -989,7 +991,7 @@ mod tests {
             original_env
         );
         let verify = FileVault::new(
-            vault_dir.path(),
+            &crate::test_support::canonical_tempdir_path(&vault_dir),
             "rollback",
             "workspace-test-passphrase".to_string(),
         )
@@ -1212,7 +1214,7 @@ mod tests {
         let original_env = "OPENAI_API_KEY=sk-new-interrupted-value\n";
         write(workspace.path().join(".env"), original_env);
         let original_vault = FileVault::new(
-            vault_dir.path(),
+            &crate::test_support::canonical_tempdir_path(&vault_dir),
             "journal-rollback",
             "workspace-test-passphrase".to_string(),
         )
@@ -1252,7 +1254,7 @@ mod tests {
             original_env
         );
         let verify = FileVault::new(
-            vault_dir.path(),
+            &crate::test_support::canonical_tempdir_path(&vault_dir),
             "journal-rollback",
             "workspace-test-passphrase".to_string(),
         )
@@ -1271,7 +1273,7 @@ mod tests {
         let original_env = "OPENAI_API_KEY=sk-new-recovery-race\n";
         write(workspace.path().join(".env"), original_env);
         let original_vault = FileVault::new(
-            vault_dir.path(),
+            &crate::test_support::canonical_tempdir_path(&vault_dir),
             "journal-drift",
             "workspace-test-passphrase".to_string(),
         )
@@ -1291,7 +1293,7 @@ mod tests {
         assert!(apply_setup_plan_durable(&sealed, &key, &mut participant, &journal).is_err());
 
         let drifted_vault = FileVault::new(
-            vault_dir.path(),
+            &crate::test_support::canonical_tempdir_path(&vault_dir),
             "journal-drift",
             "workspace-test-passphrase".to_string(),
         )
