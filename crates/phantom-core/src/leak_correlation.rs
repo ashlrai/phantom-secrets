@@ -918,9 +918,7 @@ pub fn alert_destination_origins(backends: &[AlertBackendConfig]) -> std::io::Re
                 }
                 parsed.origin().ascii_serialization()
             }
-            AlertBackendConfig::PagerDuty { .. } => {
-                "https://events.pagerduty.com".to_string()
-            }
+            AlertBackendConfig::PagerDuty { .. } => "https://events.pagerduty.com".to_string(),
         };
         origins.push(origin);
     }
