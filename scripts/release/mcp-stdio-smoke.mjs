@@ -266,9 +266,12 @@ try {
   const registry = JSON.parse(readFileSync(registryPath, "utf8"));
   if (
     registry.description !==
-    "Reduce credential exposure for AI coding agents on Phantom-supported paths. An authenticated local proxy injects only fixed route-owned authentication; client headers and bodies never resolve phm_ tokens."
+    "Value-blind secret metadata and gated workflows for AI coding agents through Phantom's local proxy."
   ) {
     throw new Error("registry description must remain evidence-bounded");
+  }
+  if (registry.description.length > 100) {
+    throw new Error("registry description exceeds the MCP Registry 100-character limit");
   }
   if (writeRegistry) {
     registry.tools = result.tools;
