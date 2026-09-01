@@ -93,6 +93,7 @@ function pathSet(cacheDir, platform = process.platform) {
     // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed sibling lock derived from the validated private cache root so direct and npm installers share ownership.
     lockPath: join(dirname(cacheDir), `.${basename(cacheDir)}.install.lock`),
     // Explicitly overrides a stale direct-installer receipt in the shared root.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed child of the resolved, ownership-checked, non-symlink private cache root.
     sourceMarkerPath: join(cacheDir, ".phantom-install-source.npm-mcp"),
   };
 }
