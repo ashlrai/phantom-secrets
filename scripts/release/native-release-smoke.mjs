@@ -172,7 +172,7 @@ function validateDownloadedArtifact(archivePath, contract) {
   return archive;
 }
 
-function inspectAndExtract(archive, contract, destination) {
+function inspectAndExtract(archive, contract, destination, runCommand) {
   const compressedTar = contract.archive.endsWith(".tar.gz");
   const listArgs = compressedTar ? ["-tzf", archive] : ["-tf", archive];
   const verboseArgs = compressedTar ? ["-tvzf", archive] : ["-tvf", archive];
@@ -180,7 +180,7 @@ function inspectAndExtract(archive, contract, destination) {
     ? ["-xzf", archive, "-C", destination]
     : ["-xf", archive, "-C", destination];
 
-  const members = exactLines(run("tar", listArgs, `inspect ${contract.archive}`)).sort();
+  const members = exactLines(runCommand("tar", listArgs, `inspect ${contract.archive}`)).sort();
   const expectedMembers = [...contract.binaries].sort();
   if (
     members.length !== expectedMembers.length ||
@@ -190,13 +190,15 @@ function inspectAndExtract(archive, contract, destination) {
       `${contract.archive} must contain exactly ${expectedMembers.join(", ")}; got ${members.join(", ")}`,
     );
   }
-  const verbose = exactLines(run("tar", verboseArgs, `inspect types in ${contract.archive}`));
+  const verbose = exactLines(
+    runCommand("tar", verboseArgs, `inspect types in ${contract.archive}`),
+  );
   if (verbose.length !== expectedMembers.length || verbose.some((line) => !line.startsWith("-"))) {
     fail(`${contract.archive} members must each be one regular file`);
   }
 
   const before = archiveDigest(archive);
-  run("tar", extractArgs, `extract ${contract.archive}`);
+  runCommand("tar", extractArgs, `extract ${contract.archive}`);
   if (archiveDigest(archive) !== before) fail(`${contract.archive} changed during extraction`);
 
   const extractedNames = readdirSync(destination).sort();
@@ -212,15 +214,22 @@ function inspectAndExtract(archive, contract, destination) {
   }
 }
 
-function verifyVersion(binary, expected) {
+function verifyVersion(binary, expected, runCommand) {
   accessSync(binary, constants.X_OK);
-  const actual = run(binary, ["--version"], `${basename(binary)} --version`)
+  const actual = runCommand(binary, ["--version"], `${basename(binary)} --version`)
     .replace(/\r\n/g, "\n")
     .replace(/\n$/, "");
   if (actual !== expected) fail(`${basename(binary)} --version must equal ${expected}; got ${actual}`);
 }
 
-export function runNativeReleaseSmoke({ archivePath, target, tag }) {
+export function runNativeReleaseSmoke({
+  archivePath,
+  target,
+  tag,
+  env = process.env,
+  runtime = process,
+  runCommand = run,
+}) {
   if (
     typeof archivePath !== "string" ||
     archivePath === "" ||
@@ -231,17 +240,17 @@ export function runNativeReleaseSmoke({ archivePath, target, tag }) {
   ) {
     fail("native release smoke requires a non-empty archive path, target, and release tag");
   }
-  const contract = validateNativeRuntime(target);
+  const contract = validateNativeRuntime(target, env, runtime);
   const version = validateTag(tag);
   const archive = validateDownloadedArtifact(archivePath, contract);
   const extractionDir = mkdtempSync(join(tmpdir(), "phantom-native-release-"));
   try {
-    inspectAndExtract(archive, contract, extractionDir);
+    inspectAndExtract(archive, contract, extractionDir, runCommand);
     const phantom = join(extractionDir, contract.binaries[0]);
     const phantomMcp = join(extractionDir, contract.binaries[1]);
-    verifyVersion(phantom, `phantom ${version}`);
-    verifyVersion(phantomMcp, `phantom-mcp ${version}`);
-    run(
+    verifyVersion(phantom, `phantom ${version}`, runCommand);
+    verifyVersion(phantomMcp, `phantom-mcp ${version}`, runCommand);
+    runCommand(
       process.execPath,
       [join(repoRoot, "scripts/release/mcp-stdio-smoke.mjs"), phantomMcp, "54"],
       "MCP stdio schema smoke",

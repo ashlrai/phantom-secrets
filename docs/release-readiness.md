@@ -176,10 +176,11 @@ syntax, digest, exact member names and types, and absence of traversal, links,
 reparse points, nesting, and extras. For every SBOM, verify the exact name,
 bounded size, JSON parsing, SPDX
 2.3 identity, namespace, creation metadata, and packages-array shape. The
-source smoke verifies locally built binary versions and the MCP schema. The
-native matrix repeats those checks against the extracted binaries from every
-exact build archive and gates attestation on all six rows. Run packaged npm and
-MCP stdio smoke against staged local artifacts without downloading or publishing.
+`verify-source` job locally builds and schema-smokes `phantom-mcp`; it does not
+build `phantom` or execute either binary's `--version`. Exact tag-bound version
+execution for both binaries occurs in the native matrix after extraction from
+every build archive, and all six rows gate attestation. Run packaged npm and MCP
+stdio smoke against staged local artifacts without downloading or publishing.
 
 ## Supply-chain and native blockers
 
@@ -197,6 +198,13 @@ do not identify a publisher. Before a high-assurance release claim, verify:
 Linux package-repository metadata, Homebrew formula updates, npm publication,
 MCP Registry publication, and website deployment are separate distribution
 actions with their own authorization and receipts.
+
+The hosted build environment is not fully hermetic. Both macOS build rows use
+the moving `macos-latest` label, while the x64 Windows build and native-acceptance
+rows use `windows-latest`; GitHub also refreshes hosted runner images behind
+named labels. Preserve the resolved runner image metadata with the exact-tag
+workflow receipt. A successful native matrix proves execution on those resolved
+hosts, not bit-for-bit reproducibility on future runner images.
 
 GitHub documents the required attestation permissions, SBOM binding inputs,
 verification commands, and plan limitations in [Using artifact attestations to

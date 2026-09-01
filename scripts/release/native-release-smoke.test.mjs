@@ -1,12 +1,27 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
-import { NATIVE_TARGETS, validateNativeRuntime } from "./native-release-smoke.mjs";
+import {
+  NATIVE_TARGETS,
+  runNativeReleaseSmoke,
+  validateNativeRuntime,
+} from "./native-release-smoke.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflow = readFileSync(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
+const fixtureTarget = "x86_64-unknown-linux-gnu";
+const fixtureEnv = Object.freeze({ RUNNER_OS: "Linux", RUNNER_ARCH: "X64" });
+const fixtureRuntime = Object.freeze({ platform: "linux", arch: "x64" });
 
 const expected = Object.freeze({
   "x86_64-apple-darwin": [
@@ -73,6 +88,79 @@ function matrixRows(jobText) {
   return rows;
 }
 
+function lines(values) {
+  return `${values.join("\n")}\n`;
+}
+
+function nativeArchiveFixture(t, options = {}) {
+  const contract = NATIVE_TARGETS[fixtureTarget];
+  const directory = mkdtempSync(join(tmpdir(), "phantom-native-smoke-test-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const archivePath = join(directory, contract.archive);
+  writeFileSync(archivePath, "synthetic immutable archive");
+  writeFileSync(`${archivePath}.spdx.json`, "{}\n");
+
+  const expectedMembers = [...contract.binaries];
+  const members = options.members ?? expectedMembers;
+  const verboseMembers =
+    options.verboseMembers ??
+    expectedMembers.map((name) => `-rwxr-xr-x 0 0 0 1 Jan 1 00:00 ${name}`);
+  const commands = [];
+  let extractionDirectory;
+
+  function runCommand(command, args, label) {
+    commands.push({ command, args: [...args], label });
+    if (label === `inspect ${contract.archive}`) {
+      assert.equal(command, "tar");
+      return lines(members);
+    }
+    if (label === `inspect types in ${contract.archive}`) {
+      assert.equal(command, "tar");
+      return lines(verboseMembers);
+    }
+    if (label === `extract ${contract.archive}`) {
+      assert.equal(command, "tar");
+      const destinationIndex = args.indexOf("-C");
+      assert.notEqual(destinationIndex, -1, "extract command must select a destination");
+      extractionDirectory = args[destinationIndex + 1];
+      for (const name of expectedMembers) {
+        writeFileSync(join(extractionDirectory, name), "synthetic executable\n", { mode: 0o755 });
+      }
+      if (options.extractedExtra) {
+        writeFileSync(join(extractionDirectory, options.extractedExtra), "unexpected\n");
+      }
+      if (options.mutateArchive) appendFileSync(archivePath, "mutated");
+      return "";
+    }
+    if (label === "phantom --version") {
+      return `${options.phantomVersion ?? "phantom 0.7.4"}\n`;
+    }
+    if (label === "phantom-mcp --version") {
+      return `${options.phantomMcpVersion ?? "phantom-mcp 0.7.4"}\n`;
+    }
+    if (label === "MCP stdio schema smoke") {
+      if (options.failMcp) throw new Error("synthetic MCP schema failure");
+      return "";
+    }
+    throw new Error(`unexpected synthetic command: ${label}`);
+  }
+
+  return {
+    archivePath,
+    commands,
+    extractionDirectory: () => extractionDirectory,
+    smoke: () =>
+      runNativeReleaseSmoke({
+        archivePath,
+        target: fixtureTarget,
+        tag: "v0.7.4",
+        env: fixtureEnv,
+        runtime: fixtureRuntime,
+        runCommand,
+      }),
+  };
+}
+
 test("native target contract is closed, unique, and exact", () => {
   assert.deepEqual(Object.keys(NATIVE_TARGETS).sort(), Object.keys(expected).sort());
   const artifacts = new Set();
@@ -122,6 +210,115 @@ test("runtime identity fails closed for unset, cross-OS, and cross-architecture 
         { platform: "linux", arch: "x64" },
       ),
     /Node runtime mismatch/,
+  );
+});
+
+test("native archive smoke exercises the complete accepted artifact path", (t) => {
+  const fixture = nativeArchiveFixture(t);
+  assert.deepEqual(fixture.smoke(), {
+    archive: "phantom-x86_64-unknown-linux-gnu.tar.gz",
+    target: fixtureTarget,
+    version: "0.7.4",
+  });
+  assert.deepEqual(
+    fixture.commands.map(({ label }) => label),
+    [
+      "inspect phantom-x86_64-unknown-linux-gnu.tar.gz",
+      "inspect types in phantom-x86_64-unknown-linux-gnu.tar.gz",
+      "extract phantom-x86_64-unknown-linux-gnu.tar.gz",
+      "phantom --version",
+      "phantom-mcp --version",
+      "MCP stdio schema smoke",
+    ],
+  );
+  assert.equal(
+    existsSync(fixture.extractionDirectory()),
+    false,
+    "temporary extraction must be removed",
+  );
+});
+
+test("native archive smoke rejects extra and traversal members before extraction", async (t) => {
+  await t.test("extra member", (t) => {
+    const fixture = nativeArchiveFixture(t, {
+      members: ["phantom", "phantom-mcp", "README.md"],
+    });
+    assert.throws(fixture.smoke, /must contain exactly phantom, phantom-mcp/);
+    assert.deepEqual(
+      fixture.commands.map(({ label }) => label),
+      ["inspect phantom-x86_64-unknown-linux-gnu.tar.gz"],
+    );
+  });
+
+  await t.test("traversal member", (t) => {
+    const fixture = nativeArchiveFixture(t, {
+      members: ["phantom", "../phantom-mcp"],
+    });
+    assert.throws(fixture.smoke, /\.\.\/phantom-mcp/);
+    assert.deepEqual(
+      fixture.commands.map(({ label }) => label),
+      ["inspect phantom-x86_64-unknown-linux-gnu.tar.gz"],
+    );
+  });
+});
+
+test("native archive smoke rejects non-regular members before extraction", (t) => {
+  const fixture = nativeArchiveFixture(t, {
+    verboseMembers: [
+      "-rwxr-xr-x 0 0 0 1 Jan 1 00:00 phantom",
+      "lrwxr-xr-x 0 0 0 0 Jan 1 00:00 phantom-mcp -> elsewhere",
+    ],
+  });
+  assert.throws(fixture.smoke, /members must each be one regular file/);
+  assert.deepEqual(
+    fixture.commands.map(({ label }) => label),
+    [
+      "inspect phantom-x86_64-unknown-linux-gnu.tar.gz",
+      "inspect types in phantom-x86_64-unknown-linux-gnu.tar.gz",
+    ],
+  );
+});
+
+test("native archive smoke rejects mutation during extraction", (t) => {
+  const fixture = nativeArchiveFixture(t, { mutateArchive: true });
+  assert.throws(fixture.smoke, /changed during extraction/);
+  assert.equal(
+    existsSync(fixture.extractionDirectory()),
+    false,
+    "failed extraction must be removed",
+  );
+});
+
+test("native archive smoke rejects unexpected extracted files", (t) => {
+  const fixture = nativeArchiveFixture(t, { extractedExtra: "unexpected" });
+  assert.throws(fixture.smoke, /extracted archive contains unexpected entries/);
+  assert.equal(
+    existsSync(fixture.extractionDirectory()),
+    false,
+    "failed extraction must be removed",
+  );
+});
+
+test("native archive smoke rejects a binary built at the wrong version", (t) => {
+  const fixture = nativeArchiveFixture(t, { phantomVersion: "phantom 0.7.3" });
+  assert.throws(
+    fixture.smoke,
+    /phantom --version must equal phantom 0\.7\.4; got phantom 0\.7\.3/,
+  );
+  assert.doesNotMatch(
+    fixture.commands.map(({ label }) => label).join("\n"),
+    /MCP stdio schema smoke/,
+  );
+});
+
+test("native archive smoke propagates MCP schema failure after exact versions pass", (t) => {
+  const fixture = nativeArchiveFixture(t, { failMcp: true });
+  assert.throws(fixture.smoke, /synthetic MCP schema failure/);
+  assert.equal(fixture.commands.at(-1).label, "MCP stdio schema smoke");
+  assert.equal(
+    existsSync(fixture.extractionDirectory()),
+    false,
+    "failed MCP smoke must clean up",
   );
 });
 
