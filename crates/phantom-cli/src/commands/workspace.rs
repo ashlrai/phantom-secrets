@@ -2,11 +2,12 @@ use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
+use phantom_core::error::PhantomError;
 use phantom_core::token::TokenMap;
 use phantom_core::workspace_request::{
     self, SanitizedActionSummary, WorkspaceActionKind, WorkspaceApplyReceipt, WorkspaceRequestState,
 };
-use phantom_vault::{SecretMetadata, VaultBackend};
+use phantom_vault::{ProjectTransactionLock, VaultBackend};
 use phantom_workspace::{
     apply_setup_plan_durable, build_sealed_setup_plan, clear_setup_plan_journal,
     recover_setup_plan_journal, DurableJournalConfig, JournalRecovery, ParticipantError,
@@ -361,23 +362,39 @@ fn action_summary(plan: &SetupPlan) -> SanitizedActionSummary {
 
 struct VaultSnapshot {
     name: String,
-    value: Option<Zeroizing<String>>,
-    metadata: Option<SecretMetadata>,
+    before: Option<Zeroizing<String>>,
+    after: Zeroizing<String>,
 }
 
-#[derive(Serialize, serde::Deserialize)]
+#[derive(Serialize)]
+struct VaultRecoverySnapshotRef<'a> {
+    name: &'a str,
+    before: Option<&'a str>,
+    after: &'a str,
+}
+
+#[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VaultRecoverySnapshot {
     name: String,
-    value: Option<String>,
-    metadata: Option<SecretMetadata>,
+    before: Option<String>,
+    after: String,
+}
+
+impl Drop for VaultRecoverySnapshot {
+    fn drop(&mut self) {
+        if let Some(before) = self.before.as_mut() {
+            before.zeroize();
+        }
+        self.after.zeroize();
+    }
 }
 
 struct VaultSetupParticipant {
     workspace_root: PathBuf,
     vault: Box<dyn VaultBackend>,
     snapshots: Vec<VaultSnapshot>,
-    staged_values: BTreeMap<String, Zeroizing<String>>,
+    project_lock: Option<ProjectTransactionLock>,
     commit_started: bool,
     #[cfg(test)]
     fail_commit: bool,
@@ -385,6 +402,12 @@ struct VaultSetupParticipant {
 
 impl VaultSetupParticipant {
     fn new(workspace_root: &Path) -> Result<Self> {
+        let workspace_root = workspace_root
+            .canonicalize()
+            .context("Workspace root could not be resolved safely")?;
+        if !workspace_root.is_dir() {
+            bail!("workspace root is not a directory");
+        }
         let config_path = workspace_root.join(".phantom.toml");
         let project_id = if config_path.exists() {
             let metadata = std::fs::symlink_metadata(&config_path)
@@ -397,13 +420,13 @@ impl VaultSetupParticipant {
                 .local_project_id()
                 .to_string()
         } else {
-            PhantomConfig::project_id_from_path(workspace_root)
+            PhantomConfig::project_id_from_path(&workspace_root)
         };
         Ok(Self {
-            workspace_root: workspace_root.to_path_buf(),
+            workspace_root,
             vault: phantom_vault::try_create_vault(&project_id)?,
             snapshots: Vec::new(),
-            staged_values: BTreeMap::new(),
+            project_lock: None,
             commit_started: false,
             #[cfg(test)]
             fail_commit: false,
@@ -413,10 +436,12 @@ impl VaultSetupParticipant {
     #[cfg(test)]
     fn with_vault(workspace_root: &Path, vault: Box<dyn VaultBackend>, fail_commit: bool) -> Self {
         Self {
-            workspace_root: workspace_root.to_path_buf(),
+            workspace_root: workspace_root
+                .canonicalize()
+                .expect("test workspace root must resolve"),
             vault,
             snapshots: Vec::new(),
-            staged_values: BTreeMap::new(),
+            project_lock: None,
             commit_started: false,
             fail_commit,
         }
@@ -434,41 +459,72 @@ impl VaultSetupParticipant {
         Ok(self.workspace_root.join(relative))
     }
 
+    fn ensure_project_lock(&mut self) -> std::result::Result<(), ParticipantError> {
+        if self.project_lock.is_none() {
+            self.project_lock = Some(
+                phantom_vault::acquire_project_transaction_lock(&self.workspace_root)
+                    .map_err(|_| ParticipantError::new("project_lock_failed"))?,
+            );
+        }
+        Ok(())
+    }
+
+    fn retrieve_optional(
+        &self,
+        name: &str,
+    ) -> std::result::Result<Option<Zeroizing<String>>, ParticipantError> {
+        match self.vault.retrieve(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(PhantomError::SecretNotFound(_)) => Ok(None),
+            Err(_) => Err(ParticipantError::new("vault_snapshot_failed")),
+        }
+    }
+
+    fn value_matches(current: Option<&Zeroizing<String>>, expected: Option<&str>) -> bool {
+        current.map(|value| value.as_str()) == expected
+    }
+
     fn restore_snapshots(&mut self) -> std::result::Result<(), ParticipantError> {
         if !self.commit_started {
             self.snapshots.clear();
-            self.staged_values.clear();
+            self.project_lock.take();
             return Ok(());
         }
         let mut failed = false;
-        for snapshot in self.snapshots.drain(..).rev() {
-            let result = match snapshot.value {
-                Some(value) => {
-                    let stored = self.vault.store(&snapshot.name, value.as_str());
-                    if stored.is_ok() {
-                        match snapshot.metadata {
-                            Some(metadata) => self.vault.set_metadata(&snapshot.name, metadata),
-                            None => Ok(()),
-                        }
-                    } else {
-                        stored
-                    }
+        for snapshot in self.snapshots.iter().rev() {
+            let before = snapshot.before.as_ref().map(|value| value.as_str());
+            let current = match self.retrieve_optional(&snapshot.name) {
+                Ok(current) => current,
+                Err(_) => {
+                    failed = true;
+                    continue;
                 }
-                None => match self.vault.exists(&snapshot.name) {
-                    Ok(true) => self.vault.delete(&snapshot.name),
-                    Ok(false) => Ok(()),
-                    Err(error) => Err(error),
-                },
             };
-            if result.is_err() {
+            if Self::value_matches(current.as_ref(), before) {
+                continue;
+            }
+            if !Self::value_matches(current.as_ref(), Some(snapshot.after.as_str())) {
+                failed = true;
+                continue;
+            }
+            let restored = self
+                .vault
+                .compare_and_swap(&snapshot.name, Some(snapshot.after.as_str()), before)
+                .unwrap_or(false);
+            let verified = self
+                .retrieve_optional(&snapshot.name)
+                .map(|current| Self::value_matches(current.as_ref(), before))
+                .unwrap_or(false);
+            if !restored || !verified {
                 failed = true;
             }
         }
+        self.project_lock.take();
         if failed {
             Err(ParticipantError::new("vault_rollback_failed"))
         } else {
             self.commit_started = false;
-            self.staged_values.clear();
+            self.snapshots.clear();
             Ok(())
         }
     }
@@ -483,6 +539,7 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
         if !self.snapshots.is_empty() {
             return Err(ParticipantError::new("vault_participant_reused"));
         }
+        self.ensure_project_lock()?;
 
         let protect_actions = external_actions
             .iter()
@@ -520,32 +577,17 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
             parsed.push((action, dotenv));
         }
 
-        let mut snapshots = Vec::with_capacity(values.len());
-        for name in values.keys() {
-            let existed = self
-                .vault
-                .exists(name)
-                .map_err(|_| ParticipantError::new("vault_snapshot_failed"))?;
-            snapshots.push(VaultSnapshot {
-                name: name.clone(),
-                value: if existed {
-                    Some(
-                        self.vault
-                            .retrieve(name)
-                            .map_err(|_| ParticipantError::new("vault_snapshot_failed"))?,
-                    )
-                } else {
-                    None
-                },
-                metadata: self
-                    .vault
-                    .get_metadata(name)
-                    .map_err(|_| ParticipantError::new("vault_snapshot_failed"))?,
-            });
-        }
         let mut token_map = TokenMap::new();
         for name in values.keys() {
             token_map.insert(name.clone());
+        }
+        let mut snapshots = Vec::with_capacity(values.len());
+        for (name, after) in values {
+            snapshots.push(VaultSnapshot {
+                before: self.retrieve_optional(&name)?,
+                name,
+                after,
+            });
         }
         let mut mutations = Vec::with_capacity(parsed.len());
         for (action, dotenv) in parsed {
@@ -560,7 +602,6 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
             ));
         }
         self.snapshots = snapshots;
-        self.staged_values = values;
 
         Ok(ParticipantPreparation::new(
             protect_actions.iter().map(|action| action.id.clone()),
@@ -570,17 +611,31 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
 
     fn commit(&mut self) -> std::result::Result<(), ParticipantError> {
         self.commit_started = true;
-        for (name, value) in &self.staged_values {
-            self.vault
-                .store(name, value.as_str())
-                .map_err(|_| ParticipantError::new("vault_store_failed"))?;
+        for snapshot in &self.snapshots {
+            let before = snapshot.before.as_ref().map(|value| value.as_str());
+            let current = self.retrieve_optional(&snapshot.name)?;
+            if !Self::value_matches(current.as_ref(), before) {
+                return Err(ParticipantError::new("vault_concurrent_change"));
+            }
+            match self
+                .vault
+                .compare_and_swap(&snapshot.name, before, Some(snapshot.after.as_str()))
+            {
+                Ok(true) => {}
+                Ok(false) => return Err(ParticipantError::new("vault_concurrent_change")),
+                Err(_) => return Err(ParticipantError::new("vault_cas_failed")),
+            }
+            let current = self.retrieve_optional(&snapshot.name)?;
+            if !Self::value_matches(current.as_ref(), Some(snapshot.after.as_str())) {
+                return Err(ParticipantError::new("vault_commit_verification_failed"));
+            }
         }
         #[cfg(test)]
         if self.fail_commit {
             return Err(ParticipantError::new("injected_vault_commit_failure"));
         }
         self.snapshots.clear();
-        self.staged_values.clear();
+        self.project_lock.take();
         self.commit_started = false;
         Ok(())
     }
@@ -593,13 +648,10 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
         let snapshots = self
             .snapshots
             .iter()
-            .map(|snapshot| VaultRecoverySnapshot {
-                name: snapshot.name.clone(),
-                value: snapshot
-                    .value
-                    .as_ref()
-                    .map(|value| value.as_str().to_string()),
-                metadata: snapshot.metadata.clone(),
+            .map(|snapshot| VaultRecoverySnapshotRef {
+                name: &snapshot.name,
+                before: snapshot.before.as_ref().map(|value| value.as_str()),
+                after: snapshot.after.as_str(),
             })
             .collect::<Vec<_>>();
         serde_json::to_vec(&snapshots)
@@ -610,14 +662,15 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
         &mut self,
         payload: &[u8],
     ) -> std::result::Result<(), ParticipantError> {
+        self.ensure_project_lock()?;
         let snapshots: Vec<VaultRecoverySnapshot> = serde_json::from_slice(payload)
             .map_err(|_| ParticipantError::new("vault_recovery_parse_failed"))?;
         self.snapshots = snapshots
             .into_iter()
-            .map(|snapshot| VaultSnapshot {
-                name: snapshot.name,
-                value: snapshot.value.map(Zeroizing::new),
-                metadata: snapshot.metadata,
+            .map(|mut snapshot| VaultSnapshot {
+                name: std::mem::take(&mut snapshot.name),
+                before: snapshot.before.take().map(Zeroizing::new),
+                after: Zeroizing::new(std::mem::take(&mut snapshot.after)),
             })
             .collect();
         self.commit_started = true;
@@ -635,7 +688,9 @@ mod tests {
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use phantom_vault::file::FileVault;
     use phantom_workspace::{apply_setup_plan, WorkspaceError};
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::Duration;
     use tempfile::TempDir;
 
     #[derive(Clone)]
@@ -673,12 +728,137 @@ mod tests {
             Ok(())
         }
 
+        fn compare_and_swap(
+            &self,
+            name: &str,
+            expected: Option<&str>,
+            replacement: Option<&str>,
+        ) -> PhantomResult<bool> {
+            if name == self.fail_name {
+                return Err(PhantomError::VaultError(
+                    "injected compare-and-swap failure".to_string(),
+                ));
+            }
+            let mut values = self.values.lock().unwrap();
+            if values.get(name).map(String::as_str) != expected {
+                return Ok(false);
+            }
+            match replacement {
+                Some(value) => {
+                    values.insert(name.to_string(), value.to_string());
+                }
+                None => {
+                    values.remove(name);
+                }
+            }
+            Ok(true)
+        }
+
         fn list(&self) -> PhantomResult<Vec<String>> {
             Ok(self.values.lock().unwrap().keys().cloned().collect())
         }
 
         fn backend_name(&self) -> &str {
             "injected-test-vault"
+        }
+    }
+
+    enum CasFault {
+        DriftBeforeFirst,
+        DriftDuringRollback,
+        FileDriftOnSecond(PathBuf),
+    }
+
+    struct ScriptedCasVault {
+        values: Arc<Mutex<BTreeMap<String, String>>>,
+        calls: AtomicUsize,
+        fault: CasFault,
+    }
+
+    impl ScriptedCasVault {
+        fn apply_cas(&self, name: &str, expected: Option<&str>, replacement: Option<&str>) -> bool {
+            let mut values = self.values.lock().unwrap();
+            if values.get(name).map(String::as_str) != expected {
+                return false;
+            }
+            match replacement {
+                Some(value) => {
+                    values.insert(name.to_string(), value.to_string());
+                }
+                None => {
+                    values.remove(name);
+                }
+            }
+            true
+        }
+    }
+
+    impl VaultBackend for ScriptedCasVault {
+        fn store(&self, name: &str, value: &str) -> PhantomResult<()> {
+            self.values
+                .lock()
+                .unwrap()
+                .insert(name.to_string(), value.to_string());
+            Ok(())
+        }
+
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.values
+                .lock()
+                .unwrap()
+                .get(name)
+                .cloned()
+                .map(Zeroizing::new)
+                .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))
+        }
+
+        fn delete(&self, name: &str) -> PhantomResult<()> {
+            self.values.lock().unwrap().remove(name);
+            Ok(())
+        }
+
+        fn compare_and_swap(
+            &self,
+            name: &str,
+            expected: Option<&str>,
+            replacement: Option<&str>,
+        ) -> PhantomResult<bool> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            match &self.fault {
+                CasFault::DriftBeforeFirst if call == 1 => {
+                    self.values
+                        .lock()
+                        .unwrap()
+                        .insert(name.to_string(), "sk-third-party-drift".to_string());
+                    Ok(false)
+                }
+                CasFault::DriftDuringRollback if call == 2 => Err(PhantomError::VaultError(
+                    "injected second commit failure".to_string(),
+                )),
+                CasFault::DriftDuringRollback if call == 3 => {
+                    self.values
+                        .lock()
+                        .unwrap()
+                        .insert(name.to_string(), "sk-third-party-rollback-race".to_string());
+                    Ok(false)
+                }
+                CasFault::FileDriftOnSecond(path) if call == 2 => {
+                    std::fs::write(path, "A_SECRET=sk-third-party-file-drift\n")
+                        .map_err(PhantomError::Io)?;
+                    Err(PhantomError::VaultError(
+                        "injected failure after file drift".to_string(),
+                    ))
+                }
+                _ => Ok(self.apply_cas(name, expected, replacement)),
+            }
+        }
+
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            Ok(self.values.lock().unwrap().keys().cloned().collect())
+        }
+
+        fn backend_name(&self) -> &str {
+            "scripted-cas-vault"
         }
     }
 
@@ -826,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn mid_store_failure_deletes_only_entries_that_were_actually_staged() {
+    fn nth_cas_failure_rolls_back_only_exact_transaction_values() {
         let workspace = TempDir::new().unwrap();
         let original_env = "A_SECRET=sk-first-store\nB_SECRET=sk-second-store\n";
         write(workspace.path().join(".env"), original_env);
@@ -848,6 +1028,135 @@ mod tests {
             original_env
         );
         assert!(!workspace.path().join(".phantom.toml").exists());
+    }
+
+    #[test]
+    fn participant_holds_canonical_project_lock_from_prepare_through_rollback() {
+        let workspace = TempDir::new().unwrap();
+        let vault_dir = TempDir::new().unwrap();
+        write(
+            workspace.path().join(".env"),
+            "OPENAI_API_KEY=sk-project-lock-sentinel\n",
+        );
+        let key = seal_key();
+        let sealed = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+        let external = sealed
+            .plan
+            .actions
+            .iter()
+            .filter(|action| action.kind == SetupActionKind::ProtectEnvFile)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut participant = VaultSetupParticipant::with_vault(
+            workspace.path(),
+            test_vault(vault_dir.path(), "project-lock"),
+            false,
+        );
+        participant.prepare(&sealed.plan, &external).unwrap();
+
+        let canonical = workspace.path().canonicalize().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let contender = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _lock = phantom_vault::acquire_project_transaction_lock(&canonical).unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(acquired_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+
+        participant.rollback().unwrap();
+        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        contender.join().unwrap();
+    }
+
+    #[test]
+    fn concurrent_vault_drift_is_preserved_and_never_overwritten() {
+        let workspace = TempDir::new().unwrap();
+        let original_env = "A_SECRET=sk-reviewed-value\n";
+        write(workspace.path().join(".env"), original_env);
+        let shared = Arc::new(Mutex::new(BTreeMap::new()));
+        let vault = ScriptedCasVault {
+            values: Arc::clone(&shared),
+            calls: AtomicUsize::new(0),
+            fault: CasFault::DriftBeforeFirst,
+        };
+        let key = seal_key();
+        let sealed = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+        let mut participant =
+            VaultSetupParticipant::with_vault(workspace.path(), Box::new(vault), false);
+
+        let error = apply_setup_plan(&sealed, &key, &mut participant).unwrap_err();
+        assert!(matches!(error, WorkspaceError::RollbackIncomplete));
+        assert_eq!(
+            shared.lock().unwrap().get("A_SECRET").map(String::as_str),
+            Some("sk-third-party-drift")
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join(".env")).unwrap(),
+            original_env
+        );
+    }
+
+    #[test]
+    fn rollback_cas_race_preserves_the_competing_value() {
+        let workspace = TempDir::new().unwrap();
+        let original_env = "A_SECRET=sk-reviewed-a\nB_SECRET=sk-reviewed-b\n";
+        write(workspace.path().join(".env"), original_env);
+        let shared = Arc::new(Mutex::new(BTreeMap::new()));
+        let vault = ScriptedCasVault {
+            values: Arc::clone(&shared),
+            calls: AtomicUsize::new(0),
+            fault: CasFault::DriftDuringRollback,
+        };
+        let key = seal_key();
+        let sealed = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+        let mut participant =
+            VaultSetupParticipant::with_vault(workspace.path(), Box::new(vault), false);
+
+        let error = apply_setup_plan(&sealed, &key, &mut participant).unwrap_err();
+        assert!(matches!(error, WorkspaceError::RollbackIncomplete));
+        let values = shared.lock().unwrap();
+        assert_eq!(
+            values.get("A_SECRET").map(String::as_str),
+            Some("sk-third-party-rollback-race")
+        );
+        assert!(!values.contains_key("B_SECRET"));
+        drop(values);
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join(".env")).unwrap(),
+            original_env
+        );
+    }
+
+    #[test]
+    fn file_rollback_drift_is_preserved_instead_of_overwritten() {
+        let workspace = TempDir::new().unwrap();
+        let env_path = workspace.path().join(".env");
+        write(
+            &env_path,
+            "A_SECRET=sk-reviewed-a\nB_SECRET=sk-reviewed-b\n",
+        );
+        let shared = Arc::new(Mutex::new(BTreeMap::new()));
+        let vault = ScriptedCasVault {
+            values: Arc::clone(&shared),
+            calls: AtomicUsize::new(0),
+            fault: CasFault::FileDriftOnSecond(env_path.clone()),
+        };
+        let key = seal_key();
+        let sealed = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+        let mut participant =
+            VaultSetupParticipant::with_vault(workspace.path(), Box::new(vault), false);
+
+        let error = apply_setup_plan(&sealed, &key, &mut participant).unwrap_err();
+        assert!(matches!(error, WorkspaceError::RollbackIncomplete));
+        assert_eq!(
+            std::fs::read_to_string(&env_path).unwrap(),
+            "A_SECRET=sk-third-party-file-drift\n"
+        );
+        assert!(shared.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -951,6 +1260,66 @@ mod tests {
         assert_eq!(
             verify.retrieve("OPENAI_API_KEY").unwrap().as_str(),
             "sk-old-interrupted-value"
+        );
+    }
+
+    #[test]
+    fn journal_recovery_preserves_post_failure_vault_drift() {
+        let workspace = TempDir::new().unwrap();
+        let vault_dir = TempDir::new().unwrap();
+        let journal_dir = TempDir::new().unwrap();
+        let original_env = "OPENAI_API_KEY=sk-new-recovery-race\n";
+        write(workspace.path().join(".env"), original_env);
+        let original_vault = FileVault::new(
+            vault_dir.path(),
+            "journal-drift",
+            "workspace-test-passphrase".to_string(),
+        )
+        .unwrap();
+        original_vault
+            .store("OPENAI_API_KEY", "sk-old-recovery-race")
+            .unwrap();
+        let key = seal_key();
+        let sealed = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+        let journal = DurableJournalConfig::new(
+            "c".repeat(64),
+            journal_dir.path().join("request.journal"),
+            [0x44; 32],
+        );
+        let mut participant =
+            VaultSetupParticipant::with_vault(workspace.path(), Box::new(original_vault), true);
+        assert!(apply_setup_plan_durable(&sealed, &key, &mut participant, &journal).is_err());
+
+        let drifted_vault = FileVault::new(
+            vault_dir.path(),
+            "journal-drift",
+            "workspace-test-passphrase".to_string(),
+        )
+        .unwrap();
+        drifted_vault
+            .store("OPENAI_API_KEY", "sk-third-party-after-failure")
+            .unwrap();
+        let mut recovery = VaultSetupParticipant::with_vault(
+            workspace.path(),
+            test_vault(vault_dir.path(), "journal-drift"),
+            false,
+        );
+        let error = recover_setup_plan_journal(
+            workspace.path(),
+            &sealed.plan.plan_id,
+            &sealed.pre_state_id,
+            &mut recovery,
+            &journal,
+        )
+        .unwrap_err();
+        assert!(matches!(error, WorkspaceError::RollbackIncomplete));
+        assert_eq!(
+            drifted_vault.retrieve("OPENAI_API_KEY").unwrap().as_str(),
+            "sk-third-party-after-failure"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join(".env")).unwrap(),
+            original_env
         );
     }
 }

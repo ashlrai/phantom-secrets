@@ -611,7 +611,7 @@ fn apply_setup_plan_inner<P: SetupTransactionParticipant>(
         };
         let write_result = apply_mutations(&canonical_root, &mutations, &mut snapshot);
         if let Err(error) = write_result {
-            let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
+            let filesystem_rolled_back = restore_snapshot_checked(&snapshot).is_ok();
             let participant_rolled_back = participant.rollback().is_ok();
             if filesystem_rolled_back && participant_rolled_back {
                 if let Some(journal) = journal.as_mut() {
@@ -626,7 +626,7 @@ fn apply_setup_plan_inner<P: SetupTransactionParticipant>(
         }
 
         if let Err(error) = finalize_snapshot(&mut snapshot) {
-            let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
+            let filesystem_rolled_back = restore_snapshot_checked(&snapshot).is_ok();
             let participant_rolled_back = participant.rollback().is_ok();
             return if filesystem_rolled_back && participant_rolled_back {
                 Err(error)
@@ -639,7 +639,7 @@ fn apply_setup_plan_inner<P: SetupTransactionParticipant>(
             journal.set_phase(JournalPhase::ParticipantCommitStarted, None)?;
         }
         if let Err(error) = participant.commit() {
-            let filesystem_rolled_back = restore_snapshot_unchecked(&snapshot).is_ok();
+            let filesystem_rolled_back = restore_snapshot_checked(&snapshot).is_ok();
             let participant_rolled_back = participant.rollback().is_ok();
             return if filesystem_rolled_back && participant_rolled_back {
                 Err(WorkspaceError::Participant {
@@ -896,16 +896,7 @@ pub fn recover_setup_plan_journal<P: SetupTransactionParticipant>(
         let mut filesystem_ok = true;
         for (file, parent) in journal.record.files.iter().zip(parents.iter()).rev() {
             let path = root.join(&file.target);
-            let restored = match &file.before {
-                Some(content) => {
-                    let permissions = file.before_mode.map(|mode| {
-                        use std::os::unix::fs::PermissionsExt;
-                        Permissions::from_mode(mode)
-                    });
-                    write_at(parent, &path, content, permissions, false)
-                }
-                None => unlink_at(parent, &path, 0),
-            };
+            let restored = restore_journal_file_checked(file, parent, &path);
             if restored.is_err() {
                 filesystem_ok = false;
             }
@@ -916,6 +907,36 @@ pub fn recover_setup_plan_journal<P: SetupTransactionParticipant>(
         journal.set_phase(JournalPhase::RolledBack, None)?;
         Ok(JournalRecovery::RolledBack)
     }
+}
+
+#[cfg(unix)]
+fn restore_journal_file_checked(
+    file: &JournalFile,
+    parent: &SecureParent,
+    path: &Path,
+) -> Result<()> {
+    let current = read_at(parent, path)?.map(|(content, _)| content);
+    if current.as_ref() == file.before.as_ref() {
+        return Ok(());
+    }
+    if current.as_deref() != Some(file.after.as_slice()) {
+        return Err(WorkspaceError::RollbackDrift(path.to_path_buf()));
+    }
+    match &file.before {
+        Some(content) => {
+            let permissions = file.before_mode.map(|mode| {
+                use std::os::unix::fs::PermissionsExt;
+                Permissions::from_mode(mode)
+            });
+            write_at(parent, path, content, permissions, false)?;
+        }
+        None => unlink_at(parent, path, 0)?,
+    }
+    let verified = read_at(parent, path)?.map(|(content, _)| content);
+    if verified.as_ref() != file.before.as_ref() {
+        return Err(WorkspaceError::RollbackDrift(path.to_path_buf()));
+    }
+    Ok(())
 }
 
 /// Delete an already-terminal encrypted journal after its value-free receipt
@@ -946,20 +967,7 @@ pub fn rollback_workspace(snapshot: WorkspaceSnapshot) -> Result<()> {
         return Err(WorkspaceError::InvalidPlan);
     }
     let _lock = acquire_workspace_lock(&snapshot.workspace_root)?;
-    for file in &snapshot.files {
-        #[cfg(unix)]
-        let current = read_at(
-            file.parent.as_ref().ok_or(WorkspaceError::InvalidPlan)?,
-            &file.path,
-        )?
-        .map(|(content, _)| content);
-        #[cfg(not(unix))]
-        let current = read_optional(&file.path)?;
-        if current != file.after {
-            return Err(WorkspaceError::RollbackDrift(file.path.clone()));
-        }
-    }
-    restore_snapshot_unchecked(&snapshot)
+    restore_snapshot_checked(&snapshot)
 }
 
 fn validate_preparation(
@@ -1559,6 +1567,11 @@ fn apply_mutations(
                 FileState::Present { permissions, .. } => Some(permissions.clone()),
                 FileState::Missing => None,
             };
+            let current = read_at(parent, &file.path)?.map(|(content, _)| content);
+            if !file_before_matches(file, current.as_deref()) {
+                return Err(WorkspaceError::RollbackDrift(file.path.clone()));
+            }
+            file.after = Some(mutation.content.clone());
             write_at(
                 parent,
                 &file.path,
@@ -1566,6 +1579,10 @@ fn apply_mutations(
                 previous_permissions,
                 mutation.executable,
             )?;
+            let current = read_at(parent, &file.path)?.map(|(content, _)| content);
+            if current.as_deref() != Some(mutation.content.as_slice()) {
+                return Err(WorkspaceError::RollbackDrift(file.path.clone()));
+            }
         }
         Ok(())
     }
@@ -1608,15 +1625,41 @@ fn finalize_snapshot(snapshot: &mut WorkspaceSnapshot) -> Result<()> {
             path: file.path.clone(),
             source,
         })?;
-        file.after = Some(content);
+        if file.after.as_deref() != Some(content.as_slice()) {
+            return Err(WorkspaceError::RollbackDrift(file.path.clone()));
+        }
     }
     snapshot.finalized = true;
     Ok(())
 }
 
-fn restore_snapshot_unchecked(snapshot: &WorkspaceSnapshot) -> Result<()> {
+fn restore_snapshot_checked(snapshot: &WorkspaceSnapshot) -> Result<()> {
     let mut first_error = None;
     for file in snapshot.files.iter().rev() {
+        #[cfg(unix)]
+        let current = read_at(
+            file.parent.as_ref().ok_or(WorkspaceError::InvalidPlan)?,
+            &file.path,
+        )?
+        .map(|(content, _)| content);
+        #[cfg(not(unix))]
+        let current = read_optional(&file.path)?;
+        let before_matches = file_before_matches(file, current.as_deref());
+        if before_matches {
+            continue;
+        }
+        let Some(after) = file.after.as_deref() else {
+            if first_error.is_none() {
+                first_error = Some(WorkspaceError::RollbackDrift(file.path.clone()));
+            }
+            continue;
+        };
+        if current.as_deref() != Some(after) {
+            if first_error.is_none() {
+                first_error = Some(WorkspaceError::RollbackDrift(file.path.clone()));
+            }
+            continue;
+        }
         #[cfg(unix)]
         let restored = {
             let parent = file.parent.as_ref().ok_or(WorkspaceError::InvalidPlan)?;
@@ -1651,6 +1694,18 @@ fn restore_snapshot_unchecked(snapshot: &WorkspaceSnapshot) -> Result<()> {
         };
         if restored.is_err() && first_error.is_none() {
             first_error = restored.err();
+            continue;
+        }
+        #[cfg(unix)]
+        let verified = read_at(
+            file.parent.as_ref().ok_or(WorkspaceError::InvalidPlan)?,
+            &file.path,
+        )?
+        .map(|(content, _)| content);
+        #[cfg(not(unix))]
+        let verified = read_optional(&file.path)?;
+        if !file_before_matches(file, verified.as_deref()) && first_error.is_none() {
+            first_error = Some(WorkspaceError::RollbackDrift(file.path.clone()));
         }
     }
     #[cfg(unix)]
@@ -1693,6 +1748,13 @@ fn restore_snapshot_unchecked(snapshot: &WorkspaceSnapshot) -> Result<()> {
     match first_error {
         Some(error) => Err(error),
         None => Ok(()),
+    }
+}
+
+fn file_before_matches(file: &FileSnapshot, current: Option<&[u8]>) -> bool {
+    match &file.before {
+        FileState::Missing => current.is_none(),
+        FileState::Present { content, .. } => current == Some(content.as_slice()),
     }
 }
 
