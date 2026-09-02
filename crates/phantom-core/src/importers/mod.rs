@@ -231,6 +231,9 @@ pub(crate) fn env_importer(input: &[u8]) -> Result<SecretMap> {
     let content =
         std::str::from_utf8(input).map_err(|_| anyhow::anyhow!("File is not valid UTF-8"))?;
     let dotenv = crate::dotenv::DotenvFile::parse_str(content);
+    dotenv
+        .validate_for_mutation()
+        .map_err(|error| anyhow::anyhow!("Malformed dotenv import refused: {error}"))?;
     let mut map = SecretMap::new();
     for entry in dotenv.entries() {
         if entry.value.is_empty() {
@@ -259,6 +262,15 @@ mod secure_read_tests {
         std::fs::write(&path, b"TOKEN=secret").unwrap();
         let bytes: Zeroizing<Vec<u8>> = read_competitor_export(&path).unwrap();
         assert_eq!(bytes.as_slice(), b"TOKEN=secret");
+    }
+
+    #[test]
+    fn malformed_dotenv_import_is_rejected_without_returning_partial_plaintext() {
+        let error = env_importer(b"API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Malformed dotenv import refused"));
+        assert!(!error.contains("plaintext-must-not-escape"));
     }
 
     #[test]

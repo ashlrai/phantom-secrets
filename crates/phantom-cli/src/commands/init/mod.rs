@@ -186,6 +186,9 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     let env_text =
         std::str::from_utf8(env_before.bytes()).context("Managed dotenv is not valid UTF-8")?;
     let dotenv = DotenvFile::parse_str(env_text);
+    dotenv
+        .validate_for_mutation()
+        .context("Managed dotenv is malformed; initialization made no changes")?;
 
     // Classify all entries
     let classified = dotenv.classified_entries();
@@ -322,7 +325,9 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     for entry in &real_entries {
         token_map.insert(entry.key.clone());
     }
-    let (phantomized_env, mut originals) = dotenv.rewrite_with_phantoms(&token_map);
+    let (phantomized_env, mut originals) = dotenv
+        .rewrite_with_phantoms(&token_map)
+        .context("Managed dotenv cannot be rewritten safely")?;
     for value in originals.values_mut() {
         use zeroize::Zeroize;
         value.zeroize();
@@ -346,7 +351,9 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         files.push(file);
     }
     let example_path = project_dir.join(".env.example");
-    let example_content = dotenv.generate_example_content(Some(&phantom_config));
+    let example_content = dotenv
+        .generate_example_content(Some(&phantom_config))
+        .context("Managed dotenv cannot be used to generate a plaintext-safe example")?;
     let example_before = phantom_core::fs::read_regular_file(&example_path)
         .with_context(|| format!("Failed to safely inspect {}", example_path.display()))?;
     files.push(InitFile::replace_if_unchanged(

@@ -71,11 +71,25 @@ pub fn setup(dry_run: bool, apply: bool) -> Result<()> {
 }
 
 fn readiness_report(project_dir: &std::path::Path) -> AgentReadinessReport {
-    let vault = vault_probe(project_dir);
+    let base = agent::build_report(
+        project_dir,
+        AgentReadinessOptions {
+            vault: None,
+            cloud_logged_in: phantom_core::auth::load_token().is_some(),
+            audit_enabled: phantom_core::audit::enabled(),
+        },
+    );
+    if base
+        .findings
+        .iter()
+        .any(|finding| finding.id == "env-parse-error")
+    {
+        return base;
+    }
     agent::build_report(
         project_dir,
         AgentReadinessOptions {
-            vault,
+            vault: vault_probe(project_dir),
             cloud_logged_in: phantom_core::auth::load_token().is_some(),
             audit_enabled: phantom_core::audit::enabled(),
         },
@@ -116,6 +130,16 @@ fn vault_probe(project_dir: &std::path::Path) -> Option<VaultProbe> {
 fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> Result<()> {
     println!("{}", "Applying Phantom agent setup".bold().underline());
     println!();
+
+    if before
+        .findings
+        .iter()
+        .any(|finding| finding.id == "env-parse-error")
+    {
+        anyhow::bail!(
+            "Managed dotenv is malformed; agent setup made no gitignore, example, config, vault, or client changes"
+        );
+    }
 
     let config_path = project_dir.join(".phantom.toml");
     let config = PhantomConfig::load(&config_path).ok();
@@ -175,10 +199,66 @@ fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> 
     Ok(())
 }
 
+fn agent_dotenv_guard(
+    lock: &phantom_vault::ProjectTransactionLock,
+    project_dir: &std::path::Path,
+    config: Option<&PhantomConfig>,
+) -> Result<(
+    phantom_core::fs::AnchoredTarget,
+    Option<phantom_core::fs::AnchoredRead>,
+)> {
+    let env_path = match config {
+        Some(config) => super::env::resolve_dotenv_anchored(lock, project_dir, config)?.0,
+        None => project_dir.join(".env"),
+    };
+    let target = lock.target(&env_path)?;
+    let before = target
+        .read_regular()
+        .with_context(|| format!("Failed to retain managed dotenv {}", env_path.display()))?;
+    if let Some(bytes) = before.as_ref() {
+        let text = std::str::from_utf8(bytes.bytes())
+            .context("Managed dotenv is not valid UTF-8; agent setup made no changes")?;
+        DotenvFile::parse_str(text)
+            .validate_for_mutation()
+            .context("Managed dotenv is malformed; agent setup made no changes")?;
+    }
+    Ok((target, before))
+}
+
+fn ensure_agent_dotenv_unchanged(
+    target: &phantom_core::fs::AnchoredTarget,
+    expected: Option<&phantom_core::fs::AnchoredRead>,
+) -> Result<()> {
+    let current = target
+        .read_regular()
+        .context("Failed to re-read managed dotenv before agent setup mutation")?;
+    let matches = match (expected, current.as_ref()) {
+        (Some(expected), Some(current)) => {
+            expected.identity() == current.identity()
+                && expected.bytes() == current.bytes()
+                && expected.permissions() == current.permissions()
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    if !matches {
+        anyhow::bail!(
+            "Managed dotenv changed after agent setup preflight; no further change was attempted"
+        );
+    }
+    Ok(())
+}
+
 fn ensure_gitignore(project_dir: &std::path::Path) -> Result<bool> {
     let path = project_dir.join(".gitignore");
     let lock = phantom_vault::acquire_project_transaction_lock(project_dir)
         .context("Failed to acquire the project transaction lock")?;
+    let config_path = project_dir.join(".phantom.toml");
+    let config = lock
+        .target(&config_path)?
+        .read_regular()?
+        .and_then(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()).ok());
+    let (dotenv_target, dotenv_before) = agent_dotenv_guard(&lock, project_dir, config.as_ref())?;
     let target = lock.target(&path)?;
     let before = target
         .read_regular()
@@ -196,6 +276,7 @@ fn ensure_gitignore(project_dir: &std::path::Path) -> Result<bool> {
         content.push('\n');
     }
     content.push_str(".env\n.env.local\n.env.*.local\n.env.backup\n");
+    ensure_agent_dotenv_unchanged(&dotenv_target, dotenv_before.as_ref())?;
     replace_agent_target(&target, before.as_ref(), content.as_bytes(), &path)?;
     println!(
         "{} Updated .gitignore with env patterns",
@@ -212,20 +293,13 @@ fn ensure_env_example(project_dir: &std::path::Path) -> Result<bool> {
         .target(&config_path)?
         .read_regular()?
         .and_then(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()).ok());
-    let (_env_path, dotenv) = match config.as_ref() {
-        Some(config) => super::env::resolve_dotenv_anchored(&lock, project_dir, config)?,
-        None => {
-            let path = project_dir.join(".env");
-            let Some(bytes) = lock.target(&path)?.read_regular()? else {
-                return Ok(false);
-            };
-            let content = std::str::from_utf8(bytes.bytes()).context("Failed to read .env")?;
-            (path, Some(DotenvFile::parse_str(content)))
-        }
-    };
-    let Some(dotenv) = dotenv else {
+    let (dotenv_target, dotenv_before) = agent_dotenv_guard(&lock, project_dir, config.as_ref())?;
+    let Some(dotenv_before) = dotenv_before else {
         return Ok(false);
     };
+    let dotenv = DotenvFile::parse_str(
+        std::str::from_utf8(dotenv_before.bytes()).context("Failed to read managed dotenv")?,
+    );
     let example_path = project_dir.join(".env.example");
     let example_target = lock.target(&example_path)?;
     let example_before = example_target.read_regular().with_context(|| {
@@ -238,7 +312,10 @@ fn ensure_env_example(project_dir: &std::path::Path) -> Result<bool> {
         return Ok(false);
     }
 
-    let content = dotenv.generate_example_content(config.as_ref());
+    let content = dotenv
+        .generate_example_content(config.as_ref())
+        .context("Managed dotenv is malformed; no agent example was written")?;
+    ensure_agent_dotenv_unchanged(&dotenv_target, Some(&dotenv_before))?;
     replace_agent_target(&example_target, None, content.as_bytes(), &example_path)?;
     println!("{} Generated .env.example", "ok".green().bold());
     Ok(true)
@@ -344,6 +421,25 @@ fn print_human_report(report: &AgentReadinessReport) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn malformed_dotenv_blocks_all_agent_setup_mutations() {
+        let project = tempfile::tempdir().unwrap();
+        let source = b"API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n";
+        std::fs::write(project.path().join(".env"), source).unwrap();
+        let report = super::readiness_report(project.path());
+
+        let error = super::apply_setup(project.path(), &report).unwrap_err();
+
+        assert!(error.to_string().contains("malformed"));
+        assert_eq!(std::fs::read(project.path().join(".env")).unwrap(), source);
+        for path in [".gitignore", ".env.example", ".phantom.toml", ".claude"] {
+            assert!(
+                !project.path().join(path).exists(),
+                "unexpected mutation: {path}"
+            );
+        }
+    }
+
     #[test]
     fn agent_writer_preserves_concurrent_owner() {
         let project = tempfile::tempdir().unwrap();

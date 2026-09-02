@@ -492,6 +492,9 @@ fn parse_competitor_source(
 fn parse_env_source(bytes: &[u8]) -> Result<BTreeMap<String, Zeroizing<String>>> {
     let content = std::str::from_utf8(bytes).context("File is not valid UTF-8")?;
     let dotenv = phantom_core::dotenv::DotenvFile::parse_str(content);
+    dotenv
+        .validate_for_mutation()
+        .context("Import source is malformed; no destination mutation was prepared")?;
     let mut secrets = BTreeMap::new();
     for entry in dotenv.entries() {
         if !entry.value.is_empty() {
@@ -522,6 +525,13 @@ fn load_import_project_exact() -> Result<ImportProject> {
         .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run `phantom init` first."))?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
         .context("Failed to parse the reviewed .phantom.toml snapshot")?;
+    let managed = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])
+        .context("Failed to resolve the managed dotenv before import")?;
+    if let Some(dotenv) = managed.file.as_ref() {
+        dotenv
+            .validate_for_mutation()
+            .context("Managed dotenv is malformed; import made no vault or project mutation")?;
+    }
     let local_project_id = config.local_project_id().to_string();
     let project = ImportProject {
         project_dir,

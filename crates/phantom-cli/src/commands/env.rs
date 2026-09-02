@@ -56,6 +56,9 @@ fn run_in(project_dir: &std::path::Path, output: &str, after_lock: impl FnOnce()
             crate::util::docs_url("getting-started")
         )
     })?;
+    dotenv
+        .validate_for_mutation()
+        .context("Managed dotenv is malformed; no example was written")?;
     let entries = dotenv.entries();
 
     if entries.is_empty() {
@@ -65,7 +68,9 @@ fn run_in(project_dir: &std::path::Path, output: &str, after_lock: impl FnOnce()
 
     // Load config for service info if available
     // Use shared generation logic from phantom-core
-    let content = dotenv.generate_example_content(config.as_ref());
+    let content = dotenv
+        .generate_example_content(config.as_ref())
+        .context("Managed dotenv is malformed; no example was written")?;
     match output_target.replace_if_exact(None, content.as_bytes())? {
         phantom_core::fs::AnchoredEffect::Durable(_) => {}
         phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
@@ -237,6 +242,33 @@ mod tests {
         let (path, dotenv) = resolve_dotenv_anchored(&lock, project.path(), &config).unwrap();
         assert_eq!(path, project.path().join(".env"));
         assert!(dotenv.is_none());
+    }
+
+    #[test]
+    fn malformed_dotenv_writes_no_example_or_plaintext() {
+        let project = tempfile::tempdir().unwrap();
+        let source = "API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n";
+        std::fs::write(project.path().join(".env"), source).unwrap();
+
+        let error = run_in(project.path(), ".env.example", || {}).unwrap_err();
+
+        assert!(error.to_string().contains("malformed"));
+        assert!(!project.path().join(".env.example").exists());
+        assert_eq!(
+            std::fs::read_to_string(project.path().join(".env")).unwrap(),
+            source
+        );
+    }
+
+    #[test]
+    fn malformed_only_dotenv_is_not_reported_as_empty_success() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join(".env"), "BROKEN_RECORD\n").unwrap();
+
+        let error = run_in(project.path(), ".env.example", || {}).unwrap_err();
+
+        assert!(error.to_string().contains("malformed"));
+        assert!(!project.path().join(".env.example").exists());
     }
 
     #[cfg(unix)]

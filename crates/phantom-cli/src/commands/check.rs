@@ -25,6 +25,7 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
     if !staged_only {
         for path in dotenv_scan_paths(&project_dir)? {
             let dotenv = DotenvFile::parse_file(&path)?;
+            dotenv.validate_for_mutation()?;
             let real_secrets = dotenv.real_secret_entries();
 
             if !real_secrets.is_empty() {
@@ -50,23 +51,22 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
         }
     }
 
-    // Scan staged files for .env secrets and common hardcoded secret patterns.
-    let staged = get_staged_files();
-    for file in &staged {
-        let content = if staged_only {
-            read_staged_file(file)
-        } else {
-            std::fs::read_to_string(project_dir.join(file)).ok()
-        };
-
-        if let Some(content) = content {
+    // `--staged` is the pre-commit surface. Ordinary worktree checks remain
+    // usable without a Git repository or Git binary.
+    if staged_only {
+        for file in get_staged_files()? {
             if file.ends_with(".phantom.toml") {
-                warn_on_config_risks(file, &content);
+                let content = read_staged_file(&file)?;
+                warn_on_config_risks(&file, &content);
                 continue;
             }
 
-            if is_env_file(file) {
+            if is_env_file(&file) {
+                // Dotenv is a strict text format. Non-UTF-8 content makes its
+                // protection status indeterminate and therefore fails closed.
+                let content = read_staged_file(&file)?;
                 let dotenv = DotenvFile::parse_str(&content);
+                dotenv.validate_for_mutation()?;
                 let real_secrets = dotenv.real_secret_entries();
 
                 if !real_secrets.is_empty() {
@@ -76,23 +76,24 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
                             "BLOCKED".red().bold()
                         );
                     }
-
                     eprintln!(
                         "  {} staged {} has unprotected secret name(s):",
                         "!".red().bold(),
                         file
                     );
-
                     for entry in &real_secrets {
                         eprintln!("    {} {}", "-".dimmed(), entry.key.bold());
                     }
-
                     issues += real_secrets.len();
                 }
                 continue;
             }
 
-            let secret_patterns = [
+            // Do not decode arbitrary staged blobs: PNG, PDF, and other
+            // unrelated binary assets are valid. Git emits a textual binary
+            // diff marker and therefore no added lines for those files.
+            let scan_content = staged_added_lines(&file)?;
+            for (pattern, label) in [
                 ("sk-", "OpenAI API key"),
                 ("sk_live_", "Stripe live key"),
                 ("sk_test_", "Stripe test key"),
@@ -102,15 +103,7 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
                 ("xoxb-", "Slack bot token"),
                 ("xoxp-", "Slack user token"),
                 ("AKIA", "AWS access key"),
-            ];
-
-            let scan_content = if staged_only {
-                staged_added_lines(file).unwrap_or_default()
-            } else {
-                content
-            };
-
-            for (pattern, label) in &secret_patterns {
+            ] {
                 if scan_content.contains(pattern) {
                     if issues == 0 {
                         eprintln!("\n{} Potential secrets in code!\n", "BLOCKED".red().bold());
@@ -273,42 +266,69 @@ fn run_runtime_check() -> Result<()> {
     Ok(())
 }
 
-fn get_staged_files() -> Vec<String> {
-    std::process::Command::new("git")
-        .args(["diff", "--cached", "--name-only", "--diff-filter=ACMR"])
+fn get_staged_files() -> Result<Vec<String>> {
+    let output = std::process::Command::new("git")
+        .args([
+            "diff",
+            "--cached",
+            "--name-only",
+            "--diff-filter=ACMR",
+            "-z",
+        ])
         .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|s| s.lines().map(String::from).collect())
-        .unwrap_or_default()
+        .map_err(|_| {
+            anyhow::anyhow!("Failed to inspect staged paths; clean status is indeterminate")
+        })?;
+    if !output.status.success() {
+        anyhow::bail!("Failed to inspect staged paths; clean status is indeterminate");
+    }
+    let paths = String::from_utf8(output.stdout).map_err(|_| {
+        anyhow::anyhow!("Staged path list is not valid UTF-8; clean status is indeterminate")
+    })?;
+    Ok(paths
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(String::from)
+        .collect())
 }
 
-fn read_staged_file(file: &str) -> Option<String> {
-    std::process::Command::new("git")
+fn read_staged_file(file: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
         .args(["show", &format!(":{file}")])
         .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map_err(|_| {
+            anyhow::anyhow!("Failed to read staged file; clean status is indeterminate")
+        })?;
+    if !output.status.success() {
+        anyhow::bail!("Failed to read staged file; clean status is indeterminate");
+    }
+    String::from_utf8(output.stdout).map_err(|_| {
+        anyhow::anyhow!("Staged file is not valid UTF-8; clean status is indeterminate")
+    })
 }
 
-fn staged_added_lines(file: &str) -> Option<String> {
-    std::process::Command::new("git")
+fn staged_added_lines(file: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
         .args(["diff", "--cached", "--unified=0", "--", file])
         .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|diff| {
-            diff.lines()
-                .filter_map(|line| {
-                    line.strip_prefix('+')
-                        .filter(|_| !line.starts_with("+++ "))
-                        .map(str::to_string)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+        .map_err(|_| {
+            anyhow::anyhow!("Failed to inspect staged additions; clean status is indeterminate")
+        })?;
+    if !output.status.success() {
+        anyhow::bail!("Failed to inspect staged additions; clean status is indeterminate");
+    }
+    let diff = String::from_utf8(output.stdout).map_err(|_| {
+        anyhow::anyhow!("Staged diff is not valid UTF-8; clean status is indeterminate")
+    })?;
+    Ok(diff
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix('+')
+                .filter(|_| !line.starts_with("+++ "))
+                .map(str::to_string)
         })
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 #[cfg(test)]

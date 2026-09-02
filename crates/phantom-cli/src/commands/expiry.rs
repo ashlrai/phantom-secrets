@@ -51,6 +51,11 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    if auto_rotate {
+        crate::commands::add::validate_managed_dotenv_preflight(&project_dir, &config).context(
+            "Managed dotenv is malformed; auto-rotate stopped before vault, metadata, or output effects",
+        )?;
+    }
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     let entries = vault
@@ -461,6 +466,9 @@ pub fn run_rotate(key: &str) -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    crate::commands::add::validate_managed_dotenv_preflight(&project_dir, &config).context(
+        "Managed dotenv is malformed; expiry token remap stopped before vault, metadata, or output effects",
+    )?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Ensure the secret exists.

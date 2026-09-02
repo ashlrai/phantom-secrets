@@ -10,7 +10,7 @@ use phantom_core::workspace_request::{
 };
 use phantom_vault::{ProjectTransactionLock, VaultBackend};
 use phantom_workspace::{
-    apply_setup_plan_durable, build_sealed_setup_plan, clear_setup_plan_journal,
+    apply_setup_plan_durable, build_sealed_setup_plan, clear_setup_plan_journal, inspect_workspace,
     recover_setup_plan_journal, DurableJournalConfig, JournalRecovery, ParticipantError,
     ParticipantFileMutation, ParticipantPreparation, PlanSealKey, SealedSetupPlan, SetupAction,
     SetupActionKind, SetupPlan, SetupTransactionParticipant,
@@ -41,11 +41,10 @@ struct ActionOutput<'a> {
 
 pub fn run_plan(json: bool) -> Result<()> {
     let workspace = std::env::current_dir().context("Could not resolve the current workspace")?;
-    let key_bytes = workspace_request::load_or_create_workspace_plan_key()
-        .context("Could not load the local workspace plan key")?;
-    let seal_key = PlanSealKey::from_bytes(*key_bytes);
-    let sealed = build_sealed_setup_plan(&workspace, &seal_key)
-        .context("Could not build the exact workspace setup plan")?;
+    let (_seal_key, sealed) = build_sealed_plan_after_strict_inspection(&workspace, || {
+        workspace_request::load_or_create_workspace_plan_key()
+            .context("Could not load the local workspace plan key")
+    })?;
     let request_id = workspace_request::create_request(
         &workspace,
         &sealed.plan.plan_id,
@@ -88,6 +87,53 @@ pub fn run_status(request_id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn build_sealed_plan_after_strict_inspection(
+    workspace: &Path,
+    load_key: impl FnOnce() -> Result<Zeroizing<[u8; 32]>>,
+) -> Result<(PlanSealKey, SealedSetupPlan)> {
+    // A first-use plan key is persistent machine-local state. Strict dotenv
+    // inspection must therefore complete before the key loader is allowed to
+    // create it. The sealed-plan builder re-inspects under its workspace lock
+    // after key loading so the returned plan still binds the current state.
+    inspect_workspace(workspace)
+        .context("Could not validate workspace dotenv files before provisioning plan authority")?;
+    let key_bytes = load_key()?;
+    let seal_key = PlanSealKey::from_bytes(*key_bytes);
+    let sealed = build_sealed_setup_plan(workspace, &seal_key)
+        .context("Could not build the exact workspace setup plan")?;
+    Ok((seal_key, sealed))
+}
+
+fn rebuild_exact_request_plan_with(
+    workspace: &Path,
+    expected_plan_id: &str,
+    expected_pre_state_id: &str,
+    load_key: impl FnOnce() -> Result<Zeroizing<[u8; 32]>>,
+) -> Result<(PlanSealKey, SealedSetupPlan)> {
+    let (seal_key, sealed) = build_sealed_plan_after_strict_inspection(workspace, load_key)?;
+    if sealed.plan.plan_id != expected_plan_id || sealed.pre_state_id != expected_pre_state_id {
+        bail!("workspace changed after this request was created; create a fresh plan");
+    }
+    Ok((seal_key, sealed))
+}
+
+fn prepare_pending_apply_before_effects<T>(
+    workspace: &Path,
+    expected_plan_id: &str,
+    expected_pre_state_id: &str,
+    load_key: impl FnOnce() -> Result<Zeroizing<[u8; 32]>>,
+    create_effects: impl FnOnce() -> Result<T>,
+) -> Result<(PlanSealKey, SealedSetupPlan, T)> {
+    let (seal_key, sealed) = rebuild_exact_request_plan_with(
+        workspace,
+        expected_plan_id,
+        expected_pre_state_id,
+        load_key,
+    )?;
+    let effects = create_effects()?;
+    Ok((seal_key, sealed, effects))
+}
+
 pub fn run_apply(request_id: &str) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         bail!(
@@ -119,11 +165,44 @@ pub fn run_apply(request_id: &str) -> Result<()> {
         );
     }
 
-    let (journal_path, journal_key) =
-        workspace_request::load_or_create_workspace_journal(request_id)
-            .context("Could not load the local workspace recovery journal key")?;
-    let journal = DurableJournalConfig::new(request_id, journal_path, *journal_key);
-    let mut participant = VaultSetupParticipant::new(&workspace)?;
+    // Pending requests have no transaction to recover. Validate their exact
+    // current dotenv state before creating journal authority or opening a
+    // vault. Claimed requests may already have durable effects, so their
+    // existing journal retains recovery priority.
+    let pending_preparation = if status.state == WorkspaceRequestState::Pending {
+        Some(prepare_pending_apply_before_effects(
+            &workspace,
+            &status.plan_id,
+            &status.pre_state_id,
+            || {
+                workspace_request::load_existing_workspace_plan_key()
+                    .context("Could not load the existing local workspace plan key")
+            },
+            || {
+                let (journal_path, journal_key) =
+                    workspace_request::load_or_create_workspace_journal(request_id)
+                        .context("Could not load the local workspace recovery journal key")?;
+                let journal = DurableJournalConfig::new(request_id, journal_path, *journal_key);
+                let participant = VaultSetupParticipant::new(&workspace)?;
+                Ok((journal, participant))
+            },
+        )?)
+    } else {
+        None
+    };
+    let (pending_plan, journal, mut participant) = match pending_preparation {
+        Some((seal_key, sealed, (journal, participant))) => {
+            (Some((seal_key, sealed)), journal, participant)
+        }
+        None => {
+            let (journal_path, journal_key) =
+                workspace_request::load_or_create_workspace_journal(request_id)
+                    .context("Could not load the local workspace recovery journal key")?;
+            let journal = DurableJournalConfig::new(request_id, journal_path, *journal_key);
+            let participant = VaultSetupParticipant::new_for_recovery(&workspace)?;
+            (None, journal, participant)
+        }
+    };
     match recover_setup_plan_journal(
         &workspace,
         &status.plan_id,
@@ -160,14 +239,18 @@ pub fn run_apply(request_id: &str) -> Result<()> {
         JournalRecovery::Absent => {}
     }
 
-    let key_bytes = workspace_request::load_or_create_workspace_plan_key()
-        .context("Could not load the local workspace plan key")?;
-    let seal_key = PlanSealKey::from_bytes(*key_bytes);
-    let sealed = build_sealed_setup_plan(&workspace, &seal_key)
-        .context("Could not rebuild the exact workspace setup plan")?;
-    if sealed.plan.plan_id != status.plan_id || sealed.pre_state_id != status.pre_state_id {
-        bail!("workspace changed after this request was created; create a fresh plan");
-    }
+    let (seal_key, sealed) = match pending_plan {
+        Some(prepared) => prepared,
+        None => rebuild_exact_request_plan_with(
+            &workspace,
+            &status.plan_id,
+            &status.pre_state_id,
+            || {
+                workspace_request::load_existing_workspace_plan_key()
+                    .context("Could not load the existing local workspace plan key")
+            },
+        )?,
+    };
     print_confirmation(&sealed.plan, request_id)?;
 
     let mut input = std::io::BufReader::new(std::io::stdin().lock());
@@ -432,15 +515,31 @@ impl VaultSetupParticipant {
         Self::new_with_vault_factory(workspace_root, phantom_vault::try_create_vault)
     }
 
+    fn new_for_recovery(workspace_root: &Path) -> Result<Self> {
+        Self::new_with_vault_factory_mode(workspace_root, phantom_vault::try_create_vault, false)
+    }
+
     fn new_with_vault_factory(
         workspace_root: &Path,
         create_vault: impl FnOnce(&str) -> phantom_core::error::Result<Box<dyn VaultBackend>>,
+    ) -> Result<Self> {
+        Self::new_with_vault_factory_mode(workspace_root, create_vault, true)
+    }
+
+    fn new_with_vault_factory_mode(
+        workspace_root: &Path,
+        create_vault: impl FnOnce(&str) -> phantom_core::error::Result<Box<dyn VaultBackend>>,
+        strict_dotenv_preflight: bool,
     ) -> Result<Self> {
         let workspace_root = workspace_root
             .canonicalize()
             .context("Workspace root could not be resolved safely")?;
         if !workspace_root.is_dir() {
             bail!("workspace root is not a directory");
+        }
+        if strict_dotenv_preflight {
+            inspect_workspace(&workspace_root)
+                .context("Workspace dotenv validation failed before vault resolution")?;
         }
         let reviewed_root = TrustedAnchor::open(&workspace_root)
             .context("Workspace root could not be retained before vault resolution")?;
@@ -610,6 +709,9 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
             let text = std::str::from_utf8(before.bytes())
                 .map_err(|_| ParticipantError::new("approved_env_invalid_utf8"))?;
             let dotenv = DotenvFile::parse_str(text);
+            dotenv
+                .validate_for_mutation()
+                .map_err(|_| ParticipantError::new("approved_env_malformed"))?;
             let approved_names = action.key_names.iter().collect::<BTreeSet<_>>();
             let mut found = BTreeSet::new();
             for entry in dotenv.entries() {
@@ -650,7 +752,9 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
         }
         let mut mutations = Vec::with_capacity(parsed.len());
         for (action, dotenv) in parsed {
-            let (content, mut originals) = dotenv.rewrite_with_phantoms(&token_map);
+            let (content, mut originals) = dotenv
+                .rewrite_with_phantoms(&token_map)
+                .map_err(|_| ParticipantError::new("approved_env_malformed"))?;
             for value in originals.values_mut() {
                 value.zeroize();
             }
@@ -753,6 +857,30 @@ mod portable_capability_contract_tests {
         let ambient_read = ["std::fs::read_to_", "string(&path)"].concat();
         assert!(!source.contains(&ambient_parse));
         assert!(!source.contains(&ambient_read));
+    }
+
+    #[test]
+    fn claimed_requests_recover_before_strict_replanning() {
+        let source = include_str!("workspace.rs");
+        let run_apply = source
+            .split_once("pub fn run_apply")
+            .expect("run_apply must remain present")
+            .1
+            .split_once("fn print_confirmation")
+            .expect("run_apply must precede print_confirmation")
+            .0;
+        let recovery_participant = run_apply
+            .find("VaultSetupParticipant::new_for_recovery")
+            .expect("claimed requests must construct a recovery participant");
+        let journal_recovery = run_apply
+            .find("match recover_setup_plan_journal")
+            .expect("claimed requests must attempt journal recovery");
+        let strict_replan = run_apply
+            .find("None => rebuild_exact_request_plan_with")
+            .expect("an absent journal must still require an exact strict replan");
+
+        assert!(recovery_participant < journal_recovery);
+        assert!(journal_recovery < strict_replan);
     }
 }
 
@@ -963,6 +1091,92 @@ mod tests {
 
     fn seal_key() -> PlanSealKey {
         PlanSealKey::from_bytes([0x71; 32])
+    }
+
+    #[test]
+    fn malformed_workspace_is_rejected_before_plan_key_loader() {
+        let workspace = TempDir::new().unwrap();
+        write(
+            workspace.path().join(".env"),
+            "API_SECRET=plaintext-must-not-escape\nBROKEN_RECORD\n",
+        );
+        let key_loads = AtomicUsize::new(0);
+
+        let result = build_sealed_plan_after_strict_inspection(workspace.path(), || {
+            key_loads.fetch_add(1, Ordering::SeqCst);
+            Ok(Zeroizing::new([0x71; 32]))
+        });
+        let error = match result {
+            Ok(_) => panic!("malformed workspace must fail before key loading"),
+            Err(error) => format!("{error:#}"),
+        };
+
+        assert_eq!(key_loads.load(Ordering::SeqCst), 0);
+        assert!(error.contains("validate workspace dotenv"), "{error}");
+        assert!(error.contains("malformed dotenv"), "{error}");
+        assert!(!error.contains("plaintext-must-not-escape"));
+    }
+
+    #[test]
+    fn malformed_pending_apply_is_rejected_before_journal_or_vault_effects() {
+        let workspace = TempDir::new().unwrap();
+        write(
+            workspace.path().join(".env"),
+            "API_SECRET=plaintext-must-not-escape\nBROKEN_RECORD\n",
+        );
+        let key_loads = AtomicUsize::new(0);
+        let effect_creations = AtomicUsize::new(0);
+
+        let result = prepare_pending_apply_before_effects(
+            workspace.path(),
+            &"a".repeat(64),
+            &"b".repeat(64),
+            || {
+                key_loads.fetch_add(1, Ordering::SeqCst);
+                Ok(Zeroizing::new([0x71; 32]))
+            },
+            || {
+                effect_creations.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        let error = match result {
+            Ok(_) => panic!("malformed workspace must fail before apply effects"),
+            Err(error) => format!("{error:#}"),
+        };
+
+        assert_eq!(key_loads.load(Ordering::SeqCst), 0);
+        assert_eq!(effect_creations.load(Ordering::SeqCst), 0);
+        assert!(error.contains("validate workspace dotenv"), "{error}");
+        assert!(!error.contains("plaintext-must-not-escape"));
+    }
+
+    #[test]
+    fn participant_rejects_malformed_workspace_before_vault_factory() {
+        let workspace = TempDir::new().unwrap();
+        write(
+            workspace.path().join(".env"),
+            "API_SECRET=plaintext-must-not-escape\nBROKEN_RECORD\n",
+        );
+        let vault_creations = AtomicUsize::new(0);
+
+        let result =
+            VaultSetupParticipant::new_with_vault_factory(workspace.path(), |_project_id| {
+                vault_creations.fetch_add(1, Ordering::SeqCst);
+                Ok(Box::new(FailingStoreVault {
+                    values: Arc::new(Mutex::new(BTreeMap::new())),
+                    fail_name: "NEVER_FAIL".to_string(),
+                }) as Box<dyn VaultBackend>)
+            });
+        let error = match result {
+            Ok(_) => panic!("malformed workspace must fail before vault construction"),
+            Err(error) => format!("{error:#}"),
+        };
+
+        assert_eq!(vault_creations.load(Ordering::SeqCst), 0);
+        assert!(error.contains("dotenv validation failed"), "{error}");
+        assert!(error.contains("malformed dotenv"), "{error}");
+        assert!(!error.contains("plaintext-must-not-escape"));
     }
 
     #[test]

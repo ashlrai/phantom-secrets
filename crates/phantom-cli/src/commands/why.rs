@@ -23,6 +23,9 @@ pub fn run(key: &str) -> Result<()> {
     }
 
     let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env")?;
+    dotenv
+        .validate_for_mutation()
+        .context("Managed dotenv is malformed; protection status is indeterminate")?;
     // Find the entry
     let entry = dotenv.entries().into_iter().find(|e| e.key == key);
 

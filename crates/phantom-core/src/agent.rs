@@ -126,6 +126,20 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
     for path in &env_files {
         match DotenvFile::parse_file(path) {
             Ok(dotenv) => {
+                if let Err(err) = dotenv.validate_for_mutation() {
+                    findings.push(ReadinessFinding {
+                        id: "env-parse-error".to_string(),
+                        severity: FindingSeverity::Critical,
+                        message: format!(
+                            "Could not safely parse {}: {err}",
+                            rel(project_dir, path)
+                        ),
+                        file: Some(rel(project_dir, path)),
+                        command: None,
+                        requires_approval: false,
+                    });
+                    continue;
+                }
                 for entry in dotenv.real_secret_entries() {
                     unprotected.push((path.clone(), entry.key.clone()));
                 }

@@ -41,6 +41,8 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
         );
     }
 
+    validate_watched_dotenvs(&watched)?;
+
     println!(
         "{} Watching for new secrets in: {}",
         "->".blue().bold(),
@@ -101,6 +103,21 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
     Ok(())
 }
 
+fn validate_watched_dotenvs(watched: &[PathBuf]) -> Result<()> {
+    for path in watched {
+        DotenvFile::parse_file(path)
+            .with_context(|| format!("Failed to read {} before starting watcher", path.display()))?
+            .validate_for_mutation()
+            .with_context(|| {
+                format!(
+                    "{} is malformed; watcher did not announce readiness or start",
+                    path.display()
+                )
+            })?;
+    }
+    Ok(())
+}
+
 fn watched_dotenv_paths(project_dir: &Path, config: &PhantomConfig) -> Result<Vec<PathBuf>> {
     let mut candidates = vec![
         project_dir.join(".env"),
@@ -153,6 +170,15 @@ fn handle_env_change(env_path: &Path) {
         Ok(d) => d,
         Err(_) => return,
     };
+    if let Err(error) = dotenv.validate_for_mutation() {
+        eprintln!(
+            "{} {} is malformed; secret detection is indeterminate: {}",
+            "BLOCKED".red().bold(),
+            env_path.display(),
+            error
+        );
+        return;
+    }
 
     let classified = dotenv.classified_entries();
     let new_secrets: Vec<_> = classified
@@ -233,6 +259,20 @@ mod tests {
         let mut config = PhantomConfig::new_with_defaults("watch-traversal".to_string());
         config.phantom.dotenv_path = Some("../outside.env".to_string());
         assert!(watched_dotenv_paths(dir.path(), &config).is_err());
+    }
+
+    #[test]
+    fn initial_validation_rejects_malformed_without_touching_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let before = b"API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n";
+        std::fs::write(&path, before).unwrap();
+
+        let error = validate_watched_dotenvs(std::slice::from_ref(&path)).unwrap_err();
+
+        assert!(error.to_string().contains("malformed"));
+        assert!(!error.to_string().contains("plaintext-must-not-escape"));
+        assert_eq!(std::fs::read(path).unwrap(), before);
     }
 
     #[cfg(unix)]
