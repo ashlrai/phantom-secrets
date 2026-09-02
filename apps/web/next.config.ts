@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import docsRoutes from "./docs-routes.json";
 import { publicAuthConfigurationFingerprint } from "./src/lib/public-auth-configuration";
 
 const CONTENT_SECURITY_POLICY = [
@@ -44,32 +45,11 @@ const nextConfig: NextConfig = {
       publicAuthConfigurationFingerprint(process.env) ?? "unconfigured",
   },
   async redirects() {
-    return [
-      {
-        source: "/docs",
-        destination:
-          "https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md",
-        permanent: false,
-      },
-      {
-        source: "/docs/getting-started",
-        destination:
-          "https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md",
-        permanent: false,
-      },
-      {
-        source: "/docs/login",
-        destination:
-          "https://github.com/ashlrai/phantom-secrets/blob/main/docs/login.md",
-        permanent: false,
-      },
-      {
-        source: "/docs/sync",
-        destination:
-          "https://github.com/ashlrai/phantom-secrets/blob/main/docs/sync.md",
-        permanent: false,
-      },
-    ];
+    return docsRoutes.map(({ source, file }) => ({
+      source,
+      destination: `https://github.com/ashlrai/phantom-secrets/blob/main/docs/${file}`,
+      permanent: false,
+    }));
   },
   async headers() {
     return [

@@ -1,0 +1,10 @@
+{
+  "task": "Inspect billing integration configuration",
+  "secret_names": [
+    "BILLING_API_TOKEN"
+  ],
+  "agent_may_read_secret_values": false,
+  "network": "denied",
+  "mutations": "denied",
+  "provider_acceptance": "not-tested"
+}

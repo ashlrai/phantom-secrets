@@ -1,0 +1,10 @@
+Phantom first-five-minutes walkthrough
+PASS environment contract is value-free
+  agent-visible secret names: BILLING_API_TOKEN
+  agent-visible secret values: 0
+PASS delegation policy is closed
+  network requests: 0
+  mutations: 0
+  persisted token mappings: 0
+LIMIT provider acceptance: not claimed
+NEXT use Phantom's trusted-terminal quickstart for a real project

@@ -1,0 +1,40 @@
+# Local-only configuration for deterministic migration replay in CI and development.
+# This file is not a remote-project link and intentionally contains no project ref,
+# access token, database password, or provider credential.
+project_id = "phantom-web-local"
+
+[api]
+enabled = false
+
+[db]
+port = 54322
+shadow_port = 54320
+health_timeout = "2m"
+# Keep this explicit so a Supabase CLI default change cannot silently change the
+# Postgres compatibility target exercised by the migration workflow.
+major_version = 17
+
+[db.migrations]
+enabled = true
+# Phantom uses ordered, imperative SQL migrations rather than declarative schemas.
+schema_paths = []
+
+[db.seed]
+# Migration validation must not depend on mutable or production-derived seed data.
+enabled = false
+sql_paths = []
+
+[studio]
+enabled = false
+
+[auth]
+# Fresh local volumes need Supabase Auth's one-shot schema migrator before the
+# project migrations can reference auth.users, auth.identities, and auth.uid().
+# No auth server is exposed because the local API remains disabled.
+enabled = true
+
+[storage]
+enabled = false
+
+[realtime]
+enabled = false

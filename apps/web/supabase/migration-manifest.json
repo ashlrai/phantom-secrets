@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "algorithm": "sha256",
+  "migrations": [
+    {
+      "file": "001_initial.sql",
+      "sha256": "06067f4745868ca7a98541394279227949a6df5a957947dff601c16a42cdf96d"
+    },
+    {
+      "file": "002_teams.sql",
+      "sha256": "6ee0ed98ae1664efebd57fe9dc8bb31f3f38a802c9c50cfa16f39fc4bd0a92f5"
+    },
+    {
+      "file": "003_stripe_events.sql",
+      "sha256": "b46576afd48f6662d06445814da5ef1c082f398975da008a24a985003729b274"
+    },
+    {
+      "file": "004_platform_tokens.sql",
+      "sha256": "09e41f78b3c34e1c5a634b1262b03de1a9a3447f8adc11103ad451b513ea0481"
+    },
+    {
+      "file": "005_team_keys.sql",
+      "sha256": "ce7ebcdca8d8d25c928487c23697a9fc63e2df1daa9a1ab794b3b3e010070309"
+    },
+    {
+      "file": "20260523000016_canonical_device_user_codes.sql",
+      "sha256": "a3665c14eb09151791255cf2e82f72a2d10c713b8f3b7def613deadb3f10aa81"
+    },
+    {
+      "file": "20260523043035_harden_auth_and_rls.sql",
+      "sha256": "eafc0e4e65f37ca2a4aa40a9ad23c405981ba66df84d695aa2d5c2ba24cf30f4"
+    },
+    {
+      "file": "20260709035059_harden_vault_team_rls.sql",
+      "sha256": "a916ff673caff7e3bf563435c3c0dc7cee2c61223272d41f923a3ef80e228fa4"
+    },
+    {
+      "file": "20260831010000_stripe_event_processing_state.sql",
+      "sha256": "05bf61f537a920a6fc26115e865c6d0775548384bfa39ee6ad5b8933f78d7d06"
+    },
+    {
+      "file": "20260831020000_harden_identity_and_device_auth.sql",
+      "sha256": "a8fe023ec65fa6c6d736867d56938cd8775e7cb013cc1e8bc246109eeb34ddaa"
+    }
+  ]
+}

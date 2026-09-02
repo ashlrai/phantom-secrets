@@ -81,6 +81,23 @@ candidate build and native checks only. It does not create attestations,
 publish a release or package, sign binaries, deploy the website, apply a
 migration, activate a provider, or establish customer acceptance.
 
+After the rehearsal succeeds, run the read-only pre-tag gate from the exact
+clean candidate worktree. It queries the current remote `main`, proves local
+and remote tag absence, re-runs version and release-note checks, binds the
+successful rehearsal to the candidate SHA and exact native/bundle jobs, and
+re-queries the release environment and tag rulesets:
+
+```bash
+node scripts/release/pre-tag-preflight.mjs v0.7.4 33584179616
+```
+
+The script never creates or pushes a tag. Only after every gate passes does it
+print the exact annotated-tag and explicit `refs/tags/...` push commands for a
+trusted operator to review. Recheck the printed SHA and rehearsal URL before
+running them. A pushed `v*` tag is immutable in the current governance model;
+if its workflow fails or its release is defective, publish a higher
+fix-forward version rather than attempting to move or delete the tag.
+
 The workflow source only requests SBOM and provenance attestations when a tag
 run executes successfully. This repository state does **not** prove the native
 matrix ran or that an attestation exists, and attestations are not independent
@@ -138,7 +155,9 @@ npm --prefix apps/web run lint
 npm --prefix apps/web test
 npm --prefix apps/web run build
 node --test scripts/installers.test.js
+node --test scripts/examples-first-five-minutes.test.mjs
 node --test scripts/release/native-installer-acceptance.test.mjs
+node --test scripts/release/pre-tag-preflight.test.mjs
 node --test scripts/release/release-rehearsal-contract.test.mjs
 node --test scripts/publish-crates.test.js
 node scripts/check-platform-installers.mjs

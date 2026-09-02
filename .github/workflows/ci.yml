@@ -30,6 +30,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
         with:
           toolchain: 1.95.0
@@ -40,6 +43,7 @@ jobs:
         run: cargo test --workspace --all-targets --locked --no-fail-fast --verbose
       - name: Verify platform, installer, and release mappings
         run: |
+          node --test scripts/examples-first-five-minutes.test.mjs
           node scripts/check-platform-installers.mjs
           node npm-mcp/test/platform-matrix.test.js
       - name: Run direct installer offline tests
@@ -175,6 +179,7 @@ jobs:
   web:
     name: Web security, tests, and build
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     permissions:
       contents: read
     defaults:
@@ -189,6 +194,8 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
+      - name: Verify immutable migration source contract
+        run: node --test ../../scripts/supabase/verify-migrations.test.mjs
       - name: Install from the lockfile
         run: npm ci
       - name: Audit production dependencies
@@ -199,6 +206,28 @@ jobs:
         run: npm test
       - name: Build the production application
         run: npm run build
+      - name: Install pinned Supabase CLI
+        # This exact CLI release fixes the local service-image compatibility set;
+        # config.toml separately pins the Postgres image major version.
+        uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
+        with:
+          version: 2.116.0
+      - name: Confirm exact Supabase CLI version
+        run: test "$(supabase --version)" = "2.116.0"
+      - id: start_database
+        name: Start isolated local database
+        run: supabase db start
+      - name: Replay every migration from an empty local database
+        run: supabase db reset --local --no-seed
+      - name: Verify local migration history
+        run: supabase migration list --local
+      - name: Lint local schema
+        run: supabase db lint --local --level warning --fail-on warning
+      - name: Run local security and performance advisors
+        run: supabase db advisors --local --type all --level warn --fail-on warn
+      - name: Tear down local database and delete its volumes
+        if: ${{ always() && steps.start_database.outcome != 'skipped' }}
+        run: supabase stop --no-backup
 
   secret-scan:
     name: Source secret scan
@@ -258,7 +287,7 @@ jobs:
       - name: Test fail-closed publication and release receipts
         run: |
           node scripts/release/check-version-parity.mjs
-          node --test scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/release-receipts.test.mjs scripts/release/release-rehearsal-contract.test.mjs
+          node --test scripts/examples-first-five-minutes.test.mjs scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/pre-tag-preflight.test.mjs scripts/release/release-receipts.test.mjs scripts/release/release-rehearsal-contract.test.mjs
       - name: Install checksum-verified MCP Registry publisher
         run: bash scripts/release/install-mcp-publisher.sh
       - name: Validate the staged MCP Registry manifest
