@@ -180,8 +180,9 @@ fn write_approval_output(
 mod tests {
     use std::cell::RefCell;
     use std::io::{BufRead, Cursor, Read};
+    use std::process::Command;
     use std::sync::mpsc;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use phantom_core::mcp_approval;
     use rand::RngCore;
@@ -293,6 +294,35 @@ mod tests {
 
     #[test]
     fn noninteractive_admission_never_reads_or_strands_transaction_waiters() {
+        const ISOLATED_CHILD_ENV: &str = "PHANTOM_TEST_MCP_APPROVE_ISOLATED_CHILD_V1";
+        const TEST_NAME: &str = "commands::mcp_approve::tests::noninteractive_admission_never_reads_or_strands_transaction_waiters";
+
+        // This is a process-global lock-order test. Running its watchdog beside
+        // unrelated ENV_LOCK users can starve the deliberately blocked thread
+        // and misclassify scheduler contention as a deadlock. Re-enter only
+        // this exact test in a bounded child process so the same production
+        // locks are exercised without unrelated test-harness interference.
+        if std::env::var(ISOLATED_CHILD_ENV).as_deref() != Ok("1") {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(ISOLATED_CHILD_ENV, "1")
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success(), "isolated lock-order test failed");
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().ok();
+                    child.wait().ok();
+                    panic!("isolated lock-order test exceeded its deadlock watchdog");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
         let project = TempDir::new().unwrap();
         let project_path = project.path().to_path_buf();
         let (acquired_rx, contender) = with_temp_home(|| {
@@ -332,11 +362,7 @@ mod tests {
             (acquired_rx, contender)
         });
 
-        // The package-contract job runs the full CLI test binary in parallel;
-        // unrelated environment-isolation tests can legitimately retain the
-        // shared process lock for several seconds. This remains a bounded
-        // deadlock watchdog without classifying scheduler contention as one.
-        acquired_rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        acquired_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         contender.join().unwrap();
     }
 
