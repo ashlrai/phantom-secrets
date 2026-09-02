@@ -7,6 +7,10 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+// Keep signing-readiness contracts on the existing release source-test path
+// without changing workflow behavior or permissions.
+import "./signing-readiness.test.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
 const releaseBuild = readFileSync(

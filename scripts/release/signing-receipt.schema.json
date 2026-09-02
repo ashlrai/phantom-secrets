@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phm.dev/schemas/signing-receipts-v1.json",
+  "title": "Phantom sanitized signing receipts",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "policy_state", "release_tag", "source_sha", "generated_at", "targets"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "phantom_signing_receipts" },
+    "policy_state": { "const": "required" },
+    "release_tag": { "type": "string", "pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "source_sha": { "$ref": "#/$defs/source_sha" },
+    "generated_at": { "$ref": "#/$defs/timestamp" },
+    "targets": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "prefixItems": [
+        { "allOf": [{ "$ref": "#/$defs/target_receipt" }, { "properties": { "target": { "const": "aarch64-apple-darwin" }, "evidence": { "$ref": "#/$defs/macos_evidence" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/target_receipt" }, { "properties": { "target": { "const": "x86_64-apple-darwin" }, "evidence": { "$ref": "#/$defs/macos_evidence" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/target_receipt" }, { "properties": { "target": { "const": "aarch64-pc-windows-msvc" }, "evidence": { "$ref": "#/$defs/windows_evidence" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/target_receipt" }, { "properties": { "target": { "const": "x86_64-pc-windows-msvc" }, "evidence": { "$ref": "#/$defs/windows_evidence" } } }] }
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "source_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "format": "date-time", "pattern": "Z$" },
+    "binary_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "unsigned_sha256", "signed_sha256"],
+      "properties": {
+        "name": { "enum": ["phantom", "phantom-mcp"] },
+        "unsigned_sha256": { "$ref": "#/$defs/sha256" },
+        "signed_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "macos_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "team_id", "hardened_runtime", "secure_timestamp_verified", "notarization_status", "submission_id", "submission_container_sha256", "submission_members", "submitted_at", "accepted_at", "stapling"],
+      "properties": {
+        "kind": { "const": "macos" },
+        "team_id": { "type": "string", "pattern": "^[A-Z0-9]{10}$" },
+        "hardened_runtime": { "const": true },
+        "secure_timestamp_verified": { "const": true },
+        "notarization_status": { "const": "Accepted" },
+        "submission_id": { "type": "string", "format": "uuid" },
+        "submission_container_sha256": { "$ref": "#/$defs/sha256" },
+        "submission_members": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            { "type": "object", "additionalProperties": false, "required": ["name", "signed_sha256"], "properties": { "name": { "const": "phantom" }, "signed_sha256": { "$ref": "#/$defs/sha256" } } },
+            { "type": "object", "additionalProperties": false, "required": ["name", "signed_sha256"], "properties": { "name": { "const": "phantom-mcp" }, "signed_sha256": { "$ref": "#/$defs/sha256" } } }
+          ],
+          "items": false
+        },
+        "submitted_at": { "$ref": "#/$defs/timestamp" },
+        "accepted_at": { "$ref": "#/$defs/timestamp" },
+        "stapling": { "const": "not_applicable_raw_binary" }
+      }
+    },
+    "windows_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "account_name", "certificate_profile", "timestamp_status", "timestamp_authority", "timestamped_at"],
+      "properties": {
+        "kind": { "const": "windows" },
+        "account_name": { "type": "string", "minLength": 1 },
+        "certificate_profile": { "type": "string", "minLength": 1 },
+        "timestamp_status": { "const": "valid" },
+        "timestamp_authority": { "const": "http://timestamp.acs.microsoft.com" },
+        "timestamped_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "target_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "signer_subject", "signature_verified", "verified_at", "binaries", "evidence"],
+      "properties": {
+        "target": { "enum": ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-pc-windows-msvc", "x86_64-pc-windows-msvc"] },
+        "signer_subject": { "type": "string", "minLength": 1 },
+        "signature_verified": { "const": true },
+        "verified_at": { "$ref": "#/$defs/timestamp" },
+        "binaries": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            { "allOf": [{ "$ref": "#/$defs/binary_receipt" }, { "properties": { "name": { "const": "phantom" } } }] },
+            { "allOf": [{ "$ref": "#/$defs/binary_receipt" }, { "properties": { "name": { "const": "phantom-mcp" } } }] }
+          ],
+          "items": false
+        },
+        "evidence": { "oneOf": [{ "$ref": "#/$defs/macos_evidence" }, { "$ref": "#/$defs/windows_evidence" }] }
+      }
+    }
+  }
+}

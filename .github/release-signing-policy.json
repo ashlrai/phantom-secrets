@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "kind": "phantom_release_signing_policy",
+  "state": "disabled",
+  "macos": {
+    "state": "disabled"
+  },
+  "windows": {
+    "state": "disabled"
+  }
+}

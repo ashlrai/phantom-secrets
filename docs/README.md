@@ -19,6 +19,7 @@ artifacts, packages, deployments, providers, or hosted entitlements are live.
 | Review the Rama-derived network engineering standard and adoption gates | [Rama design standard](rama-design-standard.md) |
 | Understand supported operating systems, architectures, and current validation | [Platform support](platform-support.md) |
 | Prepare or audit a release candidate | [Release and readiness](release-readiness.md) |
+| Review the current unsigned boundary and future signing gates | [Signing and notarization readiness](signing-and-notarization.md) |
 | Assemble a security or third-party review | [Security and audit index](audit-index.md) |
 | Report a vulnerability | [Security policy](../SECURITY.md) |
 | Evaluate Phantom's security assumptions and known gaps | [Threat model](../THREAT_MODEL.md) |
@@ -63,6 +64,7 @@ and retains historical design-status language.
 - [Current-state architecture and trust boundaries](architecture.md)
 - [Rama-derived network engineering standard](rama-design-standard.md)
 - [Release and readiness guide](release-readiness.md)
+- [Signing and notarization readiness](signing-and-notarization.md)
 - [Security and audit index](audit-index.md)
 - [Platform support and native acceptance matrix](platform-support.md)
 - [Design-era provider-grant lifecycle specification](grants-spec.md)

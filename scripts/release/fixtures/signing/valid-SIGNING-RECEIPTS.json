@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "kind": "phantom_signing_receipts",
+  "policy_state": "required",
+  "release_tag": "v9.9.9",
+  "source_sha": "0123456789abcdef0123456789abcdef01234567",
+  "generated_at": "2030-01-01T00:20:00Z",
+  "targets": [
+    {
+      "target": "aarch64-apple-darwin",
+      "signer_subject": "Developer ID Application: Example Organization (EXAMPLE123)",
+      "signature_verified": true,
+      "verified_at": "2030-01-01T00:05:00Z",
+      "binaries": [
+        { "name": "phantom", "unsigned_sha256": "1111111111111111111111111111111111111111111111111111111111111111", "signed_sha256": "9111111111111111111111111111111111111111111111111111111111111111" },
+        { "name": "phantom-mcp", "unsigned_sha256": "2222222222222222222222222222222222222222222222222222222222222222", "signed_sha256": "9222222222222222222222222222222222222222222222222222222222222222" }
+      ],
+      "evidence": {
+        "kind": "macos",
+        "team_id": "EXAMPLE123",
+        "hardened_runtime": true,
+        "secure_timestamp_verified": true,
+        "notarization_status": "Accepted",
+        "submission_id": "12345678-1234-4123-8123-123456789abc",
+        "submission_container_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "submission_members": [
+          { "name": "phantom", "signed_sha256": "9111111111111111111111111111111111111111111111111111111111111111" },
+          { "name": "phantom-mcp", "signed_sha256": "9222222222222222222222222222222222222222222222222222222222222222" }
+        ],
+        "submitted_at": "2030-01-01T00:01:00Z",
+        "accepted_at": "2030-01-01T00:04:00Z",
+        "stapling": "not_applicable_raw_binary"
+      }
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "signer_subject": "Developer ID Application: Example Organization (EXAMPLE123)",
+      "signature_verified": true,
+      "verified_at": "2030-01-01T00:06:00Z",
+      "binaries": [
+        { "name": "phantom", "unsigned_sha256": "3333333333333333333333333333333333333333333333333333333333333333", "signed_sha256": "9333333333333333333333333333333333333333333333333333333333333333" },
+        { "name": "phantom-mcp", "unsigned_sha256": "4444444444444444444444444444444444444444444444444444444444444444", "signed_sha256": "9444444444444444444444444444444444444444444444444444444444444444" }
+      ],
+      "evidence": {
+        "kind": "macos",
+        "team_id": "EXAMPLE123",
+        "hardened_runtime": true,
+        "secure_timestamp_verified": true,
+        "notarization_status": "Accepted",
+        "submission_id": "22345678-1234-4123-8123-123456789abc",
+        "submission_container_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "submission_members": [
+          { "name": "phantom", "signed_sha256": "9333333333333333333333333333333333333333333333333333333333333333" },
+          { "name": "phantom-mcp", "signed_sha256": "9444444444444444444444444444444444444444444444444444444444444444" }
+        ],
+        "submitted_at": "2030-01-01T00:01:30Z",
+        "accepted_at": "2030-01-01T00:05:00Z",
+        "stapling": "not_applicable_raw_binary"
+      }
+    },
+    {
+      "target": "aarch64-pc-windows-msvc",
+      "signer_subject": "CN=Example Organization, O=Example Organization, C=US",
+      "signature_verified": true,
+      "verified_at": "2030-01-01T00:10:00Z",
+      "binaries": [
+        { "name": "phantom", "unsigned_sha256": "5555555555555555555555555555555555555555555555555555555555555555", "signed_sha256": "9555555555555555555555555555555555555555555555555555555555555555" },
+        { "name": "phantom-mcp", "unsigned_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "signed_sha256": "9666666666666666666666666666666666666666666666666666666666666666" }
+      ],
+      "evidence": {
+        "kind": "windows",
+        "account_name": "example-account",
+        "certificate_profile": "example-profile",
+        "timestamp_status": "valid",
+        "timestamp_authority": "http://timestamp.acs.microsoft.com",
+        "timestamped_at": "2030-01-01T00:09:00Z"
+      }
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "signer_subject": "CN=Example Organization, O=Example Organization, C=US",
+      "signature_verified": true,
+      "verified_at": "2030-01-01T00:11:00Z",
+      "binaries": [
+        { "name": "phantom", "unsigned_sha256": "7777777777777777777777777777777777777777777777777777777777777777", "signed_sha256": "9777777777777777777777777777777777777777777777777777777777777777" },
+        { "name": "phantom-mcp", "unsigned_sha256": "8888888888888888888888888888888888888888888888888888888888888888", "signed_sha256": "9888888888888888888888888888888888888888888888888888888888888888" }
+      ],
+      "evidence": {
+        "kind": "windows",
+        "account_name": "example-account",
+        "certificate_profile": "example-profile",
+        "timestamp_status": "valid",
+        "timestamp_authority": "http://timestamp.acs.microsoft.com",
+        "timestamped_at": "2030-01-01T00:09:30Z"
+      }
+    }
+  ]
+}

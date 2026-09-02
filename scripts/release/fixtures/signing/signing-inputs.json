@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "phantom_unsigned_signing_inputs",
+  "release_tag": "v9.9.9",
+  "source_sha": "0123456789abcdef0123456789abcdef01234567",
+  "artifacts": [
+    { "target": "aarch64-apple-darwin", "binary": "phantom", "sha256": "1111111111111111111111111111111111111111111111111111111111111111" },
+    { "target": "aarch64-apple-darwin", "binary": "phantom-mcp", "sha256": "2222222222222222222222222222222222222222222222222222222222222222" },
+    { "target": "x86_64-apple-darwin", "binary": "phantom", "sha256": "3333333333333333333333333333333333333333333333333333333333333333" },
+    { "target": "x86_64-apple-darwin", "binary": "phantom-mcp", "sha256": "4444444444444444444444444444444444444444444444444444444444444444" },
+    { "target": "aarch64-pc-windows-msvc", "binary": "phantom", "sha256": "5555555555555555555555555555555555555555555555555555555555555555" },
+    { "target": "aarch64-pc-windows-msvc", "binary": "phantom-mcp", "sha256": "6666666666666666666666666666666666666666666666666666666666666666" },
+    { "target": "x86_64-pc-windows-msvc", "binary": "phantom", "sha256": "7777777777777777777777777777777777777777777777777777777777777777" },
+    { "target": "x86_64-pc-windows-msvc", "binary": "phantom-mcp", "sha256": "8888888888888888888888888888888888888888888888888888888888888888" }
+  ]
+}
