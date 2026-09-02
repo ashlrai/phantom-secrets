@@ -647,8 +647,8 @@ async fn handle_request(
 
     if is_streaming {
         // Stream the response body chunk-by-chunk (critical for SSE/streaming APIs).
-        // ResponseScrubber performs content-aware, overlap-safe redaction for both
-        // exact vault values and recognized unmanaged credential formats.
+        // ResponseScrubber performs bounded incremental redaction for both exact
+        // vault values and recognized unmanaged credential formats.
         debug!("Streaming response: {}", status);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(32);
 
@@ -657,13 +657,16 @@ async fn handle_request(
         let byte_stream = response.bytes_stream();
         tokio::spawn(async move {
             tokio::pin!(byte_stream);
-            let mut scrub_carry: Vec<u8> = Vec::new();
+            let mut scrub_state = crate::response_scrubber::StreamingScrubState::new();
 
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
-                        let (scrubbed, scrub_event) =
-                            resp_scrubber.scrub_chunk(resp_ct.as_deref(), &mut scrub_carry, &chunk);
+                        let (scrubbed, scrub_event) = resp_scrubber.scrub_stream_chunk(
+                            resp_ct.as_deref(),
+                            &mut scrub_state,
+                            &chunk,
+                        );
                         if scrub_event.scrubbed {
                             debug!(
                                 "ResponseScrubber intercepted leak(s) in streaming chunk \
@@ -688,7 +691,7 @@ async fn handle_request(
                 }
             }
 
-            let (scrubbed, _) = resp_scrubber.flush_carry(resp_ct.as_deref(), scrub_carry);
+            let (scrubbed, _) = resp_scrubber.finish_stream(resp_ct.as_deref(), scrub_state);
             if !scrubbed.is_empty() {
                 let _ = tx.send(Ok(Frame::data(Bytes::from(scrubbed)))).await;
             }

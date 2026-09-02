@@ -11,6 +11,7 @@ pub use interceptor::{Interceptor, ResponseLeakAnalyzer};
 pub use rate_limiter::{AnomalyClass, RateDecision, RateLimitConfig, RateLimiter};
 pub use response_scrubber::{
     AdaptiveResponseScrubber, AdaptiveScrubHit, ContentKind, ResponseScrubber, ScrubEvent,
+    StreamingScrubState,
 };
 pub use server::{ProxyConfig, ProxyServer};
 pub use services::{ServiceRegistry, ServiceRoute};

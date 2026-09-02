@@ -6,10 +6,12 @@
 //! * **Buffered responses** — JSON, plain-text, and generic bodies are collected,
 //!   scanned for vault-registered secrets and known format patterns, then returned
 //!   with every hit replaced by `[REDACTED:<pattern>]`.
-//! * **Streaming / SSE responses** — each chunk is processed with a carry-buffer
-//!   overlap window so secrets split across chunk boundaries are still caught.
-//! * **SSE event parsing** — `data:` lines in `text/event-stream` bodies are
-//!   scrubbed individually so partial-event delimiters are not corrupted.
+//! * **Streaming / SSE responses** — each chunk is processed by a bounded,
+//!   byte-oriented incremental scanner so secrets split across chunk boundaries
+//!   are caught without buffering unbounded credential continuations.
+//! * **SSE handling** — buffered bodies retain line-aware parsing; streaming
+//!   bodies use the same byte-oriented incremental scanner as other content so
+//!   split UTF-8 and event delimiters remain byte-preserving.
 //! * **Adaptive / context-aware scrubbing** — the scrubber learns which JSON
 //!   paths habitually carry a given secret by consulting a
 //!   [`ContextualLeakProfileStore`].  After enough observations (≥
@@ -26,11 +28,238 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::interceptor::ResponseLeakAnalyzer;
-use phantom_core::audit::{LeakEvent, LeakSeverity};
+use phantom_core::audit::{LeakEvent, LeakLocation, LeakSeverity};
 use phantom_core::leak_correlation::{
     extract_json_path, value_at_json_path, ContextualLeakProfileStore, RequestContext,
 };
 use tracing::warn;
+use zeroize::Zeroize;
+
+#[derive(Clone, Copy)]
+enum ByteClass {
+    Alnum,
+    AlnumUnderscore,
+    AlnumDashUnderscore,
+    UpperAlnum,
+    AlnumDash,
+    HexLower,
+}
+
+impl ByteClass {
+    fn contains(self, byte: u8) -> bool {
+        match self {
+            Self::Alnum => byte.is_ascii_alphanumeric(),
+            Self::AlnumUnderscore => byte.is_ascii_alphanumeric() || byte == b'_',
+            Self::AlnumDashUnderscore => {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+            }
+            Self::UpperAlnum => byte.is_ascii_uppercase() || byte.is_ascii_digit(),
+            Self::AlnumDash => byte.is_ascii_alphanumeric() || byte == b'-',
+            Self::HexLower => byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FormatShape {
+    Unbounded { class: ByteClass, min: usize },
+    Fixed { class: ByteClass, len: usize },
+    SendGrid,
+}
+
+#[derive(Clone, Copy)]
+struct FormatSpec {
+    label: &'static str,
+    prefix: &'static [u8],
+    shape: FormatShape,
+}
+
+impl FormatSpec {
+    fn minimum_match_len(self) -> usize {
+        self.prefix.len()
+            + match self.shape {
+                FormatShape::Unbounded { min, .. } => min,
+                FormatShape::Fixed { len, .. } => len,
+                FormatShape::SendGrid => 22 + 1 + 43,
+            }
+    }
+
+    fn is_unbounded(self) -> bool {
+        matches!(self.shape, FormatShape::Unbounded { .. })
+    }
+
+    fn continuation_contains(self, byte: u8) -> bool {
+        match self.shape {
+            FormatShape::Unbounded { class, .. } => class.contains(byte),
+            _ => false,
+        }
+    }
+
+    /// Whether all of `candidate` can still become a match for this format.
+    fn is_incomplete_prefix(self, candidate: &[u8]) -> bool {
+        if candidate.len() <= self.prefix.len() {
+            return self.prefix.starts_with(candidate);
+        }
+        if !candidate.starts_with(self.prefix) {
+            return false;
+        }
+        let suffix = &candidate[self.prefix.len()..];
+        match self.shape {
+            FormatShape::Unbounded { class, min } => {
+                suffix.len() < min && suffix.iter().all(|byte| class.contains(*byte))
+            }
+            FormatShape::Fixed { class, len } => {
+                suffix.len() < len && suffix.iter().all(|byte| class.contains(*byte))
+            }
+            FormatShape::SendGrid => sendgrid_prefix_is_incomplete(suffix),
+        }
+    }
+
+    /// Length of a complete match at the beginning of `candidate`.
+    fn complete_prefix_len(self, candidate: &[u8]) -> Option<usize> {
+        if !candidate.starts_with(self.prefix) {
+            return None;
+        }
+        let suffix = &candidate[self.prefix.len()..];
+        match self.shape {
+            FormatShape::Unbounded { class, min } => {
+                let run = suffix
+                    .iter()
+                    .take_while(|byte| class.contains(**byte))
+                    .count();
+                (run >= min).then_some(self.prefix.len() + run)
+            }
+            FormatShape::Fixed { class, len } => (suffix.len() >= len
+                && suffix[..len].iter().all(|byte| class.contains(*byte)))
+            .then_some(self.prefix.len() + len),
+            FormatShape::SendGrid => {
+                let total = 22 + 1 + 43;
+                (suffix.len() >= total
+                    && suffix[..22]
+                        .iter()
+                        .all(|byte| ByteClass::AlnumDashUnderscore.contains(*byte))
+                    && suffix[22] == b'.'
+                    && suffix[23..total]
+                        .iter()
+                        .all(|byte| ByteClass::AlnumDashUnderscore.contains(*byte)))
+                .then_some(self.prefix.len() + total)
+            }
+        }
+    }
+}
+
+fn sendgrid_prefix_is_incomplete(suffix: &[u8]) -> bool {
+    if suffix.len() <= 22 {
+        return suffix
+            .iter()
+            .all(|byte| ByteClass::AlnumDashUnderscore.contains(*byte));
+    }
+    if suffix[22] != b'.' {
+        return false;
+    }
+    let tail = &suffix[23..];
+    tail.len() < 43
+        && tail
+            .iter()
+            .all(|byte| ByteClass::AlnumDashUnderscore.contains(*byte))
+}
+
+// Keep these byte grammars exactly aligned with interceptor::SECRET_PATTERNS.
+const FORMAT_SPECS: &[FormatSpec] = &[
+    FormatSpec {
+        label: "sk_*",
+        prefix: b"sk-",
+        shape: FormatShape::Unbounded {
+            class: ByteClass::AlnumDashUnderscore,
+            min: 20,
+        },
+    },
+    FormatSpec {
+        label: "sk_live_*",
+        prefix: b"sk_live_",
+        shape: FormatShape::Unbounded {
+            class: ByteClass::Alnum,
+            min: 20,
+        },
+    },
+    FormatSpec {
+        label: "sk_test_*",
+        prefix: b"sk_test_",
+        shape: FormatShape::Unbounded {
+            class: ByteClass::Alnum,
+            min: 20,
+        },
+    },
+    FormatSpec {
+        label: "ghp_*",
+        prefix: b"ghp_",
+        shape: FormatShape::Unbounded {
+            class: ByteClass::Alnum,
+            min: 36,
+        },
+    },
+    FormatSpec {
+        label: "github_pat_*",
+        prefix: b"github_pat_",
+        shape: FormatShape::Unbounded {
+            class: ByteClass::AlnumUnderscore,
+            min: 80,
+        },
+    },
+    FormatSpec {
+        label: "AKIA*",
+        prefix: b"AKIA",
+        shape: FormatShape::Fixed {
+            class: ByteClass::UpperAlnum,
+            len: 16,
+        },
+    },
+    FormatSpec {
+        label: "AIza*",
+        prefix: b"AIza",
+        shape: FormatShape::Fixed {
+            class: ByteClass::AlnumDashUnderscore,
+            len: 35,
+        },
+    },
+    FormatSpec {
+        label: "xoxb-*",
+        prefix: b"xoxb-",
+        shape: FormatShape::Unbounded {
+            class: ByteClass::AlnumDash,
+            min: 40,
+        },
+    },
+    FormatSpec {
+        label: "xoxp-*",
+        prefix: b"xoxp-",
+        shape: FormatShape::Unbounded {
+            class: ByteClass::AlnumDash,
+            min: 40,
+        },
+    },
+    FormatSpec {
+        label: "SG.*",
+        prefix: b"SG.",
+        shape: FormatShape::SendGrid,
+    },
+    FormatSpec {
+        label: "AC*",
+        prefix: b"AC",
+        shape: FormatShape::Fixed {
+            class: ByteClass::HexLower,
+            len: 32,
+        },
+    },
+    FormatSpec {
+        label: "phm_*",
+        prefix: b"phm_",
+        shape: FormatShape::Fixed {
+            class: ByteClass::HexLower,
+            len: 64,
+        },
+    },
+];
 
 // ────────────────────────────────────────────────────────────────────────────
 // Content-type helpers
@@ -131,14 +360,92 @@ pub struct AdaptiveScrubHit {
 // ResponseScrubber
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Opaque state for one streaming response scrub operation.
+///
+/// A state value must belong to exactly one response stream. It retains only a
+/// bounded candidate prefix and, after an unbounded credential is redacted, a
+/// bounded minimum-length prefix while continuation bytes are suppressed.
+/// Secret-bearing buffers are zeroized when the state is dropped.
+pub struct StreamingScrubState {
+    pending: Vec<u8>,
+    suppressing: Option<usize>,
+    suppression_prefix: Vec<u8>,
+}
+
+impl StreamingScrubState {
+    pub fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+            suppressing: None,
+            suppression_prefix: Vec::new(),
+        }
+    }
+
+    /// Number of response bytes currently retained by the incremental scanner.
+    pub fn buffered_len(&self) -> usize {
+        self.pending.len() + self.suppression_prefix.len()
+    }
+
+    /// Whether continuation bytes for an already-redacted unbounded credential
+    /// are currently being suppressed.
+    pub fn is_suppressing(&self) -> bool {
+        self.suppressing.is_some()
+    }
+
+    fn from_legacy_carry(carry: Vec<u8>) -> Self {
+        let suppressing = FORMAT_SPECS.iter().position(|spec| {
+            spec.is_unbounded()
+                && carry.len() == spec.minimum_match_len()
+                && spec.complete_prefix_len(&carry) == Some(carry.len())
+        });
+        if suppressing.is_some() {
+            Self {
+                pending: Vec::new(),
+                suppressing,
+                suppression_prefix: carry,
+            }
+        } else {
+            Self {
+                pending: carry,
+                suppressing: None,
+                suppression_prefix: Vec::new(),
+            }
+        }
+    }
+
+    fn into_legacy_carry(mut self) -> Vec<u8> {
+        if self.suppressing.is_some() {
+            std::mem::take(&mut self.suppression_prefix)
+        } else {
+            std::mem::take(&mut self.pending)
+        }
+    }
+
+    fn clear_suppression(&mut self) {
+        self.suppression_prefix.zeroize();
+        self.suppression_prefix.clear();
+        self.suppressing = None;
+    }
+}
+
+impl Default for StreamingScrubState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for StreamingScrubState {
+    fn drop(&mut self) {
+        self.pending.zeroize();
+        self.suppression_prefix.zeroize();
+    }
+}
+
 /// Real-time response scrubber.  Build once per proxy request from the active
 /// vault mapping; call [`scrub_buffered`] or the streaming helpers as chunks
 /// arrive.
 pub struct ResponseScrubber {
     analyzer: ResponseLeakAnalyzer,
-    /// Maximum byte-length of any registered secret value — used to size the
-    /// streaming overlap (carry) window.
-    max_secret_len: usize,
 }
 
 impl ResponseScrubber {
@@ -157,31 +464,42 @@ impl ResponseScrubber {
         // Collect borrowed pairs so max-length calculation and analyzer
         // construction share one view without another plaintext owner.
         let pairs = pairs.into_iter().collect::<Vec<_>>();
-        let max_secret_len = pairs
-            .iter()
-            .map(|(_, secret)| secret.len())
-            .max()
-            .unwrap_or(0);
         Self {
             analyzer: ResponseLeakAnalyzer::from_token_secret_pairs(pairs.iter().copied()),
-            max_secret_len,
         }
     }
 
     /// Build from a name→secret mapping (human-readable key names in leak events).
     pub fn from_named_map(named_secrets: &HashMap<String, String>) -> Self {
-        let max_secret_len = named_secrets.values().map(|v| v.len()).max().unwrap_or(0);
         Self {
             analyzer: ResponseLeakAnalyzer::new(named_secrets),
-            max_secret_len,
         }
     }
 
-    /// The carry-buffer overlap size needed for streaming scrubbing.
-    /// Callers that manage their own carry buffer should retain this many bytes
-    /// between chunks.
+    /// Compatibility alias for the full bounded streaming state requirement.
+    ///
+    /// Older callers used this as a managed-secret-only overlap. It now returns
+    /// [`Self::stream_buffer_bound`] so empty and short managed maps cannot
+    /// under-size protection for recognized unmanaged credential formats. New
+    /// integrations should use [`StreamingScrubState`] rather than constructing
+    /// their own overlap buffer.
     pub fn overlap_len(&self) -> usize {
-        self.max_secret_len.saturating_sub(1)
+        self.stream_buffer_bound()
+    }
+
+    /// Maximum number of response bytes retained between calls by the typed
+    /// incremental scanner. The bound covers the longest managed exact-value
+    /// prefix and the longest minimum unmanaged credential representation.
+    pub fn stream_buffer_bound(&self) -> usize {
+        let unmanaged_bound = FORMAT_SPECS
+            .iter()
+            .map(|spec| spec.minimum_match_len())
+            .max()
+            .unwrap_or(0);
+        self.analyzer
+            .max_managed_value_len()
+            .saturating_sub(1)
+            .max(unmanaged_bound)
     }
 
     // ── Buffered scrub ────────────────────────────────────────────────────────
@@ -222,11 +540,12 @@ impl ResponseScrubber {
         (scrubbed, event)
     }
 
-    /// Process one chunk from a streaming response.
+    /// Process one chunk from a streaming response using the legacy carry API.
     ///
-    /// `carry` is the overlap buffer from the previous call; it is prepended
-    /// to `chunk` before scanning, and updated to hold the last `overlap_len()`
-    /// bytes of the scrubbed result.
+    /// `carry` is opaque scanner state and must only be passed to the next call
+    /// for the same response, then to [`Self::flush_carry`]. New integrations
+    /// should prefer [`Self::scrub_stream_chunk`] with [`StreamingScrubState`],
+    /// which represents suppression state without legacy carry inference.
     ///
     /// Returns `(bytes_ready_to_emit, ScrubEvent)`.
     pub fn scrub_chunk(
@@ -235,54 +554,162 @@ impl ResponseScrubber {
         carry: &mut Vec<u8>,
         chunk: &[u8],
     ) -> (Vec<u8>, ScrubEvent) {
-        // Combine carry + new chunk.
-        let mut combined = Vec::with_capacity(carry.len() + chunk.len());
-        combined.extend_from_slice(carry);
-        combined.extend_from_slice(chunk);
-
-        let kind = ContentKind::from_header(content_type);
-
-        let (scrubbed, events) = match kind {
-            ContentKind::Sse => self.scrub_sse_body(&combined),
-            _ => self.analyzer.analyze_body(&combined),
-        };
-
-        let overlap = self.overlap_len();
-
-        let to_emit = if overlap > 0 && scrubbed.len() > overlap {
-            let emit_end = scrubbed.len() - overlap;
-            *carry = scrubbed[emit_end..].to_vec();
-            scrubbed[..emit_end].to_vec()
-        } else if overlap > 0 {
-            // Entire result fits in the overlap window — carry it all.
-            *carry = scrubbed;
-            Vec::new()
-        } else {
-            carry.clear();
-            scrubbed
-        };
-
-        let event = ScrubEvent::from_events(events.clone());
-        emit_leak_warnings(&events, content_type);
-
-        (to_emit, event)
+        let mut state = StreamingScrubState::from_legacy_carry(std::mem::take(carry));
+        let result = self.scrub_stream_chunk(content_type, &mut state, chunk);
+        *carry = state.into_legacy_carry();
+        result
     }
 
     /// Flush the remaining carry buffer at end-of-stream.
     ///
     /// Returns `(final_bytes, ScrubEvent)`.
     pub fn flush_carry(&self, content_type: Option<&str>, carry: Vec<u8>) -> (Vec<u8>, ScrubEvent) {
-        if carry.is_empty() {
-            return (Vec::new(), ScrubEvent::clean());
-        }
-        let kind = ContentKind::from_header(content_type);
-        let (scrubbed, events) = match kind {
-            ContentKind::Sse => self.scrub_sse_body(&carry),
-            _ => self.analyzer.analyze_body(&carry),
-        };
+        self.finish_stream(content_type, StreamingScrubState::from_legacy_carry(carry))
+    }
+
+    /// Incrementally scrub a response chunk using bounded, byte-oriented state.
+    ///
+    /// This is the production streaming API. It recognizes the same unmanaged
+    /// credential families as buffered scrubbing across every possible chunk
+    /// boundary. It scans raw bytes for every content type, including SSE, so
+    /// transport chunking and split UTF-8 cannot alter the security result.
+    /// Once an unbounded family reaches its redaction threshold, all
+    /// continuation-class bytes are suppressed until the first delimiter.
+    pub fn scrub_stream_chunk(
+        &self,
+        content_type: Option<&str>,
+        state: &mut StreamingScrubState,
+        chunk: &[u8],
+    ) -> (Vec<u8>, ScrubEvent) {
+        let (output, events) = self.process_stream_bytes(state, chunk, false);
+        debug_assert!(state.buffered_len() <= self.stream_buffer_bound());
         let event = ScrubEvent::from_events(events.clone());
         emit_leak_warnings(&events, content_type);
-        (scrubbed, event)
+        (output, event)
+    }
+
+    /// Finish a typed streaming scrub operation and emit any incomplete,
+    /// non-secret candidate bytes verbatim.
+    pub fn finish_stream(
+        &self,
+        content_type: Option<&str>,
+        mut state: StreamingScrubState,
+    ) -> (Vec<u8>, ScrubEvent) {
+        let (output, events) = self.process_stream_bytes(&mut state, &[], true);
+        let event = ScrubEvent::from_events(events.clone());
+        emit_leak_warnings(&events, content_type);
+        (output, event)
+    }
+
+    fn process_stream_bytes(
+        &self,
+        state: &mut StreamingScrubState,
+        input: &[u8],
+        finish: bool,
+    ) -> (Vec<u8>, Vec<LeakEvent>) {
+        let mut output = Vec::with_capacity(input.len());
+        let mut events = Vec::new();
+
+        for &byte in input {
+            if let Some(spec_index) = state.suppressing {
+                if FORMAT_SPECS[spec_index].continuation_contains(byte) {
+                    continue;
+                }
+                state.clear_suppression();
+            }
+
+            state.pending.push(byte);
+            self.drain_stream_pending(state, &mut output, &mut events, false);
+        }
+
+        if finish {
+            state.clear_suppression();
+            self.drain_stream_pending(state, &mut output, &mut events, true);
+        }
+
+        (output, events)
+    }
+
+    fn drain_stream_pending(
+        &self,
+        state: &mut StreamingScrubState,
+        output: &mut Vec<u8>,
+        events: &mut Vec<LeakEvent>,
+        finish: bool,
+    ) {
+        while !state.pending.is_empty() {
+            if let Some(name) = self.analyzer.managed_exact_name(&state.pending) {
+                if !finish && self.analyzer.is_managed_prefix(&state.pending) {
+                    return;
+                }
+                let name = name.to_string();
+                redact_pending_prefix(
+                    state,
+                    state.pending.len(),
+                    "vault-secret",
+                    LeakSeverity::High,
+                    Some(name),
+                    events,
+                    output,
+                );
+                continue;
+            }
+
+            if !finish && self.analyzer.is_managed_prefix(&state.pending) {
+                return;
+            }
+
+            if let Some((match_len, name)) = self.analyzer.managed_prefix_match(&state.pending) {
+                redact_pending_prefix(
+                    state,
+                    match_len,
+                    "vault-secret",
+                    LeakSeverity::High,
+                    Some(name.to_string()),
+                    events,
+                    output,
+                );
+                continue;
+            }
+
+            if let Some((spec_index, match_len)) =
+                FORMAT_SPECS.iter().enumerate().find_map(|(index, spec)| {
+                    spec.complete_prefix_len(&state.pending)
+                        .map(|len| (index, len))
+                })
+            {
+                let spec = FORMAT_SPECS[spec_index];
+                let suppress = !finish && spec.is_unbounded() && match_len == state.pending.len();
+                let suppression_prefix =
+                    suppress.then(|| state.pending[..spec.minimum_match_len()].to_vec());
+                redact_pending_prefix(
+                    state,
+                    match_len,
+                    spec.label,
+                    LeakSeverity::Medium,
+                    None,
+                    events,
+                    output,
+                );
+                if let Some(prefix) = suppression_prefix {
+                    state.suppressing = Some(spec_index);
+                    state.suppression_prefix = prefix;
+                    return;
+                }
+                continue;
+            }
+
+            if !finish
+                && FORMAT_SPECS
+                    .iter()
+                    .any(|spec| spec.is_incomplete_prefix(&state.pending))
+            {
+                return;
+            }
+
+            output.push(state.pending[0]);
+            state.pending.remove(0);
+        }
     }
 
     // ── SSE parsing ───────────────────────────────────────────────────────────
@@ -338,6 +765,49 @@ impl ResponseScrubber {
 
         (output.into_bytes(), all_events)
     }
+}
+
+fn redact_pending_prefix(
+    state: &mut StreamingScrubState,
+    match_len: usize,
+    pattern: &str,
+    severity: LeakSeverity,
+    secret_name: Option<String>,
+    events: &mut Vec<LeakEvent>,
+    output: &mut Vec<u8>,
+) {
+    output.extend_from_slice(b"[REDACTED:");
+    output.extend_from_slice(pattern.as_bytes());
+    output.push(b']');
+
+    state.pending[..match_len].zeroize();
+    let mut removed = state.pending.drain(..match_len).collect::<Vec<_>>();
+    removed.zeroize();
+
+    if let Some(event) = events.iter_mut().find(|event| {
+        event.location == LeakLocation::Body
+            && event.severity == severity
+            && event.pattern == pattern
+            && event.secret_name == secret_name
+    }) {
+        event.match_count += 1;
+    } else {
+        events.push(LeakEvent {
+            ts: stream_now_unix(),
+            location: LeakLocation::Body,
+            severity,
+            secret_name,
+            pattern: pattern.to_string(),
+            match_count: 1,
+        });
+    }
+}
+
+fn stream_now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
