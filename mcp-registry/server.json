@@ -770,7 +770,7 @@
     },
     {
       "name": "phantom_doctor",
-      "description": "Run Phantom health checks: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook. Set fix=true to auto-fix safe issues.",
+      "description": "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
