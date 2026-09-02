@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -16,6 +17,18 @@ const rehearsal = readFileSync(
   join(repoRoot, ".github/workflows/release-rehearsal.yml"),
   "utf8"
 );
+const readiness = readFileSync(join(repoRoot, "docs/release-readiness.md"), "utf8");
+const npmPublication = readFileSync(join(repoRoot, "docs/npm-publication.md"), "utf8");
+const mcpPublication = readFileSync(
+  join(repoRoot, "docs/mcp-registry-publication.md"),
+  "utf8"
+);
+const npmPackage = JSON.parse(readFileSync(join(repoRoot, "npm/package.json"), "utf8"));
+const npmMcpPackage = JSON.parse(
+  readFileSync(join(repoRoot, "npm-mcp/package.json"), "utf8")
+);
+const npmReadme = readFileSync(join(repoRoot, "npm/README.md"), "utf8");
+const npmMcpReadme = readFileSync(join(repoRoot, "npm-mcp/README.md"), "utf8");
 
 const tagOnlyCondition =
   "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
@@ -26,6 +39,28 @@ function jobBlock(source, name, nextName) {
   const end = nextName ? source.indexOf(`\n  ${nextName}:\n`, start + 1) : source.length;
   assert.notEqual(end, -1, `missing ${nextName} job after ${name}`);
   return source.slice(start, end);
+}
+
+function markdownSection(source, heading, nextHeading) {
+  const start = source.indexOf(`## ${heading}`);
+  assert.notEqual(start, -1, `missing ${heading} section`);
+  const end = nextHeading ? source.indexOf(`## ${nextHeading}`, start + 1) : source.length;
+  assert.notEqual(end, -1, `missing ${nextHeading} section after ${heading}`);
+  return source.slice(start, end);
+}
+
+function inspectPack(packageDirectory) {
+  const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
+  const output = execFileSync(npmExecutable, ["pack", "--dry-run", "--json"], {
+    cwd: join(repoRoot, packageDirectory),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+  });
+  const packs = JSON.parse(output);
+  assert.equal(packs.length, 1, `${packageDirectory} must produce one package`);
+  return packs[0];
 }
 
 test("manual rehearsal delegates to the shared graph with read-only authority", () => {
@@ -100,4 +135,467 @@ test("tag binding remains mandatory for tag pushes and absent from rehearsal cal
   assert.match(following, new RegExp(tagOnlyCondition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(following, /verify-github-tag-binding\.mjs/);
   assert.doesNotMatch(rehearsal, /verify-github-tag-binding|refs\/tags/);
+});
+
+test("npm and MCP distribution metadata and runbooks remain publication-safe", () => {
+  for (const packageJson of [npmPackage, npmMcpPackage]) {
+    assert.deepEqual(packageJson.publishConfig, {
+      access: "public",
+      registry: "https://registry.npmjs.org/",
+    });
+  }
+
+  for (const readme of [npmReadme, npmMcpReadme]) {
+    assert.match(readme, /This wrapper is version `0\.7\.4`/);
+    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.4/);
+    assert.match(readme, /releases\/tag\/v0\.7\.4/);
+    assert.match(readme, /do not prove|does not prove/);
+    assert.doesNotMatch(readme, /v0\.7\.3|older release track|Current main/);
+  }
+
+  assert.match(readiness, /\(cd npm && npm pack --dry-run\)/);
+  assert.match(readiness, /\(cd npm-mcp && npm pack --dry-run\)/);
+  assert.doesNotMatch(readiness, /npm --prefix npm(?:-mcp)? pack --dry-run/);
+  assert.match(readiness, /\[npm publication runbook\]\(npm-publication\.md\)/);
+  assert.match(
+    readiness,
+    /\[MCP Registry publication runbook\]\(mcp-registry-publication\.md\)/
+  );
+  assert.match(readiness, /stage both under `release-candidate`/);
+  assert.match(readiness, /six-target npm-channel\s+acceptance gate/);
+  assert.match(readiness, /MCP\s+wrapper to `latest` first and the primary CLI to `latest` last/);
+
+  const npmPlan = markdownSection(
+    npmPublication,
+    "Read-only source and package plan",
+    "Recompute and stage both candidates"
+  );
+  const mcpPlan = markdownSection(
+    mcpPublication,
+    "Read-only source and registry plan",
+    "Human-approved interactive effect"
+  );
+  const npmStage = markdownSection(
+    npmPublication,
+    "Recompute and stage both candidates",
+    "Review both stages before approval"
+  );
+  const mcpEffect = markdownSection(
+    mcpPublication,
+    "Human-approved interactive effect",
+    "Reconcile the public effect"
+  );
+  const npmPromotion = markdownSection(
+    npmPublication,
+    "Promote default tags after acceptance",
+    "Partial failure and recovery"
+  );
+  const mcpReconcile = markdownSection(
+    mcpPublication,
+    "Reconcile the public effect",
+    "Partial failure and recovery"
+  );
+  assert.doesNotMatch(npmPlan, /npm publish/);
+  assert.doesNotMatch(mcpPlan, /mcp-publisher"? publish/);
+  assert.doesNotMatch(npmPublication, /\bnpm\s+publish\b/);
+  assert.match(npmPublication, /## Partial failure and recovery/);
+  assert.match(mcpPublication, /## Partial failure and recovery/);
+  assert.match(npmPublication, /Never put an npm credential or one-time password/);
+  assert.match(mcpPublication, /Never pass an MCP Registry token/);
+  assert.match(mcpPublication, /test "\$\(uname -s\)-\$\(uname -m\)" = "Linux-x86_64"/);
+  assert.match(npmPublication, /Node\.js `22\.14\.0` or later/);
+  assert.match(npmPublication, /npm CLI `11\.15\.0` or later/);
+  assert.match(npmStage, /NPM_STAGE_DIR="\$\(mktemp -d\)"/);
+  assert.match(npmStage, /chmod 700 "\$\{NPM_STAGE_DIR\}"/);
+  assert.match(npmStage, /trap cleanup_npm_stage EXIT HUP INT TERM/);
+  assert.match(
+    npmStage,
+    /\(cd npm && npm pack --json --pack-destination "\$\{NPM_STAGE_DIR\}"\)/
+  );
+  assert.match(
+    npmStage,
+    /\(cd npm-mcp && npm pack --json --pack-destination "\$\{NPM_STAGE_DIR\}"\)/
+  );
+  assert.match(npmStage, /PRIMARY_TARBALL="\$\{NPM_STAGE_DIR\}\/phantom-secrets-\$\{VERSION\}\.tgz"/);
+  assert.match(npmStage, /MCP_TARBALL="\$\{NPM_STAGE_DIR\}\/phantom-secrets-mcp-\$\{VERSION\}\.tgz"/);
+  assert.match(npmStage, /packs\[0\]\.filename !== `\$\{name\}-\$\{version\}\.tgz`/);
+  assert.match(npmStage, /packs\[0\]\.entryCount !== 5/);
+  assert.match(npmStage, /packs\[0\]\.integrity !== approvedIntegrity/);
+  assert.equal(
+    npmStage.match(/npm pack --json --pack-destination/g)?.length,
+    2,
+    "each package must be packed exactly once for staging"
+  );
+  assert.match(
+    npmStage,
+    /npm stage publish "\$\{PRIMARY_TARBALL\}" --tag release-candidate \\\n  --registry=https:\/\/registry\.npmjs\.org\//
+  );
+  assert.match(
+    npmStage,
+    /npm stage publish "\$\{MCP_TARBALL\}" --tag release-candidate \\\n  --registry=https:\/\/registry\.npmjs\.org\//
+  );
+  assert.doesNotMatch(npmStage, /npm stage publish --tag release-candidate/);
+  assert.doesNotMatch(npmStage, /npm stage publish (?:\.|npm|npm-mcp) --tag/);
+  assert.equal(
+    npmStage.match(/^npm stage publish /gm)?.length,
+    2,
+    "only the two explicit reviewed tarballs may be staged"
+  );
+  assert.match(npmPublication, /npm stage list phantom-secrets --json/);
+  assert.match(npmPublication, /npm stage list phantom-secrets-mcp --json/);
+  assert.match(npmPublication, /npm stage view "\$\{PRIMARY_STAGE_ID\}"/);
+  assert.match(npmPublication, /npm stage view "\$\{MCP_STAGE_ID\}"/);
+  assert.match(npmPublication, /npm stage download "\$\{PRIMARY_STAGE_ID\}"/);
+  assert.match(npmPublication, /npm stage download "\$\{MCP_STAGE_ID\}"/);
+  assert.match(npmPublication, /npm stage approve "\$\{MCP_STAGE_ID\}"/);
+  assert.match(npmPublication, /npm stage approve "\$\{PRIMARY_STAGE_ID\}"/);
+  assert.match(npmPublication, /Enter 2FA only at npm's interactive prompt/);
+  assert.match(npmPublication, /all six targets/);
+  assert.match(npmPublication, /\| macOS x64 \| `macos-15-intel` \|/);
+  assert.match(npmPublication, /\| macOS arm64 \| `macos-15` \|/);
+  assert.match(npmPublication, /\| GNU Linux x64 \| `ubuntu-22\.04` \|/);
+  assert.match(npmPublication, /\| GNU Linux arm64 \| `ubuntu-22\.04-arm` \|/);
+  assert.match(npmPublication, /\| Windows x64 \| `windows-latest` \|/);
+  assert.match(npmPublication, /\| Windows arm64 \| `windows-11-vs2026-arm` \|/);
+  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.4/);
+  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.4/);
+  assert.match(npmPublication, /dist\.attestations/);
+  assert.match(npmPublication, /SHA-512 SRI/);
+  assert.match(npmPublication, /verify-github-tag-binding\.mjs/);
+  assert.match(npmPublication, /origin is not canonical/);
+  assert.match(npmPublication, /does not currently contain or prove that protected npm staging/);
+  assert.match(npmPublication, /disallow tokens/);
+
+  const primaryPack = npmStage.indexOf(
+    '(cd npm && npm pack --json --pack-destination "${NPM_STAGE_DIR}")'
+  );
+  const mcpPack = npmStage.indexOf(
+    '(cd npm-mcp && npm pack --json --pack-destination "${NPM_STAGE_DIR}")'
+  );
+  const sourceRecheck = npmStage.indexOf(
+    'test "${SOURCE_SHA}" = "$(git rev-parse HEAD)"'
+  );
+  const tagRecheck = npmStage.indexOf(
+    'node scripts/release/verify-github-tag-binding.mjs "${TAG}" "${SOURCE_SHA}"'
+  );
+  const primaryStage = npmStage.indexOf(
+    'npm stage publish "${PRIMARY_TARBALL}" --tag release-candidate'
+  );
+  const mcpStage = npmStage.indexOf(
+    'npm stage publish "${MCP_TARBALL}" --tag release-candidate'
+  );
+  const mcpApprove = npmPublication.indexOf('npm stage approve "${MCP_STAGE_ID}"');
+  const primaryApprove = npmPublication.indexOf('npm stage approve "${PRIMARY_STAGE_ID}"');
+  assert.ok(
+    [
+      primaryPack,
+      mcpPack,
+      sourceRecheck,
+      tagRecheck,
+      primaryStage,
+      mcpStage,
+      mcpApprove,
+      primaryApprove,
+    ].every((index) => index >= 0),
+    "explicit tarballs, source rechecks, stages, and approvals are mandatory"
+  );
+  assert.ok(
+    Math.max(primaryPack, mcpPack) < sourceRecheck &&
+      sourceRecheck < tagRecheck &&
+      tagRecheck < Math.min(primaryStage, mcpStage) &&
+      Math.max(primaryStage, mcpStage) < Math.min(mcpApprove, primaryApprove),
+    "pack once, recheck source/tag, stage both tarballs, then approve"
+  );
+
+  const mcpLatest = npmPublication.indexOf(
+    'npm dist-tag add "phantom-secrets-mcp@${VERSION}" latest'
+  );
+  const primaryLatest = npmPublication.indexOf(
+    'npm dist-tag add "phantom-secrets@${VERSION}" latest'
+  );
+  const mcpCandidateRemoval = npmPublication.indexOf(
+    "npm dist-tag rm phantom-secrets-mcp release-candidate"
+  );
+  const primaryCandidateRemoval = npmPublication.indexOf(
+    "npm dist-tag rm phantom-secrets release-candidate"
+  );
+  assert.ok(
+    [mcpLatest, primaryLatest, mcpCandidateRemoval, primaryCandidateRemoval].every(
+      (index) => index >= 0
+    ),
+    "missing required dist-tag promotion or cleanup command"
+  );
+  assert.ok(
+    mcpLatest < primaryLatest &&
+      primaryLatest < mcpCandidateRemoval &&
+      mcpCandidateRemoval < primaryCandidateRemoval,
+    "promote MCP first, primary last, then remove candidate tags"
+  );
+
+  const firstMcpTagQuery = npmPromotion.indexOf(
+    'MCP_TAGS_JSON="$(npm view phantom-secrets-mcp dist-tags --json'
+  );
+  const firstPrimaryTagQuery = npmPromotion.indexOf(
+    'PRIMARY_TAGS_JSON="$(npm view phantom-secrets dist-tags --json'
+  );
+  const firstTagGuard = npmPromotion.indexOf(
+    'mt.latest!==oldM||pt.latest!==oldP||mt["release-candidate"]!==v||pt["release-candidate"]!==v'
+  );
+  const guardedMcpLatest = npmPromotion.indexOf(
+    'npm dist-tag add "phantom-secrets-mcp@${VERSION}" latest'
+  );
+  const secondMcpTagQuery = npmPromotion.indexOf(
+    'MCP_TAGS_JSON="$(npm view phantom-secrets-mcp dist-tags --json',
+    firstMcpTagQuery + 1
+  );
+  const secondPrimaryTagQuery = npmPromotion.indexOf(
+    'PRIMARY_TAGS_JSON="$(npm view phantom-secrets dist-tags --json',
+    firstPrimaryTagQuery + 1
+  );
+  const secondTagGuard = npmPromotion.indexOf(
+    'mt.latest!==v||pt.latest!==oldP||mt["release-candidate"]!==v||pt["release-candidate"]!==v'
+  );
+  const guardedPrimaryLatest = npmPromotion.indexOf(
+    'npm dist-tag add "phantom-secrets@${VERSION}" latest'
+  );
+  assert.ok(
+    [
+      firstMcpTagQuery,
+      firstPrimaryTagQuery,
+      firstTagGuard,
+      guardedMcpLatest,
+      secondMcpTagQuery,
+      secondPrimaryTagQuery,
+      secondTagGuard,
+      guardedPrimaryLatest,
+    ].every((index) => index >= 0),
+    "both dist-tag maps and expected candidate/latest states must guard each promotion"
+  );
+  assert.ok(
+    firstMcpTagQuery < firstPrimaryTagQuery &&
+      firstPrimaryTagQuery < firstTagGuard &&
+      firstTagGuard < guardedMcpLatest &&
+      guardedMcpLatest < secondMcpTagQuery &&
+      secondMcpTagQuery < secondPrimaryTagQuery &&
+      secondPrimaryTagQuery < secondTagGuard &&
+      secondTagGuard < guardedPrimaryLatest,
+    "reconcile both tag maps immediately before MCP-first and primary-last promotion"
+  );
+
+  const firstRemovalMcpQuery = npmPromotion.indexOf(
+    'MCP_TAGS_JSON="$(npm view phantom-secrets-mcp dist-tags --json',
+    guardedPrimaryLatest + 1
+  );
+  const firstRemovalPrimaryQuery = npmPromotion.indexOf(
+    'PRIMARY_TAGS_JSON="$(npm view phantom-secrets dist-tags --json',
+    guardedPrimaryLatest + 1
+  );
+  const firstRemovalGuard = npmPromotion.indexOf(
+    'mt.latest!==v||pt.latest!==v||mt["release-candidate"]!==v||pt["release-candidate"]!==v'
+  );
+  const guardedMcpRemoval = npmPromotion.indexOf(
+    "npm dist-tag rm phantom-secrets-mcp release-candidate"
+  );
+  const secondRemovalMcpQuery = npmPromotion.indexOf(
+    'MCP_TAGS_JSON="$(npm view phantom-secrets-mcp dist-tags --json',
+    guardedMcpRemoval + 1
+  );
+  const secondRemovalPrimaryQuery = npmPromotion.indexOf(
+    'PRIMARY_TAGS_JSON="$(npm view phantom-secrets dist-tags --json',
+    guardedMcpRemoval + 1
+  );
+  const secondRemovalGuard = npmPromotion.indexOf(
+    'Object.hasOwn(mt,"release-candidate")||pt["release-candidate"]!==v'
+  );
+  const guardedPrimaryRemoval = npmPromotion.indexOf(
+    "npm dist-tag rm phantom-secrets release-candidate"
+  );
+  assert.ok(
+    [
+      firstRemovalMcpQuery,
+      firstRemovalPrimaryQuery,
+      firstRemovalGuard,
+      guardedMcpRemoval,
+      secondRemovalMcpQuery,
+      secondRemovalPrimaryQuery,
+      secondRemovalGuard,
+      guardedPrimaryRemoval,
+    ].every((index) => index >= 0),
+    "fresh exact latest/candidate state must guard each candidate-tag removal"
+  );
+  assert.ok(
+    firstRemovalMcpQuery < firstRemovalPrimaryQuery &&
+      firstRemovalPrimaryQuery < firstRemovalGuard &&
+      firstRemovalGuard < guardedMcpRemoval &&
+      guardedMcpRemoval < secondRemovalMcpQuery &&
+      secondRemovalMcpQuery < secondRemovalPrimaryQuery &&
+      secondRemovalPrimaryQuery < secondRemovalGuard &&
+      secondRemovalGuard < guardedPrimaryRemoval,
+    "requery both tag maps immediately before each sequential candidate removal"
+  );
+
+  assert.match(mcpPublication, /MCP_HOME="\$\(mktemp -d\)"/);
+  assert.match(mcpPublication, /set -euo pipefail/);
+  assert.match(mcpPublication, /chmod 700 "\$\{MCP_HOME\}"/);
+  assert.match(mcpPublication, /trap cleanup_mcp_publish EXIT HUP INT TERM/);
+  assert.match(mcpPublication, /timeout 300s/);
+  assert.match(mcpPublication, /timeout 120s/);
+  assert.match(mcpPublication, /timeout 45s curl/);
+  assert.match(
+    mcpPublication,
+    /login github \\\n  --registry="\$\{MCP_REGISTRY_URL\}"/
+  );
+  assert.equal(
+    mcpPublication.match(/--registry="\$\{MCP_REGISTRY_URL\}"/g)?.length,
+    1,
+    "only login accepts the explicit MCP Registry flag"
+  );
+  assert.match(
+    mcpPublication,
+    /mcp-publisher" logout >\/dev\/null 2>&1/
+  );
+  const logoutCwd = mcpPublication.indexOf('cd "${MCP_HOME}" || exit 1');
+  const publisherLogout = mcpPublication.indexOf('mcp-publisher" logout');
+  assert.ok(
+    logoutCwd >= 0 && publisherLogout >= 0 && logoutCwd < publisherLogout,
+    "publisher logout must run from the ephemeral MCP home"
+  );
+  assert.match(mcpPublication, /Logout deletes local credential material; it does not\s+revoke an already issued registry token/);
+  assert.match(
+    mcpPublication,
+    /WARNING: MCP publisher logout failed; record logout_failed=true externally/
+  );
+  assert.match(mcpPublication, /No automatic receipt survives\s+cleanup/);
+  assert.equal(
+    mcpPublication.match(
+      /env HOME="\$\{MCP_HOME\}" timeout 60s "\$\{PUBLISHER_DIR\}\/mcp-publisher" \\\n  validate mcp-registry\/server\.json/g
+    )?.length,
+    3,
+    "all pinned manifest validations must ignore normal-home publisher state"
+  );
+  assert.doesNotMatch(
+    mcpPublication,
+    /(?:^|\n)timeout 60s "\$\{PUBLISHER_DIR\}\/mcp-publisher" \\\n  validate/
+  );
+  assert.match(
+    mcpPublication,
+    /mcp-publisher" publish mcp-registry\/server\.json\n/
+  );
+  assert.doesNotMatch(
+    mcpPublication,
+    /(?:logout|validate mcp-registry\/server\.json|publish mcp-registry\/server\.json)[^\n]*\\?\n?\s*--registry/
+  );
+  assert.match(mcpPublication, /\?include_deleted=true/);
+  assert.match(mcpPublication, /--output "\$\{MCP_BODY\}" --write-out '%\{http_code\}'/);
+  assert.match(mcpPublication, /does not\s+currently contain or prove that MCP publication workflow/);
+  assert.match(mcpPublication, /verify-github-tag-binding\.mjs/);
+  assert.match(mcpPublication, /origin is not canonical/);
+  assert.match(mcpPublication, /mcp-publisher" publish mcp-registry\/server\.json/);
+  assert.match(
+    mcpReconcile,
+    /jq -S 'del\(\._meta\["io\.modelcontextprotocol\.registry\/official"\]\)/
+  );
+  assert.match(mcpReconcile, /jq -S '\.server \|/);
+  assert.match(
+    mcpReconcile,
+    /cmp --silent "\$\{REVIEWED_SERVER_NORMALIZED\}" "\$\{PUBLIC_SERVER_NORMALIZED\}"/
+  );
+  assert.match(
+    mcpReconcile,
+    /\._meta\["io\.modelcontextprotocol\.registry\/official"\]\.status == "active"/
+  );
+  assert.doesNotMatch(mcpReconcile, /\.server\.(?:name|version|repository|packages)\b/);
+  const deepCompare = mcpReconcile.indexOf('cmp --silent "${REVIEWED_SERVER_NORMALIZED}"');
+  const activeStatus = mcpReconcile.indexOf(
+    '._meta["io.modelcontextprotocol.registry/official"].status == "active"'
+  );
+  assert.ok(
+    deepCompare >= 0 && activeStatus >= 0 && deepCompare < activeStatus,
+    "deep-compare every immutable manifest field before checking active status separately"
+  );
+
+  const manifestRehash = mcpEffect.indexOf(
+    'sha256sum mcp-registry/server.json | awk \'{print $1}\''
+  );
+  const manifestRevalidate = mcpEffect.indexOf(
+    'validate mcp-registry/server.json'
+  );
+  const registryLogin = mcpEffect.indexOf('mcp-publisher" login github');
+  const registryPublish = mcpEffect.indexOf(
+    'mcp-publisher" publish mcp-registry/server.json'
+  );
+  const postLoginClean = mcpEffect.indexOf(
+    'test -z "$(git status --porcelain=v1)"',
+    registryLogin + 1
+  );
+  const postLoginSource = mcpEffect.indexOf(
+    'test "${SOURCE_SHA}" = "$(git rev-parse HEAD)"',
+    registryLogin + 1
+  );
+  const postLoginTag = mcpEffect.indexOf(
+    'verify-github-tag-binding.mjs "${TAG}" "${SOURCE_SHA}"',
+    registryLogin + 1
+  );
+  const postLoginRehash = mcpEffect.indexOf(
+    'sha256sum mcp-registry/server.json | awk \'{print $1}\'',
+    registryLogin + 1
+  );
+  const postLoginRevalidate = mcpEffect.indexOf(
+    'validate mcp-registry/server.json',
+    registryLogin + 1
+  );
+  assert.ok(
+    [
+      manifestRehash,
+      manifestRevalidate,
+      registryLogin,
+      postLoginClean,
+      postLoginSource,
+      postLoginTag,
+      postLoginRehash,
+      postLoginRevalidate,
+      registryPublish,
+    ].every((index) => index >= 0),
+    "MCP effect requires pre-login and post-login source/digest validation"
+  );
+  assert.ok(
+    manifestRehash < manifestRevalidate &&
+      manifestRevalidate < registryLogin &&
+      registryLogin < postLoginClean &&
+      postLoginClean < postLoginSource &&
+      postLoginSource < postLoginTag &&
+      postLoginTag < postLoginRehash &&
+      postLoginRehash < postLoginRevalidate &&
+      postLoginRevalidate < registryPublish,
+    "repeat clean source, digest, and HOME-bound validation after login immediately before publish"
+  );
+
+  const mcpReconciliation = mcpPublication.indexOf("## Reconcile the public effect");
+  const mcpInteractiveEffect = mcpPublication.indexOf(
+    "## Human-approved interactive effect"
+  );
+  assert.ok(
+    mcpReconciliation >= 0 &&
+      mcpInteractiveEffect >= 0 &&
+      mcpInteractiveEffect < mcpReconciliation,
+    "MCP publication must be followed by a bounded public-state reconciliation"
+  );
+});
+
+test("npm package contents remain the exact five reviewed files", () => {
+  const expectedFiles = ["LICENSE", "README.md", "bin/cli.js", "install.js", "package.json"];
+
+  for (const [directory, packageName] of [
+    ["npm", "phantom-secrets"],
+    ["npm-mcp", "phantom-secrets-mcp"],
+  ]) {
+    const pack = inspectPack(directory);
+    assert.equal(pack.name, packageName);
+    assert.equal(pack.version, "0.7.4");
+    assert.equal(pack.entryCount, 5);
+    assert.deepEqual(
+      pack.files.map(({ path }) => path).sort(),
+      expectedFiles
+    );
+  }
 });

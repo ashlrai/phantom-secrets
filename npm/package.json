@@ -39,6 +39,10 @@
   "bugs": {
     "url": "https://github.com/ashlrai/phantom-secrets/issues"
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
     "node": ">=22"
   },

@@ -55,6 +55,8 @@ and retains historical design-status language.
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
 - [Shell prompt integration](shell-prompt.md)
+- [npm publication](npm-publication.md)
+- [MCP Registry publication](mcp-registry-publication.md)
 
 ## Architecture and project development
 

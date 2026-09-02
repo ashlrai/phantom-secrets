@@ -146,9 +146,9 @@ gitleaks dir . --config .gitleaks.toml --redact --no-banner --max-target-megabyt
 cargo build --release --locked -p phantom-secrets --bin phantom
 cargo build --release --locked -p phantom-secrets-mcp --bin phantom-mcp
 npm --prefix npm test
-npm --prefix npm pack --dry-run
+(cd npm && npm pack --dry-run)
 npm --prefix npm-mcp test
-npm --prefix npm-mcp pack --dry-run
+(cd npm-mcp && npm pack --dry-run)
 npm --prefix apps/web ci
 npm --prefix apps/web audit --omit=dev --audit-level=moderate
 npm --prefix apps/web run lint
@@ -258,6 +258,27 @@ publication race only if the resulting bytes are identical. A successful script
 run proves crates.io package publication only; npm, Homebrew, MCP Registry,
 signing, deployment, provider activation, and authenticated acceptance remain
 separate.
+
+## npm and MCP Registry publication
+
+The GitHub tag workflow does not publish either npm wrapper or the MCP Registry
+entry. After an exact immutable GitHub Release is independently verified, use
+the guarded [npm publication runbook](npm-publication.md) to re-pack both
+wrappers, stage both under `release-candidate`, inspect the staged tarballs,
+approve each stage with interactive 2FA, and reconcile exact integrity and
+provenance. Both exact `0.7.4` packages must then pass the six-target npm-channel
+acceptance gate before any default tag changes. Separately promote the MCP
+wrapper to `latest` first and the primary CLI to `latest` last; verify both
+promotions before removing either candidate tag. Only after all npm gates pass
+should an operator use the separate
+[MCP Registry publication runbook](mcp-registry-publication.md).
+
+Both runbooks keep public reads and local package inspection separate from
+human-approved registry writes. They also define idempotent reconciliation and
+fix-forward behavior for partial publication. A successful GitHub Release does
+not authorize either registry, a staged package is not public acceptance,
+npm publication does not prove MCP Registry publication, and none proves an
+authenticated customer workflow.
 
 ## Artifact gates before publication
 

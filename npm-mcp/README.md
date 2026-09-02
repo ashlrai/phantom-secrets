@@ -2,7 +2,7 @@
 
 **Value-blind secret metadata and gated lifecycle requests over MCP.**
 
-[![GitHub release](https://img.shields.io/github/v/release/ashlrai/phantom-secrets)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3)
+[![GitHub release](https://img.shields.io/github/v/release/ashlrai/phantom-secrets)](https://github.com/ashlrai/phantom-secrets/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ashlrai/phantom-secrets/blob/main/LICENSE)
 
 Phantom's MCP server lets compatible clients inspect protection state and
@@ -11,29 +11,30 @@ credential values. That statement covers the MCP response contract, not other
 files, processes, tools, terminal output, network providers, or values pasted
 into an agent conversation.
 
-## Verified runtime
+## Install an exact published version
 
-Use the local MCP runtime from the immutable
-[`v0.7.3` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3)
-or the trusted Homebrew formula. The npm registry is on an older release track
-as of August 31, 2026. This repository's `0.7.4` wrapper manifest is staged
-source, not evidence that a matching npm package has been published or accepted.
-
-On macOS:
+This wrapper is version `0.7.4`. Its manifest and this README do not prove npm,
+GitHub, or MCP Registry publication. Verify the exact npm version before
+installing it:
 
 ```bash
-brew tap ashlrai/phantom
-brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom
-phantom --version
+npm view phantom-secrets-mcp@0.7.4 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
+npm install --global phantom-secrets-mcp@0.7.4 --registry=https://registry.npmjs.org/
 phantom-mcp --version
 ```
 
-For other release targets, download both matching binaries, checksums, and
-attestations from the verified release. `v0.7.3` provides archives for macOS
-arm64/x64, glibc Linux arm64/x64, and Windows arm64/x64. Published archives are
-not blanket proof of native keychain, shell, editor, or provider acceptance;
-review the [platform support matrix](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md).
+The first invocation downloads the matching native binary from the exact
+[`v0.7.4` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4),
+verifies the archive against its `.sha256` sidecar, extracts only the expected
+binary from the closed two-binary archive, and records a private local cache
+manifest. The wrapper does not itself verify GitHub attestations or publisher
+identity. If the npm query, release, checksum, or expected `phantom-mcp 0.7.4`
+version is unavailable, stop instead of substituting an unpinned launcher.
+
+The wrapper supports macOS arm64/x64, glibc Linux arm64/x64, and Windows
+arm64/x64. Published archives do not by themselves prove every keychain,
+shell, editor, or provider integration on every host; review the
+[platform support matrix](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md).
 
 ## Configure a client
 
@@ -46,14 +47,10 @@ phantom setup --client windsurf
 phantom setup --client codex
 ```
 
-Released `v0.7.3` normally records its bundled local `phantom mcp serve`
-command. If it cannot resolve that executable, its setup implementation can
-fall back to a local `phantom-mcp` and finally to an unpinned registry launcher.
-That final legacy fallback resolves an older registry track; do not rely on it.
-Install both verified `v0.7.3` binaries and inspect the generated command.
-Current main removes the network fallback and fails closed when no local MCP
-runtime is available. That hardening is not `v0.7.3` behavior and requires a
-later verified release.
+Version `0.7.4` records the installed local `phantom mcp serve` command when it
+can resolve that executable, otherwise it looks for a local `phantom-mcp`.
+Setup has no network package-runner fallback and fails closed when neither
+local runtime is available. Inspect the generated command before trusting it.
 
 A manual stdio configuration can call the reviewed local CLI directly:
 
@@ -146,9 +143,13 @@ a new vault to the intended fixed membership.
 
 This directory is the source for a thin native-binary wrapper. The local
 `package.json` version is not proof of npm publication, native artifact parity,
-MCP Registry publication, or platform acceptance. Until those channels are
-independently published and verified, configure the installed local runtime
-from the immutable GitHub release or trusted Homebrew formula.
+MCP Registry publication, or platform acceptance. Verify
+`phantom-secrets-mcp@0.7.4` with the exact `npm view` command above, then verify
+the matching immutable GitHub release. An npm publication still does not prove
+the separate MCP Registry entry. Maintainers should follow the guarded
+[npm](https://github.com/ashlrai/phantom-secrets/blob/main/docs/npm-publication.md)
+and [MCP Registry](https://github.com/ashlrai/phantom-secrets/blob/main/docs/mcp-registry-publication.md)
+publication runbooks.
 
 ## Links
 
