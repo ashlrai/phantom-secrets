@@ -96,6 +96,13 @@ or are active.
 
 ### Breaking changes and migration
 
+- Rust callers of `phantom-core` must now handle `Result` from
+  `DotenvFile::rewrite_with_phantoms` and
+  `DotenvFile::generate_example_content`. Mutation and generated-output APIs
+  reject malformed or duplicate mappings instead of returning partial output;
+  `DotenvFile::upsert_with_phantoms` is the format-preserving API for adding
+  prepared mappings. Phantom remains pre-1.0, but this source-level signature
+  change is called out explicitly for library consumers.
 - `phantom setup` and initialization no longer generate an unpinned `npx`
   fallback when a local MCP runtime cannot be resolved. After the immutable
   `0.7.4` release receipt exists, install both `phantom` and `phantom-mcp` from
@@ -148,6 +155,13 @@ or are active.
 
 ### Security
 
+- Dotenv parsing now retains exact source spans and preserves BOM, LF, CRLF,
+  lone-CR endings, quotes, comments, spacing, multiline values, and terminal
+  newline shape outside explicitly changed values. Every mutating caller fails
+  closed on malformed, duplicate, unsafe, or concurrently changed mappings
+  before vault, approval, provider, or unrelated repair effects where the
+  command contract permits; diagnostics contain locations and fixed categories,
+  never source values.
 - Serializes the full MCP terminal-approval and one-use consumption critical
   sections across threads and processes, uses collision-safe atomic storage,
   and gives approved tokens a fresh five-minute use window. Concurrent replay

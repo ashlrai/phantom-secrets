@@ -41,6 +41,39 @@ fn run_init(dir: &TempDir) -> assert_cmd::assert::Assert {
 }
 
 #[test]
+fn malformed_dotenv_aborts_before_every_project_and_vault_mutation() {
+    let dir = common::canonical_tempdir();
+    let source = "OPENAI_API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n";
+    fs::write(dir.path().join(".env"), source).unwrap();
+
+    let output = Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["init", "--from", ".env"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("malformed"), "unexpected error: {stderr}");
+    assert!(!stderr.contains("plaintext-must-not-escape"));
+    assert_eq!(fs::read_to_string(dir.path().join(".env")).unwrap(), source);
+    for path in [
+        ".phantom.toml",
+        ".env.example",
+        ".gitignore",
+        ".claude/settings.local.json",
+    ] {
+        assert!(
+            !dir.path().join(path).exists(),
+            "unexpected mutation: {path}"
+        );
+    }
+    assert!(!dir.path().join(".phantom").exists());
+}
+
+#[test]
 fn init_rejects_single_project_dry_run_without_mutating() {
     let dir = common::canonical_tempdir();
     let env_path = dir.path().join(".env");

@@ -50,6 +50,14 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
             )
         })?;
 
+    let target_preflight =
+        phantom_core::managed_dotenv::resolve_dotenv(&target_dir, &target_config, &[])?;
+    if let Some(dotenv) = target_preflight.file.as_ref() {
+        dotenv.validate_for_mutation().context(
+            "Target managed dotenv is malformed; copy stopped before opening either vault",
+        )?;
+    }
+
     let target_vault = phantom_vault::try_create_vault(target_config.local_project_id())?;
 
     // Complete every target collision and filesystem check before retrieving
@@ -225,10 +233,11 @@ fn dotenv_has_key(before: Option<&[u8]>, name: &str) -> Result<bool> {
     };
     let content = std::str::from_utf8(bytes)
         .context("Target managed dotenv is not valid UTF-8; refusing to inspect or rewrite it")?;
-    Ok(DotenvFile::parse_str(content)
-        .entries()
-        .iter()
-        .any(|entry| entry.key == name))
+    let dotenv = DotenvFile::parse_str(content);
+    dotenv.validate_for_mutation().context(
+        "Target managed dotenv is malformed; copy made no vault, config, or file changes",
+    )?;
+    Ok(dotenv.entries().iter().any(|entry| entry.key == name))
 }
 
 #[cfg(test)]
@@ -242,6 +251,17 @@ mod tests {
     fn target_key_detection_is_exact() {
         assert!(dotenv_has_key(Some(b"API_KEY=phm_test\n"), "API_KEY").unwrap());
         assert!(!dotenv_has_key(Some(b"OTHER_API_KEY=phm_test\n"), "API_KEY").unwrap());
+    }
+
+    #[test]
+    fn malformed_target_refuses_collision_decision() {
+        let error = dotenv_has_key(
+            Some(b"COPIED_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n"),
+            "COPIED_KEY",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("malformed"));
+        assert!(!error.to_string().contains("plaintext-must-not-escape"));
     }
 
     #[test]

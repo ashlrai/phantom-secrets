@@ -1,9 +1,10 @@
 use crate::commands::upgrade::{detect_install_source, InstallSource};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::precommit_hook::{self, HookChange};
+use zeroize::Zeroizing;
 
 fn doctor_can_open_vault(_fix: bool) -> bool {
     // Diagnostics and repository-local repairs must not provision keychain or
@@ -29,6 +30,40 @@ fn commit_precommit_repair(project_dir: &std::path::Path) -> Result<Option<HookC
     )?))
 }
 
+type DotenvRepairGuard = (std::path::PathBuf, Option<Zeroizing<Vec<u8>>>);
+
+fn prepare_dotenv_repair_guard(env_path: &std::path::Path) -> Result<DotenvRepairGuard> {
+    let before = phantom_core::fs::read_regular_file(env_path)
+        .context("Failed to read managed dotenv before doctor repairs")?
+        .map(Zeroizing::new);
+    if let Some(bytes) = before.as_deref() {
+        let text = std::str::from_utf8(bytes).context("Managed dotenv is not valid UTF-8")?;
+        DotenvFile::parse_str(text)
+            .validate_for_mutation()
+            .context("Managed dotenv is malformed; doctor made no repairs")?;
+    }
+    Ok((env_path.to_path_buf(), before))
+}
+
+fn ensure_dotenv_repair_guard(guard: Option<&DotenvRepairGuard>) -> Result<()> {
+    let Some((path, expected)) = guard else {
+        return Ok(());
+    };
+    let current = phantom_core::fs::read_regular_file(path)
+        .context("Failed to re-read managed dotenv before doctor repair")?;
+    let matches = match (expected.as_deref(), current.as_deref()) {
+        (Some(expected), Some(current)) => expected == current,
+        (None, None) => true,
+        _ => false,
+    };
+    if !matches {
+        anyhow::bail!(
+            "Managed dotenv changed after doctor preflight; no further repair was attempted"
+        );
+    }
+    Ok(())
+}
+
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
 pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
@@ -40,6 +75,9 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         }
         None => project_dir.join(".env"),
     };
+    let repair_dotenv_guard = fix
+        .then(|| prepare_dotenv_repair_guard(&env_path))
+        .transpose()?;
     let mut issues = 0;
     let mut fixed = 0;
     // A doctor invocation publishes at most one local repair. This prevents a
@@ -123,7 +161,10 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 let entries = dotenv.entries();
                 let real_secrets = dotenv.real_secret_entries();
 
-                if real_secrets.is_empty() {
+                if let Err(error) = dotenv.validate_for_mutation() {
+                    check_fail(&format!(".env parse error: {error}"));
+                    issues += 1;
+                } else if real_secrets.is_empty() {
                     check_pass(&format!(
                         ".env has {} entries, all protected",
                         entries.len()
@@ -164,6 +205,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
             check_warn(".env is NOT in .gitignore — secrets could be committed!");
             check_fix("Run: echo '.env' >> .gitignore");
             if fix && !mutation_applied {
+                ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
                 let mut c = content;
                 if !c.ends_with('\n') {
                     c.push('\n');
@@ -185,6 +227,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     } else {
         check_warn("No .gitignore — consider adding one");
         if fix && !mutation_applied {
+            ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
             write_project_file_exact(
                 &project_dir,
                 &gitignore_path,
@@ -211,7 +254,10 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         if fix && !mutation_applied && env_path.exists() {
             if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
                 let config = PhantomConfig::load(&config_path).ok();
-                let content = dotenv.generate_example_content(config.as_ref());
+                let content = dotenv
+                    .generate_example_content(config.as_ref())
+                    .context("Managed dotenv is malformed; doctor made no .env.example repair")?;
+                ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
                 write_project_file_exact(
                     &project_dir,
                     &example_path,
@@ -308,6 +354,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 check_fix("Run: phantom init (will add a local Phantom check to the hook)");
             }
             if fix && !mutation_applied {
+                ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
                 let change = commit_precommit_repair(&project_dir)?
                     .expect("Git hook state already established a repository");
                 let message = match change {
@@ -327,6 +374,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
             check_warn("No pre-commit hook installed");
             check_fix("Run: phantom init (will install a local Phantom check)");
             if fix && !mutation_applied {
+                ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
                 commit_precommit_repair(&project_dir)?;
                 check_fixed("Installed pre-commit hook");
                 fixed += 1;
@@ -790,6 +838,20 @@ mod tests {
     fn read_only_doctor_never_opens_a_vault_backend() {
         assert!(!super::doctor_can_open_vault(false));
         assert!(!super::doctor_can_open_vault(true));
+    }
+
+    #[test]
+    fn doctor_repair_guard_rejects_dotenv_drift() {
+        let project = tempfile::tempdir().unwrap();
+        let env_path = project.path().join(".env");
+        std::fs::write(&env_path, b"API_KEY=phm_before\n").unwrap();
+        let guard = super::prepare_dotenv_repair_guard(&env_path).unwrap();
+        std::fs::write(&env_path, b"BROKEN_RECORD\n").unwrap();
+
+        let error = super::ensure_dotenv_repair_guard(Some(&guard)).unwrap_err();
+
+        assert!(error.to_string().contains("changed after doctor preflight"));
+        assert!(!project.path().join(".gitignore").exists());
     }
 
     #[test]

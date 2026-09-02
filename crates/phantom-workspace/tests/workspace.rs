@@ -86,6 +86,25 @@ fn discovers_multiple_env_files_without_crossing_nested_repositories() {
 }
 
 #[test]
+fn malformed_dotenv_blocks_workspace_inspection_and_sealing_value_free() {
+    let workspace = TempDir::new().unwrap();
+    write(
+        workspace.path().join(".env"),
+        "API_SECRET=plaintext-must-not-escape\nBROKEN_RECORD\n",
+    );
+
+    let inspection_error = inspect_workspace(workspace.path()).unwrap_err().to_string();
+    let sealing_error = build_sealed_setup_plan(workspace.path(), &seal_key())
+        .unwrap_err()
+        .to_string();
+
+    for error in [inspection_error, sealing_error] {
+        assert!(error.contains("malformed dotenv"), "{error}");
+        assert!(!error.contains("plaintext-must-not-escape"));
+    }
+}
+
+#[test]
 fn serialized_inspection_and_plan_never_contain_environment_values() {
     let workspace = TempDir::new().unwrap();
     let sentinels = [

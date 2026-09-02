@@ -40,6 +40,7 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
     }
 
     let (config, config_before) = load_config_exact(&config_path)?;
+    validate_managed_dotenv_preflight(&project_dir, &config)?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     ensure_secret_absent(vault.as_ref(), name)?;
 
@@ -78,6 +79,20 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
             .unwrap_or("managed dotenv")
             .cyan()
     );
+    Ok(())
+}
+
+pub(super) fn validate_managed_dotenv_preflight(
+    project_dir: &Path,
+    config: &PhantomConfig,
+) -> Result<()> {
+    let resolved = phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])
+        .context("Failed to resolve the managed dotenv before vault access or secret input")?;
+    if let Some(dotenv) = resolved.file.as_ref() {
+        dotenv.validate_for_mutation().context(
+            "Managed dotenv is malformed; add stopped before vault access or secret input",
+        )?;
+    }
     Ok(())
 }
 
@@ -227,28 +242,25 @@ pub(super) fn snapshot_regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 pub(super) fn rewrite_dotenv(before: Option<&[u8]>, name: &str) -> Result<Vec<u8>> {
-    let mut content = Zeroizing::new(match before {
+    let content = Zeroizing::new(match before {
         Some(bytes) => String::from_utf8(bytes.to_vec())
             .context("Managed dotenv is not valid UTF-8; refusing to rewrite it")?,
         None => String::new(),
     });
     let dotenv = DotenvFile::parse_str(content.as_str());
+    dotenv
+        .validate_for_mutation()
+        .context("Managed dotenv is malformed; no vault, config, or file mutation was prepared")?;
     let mut tokens = TokenMap::new();
-    let token = tokens.insert(name.to_string()).to_string();
-    let mut after = if dotenv.entries().iter().any(|entry| entry.key == name) {
-        let (rewritten, mut originals) = dotenv.rewrite_with_phantoms(&tokens);
-        for original in originals.values_mut() {
-            original.zeroize();
-        }
-        originals.clear();
-        Zeroizing::new(rewritten)
-    } else {
-        if !content.is_empty() && !content.ends_with('\n') {
-            content.push('\n');
-        }
-        content.push_str(&format!("{name}={token}\n"));
-        Zeroizing::new(std::mem::take(&mut *content))
-    };
+    tokens.insert(name.to_string());
+    let (rewritten, mut originals) = dotenv
+        .upsert_with_phantoms(&tokens)
+        .context("Managed dotenv cannot be rewritten safely")?;
+    for original in originals.values_mut() {
+        original.zeroize();
+    }
+    originals.clear();
+    let mut after = Zeroizing::new(rewritten);
     Ok(std::mem::take(&mut *after).into_bytes())
 }
 
@@ -325,6 +337,33 @@ mod tests {
             assert!(validate_secret_name(name).is_err());
         }
         assert!(validate_secret_name("API_KEY_2").is_ok());
+    }
+
+    #[test]
+    fn malformed_dotenv_refuses_append_and_rewrite_plans() {
+        for source in [
+            b"API_KEY=plaintext\nBROKEN_RECORD\n".as_slice(),
+            b"OTHER=plaintext\nBROKEN_RECORD\n".as_slice(),
+        ] {
+            let error = rewrite_dotenv(Some(source), "API_KEY").unwrap_err();
+            assert!(error.to_string().contains("malformed"));
+        }
+    }
+
+    #[test]
+    fn add_validates_dotenv_before_vault_access_and_secret_input() {
+        let source = include_str!("add.rs");
+        let validate = source
+            .find("validate_managed_dotenv_preflight(&project_dir, &config)?")
+            .unwrap();
+        let vault = source
+            .find("phantom_vault::try_create_vault(config.local_project_id())?")
+            .unwrap();
+        let input = source
+            .find("let value = read_secret_value(name, from_stdin)?")
+            .unwrap();
+        assert!(validate < vault);
+        assert!(validate < input);
     }
 
     #[test]

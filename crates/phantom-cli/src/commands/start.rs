@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
@@ -129,6 +129,9 @@ async fn run_async() -> Result<()> {
     config.validate_agentic_proxy_routes()?;
 
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
+    validate_start_dotenv(&preflight).context(
+        "Managed dotenv is malformed; proxy start stopped before lifecycle or vault access",
+    )?;
     let preflight_protected_keys: std::collections::HashSet<&str> = preflight
         .file
         .iter()
@@ -170,6 +173,8 @@ async fn run_async() -> Result<()> {
     })?;
     let resolved =
         phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
+    validate_start_dotenv(&resolved)
+        .context("Managed dotenv is malformed; proxy start stopped before secret resolution")?;
 
     // Build token mapping
     let mut token_to_secret: HashMap<String, (String, String)> = HashMap::new();
@@ -269,6 +274,13 @@ async fn run_async() -> Result<()> {
     Ok(())
 }
 
+fn validate_start_dotenv(resolved: &phantom_core::managed_dotenv::ResolvedDotenv) -> Result<()> {
+    if let Some(dotenv) = resolved.file.as_ref() {
+        dotenv.validate_for_mutation()?;
+    }
+    Ok(())
+}
+
 fn retrieve_required_default_secret(
     vault: &dyn phantom_vault::VaultBackend,
     name: &str,
@@ -358,6 +370,34 @@ mod shell_tests {
         let error = run(true).unwrap_err().to_string();
         assert!(error.contains("Detached proxy mode is disabled"));
         assert!(error.contains("will not persist a live proxy bearer"));
+    }
+
+    #[test]
+    fn malformed_dotenv_fails_value_free_before_start_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = b"API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n";
+        let env_path = dir.path().join(".env");
+        std::fs::write(&env_path, source).unwrap();
+        let config = PhantomConfig::new_with_defaults("start-malformed".to_string());
+        let resolved =
+            phantom_core::managed_dotenv::resolve_dotenv(dir.path(), &config, &[]).unwrap();
+
+        let error = validate_start_dotenv(&resolved).unwrap_err().to_string();
+
+        assert!(error.contains("malformed dotenv"));
+        assert!(!error.contains("plaintext-must-not-escape"));
+        assert_eq!(std::fs::read(&env_path).unwrap(), source);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn strict_start_preflight_precedes_lifecycle_and_vault_source_contract() {
+        let source = include_str!("start.rs");
+        let preflight = source.find("validate_start_dotenv(&preflight)").unwrap();
+        let legacy = source.find("legacy_proxy::refuse_start").unwrap();
+        let lifecycle = source.find("proxy_lifecycle::try_acquire").unwrap();
+        let vault = source.find("phantom_vault::try_create_vault").unwrap();
+        assert!(preflight < legacy && legacy < lifecycle && lifecycle < vault);
     }
 
     #[test]

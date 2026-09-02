@@ -13,6 +13,7 @@ pub fn run(name: &str) -> Result<()> {
         .context("Project is not initialized. Run `phantom init --empty` first.")?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
         .context("Failed to load exact .phantom.toml snapshot")?;
+    super::add::validate_managed_dotenv_preflight(&project_dir, &config)?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let plan = phantom_vault::ManagedRemovePlan::prepare(
         &project_dir,

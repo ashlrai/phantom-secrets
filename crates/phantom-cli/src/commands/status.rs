@@ -36,6 +36,11 @@ pub fn run(oneline: bool) -> Result<()> {
         }
     }
     let managed = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
+    if let Some(dotenv) = managed.file.as_ref() {
+        dotenv
+            .validate_for_mutation()
+            .context("Managed dotenv is malformed; status is indeterminate")?;
+    }
     let names: Vec<String> = managed
         .file
         .iter()

@@ -46,6 +46,11 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         .context("Refusing unapproved repository-controlled proxy routing")?;
 
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
+    if let Some(dotenv) = preflight.file.as_ref() {
+        dotenv
+            .validate_for_mutation()
+            .context("Managed dotenv is malformed; child launch stopped before vault access")?;
+    }
     let preflight_protected_keys: HashSet<String> = preflight
         .file
         .iter()
@@ -79,8 +84,11 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         .context("Failed to list protected vault entries before child launch")?;
     let resolved =
         phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
-    let env_path = resolved.path.clone();
-
+    if let Some(dotenv) = resolved.file.as_ref() {
+        dotenv
+            .validate_for_mutation()
+            .context("Managed dotenv is malformed; child launch stopped before proxy startup")?;
+    }
     let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
     let dotenv = resolved.file;
     let protected_env_keys: HashSet<String> = dotenv
@@ -216,15 +224,13 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
 
             // Pass through NEXT_PUBLIC_ prefixed vars from .env unchanged —
             // these are non-secret public vars that the Next.js build expects
-            if env_path.exists() {
-                if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
-                    for entry in dotenv.entries() {
-                        if entry.key.starts_with("NEXT_PUBLIC_")
-                            && !PhantomToken::is_phantom_token(&entry.value)
-                            && !never_reintroduce.contains(&entry.key)
-                        {
-                            framework_env_vars.push((entry.key.clone(), entry.value.clone()));
-                        }
+            if let Some(dotenv) = dotenv.as_ref() {
+                for entry in dotenv.entries() {
+                    if entry.key.starts_with("NEXT_PUBLIC_")
+                        && !PhantomToken::is_phantom_token(&entry.value)
+                        && !never_reintroduce.contains(&entry.key)
+                    {
+                        framework_env_vars.push((entry.key.clone(), entry.value.clone()));
                     }
                 }
             }

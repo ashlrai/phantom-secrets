@@ -302,6 +302,7 @@ fn prepare_local_token_remap(project_dir: &Path) -> Result<Option<LocalTokenRema
         .context("No .phantom.toml found. Run `phantom init` first.")?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
         .context("Failed to load exact .phantom.toml snapshot")?;
+    crate::commands::add::validate_managed_dotenv_preflight(&project_dir, &config)?;
     let local_project_id = config.local_project_id().to_string();
     let vault =
         phantom_vault::try_create_vault(&local_project_id).context("Failed to initialize vault")?;
@@ -512,6 +513,9 @@ fn validate_protected_placeholders(env_path: &Path, names: &[String], before: &[
     let content = std::str::from_utf8(before)
         .with_context(|| format!("Failed to parse {} as UTF-8", env_path.display()))?;
     let dotenv = DotenvFile::parse_str(content);
+    dotenv
+        .validate_for_mutation()
+        .context("Managed dotenv is malformed; no token remap was prepared")?;
     for name in names {
         let entry = dotenv
             .entries()
@@ -598,6 +602,26 @@ fn resolve_managed_dotenv_path(
         .unwrap_or_else(|| project_dir.join(".env")))
 }
 
+fn validate_managed_dotenv_for_mutation(
+    transaction_lock: &phantom_vault::ProjectTransactionLock,
+    env_path: &Path,
+) -> Result<()> {
+    let target = transaction_lock
+        .target(env_path)
+        .with_context(|| format!("Refusing unmanaged dotenv target {}", env_path.display()))?;
+    let before = target.read_regular()?.with_context(|| {
+        format!(
+            "Managed dotenv disappeared before mutation: {}",
+            env_path.display()
+        )
+    })?;
+    let content = std::str::from_utf8(before.bytes())
+        .with_context(|| format!("Failed to parse {} as UTF-8", env_path.display()))?;
+    DotenvFile::parse_str(content)
+        .validate_for_mutation()
+        .context("Managed dotenv cannot be mutated safely")
+}
+
 fn remap_phantom_tokens_from_snapshot(
     target: &AnchoredTarget,
     env_path: &Path,
@@ -614,7 +638,9 @@ fn remap_phantom_tokens_from_snapshot(
     for name in names {
         token_map.insert(name.clone());
     }
-    let (rewritten, mut originals) = dotenv.rewrite_with_phantoms(&token_map);
+    let (rewritten, mut originals) = dotenv
+        .rewrite_with_phantoms(&token_map)
+        .context("Managed dotenv cannot be rewritten safely")?;
     for value in originals.values_mut() {
         value.zeroize();
     }
@@ -854,6 +880,10 @@ pub fn run_with_provider(
             "Reviewed config did not bind to the canonical local project identity; no provider or project payload was used."
         );
     }
+    crate::commands::add::validate_managed_dotenv_preflight(&reviewed_project_root, &config)
+        .context(
+            "Managed dotenv is malformed; provider rotation stopped before vault access, credential access, or network I/O",
+        )?;
     // Vault construction may take PROCESS_ENV_LOCK, so it must complete before
     // the project transaction lock is acquired.
     let vault = phantom_vault::try_create_vault(&reviewed_local_project_id)
@@ -887,6 +917,9 @@ pub fn run_with_provider(
         &reviewed_project_root,
         &config,
         &vault_names,
+    )?;
+    validate_managed_dotenv_for_mutation(&transaction_lock, &env_path).context(
+        "Managed dotenv is malformed; provider rotation stopped before credential access or network I/O",
     )?;
 
     // Resolve provider config from .phantom.toml.
@@ -1034,6 +1067,8 @@ pub fn run_with_provider(
             ".phantom.toml changed after provider rotation was planned; no provider call was made"
         );
     }
+    validate_managed_dotenv_for_mutation(&transaction_lock, &env_path)
+        .context("Managed dotenv became malformed; no provider call was made")?;
 
     let new_value = auto_sync_rotation_with_bootstrap(name, provider_config, &providers, bootstrap)
         .map_err(|e| anyhow::anyhow!("Provider rotation failed for '{}': {}", name, e))?;
@@ -1692,6 +1727,28 @@ mod token_remap_tests {
             std::fs::read(project.join(".phantom.toml")).unwrap(),
             b"decoy\n"
         );
+    }
+
+    #[test]
+    fn provider_call_is_ordered_after_strict_dotenv_revalidation() {
+        let source = include_str!("rotate.rs");
+        let provider = source
+            .split("pub fn run_with_provider")
+            .nth(1)
+            .unwrap()
+            .split("pub fn")
+            .next()
+            .unwrap();
+        let provider_edge = provider.find("config_at_provider_edge").unwrap();
+        let strict_revalidation = provider[provider_edge..]
+            .find("validate_managed_dotenv_for_mutation")
+            .unwrap()
+            + provider_edge;
+        let provider_call = provider[provider_edge..]
+            .find("let new_value = auto_sync_rotation_with_bootstrap")
+            .unwrap()
+            + provider_edge;
+        assert!(provider_edge < strict_revalidation && strict_revalidation < provider_call);
     }
 
     #[test]

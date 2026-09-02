@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use phantom_core::dotenv::DotenvFile;
 use phantom_core::error::PhantomError;
 use phantom_core::sync::{self, Platform};
 use phantom_core::token::TokenMap;
@@ -11,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Clone, Debug, Serialize)]
 struct PullPlan {
@@ -77,13 +78,13 @@ async fn run_async(
     })?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
         .context("Failed to parse the exact .phantom.toml snapshot")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let vault_names = vault.list().context("Failed to list local vault names")?;
-    let env_path =
-        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)
-            .context("Failed to resolve the managed dotenv for platform pull")?
-            .path;
+    let env_path = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])
+        .context("Failed to resolve the managed dotenv for platform-pull preflight")?
+        .path;
     let env_before = snapshot_regular_file(&env_path)?;
+    parse_pull_dotenv(env_before.as_deref()).context(
+        "Managed dotenv is malformed; pull stopped before vault, approval, credential, or provider access",
+    )?;
     let plan = PullPlan {
         platform: platform.to_string(),
         provider_project: project.to_string(),
@@ -102,6 +103,26 @@ async fn run_async(
     };
     let plan_digest = pull_plan_digest(&plan)?;
     require_trusted_terminal_pull(&plan)?;
+
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault_names = vault.list().context("Failed to list local vault names")?;
+    let provider_edge =
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)
+            .context("Failed to re-resolve the managed dotenv before provider access")?;
+    if provider_edge.path != env_path {
+        anyhow::bail!(
+            "Managed dotenv resolution changed after approval; no provider credential or network endpoint was accessed"
+        );
+    }
+    let provider_env_before = snapshot_regular_file(&provider_edge.path)?;
+    parse_pull_dotenv(provider_env_before.as_deref()).context(
+        "Managed dotenv became malformed; no provider credential or network endpoint was accessed",
+    )?;
+    if provider_env_before != env_before {
+        anyhow::bail!(
+            "Managed dotenv changed after approval; no provider credential or network endpoint was accessed"
+        );
+    }
 
     let token = Zeroizing::new(std::env::var(token_env).context(format!(
         "{token_env} not set. Export your {platform} API token."
@@ -330,6 +351,17 @@ fn apply_platform_pull_transaction(
     pulled: &BTreeMap<String, Zeroizing<String>>,
     force: bool,
 ) -> Result<PullCounts> {
+    if pulled
+        .keys()
+        .any(|name| !phantom_core::dotenv::is_canonical_env_name(name))
+    {
+        anyhow::bail!(
+            "Provider returned an unsafe environment-variable name; platform pull made no local mutation"
+        );
+    }
+    let dotenv = parse_pull_dotenv(env_before.as_deref()).context(
+        "Managed dotenv is malformed; platform pull made no vault, config, or file mutation",
+    )?;
     let mut counts = PullCounts::default();
     let mut token_map = TokenMap::new();
     let mut mutations = Vec::new();
@@ -355,41 +387,8 @@ fn apply_platform_pull_transaction(
 
     let mut files = Vec::new();
     if !mutations.is_empty() {
-        let mut env_content = match env_before.as_ref() {
-            Some(bytes) => String::from_utf8(bytes.clone())
-                .context("Existing .env is not valid UTF-8; refusing to rewrite it")?,
-            None => String::new(),
-        };
-
-        for key in counts.new_names.iter().chain(counts.updated_names.iter()) {
-            if let Some(token) = token_map.get_token(key) {
-                let key_prefix = format!("{key}=");
-                if env_content.lines().any(|l| l.starts_with(&key_prefix)) {
-                    env_content = env_content
-                        .lines()
-                        .map(|line| {
-                            if line.starts_with(&key_prefix) {
-                                format!("{key}={token}")
-                            } else {
-                                line.to_string()
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                        + "\n";
-                } else {
-                    // Append new entry
-                    if !env_content.is_empty() && !env_content.ends_with('\n') {
-                        env_content.push('\n');
-                    }
-                    env_content.push_str(&format!("{key}={token}\n"));
-                }
-            }
-        }
-        files.push(
-            InitFile::replace_if_unchanged(env_path, env_before, env_content.into_bytes())
-                .commit_last(),
-        );
+        let env_content = rewrite_pull_dotenv(&dotenv, &token_map)?;
+        files.push(InitFile::replace_if_unchanged(env_path, env_before, env_content).commit_last());
     }
 
     if !mutations.is_empty() {
@@ -404,6 +403,26 @@ fn apply_platform_pull_transaction(
     phantom_vault::commit_init(project_dir, vault, mutations, files)
         .context("Platform pull transaction failed")?;
     Ok(counts)
+}
+
+fn parse_pull_dotenv(before: Option<&[u8]>) -> Result<DotenvFile> {
+    let content = match before {
+        Some(bytes) => std::str::from_utf8(bytes)
+            .context("Existing managed dotenv is not valid UTF-8; refusing to mutate it")?,
+        None => "",
+    };
+    let dotenv = DotenvFile::parse_str(content);
+    dotenv.validate_for_mutation()?;
+    Ok(dotenv)
+}
+
+fn rewrite_pull_dotenv(dotenv: &DotenvFile, token_map: &TokenMap) -> Result<Vec<u8>> {
+    let (rewritten, mut originals) = dotenv.upsert_with_phantoms(token_map)?;
+    for value in originals.values_mut() {
+        value.zeroize();
+    }
+    originals.clear();
+    Ok(rewritten.into_bytes())
 }
 
 fn snapshot_secret(vault: &dyn VaultBackend, name: &str) -> Result<Option<Zeroizing<String>>> {
@@ -529,6 +548,134 @@ mod tests {
         let provider = source.find("sync::pull_from_vercel(").unwrap();
         assert!(confirmation < credential);
         assert!(credential < provider);
+    }
+
+    #[test]
+    fn strict_dotenv_preflight_precedes_vault_approval_and_provider_access() {
+        let source = include_str!("pull.rs");
+        let strict = source
+            .find("parse_pull_dotenv(env_before.as_deref())")
+            .unwrap();
+        let approval = source
+            .find("require_trusted_terminal_pull(&plan)?")
+            .unwrap();
+        let vault = source
+            .find("let vault = phantom_vault::try_create_vault")
+            .unwrap();
+        let credential = source.find("std::env::var(token_env)").unwrap();
+        let provider = source.find("sync::pull_from_vercel(").unwrap();
+        assert!(
+            strict < approval && approval < vault && vault < credential && credential < provider
+        );
+    }
+
+    #[test]
+    fn pull_rewrite_preserves_bom_crlf_comments_quotes_and_eof_shape() {
+        let source = "\u{feff}# keep\r\nexport UPDATED = \"old\"  # tail";
+        let dotenv = parse_pull_dotenv(Some(source.as_bytes())).unwrap();
+        let mut tokens = TokenMap::new();
+        tokens.insert_with_token(
+            "UPDATED".to_string(),
+            phantom_core::token::PhantomToken::parse("phm_updated").unwrap(),
+        );
+        tokens.insert_with_token(
+            "NEW_KEY".to_string(),
+            phantom_core::token::PhantomToken::parse("phm_new").unwrap(),
+        );
+
+        let rewritten = rewrite_pull_dotenv(&dotenv, &tokens).unwrap();
+
+        assert_eq!(
+            std::str::from_utf8(&rewritten).unwrap(),
+            "\u{feff}# keep\r\nexport UPDATED = \"phm_updated\"  # tail\r\nNEW_KEY=phm_new"
+        );
+    }
+
+    #[test]
+    fn malformed_or_duplicate_pull_dotenv_causes_zero_local_mutation() {
+        use phantom_vault::file::FileVault;
+        use tempfile::TempDir;
+
+        for source in [b"BROKEN\n".as_slice(), b"DUP=one\nDUP=two\n".as_slice()] {
+            let dir = TempDir::new().unwrap();
+            let config_path = dir.path().join(".phantom.toml");
+            let config = PhantomConfig::new_with_defaults("pull-malformed".to_string());
+            let config_before = toml::to_string_pretty(&config).unwrap().into_bytes();
+            std::fs::write(&config_path, &config_before).unwrap();
+            let env_path = dir.path().join(".env");
+            std::fs::write(&env_path, source).unwrap();
+            let vault = FileVault::new(
+                &crate::test_support::canonical_tempdir_path(&dir),
+                "pull-malformed",
+                "passphrase".to_string(),
+            )
+            .unwrap();
+            let pulled = BTreeMap::from([(
+                "NEW_SECRET".to_string(),
+                Zeroizing::new("provider-value".to_string()),
+            )]);
+
+            let error = apply_platform_pull_transaction(
+                dir.path(),
+                &config_path,
+                &env_path,
+                &vault,
+                config_before.clone(),
+                Some(source.to_vec()),
+                &pulled,
+                false,
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("malformed"));
+            assert!(!vault.exists("NEW_SECRET").unwrap());
+            assert_eq!(std::fs::read(&env_path).unwrap(), source);
+            assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+        }
+    }
+
+    #[test]
+    fn unsafe_provider_name_is_rejected_before_local_mutation() {
+        use phantom_vault::file::FileVault;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = PhantomConfig::new_with_defaults("pull-unsafe-name".to_string());
+        let config_before = toml::to_string_pretty(&config).unwrap().into_bytes();
+        std::fs::write(&config_path, &config_before).unwrap();
+        let env_path = dir.path().join(".env");
+        let env_before = b"OWNER=unchanged\n".to_vec();
+        std::fs::write(&env_path, &env_before).unwrap();
+        let vault = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "pull-unsafe-name",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        let pulled = BTreeMap::from([(
+            "BAD\nINJECTED".to_string(),
+            Zeroizing::new("provider-value".to_string()),
+        )]);
+
+        let error = apply_platform_pull_transaction(
+            dir.path(),
+            &config_path,
+            &env_path,
+            &vault,
+            config_before.clone(),
+            Some(env_before.clone()),
+            &pulled,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("unsafe environment-variable name"));
+        assert!(!vault.exists("BAD\nINJECTED").unwrap());
+        assert_eq!(std::fs::read(&env_path).unwrap(), env_before);
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
     }
 
     #[test]

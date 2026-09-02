@@ -101,18 +101,14 @@ pub fn inspect_workspace(root: impl AsRef<Path>) -> Result<WorkspaceInspection> 
     env_paths.sort_by_key(|path| relative_path(&canonical_root, path));
 
     let mut env_files = Vec::with_capacity(env_paths.len());
-    let mut warnings = Vec::new();
     for path in env_paths {
-        match inspect_env_file(&canonical_root, &path) {
-            Ok(observation) => env_files.push(observation),
-            Err(error) => warnings.push(format!(
-                "Could not inspect {}: {}",
-                relative_path(&canonical_root, &path),
-                error
-            )),
-        }
+        // Dotenv observations feed both authority planning and later vault/file
+        // effects. Treating an unreadable or malformed file as a warning would
+        // silently omit it from the sealed pre-state, so inspection must fail
+        // closed instead.
+        env_files.push(inspect_env_file(&canonical_root, &path)?);
     }
-    warnings.sort();
+    let warnings = Vec::new();
 
     let git = inspect_git_identity(&canonical_root)?;
     let place_hints = build_place_hints(git.as_ref());
@@ -203,6 +199,12 @@ fn inspect_env_file(root: &Path, path: &Path) -> Result<EnvFileObservation> {
         path: path.to_path_buf(),
         source: std::io::Error::other(error.to_string()),
     })?;
+    dotenv
+        .validate_for_mutation()
+        .map_err(|error| WorkspaceError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::other(error.to_string()),
+        })?;
 
     let mut entry_names = BTreeSet::new();
     let mut unprotected_secret_names = BTreeSet::new();

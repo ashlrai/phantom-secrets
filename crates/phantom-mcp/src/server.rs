@@ -109,6 +109,26 @@ impl PhantomMcpServer {
         PhantomConfig::load(&path).map_err(|e| format!("Failed to load config: {e}"))
     }
 
+    /// Reject a malformed managed dotenv before approval consumption, vault
+    /// construction, or any other effectful compatibility-tool preflight.
+    /// Effectful callers still re-read under their transaction lock before
+    /// committing, closing drift between this value-blind check and mutation.
+    fn preflight_managed_dotenv_strict(&self) -> Result<(), McpError> {
+        let config = self.load_config().map_err(internal_err)?;
+        let resolved =
+            phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &config, &[]).map_err(
+                |error| invalid_params_err(format!("Failed to resolve managed dotenv: {error}")),
+            )?;
+        if let Some(dotenv) = resolved.file.as_ref() {
+            dotenv.validate_for_mutation().map_err(|error| {
+                invalid_params_err(format!(
+                    "Managed dotenv is malformed; no approval, vault, or mutation effect was attempted: {error}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
     fn load_config_and_vault(
         &self,
     ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
@@ -385,13 +405,6 @@ impl PhantomMcpServer {
             }
             SetupWorkspacePhase::RequestApply => {
                 require_confirm("phantom_setup_workspace", params.confirm)?;
-                let params_json = serde_json::to_string(&params).unwrap_or_default();
-                require_approval_token(
-                    "phantom_setup_workspace",
-                    params.approval_token.as_deref(),
-                    &params_json,
-                    &self.project_id(),
-                )?;
                 if params.request_id.is_some() {
                     return Err(invalid_params_err(
                         "request_apply does not accept request_id",
@@ -422,6 +435,17 @@ impl PhantomMcpServer {
                         "sealed setup plan mismatch or workspace drift; run propose again",
                     ));
                 }
+                // Consume the replay-proof approval only after rebuilding and
+                // strict-validating the current workspace and matching both
+                // caller-supplied sealed identifiers. Drift or malformed
+                // dotenv state must leave the approval reusable.
+                let params_json = serde_json::to_string(&params).unwrap_or_default();
+                require_approval_token(
+                    "phantom_setup_workspace",
+                    params.approval_token.as_deref(),
+                    &params_json,
+                    &self.project_id(),
+                )?;
                 let action_summary = phantom_core::workspace_request::SanitizedActionSummary::new(
                     sealed_plan.plan.actions.iter().map(|action| {
                         use phantom_core::workspace_request::WorkspaceActionKind as RequestKind;
@@ -572,18 +596,23 @@ impl PhantomMcpServer {
                 })?
                 .path;
         if env_path.exists() {
-            if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
-                let real = dotenv.real_secret_entries();
-                let total = dotenv.entries().len();
-                let phantom_count = dotenv.entries().iter().filter(|e| e.is_phantom).count();
-                output.push_str(&format!(
-                    "{}: {} entries ({} phantom tokens, {} unprotected)\n",
-                    env_path.display(),
-                    total,
-                    phantom_count,
-                    real.len()
-                ));
-            }
+            let dotenv = DotenvFile::parse_file(&env_path)
+                .map_err(|error| internal_err(format!("Failed to read managed dotenv: {error}")))?;
+            dotenv.validate_for_mutation().map_err(|error| {
+                internal_err(format!(
+                    "Managed dotenv is malformed; status is indeterminate: {error}"
+                ))
+            })?;
+            let real = dotenv.real_secret_entries();
+            let total = dotenv.entries().len();
+            let phantom_count = dotenv.entries().iter().filter(|e| e.is_phantom).count();
+            output.push_str(&format!(
+                "{}: {} entries ({} phantom tokens, {} unprotected)\n",
+                env_path.display(),
+                total,
+                phantom_count,
+                real.len()
+            ));
         }
 
         // Service mappings
@@ -612,13 +641,6 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<InitParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_init", params.confirm)?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token(
-            "phantom_init",
-            params.approval_token.as_deref(),
-            &params_json,
-            &self.project_id(),
-        )?;
         let env_name = phantom_core::managed_dotenv::validate_dotenv_basename(&params.env_path)
             .map_err(|error| invalid_params_err(error.to_string()))?;
         let env_path = self.project_dir.join(&env_name);
@@ -632,6 +654,19 @@ impl PhantomMcpServer {
         let env_text = std::str::from_utf8(env_before.as_slice())
             .map_err(|_| invalid_params_err(format!("{env_name} is not valid UTF-8")))?;
         let dotenv = DotenvFile::parse_str(env_text);
+        dotenv.validate_for_mutation().map_err(|error| {
+            invalid_params_err(format!(
+                "Managed dotenv is malformed; initialization made no changes: {error}"
+            ))
+        })?;
+
+        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        require_approval_token(
+            "phantom_init",
+            params.approval_token.as_deref(),
+            &params_json,
+            &self.project_id(),
+        )?;
 
         let real_entries = dotenv.real_secret_entries();
         if real_entries.is_empty() {
@@ -666,7 +701,9 @@ impl PhantomMcpServer {
         for entry in &real_entries {
             token_map.insert(entry.key.clone());
         }
-        let (phantomized, mut originals) = dotenv.rewrite_with_phantoms(&token_map);
+        let (phantomized, mut originals) = dotenv
+            .rewrite_with_phantoms(&token_map)
+            .map_err(|error| invalid_params_err(error.to_string()))?;
         for value in originals.values_mut() {
             use zeroize::Zeroize;
             value.zeroize();
@@ -780,6 +817,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<RemoveSecretParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_remove_secret", params.confirm)?;
+        self.preflight_managed_dotenv_strict()?;
         let canonical_project = self.project_dir.canonicalize().map_err(|error| {
             internal_err(format!("Failed to resolve project directory: {error}"))
         })?;
@@ -837,7 +875,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<RotateParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_rotate", params.confirm)?;
-        let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
+        self.preflight_managed_dotenv_strict()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_rotate",
@@ -845,6 +883,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
         let names = vault
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
@@ -912,6 +951,17 @@ impl PhantomMcpServer {
                 "Automated live provider issuance is disabled before approval consumption, vault access, credential access, or network I/O. Phantom requires a durable value-free provider recovery handle and verified abort path before it can safely persist a successor locally. Rotate at the provider, then store the replacement interactively. Unit-test mock providers are not production capability evidence. Do not retry automatically.",
             ));
         }
+        let preflight_config = self.load_config().map_err(internal_err)?;
+        let preflight_env =
+            phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &preflight_config, &[])
+                .map_err(|error| invalid_params_err(error.to_string()))?;
+        if let Some(dotenv) = preflight_env.file.as_ref() {
+            dotenv.validate_for_mutation().map_err(|error| {
+                invalid_params_err(format!(
+                    "Managed dotenv is malformed; provider rotation stopped before approval consumption, credential access, or network I/O: {error}"
+                ))
+            })?;
+        }
         require_confirm("phantom_rotate_provider", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
@@ -926,6 +976,21 @@ impl PhantomMcpServer {
         // can still mutate provider or filesystem state and is detected by the
         // exact value checks before metadata and cleanup.
         let (rotation_lock, config, vault) = self.load_config_and_vault_anchored()?;
+        let vault_names = vault
+            .list()
+            .map_err(|error| internal_err(format!("Failed to list vault secrets: {error}")))?;
+        let provider_env_path = resolve_env_path_anchored(
+            &rotation_lock,
+            rotation_lock.project_root_at_acquisition(),
+            &config,
+            &vault_names,
+        )?;
+        validate_mcp_dotenv_for_mutation(&rotation_lock, &provider_env_path).map_err(|error| {
+            invalid_params_err(format!(
+                "Managed dotenv is malformed; provider rotation stopped before credential access or network I/O: {}",
+                error.message
+            ))
+        })?;
 
         // Verify the secret exists in the vault.
         if !vault
@@ -1013,6 +1078,13 @@ impl PhantomMcpServer {
         let old_value =
             retrieve_optional_secret(vault.as_ref(), &params.name, "outgoing provider credential")?;
 
+        validate_mcp_dotenv_for_mutation(&rotation_lock, &provider_env_path).map_err(|error| {
+            invalid_params_err(format!(
+                "Managed dotenv became malformed; no provider call was made: {}",
+                error.message
+            ))
+        })?;
+
         let new_value = phantom_core::rotation_provider::auto_sync_rotation_with_bootstrap(
             &params.name,
             provider_config,
@@ -1043,15 +1115,9 @@ impl PhantomMcpServer {
                 // Refresh the phm_ token for this secret in .env — same flow
                 // as the CLI — so a client that captured the pre-rotation
                 // phm_ token cannot resolve it to the new credential.
-                let env_path = resolve_env_path_anchored(
-                    &rotation_lock,
-                    rotation_lock.project_root_at_acquisition(),
-                    &config,
-                    std::slice::from_ref(&params.name),
-                )?;
                 remap_phantom_tokens_locked(
                     &rotation_lock,
-                    &env_path,
+                    &provider_env_path,
                     std::slice::from_ref(&params.name),
                 )
                 .map_err(|error| {
@@ -1435,6 +1501,19 @@ impl PhantomMcpServer {
                 ))
             })?;
 
+        let target_preflight =
+            phantom_core::managed_dotenv::resolve_dotenv(&target_dir, &target_config, &[])
+                .map_err(|error| {
+                    invalid_params_err(format!("Failed to resolve target dotenv: {error}"))
+                })?;
+        if let Some(dotenv) = target_preflight.file.as_ref() {
+            dotenv.validate_for_mutation().map_err(|error| {
+                invalid_params_err(format!(
+                    "Target managed dotenv is malformed; copy stopped before opening either vault: {error}"
+                ))
+            })?;
+        }
+
         let target_vault = phantom_vault::try_create_vault(target_config.local_project_id())
             .map_err(|error| internal_err(format!("Failed to initialize target vault: {error}")))?;
         let target_vault_names = target_vault
@@ -1516,7 +1595,7 @@ impl PhantomMcpServer {
 
     /// Run health checks and optionally auto-fix issues.
     #[tool(
-        description = "Run Phantom health checks: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook. Set fix=true to auto-fix safe issues."
+        description = "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs."
     )]
     fn phantom_doctor(
         &self,
@@ -1524,13 +1603,6 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         if params.fix {
             require_confirm("phantom_doctor", params.confirm)?;
-            let params_json = serde_json::to_string(&params).unwrap_or_default();
-            require_approval_token(
-                "phantom_doctor",
-                params.approval_token.as_deref(),
-                &params_json,
-                &self.project_id(),
-            )?;
         }
         let mut lines: Vec<String> = Vec::new();
         let mut issues = 0u32;
@@ -1568,33 +1640,45 @@ impl PhantomMcpServer {
             None
         };
 
-        // ── Check 2: Vault accessible ───────────────────────────────────
-        let mut vault_names = Vec::new();
+        let mut repair_dotenv_guard = None;
         if params.fix {
-            if let Some(cfg) = &config {
-                match phantom_vault::try_create_vault(cfg.local_project_id()) {
-                    Ok(vault) => {
-                        lines.push(format!("pass: Vault backend: {}", vault.backend_name()));
-                        match vault.list() {
-                            Ok(names) => {
-                                lines.push(format!("pass: {} secret(s) in vault", names.len()));
-                                vault_names = names;
-                            }
-                            Err(e) => {
-                                lines.push(format!("FAIL: Vault access failed: {e}"));
-                                issues += 1;
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        lines.push(format!("FAIL: Vault initialization failed: {error}"));
-                        issues += 1;
-                    }
-                }
+            let preflight_env_path = if let Some(cfg) = &config {
+                phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, cfg, &[])
+                    .map_err(|error| invalid_params_err(error.to_string()))?
+                    .path
+            } else {
+                self.project_dir.join(".env")
+            };
+            let preflight_env_before = phantom_core::fs::read_regular_file(&preflight_env_path)
+                .map_err(|error| internal_err(format!("Failed to read managed dotenv: {error}")))?
+                .map(zeroize::Zeroizing::new);
+            if let Some(bytes) = preflight_env_before.as_deref() {
+                let text = std::str::from_utf8(bytes)
+                    .map_err(|_| invalid_params_err("Managed dotenv is not valid UTF-8"))?;
+                DotenvFile::parse_str(text)
+                    .validate_for_mutation()
+                    .map_err(|error| {
+                        invalid_params_err(format!(
+                            "Managed dotenv is malformed; doctor made no repairs: {error}"
+                        ))
+                    })?;
             }
-        } else if config.is_some() {
+            repair_dotenv_guard = Some((preflight_env_path, preflight_env_before));
+            let params_json = serde_json::to_string(&params).unwrap_or_default();
+            require_approval_token(
+                "phantom_doctor",
+                params.approval_token.as_deref(),
+                &params_json,
+                &self.project_id(),
+            )?;
+        }
+
+        // ── Check 2: Vault boundary ─────────────────────────────────────
+        let vault_names = Vec::new();
+        if config.is_some() {
             lines.push(
-                "info: Vault backend and inventory not opened in read-only doctor mode".to_string(),
+                "info: Vault backend and inventory not opened by repository-local doctor"
+                    .to_string(),
             );
         }
 
@@ -1629,7 +1713,15 @@ impl PhantomMcpServer {
                     Ok(dotenv) => {
                         let entries = dotenv.entries();
                         let real_secrets = dotenv.real_secret_entries();
-                        if real_secrets.is_empty() {
+                        if let Err(error) = dotenv.validate_for_mutation() {
+                            if params.fix {
+                                return Err(invalid_params_err(format!(
+                                    "Managed dotenv became malformed; doctor made no repairs: {error}"
+                                )));
+                            }
+                            lines.push(format!("FAIL: Managed dotenv parse error: {error}"));
+                            issues += 1;
+                        } else if real_secrets.is_empty() {
                             lines.push(format!(
                                 "pass: .env has {} entries, all protected",
                                 entries.len()
@@ -1647,6 +1739,11 @@ impl PhantomMcpServer {
                         }
                     }
                     Err(_) => {
+                        if params.fix {
+                            return Err(invalid_params_err(
+                                "Managed dotenv became non-UTF-8; doctor made no repairs",
+                            ));
+                        }
                         lines.push("FAIL: .env parse error: file is not valid UTF-8".to_string());
                         issues += 1;
                     }
@@ -1735,7 +1832,11 @@ impl PhantomMcpServer {
                         })?;
                         let dotenv = DotenvFile::parse_str(env_content);
                         let cfg = config.as_ref();
-                        let content = dotenv.generate_example_content(cfg);
+                        let content = dotenv.generate_example_content(cfg).map_err(|error| {
+                            invalid_params_err(format!(
+                                "Managed dotenv is malformed; doctor prepared no repairs: {error}"
+                            ))
+                        })?;
                         doctor_files.push(phantom_vault::InitFile::replace_if_unchanged(
                             &example_path,
                             None::<Vec<u8>>,
@@ -1804,6 +1905,7 @@ impl PhantomMcpServer {
                     lines.push("warn: Git pre-commit hook exists but no phantom check".to_string());
                 }
                 if params.fix {
+                    ensure_doctor_dotenv_unchanged(repair_dotenv_guard.as_ref())?;
                     let change = commit_mcp_precommit_repair(&self.project_dir)?
                         .expect("Git hook state already established a repository");
                     let message = match change {
@@ -1823,6 +1925,7 @@ impl PhantomMcpServer {
             precommit_hook::HookState::Missing { .. } => {
                 lines.push("warn: No pre-commit hook installed".to_string());
                 if params.fix {
+                    ensure_doctor_dotenv_unchanged(repair_dotenv_guard.as_ref())?;
                     commit_mcp_precommit_repair(&self.project_dir)?;
                     lines.push("  Fixed: Installed pre-commit hook".to_string());
                     fixed += 1;
@@ -1837,6 +1940,7 @@ impl PhantomMcpServer {
         }
 
         if !doctor_files.is_empty() {
+            ensure_doctor_dotenv_unchanged(repair_dotenv_guard.as_ref())?;
             let count = doctor_files.len() as u32;
             commit_doctor_file_updates(&self.project_dir, doctor_files, hook_changed)?;
             fixed += count;
@@ -1878,6 +1982,11 @@ impl PhantomMcpServer {
         }
         let dotenv = DotenvFile::parse_file(&env_path)
             .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
+        dotenv.validate_for_mutation().map_err(|error| {
+            invalid_params_err(format!(
+                "Managed dotenv is malformed; protection status is indeterminate: {error}"
+            ))
+        })?;
 
         let entry = dotenv.entries().into_iter().find(|e| e.key == params.key);
 
@@ -2161,6 +2270,7 @@ impl PhantomMcpServer {
             // Scan .env files for unprotected secrets
             let env_files = [".env", ".env.local", ".env.development", ".env.production"];
             let mut total_issues = 0;
+            let mut malformed_files = 0;
             let mut output = String::new();
 
             for filename in &env_files {
@@ -2171,6 +2281,14 @@ impl PhantomMcpServer {
 
                 match DotenvFile::parse_file(&path) {
                     Ok(dotenv) => {
+                        if let Err(error) = dotenv.validate_for_mutation() {
+                            output.push_str(&format!(
+                                "{}: malformed; clean status is indeterminate ({})\n",
+                                filename, error
+                            ));
+                            malformed_files += 1;
+                            continue;
+                        }
                         let real = dotenv.real_secret_entries();
                         if !real.is_empty() {
                             output.push_str(&format!(
@@ -2186,18 +2304,24 @@ impl PhantomMcpServer {
                     }
                     Err(e) => {
                         output.push_str(&format!("{}: failed to parse ({})\n", filename, e));
+                        malformed_files += 1;
                     }
                 }
             }
 
-            if total_issues == 0 {
+            if total_issues == 0 && malformed_files == 0 {
                 text_result("No issues found. All .env files are clean.")
+            } else if total_issues == 0 {
+                text_result(format!(
+                    "Found {} malformed .env file(s); clean status is indeterminate:\n\n{}",
+                    malformed_files, output
+                ))
             } else {
                 output
                     .push_str("\nRun `phantom init` to protect these secrets with phantom tokens.");
                 text_result(format!(
-                    "Found {} unprotected secret(s) across .env files:\n\n{}",
-                    total_issues, output
+                    "Found {} unprotected secret(s) and {} malformed .env file(s):\n\n{}",
+                    total_issues, malformed_files, output
                 ))
             }
         }
@@ -2212,6 +2336,9 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<EnvParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_env", params.confirm)?;
+        phantom_core::fs::validate_project_filename(&params.output)
+            .map_err(|error| invalid_params_err(error.to_string()))?;
+        self.preflight_managed_dotenv_strict()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_env",
@@ -2219,8 +2346,6 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
-        phantom_core::fs::validate_project_filename(&params.output)
-            .map_err(|error| invalid_params_err(error.to_string()))?;
         let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
         let project_root = transaction_lock.project_root_at_acquisition();
         let output_path = project_root.join(&params.output);
@@ -2258,7 +2383,9 @@ impl PhantomMcpServer {
             .map_err(|_| internal_err("Failed to read .env: managed dotenv is not valid UTF-8"))?;
         let dotenv = DotenvFile::parse_str(env_text);
 
-        let content = dotenv.generate_example_content(Some(&config));
+        let content = dotenv
+            .generate_example_content(Some(&config))
+            .map_err(|error| invalid_params_err(error.to_string()))?;
 
         write_new_anchored_output(&output_target, &params.output, content.as_bytes())?;
 
@@ -2711,6 +2838,10 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<RotateWithExpiryParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_rotate_with_expiry", params.confirm)?;
+        if params.days_ttl == 0 {
+            return Err(invalid_params_err("days_ttl must be > 0"));
+        }
+        self.preflight_managed_dotenv_strict()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_rotate_with_expiry",
@@ -2718,10 +2849,6 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
-
-        if params.days_ttl == 0 {
-            return Err(invalid_params_err("days_ttl must be > 0"));
-        }
 
         let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
         let names = vault
@@ -3777,15 +3904,26 @@ impl PhantomMcpServer {
         let (env_clean, env_detail) = if env_path.exists() {
             match phantom_core::dotenv::DotenvFile::parse_file(&env_path) {
                 Ok(dotenv) => {
-                    let real = dotenv.real_secret_entries();
-                    if real.is_empty() {
-                        (true, "No unprotected secrets in .env.".to_string())
-                    } else {
-                        let names: Vec<&str> = real.iter().map(|e| e.key.as_str()).collect();
+                    if let Err(error) = dotenv.validate_for_mutation() {
                         (
                             false,
-                            format!("{} unprotected secret(s): {}", real.len(), names.join(", ")),
+                            format!(".env parse error; clean status is indeterminate: {error}"),
                         )
+                    } else {
+                        let real = dotenv.real_secret_entries();
+                        if real.is_empty() {
+                            (true, "No unprotected secrets in .env.".to_string())
+                        } else {
+                            let names: Vec<&str> = real.iter().map(|e| e.key.as_str()).collect();
+                            (
+                                false,
+                                format!(
+                                    "{} unprotected secret(s): {}",
+                                    real.len(),
+                                    names.join(", ")
+                                ),
+                            )
+                        }
                     }
                 }
                 Err(e) => (false, format!(".env parse error: {e}")),
@@ -4441,6 +4579,12 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<AutoRotateParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_secrets_auto_rotate", params.confirm)?;
+        if params.sync {
+            return Err(invalid_params_err(
+                "sync=true is not valid for a Phantom token remap: the provider credential is unchanged. Rotate at the provider, store the replacement from a trusted terminal, then use a separately reviewed deployment workflow; automated live provider issuance is disabled.",
+            ));
+        }
+        self.preflight_managed_dotenv_strict()?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_secrets_auto_rotate",
@@ -4448,12 +4592,6 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
-
-        if params.sync {
-            return Err(invalid_params_err(
-                "sync=true is not valid for a Phantom token remap: the provider credential is unchanged. Rotate at the provider, store the replacement from a trusted terminal, then use a separately reviewed deployment workflow; automated live provider issuance is disabled.",
-            ));
-        }
 
         let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
 
@@ -5073,6 +5211,27 @@ fn commit_doctor_file_updates(
         })
 }
 
+fn ensure_doctor_dotenv_unchanged(
+    guard: Option<&(PathBuf, Option<zeroize::Zeroizing<Vec<u8>>>)>,
+) -> Result<(), McpError> {
+    let Some((path, expected)) = guard else {
+        return Ok(());
+    };
+    let current = phantom_core::fs::read_regular_file(path)
+        .map_err(|error| internal_err(format!("Failed to re-read managed dotenv: {error}")))?;
+    let matches = match (expected.as_deref(), current.as_deref()) {
+        (Some(expected), Some(current)) => expected.as_slice() == current,
+        (None, None) => true,
+        _ => false,
+    };
+    if !matches {
+        return Err(invalid_params_err(
+            "Managed dotenv changed after doctor preflight; no further repair was attempted",
+        ));
+    }
+    Ok(())
+}
+
 fn retrieve_optional_secret(
     vault: &dyn phantom_vault::VaultBackend,
     name: &str,
@@ -5177,10 +5336,13 @@ fn mcp_dotenv_has_key(before: Option<&[u8]>, name: &str) -> Result<bool, McpErro
     };
     let content = std::str::from_utf8(bytes)
         .map_err(|_| internal_err("Target managed dotenv is not valid UTF-8"))?;
-    Ok(DotenvFile::parse_str(content)
-        .entries()
-        .iter()
-        .any(|entry| entry.key == name))
+    let dotenv = DotenvFile::parse_str(content);
+    dotenv.validate_for_mutation().map_err(|error| {
+        invalid_params_err(format!(
+            "Target managed dotenv is malformed; copy made no changes: {error}"
+        ))
+    })?;
+    Ok(dotenv.entries().iter().any(|entry| entry.key == name))
 }
 
 fn copy_approval_params_json(
@@ -5264,18 +5426,27 @@ fn apply_mcp_copy_transaction(
     target_name: &str,
     value: &str,
 ) -> Result<(), McpError> {
-    let mut content = zeroize::Zeroizing::new(match env_before.as_deref() {
+    let content = zeroize::Zeroizing::new(match env_before.as_deref() {
         Some(bytes) => String::from_utf8(bytes.to_vec())
             .map_err(|_| internal_err("Target managed dotenv is not valid UTF-8"))?,
         None => String::new(),
     });
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
-    }
+    let dotenv = DotenvFile::parse_str(content.as_str());
+    dotenv.validate_for_mutation().map_err(|error| {
+        invalid_params_err(format!(
+            "Target managed dotenv is malformed; copy made no changes: {error}"
+        ))
+    })?;
     let mut tokens = TokenMap::new();
-    let token = tokens.insert(target_name.to_string());
-    content.push_str(&format!("{target_name}={token}\n"));
-    let env_after = std::mem::take(&mut *content).into_bytes();
+    tokens.insert(target_name.to_string());
+    let (env_after, mut originals) = dotenv
+        .upsert_with_phantoms(&tokens)
+        .map_err(|error| invalid_params_err(error.to_string()))?;
+    for value in originals.values_mut() {
+        zeroize::Zeroize::zeroize(value);
+    }
+    originals.clear();
+    let env_after = env_after.into_bytes();
 
     let config_after = if config.phantom.dotenv_path.is_none() && vault_names.is_empty() {
         config.phantom.dotenv_path = Some(
@@ -5677,6 +5848,37 @@ fn remap_phantom_tokens_locked(
     remap_phantom_tokens_locked_with(transaction_lock, env_path, names, || {})
 }
 
+fn validate_mcp_dotenv_for_mutation(
+    transaction_lock: &phantom_vault::ProjectTransactionLock,
+    env_path: &Path,
+) -> Result<(), McpError> {
+    let target = transaction_lock.target(env_path).map_err(|error| {
+        internal_err(format!(
+            "Failed to retain managed dotenv {}: {error}",
+            env_path.display()
+        ))
+    })?;
+    let before = target
+        .read_regular()
+        .map_err(|error| {
+            internal_err(format!(
+                "Failed to read managed dotenv {}: {error}",
+                env_path.display()
+            ))
+        })?
+        .ok_or_else(|| {
+            invalid_params_err(format!(
+                "Managed dotenv does not exist: {}",
+                env_path.display()
+            ))
+        })?;
+    let text = std::str::from_utf8(before.bytes())
+        .map_err(|_| internal_err("Managed dotenv is not valid UTF-8"))?;
+    DotenvFile::parse_str(text)
+        .validate_for_mutation()
+        .map_err(|error| invalid_params_err(error.to_string()))
+}
+
 fn remap_phantom_tokens_locked_with(
     transaction_lock: &phantom_vault::ProjectTransactionLock,
     env_path: &Path,
@@ -5710,6 +5912,9 @@ fn remap_phantom_tokens_locked_with(
         ))
     })?;
     let dotenv = DotenvFile::parse_str(env_text);
+    dotenv
+        .validate_for_mutation()
+        .map_err(|error| invalid_params_err(error.to_string()))?;
     for name in names {
         let entry = dotenv
             .entries()
@@ -5733,7 +5938,9 @@ fn remap_phantom_tokens_locked_with(
     for name in names {
         token_map.insert(name.clone());
     }
-    let (rewritten, mut originals) = dotenv.rewrite_with_phantoms(&token_map);
+    let (rewritten, mut originals) = dotenv
+        .rewrite_with_phantoms(&token_map)
+        .map_err(|error| invalid_params_err(error.to_string()))?;
     for value in originals.values_mut() {
         zeroize::Zeroize::zeroize(value);
     }
@@ -6678,6 +6885,105 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mcp_provider_call_is_ordered_after_strict_dotenv_revalidation() {
+        let source = include_str!("server.rs");
+        let provider = source
+            .split("fn phantom_rotate_provider")
+            .nth(1)
+            .unwrap()
+            .split("fn phantom_")
+            .next()
+            .unwrap();
+        let outgoing_snapshot = provider.find("outgoing provider credential").unwrap();
+        let strict_revalidation = provider[outgoing_snapshot..]
+            .find("validate_mcp_dotenv_for_mutation")
+            .unwrap()
+            + outgoing_snapshot;
+        let provider_call = provider[outgoing_snapshot..]
+            .find("let new_value = phantom_core::rotation_provider::auto_sync_rotation_with_bootstrap")
+            .unwrap()
+            + outgoing_snapshot;
+        assert!(outgoing_snapshot < strict_revalidation && strict_revalidation < provider_call);
+    }
+
+    #[test]
+    fn mcp_mutations_preflight_dotenv_before_approval_and_vault() {
+        let source = include_str!("server.rs");
+        for function in [
+            "phantom_rotate",
+            "phantom_env",
+            "phantom_rotate_with_expiry",
+            "phantom_secrets_auto_rotate",
+        ] {
+            let body = source
+                .split(&format!("fn {function}"))
+                .nth(1)
+                .unwrap()
+                .split("fn phantom_")
+                .next()
+                .unwrap();
+            let strict = body.find("preflight_managed_dotenv_strict").unwrap();
+            let approval = body.find("require_approval_token").unwrap();
+            let vault = body.find("load_config_and_vault_anchored").unwrap();
+            assert!(strict < approval, "{function} consumed approval first");
+            assert!(strict < vault, "{function} opened vault first");
+        }
+    }
+
+    #[test]
+    fn mcp_workspace_apply_matches_current_seal_before_approval() {
+        let source = include_str!("server.rs");
+        let request_apply = source
+            .split("SetupWorkspacePhase::RequestApply =>")
+            .nth(1)
+            .unwrap()
+            .split("SetupWorkspacePhase::Status =>")
+            .next()
+            .unwrap();
+        let rebuild = request_apply.find("build_sealed_setup_plan").unwrap();
+        let match_ids = request_apply
+            .find("if !(plan_matches & pre_state_matches)")
+            .unwrap();
+        let approval = request_apply.find("require_approval_token").unwrap();
+        let create = request_apply.find("create_request").unwrap();
+        assert!(rebuild < match_ids && match_ids < approval && approval < create);
+    }
+
+    #[test]
+    fn mcp_value_blind_preflight_rejects_malformed_without_plaintext() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let mut config =
+            PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&project));
+        config.phantom.dotenv_path = Some(".env".to_string());
+        config.save(&project.join(".phantom.toml")).unwrap();
+        let before = b"TARGET=plaintext-must-not-escape\nBROKEN_RECORD\n";
+        std::fs::write(project.join(".env"), before).unwrap();
+        let server = PhantomMcpServer::with_dir(project.clone());
+
+        let error = server.preflight_managed_dotenv_strict().unwrap_err();
+
+        assert!(error.message.contains("malformed"));
+        assert!(!error.message.contains("plaintext-must-not-escape"));
+        assert_eq!(std::fs::read(project.join(".env")).unwrap(), before);
+    }
+
+    #[test]
+    fn mcp_strict_dotenv_preflight_is_value_free_and_non_mutating() {
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        let before = b"TARGET=plaintext-must-not-escape\nBROKEN_RECORD\n";
+        std::fs::write(&env_path, before).unwrap();
+        let lock = phantom_vault::acquire_project_transaction_lock(dir.path()).unwrap();
+
+        let error = validate_mcp_dotenv_for_mutation(&lock, &env_path).unwrap_err();
+
+        assert!(error.message.contains("malformed dotenv"));
+        assert!(!error.message.contains("plaintext-must-not-escape"));
+        assert_eq!(std::fs::read(&env_path).unwrap(), before);
+    }
+
     #[cfg(unix)]
     #[test]
     fn mcp_remap_follows_retained_root_across_a_rename_decoy() {
@@ -7338,7 +7644,7 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert!(
-            text.contains("not opened in read-only doctor mode"),
+            text.contains("not opened by repository-local doctor"),
             "{text}"
         );
         assert_eq!(before, after);
@@ -7679,6 +7985,11 @@ mod tests {
 
         let approved = phantom_core::mcp_approval::approve_nonce(&nonce).unwrap();
         let approval_token = format!("{}:{}", nonce, approved.approval_token);
+        std::fs::write(
+            project.path().join("other.env"),
+            b"OTHER_API_KEY=sk-other-approval-binding-test\n",
+        )
+        .unwrap();
 
         let changed_params_err = server
             .phantom_init(Parameters(InitParams {
