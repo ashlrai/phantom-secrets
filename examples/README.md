@@ -8,6 +8,7 @@ live provider identifiers, cloud tokens, device codes, cookies, or persistent
 
 | Example | Status | Purpose |
 |---|---|---|
+| [First five minutes](first-five-minutes/README.md) | Executable, hermetic contract | Run a deterministic value-free delegation walkthrough with no network access, mutation, or persisted token mapping. |
 | [Agent delegation templates](agent-delegation/README.md) | Documentation templates | Copyable policy, task brief, and pilot-acceptance structures for a bounded agent task. |
 
 The repository does not currently claim a stable Rust library API or ship a

@@ -424,6 +424,7 @@ test("web release metadata matches the Rust workspace release", () => {
 });
 
 test("documentation redirects are a closed canonical allowlist", async () => {
+  const docsRoutes = require(path.join(webDir, "docs-routes.json"));
   const publicAuthConfiguration = compileModule(
     publicAuthConfigurationPath,
     require,
@@ -434,35 +435,18 @@ test("documentation redirects are a closed canonical allowlist", async () => {
       if (specifier === "./src/lib/public-auth-configuration") {
         return publicAuthConfiguration;
       }
+      if (specifier === "./docs-routes.json") return docsRoutes;
       return require(specifier);
     },
   );
   const redirects = await configModule.default.redirects();
-  assert.deepEqual(redirects, [
-    {
-      source: "/docs",
-      destination:
-        "https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md",
+  assert.deepEqual(
+    redirects,
+    docsRoutes.map(({ source, file }) => ({
+      source,
+      destination: `https://github.com/ashlrai/phantom-secrets/blob/main/docs/${file}`,
       permanent: false,
-    },
-    {
-      source: "/docs/getting-started",
-      destination:
-        "https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md",
-      permanent: false,
-    },
-    {
-      source: "/docs/login",
-      destination:
-        "https://github.com/ashlrai/phantom-secrets/blob/main/docs/login.md",
-      permanent: false,
-    },
-    {
-      source: "/docs/sync",
-      destination:
-        "https://github.com/ashlrai/phantom-secrets/blob/main/docs/sync.md",
-      permanent: false,
-    },
-  ]);
+    })),
+  );
   assert.equal(redirects.some(({ source }) => source.includes(":")), false);
 });

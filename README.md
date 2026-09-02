@@ -11,7 +11,7 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 [![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/stargazers)
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
 [![Reviewed release](https://img.shields.io/badge/reviewed_release-v0.7.3-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3)
-[![Staged source](https://img.shields.io/badge/staged_source-v0.7.4-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#074---2026-08-31)
+[![Staged source](https://img.shields.io/badge/staged_source-v0.7.4-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#074---2026-09-01)
 [![Pinned toolchain: Rust 1.95](https://img.shields.io/badge/pinned_toolchain-Rust_1.95-CE412B?style=for-the-badge&logo=rust&labelColor=0b0b14)](rust-toolchain.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
 
@@ -39,6 +39,21 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 > published, deployed, provider-enabled, or accepted on any platform. See
 > [release readiness](docs/release-readiness.md) and
 > [platform support](docs/platform-support.md).
+
+## Start here
+
+Choose the smallest path that answers your next question. The first path uses
+no credential, makes no network request, and does not install or configure
+Phantom.
+
+| Goal | Start | What it establishes |
+|---|---|---|
+| See the delegation boundary with no secret or setup | Run `node examples/first-five-minutes/run.mjs`, then read the [first-five-minutes walkthrough](examples/first-five-minutes/README.md) | A deterministic, read-only example contract; not vault, proxy, provider, or deployment acceptance. |
+| Protect a real local project | Follow [Quick Start](#quick-start) with the reviewed `v0.7.3` release | Local initialization and diagnostics on your machine. |
+| Connect an AI coding client | Complete the [first MCP task](#first-mcp-task-verify-the-boundary) | Value-blind capability, status, and repository checks; no provider action. |
+| Define a bounded task for an agent | Use the [safe delegation quickstart](docs/delegation-quickstart.md) | A reviewable task contract with explicit authority and acceptance boundaries. |
+| Evaluate a team rollout | Use the [enterprise adoption guide](docs/enterprise-adoption.md) | A controlled evaluation plan; not a claim of commissioned cloud or enterprise service. |
+| Audit the trust model first | Read the [security model](SECURITY.md) and [threat model](THREAT_MODEL.md) | Documented controls, assumptions, and residual risks. |
 
 ## Why Phantom?
 
@@ -189,6 +204,24 @@ retains design-era status language.
 Phantom ships an MCP server so AI coding tools can inspect value-blind metadata
 and request gated lifecycle operations. MCP responses do not return real secret
 values.
+
+### First MCP task: verify the boundary
+
+Use this read-only path before exploring the full tool catalog:
+
+1. Install both binaries from the reviewed [`v0.7.3` release](#installation).
+2. From the project you want to inspect, run `phantom setup --client codex`,
+   replacing `codex` with `claude`, `cursor`, or `windsurf` when appropriate.
+3. Restart the AI client so it loads the generated MCP configuration.
+4. Ask the client: “Call `phantom_capability`, then `phantom_status`. Report the
+   value-blind authority, hard denials, vault backend, secret count, and service
+   mappings. Do not request or reveal secret values.”
+5. Ask the client: “Call `phantom_check` with `staged: false`. Report findings
+   without changing files or credentials.”
+
+These calls inspect the configured local surface. They do not prove that cloud,
+team, deployment, provider, authority-kernel, or customer workflows are active
+or accepted.
 
 - **Conversation facade** — `phantom_capability` reports authority and hard denials for the small facade (not the separately gated advanced compatibility catalog); `phantom_do` canonicalizes one closed Cargo action and reports the exact activation blockers without executing it; `phantom_setup_workspace` proposes an exact value-blind plan, creates a bearerless apply request after revalidation, or reads authenticated request status. Provisioning the machine-local seal key and creating a request both require `confirm` plus an out-of-band approval token; MCP never claims or applies the request.
 - **Vault** — `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_add_secret` (deprecated; refuses plaintext), `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
