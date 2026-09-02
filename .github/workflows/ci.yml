@@ -57,6 +57,22 @@ jobs:
           if ((Get-FileHash scripts/install.ps1).Hash -ne (Get-FileHash apps/web/public/install.ps1).Hash) {
             throw 'served PowerShell installer differs from scripts/install.ps1'
           }
+      - name: Exercise the Windows installer with the existing debug binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $PWD 'phantom-x86_64-pc-windows-msvc.zip'
+          Push-Location target/debug
+          try {
+            Compress-Archive -LiteralPath phantom.exe, phantom-mcp.exe -DestinationPath $archive
+          } finally {
+            Pop-Location
+          }
+          $version = (Get-Content -LiteralPath npm/package.json -Raw | ConvertFrom-Json).version
+          $env:PHANTOM_NATIVE_ARCHIVE = $archive
+          $env:PHANTOM_NATIVE_TARGET = 'x86_64-pc-windows-msvc'
+          $env:PHANTOM_RELEASE_TAG = "v$version"
+          node scripts/release/native-installer-acceptance.mjs
 
   test-ignored:
     name: Ignored Tests (${{ matrix.os }})
