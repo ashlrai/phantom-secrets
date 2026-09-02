@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "phantom_release_signing_policy",
+  "state": "required",
+  "macos": {
+    "state": "required",
+    "environment": "release-sign-macos",
+    "signer_subject": "Developer ID Application: Example Organization (EXAMPLE123)",
+    "team_id": "EXAMPLE123",
+    "secrets": {
+      "certificate_p12": "APPLE_DEVELOPER_ID_CERTIFICATE_P12",
+      "certificate_password": "APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD",
+      "notarytool_key_p8": "APPLE_NOTARYTOOL_KEY_P8"
+    },
+    "variables": {
+      "developer_id_application": "APPLE_DEVELOPER_ID_APPLICATION",
+      "team_id": "APPLE_TEAM_ID",
+      "notarytool_key_id": "APPLE_NOTARYTOOL_KEY_ID",
+      "notarytool_issuer_id": "APPLE_NOTARYTOOL_ISSUER_ID"
+    }
+  },
+  "windows": {
+    "state": "required",
+    "environment": "release-sign-windows",
+    "runner": "windows-latest",
+    "signer_subject": "CN=Example Organization, O=Example Organization, C=US",
+    "artifact_signing_account": "example-account",
+    "certificate_profile": "example-profile",
+    "timestamp_authority": "http://timestamp.acs.microsoft.com",
+    "signed_targets": [
+      "aarch64-pc-windows-msvc",
+      "x86_64-pc-windows-msvc"
+    ],
+    "variables": {
+      "azure_client_id": "AZURE_CLIENT_ID",
+      "azure_tenant_id": "AZURE_TENANT_ID",
+      "azure_subscription_id": "AZURE_SUBSCRIPTION_ID",
+      "endpoint": "AZURE_ARTIFACT_SIGNING_ENDPOINT",
+      "account_name": "AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME",
+      "certificate_profile": "AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME"
+    }
+  }
+}

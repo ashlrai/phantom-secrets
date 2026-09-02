@@ -104,7 +104,10 @@ matrix ran or that an attestation exists, and attestations are not independent
 publisher signatures. A successful exact tag workflow supplies the native
 archive-execution receipt; source review alone does not. The release workflow
 does not perform macOS notarization or Windows Authenticode signing. Those remain
-separate gates. Repository settings must also allow Actions OIDC/attestation
+separate gates. The committed signing policy is explicitly disabled; the
+[signing and notarization readiness guide](signing-and-notarization.md) records
+the readiness-only policy, sanitized receipt contract, and separately governed
+future design without enabling it. Repository settings must also allow Actions OIDC/attestation
 writes and should protect the tag path; workflow source cannot activate those
 controls.
 
@@ -317,6 +320,12 @@ do not identify a publisher. Before a high-assurance release claim, verify:
 - Windows Authenticode signing; and
 - a successful exact-tag native-acceptance matrix receipt for every supported OS
   and architecture (workflow source alone is not an execution receipt).
+
+The [signing and notarization readiness guide](signing-and-notarization.md)
+defines the proposed fail-closed gates. Its policy validator, receipt schema,
+and fictional fixtures are source-readiness artifacts only; they do not satisfy
+any blocker in this list, change the exact 19-file release bundle, or prove that
+a signing provider has been configured.
 
 Linux package-repository metadata, Homebrew formula updates, npm publication,
 MCP Registry publication, and website deployment are separate distribution
