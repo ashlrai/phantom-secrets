@@ -1,0 +1,114 @@
+name: npm v0.7.4 candidate acceptance
+
+on:
+  push:
+    branches:
+      - codex/npm-acceptance-v0.7.4
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-v0.7.4-candidate-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  exact-version:
+    name: npm candidate (${{ matrix.target }})
+    if: >-
+      github.repository == 'ashlrai/phantom-secrets' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/codex/npm-acceptance-v0.7.4'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            runner_os: macOS
+            runner_arch: X64
+            platform: darwin
+            arch: x64
+          - target: aarch64-apple-darwin
+            os: macos-15
+            runner_os: macOS
+            runner_arch: ARM64
+            platform: darwin
+            arch: arm64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            runner_os: Linux
+            runner_arch: X64
+            platform: linux
+            arch: x64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            runner_os: Linux
+            runner_arch: ARM64
+            platform: linux
+            arch: arm64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            runner_os: Windows
+            runner_arch: X64
+            platform: win32
+            arch: x64
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-vs2026-arm
+            runner_os: Windows
+            runner_arch: ARM64
+            platform: win32
+            arch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          architecture: ${{ matrix.arch }}
+
+      - name: Install the exact npm CLI into a private tool directory
+        run: >-
+          npm install
+          --prefix "${{ runner.temp }}/phantom-npm-tool"
+          --cache "${{ runner.temp }}/phantom-npm-bootstrap-cache"
+          --registry=https://registry.npmjs.org/
+          --ignore-scripts
+          --no-audit
+          --no-fund
+          --no-save
+          --package-lock=false
+          npm@11.15.0
+
+      - name: Execute both exact public candidates from a fresh cache
+        env:
+          PHANTOM_NPM_ACCEPTANCE_VERSION: 0.7.4
+          PHANTOM_PREVIOUS_NPM_LATEST: 0.6.0
+          PHANTOM_RELEASE_TAG: v0.7.4
+          PHANTOM_RELEASE_SOURCE_SHA: c20f4eb6d8272709985083afe156b5678a1ac054
+          PHANTOM_NPM_CLI: ${{ runner.temp }}/phantom-npm-tool/node_modules/npm/bin/npm-cli.js
+          PHANTOM_APPROVED_PRIMARY_INTEGRITY: sha512-uKfkbWdRQH5rGJ4/V4yVfBjpVIRcJplvFLiLSY62fpaN83xXhq5wCHMGeER/gbKHP5zs3bdVUCWbpLYcIYBq9g==
+          PHANTOM_APPROVED_MCP_INTEGRITY: sha512-1JVJz8cbtWd29Qd9PrVND3l/d1+m0toR/32FLwcQf4WRKIE660KYb2/SBsXUVhmdZKzoGm5n8PUVKtOmM3JmOw==
+          PHANTOM_EXPECTED_TARGET: ${{ matrix.target }}
+          PHANTOM_EXPECTED_PLATFORM: ${{ matrix.platform }}
+          PHANTOM_EXPECTED_ARCH: ${{ matrix.arch }}
+          PHANTOM_EXPECTED_RUNNER_OS: ${{ matrix.runner_os }}
+          PHANTOM_EXPECTED_RUNNER_ARCH: ${{ matrix.runner_arch }}
+          PHANTOM_NPM_ACCEPTANCE_RECEIPT: ${{ github.workspace }}/npm-acceptance-receipt.json
+        run: node scripts/release/npm-candidate-smoke.mjs
+
+      - name: Preserve the per-host acceptance receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-acceptance-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
+          path: npm-acceptance-receipt.json
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: false
+          retention-days: 90
