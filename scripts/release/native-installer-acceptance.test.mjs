@@ -9,6 +9,7 @@ import {
 } from "./native-installer-acceptance.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
+const normalCi = readFileSync(resolve(repoRoot, ".github/workflows/ci.yml"), "utf8");
 
 test("Windows acceptance uses the runner-owned temp directory", () => {
   assert.equal(
@@ -88,4 +89,23 @@ test("installer local-release seams remain explicit test-only contracts", () => 
   assert.doesNotMatch(acceptance, /process\.env\.PHANTOM_TEST_PWSH/);
   assert.match(acceptance, /PHANTOM_TEST_FAIL_AFTER_PROMOTION: "1"/);
   assert.match(acceptance, /controlled post-promotion rollback/);
+});
+
+test("normal Windows CI exercises installer acceptance with existing debug binaries", () => {
+  const start = normalCi.indexOf(
+    "- name: Exercise the Windows installer with the existing debug binaries",
+  );
+  assert.ok(start >= 0, "normal CI must include native Windows installer acceptance");
+  const end = normalCi.indexOf("\n\n  test-ignored:", start);
+  assert.ok(end > start, "Windows installer acceptance must remain in the normal test job");
+  const step = normalCi.slice(start, end);
+
+  assert.match(step, /if: runner\.os == 'Windows'/);
+  assert.match(step, /Push-Location target\/debug/);
+  assert.match(step, /Compress-Archive -LiteralPath phantom\.exe, phantom-mcp\.exe/);
+  assert.match(step, /phantom-x86_64-pc-windows-msvc\.zip/);
+  assert.match(step, /PHANTOM_NATIVE_TARGET = 'x86_64-pc-windows-msvc'/);
+  assert.match(step, /PHANTOM_RELEASE_TAG = "v\$version"/);
+  assert.match(step, /node scripts\/release\/native-installer-acceptance\.mjs/);
+  assert.doesNotMatch(step, /cargo build|download-artifact|releases\/download/);
 });
