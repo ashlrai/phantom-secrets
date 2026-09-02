@@ -108,6 +108,8 @@ const machineReadableGuides = Object.entries(machineReadableClaims).filter(
 
 const verifiedReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3";
+const candidateReleaseUrl =
+  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4";
 
 function structuredMetadataBlock(source, type) {
   const marker = `"@type": "${type}"`;
@@ -458,12 +460,27 @@ test("published package READMEs use verified local binaries and bounded claims",
   ];
 
   for (const [file, source] of Object.entries(publishedPackageDocumentationClaims)) {
-    assert.ok(source.includes(verifiedReleaseUrl), file);
+    if (file === "mcp-registry/README.md") {
+      assert.ok(source.includes(verifiedReleaseUrl), file);
+      assert.match(source, /Released `v0\.7\.3`[\s\S]{0,500}legacy fallback/i, file);
+      assert.match(source, /Current main[\s\S]{0,180}(?:fails closed|removes the network fallback)/i, file);
+      assert.match(source, /older (?:release|registry) track/i, file);
+    } else {
+      assert.ok(source.includes(candidateReleaseUrl), file);
+      assert.match(
+        source,
+        /version `0\.7\.4`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
+        file,
+      );
+      assert.match(
+        source,
+        /(?:npm query|release|checksum)[\s\S]{0,120}unavailable[\s\S]{0,120}stop/i,
+        file,
+      );
+      assert.doesNotMatch(source, /releases\/tag\/v0\.7\.3/i, file);
+    }
     assert.match(source, /installed local `phantom`|installed local CLI/i, file);
     assert.match(source, /`phantom mcp serve`/i, file);
-    assert.match(source, /Released `v0\.7\.3`[\s\S]{0,500}legacy fallback/i, file);
-    assert.match(source, /Current main[\s\S]{0,180}(?:fails closed|removes the network fallback)/i, file);
-    assert.match(source, /older (?:release|registry) track/i, file);
     assert.match(
       source,
       /same machine[\s\S]{0,160}keychain-held (?:cloud )?encryption key|keychain-held (?:cloud )?encryption key[\s\S]{0,160}same machine/i,
