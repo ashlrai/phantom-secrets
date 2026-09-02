@@ -175,6 +175,7 @@ jobs:
     permissions:
       contents: read
     strategy:
+      fail-fast: false
       matrix:
         # Host archives and literal digests come from the immutable Syft 1.42.3
         # release's syft_1.42.3_checksums.txt. Do not fetch a mutable installer.
@@ -333,6 +334,7 @@ jobs:
     permissions:
       contents: read
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-apple-darwin

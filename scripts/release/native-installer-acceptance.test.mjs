@@ -3,9 +3,33 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { runNativeInstallerAcceptance } from "./native-installer-acceptance.mjs";
+import {
+  acceptanceTempRoot,
+  runNativeInstallerAcceptance,
+} from "./native-installer-acceptance.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
+
+test("Windows acceptance uses the runner-owned temp directory", () => {
+  assert.equal(
+    acceptanceTempRoot(
+      "win32",
+      { RUNNER_TEMP: "D:\\a\\_temp" },
+      "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp",
+    ),
+    "D:\\a\\_temp",
+  );
+});
+
+test("acceptance temp selection retains fail-closed platform fallbacks", () => {
+  const fallback = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp";
+  assert.equal(acceptanceTempRoot("win32", {}, fallback), fallback);
+  assert.equal(acceptanceTempRoot("win32", { RUNNER_TEMP: "  " }, fallback), fallback);
+  assert.equal(
+    acceptanceTempRoot("linux", { RUNNER_TEMP: "/runner/temp" }, "/system/temp"),
+    "/system/temp",
+  );
+});
 
 test("native installer acceptance requires complete stable release identity", () => {
   assert.throws(

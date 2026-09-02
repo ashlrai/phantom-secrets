@@ -53,8 +53,11 @@ test("shared graph validates the exact tag before building and keeps native acce
   const buildJob = releaseBuild.indexOf("\n  build:\n");
   assert.ok(parity > 0 && parity < buildJob, "version/tag validation must precede builds");
 
+  const build = jobBlock(releaseBuild, "build", "native-acceptance");
+  assert.match(build, /strategy:\n      fail-fast: false/);
   const native = jobBlock(releaseBuild, "native-acceptance", "verify-artifacts");
   assert.match(native, /needs: build/);
+  assert.match(native, /strategy:\n      fail-fast: false/);
   assert.match(native, /run: node scripts\/release\/native-release-smoke\.mjs/);
   assert.match(native, /run: node scripts\/release\/native-installer-acceptance\.mjs/);
   assert.match(native, /Install the exact archive and prove transaction rollback/);
