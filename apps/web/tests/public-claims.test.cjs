@@ -477,6 +477,11 @@ test("published package READMEs use verified local binaries and bounded claims",
         /(?:npm query|release|checksum)[\s\S]{0,120}unavailable[\s\S]{0,120}stop/i,
         file,
       );
+      assert.match(
+        source,
+        /Version `0\.7\.4`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
+        file,
+      );
       assert.doesNotMatch(source, /releases\/tag\/v0\.7\.3/i, file);
     }
     assert.match(source, /installed local `phantom`|installed local CLI/i, file);
