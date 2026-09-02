@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
+const releaseBuild = readFileSync(
+  join(repoRoot, ".github/workflows/release-build.yml"),
+  "utf8"
+);
 const rehearsal = readFileSync(
   join(repoRoot, ".github/workflows/release-rehearsal.yml"),
   "utf8"
@@ -27,7 +31,7 @@ function jobBlock(source, name, nextName) {
 test("manual rehearsal delegates to the shared graph with read-only authority", () => {
   assert.match(rehearsal, /^on:\n  workflow_dispatch:/m);
   assert.match(rehearsal, /^permissions:\n  contents: read$/m);
-  assert.match(rehearsal, /uses: \.\/\.github\/workflows\/release\.yml/);
+  assert.match(rehearsal, /uses: \.\/\.github\/workflows\/release-build\.yml/);
   assert.match(rehearsal, /release_tag: \$\{\{ inputs\.release_tag \}\}/);
   assert.doesNotMatch(rehearsal, /(?:contents|attestations|id-token): write/);
   assert.doesNotMatch(rehearsal, /environment:/);
@@ -35,19 +39,21 @@ test("manual rehearsal delegates to the shared graph with read-only authority", 
 });
 
 test("shared graph validates the exact tag before building and keeps native acceptance exact", () => {
-  assert.match(release, /^  workflow_call:\n    inputs:\n      release_tag:/m);
+  assert.match(releaseBuild, /^  workflow_call:\n    inputs:\n      release_tag:/m);
+  assert.match(releaseBuild, /^permissions:\n  contents: read$/m);
+  assert.doesNotMatch(releaseBuild, /^  (?:push|workflow_dispatch):/m);
   assert.match(
-    release,
-    /PHANTOM_RELEASE_TAG: \$\{\{ inputs\.release_tag \|\| github\.ref_name \}\}/
+    releaseBuild,
+    /PHANTOM_RELEASE_TAG: \$\{\{ inputs\.release_tag \}\}/
   );
 
-  const parity = release.indexOf(
+  const parity = releaseBuild.indexOf(
     'node scripts/release/check-version-parity.mjs "$PHANTOM_RELEASE_TAG"'
   );
-  const buildJob = release.indexOf("\n  build:\n");
+  const buildJob = releaseBuild.indexOf("\n  build:\n");
   assert.ok(parity > 0 && parity < buildJob, "version/tag validation must precede builds");
 
-  const native = jobBlock(release, "native-acceptance", "verify-artifacts");
+  const native = jobBlock(releaseBuild, "native-acceptance", "verify-artifacts");
   assert.match(native, /needs: build/);
   assert.match(native, /run: node scripts\/release\/native-release-smoke\.mjs/);
   assert.match(native, /run: node scripts\/release\/native-installer-acceptance\.mjs/);
@@ -56,7 +62,7 @@ test("shared graph validates the exact tag before building and keeps native acce
 });
 
 test("rehearsal reaches checksum and SBOM verification without publication authority", () => {
-  const verify = jobBlock(release, "verify-artifacts", "attest");
+  const verify = jobBlock(releaseBuild, "verify-artifacts");
   assert.match(verify, /needs: \[build, native-acceptance\]/);
   assert.match(verify, /^    permissions:\n      contents: read$/m);
   assert.match(verify, /Generate SHA-256 checksums/);
@@ -64,6 +70,8 @@ test("rehearsal reaches checksum and SBOM verification without publication autho
   assert.match(verify, /name: verified-release-bundle/);
   assert.doesNotMatch(verify, /(?:contents|attestations|id-token): write/);
   assert.doesNotMatch(verify, /environment:/);
+  assert.doesNotMatch(releaseBuild, /(?:contents|attestations|id-token): write/);
+  assert.doesNotMatch(releaseBuild, /(?:npm|cargo|mcp-publisher) publish|gh release/);
 });
 
 test("attestation and immutable release remain tag-push-only", () => {
@@ -75,12 +83,17 @@ test("attestation and immutable release remain tag-push-only", () => {
   assert.match(attest, /id-token: write/);
   assert.match(publish, /environment:\n      name: release/);
   assert.match(publish, /contents: write/);
+  assert.match(release, /^  build-and-verify:\n(?:.|\n)*?uses: \.\/\.github\/workflows\/release-build\.yml/m);
+  assert.match(release, /release_tag: \$\{\{ github\.ref_name \}\}/);
+  assert.match(attest, /needs: build-and-verify/);
+  assert.match(release, /^on:\n  push:\n    tags:\n      - 'v\*'$/m);
+  assert.doesNotMatch(release, /^  workflow_call:/m);
 });
 
 test("tag binding remains mandatory for tag pushes and absent from rehearsal caller", () => {
-  const binding = release.indexOf("- name: Verify immutable annotated release tag binding");
+  const binding = releaseBuild.indexOf("- name: Verify immutable annotated release tag binding");
   assert.ok(binding > 0, "missing tag-binding step");
-  const following = release.slice(binding, binding + 500);
+  const following = releaseBuild.slice(binding, binding + 500);
   assert.match(following, new RegExp(tagOnlyCondition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(following, /verify-github-tag-binding\.mjs/);
   assert.doesNotMatch(rehearsal, /verify-github-tag-binding|refs\/tags/);

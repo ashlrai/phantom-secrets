@@ -5,6 +5,10 @@ import {
   isHostedServiceCommissioned,
   type HostedService,
 } from "./commissioning";
+import {
+  publicAuthConfigurationFingerprint,
+  validOpaqueConfiguration,
+} from "./public-auth-configuration";
 
 const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const SOURCE_REVISION_PATTERN = /^[0-9a-f]{40}$/;
@@ -19,7 +23,6 @@ export type BuildIdentity = {
   identified: boolean;
   release_version: string | null;
   source_revision: string | null;
-  deployment_id: string | null;
   deployment_environment: string | null;
   unavailable_reasons: BuildIdentityReason[];
 };
@@ -38,15 +41,12 @@ export type HostedServiceState =
 
 type HostedServiceReadiness = {
   state: HostedServiceState;
-  provider_acceptance: "not_checked";
-  customer_acceptance: "not_established";
 };
 
-export type LivenessSnapshot = {
+export type PublicLivenessSnapshot = {
   status: "alive";
   service: "phantom-web";
-  scope: "process_liveness_only";
-  build: BuildIdentity;
+  release_version: string | null;
 };
 
 export type ReadinessSnapshot = {
@@ -65,45 +65,18 @@ export type ReadinessSnapshot = {
   };
 };
 
+export type PublicReadinessSnapshot = {
+  status: "configuration_ready" | "not_ready";
+  service: "phantom-web";
+  release_version: string | null;
+};
+
 function validatedValue(
   value: string | undefined,
   pattern: RegExp,
 ): string | null {
   if (!value || value.length > 128 || value.trim() !== value) return null;
   return pattern.test(value) ? value : null;
-}
-
-function validOpaqueConfiguration(
-  value: string | undefined,
-  minimumLength = 16,
-): boolean {
-  if (
-    !value ||
-    value.length < minimumLength ||
-    value.length > 8_192 ||
-    value.trim() !== value
-  ) {
-    return false;
-  }
-  return !/[\u0000-\u0020\u007f]/.test(value);
-}
-
-function validSupabaseUrl(value: string | undefined): boolean {
-  if (!value || value.length > 2_048 || value.trim() !== value) return false;
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      url.username === "" &&
-      url.password === "" &&
-      url.hostname.includes(".") &&
-      (url.pathname === "" || url.pathname === "/") &&
-      url.search === "" &&
-      url.hash === ""
-    );
-  } catch {
-    return false;
-  }
 }
 
 function validPatternConfiguration(
@@ -119,9 +92,11 @@ function validPatternConfiguration(
 }
 
 function coreAuthConfigurationReady(env: NodeJS.ProcessEnv): boolean {
+  const runtimeFingerprint = publicAuthConfigurationFingerprint(env);
   return (
-    validSupabaseUrl(env.NEXT_PUBLIC_SUPABASE_URL) &&
-    validOpaqueConfiguration(env.NEXT_PUBLIC_SUPABASE_ANON_KEY) &&
+    runtimeFingerprint !== null &&
+    process.env.PHANTOM_PUBLIC_AUTH_CONFIGURATION_FINGERPRINT ===
+      runtimeFingerprint &&
     validOpaqueConfiguration(env.SUPABASE_SERVICE_ROLE_KEY)
   );
 }
@@ -185,20 +160,20 @@ export function readBuildIdentity(
     // must not be mistaken for proof of the deployment as a whole.
     release_version: identified ? releaseVersion : null,
     source_revision: identified ? sourceRevision : null,
-    deployment_id: identified ? deploymentId : null,
     deployment_environment: identified ? deploymentEnvironment : null,
     unavailable_reasons: unavailableReasons,
   };
 }
 
-export function livenessSnapshot(
-  env: NodeJS.ProcessEnv = process.env,
-): LivenessSnapshot {
+function publicReleaseVersion(): string | null {
+  return validatedValue(packageMetadata.version, RELEASE_VERSION_PATTERN);
+}
+
+export function publicLivenessSnapshot(): PublicLivenessSnapshot {
   return {
     status: "alive",
     service: "phantom-web",
-    scope: "process_liveness_only",
-    build: readBuildIdentity(env),
+    release_version: publicReleaseVersion(),
   };
 }
 
@@ -217,11 +192,7 @@ function hostedServiceReadiness(
       : "configuration_incomplete";
   }
 
-  return {
-    state,
-    provider_acceptance: "not_checked",
-    customer_acceptance: "not_established",
-  };
+  return { state };
 }
 
 export function readinessSnapshot(): ReadinessSnapshot {
@@ -257,6 +228,15 @@ export function readinessSnapshot(): ReadinessSnapshot {
       provider: "not_checked",
       customer: "not_established",
     },
+  };
+}
+
+export function publicReadinessSnapshot(): PublicReadinessSnapshot {
+  const snapshot = readinessSnapshot();
+  return {
+    status: snapshot.status,
+    service: snapshot.service,
+    release_version: publicReleaseVersion(),
   };
 }
 

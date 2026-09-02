@@ -215,7 +215,10 @@ test('Unix installer rejects repository and tag overrides without the explicit t
   ]) {
     const { log, result } = runInstaller(options);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /test-only overrides/);
+    assert.match(
+      result.stderr,
+      /installer test overrides require PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES=1/,
+    );
     assert.equal(existsSync(log), false, 'override rejection must happen before download');
   }
 });
@@ -223,7 +226,10 @@ test('Unix installer rejects repository and tag overrides without the explicit t
 test('offline release fixtures require the explicit test opt-in and bypass curl only in test mode', () => {
   const denied = runInstaller({ directLocalRelease: true, testOverrideOptIn: false });
   assert.notEqual(denied.result.status, 0);
-  assert.match(denied.result.stderr, /test-only overrides/);
+  assert.match(
+    denied.result.stderr,
+    /installer test overrides require PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES=1/,
+  );
   assert.equal(existsSync(denied.log), false);
 
   const accepted = runInstaller({ directLocalRelease: true });

@@ -36,8 +36,11 @@ archive integrity through extraction, assert the runner OS and architecture,
 run both binaries' exact tagged `--version`, and complete the MCP stdio schema
 smoke. It then runs the real direct installer from that exact local archive in
 an isolated home/profile, validates both installed binaries and the source
-receipt, injects a controlled checksum failure, and verifies rollback/no-residue
-behavior. Windows acceptance suppresses persistent user-PATH mutation on the CI
+receipt, injects a test-only failure immediately after candidate promotion,
+and verifies that the sentinel-bearing accepted tree is restored with no
+sibling transaction residue. It then corrupts the checksum sidecar and proves
+that a pre-transaction integrity failure also preserves the accepted tree.
+Windows acceptance suppresses persistent user-PATH mutation on the CI
 account; it does not claim shell-profile acceptance. Attestation cannot begin
 until all six jobs succeed. That workflow
 definition is not evidence that a corresponding release artifact exists, is
@@ -138,8 +141,9 @@ that target:
 7. record code-signing, notarization, or platform trust results separately.
 
 The release workflow automates steps 1 and 2, a bounded portion of step 3
-(fresh direct install, receipt validation, and checksum-failure preservation),
-and MCP schema initialization from step 5 on all six native runners. Upgrade,
+(fresh direct install, receipt validation, post-promotion rollback, and
+checksum-failure preservation), and MCP schema initialization from step 5 on
+all six native runners. Upgrade,
 interruption, cache recovery, persistent PATH/shell behavior, credential stores,
 an authenticated proxy request, editors, and platform trust still require
 separately retained evidence. No repository-local source test or workflow

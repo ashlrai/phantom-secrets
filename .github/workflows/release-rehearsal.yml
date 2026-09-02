@@ -10,13 +10,13 @@ on:
         type: string
 
 # The caller cannot grant publication, attestation, or repository mutation.
-# The reusable release graph skips its tag-only attest and release jobs.
+# The reusable graph contains no write-authority or publishing jobs.
 permissions:
   contents: read
 
 jobs:
   rehearse:
     name: Build and natively verify release artifacts
-    uses: ./.github/workflows/release.yml
+    uses: ./.github/workflows/release-build.yml
     with:
       release_tag: ${{ inputs.release_tag }}

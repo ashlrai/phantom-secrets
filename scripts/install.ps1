@@ -421,6 +421,10 @@ $Repo = $CanonicalRepo
 $PinTag = $CandidateTag
 $script:TestLocalReleaseDir = $null
 $disablePathPersistence = $false
+$failAfterPromotion = $false
+# These inputs are harness-only: local release fixtures and the gated
+# post-promotion fault prove installer integrity and rollback without exposing
+# production repository, tag, or transaction controls.
 if ($env:PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1') {
     if ($env:PHANTOM_REPO) { $Repo = $env:PHANTOM_REPO }
     if ($env:PHANTOM_TAG) { $PinTag = $env:PHANTOM_TAG }
@@ -436,8 +440,15 @@ if ($env:PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1') {
         $script:TestLocalReleaseDir = $fixtureItem.FullName
     }
     $disablePathPersistence = $env:PHANTOM_TEST_DISABLE_PATH_PERSISTENCE -ceq '1'
+    if (Test-Path Env:PHANTOM_TEST_FAIL_AFTER_PROMOTION) {
+        if ($env:PHANTOM_TEST_FAIL_AFTER_PROMOTION -cne '1') {
+            Write-PhDie 'PHANTOM_TEST_FAIL_AFTER_PROMOTION must be 1 when set'
+        }
+        $failAfterPromotion = $true
+    }
 } elseif ($env:PHANTOM_REPO -or $env:PHANTOM_TAG -or
-    $env:PHANTOM_TEST_LOCAL_RELEASE_DIR -or $env:PHANTOM_TEST_DISABLE_PATH_PERSISTENCE) {
+    $env:PHANTOM_TEST_LOCAL_RELEASE_DIR -or $env:PHANTOM_TEST_DISABLE_PATH_PERSISTENCE -or
+    (Test-Path Env:PHANTOM_TEST_FAIL_AFTER_PROMOTION)) {
     Write-PhDie 'installer test overrides require PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES=1'
 }
 if ($Repo -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { Write-PhDie 'invalid PHANTOM_REPO' }
@@ -584,6 +595,9 @@ try {
         }
         Move-Item -LiteralPath $candidateDir -Destination $InstallDir
         $newMoved = $true
+        if ($failAfterPromotion) {
+            throw 'test-only injected failure after promotion'
+        }
         Assert-ExactVersion -Binary (Join-Path $InstallDir 'phantom.exe') `
             -Product 'phantom' -ExpectedVersion $expectedVersion
         Assert-ExactVersion -Binary (Join-Path $InstallDir 'phantom-mcp.exe') `

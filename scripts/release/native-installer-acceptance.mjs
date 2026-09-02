@@ -72,10 +72,10 @@ function snapshotTree(root, prefix = "") {
   return entries;
 }
 
-function installerCommand(platform) {
+function installerCommand(platform, env) {
   if (platform === "win32") {
     return {
-      command: process.env.PHANTOM_TEST_PWSH || "pwsh.exe",
+      command: env.PHANTOM_TEST_PWSH || "pwsh.exe",
       args: [
         "-NoLogo",
         "-NoProfile",
@@ -136,7 +136,8 @@ export function runNativeInstallerAcceptance({
     PHANTOM_TEST_DISABLE_PATH_PERSISTENCE: "1",
   };
   delete installerEnv.PHANTOM_REPO;
-  const command = installerCommand(contract.platform);
+  delete installerEnv.PHANTOM_TEST_FAIL_AFTER_PROMOTION;
+  const command = installerCommand(contract.platform, installerEnv);
 
   try {
     run(command.command, command.args, `native ${target} installer`, installerEnv);
@@ -164,7 +165,36 @@ export function runNativeInstallerAcceptance({
       }
     }
 
+    const sentinelPath = join(install, ".phantom-accepted-test-sentinel");
+    writeFileSync(sentinelPath, "accepted installation must survive rollback\n", {
+      mode: 0o600,
+    });
     const accepted = snapshotTree(install);
+    const assertAcceptedInstallationPreserved = (label) => {
+      const afterFailure = snapshotTree(install);
+      if (JSON.stringify(afterFailure) !== JSON.stringify(accepted)) {
+        fail(`${label} changed the accepted live installation`);
+      }
+      const residue = readdirSync(installParent).sort();
+      if (residue.length !== 1 || residue[0] !== "bin") {
+        fail(`${label} left transaction residue: ${residue.join(", ")}`);
+      }
+    };
+
+    const rollbackFailure = run(
+      command.command,
+      command.args,
+      `native ${target} installer controlled post-promotion failure`,
+      { ...installerEnv, PHANTOM_TEST_FAIL_AFTER_PROMOTION: "1" },
+      true,
+    );
+    if (!`${rollbackFailure.stdout}\n${rollbackFailure.stderr}`.includes(
+      "test-only injected failure after promotion",
+    )) {
+      fail("controlled post-promotion failure did not reach the rollback seam");
+    }
+    assertAcceptedInstallationPreserved("controlled post-promotion rollback");
+
     writeFileSync(sidecar, `${"0".repeat(64)}  ${contract.archive}\n`, { mode: 0o600 });
     run(
       command.command,
@@ -173,14 +203,7 @@ export function runNativeInstallerAcceptance({
       installerEnv,
       true,
     );
-    const afterFailure = snapshotTree(install);
-    if (JSON.stringify(afterFailure) !== JSON.stringify(accepted)) {
-      fail("controlled installer failure changed the accepted live installation");
-    }
-    const residue = readdirSync(installParent).sort();
-    if (residue.length !== 1 || residue[0] !== "bin") {
-      fail(`installer left transaction residue: ${residue.join(", ")}`);
-    }
+    assertAcceptedInstallationPreserved("controlled checksum failure");
 
     return { archive: contract.archive, target, version };
   } finally {

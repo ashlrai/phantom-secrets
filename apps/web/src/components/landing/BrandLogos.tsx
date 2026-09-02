@@ -17,8 +17,6 @@ import {
   SiDocker,
   SiFigma,
   SiGithub,
-  SiGooglecloud,
-  SiGooglegemini,
   SiLinear,
   SiMistralai,
   SiMongodb,

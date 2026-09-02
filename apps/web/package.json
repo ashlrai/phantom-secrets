@@ -6,7 +6,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint . --max-warnings=0",
     "test": "node --test tests/*.test.cjs",
     "test:billing-auth": "node --test tests/billing-auth.test.cjs",
     "test:claims": "node --test tests/public-claims.test.cjs"

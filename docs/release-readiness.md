@@ -6,12 +6,15 @@ update, signing operation, provider consent, or deployment.
 
 ## Current automated release path
 
-A `v*` tag starts `.github/workflows/release.yml`. The current workflow:
+A `v*` tag starts `.github/workflows/release.yml`. Its tag-only wrapper delegates
+the read-only build and verification graph to
+`.github/workflows/release-build.yml`, then retains the gated attestation and
+release jobs. Together they:
 
 1. verifies exact `v<semver>` parity across the release metadata surfaces;
 2. runs checksum-verified Gitleaks and cargo-deny, locked all-target workspace
    tests, formatting, strict Clippy, installer and wrapper tests, package
-   inspections, the full web install/audit/test/build gate, and the MCP
+   inspections, the full web install/audit/lint/test/build gate, and the MCP
    schema/stdio smoke;
 3. builds six targets: macOS, GNU Linux, and Windows on `arm64`/`x64`;
 4. creates an archive containing exactly `phantom` and `phantom-mcp`;
@@ -23,9 +26,12 @@ A `v*` tag starts `.github/workflows/release.yml`. The current workflow:
    schema smoke against the extracted `phantom-mcp`;
 6. runs the real direct installer against that same local archive on every
    matching runner, verifies the installed pair and source receipt, injects a
-   controlled checksum failure, and proves the accepted installation is
-   unchanged with no transaction residue; Windows acceptance explicitly skips
-   persistent user-PATH mutation while preserving the install transaction;
+   test-only failure immediately after candidate promotion, and proves the
+   sentinel-bearing accepted installation is restored with no sibling
+   transaction residue; it then corrupts the checksum sidecar and proves that
+   the pre-transaction failure also preserves the accepted installation;
+   Windows acceptance explicitly skips persistent user-PATH mutation while
+   preserving the install transaction;
 7. downloads the host-specific Syft 1.42.3 release archive, verifies its exact
    SHA-256 from Anchore's official checksum manifest, and invokes that verified
    binary to scan each exact archive into an SPDX 2.3 JSON SBOM;
@@ -54,10 +60,11 @@ and the isolated direct-installer transaction before attestation.
 
 ## Rehearse the release without a tag
 
-`.github/workflows/release-rehearsal.yml` calls the same source verification,
-six-target build, native acceptance, checksum, archive, and SBOM graph without
-creating a tag. The caller and reusable graph retain `contents: read`; the
-tag-only attestation and immutable-release jobs are skipped. This is the
+`.github/workflows/release-rehearsal.yml` calls the same reusable source
+verification, six-target build, native acceptance, checksum, archive, and SBOM
+graph without creating a tag. The caller and `.github/workflows/release-build.yml`
+retain `contents: read`; attestation and immutable-release jobs exist only in
+the tag-push wrapper and therefore cannot enter a rehearsal run. This is the
 preferred way to find release-only platform failures before requesting a
 consequential tag.
 
@@ -127,6 +134,7 @@ npm --prefix npm-mcp test
 npm --prefix npm-mcp pack --dry-run
 npm --prefix apps/web ci
 npm --prefix apps/web audit --omit=dev --audit-level=moderate
+npm --prefix apps/web run lint
 npm --prefix apps/web test
 npm --prefix apps/web run build
 node --test scripts/installers.test.js
@@ -251,9 +259,10 @@ bounded size, JSON parsing, SPDX
 build `phantom` or execute either binary's `--version`. Exact tag-bound version
 execution for both binaries occurs in the native matrix after extraction from
 every build archive. The same rows then run the direct installer against the
-exact local archive, validate the installed source receipt, and prove a
-checksum failure preserves the accepted installation without residue. All six
-rows gate attestation. Run packaged npm and MCP
+exact local archive, validate the installed source receipt, prove restoration
+after a test-only post-promotion failure, and separately prove that a checksum
+failure preserves the accepted installation without residue. All six rows gate
+attestation. Run packaged npm and MCP
 stdio smoke against staged local artifacts without downloading or publishing.
 
 ## Supply-chain and native blockers

@@ -193,6 +193,8 @@ jobs:
         run: npm ci
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=moderate
+      - name: Lint web source
+        run: npm run lint
       - name: Run web security and auth tests
         run: npm test
       - name: Build the production application

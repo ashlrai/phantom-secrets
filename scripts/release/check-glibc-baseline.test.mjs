@@ -61,7 +61,10 @@ test("fails closed above the ceiling, for unknown requirements, or without evide
 });
 
 test("release and documentation contracts pin both GNU targets to the same gate", () => {
-  const workflow = readFileSync(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
+  const workflow = readFileSync(
+    resolve(repoRoot, ".github/workflows/release-build.yml"),
+    "utf8",
+  );
   const docs = readFileSync(resolve(repoRoot, "docs/platform-support.md"), "utf8");
 
   for (const target of ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]) {

@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -11,6 +12,10 @@ const observabilityPath = path.join(
   "src/lib/hosted-observability.ts",
 );
 const commissioningPath = path.join(webDir, "src/lib/commissioning.ts");
+const publicAuthConfigurationPath = path.join(
+  webDir,
+  "src/lib/public-auth-configuration.ts",
+);
 
 const OBSERVABILITY_ENVS = [
   "VERCEL_GIT_COMMIT_SHA",
@@ -18,6 +23,7 @@ const OBSERVABILITY_ENVS = [
   "VERCEL_ENV",
   "NEXT_PUBLIC_SUPABASE_URL",
   "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+  "PHANTOM_PUBLIC_AUTH_CONFIGURATION_FINGERPRINT",
   "SUPABASE_SERVICE_ROLE_KEY",
   "STRIPE_SECRET_KEY",
   "STRIPE_PRO_PRICE_ID",
@@ -59,9 +65,16 @@ function loadCommissioning() {
 
 function loadObservability(packageVersion = "0.7.4") {
   const commissioning = loadCommissioning();
+  const publicAuthConfiguration = compileModule(
+    publicAuthConfigurationPath,
+    require,
+  );
   return compileModule(observabilityPath, (specifier) => {
     if (specifier === "server-only") return {};
     if (specifier === "./commissioning") return commissioning;
+    if (specifier === "./public-auth-configuration") {
+      return publicAuthConfiguration;
+    }
     if (specifier === "../../package.json") {
       return { name: "phantom-web", version: packageVersion };
     }
@@ -77,7 +90,7 @@ function loadRoute(relativePath, observability) {
 }
 
 function validEnvironment() {
-  return {
+  const env = {
     VERCEL_GIT_COMMIT_SHA: "a".repeat(40),
     VERCEL_DEPLOYMENT_ID: `dpl_${"B".repeat(24)}`,
     VERCEL_ENV: "production",
@@ -88,6 +101,13 @@ function validEnvironment() {
     STRIPE_PRO_PRICE_ID: `price_${"F".repeat(24)}`,
     STRIPE_WEBHOOK_SECRET: `whsec_${"g".repeat(24)}`,
   };
+  env.PHANTOM_PUBLIC_AUTH_CONFIGURATION_FINGERPRINT = createHash("sha256")
+    .update("phantom-public-auth-configuration-v1\0")
+    .update(env.NEXT_PUBLIC_SUPABASE_URL)
+    .update("\0")
+    .update(env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
+    .digest("hex");
+  return env;
 }
 
 async function withEnvironment(values, action) {
@@ -113,10 +133,15 @@ test("build identity is exact, bounded, and all-or-nothing", () => {
     identified: true,
     release_version: "0.7.4",
     source_revision: valid.VERCEL_GIT_COMMIT_SHA,
-    deployment_id: valid.VERCEL_DEPLOYMENT_ID,
     deployment_environment: "production",
     unavailable_reasons: [],
   });
+  assert.equal(
+    JSON.stringify(observability.readBuildIdentity(valid)).includes(
+      valid.VERCEL_DEPLOYMENT_ID,
+    ),
+    false,
+  );
 
   const cases = [
     [
@@ -171,7 +196,6 @@ test("build identity is exact, bounded, and all-or-nothing", () => {
     assert.equal(identity.identified, false, name);
     assert.equal(identity.release_version, null, name);
     assert.equal(identity.source_revision, null, name);
-    assert.equal(identity.deployment_id, null, name);
     assert.equal(identity.deployment_environment, null, name);
     assert.ok(identity.unavailable_reasons.includes(reason), name);
     assert.doesNotMatch(JSON.stringify(identity), /dep_|Production|A{40}/, name);
@@ -184,7 +208,7 @@ test("build identity is exact, bounded, and all-or-nothing", () => {
   ]);
 });
 
-test("health is provider-free liveness with no-store responses", async () => {
+test("health is provider-free route/runtime liveness with no-store responses", async () => {
   const observability = loadObservability();
   const route = loadRoute("src/app/api/v1/health/route.ts", observability);
   assert.equal(route.dynamic, "force-dynamic");
@@ -197,19 +221,7 @@ test("health is provider-free liveness with no-store responses", async () => {
     assert.deepEqual(await response.json(), {
       status: "alive",
       service: "phantom-web",
-      scope: "process_liveness_only",
-      build: {
-        identified: false,
-        release_version: null,
-        source_revision: null,
-        deployment_id: null,
-        deployment_environment: null,
-        unavailable_reasons: [
-          "source_revision_missing_or_invalid",
-          "deployment_id_missing_or_invalid",
-          "deployment_environment_missing_or_invalid",
-        ],
-      },
+      release_version: "0.7.4",
     });
   });
 
@@ -226,6 +238,16 @@ test("readiness fails closed for each invalid core field and build field", async
     ["deployment environment", "VERCEL_ENV", "staging"],
     ["missing Supabase URL", "NEXT_PUBLIC_SUPABASE_URL", undefined],
     ["Supabase URL", "NEXT_PUBLIC_SUPABASE_URL", "http://localhost:54321"],
+    [
+      "different valid Supabase project",
+      "NEXT_PUBLIC_SUPABASE_URL",
+      "https://other-project.supabase.co",
+    ],
+    [
+      "non-Supabase HTTPS URL",
+      "NEXT_PUBLIC_SUPABASE_URL",
+      "https://credentials.example.com",
+    ],
     [
       "Supabase URL credentials",
       "NEXT_PUBLIC_SUPABASE_URL",
@@ -270,13 +292,23 @@ test("closed hosted gates do not make core configuration unready", async () => {
       assert.equal(response.status, 200, String(gateValue));
       const body = await response.json();
       assert.equal(body.status, "configuration_ready");
+      const internal = observability.readinessSnapshot();
       assert.deepEqual(
-        Object.values(body.hosted_services).map(({ state }) => state),
-        ["not_commissioned", "not_commissioned", "not_commissioned"],
+        internal.hosted_services,
+        {
+          billing: { state: "not_commissioned" },
+          personal_vaults: { state: "not_commissioned" },
+          teams: { state: "not_commissioned" },
+        },
       );
-      assert.deepEqual(body.acceptance, {
+      assert.deepEqual(internal.acceptance, {
         provider: "not_checked",
         customer: "not_established",
+      });
+      assert.deepEqual(body, {
+        status: "configuration_ready",
+        service: "phantom-web",
+        release_version: "0.7.4",
       });
     });
   }
@@ -297,7 +329,7 @@ test("each commissioned service must have its configuration", async () => {
       const response = route.GET();
       assert.equal(response.status, 200, service);
       assert.equal(
-        (await response.json()).hosted_services[service].state,
+        observability.readinessSnapshot().hosted_services[service].state,
         "configuration_ready",
         service,
       );
@@ -321,8 +353,15 @@ test("each commissioned service must have its configuration", async () => {
     await withEnvironment(env, async () => {
       const response = route.GET();
       assert.equal(response.status, 503, name);
-      const body = await response.json();
-      assert.equal(body.hosted_services.billing.state, "configuration_incomplete");
+      assert.equal(
+        observability.readinessSnapshot().hosted_services.billing.state,
+        "configuration_incomplete",
+      );
+      assert.deepEqual(await response.json(), {
+        status: "not_ready",
+        service: "phantom-web",
+        release_version: "0.7.4",
+      });
     });
   }
 });
@@ -351,7 +390,28 @@ test("readiness never returns credential or provider configuration values", asyn
     ]) {
       assert.equal(serialized.includes(env[name]), false, name);
     }
+    for (const operationalDetail of [
+      "source_revision",
+      "deployment_environment",
+      "unavailable_reasons",
+      "hosted_services",
+      "provider",
+      "customer",
+      env.VERCEL_GIT_COMMIT_SHA,
+      env.VERCEL_DEPLOYMENT_ID,
+    ]) {
+      assert.equal(serialized.includes(operationalDetail), false, operationalDetail);
+    }
   });
+});
+
+test("readiness binds browser auth configuration to the frozen build fingerprint", () => {
+  const source = fs.readFileSync(observabilityPath, "utf8");
+  assert.match(
+    source,
+    /process\.env\.PHANTOM_PUBLIC_AUTH_CONFIGURATION_FINGERPRINT/,
+  );
+  assert.doesNotMatch(source, /process\.env\.NEXT_PUBLIC_SUPABASE_/);
 });
 
 test("web release metadata matches the Rust workspace release", () => {
@@ -364,9 +424,18 @@ test("web release metadata matches the Rust workspace release", () => {
 });
 
 test("documentation redirects are a closed canonical allowlist", async () => {
+  const publicAuthConfiguration = compileModule(
+    publicAuthConfigurationPath,
+    require,
+  );
   const configModule = compileModule(
     path.join(webDir, "next.config.ts"),
-    require,
+    (specifier) => {
+      if (specifier === "./src/lib/public-auth-configuration") {
+        return publicAuthConfiguration;
+      }
+      return require(specifier);
+    },
   );
   const redirects = await configModule.default.redirects();
   assert.deepEqual(redirects, [
@@ -385,7 +454,7 @@ test("documentation redirects are a closed canonical allowlist", async () => {
     {
       source: "/docs/login",
       destination:
-        "https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md",
+        "https://github.com/ashlrai/phantom-secrets/blob/main/docs/login.md",
       permanent: false,
     },
     {

@@ -49,8 +49,19 @@ test("installer local-release seams remain explicit test-only contracts", () => 
     const source = readFileSync(resolve(repoRoot, relative), "utf8");
     assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/);
     assert.match(source, /PHANTOM_TEST_LOCAL_RELEASE_DIR/);
+    assert.match(source, /PHANTOM_TEST_FAIL_AFTER_PROMOTION/);
+    assert.match(source, /test-only injected failure after promotion/);
   }
   const powerShell = readFileSync(resolve(repoRoot, "scripts/install.ps1"), "utf8");
   assert.match(powerShell, /PHANTOM_TEST_DISABLE_PATH_PERSISTENCE/);
   assert.match(powerShell, /persistent PATH mutation skipped/);
+
+  const acceptance = readFileSync(
+    resolve(repoRoot, "scripts/release/native-installer-acceptance.mjs"),
+    "utf8",
+  );
+  assert.match(acceptance, /installerCommand\(contract\.platform, installerEnv\)/);
+  assert.doesNotMatch(acceptance, /process\.env\.PHANTOM_TEST_PWSH/);
+  assert.match(acceptance, /PHANTOM_TEST_FAIL_AFTER_PROMOTION: "1"/);
+  assert.match(acceptance, /controlled post-promotion rollback/);
 });

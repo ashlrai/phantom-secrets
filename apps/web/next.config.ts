@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { publicAuthConfigurationFingerprint } from "./src/lib/public-auth-configuration";
 
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
@@ -35,6 +36,13 @@ const SECURITY_HEADERS = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  env: {
+    // This non-secret digest is frozen into server code at build time. Runtime
+    // injection cannot turn a missing or different browser configuration into
+    // a ready one.
+    PHANTOM_PUBLIC_AUTH_CONFIGURATION_FINGERPRINT:
+      publicAuthConfigurationFingerprint(process.env) ?? "unconfigured",
+  },
   async redirects() {
     return [
       {
@@ -52,7 +60,7 @@ const nextConfig: NextConfig = {
       {
         source: "/docs/login",
         destination:
-          "https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md",
+          "https://github.com/ashlrai/phantom-secrets/blob/main/docs/login.md",
         permanent: false,
       },
       {

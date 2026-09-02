@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { posthog } from "@/lib/posthog";
 import { Github } from "./Icons";
@@ -30,7 +31,7 @@ export function Nav() {
       ].join(" ")}
     >
       <div className="mx-auto max-w-[1200px] px-7 h-14 flex items-center justify-between">
-        <a
+        <Link
           href="/"
           className="flex items-center gap-2.5 text-t1 no-underline shrink-0"
         >
@@ -42,7 +43,7 @@ export function Nav() {
             priority
           />
           <span className="font-bold text-[0.95rem] tracking-tight">Phantom</span>
-        </a>
+        </Link>
 
         <div className="flex items-center gap-5">
           <a href="#how" className={navLinkClass}>
