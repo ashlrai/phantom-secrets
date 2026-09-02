@@ -18,7 +18,14 @@ import {
 } from "./native-release-smoke.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
-const workflow = readFileSync(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
+const workflow = readFileSync(
+  resolve(repoRoot, ".github/workflows/release-build.yml"),
+  "utf8",
+);
+const releaseWorkflow = readFileSync(
+  resolve(repoRoot, ".github/workflows/release.yml"),
+  "utf8",
+);
 const platformSupport = readFileSync(resolve(repoRoot, "docs/platform-support.md"), "utf8");
 const fixtureTarget = "x86_64-unknown-linux-gnu";
 const fixtureEnv = Object.freeze({ RUNNER_OS: "Linux", RUNNER_ARCH: "X64" });
@@ -69,12 +76,13 @@ const expected = Object.freeze({
   ],
 });
 
-function job(name, next) {
-  const start = workflow.indexOf(`\n  ${name}:\n`);
+function job(source, name, next) {
+  const start = source.indexOf(`\n  ${name}:\n`);
   assert.notEqual(start, -1, `missing ${name} job`);
-  const end = workflow.indexOf(`\n  ${next}:\n`, start + 1);
+  if (!next) return source.slice(start);
+  const end = source.indexOf(`\n  ${next}:\n`, start + 1);
   assert.notEqual(end, -1, `missing ${next} job after ${name}`);
-  return workflow.slice(start, end);
+  return source.slice(start, end);
 }
 
 function matrixRows(jobText) {
@@ -324,7 +332,7 @@ test("native archive smoke propagates MCP schema failure after exact versions pa
 });
 
 test("release workflow binds every exact artifact to one native runner", () => {
-  const nativeJob = job("native-acceptance", "attest");
+  const nativeJob = job(workflow, "native-acceptance", "verify-artifacts");
   assert.match(nativeJob, /\n    needs: build\n/);
   assert.match(nativeJob, /\n    runs-on: \$\{\{ matrix\.os \}\}\n/);
   assert.match(nativeJob, /actions\/download-artifact@[0-9a-f]{40}/);
@@ -332,11 +340,11 @@ test("release workflow binds every exact artifact to one native runner", () => {
   assert.match(nativeJob, /native-release-smoke\.mjs/);
   assert.match(nativeJob, /PHANTOM_NATIVE_ARCHIVE: native-artifact\/\$\{\{ matrix\.archive \}\}/);
   assert.match(nativeJob, /PHANTOM_NATIVE_TARGET: \$\{\{ matrix\.target \}\}/);
-  assert.match(nativeJob, /PHANTOM_RELEASE_TAG: \$\{\{ github\.ref_name \}\}/);
+  assert.match(nativeJob, /PHANTOM_RELEASE_TAG: \$\{\{ inputs\.release_tag \}\}/);
 
   const rows = matrixRows(nativeJob);
   assert.deepEqual([...rows.keys()].sort(), Object.keys(expected).sort());
-  const buildRows = matrixRows(job("build", "native-acceptance"));
+  const buildRows = matrixRows(job(workflow, "build", "native-acceptance"));
   assert.deepEqual([...buildRows.keys()].sort(), Object.keys(expected).sort());
   for (const [target, values] of Object.entries(expected)) {
     const [artifact, archive, runner, runnerOs, runnerArch] = values;
@@ -353,10 +361,20 @@ test("release workflow binds every exact artifact to one native runner", () => {
 });
 
 test("attestation cannot begin before every build and native acceptance succeeds", () => {
-  const attestJob = job("attest", "release");
-  assert.match(attestJob, /\n    needs: \[build, native-acceptance\]\n/);
+  const verificationJob = job(workflow, "verify-artifacts");
+  const attestJob = job(releaseWorkflow, "attest", "release");
+  assert.match(verificationJob, /\n    needs: \[build, native-acceptance\]\n/);
+  assert.match(attestJob, /\n    needs: build-and-verify\n/);
+  assert.match(
+    releaseWorkflow,
+    /build-and-verify:\n(?:.|\n)*?uses: \.\/\.github\/workflows\/release-build\.yml/m,
+  );
+  assert.doesNotMatch(verificationJob, /continue-on-error:/);
   assert.doesNotMatch(attestJob, /continue-on-error:/);
-  assert.doesNotMatch(job("native-acceptance", "attest"), /continue-on-error:/);
+  assert.doesNotMatch(
+    job(workflow, "native-acceptance", "verify-artifacts"),
+    /continue-on-error:/,
+  );
 });
 
 test("platform documentation distinguishes configured native gates from candidate evidence", () => {
@@ -373,9 +391,15 @@ test("platform documentation distinguishes configured native gates from candidat
   }
 
   assert.match(platformSupport, /no exact v0\.7\.4 candidate receipt is\s+recorded yet/i);
-  assert.match(platformSupport, /Attestation cannot begin until all six jobs succeed/);
+  assert.match(
+    platformSupport,
+    /Attestation cannot begin\s+until all six jobs succeed/,
+  );
   assert.match(platformSupport, /only a\s+retained successful run establishes that evidence/i);
-  assert.match(platformSupport, /Installer and upgrade behavior[\s\S]*still require separately retained evidence/);
+  assert.match(
+    platformSupport,
+    /Upgrade,[\s\S]*still require\s+separately retained evidence/,
+  );
   assert.doesNotMatch(platformSupport, /workflow packages but does not execute the exact resulting archive/i);
   assert.doesNotMatch(platformSupport, /no archive execution/i);
 });

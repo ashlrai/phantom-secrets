@@ -589,7 +589,7 @@ written plan terms; see the
 
 ## Links
 
-- [phm.dev](https://phm.dev) -- Cloud dashboard and account management
+- [phm.dev](https://phm.dev) -- Hosted site; deployment and authenticated acceptance remain separate from source
 - [Documentation map](docs/README.md)
 - [Getting Started Guide](docs/getting-started.md)
 - [Safe delegation quickstart](docs/delegation-quickstart.md)

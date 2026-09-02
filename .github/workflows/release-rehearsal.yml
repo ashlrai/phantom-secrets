@@ -1,0 +1,22 @@
+name: Release rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact v-prefixed SemVer already present across the candidate source
+        required: true
+        default: v0.7.4
+        type: string
+
+# The caller cannot grant publication, attestation, or repository mutation.
+# The reusable graph contains no write-authority or publishing jobs.
+permissions:
+  contents: read
+
+jobs:
+  rehearse:
+    name: Build and natively verify release artifacts
+    uses: ./.github/workflows/release-build.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}

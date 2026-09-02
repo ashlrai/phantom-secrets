@@ -116,7 +116,7 @@ export default function DevicePage() {
         }
       });
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#050508] text-[#f5f5f7] flex items-center justify-center p-6">

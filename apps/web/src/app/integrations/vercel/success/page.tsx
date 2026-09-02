@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function VercelSuccessPage() {
   return (
     <div className="min-h-screen bg-[#050508] text-[#f5f5f7] flex items-center justify-center p-6">
@@ -13,7 +15,9 @@ export default function VercelSuccessPage() {
           user-bound state validation and encrypted token storage. The CLI sync
           workflow remains separately configured and governed.
         </p>
-        <a href="/" className="text-blue-400 hover:text-blue-300">Back to Phantom</a>
+        <Link href="/" className="text-blue-400 hover:text-blue-300">
+          Back to Phantom
+        </Link>
       </div>
     </div>
   );

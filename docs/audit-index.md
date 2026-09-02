@@ -34,7 +34,7 @@ an unpublished artifact, a provider configuration, or a customer environment.
 | What makes a source candidate or artifact release-ready? | [Release and readiness guide](release-readiness.md) |
 | What blocks execution-kernel activation? | [Architecture](architecture.md) and [threat model](../THREAT_MODEL.md) |
 | How are contributors expected to build and test? | [Contributing guide](../CONTRIBUTING.md) |
-| What do CI and release automation enforce? | [`ci.yml`](../.github/workflows/ci.yml) and [`release.yml`](../.github/workflows/release.yml) |
+| What do CI and release automation enforce? | [`ci.yml`](../.github/workflows/ci.yml), the read-only [`release-build.yml`](../.github/workflows/release-build.yml) graph, and its tag-only [`release.yml`](../.github/workflows/release.yml) wrapper |
 | What is the current provider-denial contract? | [Provider-grant specification](grants-spec.md), with the [historical, non-executable design contract](../ISSUANCE_CONTRACT.md) retained separately |
 | What changed between versions? | [Changelog](../CHANGELOG.md) and immutable Git history |
 | What dependencies and packages compose the Rust workspace? | [`Cargo.toml`](../Cargo.toml), [`Cargo.lock`](../Cargo.lock), and crate manifests |
