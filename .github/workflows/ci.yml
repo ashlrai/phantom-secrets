@@ -221,6 +221,13 @@ jobs:
         run: supabase db reset --local --no-seed
       - name: Verify local migration history
         run: supabase migration list --local
+      - name: Assert local database authority boundaries
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql --version
+          psql --host 127.0.0.1 --port 54322 --username postgres --dbname postgres \
+            --file ../../scripts/supabase/assert-local-authority.sql
       - name: Lint local schema
         run: supabase db lint --local --level warning --fail-on warning
       - name: Run local security and performance advisors

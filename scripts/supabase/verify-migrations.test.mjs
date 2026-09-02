@@ -29,11 +29,41 @@ test("the committed migration set matches its ordered digest manifest", async ()
   const result = await verifyMigrationManifest({
     supabaseDirectory: projectSupabaseDirectory,
   });
-  assert.equal(result.count, 10);
+  assert.equal(result.count, 11);
   assert.equal(result.files[0], "001_initial.sql");
   assert.equal(
     result.files.at(-1),
-    "20260831020000_harden_identity_and_device_auth.sql",
+    "20260902000000_harden_rls_and_function_paths.sql",
+  );
+});
+
+test("advisor hardening preserves RLS identity checks and pins trigger paths", async () => {
+  const migration = await readFile(
+    join(
+      projectSupabaseDirectory,
+      "migrations/20260902000000_harden_rls_and_function_paths.sql",
+    ),
+    "utf8",
+  );
+  for (const policy of [
+    "users_read_own",
+    "device_tokens_read_own",
+    "team_key_shares_own",
+  ]) {
+    assert.match(migration, new RegExp(`ALTER POLICY ${policy}`));
+  }
+  assert.doesNotMatch(migration, /users_update_own/);
+  assert.equal(
+    [...migration.matchAll(/USING \([^;]*\(SELECT auth\.uid\(\)\)\);/g)].length,
+    3,
+  );
+  assert.match(
+    migration,
+    /ALTER FUNCTION public\.update_updated_at\(\) SET search_path = pg_catalog;/,
+  );
+  assert.match(
+    migration,
+    /ALTER FUNCTION public\.prevent_user_billing_self_update\(\)[\s\S]*SET search_path = pg_catalog;/,
   );
 });
 
@@ -110,6 +140,10 @@ test("workflow remains local-only and supply-chain pinned", async () => {
   assert.match(webJob, /supabase db reset --local --no-seed/);
   assert.match(
     webJob,
+    /psql --host 127\.0\.0\.1 --port 54322[\s\S]*assert-local-authority\.sql/,
+  );
+  assert.match(
+    webJob,
     /supabase db lint --local --level warning --fail-on warning/,
   );
   assert.match(
@@ -126,6 +160,23 @@ test("workflow remains local-only and supply-chain pinned", async () => {
     webJob,
     /--linked|--project-ref|SUPABASE_ACCESS_TOKEN|SUPABASE_DB_PASSWORD/,
   );
+});
+
+test("runtime authority assertions preserve the hardened user boundary", async () => {
+  const assertions = await readFile(
+    join(repositoryRoot, "scripts/supabase/assert-local-authority.sql"),
+    "utf8",
+  );
+  assert.match(assertions, /policyname = 'users_update_own'/);
+  assert.match(
+    assertions,
+    /has_table_privilege\('authenticated', 'public\.users', 'UPDATE'\)/,
+  );
+  assert.match(assertions, /roles = ARRAY\['public'\]::name\[\]/);
+  assert.match(assertions, /cmd = 'SELECT'/);
+  assert.match(assertions, /permissive = 'PERMISSIVE'/);
+  assert.match(assertions, /NOT proc\.prosecdef/);
+  assert.match(assertions, /'search_path=pg_catalog' = ANY\(proc\.proconfig\)/);
 });
 
 test("local configuration pins Postgres and disables mutable seed inputs", async () => {
