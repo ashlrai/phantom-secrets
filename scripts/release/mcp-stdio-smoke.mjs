@@ -11,6 +11,7 @@ import {
 import { isDeepStrictEqual } from "node:util";
 import { createInterface } from "node:readline";
 import { validatePhantomDoSchema } from "./mcp-schema-contract.mjs";
+import { extractReadmeMcpToolNames } from "./readme-mcp-catalog.mjs";
 
 const binaryPath = process.argv[2];
 const expectedToolCount = Number(process.argv[3] ?? "54");
@@ -284,19 +285,7 @@ try {
   }
 
   const readme = readFileSync("README.md", "utf8");
-  const catalogStart = readme.indexOf("- **Conversation facade**");
-  const catalogEnd = readme.indexOf("\n\nTools that write state", catalogStart);
-  if (catalogStart < 0 || catalogEnd < 0) {
-    throw new Error("README MCP catalog boundaries are missing");
-  }
-  const readmeNames = [
-    ...new Set(
-      readme
-        .slice(catalogStart, catalogEnd)
-        .match(/`(phantom_[a-z_]+)`/g)
-        ?.map((match) => match.slice(1, -1)) ?? []
-    ),
-  ].sort();
+  const readmeNames = extractReadmeMcpToolNames(readme);
   const runtimeNames = [...names].sort();
   if (!isDeepStrictEqual(readmeNames, runtimeNames)) {
     throw new Error(

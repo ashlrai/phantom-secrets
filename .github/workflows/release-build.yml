@@ -84,7 +84,7 @@ jobs:
           node scripts/release/extract-release-notes.mjs "$PHANTOM_RELEASE_TAG" > /tmp/phantom-release-notes.md
 
       - name: Test fail-closed publication and release receipts
-        run: node --test scripts/examples-first-five-minutes.test.mjs scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/compare-release-artifacts.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/native-installer-acceptance.test.mjs scripts/release/native-release-smoke.test.mjs scripts/release/pre-tag-preflight.test.mjs scripts/release/release-receipts.test.mjs scripts/release/release-rehearsal-contract.test.mjs scripts/release/verify-github-tag-binding.test.mjs
+        run: node --test scripts/examples-first-five-minutes.test.mjs scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/compare-release-artifacts.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/native-installer-acceptance.test.mjs scripts/release/native-release-smoke.test.mjs scripts/release/pre-tag-preflight.test.mjs scripts/release/readme-mcp-catalog.test.mjs scripts/release/release-receipts.test.mjs scripts/release/release-rehearsal-contract.test.mjs scripts/release/verify-github-tag-binding.test.mjs
 
       - name: Install checksum-verified MCP Registry publisher
         run: bash scripts/release/install-mcp-publisher.sh
