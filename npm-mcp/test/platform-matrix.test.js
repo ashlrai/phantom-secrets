@@ -55,10 +55,17 @@ function releaseMatrixTargets() {
   assert.match(normalizedWorkflow, /cargo build --release --locked --target/, "locked release build");
   assert.match(normalizedWorkflow, /check-version-parity\.mjs "\$PHANTOM_RELEASE_TAG"/, "tag parity gate");
   assert.match(normalizedWorkflow, /mcp-stdio-smoke\.mjs/, "MCP stdio release smoke");
-  const matrixRows = [...normalizedWorkflow.matchAll(
+  const buildStart = normalizedWorkflow.indexOf("\n  build:\n");
+  const buildEnd = normalizedWorkflow.indexOf("\n  native-acceptance:\n", buildStart);
+  assert.notStrictEqual(buildStart, -1, "shared release graph build job");
+  assert.notStrictEqual(buildEnd, -1, "native acceptance follows build job");
+  const buildJob = normalizedWorkflow.slice(buildStart, buildEnd);
+  const matrixRows = [...buildJob.matchAll(
     /^\s+- target: (\S+)\n\s+os: (\S+)\n\s+artifact: (\S+)$/gm
   )];
   const targets = matrixRows.map((match) => match[1]);
+  assert.strictEqual(targets.length, 6, "six release build targets");
+  assert.strictEqual(new Set(targets).size, 6, "unique release build targets");
   for (const [, target, , artifact] of matrixRows) {
     assert.strictEqual(artifact, `phantom-${target}`, `release artifact for ${target}`);
   }
