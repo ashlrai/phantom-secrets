@@ -72,6 +72,19 @@ function snapshotTree(root, prefix = "") {
   return entries;
 }
 
+export function acceptanceTempRoot(platform, env, fallback = tmpdir()) {
+  // GitHub's Windows TEMP may use a rejected 8.3 alias; RUNNER_TEMP is the
+  // per-job workspace whose path still exercises the production allowlist.
+  if (
+    platform === "win32" &&
+    typeof env.RUNNER_TEMP === "string" &&
+    env.RUNNER_TEMP.trim() !== ""
+  ) {
+    return env.RUNNER_TEMP;
+  }
+  return fallback;
+}
+
 function installerCommand(platform, env) {
   if (platform === "win32") {
     return {
@@ -111,7 +124,9 @@ export function runNativeInstallerAcceptance({
     fail(`${contract.archive} must be one regular file`);
   }
 
-  const root = mkdtempSync(join(tmpdir(), "phantom-native-installer-"));
+  const root = mkdtempSync(
+    join(acceptanceTempRoot(contract.platform, env), "phantom-native-installer-"),
+  );
   const localRelease = join(root, "release");
   const home = join(root, "home");
   const installParent = join(root, "live");
