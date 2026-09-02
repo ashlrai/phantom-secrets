@@ -41,6 +41,10 @@
     {
       "file": "20260831020000_harden_identity_and_device_auth.sql",
       "sha256": "a8fe023ec65fa6c6d736867d56938cd8775e7cb013cc1e8bc246109eeb34ddaa"
+    },
+    {
+      "file": "20260902000000_harden_rls_and_function_paths.sql",
+      "sha256": "23f766bcb2b50b24f39b69f214c1e447ddb46c1531406eb64406fa2602b49cc0"
     }
   ]
 }
