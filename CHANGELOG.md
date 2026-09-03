@@ -4,17 +4,55 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No unreleased changes are recorded after the `0.7.5` candidate.
+No unreleased changes are recorded after the `0.7.6` release candidate.
 
-## [0.7.5] - 2026-09-02
+## [0.7.6] - 2026-09-03
 
-This patch is a fix-forward release for the npm wrappers. The immutable
+This patch fixes the Windows path handling in Phantom's exact npm
+prepublication gate and refreshes the public adoption experience. It does not
+weaken the six-host package acceptance boundary: `0.7.6` must pass that gate
+from immutable tagged source before either npm package can be promoted.
+
+### Fixed
+
+- Pass native absolute tarball paths to npm during prepublication acceptance.
+  This avoids double-encoding Windows short-path tildes such as `RUNNER~1`,
+  which previously made npm resolve a nonexistent literal `%7E` directory.
+- Add regression coverage for Windows 8.3-style temporary paths while
+  preserving exact tag, source-SHA, package-integrity, cache, and dist-tag
+  receipts.
+
+### Public project experience
+
+- Rebuild the landing page around Phantom's local, value-blind security model
+  and add dedicated security, pricing, enterprise, and government pages.
+- Define the MIT core and written-scope commercial evaluation, integration,
+  and support paths without claiming unavailable hosted controls,
+  certifications, procurement vehicles, or contractual service levels.
+- Reduce the public site's initial JavaScript and harden privacy-preserving
+  analytics, accessibility, responsive behavior, and fail-closed dashboard
+  rendering when hosted dependencies are not commissioned.
+
+### Breaking changes and migration
+
+There are no intentional CLI, MCP, configuration, vault, proxy, or network
+policy breaking changes. The npm acceptance correction affects release
+validation only. Existing direct or Homebrew `v0.7.5` installations can remain
+in place until an immutable `v0.7.6` release is available and verified.
+
+## [0.7.5] - 2026-09-03
+
+This patch is an immutable GitHub fix-forward release carrying npm-wrapper
+portability fixes. The immutable
 `0.7.4` npm versions were published under `release-candidate`, were not
 promoted to `latest`, and remain available by exact version. Acceptance found
-cross-platform first-use installation defects, so an accepted `0.7.5` release
-is intended to supersede those candidates rather than overwrite or withdraw
-them. This changelog entry and repository source do not prove that a `v0.7.5` tag, GitHub Release, package,
-registry entry, deployment, or customer acceptance exists.
+cross-platform first-use installation defects. The immutable `v0.7.5` GitHub
+release at source commit `d2969e73995cc139e6253e0c8a70f1d683f88e20`
+supersedes those candidates without overwriting or withdrawing them. Its 19
+assets, all six native rows, and GitHub provenance and SPDX attestations passed
+workflow 33709338577. That GitHub receipt does not prove a Homebrew, npm,
+crates.io, or MCP Registry `0.7.5` publication, a commissioned hosted service,
+provider activation, signing/notarization, certification, or customer acceptance.
 
 ### Fixed
 
@@ -35,9 +73,10 @@ registry entry, deployment, or customer acceptance exists.
 
 There are no intentional CLI, MCP, configuration, vault, or network-policy
 breaking changes. Users who explicitly installed an npm `0.7.4`
-`release-candidate` should install exact `0.7.5` only after its public
-integrity and native acceptance receipts are available. Do not rely on an
-unpinned dist-tag while the fix-forward candidate is still under review.
+`release-candidate` should replace it with the exact `v0.7.5` GitHub release
+artifact for their OS and architecture, after verifying the published
+checksum. Do not rely on an unpinned package-manager dist-tag: no npm `0.7.5`
+publication is represented by this release receipt.
 
 ## [0.7.4] - 2026-09-02
 
@@ -438,7 +477,8 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.3

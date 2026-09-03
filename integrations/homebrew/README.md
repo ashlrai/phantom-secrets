@@ -56,8 +56,8 @@ cp ./integrations/homebrew/Formula/phantom.rb "${tap_dir}/Formula/phantom.rb"
 brew trust --formula codex/phantom-local-test/phantom
 brew install codex/phantom-local-test/phantom
 brew test codex/phantom-local-test/phantom
-phantom --version  # → "phantom 0.7.4"
-phantom-mcp --version  # → "phantom-mcp 0.7.4"
+phantom --version  # → "phantom 0.7.5"
+phantom-mcp --version  # → "phantom-mcp 0.7.5"
 brew uninstall phantom
 brew untap codex/phantom-local-test
 ```

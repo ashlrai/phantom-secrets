@@ -1,5 +1,10 @@
 import type { Metadata, Viewport } from "next";
 import { Inter_Tight, JetBrains_Mono } from "next/font/google";
+import {
+  PUBLIC_RELEASE_TAG,
+  PUBLIC_RELEASE_URL,
+  PUBLIC_RELEASE_VERSION,
+} from "@/lib/public-release";
 import "./globals.css";
 import { PostHogProvider } from "./providers";
 
@@ -20,7 +25,7 @@ const mono = JetBrains_Mono({
 const SITE_URL = "https://phm.dev";
 const TITLE = "Phantom — Delegate credentialed API work to AI";
 const DESCRIPTION =
-  "Phantom gives supported AI-agent workflows placeholders while an authenticated local proxy injects route-owned authentication only for exact configured routes. Works with Claude Code, Cursor, Windsurf, and Codex.";
+  "Open-source, local-first infrastructure for delegating supported HTTP API work to AI agents with value-blind controls and exact-route credential injection. Works with Claude Code, Cursor, Windsurf, and Codex.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -30,9 +35,9 @@ export const metadata: Metadata = {
   },
   description: DESCRIPTION,
   applicationName: "Phantom",
-  authors: [{ name: "AshlrAI", url: "https://ashlr.ai" }],
-  creator: "AshlrAI",
-  publisher: "AshlrAI",
+  authors: [{ name: "Ashlr AI", url: "https://ashlr.ai" }],
+  creator: "Ashlr AI",
+  publisher: "Ashlr AI",
   generator: "Next.js",
   keywords: [
     "API keys",
@@ -49,12 +54,8 @@ export const metadata: Metadata = {
     "vault",
   ],
   category: "developer tools",
-  alternates: {
-    canonical: "/",
-  },
   openGraph: {
     type: "website",
-    url: SITE_URL,
     siteName: "Phantom",
     title: TITLE,
     description: DESCRIPTION,
@@ -99,6 +100,7 @@ export const metadata: Metadata = {
     address: false,
     telephone: false,
   },
+  referrer: "origin-when-cross-origin",
 };
 
 export const viewport: Viewport = {
@@ -136,9 +138,8 @@ export default function RootLayout({
                 "https://github.com/ashlrai/phantom-secrets",
               ],
               license: "https://opensource.org/licenses/MIT",
-              softwareVersion: "0.7.4",
-              downloadUrl:
-                "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4",
+              softwareVersion: PUBLIC_RELEASE_VERSION,
+              downloadUrl: PUBLIC_RELEASE_URL,
               description: DESCRIPTION,
               offers: {
                 "@type": "Offer",
@@ -148,7 +149,7 @@ export default function RootLayout({
               },
               author: {
                 "@type": "Organization",
-                name: "AshlrAI",
+                name: "Ashlr AI",
                 url: "https://ashlr.ai",
               },
             }),
@@ -180,19 +181,19 @@ export default function RootLayout({
               description:
                 "Set up Phantom so supported AI-agent workflows receive placeholders instead of real API keys.",
               tool: [
-                { "@type": "HowToTool", name: "Homebrew on macOS, or an exact v0.7.4 GitHub release asset" },
+                { "@type": "HowToTool", name: `Homebrew on macOS, or an exact ${PUBLIC_RELEASE_TAG} GitHub release asset` },
                 { "@type": "HowToTool", name: "Claude Code, Cursor, Windsurf, or Codex" },
               ],
               step: [
                 {
                   "@type": "HowToStep",
                   name: "Install Phantom and protect your .env",
-                  text: "Install the reviewed release from https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4. On macOS run `brew tap ashlrai/phantom`, `brew trust --formula ashlrai/phantom/phantom`, then the fully qualified install; on Linux or Windows, checksum-verify the exact v0.7.4 GitHub asset. Then run `phantom init` in the project root.",
+                  text: `Install the reviewed release from ${PUBLIC_RELEASE_URL}. On macOS run \`brew tap ashlrai/phantom\`, \`brew trust --formula ashlrai/phantom/phantom\`, then the fully qualified install; on Linux or Windows, checksum-verify the exact ${PUBLIC_RELEASE_TAG} GitHub asset. Then run \`phantom init\` in the project root.`,
                 },
                 {
                   "@type": "HowToStep",
                   name: "Register the MCP server with your editor",
-                  text: "Install both v0.7.4 binaries, then run `phantom setup --client claude`, `cursor`, `windsurf`, or `codex`. Released v0.7.4 records its bundled local `phantom mcp serve` runtime when available, otherwise it uses a local `phantom-mcp` executable. It has no network package-runner fallback and fails closed when no local MCP runtime is available; review the generated entry.",
+                  text: `Install both ${PUBLIC_RELEASE_TAG} binaries, then run \`phantom setup --client claude\`, \`cursor\`, \`windsurf\`, or \`codex\`. Released ${PUBLIC_RELEASE_TAG} records its bundled local \`phantom mcp serve\` runtime when available, otherwise it uses a local \`phantom-mcp\` executable. It has no network package-runner fallback and fails closed when no local MCP runtime is available; review the generated entry.`,
                 },
                 {
                   "@type": "HowToStep",

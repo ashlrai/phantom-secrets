@@ -247,5 +247,19 @@ test("device and analytics URLs do not persist or report query-bearing values", 
   assert.doesNotMatch(devicePage, /redirectTo:[^\n]*code=/);
   assert.match(posthogConfig, /capture_pageview:\s*false/);
   assert.match(posthogConfig, /capture_pageleave:\s*false/);
+  assert.match(posthogConfig, /autocapture:\s*false/);
+  assert.match(posthogConfig, /capture_performance:\s*false/);
+  assert.match(posthogConfig, /disable_capture_url_hashes:\s*true/);
+  assert.match(posthogConfig, /disable_persistence:\s*true/);
+  assert.match(posthogConfig, /disable_session_recording:\s*true/);
+  assert.match(posthogConfig, /save_campaign_params:\s*false/);
+  assert.match(posthogConfig, /save_referrer:\s*false/);
+  assert.match(posthogConfig, /advanced_disable_flags:\s*true/);
+  assert.match(posthogConfig, /before_send:/);
+  assert.match(
+    posthogConfig,
+    /\$current_url:\s*canonicalBrowserUrl\(\)/g,
+  );
+  assert.match(posthogConfig, /\$pathname:\s*window\.location\.pathname/g);
   assert.match(providers, /\$current_url:\s*`\$\{window\.location\.origin\}\$\{pathname\}`/);
 });

@@ -117,13 +117,49 @@ test("rehearsal reaches checksum and SBOM verification without publication autho
   assert.doesNotMatch(releaseBuild, /(?:npm|cargo|mcp-publisher) publish|gh release/);
 });
 
-test("attestation and immutable release remain tag-push-only", () => {
-  const attest = jobBlock(release, "attest", "release");
+test("attestation verification gates release approval and remains tag-push-only", () => {
+  const attest = jobBlock(release, "attest", "verify-attestations");
+  const verifyAttestations = jobBlock(
+    release,
+    "verify-attestations",
+    "release"
+  );
   const publish = jobBlock(release, "release");
   assert.match(attest, new RegExp(tagOnlyCondition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(
+    verifyAttestations,
+    new RegExp(tagOnlyCondition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  );
   assert.match(publish, new RegExp(tagOnlyCondition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(attest, /attestations: write/);
   assert.match(attest, /id-token: write/);
+  assert.match(verifyAttestations, /needs: attest/);
+  assert.match(
+    verifyAttestations,
+    /^    permissions:\n      contents: read\n      attestations: read$/m
+  );
+  assert.match(
+    verifyAttestations,
+    /node scripts\/release\/verify-release-artifacts\.mjs artifacts/
+  );
+  assert.equal(
+    verifyAttestations.match(/gh attestation verify "\$archive_path"/g)?.length,
+    2,
+    "each of the six archives must verify provenance and SPDX attestations"
+  );
+  assert.match(
+    verifyAttestations,
+    /--predicate-type "https:\/\/spdx\.dev\/Document\/v2\.3"/
+  );
+  assert.match(verifyAttestations, /--signer-digest "\$GITHUB_SHA"/);
+  assert.match(verifyAttestations, /--source-ref "\$GITHUB_REF"/);
+  assert.match(verifyAttestations, /--source-digest "\$GITHUB_SHA"/);
+  assert.match(verifyAttestations, /--deny-self-hosted-runners/);
+  assert.doesNotMatch(
+    verifyAttestations,
+    /(?:contents|attestations|id-token): write|environment:/
+  );
+  assert.match(publish, /needs: verify-attestations/);
   assert.match(publish, /environment:\n      name: release/);
   assert.match(publish, /contents: write/);
   assert.match(release, /^  build-and-verify:\n(?:.|\n)*?uses: \.\/\.github\/workflows\/release-build\.yml/m);
@@ -151,9 +187,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   }
 
   for (const readme of [npmReadme, npmMcpReadme]) {
-    assert.match(readme, /This wrapper is version `0\.7\.5`/);
-    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.5/);
-    assert.match(readme, /releases\/tag\/v0\.7\.5/);
+    assert.match(readme, /This wrapper is version `0\.7\.6`/);
+    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.6/);
+    assert.match(readme, /releases\/tag\/v0\.7\.6/);
     assert.match(readme, /do not prove|does not prove/);
     assert.doesNotMatch(readme, /v0\.7\.3|older release track|Current main/);
   }
@@ -262,8 +298,8 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(npmPublication, /\| GNU Linux arm64 \| `ubuntu-22\.04-arm` \|/);
   assert.match(npmPublication, /\| Windows x64 \| `windows-latest` \|/);
   assert.match(npmPublication, /\| Windows arm64 \| `windows-11-vs2026-arm` \|/);
-  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.5/);
-  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.5/);
+  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.6/);
+  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.6/);
   assert.match(npmPublication, /dist\.attestations/);
   assert.match(npmPublication, /SHA-512 SRI/);
   assert.match(npmPublication, /verify-github-tag-binding\.mjs/);
@@ -608,7 +644,7 @@ test("npm package contents remain the exact five reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.7.5");
+    assert.equal(pack.version, "0.7.6");
     assert.equal(pack.entryCount, 5);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),

@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Exact v-prefixed SemVer already present across the candidate source
         required: true
-        default: v0.7.5
+        default: v0.7.6
         type: string
 
 # The caller cannot grant publication, attestation, or repository mutation.

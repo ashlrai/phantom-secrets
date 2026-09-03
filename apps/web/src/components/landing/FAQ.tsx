@@ -1,3 +1,5 @@
+import { COMMERCIAL_CONTACT } from "@/lib/commercial-offerings";
+
 // FAQ section — visible counterpart to the FAQPage JSON-LD in layout.tsx.
 // Uses native <details>/<summary> so it works without JS, with a small
 // CSS rotation on the chevron when open.
@@ -119,54 +121,31 @@ const QUESTIONS: { q: string; a: React.ReactNode }[] = [
 
 export function FAQ() {
   return (
-    <section id="faq" className="border-t border-border py-24 sm:py-28">
-      <div className="mx-auto max-w-[860px] px-7">
-        <div className="mb-12 text-center">
-          <h2 className="text-[1.8rem] sm:text-[2.4rem] font-extrabold tracking-[-0.035em] leading-[1.08] text-white">
-            Questions a security-minded developer would ask.
-          </h2>
-          <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            If yours isn&apos;t here, file an issue on GitHub or email{" "}
-            <a
-              href="mailto:mason@ashlr.ai"
-              className="text-blue-b hover:text-blue underline-offset-2 hover:underline"
-            >
-              mason@ashlr.ai
-            </a>
-            .
+    <section id="faq" className="questions-section">
+      <div className="landing-frame questions-section__layout">
+        <div className="landing-section-heading questions-section__heading">
+          <p className="landing-kicker">Review questions</p>
+          <h2>Ask where the boundary ends.</h2>
+          <p>
+            Security claims are useful only when their assumptions and failure
+            modes are visible. For a question not covered here, open a GitHub
+            issue or email{" "}
+            <a className="underline underline-offset-2" href={`mailto:${COMMERCIAL_CONTACT}`}>
+              {COMMERCIAL_CONTACT}
+            </a>.
           </p>
         </div>
 
-        <div className="rounded-2xl border border-border bg-s1 overflow-hidden">
+        <div className="questions-list">
           {QUESTIONS.map((item) => (
             <details
               key={item.q}
-              className="group [&>summary::-webkit-details-marker]:hidden border-b border-border last:border-b-0"
             >
-              <summary className="flex items-center justify-between gap-4 cursor-pointer list-none px-6 py-5 hover:bg-s2/40 focus-visible:bg-s2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-b focus-visible:ring-inset transition-colors">
-                <span className="text-[0.95rem] font-semibold text-t1 leading-snug">
-                  {item.q}
-                </span>
-                <span
-                  aria-hidden
-                  className="shrink-0 flex items-center justify-center h-7 w-7 rounded-full border border-border bg-s2/60 text-t3 group-open:rotate-45 group-open:text-blue-b transition-all duration-200"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    width="14"
-                    height="14"
-                  >
-                    <path d="M12 5v14M5 12h14" />
-                  </svg>
-                </span>
+              <summary>
+                <span>{item.q}</span>
+                <span aria-hidden="true">+</span>
               </summary>
-              <div className="px-6 pb-6 text-[0.92rem] text-t2 leading-[1.7] max-w-[680px]">
-                {item.a}
-              </div>
+              <div>{item.a}</div>
             </details>
           ))}
         </div>

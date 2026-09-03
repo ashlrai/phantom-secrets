@@ -12,12 +12,12 @@ use std::time::Duration;
 pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
     if auto_rotate {
         anyhow::bail!(
-            "--auto-rotate is deprecated and disabled: the legacy watcher only remapped local phm_ placeholders and marked rotation schedules complete without rotating provider credentials. Automated live provider issuance is disabled in 0.7.5; rotate through the provider's trusted interface, then store the successor with trusted-terminal `phantom add`."
+            "--auto-rotate is deprecated and disabled: the legacy watcher only remapped local phm_ placeholders and marked rotation schedules complete without rotating provider credentials. Automated live provider issuance is disabled in this release; rotate through the provider's trusted interface, then store the successor with trusted-terminal `phantom add`."
         );
     }
     if auto {
         anyhow::bail!(
-            "--auto is disabled before any mutation in 0.7.5: the legacy watcher could leave vault and dotenv state partially updated after a concurrent edit or write failure. Run `phantom watch` for detection, then review the file and run `phantom init` from a trusted terminal for transactional protection."
+            "--auto is disabled before any mutation in this release: the legacy watcher could leave vault and dotenv state partially updated after a concurrent edit or write failure. Run `phantom watch` for detection, then review the file and run `phantom init` from a trusted terminal for transactional protection."
         );
     }
 

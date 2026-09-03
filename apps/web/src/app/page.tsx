@@ -1,29 +1,33 @@
-import { Comparison } from "@/components/landing/Comparison";
+import type { Metadata } from "next";
 import { CTA } from "@/components/landing/CTA";
+import { EvidenceLedger } from "@/components/landing/EvidenceLedger";
 import { FAQ } from "@/components/landing/FAQ";
 import { Features } from "@/components/landing/Features";
 import { Hero } from "@/components/landing/Hero";
-import { HowItWorks } from "@/components/landing/HowItWorks";
 import { Install } from "@/components/landing/Install";
 import { Nav } from "@/components/landing/Nav";
 import { Pricing } from "@/components/landing/Pricing";
 import { QuickStart } from "@/components/landing/QuickStart";
 import { SiteFooter } from "@/components/landing/SiteFooter";
-import { Transformation } from "@/components/landing/Transformation";
+import { TrustBoundary } from "@/components/landing/TrustBoundary";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+  openGraph: { url: "/" },
+};
 
 export default function Home() {
   return (
     <>
       <Nav />
-      <main>
+      <main id="main-content" tabIndex={-1} className="landing-shell">
         <Hero />
-        <Transformation />
+        <TrustBoundary />
         <Features />
-        <Comparison />
-        <Install />
         <QuickStart />
+        <Install />
+        <EvidenceLedger />
         <Pricing />
-        <HowItWorks />
         <FAQ />
         <CTA />
       </main>

@@ -16,11 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the immutable Phantom v0.7.4 Linux release
+      - name: Install the immutable Phantom v0.7.5 Linux release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v0.7.4 --repo ashlrai/phantom-secrets \
+          gh release download v0.7.5 --repo ashlrai/phantom-secrets \
             --pattern phantom-x86_64-unknown-linux-gnu.tar.gz \
             --pattern phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
           sha256sum -c phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
@@ -37,9 +37,11 @@ jobs:
 ```
 
 The repository action at `integrations/github-actions/action.yml` is a fail-fast placeholder until a supported non-interactive Phantom Cloud auth flow exists.
-The example downloads an immutable reviewed release and verifies its published
+The example downloads immutable `v0.7.5`, whose tag resolves to source commit
+`d2969e73995cc139e6253e0c8a70f1d683f88e20`, and verifies its published
 checksum before executing it; do not replace it with an unpinned registry
-command. Select the matching asset for ARM64 or a non-Linux runner.
+command. Homebrew independently publishes the same reviewed `v0.7.5` binaries.
+Select the matching asset for ARM64 or a non-Linux runner.
 
 ## Vercel
 

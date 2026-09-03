@@ -2,13 +2,16 @@
 
 This is the canonical map for Phantom's repository documentation. Start with the shortest guide that matches your task, then use the security and architecture material when evaluating trust boundaries.
 
-Release-state snapshot, verified 2026-09-02 before any `v0.7.5` publication:
-the reviewed immutable GitHub/Homebrew distribution is `v0.7.4`. Both npm
-`0.7.4` wrappers remain public only under the failed `release-candidate` track,
-while npm `latest` remains `0.6.0`. Repository source is versioned for the
-then-unpublished `0.7.5` fix-forward; documentation of source behavior is not
-evidence that its artifacts, packages, deployments, providers, or hosted
-entitlements are live.
+Release-state snapshot, verified 2026-09-03: the reviewed immutable GitHub
+release is `v0.7.5` at source commit
+`d2969e73995cc139e6253e0c8a70f1d683f88e20`. Its exact 19-asset set, all six
+native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
+provenance and SPDX attestations were verified in workflow 33709338577.
+Homebrew publishes the same reviewed `v0.7.5`; npm `latest` remains `0.6.0`, and both npm
+`0.7.4` wrappers remain only under the failed `release-candidate` track. The
+GitHub receipt alone does not establish `0.7.5` publication on npm, crates.io,
+MCP Registry, or the independently verified Homebrew publication, or any hosted-service commissioning, provider activation,
+certification, or customer acceptance.
 
 ## Start here
 
@@ -17,6 +20,11 @@ entitlements are live.
 | Protect a project for the first time | [Getting started](getting-started.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
 | Plan a team or enterprise pilot | [Enterprise adoption](enterprise-adoption.md) |
+| Understand open-source rights and paid evaluation paths | [Commercial offerings](commercial-offerings.md) |
+| Plan a public-sector evaluation | [Government evaluation](government-evaluation.md) |
+| Review the shipped security boundary | [Security evaluation](security-evaluation.md) |
+| Understand commercial support boundaries | [Commercial support](commercial-support.md) |
+| Use the project name or logo accurately | [Project name and logo use](trademark-policy.md) |
 | Diagnose an install, vault, proxy, or cloud problem | [Troubleshooting](troubleshooting.md) |
 | Understand the provider-grant design and 0.7.5 universal hard denial | [Provider grants](grants-spec.md) |
 | Understand components, trust boundaries, and activation status | [Architecture](architecture.md) |
@@ -56,6 +64,10 @@ and retains historical design-status language.
 ## Operations
 
 - [Enterprise adoption and evidence](enterprise-adoption.md)
+- [Commercial offerings around the MIT core](commercial-offerings.md)
+- [Commercial support boundary](commercial-support.md)
+- [Government evaluation](government-evaluation.md)
+- [Security evaluation](security-evaluation.md)
 - [Cloud login](login.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
@@ -100,8 +112,8 @@ or production acceptance.
   response targets, and known limitations
 - [Roadmap](../ROADMAP.md) — staged, gated, and exploratory milestones without
   delivery-date or activation claims
-- [Citation metadata](../CITATION.cff) — cite the reviewed release, or include
-  the exact commit SHA when discussing unreleased source
+- [Citation metadata](../CITATION.cff) — cite the reviewed `v0.7.5` release, or
+  include the exact commit SHA when discussing later unreleased source
 
 No donation or sponsorship program is represented by repository metadata at
 this time. Hosted pilots, enterprise scope, and support terms require separate

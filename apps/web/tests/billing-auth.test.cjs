@@ -499,6 +499,14 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
     path.join(repoDir, "src/app/pricing/page.tsx"),
     "utf8",
   );
+  const commercialOfferings = fs.readFileSync(
+    path.join(repoDir, "src/lib/commercial-offerings.ts"),
+    "utf8",
+  );
+  const offeringGrid = fs.readFileSync(
+    path.join(repoDir, "src/components/landing/OfferingGrid.tsx"),
+    "utf8",
+  );
   const billingDashboard = fs.readFileSync(
     path.join(repoDir, "src/app/dashboard/billing/page.tsx"),
     "utf8",
@@ -507,14 +515,19 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
   assert.doesNotMatch(pricing, /signInWithOAuth/);
   assert.doesNotMatch(pricing, /subscription_exists/);
   assert.doesNotMatch(pricing, /Start with Pro/);
+  assert.match(pricing, /OfferingGrid/);
+  assert.match(offeringGrid, /COMMERCIAL_OFFERINGS/);
   assert.match(
-    pricing,
-    /Pro billing and cloud entitlements are not commissioned/,
+    commercialOfferings,
+    /No generally available Phantom Cloud service or hosted control plane/,
   );
-  assert.match(pricing, /Join the Pro pilot list/);
   assert.match(
-    pricing,
-    /mailto:mason@ashlr\.ai\?subject=Phantom%20Pro%20pilot/,
+    commercialOfferings,
+    /Support commitments only as written in the agreement/,
+  );
+  assert.match(
+    commercialOfferings,
+    /mailto:\$\{COMMERCIAL_CONTACT\}\?subject=Phantom%20enterprise%20evaluation/,
   );
   assert.doesNotMatch(
     billingDashboard,

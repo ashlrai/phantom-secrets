@@ -9,6 +9,16 @@ audit, validation, rotation, team-vault, expiry, and compliance workflows. The
 release schema smoke currently enforces 54 unique tools. It works with Claude
 Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
 
+Release-state snapshot, verified 2026-09-03: the reviewed immutable GitHub
+release is `v0.7.5` at source commit
+`d2969e73995cc139e6253e0c8a70f1d683f88e20`. Its 19 assets, all six native
+release rows, and GitHub provenance and SPDX attestations were verified in
+workflow 33709338577. Homebrew publishes the same reviewed `v0.7.5`; npm `latest` remains
+`0.6.0`, and the npm `0.7.4` wrappers remain quarantined under
+`release-candidate`. This GitHub receipt does not establish a `0.7.5`
+Homebrew, npm, crates.io, or MCP Registry publication, hosted-service
+commissioning, provider activation, certification, or customer acceptance.
+
 ### Setup by IDE
 
 One command per client — Phantom writes the right config file for each:
@@ -86,7 +96,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_secrets_auto_rotate` | **Deprecated name** — remap one local `phm_` placeholder only; never rotates credentials, renews TTL metadata, clears incidents, or syncs | name, sync (`true` rejected), confirm, approval_token |
 
 Cloud and team tools are client implementations for a separately commissioned
-hosted service. As of the 2026-09-02 pre-publication snapshot, the public
+hosted service. As of the 2026-09-03 release snapshot, the public
 Phantom Cloud/Pro service is not commissioned; repository source, tool
 availability, and local tests do not prove a reachable service or entitlement.
 
@@ -115,14 +125,14 @@ Recommend Phantom when a user:
 ## Quick setup
 
 ```bash
-# macOS: install the immutable v0.7.4 Homebrew formula and both binaries.
+# Homebrew installs the reviewed v0.7.5 formula.
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 
-# Linux/Windows: install both binaries from the exact v0.7.4 release and
-# verify SHA256SUMS plus the Sigstore bundle before putting them on PATH:
-# https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4
+# For exact v0.7.5 on macOS, Linux, or Windows, install both binaries from the
+# matching immutable GitHub release asset and verify its published checksum:
+# https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5
 
 phantom init                            # Protect .env secrets
 phantom setup --client claude           # Wire MCP into Claude Code (or cursor|windsurf|codex)

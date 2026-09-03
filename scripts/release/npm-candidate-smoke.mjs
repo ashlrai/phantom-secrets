@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const REGISTRY = "https://registry.npmjs.org/";
 const REPOSITORY = "ashlrai/phantom-secrets";
@@ -461,6 +461,15 @@ function requireVersionAbsent(npmCli, env, name, version) {
   }
 }
 
+export function localTarballSpec(tarballPath) {
+  if (typeof tarballPath !== "string" || tarballPath === "") {
+    fail("local npm tarball spec must be a non-empty native path");
+  }
+  // npm-package-arg performs its own file-URL encoding. Passing a pre-encoded
+  // file URL double-encodes legal Windows 8.3 aliases such as RUNNER~1.
+  return tarballPath;
+}
+
 function packLocalPackage(npmCli, env, packageDirectory, packDirectory, name, version) {
   const output = run(
     process.execPath,
@@ -476,7 +485,7 @@ function packLocalPackage(npmCli, env, packageDirectory, packDirectory, name, ve
   }
   const sha256 = createHash("sha256").update(readFileSync(tarballPath)).digest("hex");
   return {
-    spec: pathToFileURL(tarballPath).href,
+    spec: localTarballSpec(tarballPath),
     receipt: {
       name: pack.name,
       version: pack.version,

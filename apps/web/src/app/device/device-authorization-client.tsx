@@ -7,7 +7,7 @@ import {
   isValidDeviceUserCode,
   normalizeDeviceUserCode,
 } from "@/lib/device-code";
-import { posthog } from "@/lib/posthog";
+import { capturePostHog } from "@/lib/posthog";
 
 let supabase: SupabaseClient | null = null;
 function getSupabase() {
@@ -43,7 +43,7 @@ export default function DeviceAuthorizationClient() {
 
       if (response.ok) {
         setStatus("done");
-        posthog.capture("device_authorized");
+        void capturePostHog("device_authorized");
       } else {
         const data = await response.json();
         setError(data.error || "Failed to approve device");

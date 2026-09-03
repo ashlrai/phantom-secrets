@@ -42,16 +42,21 @@ release jobs. Together they:
 10. requests one GitHub build-provenance attestation covering the six exact
    archive digests and one SBOM attestation binding each archive to its matching
    SPDX document; and
-11. re-verifies the preserved bundle before creating a non-overwriting GitHub
+11. downloads the preserved bundle in a read-only job and verifies both
+   attestations for every archive against the exact tag ref, source and signer
+   commit, release workflow, and hosted-runner policy before release approval;
+   and
+12. re-verifies the preserved bundle before creating a non-overwriting GitHub
    release.
 
 Third-party actions are pinned. Build jobs use read-only repository permissions;
 only the attestation job receives `id-token: write` and `attestations: write`,
-and only the release job receives `contents: write`. That write-capable job
-targets the GitHub `release` environment. Repository administrators must
-configure that environment with a required human reviewer before creating a
-release tag; naming an environment in workflow source does not create a review
-rule by itself.
+the verification job receives only `contents: read` and `attestations: read`,
+and only the release job receives `contents: write`. The release job depends on
+successful attestation verification and targets the GitHub `release`
+environment. Repository administrators must configure that environment with a
+required human reviewer before creating a release tag; naming an environment in
+workflow source does not create a review rule by itself.
 
 The build matrix may cross-compile, but it cannot authorize attestation directly.
 A separate six-row native-acceptance matrix downloads each exact build artifact
@@ -72,7 +77,7 @@ Starting a hosted rehearsal consumes GitHub Actions capacity and therefore
 requires repository authorization. For an approved exact candidate, run:
 
 ```bash
-gh workflow run release-rehearsal.yml -f release_tag=v0.7.5
+gh workflow run release-rehearsal.yml -f release_tag=v0.7.6
 ```
 
 Retain the workflow URL, source SHA, resolved runner images, six native job
@@ -83,12 +88,16 @@ migration, activate a provider, or establish customer acceptance.
 
 After the rehearsal succeeds, run the read-only pre-tag gate from the exact
 clean candidate worktree. It queries the current remote `main`, proves local
-and remote tag absence, re-runs version and release-note checks, binds the
-successful rehearsal to the candidate SHA and exact native/bundle jobs, and
-re-queries the release environment and tag rulesets:
+and remote tag absence, proves that neither a GitHub Release nor either exact npm
+version or staged version already reserves the candidate identity, re-runs
+version and release-note checks, binds the successful rehearsal to the candidate
+SHA and exact native/bundle jobs, and re-queries the release environment and tag
+rulesets. The npm reservation check requires an authenticated npm CLI `11.15.0`
+or later on `PATH`; an unavailable, unauthenticated, malformed, or older client
+blocks the preflight rather than treating the reservation as absent:
 
 ```bash
-node scripts/release/pre-tag-preflight.mjs v0.7.5 REHEARSAL_RUN_ID_OR_URL
+node scripts/release/pre-tag-preflight.mjs v0.7.6 REHEARSAL_RUN_ID_OR_URL
 ```
 
 The script never creates or pushes a tag. Only after every gate passes does it
@@ -98,13 +107,15 @@ running them. A pushed `v*` tag is immutable in the current governance model;
 if its workflow fails or its release is defective, publish a higher
 fix-forward version rather than attempting to move or delete the tag.
 
-The workflow source only requests SBOM and provenance attestations when a tag
-run executes successfully. This repository state does **not** prove the native
-matrix ran or that an attestation exists, and attestations are not independent
-publisher signatures. A successful exact tag workflow supplies the native
-archive-execution receipt; source review alone does not. The release workflow
-does not perform macOS notarization or Windows Authenticode signing. Those remain
-separate gates. The committed signing policy is explicitly disabled; the
+The workflow only requests SBOM and provenance attestations when a tag run
+executes successfully, then verifies both predicates for every archive before
+the release-environment approval can begin. This repository state does **not**
+prove the native matrix or verification job ran, and attestations are not
+independent publisher signatures. A successful exact tag workflow supplies the
+native archive-execution and pre-publication attestation receipts; source review
+alone does not. The release workflow does not perform macOS notarization or
+Windows Authenticode signing. Those remain separate gates. The committed signing
+policy is explicitly disabled; the
 [signing and notarization readiness guide](signing-and-notarization.md) records
 the readiness-only policy, sanitized receipt contract, and separately governed
 future design without enabling it. Repository settings must also allow Actions OIDC/attestation
@@ -164,7 +175,7 @@ node --test scripts/release/pre-tag-preflight.test.mjs
 node --test scripts/release/release-rehearsal-contract.test.mjs
 node --test scripts/publish-crates.test.js
 node scripts/check-platform-installers.mjs
-node scripts/release/check-version-parity.mjs v0.7.5
+node scripts/release/check-version-parity.mjs v0.7.6
 git diff --check
 ```
 
@@ -180,7 +191,7 @@ identity, current-user DACL establishment/preservation, pre-byte permission
 ordering, and both anchored effect outcomes. Source-contract tests and workflow
 configuration do not establish that native acceptance.
 
-Provider-grant changes must preserve the 0.7.5 universal denial before provider
+Provider-grant changes must preserve the 0.7.6 universal denial before provider
 credential lookup and network access. Exact `cfg(test)` mocks prove only local
 transaction scaffolding. Any future activation additionally needs an authorized
 throwaway-account acceptance plan; source tests do not prove a provider
@@ -207,14 +218,14 @@ publication tiers are:
 Run the non-publishing gate while preparing a candidate:
 
 ```bash
-./scripts/publish-crates.sh --verify-only --version 0.7.5
+./scripts/publish-crates.sh --verify-only --version 0.7.6
 ```
 
 Use `--allow-dirty` only for local development diagnostics. Before requesting
 publication authorization, perform the read-only crates.io reconciliation:
 
 ```bash
-./scripts/publish-crates.sh --dry-run --version 0.7.5
+./scripts/publish-crates.sh --dry-run --version 0.7.6
 ```
 
 The dry run builds each local `.crate`, queries the exact crates.io package
@@ -245,8 +256,8 @@ normal credentials or `CARGO_REGISTRY_TOKEN` and an exact confirmation value
 are also required:
 
 ```bash
-PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.7.5 \
-  ./scripts/publish-crates.sh --publish --version 0.7.5
+PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.7.6 \
+  ./scripts/publish-crates.sh --publish --version 0.7.6
 ```
 
 Do not place the registry token on the command line. The script removes registry
@@ -271,7 +282,7 @@ the exact tagged tarballs from fresh caches on all six native hosts while the
 npm versions are still absent. Only after that prepublication gate passes,
 re-pack both wrappers, stage both under `release-candidate`, inspect the staged
 tarballs, approve each stage with interactive 2FA, and reconcile exact integrity
-and provenance. Both exact public `0.7.5` packages must then pass the separate
+and provenance. Both exact public `0.7.6` packages must then pass the separate
 postpublication six-target npm-channel acceptance gate before any default tag changes. Separately promote the MCP
 wrapper to `latest` first and the primary CLI to `latest` last; verify both
 promotions before removing either candidate tag. Only after all npm gates pass
@@ -347,8 +358,10 @@ GitHub Free, Pro, and Team support attestations only for public repositories;
 private or internal repositories require GitHub Enterprise Cloud. The workflow
 must be allowed to request an OIDC token and write repository attestations. A
 successful tag run must still be followed by `gh attestation verify` for both
-the default provenance predicate and the SPDX 2.3 predicate; workflow YAML is
-not an execution receipt.
+the default provenance predicate and the SPDX 2.3 predicate against the hosted
+immutable release downloads; the pre-publication job verifies the preserved
+workflow bundle, while this post-publication check verifies the public
+distribution bytes. Workflow YAML is not an execution receipt.
 
 The workflow does not use a mutable installer or SBOM action. It downloads
 host-specific assets from the immutable [Syft 1.42.3 release](https://github.com/anchore/syft/releases/tag/v1.42.3),

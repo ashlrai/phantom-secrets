@@ -1,6 +1,6 @@
 //! Compatibility surface for the former client-token substitution helpers.
 //!
-//! Phantom 0.7.5 deliberately does not resolve client-controlled `phm_`
+//! Phantom deliberately does not resolve client-controlled `phm_`
 //! tokens in request headers or bodies. A matched proxy route injects only its
 //! configured vault secret into its exact configured authentication header.
 //! These functions remain available so patch upgrades do not break source

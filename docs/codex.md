@@ -23,7 +23,7 @@ audit, import/export, cloud sync, team vaults, and safe MCP setup for Codex.
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.4` binary using the platform-specific, checksum-
+Install the reviewed `v0.7.5` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -41,7 +41,7 @@ command = "phantom-mcp"
 args = []
 ```
 
-Install both `v0.7.4` release binaries before setup. Version `0.7.4` records the
+Install both `v0.7.5` release binaries before setup. Version `0.7.5` records the
 running `phantom` executable with `mcp serve` when it can resolve that runtime,
 otherwise it looks for a local `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is

@@ -10,9 +10,11 @@
 
 ## Install
 
-Release-state snapshot verified 2026-09-02 before any `v0.7.5` publication.
-Reviewed GitHub/Homebrew release at that snapshot: `v0.7.4` at
-https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4
+Release state verified 2026-09-03. The immutable GitHub `v0.7.5` release at
+https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5 resolves to
+`d2969e73995cc139e6253e0c8a70f1d683f88e20`. Workflow `33709338577` published
+19 assets after all six native acceptance rows and release attestations passed.
+The separately managed Homebrew formula publishes reviewed `v0.7.5`.
 
 Homebrew (macOS, third-party tap):
 
@@ -22,13 +24,14 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-Linux and Windows: select the exact `v0.7.4` archive for your architecture from
+For the current macOS, Linux, or Windows release, select the exact `v0.7.5`
+archive for your architecture from
 the release, download its adjacent `.sha256` sidecar, verify it, and place both
-release executables on PATH. As verified 2026-09-02, npm `latest` remains
+release executables on PATH. Registry status verified 2026-09-03: npm `latest` remains
 `0.6.0`; exact npm `0.7.4` wrappers exist only under the failed
 `release-candidate` track. No MCP Registry `0.7.4` record was found; crates.io
 remains on `0.5.1`. Unpinned npm, npx, and Cargo installs are not the reviewed
-`v0.7.4` path.
+`v0.7.5` GitHub release path.
 
 ## Editor MCP setup
 
@@ -42,7 +45,7 @@ One command per AI client — Phantom writes the right config file for each:
 | Codex | `phantom setup --client codex` | `~/.codex/config.toml` |
 | Other | `phantom setup --client claude --print` | snippet to stdout |
 
-Install both `v0.7.4` release binaries first. Version `0.7.4` records the running
+Install both `v0.7.5` GitHub release binaries first. Version `0.7.5` records the running
 `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise
 it looks for a local `phantom-mcp`. Setup has no network package-runner fallback
 and fails closed when neither local runtime is executable. Keep both verified
@@ -196,13 +199,15 @@ Detection and runtime injection are different capabilities. Database connection 
   files/directories before bytes and preserves the reviewed exact DACL and
   inheritance state on replacement staging files before writing. Reparse,
   handle, ACL, and Credential Manager behavior still await protected native
-  Windows CI acceptance. Current `0.7.5` source does not prove artifact
-  publication or deployment.
-- Implementation-security identity:
-  `5a3edad60634c78af3079f588bf51fefa0b69586`. Live GitHub governance observed
+  Windows CI acceptance. The release receipt proves exact-archive execution
+  and MCP schema initialization, not native keychain, ACL, shell, or editor
+  acceptance.
+- Immutable `v0.7.5` release identity:
+  `d2969e73995cc139e6253e0c8a70f1d683f88e20`. Live GitHub governance observed
   2026-09-01: the `release` environment required review and accepted only `v*`
   tags; no-bypass immutability ruleset `21903888` was separate from creation
-  ruleset `21997435` with Mason-only bypass. Reverify before release.
+  ruleset `21997435` with Mason-only bypass. The successful immutable release
+  workflow is https://github.com/ashlrai/phantom-secrets/actions/runs/33709338577.
 - Locus and the execution-kernel crates remain inactive and fail closed.
   Enterprise capabilities require separate commissioning and acceptance.
 - Rama upstream main snapshot
@@ -222,12 +227,18 @@ Detection and runtime injection are different capabilities. Database connection 
 - `phantom-mcp` — `rmcp` stdio server with a release-checked tool schema; use runtime `tools/list` for the current catalog.
 - Authority, Locus-contract, broker, runtime, evidence, session, and workspace crates are fail-closed foundations; they do not activate production execution.
 
-## Pricing
+## Current offerings
 
-- Free: local vault, proxy, MCP, and Vercel/Railway sync workflows; no public
-  hosted cloud-vault entitlement is commissioned
-- Pro (planned hosted pilot): proposed packaging for cloud-backup, cloud-key-portability evaluation, and team-vault capabilities; limits and pricing are TBD, and no self-serve checkout is commissioned
-- Enterprise evaluation: team-vault source and local audit tooling are present; SSO/SAML, centralized enterprise authorization, certification, and contractual SLA are not shipped by this repository. Service and support scope require a separate written agreement with Ashlr AI — `mason@ashlr.ai`.
+- Open source ($0): use, modify, and distribute the local vault, proxy, MCP,
+  and deployment-sync workflows under MIT; no hosted entitlement is included.
+- Enterprise (written scope): SSO/SAML, centralized enterprise authorization, certification, and contractual SLA are not shipped by this repository. Reversible evaluation, environment-specific integration, security review, and support terms require a separate written agreement with Ashlr AI at `mason@ashlr.ai`.
+- Government (written scope): bounded public-sector evaluation and integration
+  may be contracted separately. No authorization, certification, contract
+  vehicle, procurement schedule, hosted service, or SLA is represented.
+
+A Pro hosted pilot remains roadmap direction only. It is not a current public
+offering, has no commissioned self-serve checkout, and has no published price
+or entitlement.
 
 ## Documentation
 

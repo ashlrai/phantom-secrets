@@ -13,23 +13,23 @@ wrapper mapping, and native acceptance. One does not prove the next.
 | Native acceptance | The exact identified archive passed the named checks on the matching OS and architecture, with a retained receipt. |
 
 The filesystem hardening described below is source-contract evidence in this
-documentation tranche. The immutable `v0.7.4` GitHub release has separate
-six-target native-release acceptance; that does not validate the npm wrapper
-installation path, whose `0.7.4` candidate failed on all six targets. The
-release-state snapshot below was verified 2026-09-02 before any `v0.7.5`
-publication; at that snapshot the `0.7.5` fix-forward had no native or
-npm-channel acceptance receipt.
+documentation tranche. Verified 2026-09-03, the immutable `v0.7.5` GitHub
+release resolves to `d2969e73995cc139e6253e0c8a70f1d683f88e20`; workflow
+`33709338577` published 19 assets after all six native-release rows and release
+attestations passed. That does not validate the npm wrapper installation path:
+the `0.7.4` candidate failed on all six targets, npm `latest` remains `0.6.0`,
+and no exact npm `0.7.5` acceptance receipt is claimed.
 
 ## Current matrix
 
 | Target | Release build host and mode | GitHub release workflow | Primary npm wrapper | Shell installer | Configured native acceptance / current evidence |
 |---|---:|---:|---:|---:|---:|
-| macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build | Archive + SBOM configured | Mapped | Mapped | `v0.7.4` release-native acceptance passed on `macos-15` ARM64; npm `0.7.4` acceptance failed; no `0.7.5` receipt |
-| macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host | Archive + SBOM configured | Mapped | Mapped | `v0.7.4` release-native acceptance passed on `macos-15-intel` X64; npm `0.7.4` acceptance failed; no `0.7.5` receipt |
-| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04 | Archive + SBOM configured; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.4` release-native acceptance passed on `ubuntu-22.04-arm` ARM64; npm `0.7.4` acceptance failed; no `0.7.5` receipt |
-| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04 | Archive + SBOM configured; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.4` release-native acceptance passed on `ubuntu-22.04` X64; npm `0.7.4` acceptance failed; no `0.7.5` receipt |
-| Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest` | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | `v0.7.4` release-native acceptance passed on `windows-latest` X64; npm `0.7.4` acceptance failed; no `0.7.5` receipt |
-| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm` | ZIP + SBOM configured | Mapped | Mapped by `install.ps1` | `v0.7.4` release-native acceptance passed on `windows-11-vs2026-arm` ARM64; npm `0.7.4` acceptance failed; no `0.7.5` receipt |
+| macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build | Archive + SBOM published and attested | Mapped | Mapped | `v0.7.5` release-native acceptance passed on `macos-15` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
+| macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host | Archive + SBOM published and attested | Mapped | Mapped | `v0.7.5` release-native acceptance passed on `macos-15-intel` X64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
+| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04 | Archive + SBOM published and attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.5` release-native acceptance passed on `ubuntu-22.04-arm` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
+| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04 | Archive + SBOM published and attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.5` release-native acceptance passed on `ubuntu-22.04` X64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
+| Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest` | ZIP + SBOM published and attested | Mapped | Mapped by `install.ps1` | `v0.7.5` release-native acceptance passed on `windows-latest` X64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
+| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm` | ZIP + SBOM published and attested | Mapped | Mapped by `install.ps1` | `v0.7.5` release-native acceptance passed on `windows-11-vs2026-arm` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
 
 The current workflow defines six target archives, each containing `phantom`
 and `phantom-mcp`: four Unix `.tar.gz` files and two Windows `.zip` files. Both
@@ -39,7 +39,7 @@ the exact tagged five-file npm tarballs from fresh caches on these same six
 native host classes before npm publication, then to repeat acceptance against
 the integrity-pinned public `release-candidate` packages before either `latest`
 tag changes. A workflow definition is not a receipt; retain all six successful
-jobs for each mode.
+jobs for each mode. No exact npm `0.7.5` receipt is claimed here.
 The `native-acceptance` matrix is configured to download each exact build
 artifact on its matching runner, reject extra or unsafe archive members, verify
 archive integrity through extraction, assert the runner OS and architecture,
@@ -52,12 +52,12 @@ sibling transaction residue. It then corrupts the checksum sidecar and proves
 that a pre-transaction integrity failure also preserves the accepted tree.
 Windows acceptance suppresses persistent user-PATH mutation on the CI
 account; it does not claim shell-profile acceptance. Attestation cannot begin
-until all six jobs succeed. The exact `v0.7.4` tag workflow passed this release
-native matrix and created the immutable GitHub release in
-[run 33681798126](https://github.com/ashlrai/phantom-secrets/actions/runs/33681798126).
+until all six jobs succeed. The exact `v0.7.5` tag workflow passed this release
+native matrix, completed release attestations, and created the immutable
+19-asset GitHub release in
+[run 33709338577](https://github.com/ashlrai/phantom-secrets/actions/runs/33709338577).
 That receipt does not prove npm-wrapper installation: exact npm `0.7.4`
-acceptance failed independently. At the 2026-09-02 pre-publication snapshot, no
-exact `v0.7.5` candidate receipt existed.
+acceptance failed independently and no exact npm `0.7.5` receipt is claimed.
 
 GitHub's current [hosted-runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 maps `windows-latest` to x64 and `macos-latest` to arm64. GNU/Linux release
@@ -104,7 +104,7 @@ remaining operating-system integrations below.
 
 | Contract | Current source evidence | Acceptance boundary |
 |---|---|---|
-| Retained root/parent identity | Project and explicitly authorized global config writers resolve targets from retained directory capabilities; Unix rename-and-decoy tests preserve the replacement decoy | No exact native-archive receipt is recorded |
+| Retained root/parent identity | Project and explicitly authorized global config writers resolve targets from retained directory capabilities; Unix rename-and-decoy tests preserve the replacement decoy | The exact native-release receipt does not exercise this filesystem contract |
 | Symlink and reparse denial | No-follow traversal rejects symlink/reparse ancestors and leaf targets; Windows implementation has source-contract checks | Windows tests in source are not a native Windows run |
 | Hard-link denial | Sensitive anchored files must be regular and have one link before read/effect | Platform filesystem behavior still needs exact native acceptance |
 | Exact compare-and-swap | Before-images bind stable file identity and bytes; same-content replacement identities are rejected | Covers cooperating Phantom operations, not arbitrary same-user writers |
@@ -127,18 +127,19 @@ acceptance and never place provider client secrets on the command line.
 
 ## Install methods
 
-- The reviewed `v0.7.4` source build checks out
-  `c20f4eb6d8272709985083afe156b5678a1ac054` and runs
+- The reviewed `v0.7.5` source build checks out
+  `d2969e73995cc139e6253e0c8a70f1d683f88e20` and runs
   `cargo build --release --locked --bin phantom --bin phantom-mcp`. An unpinned
   crates.io install currently resolves the older `0.5.1` track.
 - The npm packages' `latest` tags currently resolve `0.6.0`. Exact `0.7.4`
   wrappers exist only under `release-candidate` and failed the six-target npm
-  acceptance gate; they are not the reviewed `v0.7.4` GitHub/Homebrew path.
+  acceptance gate; they are not the reviewed `v0.7.5` GitHub release path.
 - `scripts/install.sh` supports macOS and GNU Linux targets. Native Windows uses
   `scripts/install.ps1`; both scripts verify bounded HTTPS downloads, strict
   sidecar checksums, archive shape, and binary identity before promotion.
-- The Homebrew formula is a manually reviewed distribution surface. The
-  repository's release workflow does not automatically update a tap.
+- The Homebrew formula publishes reviewed `v0.7.5` as a separately managed
+  distribution surface. The repository's release workflow does not
+  automatically update a tap.
 
 ## Configured and additional native acceptance
 

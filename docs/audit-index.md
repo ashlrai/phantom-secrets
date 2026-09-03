@@ -175,13 +175,17 @@ Reviewers should pay particular attention to these unresolved boundaries:
 - provider enrollment, issuance, refresh, renewal, rotation, and remote
   revocation are not active; shipped paths fail before credential or network
   access, while exact test mocks prove local scaffolding only; and
-- at the release-state snapshot verified 2026-09-02 before any `v0.7.5`
-  publication, the reviewed immutable `v0.7.4` GitHub/Homebrew release was
-  distinct from the then-unpublished `0.7.5` fix-forward source. The exact `v0.7.4` archives passed the
-  six-target release-native matrix in run 33681798126, while its npm wrappers
-  failed separate installation-channel acceptance. Independent signatures,
-  native code signing/notarization, credential-store/ACL/editor acceptance, and
-  six-target exact-archive acceptance for `v0.7.5` remain open.
+- at the release-state snapshot verified 2026-09-03, the immutable `v0.7.5`
+  GitHub release resolves to source commit
+  `d2969e73995cc139e6253e0c8a70f1d683f88e20`; its 19 assets, checksums,
+  archive-specific SPDX SBOMs, GitHub attestations, and all six release-native
+  rows passed workflow 33709338577. Homebrew independently publishes the same
+  reviewed `v0.7.5` binaries. The npm `0.7.4` wrappers remain only under the
+  failed `release-candidate` track, npm `latest` remains `0.6.0`, and no npm,
+  crates.io, or MCP Registry `0.7.5` publication is claimed. Native code
+  signing/notarization, credential-store/ACL/editor acceptance on every host,
+  hosted-service commissioning, provider activation, certification, and
+  customer acceptance remain separate evidence gates.
 
 The inactive components deny production use while these activation findings
 remain open. Do not work around that denial with test constructors, caller

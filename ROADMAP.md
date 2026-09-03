@@ -1,13 +1,15 @@
 # Roadmap
 
 This roadmap describes ordered engineering gates, not delivery dates or shipped
-capabilities. This status snapshot was verified on 2026-09-02 before any
-`v0.7.5` publication. At that snapshot, the immutable `v0.7.4` GitHub release and Homebrew formula are the
-reviewed native distribution. Both npm `0.7.4` wrappers remain public only under
-the failed `release-candidate` track, while npm `latest` remains `0.6.0`. The
-repository source is versioned for the then-unpublished `0.7.5` fix-forward; its source and workflow
-definitions do not prove an artifact was built, published, deployed, enabled,
-or accepted.
+capabilities. This status snapshot was verified on 2026-09-03. The immutable
+`v0.7.5` GitHub release binds 19 assets to source commit
+`d2969e73995cc139e6253e0c8a70f1d683f88e20`; all six native rows and GitHub
+provenance and SPDX attestations passed in workflow 33709338577. Homebrew
+publishes the same reviewed `v0.7.5`. Both npm `0.7.4` wrappers remain public only under the
+failed `release-candidate` track, while npm `latest` remains `0.6.0`.
+No `0.7.5` npm, crates.io, or MCP Registry publication, hosted-service
+commissioning, provider activation, certification, or customer acceptance is
+represented by the GitHub release receipt.
 
 ## Status vocabulary
 
@@ -20,7 +22,7 @@ or accepted.
 
 ## Current milestones
 
-### 1. Close the 0.7.5 fix-forward source candidate — staged at this snapshot
+### 1. Close the 0.7.5 fix-forward source candidate — released
 
 - Keep local mutations transactional and authority-sensitive operations
   fail-closed.
@@ -30,9 +32,11 @@ or accepted.
 - Pass locked workspace, dependency-policy, installer, wrapper, web, security,
   and schema gates on one exact clean SHA.
 
-Completion at this layer establishes a source candidate only.
+Completed at exact source commit
+`d2969e73995cc139e6253e0c8a70f1d683f88e20`; source completion was a
+prerequisite, not publication evidence by itself.
 
-### 2. Produce and accept exact native artifacts — gated
+### 2. Produce and accept exact native artifacts — released on GitHub
 
 - Run the tag-bound six-target release workflow.
 - Verify each closed archive, checksum, SBOM, provenance binding, binary
@@ -40,13 +44,18 @@ Completion at this layer establishes a source candidate only.
 - Record skipped or externally unavailable checks and keep notarization,
   Authenticode, and independent signing claims separate.
 
-No platform archive is considered accepted solely because a workflow matrix or
-cross-compile target exists in source.
+The tag-bound workflow published the exact 19-asset release set and passed all
+six native rows plus provenance and SPDX attestation verification. The
+archives remain unsigned and unnotarized; this receipt does not establish
+native credential-store, ACL, editor, or every-device acceptance.
 
-### 3. Reconcile distribution tracks — gated
+### 3. Reconcile remaining distribution tracks — gated
 
-- Publish crates.io, npm, MCP Registry, Homebrew, and GitHub release surfaces
-  only through their separately approved workflows.
+- Preserve the immutable GitHub and Homebrew `v0.7.5` receipts while the
+  `v0.7.6` Windows npm-path fix-forward candidate completes its independent
+  release and package gates.
+- Publish crates.io, npm, MCP Registry, and future Homebrew updates only through
+  their separately approved workflows.
 - Verify exact version and byte identity for each immutable publication.
 - Keep older tracks visibly distinct until their own publication receipts exist.
 

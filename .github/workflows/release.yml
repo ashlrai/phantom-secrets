@@ -79,13 +79,66 @@ jobs:
           subject-path: artifacts/phantom-x86_64-pc-windows-msvc/phantom-x86_64-pc-windows-msvc.zip
           sbom-path: artifacts/phantom-x86_64-pc-windows-msvc/phantom-x86_64-pc-windows-msvc.zip.spdx.json
 
-  release:
-    name: Create Release
+  verify-attestations:
+    name: Verify release attestations
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: attest
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-release-bundle
+          path: artifacts
+
+      - name: Re-verify the exact attested artifact set
+        run: node scripts/release/verify-release-artifacts.mjs artifacts
+
+      - name: Verify build provenance and SPDX attestations before release approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for archive in \
+            phantom-aarch64-apple-darwin.tar.gz \
+            phantom-x86_64-apple-darwin.tar.gz \
+            phantom-aarch64-unknown-linux-gnu.tar.gz \
+            phantom-x86_64-unknown-linux-gnu.tar.gz \
+            phantom-aarch64-pc-windows-msvc.zip \
+            phantom-x86_64-pc-windows-msvc.zip; do
+            mapfile -t matches < <(find artifacts -type f -name "$archive" -print)
+            test "${#matches[@]}" -eq 1
+            archive_path="${matches[0]}"
+            gh attestation verify "$archive_path" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --signer-digest "$GITHUB_SHA" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners >/dev/null
+            gh attestation verify "$archive_path" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --signer-digest "$GITHUB_SHA" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA" \
+              --predicate-type "https://spdx.dev/Document/v2.3" \
+              --deny-self-hosted-runners >/dev/null
+          done
+
+  release:
+    name: Create Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify-attestations
+    runs-on: ubuntu-latest
     # Configure this environment in GitHub with a required human reviewer.
-    # Tags may build and attest, but publication keeps a separate approval gate.
+    # Tags may build, attest, and verify, but publication keeps a separate
+    # approval gate.
     environment:
       name: release
     # Release job needs write to publish the Release and upload assets.

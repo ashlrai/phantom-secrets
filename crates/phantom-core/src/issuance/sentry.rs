@@ -1,6 +1,6 @@
 //! Sentry published-integration protocol foundation.
 //!
-//! Shipped 0.7.5 returns `NotSupported` before request, browser, loopback,
+//! This release returns `NotSupported` before request, browser, loopback,
 //! credential, or network access. This flow executes only in crate-local tests.
 //!
 //! This mirrors the shipped GitHub installation-token architecture almost

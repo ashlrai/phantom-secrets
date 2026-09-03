@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { getBrowserClient } from "@/lib/supabase-browser";
 import { Nav } from "@/components/landing/Nav";
 import { Github } from "@/components/landing/Icons";
 
-type Status = "loading" | "signed_in" | "signed_out";
+type Status = "loading" | "signed_in" | "signed_out" | "unavailable";
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>("loading");
@@ -14,26 +15,47 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   const [signingIn, setSigningIn] = useState(false);
 
   useEffect(() => {
-    const supabase = getBrowserClient();
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) {
-        setStatus("signed_out");
-        return;
+    let active = true;
+
+    const loadSession = async () => {
+      try {
+        const supabase = getBrowserClient();
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (!active) return;
+        if (error) {
+          setStatus("unavailable");
+        } else if (!session) {
+          setStatus("signed_out");
+        } else {
+          setEmail(session.user.email ?? null);
+          setStatus("signed_in");
+        }
+      } catch {
+        if (active) setStatus("unavailable");
       }
-      setEmail(session.user.email ?? null);
-      setStatus("signed_in");
-    });
+    };
+
+    void loadSession();
+    return () => {
+      active = false;
+    };
   }, []);
 
   const signIn = async () => {
     setSigningIn(true);
-    const supabase = getBrowserClient();
-    await supabase.auth.signInWithOAuth({
-      provider: "github",
-      options: {
-        redirectTo: `${window.location.origin}${window.location.pathname}`,
-      },
-    });
+    try {
+      const supabase = getBrowserClient();
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "github",
+        options: {
+          redirectTo: `${window.location.origin}${window.location.pathname}`,
+        },
+      });
+      if (error) throw error;
+    } catch {
+      setStatus("unavailable");
+      setSigningIn(false);
+    }
   };
 
   if (status === "loading") {
@@ -64,7 +86,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             type="button"
             onClick={signIn}
             disabled={signingIn}
-            className="mt-7 inline-flex items-center gap-2 rounded-lg bg-blue px-5 py-3 text-[0.92rem] font-semibold text-white transition-all hover:bg-blue-d hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(59,130,246,0.32)] disabled:opacity-60 disabled:cursor-wait"
+            className="mt-7 inline-flex items-center gap-2 rounded-lg bg-blue-action px-5 py-3 text-[0.92rem] font-semibold text-white transition-all hover:bg-blue-action-d hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(59,130,246,0.32)] disabled:opacity-60 disabled:cursor-wait"
           >
             <Github className="h-4 w-4" />
             {signingIn ? "Redirecting to GitHub…" : "Sign in with GitHub"}
@@ -72,6 +94,33 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           <p className="mt-5 text-[0.78rem] text-t3">
             We only request your GitHub login + email. No repo access.
           </p>
+        </main>
+      </>
+    );
+  }
+
+  if (status === "unavailable") {
+    return (
+      <>
+        <Nav />
+        <main className="mx-auto max-w-[640px] px-7 pb-20 pt-24 text-center">
+          <p className="font-mono text-[0.72rem] uppercase tracking-[0.16em] text-blue-b">
+            Hosted boundary closed
+          </p>
+          <h1 className="mt-4 text-[1.8rem] font-extrabold leading-[1.1] tracking-[-0.035em] text-white sm:text-[2.2rem]">
+            Dashboard access is not commissioned.
+          </h1>
+          <p className="mt-4 text-[0.95rem] leading-[1.65] text-t2">
+            This deployment has no usable browser-auth configuration. Phantom&apos;s
+            open-source local workflow remains separate from hosted dashboard,
+            cloud, team, and billing services.
+          </p>
+          <Link
+            href="/"
+            className="mt-7 inline-flex min-h-11 items-center justify-center rounded-lg border border-border-l px-5 py-3 text-[0.9rem] font-semibold text-t1 no-underline transition hover:border-t3"
+          >
+            Return to the open-source project
+          </Link>
         </main>
       </>
     );
@@ -125,7 +174,7 @@ function DashboardNav({ email }: { email: string | null }) {
               className={
                 "rounded-md px-3 py-1.5 text-[0.85rem] font-medium transition-colors " +
                 (active
-                  ? "bg-blue text-white"
+                  ? "bg-blue-action text-white"
                   : "text-t2 hover:bg-s2 hover:text-t1")
               }
             >
