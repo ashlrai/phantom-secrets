@@ -7,6 +7,7 @@ const sha = "a".repeat(40);
 const repository = "ashlrai/phantom-secrets";
 const runId = "123456789";
 const runUrl = `https://github.com/${repository}/actions/runs/${runId}`;
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const nativeTargets = [
   "x86_64-apple-darwin",
   "aarch64-apple-darwin",
@@ -84,6 +85,14 @@ function createRunner({
   ],
   originUrl = `https://github.com/${repository}.git`,
   repositoryData = repository,
+  githubReleaseLookup = {
+    status: 1,
+    stdout: "HTTP/2.0 404 Not Found\n\n{}\n",
+    stderr: "gh: Not Found (HTTP 404)\n",
+  },
+  npmVersion = "11.15.0",
+  npmPublishedVersions = [],
+  npmStages = {},
 } = {}) {
   const calls = [];
   const runner = (file, args) => {
@@ -117,6 +126,13 @@ function createRunner({
     if (file === "gh" && args[0] === "run") return success(JSON.stringify(runData));
     if (file === "gh" && args[0] === "api") {
       const endpoint = args[1];
+      if (endpoint === "--include") {
+        assert.equal(
+          args[2],
+          `repos/${repository}/releases/tags/v0.7.6`,
+        );
+        return githubReleaseLookup;
+      }
       if (endpoint.endsWith("/environments/release")) {
         return success(JSON.stringify(environmentData));
       }
@@ -130,12 +146,32 @@ function createRunner({
       const found = rulesets.find((candidate) => candidate.id === id);
       if (found) return success(JSON.stringify(found));
     }
+    if (file === npmCommand && args.join(" ") === "--version") {
+      return success(`${npmVersion}\n`);
+    }
+    if (file === npmCommand && args[0] === "view") {
+      assert.deepEqual(args.slice(2), [
+        "versions",
+        "--json",
+        "--registry=https://registry.npmjs.org/",
+      ]);
+      const versions = npmPublishedVersions[args[1]] ?? npmPublishedVersions;
+      return success(JSON.stringify(versions));
+    }
+    if (file === npmCommand && args[0] === "stage") {
+      assert.equal(args[1], "list");
+      assert.deepEqual(args.slice(3), [
+        "--json",
+        "--registry=https://registry.npmjs.org/",
+      ]);
+      return success(JSON.stringify(npmStages[args[2]] ?? []));
+    }
     assert.fail(`unexpected command: ${file} ${args.join(" ")}`);
   };
   return { runner, calls };
 }
 
-test("passes only after exact source, rehearsal, native, bundle, and governance gates", () => {
+test("passes only after source, rehearsal, governance, and reservation gates", () => {
   const { runner, calls } = createRunner();
   const result = runPreTagPreflight({
     tag: "v0.7.6",
@@ -164,13 +200,104 @@ test("passes only after exact source, rehearsal, native, bundle, and governance 
     "x86_64-unknown-linux-gnu",
   ]);
   assert.deepEqual(result.receipt.mutations_performed, []);
+  assert.deepEqual(result.receipt.reservations, {
+    github_release_absent: true,
+    npm: {
+      cli_minimum: "11.15.0",
+      registry: "https://registry.npmjs.org/",
+      packages: ["phantom-secrets", "phantom-secrets-mcp"],
+      exact_version_public: false,
+      exact_version_staged: false,
+    },
+  });
   assert.deepEqual(result.commands, [
     `git tag -a 'v0.7.6' '${sha}' -m 'Phantom v0.7.6'`,
     "git push origin 'refs/tags/v0.7.6'",
   ]);
-  assert.equal(calls.filter(({ file, args }) => file === "git" && args[0] === "fetch").length, 0);
-  assert.equal(calls.filter(({ file, args }) => file === "git" && args[0] === "ls-remote").length, 4);
+  assert.equal(
+    calls.filter(({ file, args }) => file === "git" && args[0] === "fetch")
+      .length,
+    0,
+  );
+  assert.equal(
+    calls.filter(({ file, args }) => file === "git" && args[0] === "ls-remote")
+      .length,
+    4,
+  );
+  assert.equal(
+    calls.filter(({ file, args }) => file === npmCommand && args[0] === "stage")
+      .length,
+    2,
+  );
   assert.equal(calls.some(({ args }) => args.includes("tag") || args.includes("push")), false);
+});
+
+test("fails closed on existing or unprovable GitHub release reservations", () => {
+  for (const [githubReleaseLookup, message] of [
+    [success('{"tag_name":"v0.7.6"}'), /GitHub release v0\.7\.6 already exists/],
+    [
+      {
+        status: 1,
+        stdout: "HTTP/2.0 500 Internal Server Error\n",
+        stderr: "secret",
+      },
+      /GitHub release absence could not be proven/,
+    ],
+  ]) {
+    const { runner } = createRunner({ githubReleaseLookup });
+    assert.throws(
+      () =>
+        runPreTagPreflight({
+          tag: "v0.7.6",
+          runInput: runId,
+          cwd: "/fixture/repo",
+          commandRunner: runner,
+        }),
+      message,
+    );
+  }
+});
+
+test("fails closed on unsupported npm, public versions, and stage reservations", () => {
+  const cases = [
+    {
+      npmVersion: "11.14.9",
+      message: /npm >=11\.15\.0 is required/,
+    },
+    {
+      npmPublishedVersions: {
+        "phantom-secrets": ["0.6.0", "0.7.6"],
+        "phantom-secrets-mcp": ["0.6.0"],
+      },
+      message: /phantom-secrets@0\.7\.6 is already public/,
+    },
+    {
+      npmStages: {
+        "phantom-secrets@0.7.6": [{ id: "reserved-stage" }],
+      },
+      message: /phantom-secrets@0\.7\.6 already has an npm stage reservation/,
+    },
+    {
+      npmStages: {
+        "phantom-secrets@0.7.6": {},
+      },
+      message: /non-array response/,
+    },
+  ];
+
+  for (const { message, ...options } of cases) {
+    const { runner } = createRunner(options);
+    assert.throws(
+      () =>
+        runPreTagPreflight({
+          tag: "v0.7.6",
+          runInput: runId,
+          cwd: "/fixture/repo",
+          commandRunner: runner,
+        }),
+      message,
+    );
+  }
 });
 
 test("accepts a positive run ID directly", () => {

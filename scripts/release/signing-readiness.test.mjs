@@ -195,7 +195,7 @@ test("disabled policy cannot claim or validate signed evidence", () => {
   );
 });
 
-test("release workflows remain unsigned and preserve their existing authority graph", () => {
+test("release workflows remain unsigned with read-only attestation verification", () => {
   const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
   const build = readFileSync(join(repoRoot, ".github/workflows/release-build.yml"), "utf8");
   const rehearsal = readFileSync(join(repoRoot, ".github/workflows/release-rehearsal.yml"), "utf8");
@@ -204,7 +204,7 @@ test("release workflows remain unsigned and preserve their existing authority gr
   assert.match(release, /^on:\n  push:\n    tags:\n      - 'v\*'$/m);
   assert.deepEqual(
     [...release.matchAll(/^  ([a-z][a-z0-9-]+):$/gm)].map((match) => match[1]),
-    ["push", "build-and-verify", "attest", "release"]
+    ["push", "build-and-verify", "attest", "verify-attestations", "release"]
   );
   assert.deepEqual(
     [...build.matchAll(/^  ([a-z][a-z0-9_-]+):$/gm)].map((match) => match[1]),
@@ -214,10 +214,14 @@ test("release workflows remain unsigned and preserve their existing authority gr
   const idTokenWrites = workflows.match(/id-token:\s*write/g) ?? [];
   assert.equal(idTokenWrites.length, 1, "only GitHub artifact attestation may request OIDC");
   const attestStart = release.indexOf("\n  attest:\n");
-  const releaseStart = release.indexOf("\n  release:\n", attestStart);
-  const attest = release.slice(attestStart, releaseStart);
+  const verifyStart = release.indexOf("\n  verify-attestations:\n", attestStart);
+  const attest = release.slice(attestStart, verifyStart);
   assert.match(attest, /id-token: write/);
   assert.match(attest, /uses: actions\/attest@/);
+  const releaseStart = release.indexOf("\n  release:\n", verifyStart);
+  const verify = release.slice(verifyStart, releaseStart);
+  assert.match(verify, /attestations: read/);
+  assert.doesNotMatch(verify, /id-token: write|attestations: write/);
 
   const forbiddenIdentifiers = [
     "release-sign-macos",

@@ -18,6 +18,9 @@ const expectedNativeTargets = [
   "x86_64-pc-windows-msvc",
   "x86_64-unknown-linux-gnu",
 ];
+const npmPackages = ["phantom-secrets", "phantom-secrets-mcp"];
+const npmRegistry = "https://registry.npmjs.org/";
+const minimumNpmVersion = [11, 15, 0];
 
 function defaultCommandRunner(file, args, options = {}) {
   const result = spawnSync(file, args, {
@@ -60,6 +63,105 @@ function parseJson(output, label) {
   } catch {
     throw new Error(`${label} returned malformed JSON`);
   }
+}
+
+function parseStableVersion(value, label) {
+  const match = String(value ?? "")
+    .trim()
+    .match(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/);
+  if (!match) {
+    throw new Error(`${label} returned a non-stable semantic version`);
+  }
+  return match.slice(1).map(Number);
+}
+
+function versionAtLeast(actual, minimum) {
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] > minimum[index]) return true;
+    if (actual[index] < minimum[index]) return false;
+  }
+  return true;
+}
+
+function verifyGithubReleaseAbsent(commandRunner, cwd, repository, tag) {
+  const result = run(
+    commandRunner,
+    "gh",
+    ["api", "--include", `repos/${repository}/releases/tags/${tag}`],
+    cwd,
+    "GitHub release reservation lookup",
+    [0, 1],
+  );
+  if (result.status === 0) {
+    throw new Error(`GitHub release ${tag} already exists`);
+  }
+  if (!/^HTTP\/(?:1\.\d|2(?:\.0)?) 404(?: Not Found)?\r?$/m.test(result.stdout)) {
+    throw new Error("GitHub release absence could not be proven");
+  }
+}
+
+function verifyNpmReservationsAbsent(commandRunner, cwd, version) {
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+  const npmVersion = parseStableVersion(
+    run(commandRunner, npmCommand, ["--version"], cwd, "npm CLI version lookup")
+      .stdout,
+    "npm CLI version lookup",
+  );
+  if (!versionAtLeast(npmVersion, minimumNpmVersion)) {
+    throw new Error(
+      `npm >=${minimumNpmVersion.join(".")} is required for stage reservation checks`,
+    );
+  }
+
+  for (const name of npmPackages) {
+    const versions = parseJson(
+      run(
+        commandRunner,
+        npmCommand,
+        ["view", name, "versions", "--json", `--registry=${npmRegistry}`],
+        cwd,
+        `${name} public version lookup`,
+      ).stdout,
+      `${name} public version lookup`,
+    );
+    const published = Array.isArray(versions) ? versions : [versions];
+    if (published.includes(version)) {
+      throw new Error(`${name}@${version} is already public`);
+    }
+
+    const stages = parseJson(
+      run(
+        commandRunner,
+        npmCommand,
+        [
+          "stage",
+          "list",
+          `${name}@${version}`,
+          "--json",
+          `--registry=${npmRegistry}`,
+        ],
+        cwd,
+        `${name} npm stage reservation lookup`,
+      ).stdout,
+      `${name} npm stage reservation lookup`,
+    );
+    if (!Array.isArray(stages)) {
+      throw new Error(
+        `${name} npm stage reservation lookup returned a non-array response`,
+      );
+    }
+    if (stages.length !== 0) {
+      throw new Error(`${name}@${version} already has an npm stage reservation`);
+    }
+  }
+
+  return {
+    cli_minimum: minimumNpmVersion.join("."),
+    registry: npmRegistry,
+    packages: [...npmPackages],
+    exact_version_public: false,
+    exact_version_staged: false,
+  };
 }
 
 function normalizeRunInput(runInput, repository) {
@@ -440,8 +542,19 @@ export function runPreTagPreflight({
   });
   const governance = verifyGovernance(environment, policies, rulesets, tag);
 
+  // A draft release or npm stage can reserve an otherwise absent version.
+  // Prove those external identities are still unclaimed before emitting the
+  // irreversible annotated-tag commands.
+  verifyGithubReleaseAbsent(commandRunner, cwd, repository, tag);
+  const npmReservations = verifyNpmReservationsAbsent(
+    commandRunner,
+    cwd,
+    tag.slice(1),
+  );
+
   // Close the race between the earlier source checks and external governance
-  // inspection. No commands are printed unless the candidate is still exact.
+  // and reservation inspection. No commands are printed unless the candidate
+  // is still exact.
   const finalSha = refreshCandidate(commandRunner, cwd, tag);
   if (finalSha !== initialSha) {
     throw new Error("candidate changed during pre-tag preflight");
@@ -472,6 +585,10 @@ export function runPreTagPreflight({
       v_tag_policy: true,
       creation_ruleset_ids: governance.creationRulesetIds,
       immutable_ruleset_ids: governance.immutableRulesetIds,
+    },
+    reservations: {
+      github_release_absent: true,
+      npm: npmReservations,
     },
     credential_values_emitted: false,
     mutations_performed: [],
