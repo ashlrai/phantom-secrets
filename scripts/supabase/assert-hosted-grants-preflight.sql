@@ -361,26 +361,11 @@ BEGIN
       'postgres has an unreviewed global default Data API grant';
   END IF;
 
-  IF EXISTS (
-    SELECT 1
-    FROM pg_catalog.pg_default_acl AS defaults
-    CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
-    WHERE defaults.defaclnamespace = 0
-      AND defaults.defaclrole <> 'postgres'::regrole
-      AND (
-        privilege.grantee = 0
-        OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
-          ARRAY['anon', 'authenticated', 'service_role']
-        )
-      )
-  ) THEN
-    RAISE EXCEPTION
-      'a non-postgres owner has a global default Data API grant';
-  END IF;
-
-  -- The migration also resets public-schema defaults for objects later created
-  -- by postgres. Fail if another creator has a schema-specific grant that would
-  -- reopen Data API access outside that controlled default ACL.
+  -- Phantom migrations and every reviewed application object are owned by
+  -- postgres (asserted above), so only that creator's defaults are in this
+  -- migration contract. Supabase seeds separate platform-owned defaults for
+  -- supabase_admin; those defaults are outside Phantom's object-creation path
+  -- and must not make a stock Supabase runtime fail preflight.
   IF EXISTS (
     SELECT 1
     FROM pg_catalog.pg_default_acl AS defaults
@@ -388,7 +373,7 @@ BEGIN
       ON namespace.oid = defaults.defaclnamespace
     CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
     WHERE namespace.nspname = 'public'
-      AND defaults.defaclrole <> 'postgres'::regrole
+      AND defaults.defaclrole = 'postgres'::regrole
       AND (
         CASE
           WHEN privilege.grantee = 0 THEN 'public'
@@ -397,7 +382,7 @@ BEGIN
       ) = ANY (ARRAY['public', 'anon', 'authenticated', 'service_role'])
   ) THEN
     RAISE EXCEPTION
-      'a non-postgres owner has a public-schema default Data API grant';
+      'postgres has an unreviewed public-schema default Data API grant';
   END IF;
 END
 $$;

@@ -230,7 +230,8 @@ test("hosted grant preflight is read-only and fail-closed", async () => {
   assert.match(preflight, /'authenticated', 'app_private', 'CREATE'/);
   assert.match(preflight, /column_acl_cells <> 1008/);
   assert.match(preflight, /column_acl_mismatches <> 0/);
-  assert.match(preflight, /defaults\.defaclrole <> 'postgres'::regrole/);
+  assert.match(preflight, /defaults\.defaclrole = 'postgres'::regrole/);
+  assert.match(preflight, /Supabase seeds separate platform-owned defaults/);
   assert.match(preflight, /ROLLBACK;\s*$/);
   assert.doesNotMatch(
     preflight,
@@ -265,7 +266,8 @@ test("hosted grant receipt proves the exact PostgreSQL 17 authority matrix", asy
   assert.match(receipt, /reviewed_columns <> 84/);
   assert.match(receipt, /column_acl_cells <> 1008/);
   assert.match(receipt, /column_acl_mismatches <> 0/);
-  assert.match(receipt, /other_owner_global_default_grants <> 0/);
+  assert.match(receipt, /defaults\.defaclrole = 'postgres'::regrole/);
+  assert.match(receipt, /Supabase's stock runtime seeds platform-owned/);
   assert.match(receipt, /app_private_schema_owner IS DISTINCT FROM 'postgres'/);
   assert.match(receipt, /'authenticated', 'app_private', 'CREATE'/);
   assert.match(receipt, /defaults\.defaclnamespace = 0/);

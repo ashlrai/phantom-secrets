@@ -241,6 +241,7 @@ SELECT is(
         ON namespace.oid = defaults.defaclnamespace
       CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
       WHERE namespace.nspname = 'public'
+        AND defaults.defaclrole = 'postgres'::regrole
         AND (
           privilege.grantee = 0
           OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
@@ -251,7 +252,7 @@ SELECT is(
     SELECT count(*) FROM forbidden_defaults
   ),
   0::bigint,
-  'global and public-schema defaults grant no future Data API privilege'
+  'postgres defaults grant no future Data API privilege'
 );
 
 CREATE FUNCTION public.phantom_default_acl_probe()
