@@ -230,7 +230,7 @@ test("team identity is server-owned and device issuance is atomic per client", (
 
 test("device and analytics URLs do not persist or report query-bearing values", () => {
   const devicePage = fs.readFileSync(
-    path.join(repoDir, "src/app/device/page.tsx"),
+    path.join(repoDir, "src/app/device/device-authorization-client.tsx"),
     "utf8",
   );
   const posthogConfig = fs.readFileSync(

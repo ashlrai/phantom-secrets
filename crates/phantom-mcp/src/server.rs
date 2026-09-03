@@ -1240,7 +1240,7 @@ impl PhantomMcpServer {
 
     /// Push encrypted vault to Phantom Cloud.
     #[tool(
-        description = "Push local vault to Phantom Cloud. Encrypts secrets client-side before upload; server never sees plaintext. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true`; the agent must ask the user for explicit consent before calling."
+        description = "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true`; the agent must ask the user for explicit consent before calling."
     )]
     async fn phantom_cloud_push(
         &self,
@@ -1347,7 +1347,7 @@ impl PhantomMcpServer {
 
     /// Pull vault from Phantom Cloud.
     #[tool(
-        description = "Pull and decrypt a personal-vault snapshot from Phantom Cloud. DESTRUCTIVE — writes local vault entries; force=true declares overwrites but never bypasses approval. With force=false, existing entries are skipped; any partial result preserves the prior merge base, records a durable reconciliation requirement, and blocks cloud push until a fully reconciled pull. Requires `confirm: true` plus an out-of-band `approval_token`."
+        description = "Pull and decrypt a personal-vault snapshot from a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. DESTRUCTIVE — writes local vault entries; force=true declares overwrites but never bypasses approval. With force=false, existing entries are skipped; any partial result preserves the prior merge base, records a durable reconciliation requirement, and blocks cloud push until a fully reconciled pull. Requires `confirm: true` plus an out-of-band `approval_token`."
     )]
     async fn phantom_cloud_pull(
         &self,
@@ -2502,7 +2502,7 @@ impl PhantomMcpServer {
 
     /// Check cloud auth and sync status.
     #[tool(
-        description = "Check Phantom Cloud authentication status, plan, and last sync version. This uses the stored cloud credential and makes a provider request; requires confirm plus approval_token."
+        description = "Check authentication status, plan, and last sync version against a separately commissioned Phantom Cloud deployment; the public hosted service is not currently commissioned for authenticated use. This uses the stored cloud credential and makes a provider request; requires confirm plus approval_token."
     )]
     async fn phantom_cloud_status(
         &self,
@@ -2557,7 +2557,7 @@ impl PhantomMcpServer {
 
     /// List teams the user belongs to.
     #[tool(
-        description = "List teams the authenticated user belongs to. Returns team id, name, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token."
+        description = "List teams the authenticated user belongs to. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Returns team id, name, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token."
     )]
     async fn phantom_team_list(
         &self,
@@ -2587,9 +2587,9 @@ impl PhantomMcpServer {
         text_result(out)
     }
 
-    /// Create a new team. Pro-only.
+    /// Request team creation from a separately commissioned hosted pilot.
     #[tool(
-        description = "Create a new team. The authenticated user becomes the owner. Pro plan required. Mutating: requires confirm:true."
+        description = "Request a new team from a separately commissioned hosted Pro pilot and entitled account; the public hosted service and self-serve Pro billing are not currently commissioned. If accepted, the authenticated user becomes the owner. Mutating provider request: requires confirm:true plus an out-of-band approval_token."
     )]
     async fn phantom_team_create(
         &self,
@@ -2617,7 +2617,7 @@ impl PhantomMcpServer {
 
     /// List members of a team.
     #[tool(
-        description = "List members of a team by team_id. Returns GitHub login, email, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token."
+        description = "List members of a team by team_id. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Returns GitHub login, email, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token."
     )]
     async fn phantom_team_members(
         &self,
@@ -2656,7 +2656,7 @@ impl PhantomMcpServer {
 
     /// Invite someone to a team by GitHub username.
     #[tool(
-        description = "Invite someone to a team by GitHub username. The caller must be a team owner or admin; the hosted API permits assigning only member or admin (not owner). Mutating provider request: requires confirm:true plus an out-of-band approval_token."
+        description = "Invite someone to a team by GitHub username. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. The caller must be a team owner or admin; the hosted API permits assigning only member or admin (not owner). Mutating provider request: requires confirm:true plus an out-of-band approval_token."
     )]
     async fn phantom_team_invite(
         &self,
@@ -2691,7 +2691,7 @@ impl PhantomMcpServer {
 
     /// Register the user's X25519 public key on a team.
     #[tool(
-        description = "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation."
+        description = "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation."
     )]
     async fn phantom_team_key_publish(
         &self,
@@ -2726,7 +2726,7 @@ impl PhantomMcpServer {
 
     /// Push the current project's vault to a team.
     #[tool(
-        description = "Push this project's secrets to the shared team vault so all members can pull them. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true."
+        description = "Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true."
     )]
     async fn phantom_team_vault_push(
         &self,
@@ -4102,7 +4102,7 @@ impl PhantomMcpServer {
 
     /// Pull a team vault into the current project's local vault.
     #[tool(
-        description = "Download and decrypt the team vault for this project into the local vault. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true."
+        description = "Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true."
     )]
     async fn phantom_team_vault_pull(
         &self,

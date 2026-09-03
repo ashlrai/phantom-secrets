@@ -16,7 +16,7 @@ catalog for value-free secret workflows. The current release contract enforces
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+Install the reviewed `v0.7.4` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -30,13 +30,12 @@ This writes `.claude/settings.local.json` with two things at once:
 - The `phantom` MCP server entry (so Claude can call the Phantom tool catalog)
 - Removal of legacy Phantom-managed `.env` read grants; dotenv denies remain a defense-in-depth boundary while MCP exposes value-blind inventory
 
-Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
-records the running `phantom` executable with `mcp serve`; if that cannot be
-resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is
-unpinned `npx -y phantom-secrets-mcp`, an older registry track, so keep both
-verified binaries installed and inspect the generated entry. Current main
-removes that network fallback and fails closed; this is not `v0.7.3` behavior
-and awaits a later release.
+Install both `v0.7.4` release binaries before setup. Version `0.7.4` records the
+running `phantom` executable with `mcp serve` when it can resolve that runtime,
+otherwise it looks for a local `phantom-mcp`. Setup has no network
+package-runner fallback and fails closed when neither local runtime is
+executable. Keep both verified binaries installed and inspect the generated
+entry.
 
 Verify it registered:
 
@@ -102,8 +101,8 @@ Claude's shell and PTY authority.
 | `phantom_add_secret` | Deprecated compatibility tool. Refuses plaintext values passed through MCP. |
 | `phantom_remove_secret` | Transactionally remove the vault value, lifecycle record, and exact managed-dotenv mapping. |
 | `phantom_rotate` | Regenerate all phantom tokens in `.env`. Old tokens become invalid immediately — any running dev server that cached them will break until it reloads. Real secrets are unchanged. |
-| `phantom_cloud_push` | Encrypt and upload the local vault to Phantom Cloud. Overwrites the existing cloud copy. Requires `phantom login` first. |
-| `phantom_cloud_pull` | Download and decrypt a vault from Phantom Cloud. With `force=false`, skipped entries preserve the prior merge base and block push until full reconciliation; `force=true` declares overwrites but does not bypass approval. |
+| `phantom_cloud_push` | With a separately commissioned hosted deployment and entitled account, encrypt and upload the local vault. The public hosted service is not currently commissioned for authenticated use. Overwrites the existing cloud copy and requires `phantom login` first. |
+| `phantom_cloud_pull` | With a separately commissioned hosted deployment and entitled account, download and decrypt a vault. The public hosted service is not currently commissioned for authenticated use. With `force=false`, skipped entries preserve the prior merge base and block push until full reconciliation; `force=true` declares overwrites but does not bypass approval. |
 | `phantom_copy_secret` | Copy into another initialized project using exact config/vault/managed-dotenv before-images. Existing target ownership and traversal are refused. |
 | `phantom_wrap` | Wrap `package.json` scripts with the installed local `phantom exec --` runtime so secrets are injected at runtime. Saves originals as `script:raw` variants. |
 | `phantom_unwrap` | Reverse `phantom_wrap` — restore original scripts from `:raw` variants and remove the `:raw` entries. |
@@ -145,12 +144,14 @@ Claude: [calls phantom_doctor]
         All checks pass. Config valid, vault accessible, .env fully protected,
         .env is in .gitignore, .env.example exists.
 
-You: back up this vault to cloud so I can restore it on this keychain machine later
+You: after our hosted pilot is commissioned, back up this vault so I can restore
+     it on this keychain machine later
 
-Claude: I'll push to Phantom Cloud — this overwrites the existing cloud copy.
+Claude: I first need to verify that the hosted deployment and your entitlement
+        are commissioned. If they are, the push overwrites the existing cloud copy.
         Approve the exact effect outside my shell authority. [calls
         phantom_cloud_push with confirm: true and the one-use approval_token]
-        Pushed 4 secrets (v7). End-to-end encrypted.
+        [Only after provider acceptance: reports the value-free push result.]
 ```
 
 ---
@@ -227,7 +228,7 @@ never kills a process or deletes the record.
 
 ## Reference
 
-- MCP setup: `phantom setup --client claude` after installing both `v0.7.3` binaries
+- MCP setup: `phantom setup --client claude` after installing both `v0.7.4` binaries
 - Full command list: [getting-started.md](./getting-started.md)
 - Troubleshooting: [troubleshooting.md](./troubleshooting.md)
 - GitHub: [https://github.com/ashlrai/phantom-secrets](https://github.com/ashlrai/phantom-secrets)

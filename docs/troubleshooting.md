@@ -179,11 +179,12 @@ support requires an explicit reviewed trust design and is not supported in this 
 
 ### An older registry-based install command fails
 
-The reviewed `v0.7.3` binaries ship through GitHub Releases and the trusted
-Homebrew formula; npm and crates.io remain older distribution tracks.
+The reviewed `v0.7.4` binaries ship through GitHub Releases and the trusted
+Homebrew formula. npm `latest` remains `0.6.0`; exact npm `0.7.4` wrappers are
+failed release candidates. crates.io remains an older distribution track.
 
-1. Verify the immutable release exists: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
-2. Use the exact `v0.7.3` asset and `.sha256` sidecar documented in
+1. Verify the immutable release exists: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4
+2. Use the exact `v0.7.4` asset and `.sha256` sidecar documented in
    [getting started](./getting-started.md#install)
 3. On macOS, use the tap, trust, and fully qualified formula commands from the
    same install guide
@@ -325,14 +326,20 @@ If you lose access to your vault (e.g., you reset your machine or the vault file
 
 ## Cloud Sync Issues
 
+The source-backed commands in this section require a separately verified hosted
+deployment and account entitlement. The public hosted service is not currently
+commissioned for authenticated use; a 404/5xx or unavailable entitlement is a
+commissioning blocker, not evidence that local vault protection failed.
+
 ### "Not authenticated" when running `phantom cloud push`
 
-You need to log in first:
+After commissioning is verified, log in first:
 ```bash
 phantom login
 ```
 
-This opens your browser for GitHub OAuth. Once authenticated, your device is linked to your Phantom Cloud account.
+This is designed to open the configured device flow. A browser page alone does
+not prove that authentication, account linking, or the hosted API completed.
 
 ### Cloud push fails with encryption error
 

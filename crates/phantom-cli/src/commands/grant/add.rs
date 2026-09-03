@@ -6,7 +6,7 @@
 //!     [--client-secret-env ENV] [--scope a,b,c] [--no-browser] [--json]
 //! ```
 //!
-//! Version 0.7.4 performs no enrollment: it returns before cwd/config/vault/env,
+//! Version 0.7.5 performs no enrollment: it returns before cwd/config/vault/env,
 //! browser, loopback, network, audit, or approval effects. Protocol request
 //! builders remain compiled only for hermetic unit tests.
 
@@ -42,6 +42,6 @@ pub fn run_add(
         json_output,
     );
     bail!(
-        "`phantom grant add` is disabled in shipped 0.7.4 before project, vault, environment, browser, loopback, network, audit, or approval access. Obtain the credential directly from the provider with fresh operator consent, then store it from a trusted terminal with `phantom add <NAME>`. No enrollment or local state change occurred. Do not retry automatically."
+        "`phantom grant add` is disabled in shipped 0.7.5 before project, vault, environment, browser, loopback, network, audit, or approval access. Obtain the credential directly from the provider with fresh operator consent, then store it from a trusted terminal with `phantom add <NAME>`. No enrollment or local state change occurred. Do not retry automatically."
     )
 }

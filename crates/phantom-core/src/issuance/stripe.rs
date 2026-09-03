@@ -1,6 +1,6 @@
 //! Stripe App OAuth protocol foundation.
 //!
-//! Shipped 0.7.4 returns `NotSupported` before request, browser, loopback,
+//! Shipped 0.7.5 returns `NotSupported` before request, browser, loopback,
 //! credential, or network access. This flow executes only in crate-local tests.
 //!
 //! [`StripeAppOAuthFlow`] runs the ONE human "accept permissions" click on a
@@ -321,7 +321,7 @@ const STRIPE_RAK_NOT_SUPPORTED_REASON: &str =
      (e.g. STRIPE_KOALA_TEST): create a sandbox restricted key at \
      https://dashboard.stripe.com/test/apikeys/create (sandbox keys are always revealable \
      and never expire), then store it with trusted-terminal `phantom add STRIPE_KOALA_TEST`. \
-     Automated enrollment and OAuth refresh are disabled in shipped 0.7.4 until durable \
+     Automated enrollment and OAuth refresh are disabled in shipped 0.7.5 until durable \
      recovery escrow exists.";
 
 impl ConsentEngine for StripeRestrictedKeyFlow {

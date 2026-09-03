@@ -6,8 +6,9 @@ Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Current reviewed release: `v0.7.3` at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
-Install: macOS uses the exact Homebrew tap/trust/fully-qualified formula commands below; Linux and Windows use the exact checksum-verified `v0.7.3` assets below
+Release-state snapshot verified 2026-09-02 before any `v0.7.5` publication.
+Reviewed GitHub/Homebrew release at that snapshot: `v0.7.4` at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4
+Install: macOS uses the exact Homebrew tap/trust/fully-qualified formula commands below; Linux and Windows use the exact checksum-verified `v0.7.4` assets below
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`
 
 
@@ -36,31 +37,32 @@ https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/
 
 ## Install
 
-### Homebrew (macOS, reviewed v0.7.3)
+### Homebrew (macOS, reviewed v0.7.4)
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-### Exact v0.7.3 assets
-Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz
-Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz
-Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip
-Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip
+### Exact v0.7.4 assets
+Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-unknown-linux-gnu.tar.gz
+Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-unknown-linux-gnu.tar.gz
+Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-pc-windows-msvc.zip
+Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-pc-windows-msvc.zip
 For each archive, download its adjacent `.sha256` sidecar, verify it, extract both `phantom` and `phantom-mcp` executables, and place them on PATH.
 
 ### Exact source build
 ```
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+git checkout c20f4eb6d8272709985083afe156b5678a1ac054
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-Registry status verified 2026-08-31: npm and the MCP Registry publish 0.6.0;
-crates.io publishes 0.5.1. Unpinned npm, npx, and `cargo install` commands are
-older distribution tracks, not the reviewed v0.7.3 release.
+Registry status verified 2026-09-02: npm `latest` remains 0.6.0; exact npm
+0.7.4 wrappers exist only under the failed `release-candidate` track. No MCP
+Registry 0.7.4 record was found; crates.io remains on 0.5.1. Unpinned npm, npx,
+and `cargo install` commands are not the reviewed v0.7.4 GitHub/Homebrew path.
 
 ### Verify
 ```
@@ -168,7 +170,9 @@ Configure Claude Code MCP server and permissions automatically.
 Writes to .claude/settings.local.json.
 
 ### phantom login
-Sign in through a GitHub device flow. Requires attached stdin/stdout/stderr,
+After a hosted deployment and account entitlement are independently
+commissioned, sign in through its GitHub device flow. The public hosted service
+is not currently commissioned for authenticated use. Requires attached stdin/stdout/stderr,
 then exact typed challenges before provider access and before browser/polling/
 keychain effects.
 
@@ -176,12 +180,12 @@ keychain effects.
 Delete the stored cloud token only after an exact trusted-terminal challenge.
 
 ### phantom cloud push
-After an exact trusted-terminal challenge, encrypt the vault client-side and
-upload ciphertext to Phantom Cloud. A config-save failure after upload is an
+After separate hosted commissioning and an exact trusted-terminal challenge,
+encrypt the vault client-side and upload ciphertext to the configured service. A config-save failure after upload is an
 explicit partial success that must be reconciled; do not retry automatically.
 
 ### phantom cloud pull
-Download and decrypt a personal-vault snapshot from Phantom Cloud. Decryption
+After separate hosted commissioning, download and decrypt a personal-vault snapshot. Decryption
 requires the cloud encryption key in the original OS keychain; login alone on a
 different machine is insufficient.
 Requires an exact trusted-terminal challenge. With `force=false`, skipped local
@@ -250,7 +254,7 @@ Reverse phantom wrap. Restores original scripts from :raw variants.
 
 ### phantom watch
 Watch managed dotenv files and report new unprotected secrets. The compatibility
---auto flag hard-denies before mutation in 0.7.4; review the file and run
+--auto flag hard-denies before mutation in 0.7.5; review the file and run
 transactional phantom init from a trusted terminal.
 
 ### phantom why <KEY>
@@ -283,11 +287,17 @@ Print a shell-completion script to stdout. Source from your shell rc; see the RE
 
 ## MCP server — selected release-checked tools
 
-Setup: install both reviewed `v0.7.3` binaries, then run `phantom setup --client claude`
+Setup: install both reviewed `v0.7.4` binaries, then run `phantom setup --client claude`
 
-Released `v0.7.3` normally records the running `phantom` executable with `mcp serve`; if that cannot be resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is unpinned `npx -y phantom-secrets-mcp`, which resolves an older registry track. Keep both verified `v0.7.3` binaries installed and inspect the generated entry instead of relying on that fallback. Current main removes the network fallback and fails closed; that hardening is not in `v0.7.3` and awaits a later release.
+Released `v0.7.4` records the running `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise it looks for a local `phantom-mcp`. Setup has no network package-runner fallback and fails closed when neither local runtime is executable. Keep both verified `v0.7.4` binaries installed and inspect the generated entry.
 
 The MCP server uses stdio transport via the rmcp 1.3 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex. The runtime `tools/list` response is the canonical parameter schema.
+
+Commissioning boundary: cloud and team tools below are client implementations
+for a separately deployed and entitled hosted service. As of the 2026-09-02
+pre-publication snapshot, the public Phantom Cloud/Pro service is not
+commissioned. Tool availability and local tests do not prove a reachable
+service, account entitlement, or successful provider effect.
 
 ### Read-only and read-only-by-default tools
 
@@ -404,6 +414,11 @@ phantom_apply_expiry_policy
 
 ### Team tools (planned Pro pilot, multi-developer fixed-membership shared vaults)
 
+These tools require a separately commissioned Phantom Cloud deployment and
+account entitlement. The public Phantom Cloud/Pro service was not commissioned
+at the 2026-09-02 pre-publication snapshot; the descriptions below specify
+candidate client behavior, not currently available public operations.
+
 Current vault access is member-wide: every team member can read and write the shared vault. Invitation management is owner/admin-gated; roles do not provide per-vault access control.
 
 phantom_team_list
@@ -519,7 +534,7 @@ Windows source establishes a protected current-user DACL on new private
 files/directories before bytes and preserves the reviewed exact DACL and
 inheritance state on replacement staging files before writing. Reparse, handle,
 ACL, and Credential Manager behavior still await protected native Windows CI
-acceptance. Current main does not prove `v0.7.4` publication, deployment,
+acceptance. Current `0.7.5` source does not prove artifact publication, deployment,
 enterprise commissioning, or customer acceptance.
 
 Implementation-security identity:
@@ -646,8 +661,14 @@ Supported platforms: Vercel, Railway. Requires platform API token in environment
 
 ## Personal Cloud Backup Architecture
 
-Phantom Cloud provides client-encrypted personal-vault backup and restore on the
-machine that holds the original OS-keychain encryption key.
+This is the implemented client/server design for a separately commissioned
+deployment, not evidence of a currently available public service. At the
+2026-09-02 pre-publication snapshot, public Phantom Cloud/Pro hosting and
+entitlements were not commissioned.
+
+When commissioned, Phantom Cloud provides client-encrypted personal-vault
+backup and restore on the machine that holds the original OS-keychain
+encryption key.
 
 For the implemented encrypted cloud-vault path, the server stores opaque ciphertext; encryption and decryption occur in the client. This claim does not make provider API traffic local: configured upstream requests still leave the machine.
 
@@ -680,11 +701,11 @@ The Pro plan is not generally purchasable or commissioned based on repository so
 Direct Phantom Cloud pulls from headless CI are not supported in this release because the CLI does not expose a non-interactive cloud login flow. Use GitHub Actions for checks and builds, then sync deploy-time secrets to Vercel or Railway before deployment.
 
 ```yaml
-- name: Install the immutable Phantom v0.7.3 Linux release
+- name: Install the immutable Phantom v0.7.4 Linux release
   env:
     GH_TOKEN: ${{ github.token }}
   run: |
-    gh release download v0.7.3 --repo ashlrai/phantom-secrets \
+    gh release download v0.7.4 --repo ashlrai/phantom-secrets \
       --pattern phantom-x86_64-unknown-linux-gnu.tar.gz \
       --pattern phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
     sha256sum -c phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
@@ -727,7 +748,7 @@ Do not commit:
 
 1. Solo developer with Claude Code: phantom init, then phantom exec -- claude
 2. Delegate to Claude: add MCP server, say "protect my API keys" — Claude runs phantom_init
-3. Same-keychain-machine backup: phantom login, phantom cloud push, then phantom cloud pull where the original cloud encryption key remains available
+3. Commissioned same-keychain-machine backup: after separately verifying hosted deployment and entitlement, phantom login, phantom cloud push, then phantom cloud pull where the original cloud encryption key remains available
 4. Deploy to Vercel: phantom sync --platform vercel --project prj_xxx
 5. Provider-backed machine setup: phantom pull --from vercel --project prj_xxx (requires Vercel credentials)
 6. Vault backup (encrypted): phantom export --output backup.enc / phantom import backup.enc (separate exact trusted-terminal ceremonies; export passphrase files are rejected)

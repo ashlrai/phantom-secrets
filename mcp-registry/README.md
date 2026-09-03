@@ -16,12 +16,13 @@ unchanged credential. Team invites accept only the hosted API's `member` and
 ## Publication status
 
 This directory is publication source, not a publication receipt. As last
-independently checked on August 31, 2026:
+independently checked on September 2, 2026:
 
 - the immutable GitHub release and trusted Homebrew formula provide verified
-  `v0.7.3` CLI and MCP binaries;
-- the npm package and MCP Registry entry remain on the older `0.6.0` track; and
-- local `server.json` stages version `0.7.4` and points at a `0.7.4` npm wrapper,
+  `v0.7.4` CLI and MCP binaries;
+- both npm `0.7.4` wrappers are public only under `release-candidate`, while
+  `latest` remains `0.6.0`, and no `0.7.4` MCP Registry record was found; and
+- local `server.json` stages version `0.7.5` and points at a `0.7.5` npm wrapper,
   but neither that file nor its README proves the package or registry entry was
   published.
 
@@ -32,7 +33,7 @@ an unpinned npm or package-runner command to configure the current runtime.
 ## Verified local runtime
 
 Install both binaries from the
-[`v0.7.3` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3)
+[`v0.7.4` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4)
 or, on macOS, from the trusted formula:
 
 ```bash
@@ -58,14 +59,11 @@ phantom setup --client windsurf
 phantom setup --client codex
 ```
 
-Released `v0.7.3` normally records its bundled local `phantom mcp serve`
-command. If it cannot resolve that executable, its setup implementation can
-fall back to local `phantom-mcp` and finally to an unpinned registry launcher.
-That final legacy fallback resolves the older registry track; do not rely on
-it. Install both verified `v0.7.3` binaries and inspect the generated command.
-Current main removes the network fallback and fails closed when no local MCP
-runtime is available. That change is not `v0.7.3` behavior and requires a later
-verified release.
+Released `v0.7.4` records its bundled local `phantom mcp serve` command when it
+can resolve that executable, otherwise it looks for local `phantom-mcp`. Setup
+has no network package-runner fallback and fails closed when no local MCP
+runtime is available. Install both verified `v0.7.4` binaries and inspect the
+generated command.
 
 Manual stdio configuration can call the reviewed local executable:
 
@@ -161,7 +159,7 @@ Key authority boundaries:
 - `phantom_setup_workspace` can propose and request setup, but MCP cannot claim
   or apply the trusted-terminal request.
 - Provider enrollment and live issuance/refresh/renewal/rotation/revocation are
-  hard-denied before credential and network access in 0.7.4, including from
+  hard-denied before credential and network access in 0.7.5, including from
   MCP. Protocol source and exact test mocks confer no Locus, broker,
   deployment, provider, or production execution authority.
 - Cloud, validation, rotation, sync, team, scheduling, report-saving, and alert
@@ -174,6 +172,11 @@ local vault and writes `phm_` mappings. Client headers and bodies never resolve
 those mappings. An authenticated proxy bearer can authorize exact configured
 routes, which inject their own route-owned vault value into a fixed auth
 header; rotate exposed mappings and bearers.
+
+These tools expose source-backed protocols, not evidence of a commissioned
+public service. Cloud and team requests require a separately verified
+deployment and account entitlement; the public hosted service is not currently
+commissioned for authenticated use.
 
 Personal Phantom Cloud push/pull can retain a client-encrypted backup for
 recovery on the same machine while its keychain-held cloud encryption key

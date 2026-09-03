@@ -1,6 +1,6 @@
 {
   "name": "phantom-secrets-mcp",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "Value-blind MCP tools and gated secret-lifecycle requests for Phantom Secrets.",
   "bin": {
     "phantom-secrets-mcp": "bin/cli.js",

@@ -138,7 +138,7 @@ function createRunner({
 test("passes only after exact source, rehearsal, native, bundle, and governance gates", () => {
   const { runner, calls } = createRunner();
   const result = runPreTagPreflight({
-    tag: "v0.7.4",
+    tag: "v0.7.5",
     runInput: runUrl,
     cwd: "/fixture/repo",
     commandRunner: runner,
@@ -165,8 +165,8 @@ test("passes only after exact source, rehearsal, native, bundle, and governance 
   ]);
   assert.deepEqual(result.receipt.mutations_performed, []);
   assert.deepEqual(result.commands, [
-    `git tag -a 'v0.7.4' '${sha}' -m 'Phantom v0.7.4'`,
-    "git push origin 'refs/tags/v0.7.4'",
+    `git tag -a 'v0.7.5' '${sha}' -m 'Phantom v0.7.5'`,
+    "git push origin 'refs/tags/v0.7.5'",
   ]);
   assert.equal(calls.filter(({ file, args }) => file === "git" && args[0] === "fetch").length, 0);
   assert.equal(calls.filter(({ file, args }) => file === "git" && args[0] === "ls-remote").length, 4);
@@ -177,7 +177,7 @@ test("accepts a positive run ID directly", () => {
   const { runner } = createRunner();
   assert.equal(
     runPreTagPreflight({
-      tag: "v0.7.4",
+      tag: "v0.7.5",
       runInput: runId,
       cwd: "/fixture/repo",
       commandRunner: runner,
@@ -201,7 +201,7 @@ test("rejects malformed tags and cross-repository run URLs before emitting comma
   assert.throws(
     () =>
       runPreTagPreflight({
-        tag: "v0.7.4",
+        tag: "v0.7.5",
         runInput: `https://github.com/other/project/actions/runs/${runId}`,
         cwd: "/fixture/repo",
         commandRunner: runner,
@@ -225,7 +225,7 @@ test("binds GitHub governance to the canonical origin repository", () => {
     assert.throws(
       () =>
         runPreTagPreflight({
-          tag: "v0.7.4",
+          tag: "v0.7.5",
           runInput: runId,
           cwd: "/fixture/repo",
           commandRunner: runner,
@@ -240,13 +240,13 @@ test("fails closed on dirty source, stale main, and existing tags", () => {
     [{ status: "?? untracked.txt\n" }, /not exactly clean/],
     [{ mainSha: "b".repeat(40) }, /not the current remote main/],
     [{ localTagStatus: 0 }, /already exists locally/],
-    [{ remoteTags: `${"b".repeat(40)}\trefs\/tags\/v0.7.4\n` }, /already exists remotely/],
+    [{ remoteTags: `${"b".repeat(40)}\trefs\/tags\/v0.7.5\n` }, /already exists remotely/],
   ]) {
     const { runner } = createRunner(options);
     assert.throws(
       () =>
         runPreTagPreflight({
-          tag: "v0.7.4",
+          tag: "v0.7.5",
           runInput: runId,
           cwd: "/fixture/repo",
           commandRunner: runner,
@@ -304,7 +304,7 @@ test("requires the exact successful candidate rehearsal and all native jobs", ()
     assert.throws(
       () =>
         runPreTagPreflight({
-          tag: "v0.7.4",
+          tag: "v0.7.5",
           runInput: runId,
           cwd: "/fixture/repo",
           commandRunner: runner,
@@ -335,7 +335,7 @@ test("blocks when required external governance cannot be proven", () => {
           conditions: {
             ref_name: {
               include: ["refs/tags/v*"],
-              exclude: ["refs/tags/v0.7.4"],
+              exclude: ["refs/tags/v0.7.5"],
             },
           },
         },
@@ -371,7 +371,7 @@ test("blocks when required external governance cannot be proven", () => {
     assert.throws(
       () =>
         runPreTagPreflight({
-          tag: "v0.7.4",
+          tag: "v0.7.5",
           runInput: runId,
           cwd: "/fixture/repo",
           commandRunner: runner,
@@ -390,7 +390,7 @@ test("does not include subprocess stderr in a blocker", () => {
   assert.throws(
     () =>
       runPreTagPreflight({
-        tag: "v0.7.4",
+        tag: "v0.7.5",
         runInput: runId,
         cwd: "/fixture/repo",
         commandRunner: runner,

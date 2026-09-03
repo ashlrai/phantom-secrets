@@ -353,7 +353,7 @@ fn now_unix() -> u64 {
 
 /// The interceptor injects configured route-owned secrets into fixed auth
 /// headers and scrubs real secrets from API responses to prevent leakage.
-/// Client-controlled phantom-token substitution is disabled in 0.7.4.
+/// Client-controlled phantom-token substitution is disabled in 0.7.5.
 #[derive(Clone)]
 pub struct Interceptor {
     /// phantom_token_string -> real_secret_value (for outgoing requests)

@@ -26,7 +26,7 @@ fn grant_add_denies_before_project_env_or_side_effect_access() {
         .failure();
 
     let stderr = String::from_utf8_lossy(&assertion.get_output().stderr);
-    assert!(stderr.contains("disabled in shipped 0.7.4"), "{stderr}");
+    assert!(stderr.contains("disabled in shipped 0.7.5"), "{stderr}");
     assert!(stderr.contains("No enrollment or local state change occurred"));
     assert!(!stderr.contains("must-never-be-read"));
     assert!(!stderr.contains("No .phantom.toml"));
@@ -45,7 +45,7 @@ fn grant_add_invalid_provider_still_hits_same_early_boundary() {
         .failure();
 
     let stderr = String::from_utf8_lossy(&assertion.get_output().stderr);
-    assert!(stderr.contains("disabled in shipped 0.7.4"), "{stderr}");
+    assert!(stderr.contains("disabled in shipped 0.7.5"), "{stderr}");
     assert!(!stderr.contains("unknown provider"));
     assert_eq!(fs::read_dir(project.path()).unwrap().count(), 0);
 }

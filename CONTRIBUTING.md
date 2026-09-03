@@ -4,8 +4,11 @@ Thanks for helping make safe agentic development practical. Phantom accepts focu
 
 Please read the [Code of Conduct](CODE_OF_CONDUCT.md), [security policy](SECURITY.md), and [threat model](THREAT_MODEL.md) before changing a trust boundary. Report vulnerabilities privately; do not open a public issue for them.
 
-The reviewed public distribution is `v0.7.3`; this repository currently stages
-`0.7.4`. Building or testing staged source does not prove that a package,
+Release-state snapshot, verified 2026-09-02 before any `v0.7.5` publication:
+the reviewed immutable GitHub/Homebrew distribution is `v0.7.4`; both npm
+`0.7.4` wrappers remain public only under the failed `release-candidate` track,
+while npm `latest` remains `0.6.0`. Repository source is versioned for the
+then-unpublished `0.7.5` fix-forward. Building or testing source does not prove that a package,
 native artifact, deployment, provider integration, or hosted entitlement has
 been published or accepted. See the [roadmap](ROADMAP.md) for the evidence gates.
 
@@ -43,7 +46,7 @@ On a machine where `cargo` is not on `PATH`, invoke the same commands through yo
 |------|---------|
 | `crates/phantom-cli` | Operator CLI and command integration tests. |
 | `crates/phantom-core` | Configuration, dotenv handling, cloud/auth clients, audit, validation, shared policy, and test-only provider protocol scaffolding. Production issuance is disabled. |
-| `crates/phantom-cli/src/commands/grant` | Value-free grant metadata plus compatibility commands that hard-deny enrollment and remote revocation in 0.7.4. |
+| `crates/phantom-cli/src/commands/grant` | Value-free grant metadata plus compatibility commands that hard-deny enrollment and remote revocation in 0.7.5. |
 | `crates/phantom-vault` | OS-keychain and encrypted-file vault backends. |
 | `crates/phantom-proxy` | Authenticated loopback proxy, exact route-owned auth-header injection, inert client headers/bodies, response scrubbing, and streaming. |
 | `crates/phantom-mcp` | MCP server, closed parameter schemas, the governed conversation facade, and separately gated compatibility tools. |
@@ -65,7 +68,7 @@ foundations must stay fail closed until the activation boundaries in
 
 The word **grant** has two distinct meanings. Historical provider-grant source
 models credential and renewal metadata, while an authority grant is an inactive
-value-free execution-kernel type. Shipped 0.7.4 creates no live provider grant:
+value-free execution-kernel type. Staged 0.7.5 creates no live provider grant:
 enrollment and remote revocation hard-deny before credentials or network. A
 provider-grant record must never be accepted as a Locus credential, broker
 lease, or execution permit. Current behavior is specified in

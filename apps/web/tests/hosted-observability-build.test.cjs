@@ -170,7 +170,7 @@ test(
       assert.deepEqual(runtimeInjection.body, {
         status: "not_ready",
         service: "phantom-web",
-        release_version: "0.7.4",
+        release_version: "0.7.5",
       });
 
       copyApplication(withPublicConfig);
@@ -184,7 +184,7 @@ test(
       assert.deepEqual(builtConfiguration.body, {
         status: "configuration_ready",
         service: "phantom-web",
-        release_version: "0.7.4",
+        release_version: "0.7.5",
       });
     } finally {
       fs.rmSync(temporaryRoot, { force: true, recursive: true });

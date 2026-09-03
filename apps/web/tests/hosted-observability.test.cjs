@@ -63,7 +63,7 @@ function loadCommissioning() {
   });
 }
 
-function loadObservability(packageVersion = "0.7.4") {
+function loadObservability(packageVersion = "0.7.5") {
   const commissioning = loadCommissioning();
   const publicAuthConfiguration = compileModule(
     publicAuthConfigurationPath,
@@ -131,7 +131,7 @@ test("build identity is exact, bounded, and all-or-nothing", () => {
   const valid = validEnvironment();
   assert.deepEqual(observability.readBuildIdentity(valid), {
     identified: true,
-    release_version: "0.7.4",
+    release_version: "0.7.5",
     source_revision: valid.VERCEL_GIT_COMMIT_SHA,
     deployment_environment: "production",
     unavailable_reasons: [],
@@ -201,7 +201,7 @@ test("build identity is exact, bounded, and all-or-nothing", () => {
     assert.doesNotMatch(JSON.stringify(identity), /dep_|Production|A{40}/, name);
   }
 
-  const invalidRelease = loadObservability("v0.7.4").readBuildIdentity(valid);
+  const invalidRelease = loadObservability("v0.7.5").readBuildIdentity(valid);
   assert.equal(invalidRelease.identified, false);
   assert.deepEqual(invalidRelease.unavailable_reasons, [
     "release_version_missing_or_invalid",
@@ -221,7 +221,7 @@ test("health is provider-free route/runtime liveness with no-store responses", a
     assert.deepEqual(await response.json(), {
       status: "alive",
       service: "phantom-web",
-      release_version: "0.7.4",
+      release_version: "0.7.5",
     });
   });
 
@@ -308,7 +308,7 @@ test("closed hosted gates do not make core configuration unready", async () => {
       assert.deepEqual(body, {
         status: "configuration_ready",
         service: "phantom-web",
-        release_version: "0.7.4",
+        release_version: "0.7.5",
       });
     });
   }
@@ -360,7 +360,7 @@ test("each commissioned service must have its configuration", async () => {
       assert.deepEqual(await response.json(), {
         status: "not_ready",
         service: "phantom-web",
-        release_version: "0.7.4",
+        release_version: "0.7.5",
       });
     });
   }

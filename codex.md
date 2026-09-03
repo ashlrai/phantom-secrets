@@ -7,14 +7,19 @@ undetected entries remain outside that claim.
 
 ## Rules
 
-- NEVER hardcode API keys in source code
-- NEVER ask the user to paste real API key values into code files
-- NEVER attempt to read, log, or display real secret values
-- The `phm_...` tokens in `.env` are intentional — they are worthless placeholders
+- Do not hardcode API keys in source code.
+- Do not ask the user to paste real API key values into code files or chat.
+- Do not intentionally read, log, or display stored secret values.
+- The `phm_...` values in managed dotenv entries are intentional non-provider
+  placeholders. Treat them as sensitive metadata because an active authenticated
+  Phantom proxy can use a valid mapping on its exact configured route.
 
 ## MCP Tools
 
-Phantom provides an MCP server (`npx phantom-secrets-mcp`) with these tools:
+Install both binaries from one exact immutable Phantom release, then use
+`phantom setup --client codex`. The generated configuration records the bundled
+`phantom mcp serve` runtime when resolvable, otherwise a local `phantom-mcp`;
+it has no unpinned network package-runner fallback. Representative tools include:
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
@@ -23,11 +28,11 @@ Phantom provides an MCP server (`npx phantom-secrets-mcp`) with these tools:
 | `phantom_status` | Show vault backend, secret count, project status | — |
 | `phantom_add_secret` | **Deprecated** — refuses plaintext via MCP. Use `phantom_add_secret_interactive` instead | name, value |
 | `phantom_add_secret_interactive` | Prompt the user on the terminal for a value, then store. Value never crosses the MCP wire | name |
-| `phantom_remove_secret` | Remove a secret from the vault | name |
-| `phantom_rotate` | Regenerate all phantom tokens in .env | — |
-| `phantom_cloud_push` | Push encrypted vault to Phantom Cloud | — |
-| `phantom_cloud_pull` | Pull vault from Phantom Cloud | force (bool) |
-| `phantom_cloud_status` | Check cloud auth and sync status | — |
+| `phantom_remove_secret` | Request exact transactional removal through the gated compatibility surface | name, confirm, approval_token |
+| `phantom_rotate` | Request regeneration of project phantom mappings; provider credentials are unchanged | confirm, approval_token |
+| `phantom_cloud_push` | Request a client-encrypted push after separate hosted commissioning and entitlement | confirm, approval_token |
+| `phantom_cloud_pull` | Request a pull after separate hosted commissioning and entitlement | force, confirm, approval_token |
+| `phantom_cloud_status` | Request cloud status after separate hosted commissioning | confirm, approval_token |
 
 ## MCP Setup
 
@@ -43,10 +48,10 @@ Or print the snippet for manual paste:
 phantom setup --client codex --print
 ```
 
-Released `v0.7.3` retains a final unpinned npm fallback. Current 0.7.4 source
-removes that network fallback and fails closed when neither the running
-`phantom mcp serve` runtime nor a local `phantom-mcp` can be resolved. Install
-both exact release binaries and inspect the generated entry.
+Setup fails closed when neither the running `phantom mcp serve` runtime nor a
+local `phantom-mcp` can be resolved. Install both binaries from the same exact
+release and inspect the generated entry. Consult the live `tools/list` response
+for the complete catalog and exact input schemas.
 
 ## CLI Commands
 
@@ -63,7 +68,9 @@ both exact release binaries and inspect the generated entry.
    route match, the proxy discards client control of that route's auth header
    and injects only the route-owned vault value into the fixed header. Client
    headers and bodies never resolve phantom tokens.
-3. AI agents see only worthless `phm_` tokens — real keys never enter the AI context window
+3. Phantom's value-blind interfaces are designed not to return stored values.
+   Unmanaged files, explicit reveal/export paths, same-user processes, provider
+   traffic, and values pasted into a conversation remain outside that boundary.
 
 ## When You See API Keys
 

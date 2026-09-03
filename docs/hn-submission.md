@@ -22,7 +22,7 @@ closed rather than being injected into the child process.
 
 Modular Rust workspace. MIT licensed. No SaaS dependency for local protection.
 
-Install the reviewed `v0.7.3` release using the checksum-verified
+Install the reviewed `v0.7.4` release using the checksum-verified
 [platform instructions](./getting-started.md#install), then run `phantom init`.
 
 GitHub: https://github.com/ashlrai/phantom-secrets

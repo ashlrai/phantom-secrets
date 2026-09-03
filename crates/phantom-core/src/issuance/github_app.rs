@@ -1,6 +1,6 @@
 //! GitHub App bootstrap protocol foundation.
 //!
-//! Shipped 0.7.4 returns `NotSupported` before browser, loopback, credential,
+//! Shipped 0.7.5 returns `NotSupported` before browser, loopback, credential,
 //! or network access. This flow executes only in crate-local tests.
 //!
 //! [`GithubAppManifestFlow`] registers a private, least-privilege GitHub App

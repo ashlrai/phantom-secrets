@@ -338,8 +338,9 @@ pub struct SyncParams {
 pub struct TeamCreateParams {
     /// Name for the new team (human-readable label)
     pub name: String,
-    /// Required. Must be true — confirms the user wants to create a new
-    /// team. Creating a team is a billable Pro action.
+    /// Required. Must be true — confirms the user wants to request a new team
+    /// from a separately commissioned hosted Pro pilot. This is not evidence
+    /// of current public entitlement or self-serve billing.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.

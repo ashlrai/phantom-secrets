@@ -107,9 +107,9 @@ const machineReadableGuides = Object.entries(machineReadableClaims).filter(
 );
 
 const verifiedReleaseUrl =
-  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3";
-const candidateReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4";
+const candidateReleaseUrl =
+  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5";
 
 function structuredMetadataBlock(source, type) {
   const marker = `"@type": "${type}"`;
@@ -462,14 +462,16 @@ test("published package READMEs use verified local binaries and bounded claims",
   for (const [file, source] of Object.entries(publishedPackageDocumentationClaims)) {
     if (file === "mcp-registry/README.md") {
       assert.ok(source.includes(verifiedReleaseUrl), file);
-      assert.match(source, /Released `v0\.7\.3`[\s\S]{0,500}legacy fallback/i, file);
-      assert.match(source, /Current main[\s\S]{0,180}(?:fails closed|removes the network fallback)/i, file);
-      assert.match(source, /older (?:release|registry) track/i, file);
+      assert.match(
+        source,
+        /Released `v0\.7\.4`[\s\S]{0,300}no network package-runner fallback[\s\S]{0,120}fails closed/i,
+        file,
+      );
     } else {
       assert.ok(source.includes(candidateReleaseUrl), file);
       assert.match(
         source,
-        /version `0\.7\.4`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
+        /version `0\.7\.5`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
         file,
       );
       assert.match(
@@ -479,7 +481,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       );
       assert.match(
         source,
-        /Version `0\.7\.4`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
+        /Version `0\.7\.5`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
         file,
       );
       assert.doesNotMatch(source, /releases\/tag\/v0\.7\.3/i, file);
@@ -518,12 +520,12 @@ test("registry README catalog exactly matches the staged 54-tool schema", () => 
   assert.equal(documentedNames.length, 54, "README catalog must contain 54 tool names");
   assert.equal(new Set(documentedNames).size, 54, "README catalog names must be unique");
   assert.deepEqual(documentedNames.sort(), schemaNames.sort());
-  assert.match(registryReadme, /npm package and MCP Registry entry remain on the older `0\.6\.0` track/i);
-  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.4`/i);
+  assert.match(registryReadme, /npm `0\.7\.4` wrappers are public only under `release-candidate`/i);
+  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.5`/i);
   assert.match(registryReadme, /do not publish this manifest until/i);
 });
 
-test("released setup guidance separates v0.7.3 fallback from current-main hardening", () => {
+test("released setup guidance uses the verified v0.7.4 fail-closed local runtime", () => {
   const setupBoundaryGuides = {
     "README.md": repositoryGuidanceClaims["README.md"],
     "docs/getting-started.md": repositoryGuidanceClaims["docs/getting-started.md"],
@@ -539,17 +541,14 @@ test("released setup guidance separates v0.7.3 fallback from current-main harden
   };
 
   for (const [file, source] of Object.entries(setupBoundaryGuides)) {
-    assert.match(source, /Install both[^\n]*`v0\.7\.3`|both verified `v0\.7\.3` binaries/i, file);
+    assert.match(source, /Install both[^\n]*`v0\.7\.4`|both verified `v0\.7\.4` binaries/i, file);
+    assert.match(source, /(?:Version|Released) `?v?0\.7\.4/i, file);
     assert.match(
       source,
-      /Released `v0\.7\.3`[\s\S]{0,420}legacy fallback[\s\S]{0,120}npx -y phantom-secrets-mcp/i,
+      /no network\s+package-runner fallback[\s\S]{0,80}fails closed|fails closed instead of generating a registry-backed command/i,
       file,
     );
-    assert.match(
-      source,
-      /Current main[\s\S]{0,160}(?:fails closed|removes (?:the )?network fallback)[\s\S]{0,180}(?:not (?:part of|in) `v0\.7\.3`|not `v0\.7\.3` behavior)/i,
-      file,
-    );
+    assert.doesNotMatch(source, /Released `v0\.7\.3`[\s\S]{0,500}legacy fallback/i, file);
   }
 });
 
@@ -558,9 +557,9 @@ test("HowTo and delegation guidance avoid timing and unpinned quickstart claims"
   const delegation = repositoryGuidanceClaims["docs/delegation-quickstart.md"];
 
   assert.doesNotMatch(installHowTo, /totalTime|PT1M/i);
-  assert.match(installHowTo, /Released v0\.7\.3 normally registers its bundled `phantom mcp serve`/i);
-  assert.match(installHowTo, /Current main removes that network fallback and fails closed/i);
-  assert.match(delegation, /both `phantom` and `phantom-mcp` from the reviewed `v0\.7\.3` distribution/i);
+  assert.match(installHowTo, /Released v0\.7\.4 records its bundled local `phantom mcp serve`/i);
+  assert.match(installHowTo, /no network package-runner fallback and fails closed/i);
+  assert.match(delegation, /both `phantom` and `phantom-mcp` from the reviewed `v0\.7\.4`[^\n]*distribution/i);
   assert.match(delegation, /phantom agent setup --dry-run/i);
   assert.doesNotMatch(delegation, /npx(?:\s+-y)?\s+phantom-secrets\s+agent setup/i);
 });
@@ -598,17 +597,24 @@ test("current SoftwareApplication and HowTo metadata point at the verified relea
   const softwareApplication = structuredMetadataBlock(layout, "SoftwareApplication");
   const installHowTo = structuredMetadataBlock(layout, "HowTo");
 
-  assert.match(softwareApplication, /softwareVersion:\s*"0\.7\.3"/);
-  assert.match(softwareApplication, /releases\/tag\/v0\.7\.3/);
+  assert.match(softwareApplication, /softwareVersion:\s*"0\.7\.4"/);
+  assert.match(softwareApplication, /releases\/tag\/v0\.7\.4/);
   assert.doesNotMatch(softwareApplication, /npmjs\.com\/package\/phantom-secrets/i);
   assert.match(
     installHowTo,
-    /(?:releases\/tag\/v0\.7\.3|brew trust --formula ashlrai\/phantom\/phantom)/i,
+    /(?:releases\/tag\/v0\.7\.4|brew trust --formula ashlrai\/phantom\/phantom)/i,
   );
   assert.doesNotMatch(
     installHowTo,
     /\b(?:npm\s+(?:install|i)|npx(?:\s+-y)?|cargo\s+install)\s+phantom-secrets(?:-mcp)?\b/i,
   );
+
+  const quickStart = claims["src/components/landing/QuickStart.tsx"];
+  const install = claims["src/components/landing/Install.tsx"];
+  assert.match(quickStart, /Install v0\.7\.4 on macOS/);
+  assert.match(quickStart, /phantom-mcp 0\.7\.4/);
+  assert.match(install, /both reviewed v0\.7\.4 binaries/);
+  assert.doesNotMatch(`${quickStart}\n${install}`, /(?:Install|reviewed) v0\.7\.3/i);
 });
 
 test("public leak statistics use the primary GitGuardian 2026 report accurately", () => {
@@ -832,9 +838,10 @@ test("community health metadata preserves release and support boundaries", () =>
   );
 
   const readme = readRepo("README.md");
-  assert.match(readme, /v0\.7\.3[^\n]*reviewed public distribution/i);
-  assert.match(readme, /repository stages `?0\.7\.4/i);
-  assert.match(readme, /do not prove[^\n]*0\.7\.4[^\n]*(?:artifact|package)|0\.7\.4[^\n]*(?:artifact|package)[^\n]*not prove/i);
+  assert.match(readme, /v0\.7\.4[^\n]*reviewed immutable GitHub and Homebrew/i);
+  assert.match(readme, /release-state snapshot[^\n]*2026-09-02/i);
+  assert.match(readme, /repository source is versioned `?0\.7\.5/i);
+  assert.match(readme, /do not prove[^\n]*0\.7\.5[^\n]*(?:artifact|package)|0\.7\.5[^\n]*(?:artifact|package)[^\n]*not prove/i);
 
   const roadmap = readRepo("ROADMAP.md");
   assert.match(roadmap, /ordered engineering gates, not delivery dates/i);
@@ -851,8 +858,10 @@ test("community health metadata preserves release and support boundaries", () =>
 
   const citation = readRepo("CITATION.cff");
   assert.match(citation, /^cff-version: 1\.2\.0$/m);
-  assert.match(citation, /^version: 0\.7\.3$/m);
-  assert.match(citation, /^date-released: 2026-08-31$/m);
+  assert.match(citation, /^version: 0\.7\.5$/m);
+  assert.match(citation, /v0\.7\.5 release candidate source/i);
+  assert.match(citation, /repository URL and full commit SHA/i);
+  assert.doesNotMatch(citation, /^date-released:/m);
 });
 
 test("cloud-signed audit remains an explicit network-free protocol foundation", () => {
@@ -890,7 +899,7 @@ test("add guidance keeps headless creation separate from replacement authority",
 
 test("contributor templates keep secrets and evidence layers separated", () => {
   const bug = readRepo(".github/ISSUE_TEMPLATE/bug_report.yml");
-  assert.match(bug, /placeholder: "phantom 0\.7\.3"/);
+  assert.match(bug, /placeholder: "phantom 0\.7\.4"/);
   assert.match(bug, /persistent `phm_` mappings; mappings are sensitive metadata/i);
   assert.doesNotMatch(bug, /phm_ tokens are safe to share/i);
   assert.match(bug, /private vulnerability reporting/i);

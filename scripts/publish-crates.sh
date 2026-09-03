@@ -435,6 +435,7 @@ lookup_remote() {
   local status
   REMOTE_CHECKSUM=""
   status="$($CURL_BIN --silent --show-error --location \
+    --user-agent "phantom-secrets-release/$WORKSPACE_VERSION (+https://github.com/$GITHUB_REPOSITORY)" \
     --proto '=https' --proto-redir '=https' --max-redirs 3 \
     --connect-timeout 10 --max-time 30 --max-filesize 1048576 \
     --output "$response" --write-out '%{http_code}' \

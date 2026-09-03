@@ -49,6 +49,13 @@ function loadRoute(relativePath) {
   const routePath = path.join(webDir, relativePath);
   const route = compileModule(routePath, (specifier) => {
     if (specifier === "@/lib/commissioning") return commissioning;
+    if (specifier === "@/lib/device-code") {
+      return {
+        formatDeviceUserCode: (value) => value,
+        isValidDeviceUserCode: () => true,
+        normalizeDeviceUserCode: (value) => value,
+      };
+    }
     if (specifier === "@/lib/auth") {
       const unauthorized = async () => {
         effects.auth += 1;
@@ -182,6 +189,21 @@ const ROUTES = [
   })),
 ];
 
+const DEVICE_ROUTES = [
+  "initiate",
+  "approve",
+  "poll",
+].map((action) => ({
+  name: `device auth ${action}`,
+  service: "personal_vaults",
+  path: `src/app/api/v1/auth/device/${action}/route.ts`,
+  handler: "POST",
+  request: () =>
+    new Request(`https://phm.dev/api/v1/auth/device/${action}`, {
+      method: "POST",
+    }),
+}));
+
 async function withOnlyGate(service, value, action) {
   const previous = new Map(
     Object.values(SERVICE_ENVS).map((env) => [env, process.env[env]]),
@@ -200,7 +222,7 @@ async function withOnlyGate(service, value, action) {
 }
 
 test("all hosted API route classes deny malformed commissioning before side effects", async () => {
-  for (const definition of ROUTES) {
+  for (const definition of [...ROUTES, ...DEVICE_ROUTES]) {
     for (const gateValue of [undefined, "", "false", "TRUE", "1", " true "]) {
       const { route, effects } = loadRoute(definition.path);
       const args = [definition.request()];
@@ -343,15 +365,31 @@ test("CLI account status omits hosted vault metadata while its separate gate is 
   assert.deepEqual(tables, ["users", "vault_blobs"]);
 });
 
-test("device authorization routes remain independent of hosted-service gates", () => {
+test("device authorization routes and UI share the server-only cloud gate", () => {
   for (const relativePath of [
     "src/app/api/v1/auth/device/initiate/route.ts",
     "src/app/api/v1/auth/device/approve/route.ts",
     "src/app/api/v1/auth/device/poll/route.ts",
   ]) {
     const source = fs.readFileSync(path.join(webDir, relativePath), "utf8");
-    assert.doesNotMatch(source, /@\/lib\/commissioning|requireHostedService/);
+    assert.match(source, /@\/lib\/commissioning/);
+    assert.match(source, /requireHostedService\("personal_vaults"\)/);
+    assert.ok(
+      source.indexOf('requireHostedService("personal_vaults")') <
+        Math.min(
+          ...["readBoundedJsonObject", "createServiceClient"]
+            .map((effect) => source.indexOf(effect, source.indexOf("export async function POST")))
+            .filter((index) => index >= 0),
+        ),
+      `${relativePath}: gate must precede request and database effects`,
+    );
   }
+
+  const page = fs.readFileSync(path.join(webDir, "src/app/device/page.tsx"), "utf8");
+  assert.match(page, /isHostedServiceCommissioned\("personal_vaults"\)/);
+  assert.match(page, /Cloud device sign-in is not commissioned/);
+  assert.match(page, /will not issue, approve, or exchange device codes/);
+  assert.doesNotMatch(page, /^"use client";/);
 });
 
 test("dashboard hosted data clients are guarded by server-only exact gates", () => {

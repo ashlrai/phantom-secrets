@@ -8,11 +8,15 @@ Phantom is still pre-1.0, so security support is focused on the reviewed public
 release and active development branch. Repository version metadata can move
 ahead of published artifacts.
 
+The table below is a release-state snapshot verified on 2026-09-02 before any
+`v0.7.5` publication. The immutable tag preserves that historical boundary;
+the live release page is authoritative for later publication state.
+
 | Version or surface | Security support | Notes |
 |--------------------|------------------|-------|
-| Reviewed public release, `v0.7.3` | Supported | Security fixes are prioritized for the immutable reviewed release and the separately deployed web surface where applicable. |
-| Staged `0.7.4` repository source | Supported for validation | Reports against unreleased source are welcome. Source and workflow definitions are not evidence of a published artifact or deployment. |
-| Releases before `v0.7.3` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
+| Reviewed GitHub/Homebrew release, `v0.7.4` | Supported | Security fixes are prioritized for the immutable reviewed release and the separately deployed web surface where applicable. The npm `0.7.4` wrappers remain failed release candidates, not the default install path. |
+| `0.7.5` repository source at this snapshot | Supported for validation | Reports against the then-unpublished fix-forward source are welcome. Source and workflow definitions alone are not evidence of a published artifact or deployment. |
+| Releases before `v0.7.4` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
 | Forks, unofficial builds, or modified binaries | Not supported | Maintainers cannot verify the provenance or behavior of modified distributions. |
 
 ### Urgent 0.7.0 upgrade notice
@@ -180,9 +184,9 @@ sandboxed principal.
   Credential Manager acceptance remains pending.
 - Audit logging is opt-in and local by default. It cannot prove deletion of both the audit log and its local checkpoint without external evidence.
 - Team member removal does not retroactively revoke access to vault pushes that were encrypted to that member before removal. Rotate affected secrets after offboarding.
-- All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.4. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.
+- All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.5. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.
 - `phantom grant revoke` currently fails closed before local mutation because remote revocation is not wired for the supported providers.
 - A provider grant is credential lifecycle state, not an execution-kernel authority grant. It cannot activate Locus verification, a broker lease, or production engineering execution.
-- GitHub immutable releases, checksums, archive-specific SPDX SBOMs, and GitHub attestations protect the published `v0.7.x` release artifacts. Installers and the self-updater verify checksums but do not yet verify attestations directly. Independent signatures, macOS notarization, Windows Authenticode, and exact-archive native acceptance remain open.
+- GitHub immutable release controls, checksums, archive-specific SPDX SBOMs, and GitHub attestations protect the published exact `v0.7.4` release artifacts. Installers and the self-updater verify checksums but do not yet verify attestations directly. Exact `v0.7.4` archives passed the six-target release-native matrix, while its npm wrappers failed their separate installation-channel acceptance. Independent signatures, macOS notarization, Windows Authenticode, native credential-store/ACL/editor acceptance, and exact `v0.7.5` archive acceptance remain open.
 
 See [THREAT_MODEL.md](./THREAT_MODEL.md#7-known-gaps-and-non-mitigations) for the full list of known gaps and non-mitigations.

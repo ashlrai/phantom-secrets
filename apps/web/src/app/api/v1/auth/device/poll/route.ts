@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase-server";
+import { requireHostedService } from "@/lib/commissioning";
 import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { effectivePlan } from "@/lib/plan";
 import { createHash, randomBytes } from "crypto";
@@ -7,6 +8,9 @@ const CLI_TOKEN_TTL_DAYS = 90;
 const MAX_DEVICE_AUTH_BODY_BYTES = 4_096;
 
 export async function POST(req: Request) {
+  const commissioningGate = requireHostedService("personal_vaults");
+  if (commissioningGate) return commissioningGate;
+
   let body: { device_code?: string };
   try {
     body = await readBoundedJsonObject(req, MAX_DEVICE_AUTH_BODY_BYTES);

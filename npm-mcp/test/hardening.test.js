@@ -23,7 +23,9 @@ const {
   ensureBinary,
   ensurePrivateCacheDir,
   extractBinaryFromArchive,
+  fsyncFile,
   getCacheDir,
+  getPlatformTarget,
   pathSet,
   propagateChildFailure,
   readVerifiedManifest,
@@ -53,11 +55,126 @@ function fakeHttps(sequence) {
   };
 }
 
+async function assertPreviousVersionCachePreserved(stage) {
+  const cacheDir = mkdtempSync(join(tmpdir(), `phantom-mcp-previous-${stage}-`));
+  try {
+    ensurePrivateCacheDir(cacheDir);
+    const paths = pathSet(cacheDir);
+    const previousBinary = Buffer.from(`working phantom-mcp 0.7.4 cache for ${stage}`);
+    const previousManifest = Buffer.from(`${JSON.stringify({
+      version: "0.7.4",
+      sha256: crypto.createHash("sha256").update(previousBinary).digest("hex"),
+    })}\n`);
+    writePrivateFile(paths.binaryPath, previousBinary, 0o700);
+    writePrivateFile(paths.manifestPath, previousManifest, 0o600);
+
+    const target = getPlatformTarget(process);
+    const archiveExt = process.platform === "win32" ? "zip" : "tar.gz";
+    const archiveName = `phantom-${target}.${archiveExt}`;
+    const archiveUrl =
+      `https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/${archiveName}`;
+    const archiveBytes = Buffer.from(`verified archive for ${stage}`);
+    const archiveSha = crypto.createHash("sha256").update(archiveBytes).digest("hex");
+    const observedUrls = [];
+    let versionExecutions = 0;
+    const stagedFailure = Object.assign(new Error(`simulated ${stage} failure`), { code: "EIO" });
+
+    await assert.rejects(
+      ensureBinary({
+        cacheDir,
+        runtime: { platform: process.platform, arch: process.arch },
+        downloadImpl: async (url) => {
+          observedUrls.push(url);
+          if (stage === "download") throw stagedFailure;
+          if (url === `${archiveUrl}.sha256`) {
+            return Buffer.from(`${archiveSha}  ${archiveName}\n`);
+          }
+          assert.strictEqual(url, archiveUrl);
+          return archiveBytes;
+        },
+        extractImpl: (_archivePath, candidatePath) => {
+          if (stage === "extract") throw stagedFailure;
+          writePrivateFile(candidatePath, `candidate for ${stage}`, 0o700);
+          if (stage === "flush") {
+            fsyncFile(candidatePath, {
+              fsyncSyncImpl: () => { throw stagedFailure; },
+            });
+          }
+        },
+        execFileSyncImpl: () => {
+          versionExecutions += 1;
+          return Buffer.from("phantom-mcp 0.7.4\n");
+        },
+      }),
+      stage === "version"
+        ? /did not report exact version 0\.7\.5/
+        : (error) => error === stagedFailure
+    );
+
+    assert.deepStrictEqual(readFileSync(paths.binaryPath), previousBinary, `${stage} binary bytes`);
+    assert.deepStrictEqual(readFileSync(paths.manifestPath), previousManifest, `${stage} manifest bytes`);
+    assert.strictEqual(existsSync(paths.backupBinaryPath), false, `${stage} backup binary cleanup`);
+    assert.strictEqual(existsSync(paths.backupManifestPath), false, `${stage} backup manifest cleanup`);
+    assert.strictEqual(existsSync(paths.transactionPath), false, `${stage} transaction cleanup`);
+    assert.strictEqual(versionExecutions, stage === "version" ? 1 : 0, `${stage} version execution`);
+    assert.deepStrictEqual(
+      observedUrls,
+      stage === "download" ? [`${archiveUrl}.sha256`] : [`${archiveUrl}.sha256`, archiveUrl]
+    );
+  } finally {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+}
+
 (async () => {
   assert.throws(
     () => getCacheDir({ env: {}, homedirImpl: () => "relative-home" }),
     /absolute private home/
   );
+
+  let fsyncOpenMode;
+  let fsyncDescriptor;
+  let closedDescriptor;
+  fsyncFile("C:\\private\\phantom-mcp.exe", {
+    openSyncImpl: (_path, mode) => {
+      fsyncOpenMode = mode;
+      if (mode === "r") {
+        const error = new Error("simulated Windows read-only FlushFileBuffers failure");
+        error.code = "EPERM";
+        throw error;
+      }
+      return 43;
+    },
+    fsyncSyncImpl: (fd) => {
+      fsyncDescriptor = fd;
+    },
+    closeSyncImpl: (fd) => {
+      closedDescriptor = fd;
+    },
+  });
+  assert.strictEqual(fsyncOpenMode, "r+");
+  assert.strictEqual(fsyncDescriptor, 43);
+  assert.strictEqual(closedDescriptor, 43);
+
+  const fsyncFailure = Object.assign(new Error("simulated durable write failure"), { code: "EIO" });
+  let failureClosedDescriptor;
+  assert.throws(
+    () => fsyncFile("C:\\private\\phantom-mcp-fsync-failure.exe", {
+      openSyncImpl: (_path, mode) => {
+        assert.strictEqual(mode, "r+");
+        return 44;
+      },
+      fsyncSyncImpl: (fd) => {
+        assert.strictEqual(fd, 44);
+        throw fsyncFailure;
+      },
+      closeSyncImpl: (fd) => {
+        failureClosedDescriptor = fd;
+      },
+    }),
+    (error) => error === fsyncFailure
+  );
+  assert.strictEqual(failureClosedDescriptor, 44);
 
   await assert.rejects(
     download("https://github.com/release", {
@@ -75,6 +192,11 @@ function fakeHttps(sequence) {
     }),
     /exceeds 5 byte limit/
   );
+
+  for (const stage of ["download", "extract", "flush", "version"]) {
+    await assertPreviousVersionCachePreserved(stage);
+  }
+
   await assert.rejects(
     download("https://github.com/release", {
       httpsGet: fakeHttps([
@@ -192,7 +314,7 @@ function fakeHttps(sequence) {
       },
       execFileSyncImpl: (_path, _args, options) => {
         assert.ok(options.timeout > 0 && options.timeout < 120_000);
-        return Buffer.from("phantom-mcp 0.7.4\n");
+        return Buffer.from("phantom-mcp 0.7.5\n");
       },
     });
     assert.ok(dirname(observedArchivePath).startsWith(join(fixtureDir, ".install-")));
@@ -233,6 +355,8 @@ function fakeHttps(sequence) {
       mkdirSync(source, { mode: 0o700 });
       writePrivateFile(join(source, "phantom"), "cli", 0o700);
       writePrivateFile(join(source, "phantom-mcp"), "mcp", 0o700);
+      chmodSync(join(source, "phantom"), 0o755);
+      chmodSync(join(source, "phantom-mcp"), 0o755);
       const archive = join(fixtureDir, "valid.tar.gz");
       execFileSync("tar", ["czf", archive, "-C", source, "phantom", "phantom-mcp"]);
       chmodSync(archive, 0o600);
@@ -248,6 +372,7 @@ function fakeHttps(sequence) {
       });
       assert.strictEqual(extractionCalls, 2);
       assert.strictEqual(readFileSync(output, "utf8"), "mcp");
+      assert.strictEqual(lstatSync(output).mode & 0o777, 0o700);
       const archiveSymlink = join(fixtureDir, "archive-link.tar.gz");
       symlinkSync(archive, archiveSymlink);
       assert.throws(
@@ -270,19 +395,30 @@ function fakeHttps(sequence) {
         /unexpected entries/
       );
 
-      const badSource = join(fixtureDir, "bad-source");
-      mkdirSync(badSource, { mode: 0o700 });
-      writePrivateFile(join(badSource, "phantom"), "cli", 0o700);
-      symlinkSync("phantom", join(badSource, "phantom-mcp"));
-      const symlinkArchive = join(fixtureDir, "symlink.tar.gz");
-      execFileSync("tar", ["czf", symlinkArchive, "-C", badSource, "phantom", "phantom-mcp"]);
-      chmodSync(symlinkArchive, 0o600);
-      assert.throws(
-        () => extractBinaryFromArchive(symlinkArchive, join(fixtureDir, "must-not-install"), {
-          cacheDir: fixtureDir,
-        }),
-        /symbolic link|regular single-link file/
-      );
+      const sentinelDir = mkdtempSync(join(tmpdir(), "phantom-mcp-external-sentinel-"));
+      try {
+        const sentinel = join(sentinelDir, "sentinel");
+        writePrivateFile(sentinel, "external-sentinel", 0o700);
+        const sentinelMode = lstatSync(sentinel).mode & 0o777;
+        const sentinelContents = readFileSync(sentinel);
+        const badSource = join(fixtureDir, "bad-source");
+        mkdirSync(badSource, { mode: 0o700 });
+        writePrivateFile(join(badSource, "phantom"), "cli", 0o700);
+        symlinkSync(sentinel, join(badSource, "phantom-mcp"));
+        const symlinkArchive = join(fixtureDir, "symlink.tar.gz");
+        execFileSync("tar", ["czf", symlinkArchive, "-C", badSource, "phantom", "phantom-mcp"]);
+        chmodSync(symlinkArchive, 0o600);
+        assert.throws(
+          () => extractBinaryFromArchive(symlinkArchive, join(fixtureDir, "must-not-install"), {
+            cacheDir: fixtureDir,
+          }),
+          /symbolic link|regular single-link file/
+        );
+        assert.deepStrictEqual(readFileSync(sentinel), sentinelContents);
+        assert.strictEqual(lstatSync(sentinel).mode & 0o777, sentinelMode);
+      } finally {
+        rmSync(sentinelDir, { recursive: true, force: true });
+      }
     }
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });

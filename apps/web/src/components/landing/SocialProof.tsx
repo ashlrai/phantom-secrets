@@ -8,7 +8,7 @@ const BADGES = [
   "MIT licensed",
   "Open source",
   "Local-first",
-  "Client-encrypted cloud vaults",
+  "Value-blind MCP tools",
   "Route-scoped credential injection",
 ];
 

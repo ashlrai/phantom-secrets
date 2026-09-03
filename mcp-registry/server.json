@@ -9,7 +9,7 @@
     "source": "github",
     "subfolder": "crates/phantom-mcp"
   },
-  "version": "0.7.4",
+  "version": "0.7.5",
   "tools": [
     {
       "name": "phantom_add_secret",
@@ -470,7 +470,7 @@
     },
     {
       "name": "phantom_cloud_pull",
-      "description": "Pull and decrypt a personal-vault snapshot from Phantom Cloud. DESTRUCTIVE — writes local vault entries; force=true declares overwrites but never bypasses approval. With force=false, existing entries are skipped; any partial result preserves the prior merge base, records a durable reconciliation requirement, and blocks cloud push until a fully reconciled pull. Requires `confirm: true` plus an out-of-band `approval_token`.",
+      "description": "Pull and decrypt a personal-vault snapshot from a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. DESTRUCTIVE — writes local vault entries; force=true declares overwrites but never bypasses approval. With force=false, existing entries are skipped; any partial result preserves the prior merge base, records a durable reconciliation requirement, and blocks cloud push until a fully reconciled pull. Requires `confirm: true` plus an out-of-band `approval_token`.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -499,7 +499,7 @@
     },
     {
       "name": "phantom_cloud_push",
-      "description": "Push local vault to Phantom Cloud. Encrypts secrets client-side before upload; server never sees plaintext. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true`; the agent must ask the user for explicit consent before calling.",
+      "description": "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true`; the agent must ask the user for explicit consent before calling.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -523,7 +523,7 @@
     },
     {
       "name": "phantom_cloud_status",
-      "description": "Check Phantom Cloud authentication status, plan, and last sync version. This uses the stored cloud credential and makes a provider request; requires confirm plus approval_token.",
+      "description": "Check authentication status, plan, and last sync version against a separately commissioned Phantom Cloud deployment; the public hosted service is not currently commissioned for authenticated use. This uses the stored cloud credential and makes a provider request; requires confirm plus approval_token.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -1322,7 +1322,7 @@
     },
     {
       "name": "phantom_team_create",
-      "description": "Create a new team. The authenticated user becomes the owner. Pro plan required. Mutating: requires confirm:true.",
+      "description": "Request a new team from a separately commissioned hosted Pro pilot and entitled account; the public hosted service and self-serve Pro billing are not currently commissioned. If accepted, the authenticated user becomes the owner. Mutating provider request: requires confirm:true plus an out-of-band approval_token.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1336,7 +1336,7 @@
           },
           "confirm": {
             "default": false,
-            "description": "Required. Must be true — confirms the user wants to create a new\nteam. Creating a team is a billable Pro action.",
+            "description": "Required. Must be true — confirms the user wants to request a new team\nfrom a separately commissioned hosted Pro pilot. This is not evidence\nof current public entitlement or self-serve billing.",
             "type": "boolean"
           },
           "name": {
@@ -1353,7 +1353,7 @@
     },
     {
       "name": "phantom_team_invite",
-      "description": "Invite someone to a team by GitHub username. The caller must be a team owner or admin; the hosted API permits assigning only member or admin (not owner). Mutating provider request: requires confirm:true plus an out-of-band approval_token.",
+      "description": "Invite someone to a team by GitHub username. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. The caller must be a team owner or admin; the hosted API permits assigning only member or admin (not owner). Mutating provider request: requires confirm:true plus an out-of-band approval_token.",
       "inputSchema": {
         "$defs": {
           "TeamInviteRole": {
@@ -1403,7 +1403,7 @@
     },
     {
       "name": "phantom_team_key_publish",
-      "description": "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation.",
+      "description": "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -1435,7 +1435,7 @@
     },
     {
       "name": "phantom_team_list",
-      "description": "List teams the authenticated user belongs to. Returns team id, name, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token.",
+      "description": "List teams the authenticated user belongs to. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Returns team id, name, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -1461,7 +1461,7 @@
     },
     {
       "name": "phantom_team_members",
-      "description": "List members of a team by team_id. Returns GitHub login, email, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token.",
+      "description": "List members of a team by team_id. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Returns GitHub login, email, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -1493,7 +1493,7 @@
     },
     {
       "name": "phantom_team_vault_pull",
-      "description": "Download and decrypt the team vault for this project into the local vault. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true.",
+      "description": "Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1524,7 +1524,7 @@
     },
     {
       "name": "phantom_team_vault_push",
-      "description": "Push this project's secrets to the shared team vault so all members can pull them. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true.",
+      "description": "Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1744,7 +1744,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "phantom-secrets-mcp",
-      "version": "0.7.4",
+      "version": "0.7.5",
       "transport": {
         "type": "stdio"
       }

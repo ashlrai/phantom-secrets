@@ -4,18 +4,50 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No unreleased changes are recorded after the `0.7.4` candidate.
+No unreleased changes are recorded after the `0.7.5` candidate.
 
-## [0.7.4] - 2026-09-01
+## [0.7.5] - 2026-09-02
+
+This patch is a fix-forward release for the npm wrappers. The immutable
+`0.7.4` npm versions were published under `release-candidate`, were not
+promoted to `latest`, and remain available by exact version. Acceptance found
+cross-platform first-use installation defects, so an accepted `0.7.5` release
+is intended to supersede those candidates rather than overwrite or withdraw
+them. This changelog entry and repository source do not prove that a `v0.7.5` tag, GitHub Release, package,
+registry entry, deployment, or customer acceptance exists.
+
+### Fixed
+
+- Open downloaded native binaries read/write before `fsync`, preserving the
+  durability barrier on Windows where `FlushFileBuffers` rejects a read-only
+  file handle.
+- Normalize extracted Unix release binaries from archive mode `0755` to the
+  private cache mode `0700` before applying the strict owned-path policy, then
+  verify the installed executable retains that private mode.
+- Apply the same portability behavior and regression coverage to both the
+  `phantom-secrets` and `phantom-secrets-mcp` wrappers.
+- Preserve a checksum-matched previous-version cache byte-for-byte until the
+  replacement binary and manifest are fully verified and atomically promoted;
+  failed downloads, extraction, flushes, or version checks leave no transaction
+  debris and never execute the prior binary under the new wrapper version.
+
+### Breaking changes and migration
+
+There are no intentional CLI, MCP, configuration, vault, or network-policy
+breaking changes. Users who explicitly installed an npm `0.7.4`
+`release-candidate` should install exact `0.7.5` only after its public
+integrity and native acceptance receipts are available. Do not rely on an
+unpinned dist-tag while the fix-forward candidate is still under review.
+
+## [0.7.4] - 2026-09-02
 
 This release hardens local agent setup, transactional secret protection, MCP
 effect authorization, retained filesystem authority, Windows private-file
-permissions, and the default-closed hosted-service boundary. Publication
-remains gated on protected-branch CI and the tag-triggered immutable-release
-workflow. This source section is not evidence that the tag, release artifacts,
-Homebrew formula, npm packages, crates.io packages, MCP Registry entry, database
-migrations, web deployment, provider integrations, or customer acceptance exist
-or are active.
+permissions, and the default-closed hosted-service boundary. Its immutable
+GitHub Release and Homebrew formula are published. Its npm packages remain
+quarantined under `release-candidate` after cross-platform acceptance failed;
+crates.io, MCP Registry, hosted-service commissioning, provider integrations,
+and customer acceptance are not represented by this release.
 
 ### Security and filesystem integrity
 
@@ -406,7 +438,8 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.3
 [0.7.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.2

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 // Keep signing-readiness contracts on the existing release source-test path
 // without changing workflow behavior or permissions.
 import "./signing-readiness.test.mjs";
+import "./npm-candidate-acceptance.test.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
@@ -150,9 +151,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   }
 
   for (const readme of [npmReadme, npmMcpReadme]) {
-    assert.match(readme, /This wrapper is version `0\.7\.4`/);
-    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.4/);
-    assert.match(readme, /releases\/tag\/v0\.7\.4/);
+    assert.match(readme, /This wrapper is version `0\.7\.5`/);
+    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.5/);
+    assert.match(readme, /releases\/tag\/v0\.7\.5/);
     assert.match(readme, /do not prove|does not prove/);
     assert.doesNotMatch(readme, /v0\.7\.3|older release track|Current main/);
   }
@@ -261,8 +262,8 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(npmPublication, /\| GNU Linux arm64 \| `ubuntu-22\.04-arm` \|/);
   assert.match(npmPublication, /\| Windows x64 \| `windows-latest` \|/);
   assert.match(npmPublication, /\| Windows arm64 \| `windows-11-vs2026-arm` \|/);
-  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.4/);
-  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.4/);
+  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.5/);
+  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.5/);
   assert.match(npmPublication, /dist\.attestations/);
   assert.match(npmPublication, /SHA-512 SRI/);
   assert.match(npmPublication, /verify-github-tag-binding\.mjs/);
@@ -289,6 +290,11 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
     'npm stage publish "${MCP_TARBALL}" --tag release-candidate'
   );
   const mcpApprove = npmPublication.indexOf('npm stage approve "${MCP_STAGE_ID}"');
+  const mcpPublicJson = npmPublication.indexOf('MCP_PUBLIC_JSON="$(npm view');
+  const mcpPublicPack = npmPublication.indexOf('MCP_PUBLIC_PACK_JSON="$(npm pack');
+  const mcpPublicProvenanceStop = npmPublication.indexOf(
+    "Stop here before approving the primary stage. Require the MCP public metadata"
+  );
   const primaryApprove = npmPublication.indexOf('npm stage approve "${PRIMARY_STAGE_ID}"');
   assert.ok(
     [
@@ -299,6 +305,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
       primaryStage,
       mcpStage,
       mcpApprove,
+      mcpPublicJson,
+      mcpPublicPack,
+      mcpPublicProvenanceStop,
       primaryApprove,
     ].every((index) => index >= 0),
     "explicit tarballs, source rechecks, stages, and approvals are mandatory"
@@ -307,8 +316,12 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
     Math.max(primaryPack, mcpPack) < sourceRecheck &&
       sourceRecheck < tagRecheck &&
       tagRecheck < Math.min(primaryStage, mcpStage) &&
-      Math.max(primaryStage, mcpStage) < Math.min(mcpApprove, primaryApprove),
-    "pack once, recheck source/tag, stage both tarballs, then approve"
+      Math.max(primaryStage, mcpStage) < mcpApprove &&
+      mcpApprove < mcpPublicJson &&
+      mcpPublicJson < mcpPublicPack &&
+      mcpPublicPack < mcpPublicProvenanceStop &&
+      mcpPublicProvenanceStop < primaryApprove,
+    "pack once, recheck source/tag, stage both tarballs, approve MCP, reconcile its public bytes/provenance, then approve primary"
   );
 
   const mcpLatest = npmPublication.indexOf(
@@ -595,7 +608,7 @@ test("npm package contents remain the exact five reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.7.4");
+    assert.equal(pack.version, "0.7.5");
     assert.equal(pack.entryCount, 5);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),

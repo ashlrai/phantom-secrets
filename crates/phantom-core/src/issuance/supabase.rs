@@ -1,6 +1,6 @@
 //! Supabase OAuth and Management-API protocol foundations.
 //!
-//! Shipped 0.7.4 returns `NotSupported` before OAuth request, browser,
+//! Shipped 0.7.5 returns `NotSupported` before OAuth request, browser,
 //! loopback, credential, or network access. Consent protocol execution is
 //! confined to crate-local overridden-endpoint tests.
 //!
