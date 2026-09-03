@@ -1,33 +1,29 @@
-import { CopyButton } from "./CopyButton";
-import { GitHubLogo } from "./BrandLogos";
+import { Github } from "./Icons";
 
 export function CTA() {
   return (
-    <section className="border-t border-border py-28 sm:py-36">
-      <div className="mx-auto max-w-[720px] px-7 text-center">
-        <h2 className="font-extrabold tracking-[-0.04em] leading-[1.04] text-white text-[clamp(2rem,4.6vw,3.2rem)]">
-          Stop rationing.
-          <br />
-          <span className="text-t3">Start delegating.</span>
-        </h2>
-
-        <div className="mt-8 mx-auto max-w-[440px]">
-          <CopyButton text="brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom" />
+    <section className="closing-section">
+      <div className="landing-frame closing-section__layout">
+        <div>
+          <p className="landing-kicker">Start locally</p>
+          <h2>Give the work to the agent. Keep the key behind the seal.</h2>
         </div>
-
-        <div className="mt-5 flex flex-wrap justify-center gap-x-4 gap-y-2 text-[0.84rem]">
-          <a
-            href="https://github.com/ashlrai/phantom-secrets"
-            className="inline-flex items-center gap-1.5 text-t2 hover:text-t1 transition-colors"
-          >
-            <GitHubLogo className="h-3.5 w-3.5" />
-            ashlrai/phantom-secrets
+        <div className="closing-section__actions">
+          <a className="sealed-button sealed-button--primary" href="#install">
+            Follow the install path
           </a>
-          <span className="text-t3">·</span>
-          <span className="text-t3">MIT licensed</span>
-          <span className="text-t3">·</span>
-          <span className="text-t3">Local-first</span>
+          <a
+            className="sealed-button sealed-button--quiet"
+            href="https://github.com/ashlrai/phantom-secrets"
+          >
+            <Github aria-hidden="true" />
+            Star or fork on GitHub
+          </a>
         </div>
+        <p>
+          MIT licensed · Local-first open core · Commercial evaluations by
+          written agreement
+        </p>
       </div>
     </section>
   );

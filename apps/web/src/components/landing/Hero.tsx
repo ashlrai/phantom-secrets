@@ -1,178 +1,65 @@
-"use client";
-
-import { posthog } from "@/lib/posthog";
 import { CopyButton } from "./CopyButton";
-import { KEY_ENTRIES } from "./BrandLogos";
 import { Github } from "./Icons";
-import { SocialProof } from "./SocialProof";
+import { RequestTrace } from "./RequestTrace";
+
+const INSTALL_COMMAND =
+  "brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom";
 
 export function Hero() {
   return (
-    <header className="relative pt-14 pb-20 sm:pt-20 sm:pb-28 overflow-hidden">
-      {/* Soft halo behind the headline */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-[680px] -z-10 opacity-60"
-        style={{
-          background:
-            "radial-gradient(ellipse 60% 60% at 50% 0%, rgba(59,130,246,0.18) 0%, transparent 70%)",
-        }}
-      />
+    <header className="sealed-hero">
+      <div className="sealed-hero__field" aria-hidden="true" />
+      <div className="landing-frame sealed-hero__layout">
+        <div className="sealed-hero__copy">
+          <p className="landing-kicker">
+            Open-source credential passage for agentic engineering
+          </p>
+          <h1>
+            Let agents use APIs.
+            <span>Keep provider keys out of their context.</span>
+          </h1>
+          <p className="sealed-hero__lede">
+            Phantom gives supported AI workflows managed placeholders. An
+            authenticated local proxy admits only exact configured HTTP routes,
+            then injects that route&apos;s vault value into its fixed auth header.
+          </p>
 
-      <div className="mx-auto max-w-[940px] px-7 text-center">
-        <span className="inline-flex items-center gap-2 rounded-full border border-border bg-s1/80 px-3 py-1 text-[0.72rem] font-medium text-t2 backdrop-blur-md">
-          <span className="relative flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue/60 opacity-75" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue" />
-          </span>
-          For Claude Code · Cursor · Windsurf · Codex
-        </span>
+          <div className="sealed-hero__actions">
+            <a className="sealed-button sealed-button--primary" href="#install">
+              Install the open-source CLI
+            </a>
+            <a
+              className="sealed-button sealed-button--quiet"
+              href="https://github.com/ashlrai/phantom-secrets"
+            >
+              <Github aria-hidden="true" />
+              Inspect the source
+            </a>
+          </div>
 
-        <h1 className="mt-7 font-extrabold tracking-[-0.045em] leading-[1.0] text-white text-[clamp(2.6rem,6.4vw,4.6rem)]">
-          Delegate credentialed API work to AI.
-          <br />
-          <span className="bg-gradient-to-br from-blue-b via-blue to-blue-d bg-clip-text text-transparent">
-            Without handing agents provider keys.
-          </span>
-        </h1>
+          <div className="sealed-hero__command">
+            <span>macOS · reviewed Homebrew path</span>
+            <CopyButton text={INSTALL_COMMAND} />
+          </div>
 
-        <p className="mt-6 mx-auto max-w-[600px] text-[0.98rem] sm:text-[1.04rem] leading-[1.65] text-t2">
-          Phantom gives supported AI workflows a value-blind{" "}
-          <code className="font-mono text-blue-b text-[0.92em]">phm_</code>{" "}
-          placeholder in the managed path. After authenticating an exact
-          supported route, the local proxy injects only that route&apos;s vault
-          value into its fixed authentication header.
-        </p>
-
-        <div className="mt-8 mx-auto w-full max-w-[460px]">
-          <CopyButton text="brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom" />
+          <dl className="sealed-hero__facts">
+            <div>
+              <dt>License</dt>
+              <dd>MIT</dd>
+            </div>
+            <div>
+              <dt>Runtime</dt>
+              <dd>Local Rust proxy</dd>
+            </div>
+            <div>
+              <dt>Clients</dt>
+              <dd>Claude · Cursor · Windsurf · Codex</dd>
+            </div>
+          </dl>
         </div>
 
-        <div className="mt-5 flex flex-wrap justify-center gap-2.5">
-          <a
-            href="#install"
-            onClick={() => posthog.capture("hero_get_started_clicked")}
-            className="inline-flex items-center gap-2 rounded-lg bg-blue px-5 py-2.5 text-[0.9rem] font-semibold text-white no-underline transition-all duration-200 hover:bg-blue-d hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(59,130,246,0.32)]"
-          >
-            Get started
-          </a>
-          <a
-            href="https://github.com/ashlrai/phantom-secrets"
-            className="inline-flex items-center gap-2 rounded-lg border border-border-l bg-s1 px-5 py-2.5 text-[0.9rem] font-semibold text-t1 no-underline transition-colors duration-200 hover:border-t3"
-          >
-            <Github className="h-3.5 w-3.5" />
-            View on GitHub
-          </a>
-        </div>
-
-        <SocialProof />
+        <RequestTrace />
       </div>
-
-      {/* Two-row counter-rotating marquee of API key cards */}
-      <KeyWall />
     </header>
-  );
-}
-
-function KeyWall() {
-  // Split entries into two rows so opposing motion creates visual depth.
-  // Even-indexed entries → top row (scrolls left), odd → bottom (scrolls right).
-  const rowA = KEY_ENTRIES.filter((_, i) => i % 2 === 0);
-  const rowB = KEY_ENTRIES.filter((_, i) => i % 2 === 1);
-
-  return (
-    <section
-      aria-label="Examples of credential names Phantom can recognize"
-      className="relative mt-16 sm:mt-20"
-    >
-      <p className="mx-auto max-w-[940px] px-7 text-center text-[0.78rem] font-medium uppercase tracking-[0.18em] text-t3 mb-8">
-        Recognizes common credential names across {KEY_ENTRIES.length}+ services
-      </p>
-
-      <div className="relative space-y-3 sm:space-y-4">
-        {/* Edge fades — sit above both marquee rows */}
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-32 sm:w-48 bg-gradient-to-r from-bg via-bg/85 to-transparent"
-        />
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-32 sm:w-48 bg-gradient-to-l from-bg via-bg/85 to-transparent"
-        />
-
-        <Marquee items={rowA} duration={62} direction="left" />
-        <Marquee items={rowB} duration={74} direction="right" />
-      </div>
-    </section>
-  );
-}
-
-function Marquee({
-  items,
-  duration,
-  direction,
-}: {
-  items: typeof KEY_ENTRIES;
-  duration: number;
-  direction: "left" | "right";
-}) {
-  // Duplicate so translateX(-50% / +50%) creates a seamless loop
-  const track = [...items, ...items];
-  const animationName = direction === "left" ? "marqueeLeft" : "marqueeRight";
-
-  return (
-    <div className="overflow-hidden marquee-pause-on-hover py-3">
-      <div
-        className="flex gap-3 sm:gap-4 w-max marquee-track"
-        style={{
-          animation: `${animationName} ${duration}s linear infinite`,
-        }}
-      >
-        {track.map((k, i) => (
-          <KeyCard key={`${k.name}-${i}`} item={k} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function KeyCard({ item }: { item: typeof KEY_ENTRIES[number] }) {
-  const { Logo, name, env, token, color } = item;
-  // Brand color exposed as a CSS variable so the card border can pick
-  // up the brand on hover. The logo itself is already in real brand
-  // colors (multi-color where applicable) regardless of state.
-  const brandStyle = { "--brand": color } as React.CSSProperties;
-
-  return (
-    <article
-      style={brandStyle}
-      className="group relative flex w-[300px] sm:w-[330px] shrink-0 items-center gap-4 rounded-xl border border-border bg-s1 px-4 py-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-[color:var(--brand)] hover:shadow-[0_4px_22px_-8px_var(--brand)] overflow-hidden"
-    >
-      {/* Logo container — real brand colors at all times */}
-      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border bg-s2/80 transition-colors duration-200 group-hover:bg-s2 group-hover:border-border-l">
-        <Logo className="h-6 w-6" />
-      </div>
-
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[0.86rem] font-semibold text-t1 truncate">
-            {name}
-          </span>
-          <span
-            className="inline-flex items-center gap-1 text-[0.7rem] font-mono uppercase tracking-[0.06em] text-green/85 shrink-0"
-          >
-            <span
-              aria-hidden
-              className="inline-block h-1.5 w-1.5 rounded-full bg-green animate-pulse"
-            />
-            placeholder
-          </span>
-        </div>
-        <div className="mt-1 font-mono text-[0.72rem] leading-tight truncate">
-          <span className="text-t3">{env}=</span>
-          <span className="text-blue-b">{token}</span>
-        </div>
-      </div>
-    </article>
   );
 }

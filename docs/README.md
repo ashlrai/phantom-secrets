@@ -17,6 +17,11 @@ entitlements are live.
 | Protect a project for the first time | [Getting started](getting-started.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
 | Plan a team or enterprise pilot | [Enterprise adoption](enterprise-adoption.md) |
+| Understand open-source rights and paid evaluation paths | [Commercial offerings](commercial-offerings.md) |
+| Plan a public-sector evaluation | [Government evaluation](government-evaluation.md) |
+| Review the shipped security boundary | [Security evaluation](security-evaluation.md) |
+| Understand commercial support boundaries | [Commercial support](commercial-support.md) |
+| Use the project name or logo accurately | [Project name and logo use](trademark-policy.md) |
 | Diagnose an install, vault, proxy, or cloud problem | [Troubleshooting](troubleshooting.md) |
 | Understand the provider-grant design and 0.7.5 universal hard denial | [Provider grants](grants-spec.md) |
 | Understand components, trust boundaries, and activation status | [Architecture](architecture.md) |
@@ -56,6 +61,10 @@ and retains historical design-status language.
 ## Operations
 
 - [Enterprise adoption and evidence](enterprise-adoption.md)
+- [Commercial offerings around the MIT core](commercial-offerings.md)
+- [Commercial support boundary](commercial-support.md)
+- [Government evaluation](government-evaluation.md)
+- [Security evaluation](security-evaluation.md)
 - [Cloud login](login.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)

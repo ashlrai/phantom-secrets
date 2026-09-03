@@ -20,7 +20,7 @@ const mono = JetBrains_Mono({
 const SITE_URL = "https://phm.dev";
 const TITLE = "Phantom — Delegate credentialed API work to AI";
 const DESCRIPTION =
-  "Phantom gives supported AI-agent workflows placeholders while an authenticated local proxy injects route-owned authentication only for exact configured routes. Works with Claude Code, Cursor, Windsurf, and Codex.";
+  "Open-source, local-first infrastructure for delegating supported HTTP API work to AI agents with value-blind controls and exact-route credential injection. Works with Claude Code, Cursor, Windsurf, and Codex.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -49,12 +49,8 @@ export const metadata: Metadata = {
     "vault",
   ],
   category: "developer tools",
-  alternates: {
-    canonical: "/",
-  },
   openGraph: {
     type: "website",
-    url: SITE_URL,
     siteName: "Phantom",
     title: TITLE,
     description: DESCRIPTION,
@@ -99,6 +95,7 @@ export const metadata: Metadata = {
     address: false,
     telephone: false,
   },
+  referrer: "origin-when-cross-origin",
 };
 
 export const viewport: Viewport = {

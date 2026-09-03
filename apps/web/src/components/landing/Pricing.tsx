@@ -1,55 +1,11 @@
 "use client";
 
 import { posthog } from "@/lib/posthog";
+import {
+  COMMERCIAL_NON_CLAIMS,
+  COMMERCIAL_OFFERINGS,
+} from "@/lib/commercial-offerings";
 import { Check } from "./Icons";
-
-const TIERS = [
-  {
-    name: "Free",
-    price: "$0",
-    cadence: "/mo",
-    pitch: "Local-first. Open source. Forever.",
-    features: [
-      "Local vault (OS keychain or encrypted file)",
-      "Local proxy: requests are size-bounded and buffered; responses can stream",
-      "MCP server for supported clients",
-      "Unlimited local secrets",
-    ],
-    cta: { label: "Install free", href: "#install", primary: false },
-  },
-  {
-    name: "Pro",
-    price: "Planned",
-    cadence: "",
-    pitch: "Join the pilot list for cloud-backup and team-vault evaluation.",
-    featured: true,
-    features: [
-      "Everything in Free",
-      "Planned cloud-vault pilots",
-      "Planned cloud-key portability evaluation",
-      "Fixed-membership team-vault pilots",
-      "Commercial terms set before each pilot",
-    ],
-    cta: {
-      label: "Join the Pro pilot list",
-      href: "mailto:mason@ashlr.ai?subject=Phantom%20Pro%20pilot",
-      primary: true,
-    },
-  },
-  {
-    name: "Enterprise",
-    price: "Custom",
-    cadence: "",
-    pitch: "Scope a bounded evaluation before any commercial rollout.",
-    features: [
-      "Written pilot scope and acceptance criteria",
-      "Evaluate local audit tooling",
-      "SSO/SAML not shipped",
-      "Support scope by written agreement",
-    ],
-    cta: { label: "Talk to us", href: "mailto:mason@ashlr.ai", primary: false },
-  },
-];
 
 export function Pricing() {
   return (
@@ -57,18 +13,19 @@ export function Pricing() {
       <div className="mx-auto max-w-[1100px] px-7">
         <div className="max-w-[640px] mb-12">
           <h2 className="text-[1.8rem] sm:text-[2.4rem] font-extrabold tracking-[-0.035em] leading-[1.08] text-white">
-            Open source today. Cloud pilots by agreement.
+            Open-source core. Commercial help when you need it.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            The CLI, vault, proxy, and MCP server are open source forever.
-            Pro billing and cloud entitlements are not commissioned; contact us
-            to scope a bounded pilot.
+            Phantom&apos;s local-first core is MIT-licensed. Organizations can
+            separately contract for a bounded evaluation, integration work,
+            and written support terms without surrendering those open-source
+            rights.
           </p>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {TIERS.map((t) => {
-            const featured = "featured" in t && t.featured;
+          {COMMERCIAL_OFFERINGS.map((t) => {
+            const featured = t.featured;
             return (
               <article
                 key={t.name}
@@ -81,7 +38,7 @@ export function Pricing() {
               >
                 {featured && (
                   <span className="absolute -top-2.5 left-7 rounded-full border border-blue-d/40 bg-blue px-2.5 py-0.5 text-[0.7rem] font-bold uppercase tracking-[0.12em] text-white">
-                    Pilot list
+                    Written scope
                   </span>
                 )}
 
@@ -121,12 +78,12 @@ export function Pricing() {
                   href={t.cta.href}
                   onClick={() =>
                     posthog.capture("pricing_cta_clicked", {
-                      tier: t.name.toLowerCase(),
+                      tier: t.id,
                     })
                   }
                   className={
                     "mt-6 inline-flex items-center justify-center min-h-[44px] rounded-lg px-4 py-2.5 text-[0.88rem] font-semibold no-underline transition-all duration-200 " +
-                    (t.cta.primary
+                    (featured
                       ? "bg-blue text-white hover:bg-blue-d hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(59,130,246,0.32)]"
                       : "border border-border-l text-t1 hover:border-t3")
                   }
@@ -139,9 +96,19 @@ export function Pricing() {
         </div>
 
         <p className="mt-8 text-center text-[0.78rem] text-t3">
-          No payment is collected from this page. Pilot access requires written
-          scope and commissioning.
+          A commercial agreement buys defined services and commitments—not
+          permission already granted by the MIT License. No payment is
+          collected here.
         </p>
+
+        <div className="mt-6 rounded-xl border border-border bg-s1/60 p-5">
+          <p className="text-[0.72rem] font-mono uppercase tracking-[0.12em] text-t3">
+            Not represented as available
+          </p>
+          <p className="mt-2 text-[0.82rem] leading-[1.65] text-t2">
+            {COMMERCIAL_NON_CLAIMS.join(" · ")}
+          </p>
+        </div>
       </div>
     </section>
   );

@@ -12,6 +12,12 @@ separate conversation with Ashlr AI and depend on the service, plan, written
 terms, and environment actually approved. This repository does not claim an
 enterprise certification, contractual SLA, or completed customer rollout.
 
+For the business boundary, see [commercial offerings](commercial-offerings.md)
+and [commercial support](commercial-support.md). A paid agreement can define
+evaluation, integration, and support services; it does not replace or narrow
+the rights granted by the MIT License. Public-sector teams should also use the
+[government evaluation guide](government-evaluation.md).
+
 ## Know which layer you are evaluating
 
 | Layer | Current repository boundary | What still needs separate evidence |
@@ -50,6 +56,12 @@ An organization that requires any blocker above should keep the pilot local or
 record the missing control as planned work. Do not compensate with an ambient
 credential, undocumented endpoint, manual database edit, or a promise in the
 pilot report.
+
+Do not describe a requested missing control as a licensable edition. The current
+commercial path is written-scope services around the MIT core, not a generally
+available proprietary Enterprise or Government product. Scope, fees,
+deliverables, support commitments, and acceptance criteria exist only in an
+executed agreement.
 
 ## Phase 0: approve a bounded pilot
 

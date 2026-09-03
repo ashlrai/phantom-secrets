@@ -27,7 +27,11 @@ function repoFilesUnder(relativeDirectory, acceptedExtensions) {
 const claimPaths = [
   "src/app/layout.tsx",
   "src/app/manifest.ts",
+  "src/app/page.tsx",
   "src/app/pricing/page.tsx",
+  "src/app/enterprise/page.tsx",
+  "src/app/government/page.tsx",
+  "src/app/security/page.tsx",
   "src/app/sitemap.ts",
   ...filesUnder("src/app/dashboard", [".tsx"]),
   ...filesUnder("src/components/landing", [".tsx"]),
@@ -759,7 +763,11 @@ test("enterprise claims remain explicitly unavailable or contractual", () => {
   for (const [file, source] of Object.entries(claims)) {
     for (const line of source.split("\n")) {
       if (/SSO|SAML|on-prem/i.test(line)) {
-        assert.match(line, /not shipped|planned/i, `${file}: ${line}`);
+        assert.match(
+          line,
+          /not shipped|planned|no\b.*\b(?:available|offered)|not (?:available|offered|represented)/i,
+          `${file}: ${line}`,
+        );
       }
     }
   }
@@ -770,6 +778,29 @@ test("enterprise claims remain explicitly unavailable or contractual", () => {
   assert.match(claims["public/llms.txt"], /contractual SLA[^\n]*not shipped/i);
   assert.match(claims["public/llms.txt"], /written agreement with Ashlr AI/i);
   assert.match(allClaims, /fixed-membership pilots/i);
+});
+
+test("organization pages preserve written-scope and certification boundaries", () => {
+  const enterprise = claims["src/app/enterprise/page.tsx"];
+  const government = claims["src/app/government/page.tsx"];
+  const security = claims["src/app/security/page.tsx"];
+  const commercialOfferings = read("src/lib/commercial-offerings.ts");
+
+  assert.match(enterprise, /written[- ]scope/i);
+  assert.match(enterprise, /non-production/i);
+  assert.match(enterprise, /COMMERCIAL_NON_CLAIMS/);
+  assert.match(commercialOfferings, /only as written|written agreement/i);
+  assert.match(enterprise, /not represented as shipped, certified, commissioned/i);
+
+  assert.match(government, /not represented as FedRAMP authorized or FIPS validated/i);
+  assert.match(government, /No government contract vehicle/i);
+  assert.match(government, /outside a signed agreement/i);
+  assert.doesNotMatch(government, /FedRAMP authorized(?! or)|FIPS validated(?!\.)/i);
+
+  assert.match(security, /not a sandbox/i);
+  assert.match(security, /not live integrations/i);
+  assert.match(security, /not claimed/i);
+  assert.doesNotMatch(security, /zero exposure|unhackable|guaranteed/i);
 });
 
 test("public guidance preserves upstream and production-authority boundaries", () => {

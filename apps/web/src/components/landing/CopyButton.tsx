@@ -31,7 +31,7 @@ export function CopyButton({ text, variant = "block" }: CopyButtonProps) {
         type="button"
         onClick={handleCopy}
         aria-label={copied ? "Copied" : "Copy command"}
-        className="inline-flex items-center gap-1.5 p-2.5 -m-2.5 text-t3 hover:text-blue-b transition-colors"
+        className="copy-command copy-command--inline"
       >
         {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
       </button>
@@ -43,13 +43,13 @@ export function CopyButton({ text, variant = "block" }: CopyButtonProps) {
       type="button"
       onClick={handleCopy}
       aria-label="Copy command"
-      className="group w-full flex items-center justify-between gap-3 bg-s2 border border-border hover:border-blue rounded-lg px-4 py-3 font-mono text-sm text-t1 text-left transition-colors cursor-pointer"
+      className="copy-command"
     >
-      <span className="truncate">
-        <span className="text-t3 select-none">$ </span>
+      <span>
+        <span aria-hidden="true">$ </span>
         {text}
       </span>
-      <span className="shrink-0 text-t3 group-hover:text-blue-b transition-colors">
+      <span className="copy-command__icon" aria-hidden="true">
         {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
       </span>
     </button>
