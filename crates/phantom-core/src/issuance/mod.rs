@@ -1,6 +1,6 @@
 //! Credential-issuance protocol foundations.
 //!
-//! Shipped 0.7.5 hard-denies every [`ConsentEngine::issue`] before request
+//! This release hard-denies every [`ConsentEngine::issue`] before request
 //! inspection, browser, loopback, environment, or network effects. The protocol
 //! implementations execute only in crate-local tests against explicit
 //! overridden endpoints. They are foundations for a future compensated
@@ -386,7 +386,7 @@ pub fn issuance_mock_allowed() -> bool {
 pub(crate) fn guard_test_only_issuance(deps: &IssuanceDeps<'_>) -> Result<(), IssuanceError> {
     if !issuance_mock_allowed() || !deps.endpoints.is_overridden() {
         return Err(IssuanceError::NotSupported {
-            reason: "live credential enrollment is disabled in shipped 0.7.5 until a durable compensated persistence and recovery transaction exists; obtain the credential at the provider and store it from a trusted terminal"
+            reason: "live credential enrollment is disabled in this release until a durable compensated persistence and recovery transaction exists; obtain the credential at the provider and store it from a trusted terminal"
                 .to_string(),
         });
     }

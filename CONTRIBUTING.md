@@ -4,13 +4,16 @@ Thanks for helping make safe agentic development practical. Phantom accepts focu
 
 Please read the [Code of Conduct](CODE_OF_CONDUCT.md), [security policy](SECURITY.md), and [threat model](THREAT_MODEL.md) before changing a trust boundary. Report vulnerabilities privately; do not open a public issue for them.
 
-Release-state snapshot, verified 2026-09-02 before any `v0.7.5` publication:
-the reviewed immutable GitHub/Homebrew distribution is `v0.7.4`; both npm
-`0.7.4` wrappers remain public only under the failed `release-candidate` track,
-while npm `latest` remains `0.6.0`. Repository source is versioned for the
-then-unpublished `0.7.5` fix-forward. Building or testing source does not prove that a package,
-native artifact, deployment, provider integration, or hosted entitlement has
-been published or accepted. See the [roadmap](ROADMAP.md) for the evidence gates.
+Release-state snapshot, verified 2026-09-03: the reviewed immutable GitHub
+release is `v0.7.5` at source commit
+`d2969e73995cc139e6253e0c8a70f1d683f88e20`; its 19 assets, all six native
+release rows, and GitHub provenance and SPDX attestations were verified in
+workflow 33709338577. Homebrew publishes the same reviewed `v0.7.5`; both npm `0.7.4` wrappers
+remain public only under the failed `release-candidate` track, while npm
+`latest` remains `0.6.0`. The GitHub receipt alone does not establish a `0.7.5`
+npm, crates.io, MCP Registry, or the independently verified Homebrew publication, deployment, provider integration,
+hosted entitlement, certification, or customer acceptance. See the
+[roadmap](ROADMAP.md) for the evidence gates.
 
 ## Before you start
 
@@ -68,7 +71,7 @@ foundations must stay fail closed until the activation boundaries in
 
 The word **grant** has two distinct meanings. Historical provider-grant source
 models credential and renewal metadata, while an authority grant is an inactive
-value-free execution-kernel type. Staged 0.7.5 creates no live provider grant:
+value-free execution-kernel type. Released 0.7.5 creates no live provider grant:
 enrollment and remote revocation hard-deny before credentials or network. A
 provider-grant record must never be accepted as a Locus credential, broker
 lease, or execution permit. Current behavior is specified in

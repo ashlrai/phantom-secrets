@@ -27,12 +27,12 @@ test("current workspace version release notes include the complete candidate tra
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`^## \\[${version.replaceAll(".", "\\.")}\\]`, "m"));
   assert.match(result.stdout, /^### Breaking changes and migration$/m);
-  assert.match(result.stdout, /Windows where `FlushFileBuffers` rejects a read-only/);
-  assert.match(result.stdout, /archive mode `0755` to the[\s\S]*private cache mode `0700`/);
-  assert.match(result.stdout, /Preserve a checksum-matched previous-version cache byte-for-byte/);
-  assert.match(result.stdout, /failed downloads, extraction, flushes, or version checks/);
+  assert.match(result.stdout, /Windows short-path tildes such as `RUNNER~1`/);
+  assert.match(result.stdout, /six-host package acceptance boundary/);
+  assert.match(result.stdout, /dedicated security, pricing, enterprise, and government pages/);
+  assert.match(result.stdout, /privacy-preserving[\s\S]*analytics, accessibility, responsive behavior/);
   assert.doesNotMatch(result.stdout, /^## \\[Unreleased\\]$/m);
-  assert.match(result.stdout, /immutable[\s\S]*`0\.7\.4` npm versions[\s\S]*`release-candidate`/);
+  assert.match(result.stdout, /Existing direct or Homebrew `v0\.7\.5` installations/);
 });
 
 test("missing release notes fail closed", () => {

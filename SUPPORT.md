@@ -29,13 +29,15 @@ Do not put a vulnerability in a public issue or discussion. Follow the
 5. Redact real credentials, cookies, device codes, vault contents, cloud
    tokens, and `phm_` mappings. Persistent mappings are sensitive metadata.
 
-Release-state snapshot, verified 2026-09-02 before any `v0.7.5` publication:
-the reviewed immutable GitHub/Homebrew distribution is `v0.7.4`. Both npm
-`0.7.4` wrappers remain public only under the failed `release-candidate` track,
-and npm `latest` remains `0.6.0`. Repository source is versioned for the
-then-unpublished `0.7.5` fix-forward; source, CI configuration, or a changelog section
-is not proof that a `0.7.5` artifact, package, deployment, provider integration,
-or hosted entitlement has been released or commissioned.
+Release-state snapshot, verified 2026-09-03: the reviewed immutable GitHub
+release is `v0.7.5` at source commit
+`d2969e73995cc139e6253e0c8a70f1d683f88e20`. Its 19 assets, all six native
+release rows, checksums, archive-specific SPDX SBOMs, and GitHub attestations
+were verified. Homebrew publishes the same reviewed `v0.7.5`; npm `latest` remains `0.6.0`, and
+the npm `0.7.4` wrappers remain public only under the failed
+`release-candidate` track. The GitHub release receipt alone is not proof of npm,
+crates.io, MCP Registry, or the independently verified Homebrew publication, a deployed provider integration,
+a commissioned hosted entitlement, certification, or customer acceptance.
 
 ## Response expectations
 

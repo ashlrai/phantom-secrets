@@ -112,9 +112,9 @@ const machineReadableGuides = Object.entries(machineReadableClaims).filter(
 );
 
 const verifiedReleaseUrl =
-  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4";
-const candidateReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5";
+const candidateReleaseUrl =
+  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.6";
 
 function structuredMetadataBlock(source, type) {
   const marker = `"@type": "${type}"`;
@@ -469,14 +469,14 @@ test("published package READMEs use verified local binaries and bounded claims",
       assert.ok(source.includes(verifiedReleaseUrl), file);
       assert.match(
         source,
-        /Released `v0\.7\.4`[\s\S]{0,300}no network package-runner fallback[\s\S]{0,120}fails closed/i,
+        /Released `v0\.7\.5`[\s\S]{0,300}no network package-runner fallback[\s\S]{0,120}fails closed/i,
         file,
       );
     } else {
       assert.ok(source.includes(candidateReleaseUrl), file);
       assert.match(
         source,
-        /version `0\.7\.5`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
+        /version `0\.7\.6`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
         file,
       );
       assert.match(
@@ -486,7 +486,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       );
       assert.match(
         source,
-        /Version `0\.7\.5`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
+        /Version `0\.7\.6`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
         file,
       );
       assert.doesNotMatch(source, /releases\/tag\/v0\.7\.3/i, file);
@@ -526,11 +526,11 @@ test("registry README catalog exactly matches the staged 54-tool schema", () => 
   assert.equal(new Set(documentedNames).size, 54, "README catalog names must be unique");
   assert.deepEqual(documentedNames.sort(), schemaNames.sort());
   assert.match(registryReadme, /npm `0\.7\.4` wrappers are public only under `release-candidate`/i);
-  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.5`/i);
+  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.6`/i);
   assert.match(registryReadme, /do not publish this manifest until/i);
 });
 
-test("released setup guidance uses the verified v0.7.4 fail-closed local runtime", () => {
+test("released setup guidance uses the verified v0.7.5 fail-closed local runtime", () => {
   const setupBoundaryGuides = {
     "README.md": repositoryGuidanceClaims["README.md"],
     "docs/getting-started.md": repositoryGuidanceClaims["docs/getting-started.md"],
@@ -546,8 +546,8 @@ test("released setup guidance uses the verified v0.7.4 fail-closed local runtime
   };
 
   for (const [file, source] of Object.entries(setupBoundaryGuides)) {
-    assert.match(source, /Install both[^\n]*`v0\.7\.4`|both verified `v0\.7\.4` binaries/i, file);
-    assert.match(source, /(?:Version|Released) `?v?0\.7\.4/i, file);
+    assert.match(source, /Install both[^\n]*`v0\.7\.5`|both verified `v0\.7\.5`(?: GitHub release)? binaries/i, file);
+    assert.match(source, /(?:Version|Released) `?v?0\.7\.5/i, file);
     assert.match(
       source,
       /no network\s+package-runner fallback[\s\S]{0,80}fails closed|fails closed instead of generating a registry-backed command/i,
@@ -564,9 +564,9 @@ test("HowTo and delegation guidance avoid timing and unpinned quickstart claims"
 
   assert.doesNotMatch(installHowTo, /totalTime|PT1M/i);
   assert.match(installHowTo, /Released \$\{PUBLIC_RELEASE_TAG\} records its bundled local/i);
-  assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.4"/);
+  assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.5"/);
   assert.match(installHowTo, /no network package-runner fallback and fails closed/i);
-  assert.match(delegation, /both `phantom` and `phantom-mcp` from the reviewed `v0\.7\.4`[^\n]*distribution/i);
+  assert.match(delegation, /both `phantom` and `phantom-mcp` from the reviewed `v0\.7\.5`[^\n]*GitHub release/i);
   assert.match(delegation, /phantom agent setup --dry-run/i);
   assert.doesNotMatch(delegation, /npx(?:\s+-y)?\s+phantom-secrets\s+agent setup/i);
 });
@@ -610,7 +610,7 @@ test("current SoftwareApplication and HowTo metadata point at the verified relea
   const softwareApplication = structuredMetadataBlock(layout, "SoftwareApplication");
   const installHowTo = structuredMetadataBlock(layout, "HowTo");
 
-  assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.4"/);
+  assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.5"/);
   assert.match(publicRelease, /PUBLIC_RELEASE_TAG\s*=\s*`v\$\{PUBLIC_RELEASE_VERSION\}`/);
   assert.match(publicRelease, /releases\/tag\/\$\{PUBLIC_RELEASE_TAG\}/);
   assert.match(softwareApplication, /softwareVersion:\s*PUBLIC_RELEASE_VERSION/);
@@ -631,6 +631,38 @@ test("current SoftwareApplication and HowTo metadata point at the verified relea
   assert.match(quickStart, /PUBLIC_RELEASE_RECEIPT/);
   assert.match(install, /both reviewed \{PUBLIC_RELEASE_TAG\} binaries/);
   assert.doesNotMatch(`${quickStart}\n${install}`, /(?:Install|reviewed) v0\.7\.3/i);
+});
+
+test("public release references bind v0.7.5 to its immutable publication receipt", () => {
+  const releaseGuides = [
+    readRepo("docs/llms.txt"),
+    readRepo("docs/llms-full.txt"),
+    readRepo("apps/web/public/llms.txt"),
+    readRepo("apps/web/public/llms-full.txt"),
+    readRepo("docs/platform-support.md"),
+  ];
+
+  for (const source of releaseGuides) {
+    assert.match(source, /2026-09-03/);
+    assert.match(source, /d2969e73995cc139e6253e0c8a70f1d683f88e20/);
+    assert.match(source, /33709338577/);
+    assert.match(source, /19 assets/i);
+    assert.match(source, /all six native|six-row native/i);
+    assert.match(source, /attestations/i);
+    assert.match(source, /Homebrew[^\n]*v0\.7\.5/i);
+  }
+
+  const fullReferences = [
+    readRepo("docs/llms-full.txt"),
+    readRepo("apps/web/public/llms-full.txt"),
+  ];
+  for (const source of fullReferences) {
+    assert.equal(
+      source.match(/releases\/download\/v0\.7\.5\/phantom-(?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu|pc-windows-msvc)\.(?:tar\.gz|zip)/g)?.length,
+      6,
+      "full reference must link all six exact v0.7.5 archives",
+    );
+  }
 });
 
 test("public leak statistics use the primary GitGuardian 2026 report accurately", () => {
@@ -881,15 +913,16 @@ test("community health metadata preserves release and support boundaries", () =>
   );
 
   const readme = readRepo("README.md");
-  assert.match(readme, /v0\.7\.4[^\n]*reviewed immutable GitHub and Homebrew/i);
-  assert.match(readme, /release-state snapshot[^\n]*2026-09-02/i);
-  assert.match(readme, /repository source is versioned `?0\.7\.5/i);
-  assert.match(readme, /do not prove[^\n]*0\.7\.5[^\n]*(?:artifact|package)|0\.7\.5[^\n]*(?:artifact|package)[^\n]*not prove/i);
+  assert.match(readme, /release-state snapshot[^\n]*2026-09-03/i);
+  assert.match(readme, /v0\.7\.5[\s\S]{0,80}reviewed[\s\S]{0,30}immutable GitHub release/i);
+  assert.match(readme, /d2969e73995cc139e6253e0c8a70f1d683f88e20/);
+  assert.match(readme, /workflow[\s\S]{0,120}33709338577/i);
+  assert.match(readme, /Homebrew publishes the same reviewed `v0\.7\.5`/i);
 
   const roadmap = readRepo("ROADMAP.md");
   assert.match(roadmap, /ordered engineering gates, not delivery dates/i);
   assert.match(roadmap, /\| Released \|[\s\S]*\| Staged \|[\s\S]*\| Gated \|[\s\S]*\| Exploratory \|/);
-  assert.match(roadmap, /source candidate only/i);
+  assert.match(roadmap, /Completed at exact source commit[\s\S]*prerequisite, not publication evidence/i);
 
   const support = readRepo("SUPPORT.md");
   assert.match(
@@ -901,10 +934,14 @@ test("community health metadata preserves release and support boundaries", () =>
 
   const citation = readRepo("CITATION.cff");
   assert.match(citation, /^cff-version: 1\.2\.0$/m);
-  assert.match(citation, /^version: 0\.7\.5$/m);
-  assert.match(citation, /v0\.7\.5 release candidate source/i);
+  assert.match(citation, /^version: 0\.7\.6$/m);
+  assert.match(citation, /immutable v0\.7\.5 GitHub release/i);
   assert.match(citation, /repository URL and full commit SHA/i);
-  assert.doesNotMatch(citation, /^date-released:/m);
+  assert.doesNotMatch(
+    citation,
+    /^date-released:/m,
+    "unpublished source candidates must not claim a release date",
+  );
 });
 
 test("cloud-signed audit remains an explicit network-free protocol foundation", () => {
@@ -942,7 +979,7 @@ test("add guidance keeps headless creation separate from replacement authority",
 
 test("contributor templates keep secrets and evidence layers separated", () => {
   const bug = readRepo(".github/ISSUE_TEMPLATE/bug_report.yml");
-  assert.match(bug, /placeholder: "phantom 0\.7\.4"/);
+  assert.match(bug, /placeholder: "phantom 0\.7\.6"/);
   assert.match(bug, /persistent `phm_` mappings; mappings are sensitive metadata/i);
   assert.doesNotMatch(bug, /phm_ tokens are safe to share/i);
   assert.match(bug, /private vulnerability reporting/i);

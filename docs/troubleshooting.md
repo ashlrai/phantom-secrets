@@ -179,15 +179,17 @@ support requires an explicit reviewed trust design and is not supported in this 
 
 ### An older registry-based install command fails
 
-The reviewed `v0.7.4` binaries ship through GitHub Releases and the trusted
-Homebrew formula. npm `latest` remains `0.6.0`; exact npm `0.7.4` wrappers are
-failed release candidates. crates.io remains an older distribution track.
+The reviewed `v0.7.5` binaries ship through the immutable GitHub Release. The
+trusted Homebrew formula publishes reviewed `v0.7.5`; Homebrew publication is
+independent of the GitHub release. npm `latest` remains `0.6.0`; exact npm
+`0.7.4` wrappers are failed release candidates. crates.io remains an older
+distribution track.
 
-1. Verify the immutable release exists: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4
-2. Use the exact `v0.7.4` asset and `.sha256` sidecar documented in
+1. Verify the immutable release exists: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5
+2. Use the exact `v0.7.5` asset and `.sha256` sidecar documented in
    [getting started](./getting-started.md#install)
-3. On macOS, use the tap, trust, and fully qualified formula commands from the
-   same install guide
+3. On macOS, use the direct GitHub asset for `v0.7.5`, or use the tap, trust,
+   and fully qualified formula commands for the same reviewed version
 
 ## CI/CD Usage
 
@@ -196,7 +198,7 @@ failed release candidates. crates.io remains an older distribution track.
 ```yaml
 - name: Set up Phantom
   run: |
-    cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev cffd0f29ab85a45358f011fdcfd40667d576c420 phantom-secrets
+    cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev d2969e73995cc139e6253e0c8a70f1d683f88e20 phantom-secrets
     echo "PHANTOM_VAULT_PASSPHRASE=${{ secrets.PHANTOM_VAULT_PASSPHRASE }}" >> $GITHUB_ENV
     phantom pull --from vercel --project ${{ vars.VERCEL_PROJECT_ID }}
   env:
@@ -207,7 +209,7 @@ failed release candidates. crates.io remains an older distribution track.
 
 ```dockerfile
 # Install phantom
-RUN cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev cffd0f29ab85a45358f011fdcfd40667d576c420 phantom-secrets
+RUN cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev d2969e73995cc139e6253e0c8a70f1d683f88e20 phantom-secrets
 
 # Set passphrase for encrypted vault (pass at runtime, not build time)
 ENV PHANTOM_VAULT_PASSPHRASE=""
@@ -443,7 +445,9 @@ An npm-owned binary is also not replaced in place because the wrapper would over
 
 Older shared-root installs may have no receipt. Phantom recognizes a structurally valid legacy npm manifest, but otherwise reports an ambiguous legacy install and fails closed. Re-running a checksum-verified direct installer establishes the receipt without relying on a path guess.
 
-For Homebrew installs, use the reviewed tap and fully qualified formula:
+For Homebrew installs, use the reviewed tap and fully qualified formula. The
+formula currently publishes `v0.7.5`; direct GitHub assets remain available for
+explicit checksum verification:
 
 ```bash
 brew tap ashlrai/phantom

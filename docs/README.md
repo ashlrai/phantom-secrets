@@ -2,13 +2,16 @@
 
 This is the canonical map for Phantom's repository documentation. Start with the shortest guide that matches your task, then use the security and architecture material when evaluating trust boundaries.
 
-Release-state snapshot, verified 2026-09-02 before any `v0.7.5` publication:
-the reviewed immutable GitHub/Homebrew distribution is `v0.7.4`. Both npm
-`0.7.4` wrappers remain public only under the failed `release-candidate` track,
-while npm `latest` remains `0.6.0`. Repository source is versioned for the
-then-unpublished `0.7.5` fix-forward; documentation of source behavior is not
-evidence that its artifacts, packages, deployments, providers, or hosted
-entitlements are live.
+Release-state snapshot, verified 2026-09-03: the reviewed immutable GitHub
+release is `v0.7.5` at source commit
+`d2969e73995cc139e6253e0c8a70f1d683f88e20`. Its exact 19-asset set, all six
+native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
+provenance and SPDX attestations were verified in workflow 33709338577.
+Homebrew publishes the same reviewed `v0.7.5`; npm `latest` remains `0.6.0`, and both npm
+`0.7.4` wrappers remain only under the failed `release-candidate` track. The
+GitHub receipt alone does not establish `0.7.5` publication on npm, crates.io,
+MCP Registry, or the independently verified Homebrew publication, or any hosted-service commissioning, provider activation,
+certification, or customer acceptance.
 
 ## Start here
 
@@ -109,8 +112,8 @@ or production acceptance.
   response targets, and known limitations
 - [Roadmap](../ROADMAP.md) — staged, gated, and exploratory milestones without
   delivery-date or activation claims
-- [Citation metadata](../CITATION.cff) — cite the reviewed release, or include
-  the exact commit SHA when discussing unreleased source
+- [Citation metadata](../CITATION.cff) — cite the reviewed `v0.7.5` release, or
+  include the exact commit SHA when discussing later unreleased source
 
 No donation or sponsorship program is represented by repository metadata at
 this time. Hosted pilots, enterprise scope, and support terms require separate

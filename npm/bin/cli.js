@@ -25,7 +25,7 @@ const https = require("https");
 const { homedir } = require("os");
 const { basename, dirname, isAbsolute, join, resolve } = require("path");
 
-const VERSION = "0.7.5";
+const VERSION = "0.7.6";
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom";
 const REVIEWED_RELEASE_URL = `https://github.com/${REPO}/releases/tag/v${VERSION}`;

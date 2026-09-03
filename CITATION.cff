@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: >-
-  This file describes the v0.7.5 release candidate source. Until an immutable
-  v0.7.5 release exists, cite the repository URL and full commit SHA.
+  Cite the immutable v0.7.5 GitHub release. When discussing later unreleased
+  source, include the repository URL and full commit SHA.
 title: Phantom
 type: software
 authors:
@@ -10,7 +10,7 @@ authors:
 repository-code: https://github.com/ashlrai/phantom-secrets
 url: https://phm.dev
 license: MIT
-version: 0.7.5
+version: 0.7.6
 keywords:
   - AI agents
   - credential management

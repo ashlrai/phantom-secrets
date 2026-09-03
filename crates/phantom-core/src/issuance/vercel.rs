@@ -1,6 +1,6 @@
 //! Vercel connectable-account Integration protocol foundation.
 //!
-//! Shipped 0.7.5 returns `NotSupported` before request inspection, browser,
+//! This release returns `NotSupported` before request inspection, browser,
 //! loopback, credential, or network access. The flow below executes only in
 //! crate-local overridden-endpoint tests; it is not live enrollment capability.
 //!

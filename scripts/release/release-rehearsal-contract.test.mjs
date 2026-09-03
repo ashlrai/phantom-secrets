@@ -151,9 +151,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   }
 
   for (const readme of [npmReadme, npmMcpReadme]) {
-    assert.match(readme, /This wrapper is version `0\.7\.5`/);
-    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.5/);
-    assert.match(readme, /releases\/tag\/v0\.7\.5/);
+    assert.match(readme, /This wrapper is version `0\.7\.6`/);
+    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.6/);
+    assert.match(readme, /releases\/tag\/v0\.7\.6/);
     assert.match(readme, /do not prove|does not prove/);
     assert.doesNotMatch(readme, /v0\.7\.3|older release track|Current main/);
   }
@@ -262,8 +262,8 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(npmPublication, /\| GNU Linux arm64 \| `ubuntu-22\.04-arm` \|/);
   assert.match(npmPublication, /\| Windows x64 \| `windows-latest` \|/);
   assert.match(npmPublication, /\| Windows arm64 \| `windows-11-vs2026-arm` \|/);
-  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.5/);
-  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.5/);
+  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.6/);
+  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.6/);
   assert.match(npmPublication, /dist\.attestations/);
   assert.match(npmPublication, /SHA-512 SRI/);
   assert.match(npmPublication, /verify-github-tag-binding\.mjs/);
@@ -608,7 +608,7 @@ test("npm package contents remain the exact five reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.7.5");
+    assert.equal(pack.version, "0.7.6");
     assert.equal(pack.entryCount, 5);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),

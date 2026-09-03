@@ -6,9 +6,8 @@ Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Release-state snapshot verified 2026-09-02 before any `v0.7.5` publication.
-Reviewed GitHub/Homebrew release at that snapshot: `v0.7.4` at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4
-Install: macOS uses the exact Homebrew tap/trust/fully-qualified formula commands below; Linux and Windows use the exact checksum-verified `v0.7.4` assets below.
+Release state verified 2026-09-03. The immutable GitHub `v0.7.5` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5 resolves to `d2969e73995cc139e6253e0c8a70f1d683f88e20`. Workflow `33709338577` published 19 assets after all six native acceptance rows and release attestations passed.
+Install: use the exact checksum-verified `v0.7.5` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula publishes reviewed `v0.7.5`.
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`.
 
 ## The Problem
@@ -80,18 +79,20 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 
 ## Installation
 
-### Homebrew (macOS, reviewed v0.7.4)
+### Homebrew (macOS, reviewed v0.7.5)
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-### Exact v0.7.4 assets
-Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-unknown-linux-gnu.tar.gz
-Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-unknown-linux-gnu.tar.gz
-Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-pc-windows-msvc.zip
-Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-pc-windows-msvc.zip
+### Exact v0.7.5 GitHub assets
+macOS Apple Silicon: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-apple-darwin.tar.gz
+macOS Intel: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-apple-darwin.tar.gz
+Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-unknown-linux-gnu.tar.gz
+Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-unknown-linux-gnu.tar.gz
+Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-pc-windows-msvc.zip
+Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-pc-windows-msvc.zip
 Download the adjacent `.sha256` sidecar for the selected archive, verify it,
 then extract both release executables and place them on PATH.
 
@@ -99,26 +100,26 @@ then extract both release executables and place them on PATH.
 ```
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout c20f4eb6d8272709985083afe156b5678a1ac054
+git checkout d2969e73995cc139e6253e0c8a70f1d683f88e20
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-Registry status verified 2026-09-02: npm `latest` remains 0.6.0; exact npm
+Registry status verified 2026-09-03: npm `latest` remains 0.6.0; exact npm
 0.7.4 wrappers exist only under the failed `release-candidate` track. No MCP
 Registry 0.7.4 record was found; crates.io remains on 0.5.1. Unpinned npm, npx,
-and `cargo install` commands are not the reviewed v0.7.4 GitHub/Homebrew path.
+and `cargo install` commands are not the reviewed v0.7.5 GitHub release path.
 
 ### MCP setup
 
 Run `phantom setup --client claude|cursor|windsurf|codex` after installing both
-`v0.7.4` binaries. Ask the client to propose protection and review affected
+`v0.7.5` GitHub release binaries. Ask the client to propose protection and review affected
 files and confirmation-gated steps. Keep secret entry in the trusted terminal
 and deployment/provider authority separate.
 
-Released `v0.7.4` records the running `phantom` executable with `mcp serve` when
+Released `v0.7.5` records the running `phantom` executable with `mcp serve` when
 it can resolve that runtime, otherwise it looks for a local `phantom-mcp`.
 Setup has no network package-runner fallback and fails closed when neither local
-runtime is executable. Keep both verified `v0.7.4` binaries installed and
+runtime is executable. Keep both verified `v0.7.5` binaries installed and
 inspect the generated entry.
 
 ## MCP Server — Multi-IDE Support
@@ -305,8 +306,10 @@ Phantom automatically identifies secrets vs config values using heuristics:
 - apps/web: Vercel-targeted Next.js source (Supabase + Stripe, device auth,
   vault API, billing); repository presence is not deployment or commissioning
 
-Current `0.7.5` filesystem hardening, tests, and workflow definitions do not
-prove that its artifacts were published, deployed, commissioned, or accepted. Locus,
+The immutable `v0.7.5` GitHub release proves publication, checksums, the six-row
+native release matrix, and release attestations for exact source
+`d2969e73995cc139e6253e0c8a70f1d683f88e20`. It does not prove web deployment,
+hosted commissioning, native credential-store acceptance, or customer acceptance. Locus,
 broker, runtime, session, and externally trusted evidence remain inactive and
 fail closed; enterprise packaging remains a separately commissioned plan.
 

@@ -439,7 +439,7 @@ enum Commands {
         /// phm_cand_ placeholder, not a provider-issued credential.
         #[arg(long, hide = true)]
         shadow: bool,
-        /// Secret name for the reserved provider-rotation surface. In 0.7.5,
+        /// Secret name for the reserved provider-rotation surface. In this release,
         /// every live provider path is denied before credential or network access.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
@@ -448,12 +448,12 @@ enum Commands {
         #[arg(long, value_name = "STRATEGY", conflicts_with = "name", hide = true)]
         schedule_strategy: Option<String>,
         /// Reserved vendor-specific rotation selector. All providers are hard
-        /// denied before bootstrap credential access and network I/O in 0.7.5.
+        /// denied before bootstrap credential access and network I/O in this release.
         #[arg(long, value_name = "PROVIDER", conflicts_with_all = ["shadow", "schedule_strategy", "with_expiry", "batch"])]
         provider: Option<String>,
 
         /// Metadata-only discovery/manual guidance. Vendor execution is hard
-        /// denied before credential or network access in 0.7.5.
+        /// denied before credential or network access in this release.
         #[arg(long, conflicts_with_all = ["shadow", "schedule_strategy", "provider"])]
         batch: bool,
 
@@ -464,7 +464,7 @@ enum Commands {
     },
 
     /// Inspect configured grant metadata. Enrollment and remote revocation are
-    /// hard-denied in shipped 0.7.5; obtain credentials at the provider and
+    /// hard-denied in this release; obtain credentials at the provider and
     /// store them with trusted-terminal `phantom add`.
     ///
     /// Subcommands: `add`, `list`, `status`, `revoke`.
@@ -653,7 +653,7 @@ enum WorkspaceCliAction {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum GrantAction {
-    /// Compatibility command. Shipped 0.7.5 returns before project, vault,
+    /// Compatibility command. This release returns before project, vault,
     /// environment, browser, loopback, or network access. No enrollment occurs.
     Add {
         /// Provider identifier retained for source compatibility; never contacted.
@@ -675,7 +675,7 @@ enum GrantAction {
         /// The OAuth app's client id (required for --flow pkce|device).
         #[arg(long)]
         client_id: Option<String>,
-        /// Reserved env-var name. Its value is not read in 0.7.5.
+        /// Reserved env-var name. Its value is not read in this release.
         #[arg(long, value_name = "ENV")]
         client_secret_env: Option<String>,
         /// Comma-separated OAuth scopes to request.
@@ -690,7 +690,7 @@ enum GrantAction {
         /// authoritative account comes back in the token exchange.
         #[arg(long)]
         account: Option<String>,
-        /// Compatibility flag. No browser is opened in 0.7.5.
+        /// Compatibility flag. No browser is opened in this release.
         #[arg(long)]
         no_browser: bool,
         /// Emit the value-free denial as JSON.

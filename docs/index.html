@@ -881,7 +881,7 @@
                 <span class="cmd">phantom init</span>
                 <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </div>
-            <div class="hero-hint">After a verified v0.7.4 install, one command protects detected, managed dotenv secrets.</div>
+            <div class="hero-hint">After a verified v0.7.5 GitHub release install, one command protects detected, managed dotenv secrets.</div>
         </div>
 
         <div class="sr sr-d3 hero-ctas">
@@ -1067,8 +1067,8 @@
         </div>
         <div class="feat sr sr-d1">
             <span class="feat-icon">&#128230;</span>
-            <h3>Release snapshot: v0.7.4 distribution</h3>
-            <p>At the release-state snapshot verified 2026-09-02 before any v0.7.5 publication, macOS used the trusted Homebrew formula and Linux and Windows used the exact GitHub release archive plus adjacent checksum. npm latest remained 0.6.0; immutable npm 0.7.4 was a failed release candidate, no MCP Registry 0.7.4 record was found, and crates.io remained on 0.5.1.</p>
+            <h3>Immutable v0.7.5 GitHub release</h3>
+            <p>Verified 2026-09-03: the immutable v0.7.5 GitHub release resolves to <code>d2969e73995cc139e6253e0c8a70f1d683f88e20</code>. Workflow 33709338577 published 19 assets after all six native acceptance rows and release attestations passed. npm latest remains 0.6.0; npm 0.7.4 remains a failed release candidate, no MCP Registry record is claimed, and crates.io remains on 0.5.1.</p>
         </div>
         <div class="feat sr sr-d2">
             <span class="feat-icon">&#128736;</span>
@@ -1086,19 +1086,19 @@
 
     <div class="install-grid sr">
         <div class="install-card">
-            <h3>Homebrew (macOS v0.7.4)</h3>
+            <h3>Homebrew (macOS v0.7.5)</h3>
             <div class="install-cmd" onclick="copyCmd('brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom')">$ brew tap ashlrai/phantom<br>$ brew trust --formula ashlrai/phantom/phantom<br>$ brew install ashlrai/phantom/phantom</div>
             <div class="install-sub">Trusted, fully qualified third-party formula</div>
         </div>
         <div class="install-card">
-            <h3>Linux + Windows v0.7.4</h3>
-            <div class="install-cmd"><a href="https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4">Exact archives + .sha256 sidecars</a></div>
+            <h3>macOS + Linux + Windows v0.7.5</h3>
+            <div class="install-cmd"><a href="https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5">Exact archives + .sha256 sidecars</a></div>
             <div class="install-sub">Verify the selected asset before extraction</div>
         </div>
         <div class="install-card">
             <h3>Exact source build</h3>
-            <div class="install-cmd" onclick="copyCmd('git checkout c20f4eb6d8272709985083afe156b5678a1ac054 && cargo build --release --locked --bin phantom --bin phantom-mcp')">$ git checkout c20f4eb6d8272709985083afe156b5678a1ac054<br>$ cargo build --release --locked --bin phantom --bin phantom-mcp</div>
-            <div class="install-sub">Source commit resolved by v0.7.4</div>
+            <div class="install-cmd" onclick="copyCmd('git checkout d2969e73995cc139e6253e0c8a70f1d683f88e20 && cargo build --release --locked --bin phantom --bin phantom-mcp')">$ git checkout d2969e73995cc139e6253e0c8a70f1d683f88e20<br>$ cargo build --release --locked --bin phantom --bin phantom-mcp</div>
+            <div class="install-sub">Exact source commit resolved by immutable v0.7.5</div>
         </div>
     </div>
 </section>

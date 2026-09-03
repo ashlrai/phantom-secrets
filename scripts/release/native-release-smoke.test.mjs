@@ -142,10 +142,10 @@ function nativeArchiveFixture(t, options = {}) {
       return "";
     }
     if (label === "phantom --version") {
-      return `${options.phantomVersion ?? "phantom 0.7.5"}\n`;
+      return `${options.phantomVersion ?? "phantom 0.7.6"}\n`;
     }
     if (label === "phantom-mcp --version") {
-      return `${options.phantomMcpVersion ?? "phantom-mcp 0.7.5"}\n`;
+      return `${options.phantomMcpVersion ?? "phantom-mcp 0.7.6"}\n`;
     }
     if (label === "MCP stdio schema smoke") {
       if (options.failMcp) throw new Error("synthetic MCP schema failure");
@@ -162,7 +162,7 @@ function nativeArchiveFixture(t, options = {}) {
       runNativeReleaseSmoke({
         archivePath,
         target: fixtureTarget,
-        tag: "v0.7.5",
+        tag: "v0.7.6",
         env: fixtureEnv,
         runtime: fixtureRuntime,
         runCommand,
@@ -227,7 +227,7 @@ test("native archive smoke exercises the complete accepted artifact path", (t) =
   assert.deepEqual(fixture.smoke(), {
     archive: "phantom-x86_64-unknown-linux-gnu.tar.gz",
     target: fixtureTarget,
-    version: "0.7.5",
+    version: "0.7.6",
   });
   assert.deepEqual(
     fixture.commands.map(({ label }) => label),
@@ -312,7 +312,7 @@ test("native archive smoke rejects a binary built at the wrong version", (t) => 
   const fixture = nativeArchiveFixture(t, { phantomVersion: "phantom 0.7.3" });
   assert.throws(
     fixture.smoke,
-    /phantom --version must equal phantom 0\.7\.5; got phantom 0\.7\.3/,
+    /phantom --version must equal phantom 0\.7\.6; got phantom 0\.7\.3/,
   );
   assert.doesNotMatch(
     fixture.commands.map(({ label }) => label).join("\n"),
@@ -377,7 +377,7 @@ test("attestation cannot begin before every build and native acceptance succeeds
   );
 });
 
-test("platform documentation distinguishes configured native gates from candidate evidence", () => {
+test("platform documentation binds the immutable release receipt to every native row", () => {
   for (const [target, values] of Object.entries(expected)) {
     const [, , runner, , runnerArch] = values;
     const row = platformSupport
@@ -392,8 +392,15 @@ test("platform documentation distinguishes configured native gates from candidat
 
   assert.match(
     platformSupport,
-    /release-state snapshot below was verified 2026-09-02 before any `?v0\.7\.5`?\s+publication;[\s\S]*at that snapshot the `?0\.7\.5`? fix-forward had no native or\s+npm-channel acceptance receipt/i,
+    /verified 2026-09-03[\s\S]*immutable `v0\.7\.5` GitHub[\s\S]*d2969e73995cc139e6253e0c8a70f1d683f88e20/i,
   );
+  assert.match(platformSupport, /workflow\s+`33709338577`[\s\S]*19 assets/i);
+  assert.equal(
+    platformSupport.match(/`v0\.7\.5` release-native acceptance passed/g)?.length,
+    6,
+    "every native row must name the exact v0.7.6 release receipt",
+  );
+  assert.match(platformSupport, /no exact npm `0\.7\.5` acceptance receipt is claimed/i);
   assert.match(
     platformSupport,
     /Attestation cannot begin\s+until all six jobs succeed/,

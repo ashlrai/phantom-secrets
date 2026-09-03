@@ -6,9 +6,8 @@ Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Release-state snapshot verified 2026-09-02 before any `v0.7.5` publication.
-Reviewed GitHub/Homebrew release at that snapshot: `v0.7.4` at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4
-Install: macOS uses the exact Homebrew tap/trust/fully-qualified formula commands below; Linux and Windows use the exact checksum-verified `v0.7.4` assets below
+Release state verified 2026-09-03. The immutable GitHub `v0.7.5` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5 resolves to `d2969e73995cc139e6253e0c8a70f1d683f88e20`. Workflow `33709338577` published 19 assets after all six native acceptance rows and release attestations passed.
+Install: use the exact checksum-verified `v0.7.5` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula publishes reviewed `v0.7.5`.
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`
 
 
@@ -37,32 +36,34 @@ https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/
 
 ## Install
 
-### Homebrew (macOS, reviewed v0.7.4)
+### Homebrew (macOS, reviewed v0.7.5)
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-### Exact v0.7.4 assets
-Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-unknown-linux-gnu.tar.gz
-Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-unknown-linux-gnu.tar.gz
-Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-pc-windows-msvc.zip
-Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-pc-windows-msvc.zip
+### Exact v0.7.5 GitHub assets
+macOS Apple Silicon: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-apple-darwin.tar.gz
+macOS Intel: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-apple-darwin.tar.gz
+Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-unknown-linux-gnu.tar.gz
+Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-unknown-linux-gnu.tar.gz
+Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-pc-windows-msvc.zip
+Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-pc-windows-msvc.zip
 For each archive, download its adjacent `.sha256` sidecar, verify it, extract both `phantom` and `phantom-mcp` executables, and place them on PATH.
 
 ### Exact source build
 ```
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout c20f4eb6d8272709985083afe156b5678a1ac054
+git checkout d2969e73995cc139e6253e0c8a70f1d683f88e20
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-Registry status verified 2026-09-02: npm `latest` remains 0.6.0; exact npm
+Registry status verified 2026-09-03: npm `latest` remains 0.6.0; exact npm
 0.7.4 wrappers exist only under the failed `release-candidate` track. No MCP
 Registry 0.7.4 record was found; crates.io remains on 0.5.1. Unpinned npm, npx,
-and `cargo install` commands are not the reviewed v0.7.4 GitHub/Homebrew path.
+and `cargo install` commands are not the reviewed v0.7.5 GitHub release path.
 
 ### Verify
 ```
@@ -287,15 +288,15 @@ Print a shell-completion script to stdout. Source from your shell rc; see the RE
 
 ## MCP server — selected release-checked tools
 
-Setup: install both reviewed `v0.7.4` binaries, then run `phantom setup --client claude`
+Setup: install both reviewed `v0.7.5` GitHub release binaries, then run `phantom setup --client claude`
 
-Released `v0.7.4` records the running `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise it looks for a local `phantom-mcp`. Setup has no network package-runner fallback and fails closed when neither local runtime is executable. Keep both verified `v0.7.4` binaries installed and inspect the generated entry.
+Released `v0.7.5` records the running `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise it looks for a local `phantom-mcp`. Setup has no network package-runner fallback and fails closed when neither local runtime is executable. Keep both verified `v0.7.5` binaries installed and inspect the generated entry.
 
 The MCP server uses stdio transport via the rmcp 1.3 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex. The runtime `tools/list` response is the canonical parameter schema.
 
 Commissioning boundary: cloud and team tools below are client implementations
-for a separately deployed and entitled hosted service. As of the 2026-09-02
-pre-publication snapshot, the public Phantom Cloud/Pro service is not
+for a separately deployed and entitled hosted service. As of the 2026-09-03
+release-state snapshot, the public Phantom Cloud/Pro service is not
 commissioned. Tool availability and local tests do not prove a reachable
 service, account entitlement, or successful provider effect.
 
@@ -416,7 +417,7 @@ phantom_apply_expiry_policy
 
 These tools require a separately commissioned Phantom Cloud deployment and
 account entitlement. The public Phantom Cloud/Pro service was not commissioned
-at the 2026-09-02 pre-publication snapshot; the descriptions below specify
+at the 2026-09-03 release-state snapshot; the descriptions below specify
 candidate client behavior, not currently available public operations.
 
 Current vault access is member-wide: every team member can read and write the shared vault. Invitation management is owner/admin-gated; roles do not provide per-vault access control.
@@ -534,8 +535,10 @@ Windows source establishes a protected current-user DACL on new private
 files/directories before bytes and preserves the reviewed exact DACL and
 inheritance state on replacement staging files before writing. Reparse, handle,
 ACL, and Credential Manager behavior still await protected native Windows CI
-acceptance. Current `0.7.5` source does not prove artifact publication, deployment,
-enterprise commissioning, or customer acceptance.
+acceptance. The immutable `v0.7.5` GitHub release proves publication,
+checksums, six-row native release acceptance, and release attestations for exact
+source `d2969e73995cc139e6253e0c8a70f1d683f88e20`; it does not prove web deployment,
+enterprise commissioning, native credential-store acceptance, or customer acceptance.
 
 Implementation-security identity:
 `5a3edad60634c78af3079f588bf51fefa0b69586`. Live GitHub governance observed
@@ -663,7 +666,7 @@ Supported platforms: Vercel, Railway. Requires platform API token in environment
 
 This is the implemented client/server design for a separately commissioned
 deployment, not evidence of a currently available public service. At the
-2026-09-02 pre-publication snapshot, public Phantom Cloud/Pro hosting and
+2026-09-03 release-state snapshot, public Phantom Cloud/Pro hosting and
 entitlements were not commissioned.
 
 When commissioned, Phantom Cloud provides client-encrypted personal-vault
@@ -706,11 +709,11 @@ or entitlement.
 Direct Phantom Cloud pulls from headless CI are not supported in this release because the CLI does not expose a non-interactive cloud login flow. Use GitHub Actions for checks and builds, then sync deploy-time secrets to Vercel or Railway before deployment.
 
 ```yaml
-- name: Install the immutable Phantom v0.7.4 Linux release
+- name: Install the immutable Phantom v0.7.5 Linux release
   env:
     GH_TOKEN: ${{ github.token }}
   run: |
-    gh release download v0.7.4 --repo ashlrai/phantom-secrets \
+    gh release download v0.7.5 --repo ashlrai/phantom-secrets \
       --pattern phantom-x86_64-unknown-linux-gnu.tar.gz \
       --pattern phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
     sha256sum -c phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
