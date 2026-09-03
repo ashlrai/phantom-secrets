@@ -9,6 +9,8 @@ const read = (relativePath) =>
 
 test("landing restores ecosystem proof without claiming universal proxy support", () => {
   const ecosystem = read("src/components/landing/Ecosystem.tsx");
+  const pauseButton = read("src/components/landing/CarouselPauseButton.tsx");
+  const logos = read("src/components/landing/BrandLogos.tsx");
   const page = read("src/app/page.tsx");
 
   assert.match(page, /<Ecosystem \/>/);
@@ -16,6 +18,11 @@ test("landing restores ecosystem proof without claiming universal proxy support"
   assert.match(ecosystem, /do not imply[\s\S]*universal proxy support/i);
   assert.match(ecosystem, /exact-match proxy routes/i);
   assert.doesNotMatch(ecosystem, /every service is supported/i);
+  assert.match(pauseButton, /aria-controls=\{controls\}/);
+  assert.match(pauseButton, /aria-pressed=\{paused\}/);
+  assert.match(pauseButton, /Pause logo carousel/);
+  assert.match(logos, /"aria-hidden": props\["aria-hidden"\]/);
+  assert.match(logos, /focusable: "false"/);
 });
 
 test("GitHub starring is a named action across the primary adoption surfaces", () => {
@@ -58,4 +65,13 @@ test("dotenv transformation uses only explicit synthetic examples", () => {
   assert.match(transformation, /GITHUB_TOKEN/);
   assert.doesNotMatch(transformation, /DATABASE_URL|MONGODB_URI/);
   assert.doesNotMatch(transformation, /sk-(?:live|proj|ant)-/i);
+});
+
+test("adoption copy does not make an unmeasured time-to-value promise", () => {
+  const documentationGateway = read(
+    "src/components/landing/DocumentationGateway.tsx",
+  );
+
+  assert.match(documentationGateway, /Start with one project/);
+  assert.doesNotMatch(documentationGateway, /(?:minute|hour)s?/i);
 });

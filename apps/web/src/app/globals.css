@@ -1219,6 +1219,32 @@ code, pre, .mono {
   line-height: 1.7;
 }
 
+.ecosystem-section__controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1.5rem;
+}
+
+.ecosystem-section__motion-toggle {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.55rem;
+  border: 1px solid #31505c;
+  border-radius: 0.35rem;
+  background: #0b2631;
+  padding: 0.65rem 0.85rem;
+  color: #c6d8de;
+  font: 600 0.76rem/1 var(--font-sans-stack);
+  cursor: pointer;
+}
+
+.ecosystem-section__motion-toggle:hover,
+.ecosystem-section__motion-toggle:focus-visible {
+  border-color: #7faeff;
+  color: #fff;
+}
+
 .ecosystem-marquee {
   position: relative;
   display: grid;
@@ -1265,7 +1291,8 @@ code, pre, .mono {
 }
 
 .ecosystem-marquee:hover .ecosystem-track,
-.ecosystem-marquee:focus-within .ecosystem-track {
+.ecosystem-marquee:focus-within .ecosystem-track,
+.ecosystem-marquee--paused .ecosystem-track {
   animation-play-state: paused;
 }
 

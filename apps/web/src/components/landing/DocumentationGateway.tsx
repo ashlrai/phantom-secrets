@@ -1,6 +1,6 @@
 const GUIDES = [
   {
-    title: "Start in five minutes",
+    title: "Start with one project",
     body: "Install a reviewed release, protect one project, inspect the boundary, and launch a supported client.",
     href: "/docs",
     action: "Open the quickstart",

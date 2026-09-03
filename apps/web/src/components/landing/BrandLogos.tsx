@@ -52,6 +52,8 @@ function asIconProps(props: LogoProps, color: string): IconBaseProps {
     className: props.className as string | undefined,
     style: props.style,
     "aria-label": props["aria-label"],
+    "aria-hidden": props["aria-hidden"],
+    focusable: "false",
   };
 }
 

@@ -1,4 +1,5 @@
 import { KEY_ENTRIES } from "./BrandLogos";
+import { CarouselPauseButton } from "./CarouselPauseButton";
 
 const firstRow = KEY_ENTRIES.filter((_, index) => index % 2 === 0);
 const secondRow = KEY_ENTRIES.filter((_, index) => index % 2 === 1);
@@ -50,7 +51,15 @@ export function Ecosystem() {
         </p>
       </div>
 
-      <div className="ecosystem-marquee" aria-label="Examples of developer services whose credentials can be vaulted">
+      <div className="landing-frame ecosystem-section__controls">
+        <CarouselPauseButton controls="ecosystem-marquee" />
+      </div>
+
+      <div
+        id="ecosystem-marquee"
+        className="ecosystem-marquee"
+        aria-label="Examples of developer services whose credentials can be vaulted"
+      >
         <LogoRow items={firstRow} />
         <LogoRow items={secondRow} reverse />
       </div>
