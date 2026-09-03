@@ -24,7 +24,7 @@ export function SiteFooter() {
           </p>
           <p className="mt-4 text-[0.78rem] leading-5 text-t3">
             Built by{" "}
-            <a href="https://ashlr.ai" className="text-t2 hover:text-blue-b">
+            <a href="https://ashlr.ai" className="text-t2 underline underline-offset-2 hover:text-blue-b">
               Ashlr AI
             </a>
             . Enterprise and government evaluations are scoped by
@@ -132,7 +132,7 @@ export function SiteFooter() {
 
       <div className="border-t border-border/70">
         <div className="mx-auto flex max-w-[1200px] flex-col gap-2 px-7 py-5 text-[0.75rem] text-t3 sm:flex-row sm:items-center sm:justify-between">
-          <p>© 2026 Ashlr AI. Phantom is open-source software.</p>
+          <p>Phantom is MIT-licensed open-source software.</p>
           <p>Hosted services and support require separate commissioning.</p>
         </div>
       </div>

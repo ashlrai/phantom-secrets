@@ -222,12 +222,18 @@ Detection and runtime injection are different capabilities. Database connection 
 - `phantom-mcp` — `rmcp` stdio server with a release-checked tool schema; use runtime `tools/list` for the current catalog.
 - Authority, Locus-contract, broker, runtime, evidence, session, and workspace crates are fail-closed foundations; they do not activate production execution.
 
-## Pricing
+## Current offerings
 
-- Free: local vault, proxy, MCP, and Vercel/Railway sync workflows; no public
-  hosted cloud-vault entitlement is commissioned
-- Pro (planned hosted pilot): proposed packaging for cloud-backup, cloud-key-portability evaluation, and team-vault capabilities; limits and pricing are TBD, and no self-serve checkout is commissioned
-- Enterprise evaluation: team-vault source and local audit tooling are present; SSO/SAML, centralized enterprise authorization, certification, and contractual SLA are not shipped by this repository. Service and support scope require a separate written agreement with Ashlr AI — `mason@ashlr.ai`.
+- Open source ($0): use, modify, and distribute the local vault, proxy, MCP,
+  and deployment-sync workflows under MIT; no hosted entitlement is included.
+- Enterprise (written scope): SSO/SAML, centralized enterprise authorization, certification, and contractual SLA are not shipped by this repository. Reversible evaluation, environment-specific integration, security review, and support terms require a separate written agreement with Ashlr AI at `mason@ashlr.ai`.
+- Government (written scope): bounded public-sector evaluation and integration
+  may be contracted separately. No authorization, certification, contract
+  vehicle, procurement schedule, hosted service, or SLA is represented.
+
+A Pro hosted pilot remains roadmap direction only. It is not a current public
+offering, has no commissioned self-serve checkout, and has no published price
+or entitlement.
 
 ## Documentation
 

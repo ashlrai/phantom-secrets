@@ -72,7 +72,7 @@ export default function GovernmentPage() {
             <div className="mt-9 flex flex-col gap-3 sm:flex-row">
               <a
                 href={`mailto:${COMMERCIAL_CONTACT}?subject=Phantom%20government%20evaluation`}
-                className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-blue px-5 py-3 text-[0.9rem] font-semibold text-white no-underline transition hover:-translate-y-px hover:bg-blue-d"
+                className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-blue-action px-5 py-3 text-[0.9rem] font-semibold text-white no-underline transition hover:-translate-y-px hover:bg-blue-action-d"
               >
                 Discuss requirements <ArrowRight className="h-4 w-4" />
               </a>

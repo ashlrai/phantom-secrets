@@ -12,7 +12,6 @@
     "test:claims": "node --test tests/public-claims.test.cjs"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.5",
     "@supabase/supabase-js": "^2",
     "next": "^15",
     "posthog-js": "^1.364.2",

@@ -85,7 +85,7 @@ export default function EnterprisePage() {
             <div className="mt-9 flex flex-col gap-3 sm:flex-row">
               <a
                 href={`mailto:${COMMERCIAL_CONTACT}?subject=Phantom%20enterprise%20evaluation`}
-                className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-blue px-5 py-3 text-[0.9rem] font-semibold text-white no-underline transition hover:-translate-y-px hover:bg-blue-d"
+                className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-blue-action px-5 py-3 text-[0.9rem] font-semibold text-white no-underline transition hover:-translate-y-px hover:bg-blue-action-d"
               >
                 Scope an evaluation <ArrowRight className="h-4 w-4" />
               </a>
@@ -130,7 +130,7 @@ export default function EnterprisePage() {
                 How it starts
               </p>
               <h2 className="mt-4 text-[1.8rem] font-extrabold tracking-[-0.035em] text-white">
-                One bounded workflow. Four explicit gates.
+                One bounded workflow. Evidence at every gate.
               </h2>
               <p className="mt-4 text-[0.9rem] leading-[1.7] text-t2">
                 A successful source review is not a rollout. Each engagement

@@ -13,6 +13,8 @@
   --color-blue: #3b82f6;
   --color-blue-b: #60a5fa;
   --color-blue-d: #1d4ed8;
+  --color-blue-action: #2563eb;
+  --color-blue-action-d: #1e40af;
   --color-green: #22c55e;
   --color-red: #ef4444;
 
@@ -992,7 +994,7 @@ code, pre, .mono {
   grid-column: 1 / -1;
   border-top: 1px solid var(--rule-strong);
   padding-top: 1rem;
-  color: var(--ink-faint);
+  color: var(--ink-soft);
   font-size: 0.72rem;
 }
 

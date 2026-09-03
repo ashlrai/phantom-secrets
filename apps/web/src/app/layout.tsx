@@ -35,9 +35,9 @@ export const metadata: Metadata = {
   },
   description: DESCRIPTION,
   applicationName: "Phantom",
-  authors: [{ name: "AshlrAI", url: "https://ashlr.ai" }],
-  creator: "AshlrAI",
-  publisher: "AshlrAI",
+  authors: [{ name: "Ashlr AI", url: "https://ashlr.ai" }],
+  creator: "Ashlr AI",
+  publisher: "Ashlr AI",
   generator: "Next.js",
   keywords: [
     "API keys",
@@ -149,7 +149,7 @@ export default function RootLayout({
               },
               author: {
                 "@type": "Organization",
-                name: "AshlrAI",
+                name: "Ashlr AI",
                 url: "https://ashlr.ai",
               },
             }),

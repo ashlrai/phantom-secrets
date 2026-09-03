@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { posthog } from "@/lib/posthog";
+import { capturePostHog } from "@/lib/posthog";
 import { Check, Copy } from "./Icons";
 
 interface CopyButtonProps {
@@ -39,7 +39,7 @@ export function CopyButton({ text }: CopyButtonProps) {
     try {
       await navigator.clipboard.writeText(text);
       if (currentAttempt !== attempt.current) return;
-      posthog.capture("command_copied");
+      void capturePostHog("command_copied");
       setCopyState("copied");
       resetAfter(1800);
     } catch {

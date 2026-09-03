@@ -611,23 +611,19 @@ CI runs locked, all-target workspace builds and tests on macOS, Linux, and Windo
 
 See [SECURITY.md](SECURITY.md) for the responsible disclosure policy and [THREAT_MODEL.md](THREAT_MODEL.md) for the full threat model (assets, actors, mitigations, known gaps, cryptography summary).
 
-## Pricing
+## Open source and commercial offerings
 
-| Packaging direction | Local open source | Pro (planned hosted pilot) | Enterprise (planned contract) |
-|---|---|---|---|
-| Local vault | Available without a hosted entitlement | Available | Available |
-| Hosted cloud vaults | No commissioned entitlement represented here | Eligibility and limits TBD | Scope defined by written agreement |
-| MCP server | Yes | Yes | Yes |
-| Personal cloud backup | Same-keychain-machine restore only | Key portability evaluation planned | Scope defined by written agreement |
-| Team features | -- | Fixed-membership pilot; eligibility and limits TBD | Planned enterprise controls; scope TBD |
-| Price | No charge for local open-source use | Pricing TBD; no self-serve checkout commissioned | Written agreement |
+| Current offering | What it covers | Commercial boundary |
+|---|---|---|
+| Open source ($0) | Use, modify, and distribute the local CLI, vault, proxy, MCP server, and deployment-sync workflows under MIT | No hosted entitlement or support commitment is included |
+| Enterprise (written scope) | Reversible evaluation, environment-specific integration, security review, and support terms | Scope, deliverables, price, schedule, and acceptance are defined in a separate agreement |
+| Government (written scope) | Bounded public-sector evaluation and integration in a named non-production environment | No authorization, certification, contract vehicle, procurement schedule, hosted service, or SLA is represented |
 
-This table is packaging direction, not evidence that a hosted entitlement,
-enterprise control, support term, or price is active for a particular account.
-The planned Pro pilot has no commissioned self-serve checkout; eligibility,
-team and vault limits, and pricing remain TBD. Verify the deployed service and
-written plan terms; see the
-[enterprise adoption guide](docs/enterprise-adoption.md) for shipped-versus-planned gates.
+A Pro hosted pilot remains roadmap direction only. It is not a current public
+offering, has no commissioned self-serve checkout, and has no published price
+or entitlement. See the [enterprise adoption guide](docs/enterprise-adoption.md)
+for shipped-versus-planned gates, or contact `mason@ashlr.ai` to discuss a
+written scope.
 
 ## Links
 

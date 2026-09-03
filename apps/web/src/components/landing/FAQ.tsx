@@ -130,7 +130,9 @@ export function FAQ() {
             Security claims are useful only when their assumptions and failure
             modes are visible. For a question not covered here, open a GitHub
             issue or email{" "}
-            <a href={`mailto:${COMMERCIAL_CONTACT}`}>{COMMERCIAL_CONTACT}</a>.
+            <a className="underline underline-offset-2" href={`mailto:${COMMERCIAL_CONTACT}`}>
+              {COMMERCIAL_CONTACT}
+            </a>.
           </p>
         </div>
 

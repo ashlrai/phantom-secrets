@@ -22,7 +22,7 @@ export function OfferingGrid({ headingLevel = "h3" }: OfferingGridProps) {
           }
         >
           {offering.featured && (
-            <span className="absolute -top-2.5 left-7 rounded-full border border-blue-d/40 bg-blue px-2.5 py-0.5 text-[0.7rem] font-bold uppercase tracking-[0.12em] text-white">
+            <span className="absolute -top-2.5 left-7 rounded-full border border-blue-d/40 bg-blue-action px-2.5 py-0.5 text-[0.7rem] font-bold uppercase tracking-[0.12em] text-white">
               Written scope
             </span>
           )}

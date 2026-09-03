@@ -686,14 +686,19 @@ personal cloud backups portable.
 
 Auth: GitHub OAuth via device code flow (like GitHub CLI).
 
-Packaging direction:
-  Free tier: local vault, proxy, and MCP; no public hosted cloud-vault
-  entitlement is commissioned
-  Pro (planned hosted pilot): proposed packaging for expanded cloud-backup,
-  cloud-key-portability evaluation, and team-vault capabilities; limits and
-  pricing are TBD, and no self-serve checkout is commissioned
+Current offerings:
+  Open source ($0): local vault, proxy, MCP, and deployment-sync workflows
+  under MIT; no hosted entitlement or support commitment is included.
+  Enterprise (written scope): reversible evaluation, environment-specific
+  integration, security review, and support terms may be contracted separately
+  with Ashlr AI at mason@ashlr.ai.
+  Government (written scope): bounded public-sector evaluation and integration
+  may be contracted separately. No authorization, certification, contract
+  vehicle, procurement schedule, hosted service, or SLA is represented.
 
-The Pro plan is not generally purchasable or commissioned based on repository source alone. Verify the deployed service, account entitlement, and written plan terms before relying on it.
+A Pro hosted pilot remains roadmap direction only. It is not a current public
+offering, has no commissioned self-serve checkout, and has no published price
+or entitlement.
 
 
 ## CI/CD

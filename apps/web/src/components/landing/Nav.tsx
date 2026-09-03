@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { posthog } from "@/lib/posthog";
+import { capturePostHog } from "@/lib/posthog";
 import { Github } from "./Icons";
 
 const navigation = [
@@ -127,9 +127,9 @@ export function Nav() {
             href={installHref}
             onClick={() => {
               setMenuOpen(false);
-              posthog.capture("nav_get_started_clicked");
+              void capturePostHog("nav_get_started_clicked");
             }}
-            className="inline-flex min-h-10 items-center rounded-md bg-blue px-3.5 py-2 text-[0.82rem] font-semibold text-white no-underline transition-all duration-200 hover:-translate-y-px hover:bg-blue-d hover:shadow-[0_4px_18px_rgba(59,130,246,0.4)] sm:px-4"
+            className="inline-flex min-h-10 items-center rounded-md bg-blue-action px-3.5 py-2 text-[0.82rem] font-semibold text-white no-underline transition-all duration-200 hover:-translate-y-px hover:bg-blue-action-d hover:shadow-[0_4px_18px_rgba(59,130,246,0.4)] sm:px-4"
           >
             Get started
           </Link>

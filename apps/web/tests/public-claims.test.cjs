@@ -574,6 +574,7 @@ test("HowTo and delegation guidance avoid timing and unpinned quickstart claims"
 test("dashboard surfaces describe uncommissioned pilot metadata, not live entitlements", () => {
   const dashboardPaths = filesUnder("src/app/dashboard", [".tsx"]);
   const dashboardClaims = dashboardPaths.map((file) => read(file)).join("\n");
+  const dashboardLayout = read("src/app/dashboard/layout.tsx");
 
   for (const forbidden of [
     /\b1\s+cloud\s+vault\b/i,
@@ -597,6 +598,10 @@ test("dashboard surfaces describe uncommissioned pilot metadata, not live entitl
       file,
     );
   }
+
+  assert.match(dashboardLayout, /"unavailable"/);
+  assert.match(dashboardLayout, /Hosted boundary closed/);
+  assert.match(dashboardLayout, /browser-auth configuration/);
 });
 
 test("current SoftwareApplication and HowTo metadata point at the verified release", () => {
