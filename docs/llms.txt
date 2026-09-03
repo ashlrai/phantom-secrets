@@ -4,8 +4,9 @@
 
 ## Install
 
-Reviewed release: `v0.7.3` at
-https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
+Release-state snapshot verified 2026-09-02 before any `v0.7.5` publication.
+Reviewed GitHub/Homebrew release at that snapshot: `v0.7.4` at
+https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4
 
 macOS:
 ```
@@ -14,10 +15,12 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-Linux and Windows: select the exact `v0.7.3` archive for your architecture from
+Linux and Windows: select the exact `v0.7.4` archive for your architecture from
 the release, download its adjacent `.sha256` sidecar, verify it, and put both
-release executables on PATH. Registry status verified 2026-08-31: npm and the
-MCP Registry publish older `0.6.0` packages; crates.io publishes `0.5.1`.
+release executables on PATH. Registry status verified 2026-09-02: npm `latest`
+remains `0.6.0`; exact npm `0.7.4` wrappers exist only under the failed
+`release-candidate` track. No MCP Registry `0.7.4` record was found; crates.io
+remains on `0.5.1`.
 
 ## MCP Server
 
@@ -28,13 +31,11 @@ Setup (recommended, one command per AI client):
 - Codex: `phantom setup --client codex` (writes ~/.codex/config.toml)
 - Generic: `phantom setup --client claude --print` (snippet to stdout)
 
-Install both `v0.7.3` release binaries first. Released `v0.7.3` normally records
-the running `phantom` executable with `mcp serve`; if that cannot be resolved, it
-looks for a local `phantom-mcp`. Its final legacy fallback is unpinned
-`npx -y phantom-secrets-mcp`, which resolves an older registry track. Keep both
-verified binaries installed and inspect the generated entry instead of relying
-on that fallback. Current main removes the network fallback and fails closed;
-that hardening is not in `v0.7.3` and awaits a later release.
+Install both `v0.7.4` release binaries first. Version `0.7.4` records the running
+`phantom` executable with `mcp serve` when it can resolve that runtime, otherwise
+it looks for a local `phantom-mcp`. Setup has no network package-runner fallback
+and fails closed when neither local runtime is executable. Keep both verified
+binaries installed and inspect the generated entry.
 
 The runtime `tools/list` response is the canonical MCP parameter schema and is
 checked for exact parity with `mcp-registry/server.json`. Provider/network
@@ -68,7 +69,11 @@ init (--from <file>, --empty, --all <DIR>, --dry-run, --jobs/-j N), agent (repor
 
 ## Dashboard
 
-https://phm.dev/dashboard: local/pilot access state and available cloud-backed project metadata. Hosted billing is not commissioned, and the dashboard does not start checkout or collect payment.
+https://phm.dev/dashboard: source-backed browser design for local/pilot access
+state and cloud-backed project metadata after a hosted deployment and account
+entitlement are independently commissioned. The public hosted service and
+billing are not currently commissioned for authenticated use, and the dashboard
+does not start checkout or collect payment.
 
 ## Key Features
 
@@ -117,8 +122,8 @@ https://phm.dev/dashboard: local/pilot access state and available cloud-backed p
   files/directories before bytes and preserves the reviewed exact DACL and
   inheritance state on replacement staging files before writing. Reparse,
   handle, ACL, and Credential Manager behavior still await protected native
-  Windows CI acceptance. Current main is not evidence that `v0.7.4` is
-  published or deployed.
+  Windows CI acceptance. Current `0.7.5` source is not evidence that its
+  artifacts are published or deployed.
 - Implementation-security identity:
   `5a3edad60634c78af3079f588bf51fefa0b69586`. Live GitHub governance observed
   2026-09-01: the `release` environment required review and accepted only `v*`

@@ -83,6 +83,9 @@ function createServiceClient(user) {
 
 function loadRoute(serviceClient) {
   const localRequire = (specifier) => {
+    if (specifier === "@/lib/commissioning") {
+      return { requireHostedService: () => null };
+    }
     if (specifier === "@/lib/supabase-server") {
       return { createServiceClient: () => serviceClient };
     }

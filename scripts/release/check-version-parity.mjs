@@ -40,6 +40,11 @@ if (!semverPattern.test(workspaceVersion)) {
 const npmCliVersion = json("npm/package.json").version;
 const npmMcpVersion = json("npm-mcp/package.json").version;
 const webVersion = json("apps/web/package.json").version;
+const citationVersion = requireMatch(
+  read("CITATION.cff"),
+  /^version:\s*([^\s]+)$/m,
+  "citation metadata version"
+);
 const registry = json("mcp-registry/server.json");
 const registryPackage = registry.packages.find(
   (entry) => entry.identifier === "phantom-secrets-mcp"
@@ -78,6 +83,7 @@ const versions = new Map([
   ["npm CLI package", npmCliVersion],
   ["npm MCP package", npmMcpVersion],
   ["Hosted web application", webVersion],
+  ["Citation metadata", citationVersion],
   ["npm CLI wrapper", cliWrapperVersion],
   ["npm MCP wrapper", wrapperVersion],
   ["Unix direct installer", shellInstallerVersion],

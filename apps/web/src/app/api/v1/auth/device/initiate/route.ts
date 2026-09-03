@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase-server";
 import { formatDeviceUserCode } from "@/lib/device-code";
+import { requireHostedService } from "@/lib/commissioning";
 import { createHash, randomUUID, randomInt } from "crypto";
 
 // Characters that are easy to read aloud — no O/0, I/1, L confusion
@@ -36,6 +37,9 @@ function noStoreJson(body: object, init?: ResponseInit) {
 }
 
 export async function POST(req: Request) {
+  const commissioningGate = requireHostedService("personal_vaults");
+  if (commissioningGate) return commissioningGate;
+
   const supabase = createServiceClient();
   const clientKeyHash = clientRateLimitKey(req);
   if (!clientKeyHash) {

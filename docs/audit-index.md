@@ -14,7 +14,7 @@ slice. Locus authority, the native broker, production engineering execution,
 and externally trusted execution receipts must remain inactive.
 
 The shipped `phantom grant` CLI exposes value-free metadata and compatibility
-commands, not live provider issuance. Version 0.7.4 hard-denies enrollment,
+commands, not live provider issuance. Version 0.7.5 hard-denies enrollment,
 refresh, renewal, rotation, and remote revocation before credential access and
 network I/O. Historical **provider-grant** records are not execution-kernel
 **authority grants** and do not activate Locus, a broker lease, or engineering
@@ -175,11 +175,13 @@ Reviewers should pay particular attention to these unresolved boundaries:
 - provider enrollment, issuance, refresh, renewal, rotation, and remote
   revocation are not active; shipped paths fail before credential or network
   access, while exact test mocks prove local scaffolding only; and
-- the reviewed `v0.7.3` release is distinct from staged `0.7.4` source. The
-  staged workflow defines per-artifact checksums, SBOM/provenance bindings, and
-  a six-target candidate matrix, but those definitions do not prove that exact
-  archives ran or passed on native runners. Independent signatures, native code
-  signing/notarization, and six-target exact-archive acceptance remain open.
+- at the release-state snapshot verified 2026-09-02 before any `v0.7.5`
+  publication, the reviewed immutable `v0.7.4` GitHub/Homebrew release was
+  distinct from the then-unpublished `0.7.5` fix-forward source. The exact `v0.7.4` archives passed the
+  six-target release-native matrix in run 33681798126, while its npm wrappers
+  failed separate installation-channel acceptance. Independent signatures,
+  native code signing/notarization, credential-store/ACL/editor acceptance, and
+  six-target exact-archive acceptance for `v0.7.5` remain open.
 
 The inactive components deny production use while these activation findings
 remain open. Do not work around that denial with test constructors, caller

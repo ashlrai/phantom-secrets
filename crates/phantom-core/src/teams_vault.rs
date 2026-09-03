@@ -360,7 +360,7 @@ pub struct RotateOutcome {
 
 /// Compatibility boundary for team-member revocation.
 ///
-/// Shipped 0.7.4 hard-denies before decrypt, roster lookup, network, audit, or
+/// Shipped 0.7.5 hard-denies before decrypt, roster lookup, network, audit, or
 /// mutation. Omitting a key share without atomically removing the server-side
 /// member would not revoke authorization, and the current key roster exposes
 /// an opaque `user_id` rather than a verified GitHub-login identity. A future

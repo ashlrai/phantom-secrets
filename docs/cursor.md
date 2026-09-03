@@ -24,7 +24,7 @@ contract enforces 54 unique tools; runtime `tools/list` is canonical.
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+Install the reviewed `v0.7.4` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -47,13 +47,12 @@ This writes `~/.cursor/mcp.json` with the `phantom` MCP server entry:
 }
 ```
 
-Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
-records the running `phantom` executable with `mcp serve`; if that cannot be
-resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is
-unpinned `npx -y phantom-secrets-mcp`, an older registry track, so keep both
-verified binaries installed and inspect the generated entry. Current main
-removes that network fallback and fails closed; this is not `v0.7.3` behavior
-and awaits a later release. The config is global and applies to every Cursor
+Install both `v0.7.4` release binaries before setup. Version `0.7.4` records the
+running `phantom` executable with `mcp serve` when it can resolve that runtime,
+otherwise it looks for a local `phantom-mcp`. Setup has no network
+package-runner fallback and fails closed when neither local runtime is
+executable. Keep both verified binaries installed and inspect the generated
+entry. The config is global and applies to every Cursor
 workspace.
 
 To see what would be written without modifying your config:
@@ -118,7 +117,8 @@ phantom add STRIPE_SECRET_KEY
 # Verify the vault is healthy
 phantom doctor
 
-# Push updated vault to cloud so teammates can pull
+# After separately verified hosted commissioning and entitlement, request an
+# encrypted cloud push. The public hosted service is not currently commissioned.
 phantom cloud push
 ```
 
@@ -136,11 +136,10 @@ Check that `~/.cursor/mcp.json` exists and contains the `phantom` entry:
 cat ~/.cursor/mcp.json
 ```
 
-If it looks correct, restart Cursor. Cursor reads MCP config on startup only. On
-current main, if setup reports that the local MCP runtime is missing, reinstall
-both verified binaries. That post-`v0.7.3` source fails closed instead of
-generating a registry-backed command. Released `v0.7.3` still has the legacy
-final `npx` fallback described above, so review its generated entry.
+If it looks correct, restart Cursor. Cursor reads MCP config on startup only. If
+setup reports that the local MCP runtime is missing, reinstall both verified
+`v0.7.4` binaries. The released setup path fails closed instead of generating a
+registry-backed command.
 
 **`phantom exec -- cursor .` opens Cursor but API calls fail**
 

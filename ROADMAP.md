@@ -1,8 +1,11 @@
 # Roadmap
 
 This roadmap describes ordered engineering gates, not delivery dates or shipped
-capabilities. The immutable `v0.7.3` release is the reviewed public
-distribution. The repository currently stages `0.7.4`; its source and workflow
+capabilities. This status snapshot was verified on 2026-09-02 before any
+`v0.7.5` publication. At that snapshot, the immutable `v0.7.4` GitHub release and Homebrew formula are the
+reviewed native distribution. Both npm `0.7.4` wrappers remain public only under
+the failed `release-candidate` track, while npm `latest` remains `0.6.0`. The
+repository source is versioned for the then-unpublished `0.7.5` fix-forward; its source and workflow
 definitions do not prove an artifact was built, published, deployed, enabled,
 or accepted.
 
@@ -17,7 +20,7 @@ or accepted.
 
 ## Current milestones
 
-### 1. Close the 0.7.4 source candidate — staged
+### 1. Close the 0.7.5 fix-forward source candidate — staged at this snapshot
 
 - Keep local mutations transactional and authority-sensitive operations
   fail-closed.

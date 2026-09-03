@@ -16,11 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the immutable Phantom v0.7.3 Linux release
+      - name: Install the immutable Phantom v0.7.4 Linux release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v0.7.3 --repo ashlrai/phantom-secrets \
+          gh release download v0.7.4 --repo ashlrai/phantom-secrets \
             --pattern phantom-x86_64-unknown-linux-gnu.tar.gz \
             --pattern phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
           sha256sum -c phantom-x86_64-unknown-linux-gnu.tar.gz.sha256

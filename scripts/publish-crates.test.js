@@ -208,7 +208,7 @@ output=''; url=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --output) output="$2"; shift 2 ;;
-    --write-out|--proto|--proto-redir|--max-redirs|--connect-timeout|--max-time|--max-filesize) shift 2 ;;
+    --write-out|--user-agent|--proto|--proto-redir|--max-redirs|--connect-timeout|--max-time|--max-filesize) shift 2 ;;
     --silent|--show-error|--location) shift ;;
     *) url="$1"; shift ;;
   esac
@@ -308,6 +308,24 @@ test('dry-run skips byte-identical versions and never invokes cargo publish', ()
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /12 identical already published, 0 would publish, 0 uploaded/);
   assert.doesNotMatch(readFileSync(harness.cargoLog, 'utf8'), /^publish /m);
+});
+
+test('every crates.io lookup sends an identifying versioned user agent', () => {
+  const harness = makeHarness();
+  const result = harness.run(
+    ['--dry-run', '--version', version, '--allow-dirty'],
+    { PHANTOM_TEST_REMOTE_MODE: 'matching' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const lookups = readFileSync(harness.curlLog, 'utf8').trim().split('\n');
+  assert.equal(lookups.length, crates.length);
+  for (const lookup of lookups) {
+    assert.match(
+      lookup,
+      /--user-agent phantom-secrets-release\/0\.7\.3 \(\+https:\/\/github\.com\/ashlrai\/phantom-secrets\)/,
+    );
+    assert.match(lookup, /https:\/\/crates\.io\/api\/v1\/crates\/phantom-secrets[^ ]*\/0\.7\.3$/);
+  }
 });
 
 test('dry-run fails closed on an immutable version checksum collision', () => {

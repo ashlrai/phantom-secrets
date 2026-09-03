@@ -61,7 +61,7 @@ Phantom applies the same standard outside the proxy:
 
 ## Current differences
 
-| Area | Rama reference | Phantom 0.7.4 candidate |
+| Area | Rama reference | Phantom 0.7.5 candidate |
 |---|---|---|
 | Stack composition | Explicitly composed services, layers, transports, protocols, and typed context | A purpose-built authenticated HTTP/1 credential proxy with internal registry/interceptor/scrubber components; its stage order is documented but not exposed as a public service/layer API |
 | Crate modularity | Many focused crates expose separable protocol, transport, telemetry, and utility surfaces | Twelve workspace crates separate product and fail-closed authority foundations, but count alone is not equivalent modularity or adoption evidence |

@@ -16,7 +16,7 @@ Cascade chat. The current release contract enforces 54 unique tools; runtime
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+Install the reviewed `v0.7.4` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -39,13 +39,12 @@ This writes `~/.codeium/windsurf/mcp_config.json` with the `phantom` MCP server 
 }
 ```
 
-Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
-records the running `phantom` executable with `mcp serve`; if that cannot be
-resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is
-unpinned `npx -y phantom-secrets-mcp`, an older registry track, so keep both
-verified binaries installed and inspect the generated entry. Current main
-removes that network fallback and fails closed; this is not `v0.7.3` behavior
-and awaits a later release. The config is global and applies to every Windsurf
+Install both `v0.7.4` release binaries before setup. Version `0.7.4` records the
+running `phantom` executable with `mcp serve` when it can resolve that runtime,
+otherwise it looks for a local `phantom-mcp`. Setup has no network
+package-runner fallback and fails closed when neither local runtime is
+executable. Keep both verified binaries installed and inspect the generated
+entry. The config is global and applies to every Windsurf
 workspace.
 
 To preview what would be written without modifying the file:
@@ -132,9 +131,8 @@ If the file is missing, re-run `phantom setup --client windsurf`. If the file is
 On current main, this means setup did not find a runnable bundled server or
 executable local standalone server. Install both verified binaries using the
 platform-specific path in [getting started](./getting-started.md#install), then
-re-run `phantom setup --client windsurf`. The fail-closed diagnostic is
-post-`v0.7.3` hardening and awaits a later release; released `v0.7.3` still has
-the legacy final `npx` fallback described above.
+re-run `phantom setup --client windsurf`. Released `v0.7.4` fails closed instead
+of generating a registry-backed command.
 
 ---
 

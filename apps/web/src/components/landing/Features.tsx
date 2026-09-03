@@ -61,8 +61,9 @@ fix: run \`phantom add\` to vault them.`,
         Push selected secrets to Vercel and Railway, or pull them back with
         explicit provider credentials. Personal Phantom Cloud snapshots can be
         restored only on the machine that holds their original OS-keychain
-        encryption key. Fixed-membership team vaults use separate per-member
-        encryption.
+        encryption key after the hosted service is independently commissioned.
+        Fixed-membership team-vault protocol source uses separate per-member
+        encryption; it is not a live-service claim.
       </>
     ),
     code: `$ phantom sync --platform vercel

@@ -23,7 +23,7 @@ audit, import/export, cloud sync, team vaults, and safe MCP setup for Codex.
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.3` binary using the platform-specific, checksum-
+Install the reviewed `v0.7.4` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -41,13 +41,12 @@ command = "phantom-mcp"
 args = []
 ```
 
-Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
-records the running `phantom` executable with `mcp serve`; if that cannot be
-resolved, it looks for a local `phantom-mcp`. Its final legacy fallback is
-unpinned `npx -y phantom-secrets-mcp`, an older registry track, so keep both
-verified binaries installed and inspect the generated entry. Current main
-removes that network fallback and fails closed; this is not `v0.7.3` behavior
-and awaits a later release.
+Install both `v0.7.4` release binaries before setup. Version `0.7.4` records the
+running `phantom` executable with `mcp serve` when it can resolve that runtime,
+otherwise it looks for a local `phantom-mcp`. Setup has no network
+package-runner fallback and fails closed when neither local runtime is
+executable. Keep both verified binaries installed and inspect the generated
+entry.
 
 To preview the snippet without modifying your config:
 
@@ -117,7 +116,8 @@ phantom add RESEND_API_KEY
 # Re-run the task; the proxy injects the key for any test calls
 phantom exec -- codex "finish the Resend integration"
 
-# Push the updated vault to cloud
+# After separately verified hosted commissioning and entitlement, request an
+# encrypted cloud push. The public hosted service is not currently commissioned.
 phantom cloud push
 ```
 

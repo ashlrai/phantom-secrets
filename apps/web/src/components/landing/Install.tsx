@@ -47,7 +47,7 @@ export function Install() {
             Install and connect your client.
           </h2>
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
-            After installing both reviewed v0.7.3 binaries, register the bundled
+            After installing both reviewed v0.7.4 binaries, register the bundled
             MCP server for a supported client and verify the resulting local
             configuration. Setup never downloads a registry fallback.
           </p>

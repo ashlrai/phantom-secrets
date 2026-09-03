@@ -5,14 +5,14 @@
 ```bash
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom   # reviewed v0.7.3 macOS release
+brew install ashlrai/phantom/phantom   # reviewed v0.7.4 macOS release
 phantom init               # protects your .env
 phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code with real secrets injected by proxy
 ```
 
 That install example is for macOS. Linux and Windows users should select and
-verify the exact `v0.7.3` GitHub asset below.
+verify the exact `v0.7.4` GitHub asset below.
 
 That's the local setup. Keep agent dotenv reads denied and launch supported API
 work through `phantom exec`; Phantom reduces credential exposure, but it does
@@ -38,7 +38,7 @@ For a detailed breakdown of assets protected, threat actors, mitigations, and kn
 
 ## Install
 
-### Homebrew (macOS, reviewed v0.7.3)
+### Homebrew (macOS, reviewed v0.7.4)
 
 ```bash
 brew tap ashlrai/phantom
@@ -47,16 +47,16 @@ brew install ashlrai/phantom/phantom
 ```
 
 The formula installs both `phantom` and `phantom-mcp` from the immutable
-[`v0.7.3` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3).
+[`v0.7.4` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4).
 
 ### Exact GitHub assets (Linux and Windows)
 
-| Platform | `v0.7.3` archive | Published checksum |
+| Platform | `v0.7.4` archive | Published checksum |
 |---|---|---|
-| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
-| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
-| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip.sha256) |
-| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
+| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-pc-windows-msvc.zip.sha256) |
+| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-pc-windows-msvc.zip.sha256) |
 
 Download the archive and its sidecar, then verify before extraction. Use
 `sha256sum -c <archive>.sha256` on Linux. On Windows, compare
@@ -68,20 +68,21 @@ executables on `PATH`.
 ```bash
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+git checkout c20f4eb6d8272709985083afe156b5678a1ac054
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-The full SHA above is the source commit resolved by `v0.7.3`. Do not treat an
-unpinned registry install as that release. As verified on 2026-08-31, npm and
-the MCP Registry publish `0.6.0`, while crates.io publishes `0.5.1`; those are
-older distribution tracks.
+The full SHA above is the source commit resolved by `v0.7.4`. Do not treat an
+unpinned registry install as that release. As verified on 2026-09-02, npm
+`latest` remains `0.6.0`; exact npm `0.7.4` wrappers exist only under the failed
+`release-candidate` track. No MCP Registry `0.7.4` record was found, and
+crates.io remains on `0.5.1`.
 
 ### Verify
 
 ```bash
 phantom --version
-# phantom 0.7.3
+# phantom 0.7.4
 ```
 
 ---
@@ -219,7 +220,10 @@ phantom rotate
 
 ### `phantom cloud push` / `phantom cloud pull`
 
-Back up and restore your vault on the same keychain machine using client-side
+These source-backed commands require a separately verified hosted deployment
+and account entitlement; the public hosted service is not currently
+commissioned for authenticated use. After commissioning, they can back up and
+restore your vault on the same keychain machine using client-side
 encryption. The cloud vault API receives ciphertext rather than decrypted secret
 values; client, endpoint, account, and OS-keychain security remain part of the
 trust boundary. Phantom does not currently transfer or recover the machine-local
@@ -349,14 +353,12 @@ phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Install both `v0.7.3` release binaries before setup. Released `v0.7.3` normally
-records the running `phantom` executable with `mcp serve`; if that executable
-cannot be resolved, it looks for the local standalone `phantom-mcp`. Its final
-legacy fallback is unpinned `npx -y phantom-secrets-mcp`, which currently
-resolves an older registry track. Do not rely on that path: keep both verified
-release binaries installed and inspect the generated entry. Current main removes
-the registry fallback and fails closed when neither local runtime is executable;
-that hardening is not part of `v0.7.3` and awaits a later release. For Claude
+Install both `v0.7.4` release binaries before setup. Version `0.7.4` records the
+running `phantom` executable with `mcp serve` when it can resolve that
+executable, otherwise it looks for a local standalone `phantom-mcp`. Setup has
+no network package-runner fallback and fails closed when neither local runtime
+is executable. Keep both verified release binaries installed and inspect the
+generated entry. For Claude
 Code, setup removes legacy Phantom-managed dotenv read grants and preserves deny
 rules; agents use value-blind MCP inventory instead. See
 [claude-code.md](./claude-code.md) for the full workflow. Runtime MCP `tools/list`
@@ -514,18 +516,18 @@ export, so avoid launching agents outside `phantom exec` while it is set.
 
 ### An older registry-based install command fails
 
-The reviewed binaries ship from the immutable `v0.7.3` GitHub Release, not the
+The reviewed binaries ship from the immutable `v0.7.4` GitHub Release, not the
 older registry tracks. Download and verify the platform asset above, or build
 the exact tagged source:
 
 ```bash
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+git checkout c20f4eb6d8272709985083afe156b5678a1ac054
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-The full SHA above is the source commit resolved by `v0.7.3`.
+The full SHA above is the source commit resolved by `v0.7.4`.
 
 ### Claude Code cannot read `.env` after setup — is this broken?
 
@@ -540,12 +542,16 @@ metadata instead.
 
 ## Dashboard
 
-Once you've run `phantom login` and `phantom cloud push`, you can see your projects, vault sizes, last sync, plan tier, and team membership at [phm.dev/dashboard](https://phm.dev/dashboard). It's read-only — every mutation still happens via the CLI — but it's useful for "wait, which projects do I have backed up?" moments.
+After a hosted deployment and account entitlement are independently
+commissioned and accepted, its read-only dashboard is designed to show project,
+vault-size, last-sync, plan, and team metadata. The public `phm.dev` service is
+not currently commissioned for authenticated use, so this is not a live
+dashboard claim.
 
 ```bash
 $ phantom open
-# After attached-terminal review and an exact typed challenge, opens
-# https://phm.dev/dashboard. Closed aliases only:
+# After hosted commissioning, attached-terminal review, and an exact typed
+# challenge, opens the configured dashboard. Closed aliases only:
 # phantom open billing | team | docs | github | pricing
 ```
 

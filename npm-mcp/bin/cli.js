@@ -25,7 +25,7 @@ const https = require("https");
 const { homedir } = require("os");
 const { basename, dirname, isAbsolute, join, resolve } = require("path");
 
-const VERSION = "0.7.4";
+const VERSION = "0.7.5";
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom-mcp";
 const REVIEWED_RELEASE_URL = `https://github.com/${REPO}/releases/tag/v${VERSION}`;
@@ -184,13 +184,32 @@ function ensurePrivateCacheDir(cacheDir, platform = process.platform) {
   validateOwnedPath(cacheDir, "directory", platform);
 }
 
-function fsyncFile(path) {
-  const fd = openSync(path, "r");
+function fsyncFile(path, {
+  openSyncImpl = openSync,
+  fsyncSyncImpl = fsyncSync,
+  closeSyncImpl = closeSync,
+} = {}) {
+  // Windows requires a writable file handle for FlushFileBuffers. Opening the
+  // already-created private file read/write preserves the durability barrier
+  // instead of turning EPERM into a platform-specific silent skip.
+  const fd = openSyncImpl(path, "r+");
   try {
-    fsyncSync(fd);
+    fsyncSyncImpl(fd);
   } finally {
-    closeSync(fd);
+    closeSyncImpl(fd);
   }
+}
+
+function normalizeExtractedBinaryMode(path, platform = process.platform) {
+  if (platform === "win32") return;
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
+    throw new Error(`${path} must be a regular single-link file`);
+  }
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error(`${path} is not owned by the current user`);
+  }
+  chmodSync(path, 0o700);
 }
 
 function fsyncDirectory(path, platform = process.platform) {
@@ -271,7 +290,7 @@ function parseSha256File(buf, expectedFilename) {
   return match[1].toLowerCase();
 }
 
-function readVerifiedManifest(binaryPath, manifestPath, platform = process.platform) {
+function readIntegrityVerifiedManifest(binaryPath, manifestPath, platform = process.platform) {
   try {
     validateOwnedPath(binaryPath, "file", platform);
     const manifestStat = validateOwnedPath(manifestPath, "file", platform);
@@ -280,7 +299,8 @@ function readVerifiedManifest(binaryPath, manifestPath, platform = process.platf
     if (
       !manifest ||
       Object.keys(manifest).sort().join(",") !== "sha256,version" ||
-      manifest.version !== VERSION ||
+      typeof manifest.version !== "string" ||
+      !new RegExp(`^${SEMVER_SOURCE}$`).test(manifest.version) ||
       !/^[0-9a-f]{64}$/.test(manifest.sha256) ||
       sha256File(binaryPath) !== manifest.sha256
     ) return null;
@@ -288,6 +308,11 @@ function readVerifiedManifest(binaryPath, manifestPath, platform = process.platf
   } catch {
     return null;
   }
+}
+
+function readVerifiedManifest(binaryPath, manifestPath, platform = process.platform) {
+  const manifest = readIntegrityVerifiedManifest(binaryPath, manifestPath, platform);
+  return manifest?.version === VERSION ? manifest : null;
 }
 
 function runBoundedExec(
@@ -486,6 +511,9 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
         { timeoutMs: execTimeoutMs, heartbeat }
       );
     }
+    // Release archives intentionally carry executable 0755 members. Establish
+    // the private cache mode before applying the stricter owned-path policy.
+    normalizeExtractedBinaryMode(extractedBinaryPath, platform);
     validateOwnedPath(extractedBinaryPath, "file", platform);
     copyFileSync(extractedBinaryPath, binaryPath, fsConstants.COPYFILE_EXCL);
     if (platform !== "win32") chmodSync(binaryPath, 0o700);
@@ -615,14 +643,17 @@ async function acquireInstallLock(lockPath, {
 }
 
 function recoverInterruptedInstall(paths, platform = process.platform) {
-  if (readVerifiedManifest(paths.binaryPath, paths.manifestPath, platform)) {
+  // Recovery is about preserving a structurally safe, checksum-matched pair,
+  // including the last released version during an upgrade. Execution remains
+  // pinned to VERSION through validateCachedBinary below.
+  if (readIntegrityVerifiedManifest(paths.binaryPath, paths.manifestPath, platform)) {
     removeFileIfExists(paths.backupBinaryPath);
     removeFileIfExists(paths.backupManifestPath);
     removeFileIfExists(paths.transactionPath);
     fsyncDirectory(dirname(paths.binaryPath), platform);
     return "current";
   }
-  if (readVerifiedManifest(paths.backupBinaryPath, paths.backupManifestPath, platform)) {
+  if (readIntegrityVerifiedManifest(paths.backupBinaryPath, paths.backupManifestPath, platform)) {
     removeFileIfExists(paths.binaryPath);
     removeFileIfExists(paths.manifestPath);
     renameSync(paths.backupBinaryPath, paths.binaryPath);
@@ -633,7 +664,7 @@ function recoverInterruptedInstall(paths, platform = process.platform) {
   }
   if (existsSync(paths.binaryPath) && !existsSync(paths.manifestPath) && existsSync(paths.backupManifestPath)) {
     renameSync(paths.backupManifestPath, paths.manifestPath);
-    if (readVerifiedManifest(paths.binaryPath, paths.manifestPath, platform)) {
+    if (readIntegrityVerifiedManifest(paths.binaryPath, paths.manifestPath, platform)) {
       removeFileIfExists(paths.transactionPath);
       fsyncDirectory(dirname(paths.binaryPath), platform);
       return "restored-manifest";
@@ -653,7 +684,9 @@ function replaceCachedBinary(candidatePath, candidateManifestPath, paths, platfo
   }
   const cacheDir = dirname(paths.binaryPath);
   writeAtomicPrivateFile(paths.transactionPath, JSON.stringify({ version: VERSION }) + "\n", 0o600, platform);
-  const hadPrevious = Boolean(readVerifiedManifest(paths.binaryPath, paths.manifestPath, platform));
+  const hadPrevious = Boolean(
+    readIntegrityVerifiedManifest(paths.binaryPath, paths.manifestPath, platform)
+  );
   if (hadPrevious) {
     renameSync(paths.manifestPath, paths.backupManifestPath);
     fsyncDirectory(cacheDir, platform);
@@ -800,6 +833,7 @@ module.exports = {
   ensurePrivateCacheDir,
   expectedArchiveEntries,
   extractBinaryFromArchive,
+  fsyncFile,
   getCacheDir,
   getPlatformTarget,
   isCachedBinaryStale,

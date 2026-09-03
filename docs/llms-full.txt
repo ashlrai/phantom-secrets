@@ -6,8 +6,9 @@ Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Current reviewed release: `v0.7.3` at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.3
-Install: macOS uses the exact Homebrew tap/trust/fully-qualified formula commands below; Linux and Windows use the exact checksum-verified `v0.7.3` assets below.
+Release-state snapshot verified 2026-09-02 before any `v0.7.5` publication.
+Reviewed GitHub/Homebrew release at that snapshot: `v0.7.4` at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.4
+Install: macOS uses the exact Homebrew tap/trust/fully-qualified formula commands below; Linux and Windows use the exact checksum-verified `v0.7.4` assets below.
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`.
 
 ## The Problem
@@ -40,11 +41,11 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom agent doctor` — Human-readable view of the same readiness policy. Status values: unsafe, protected, verified, team-ready, compliance-ready.
 - `phantom agent setup --dry-run|--apply` — Preview or apply safe defaults for agent use, including MCP wiring and .env.example generation.
 - `phantom exec -- <cmd>` — Start an authenticated proxy, run command, shut down proxy on exit.
-- `phantom login` — From attached stdin/stdout/stderr, approve an exact network plan, then separately approve browser opening/polling and OS-keychain persistence for the GitHub device flow.
+- `phantom login` — After separate hosted commissioning and entitlement, from attached stdin/stdout/stderr approve an exact network plan, then separately approve browser opening/polling and OS-keychain persistence for the GitHub device flow. The public hosted service is not currently commissioned for authenticated use.
 - `phantom logout` — From attached stdin/stdout/stderr, approve the exact deletion of persistent cloud authorization from the OS keychain.
-- `phantom cloud push` — After exact trusted-terminal consent, push a client-encrypted vault. Remote success followed by local reconciliation failure is partial success and must not be retried automatically.
-- `phantom cloud pull` — After exact trusted-terminal consent, restore on the machine holding the original cloud key. With `force=false`, skipped entries preserve the prior merge base and block later push until full reconciliation.
-- `phantom cloud status` — Check cloud auth and sync status.
+- `phantom cloud push` — After separate hosted commissioning and entitlement plus exact trusted-terminal consent, push a client-encrypted vault. Remote success followed by local reconciliation failure is partial success and must not be retried automatically.
+- `phantom cloud pull` — After separate hosted commissioning and entitlement plus exact trusted-terminal consent, restore on the machine holding the original cloud key. With `force=false`, skipped entries preserve the prior merge base and block later push until full reconciliation.
+- `phantom cloud status` — After separate hosted commissioning and entitlement, request cloud auth and sync status.
 - `phantom export --output <file>` — Requires attached stdin/stdout/stderr, an exact value-blind typed challenge, and a hidden terminal passphrase before vault-value access. Export passphrase files, plaintext, argv passphrases, existing targets, symlinks, and paths outside the project are rejected.
 - `phantom import <file>` — Requires attached stdin/stdout/stderr and exact typed consent bound to source identity/digest, target project/vault, destination names, and overwrite set. `--force` selects that reviewed overwrite set but never bypasses consent. A bounded private passphrase file is accepted only for non-Windows import and remains terminal-gated.
 - `phantom audit show [--last N] [--op OP] [--name NAME] [--json]` — Print recent audit events. Requires `PHANTOM_AUDIT=1`.
@@ -64,7 +65,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom pull --from vercel --project <id>` — Pull secrets from platforms into vault.
 - `phantom env` — Generate .env.example with secret values masked.
 - `phantom setup` — Configure Claude Code MCP server and permissions automatically.
-- `phantom watch` — Watch managed dotenv files and report newly added unprotected secrets. The compatibility `--auto` flag hard-denies before mutation in 0.7.4; review the file and run transactional `phantom init` from a trusted terminal.
+- `phantom watch` — Watch managed dotenv files and report newly added unprotected secrets. The compatibility `--auto` flag hard-denies before mutation in 0.7.5; review the file and run transactional `phantom init` from a trusted terminal.
 - `phantom why <KEY>` — Explain whether a key is classified as Secret, PublicKey, or NotSecret, and which heuristic matched.
 - `phantom copy <KEY> --to <DIR> [--rename NEW]` — After exact trusted-terminal confirmation, copy a secret from this initialized project to an initialized target without printing the value. Optional rename in the target project. It refuses an existing target vault entry, config ownership, or managed-dotenv key rather than overwriting it.
 - `phantom wrap [--only A,B] [--skip X,Y]` — Wrap `package.json` scripts with `phantom exec` so npm scripts get real credentials at runtime. Originals are preserved as `script:raw` variants.
@@ -79,18 +80,18 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 
 ## Installation
 
-### Homebrew (macOS, reviewed v0.7.3)
+### Homebrew (macOS, reviewed v0.7.4)
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-### Exact v0.7.3 assets
-Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-unknown-linux-gnu.tar.gz
-Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-unknown-linux-gnu.tar.gz
-Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-x86_64-pc-windows-msvc.zip
-Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.3/phantom-aarch64-pc-windows-msvc.zip
+### Exact v0.7.4 assets
+Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-unknown-linux-gnu.tar.gz
+Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-unknown-linux-gnu.tar.gz
+Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-x86_64-pc-windows-msvc.zip
+Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.4/phantom-aarch64-pc-windows-msvc.zip
 Download the adjacent `.sha256` sidecar for the selected archive, verify it,
 then extract both release executables and place them on PATH.
 
@@ -98,28 +99,27 @@ then extract both release executables and place them on PATH.
 ```
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout cffd0f29ab85a45358f011fdcfd40667d576c420
+git checkout c20f4eb6d8272709985083afe156b5678a1ac054
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-Registry status verified 2026-08-31: npm and the MCP Registry publish 0.6.0;
-crates.io publishes 0.5.1. Unpinned npm, npx, and `cargo install` commands are
-older distribution tracks, not the reviewed v0.7.3 release.
+Registry status verified 2026-09-02: npm `latest` remains 0.6.0; exact npm
+0.7.4 wrappers exist only under the failed `release-candidate` track. No MCP
+Registry 0.7.4 record was found; crates.io remains on 0.5.1. Unpinned npm, npx,
+and `cargo install` commands are not the reviewed v0.7.4 GitHub/Homebrew path.
 
 ### MCP setup
 
 Run `phantom setup --client claude|cursor|windsurf|codex` after installing both
-`v0.7.3` binaries. Ask the client to propose protection and review affected
+`v0.7.4` binaries. Ask the client to propose protection and review affected
 files and confirmation-gated steps. Keep secret entry in the trusted terminal
 and deployment/provider authority separate.
 
-Released `v0.7.3` normally records the running `phantom` executable with
-`mcp serve`; if that cannot be resolved, it looks for a local `phantom-mcp`. Its
-final legacy fallback is unpinned `npx -y phantom-secrets-mcp`, which resolves an
-older registry track. Keep both verified `v0.7.3` binaries installed and inspect
-the generated entry instead of relying on that fallback. Current main removes
-the network fallback and fails closed; that hardening is not in `v0.7.3` and
-awaits a later release.
+Released `v0.7.4` records the running `phantom` executable with `mcp serve` when
+it can resolve that runtime, otherwise it looks for a local `phantom-mcp`.
+Setup has no network package-runner fallback and fails closed when neither local
+runtime is executable. Keep both verified `v0.7.4` binaries installed and
+inspect the generated entry.
 
 ## MCP Server — Multi-IDE Support
 
@@ -156,7 +156,7 @@ extrapolating this selected catalog.
 
 `phantom_rotate_with_candidate` and `phantom_rotate_promote` are deprecated
 hard denials retained for schema compatibility. They create or promote nothing;
-`phantom_rotate_provider` is also a hard denial in 0.7.4; no MCP approval can
+`phantom_rotate_provider` is also a hard denial in 0.7.5; no MCP approval can
 activate live provider issuance.
 
 `phantom_apply_expiry_policy` demotes expired entries to `VaultMode::ReadOnly`.
@@ -176,9 +176,10 @@ cached by a running process.
 - `phantom_rotate` — Regenerate all phantom tokens in .env. Params: confirm, approval_token.
 
 **Personal Cloud Backup:**
-- `phantom_cloud_push` — Push a client-encrypted ChaCha20-Poly1305 vault payload to Phantom Cloud. Params: confirm, approval_token. The vault API receives ciphertext rather than decrypted secret values; client, account, endpoint, and deployment security remain in scope.
-- `phantom_cloud_pull` — Pull vault from Phantom Cloud. Params: force, confirm, approval_token. With `force=false`, skipped existing entries retain the prior merge base and block push until full reconciliation.
-- `phantom_cloud_status` — Dual-gated authenticated provider request for cloud auth status, plan, and last sync version. Params: confirm, approval_token.
+The protocol source requires a separately commissioned hosted deployment and entitled account; the public hosted service is not currently commissioned for authenticated use.
+- `phantom_cloud_push` — After commissioning, push a client-encrypted ChaCha20-Poly1305 vault payload. Params: confirm, approval_token. The configured vault API receives ciphertext rather than decrypted secret values; client, account, endpoint, and deployment security remain in scope.
+- `phantom_cloud_pull` — After commissioning, pull a vault snapshot. Params: force, confirm, approval_token. With `force=false`, skipped existing entries retain the prior merge base and block push until full reconciliation.
+- `phantom_cloud_status` — After commissioning, make a dual-gated authenticated provider request for cloud auth status, plan, and last sync version. Params: confirm, approval_token.
 
 **Diagnostics & Cross-Project:**
 - `phantom_doctor` — Health checks: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook. Params: fix, confirm, approval_token. `confirm` and `approval_token` are required only when `fix=true`.
@@ -304,8 +305,8 @@ Phantom automatically identifies secrets vs config values using heuristics:
 - apps/web: Vercel-targeted Next.js source (Supabase + Stripe, device auth,
   vault API, billing); repository presence is not deployment or commissioning
 
-Current-main filesystem hardening, tests, and workflow definitions do not prove
-that `v0.7.4` was published, deployed, commissioned, or accepted. Locus,
+Current `0.7.5` filesystem hardening, tests, and workflow definitions do not
+prove that its artifacts were published, deployed, commissioned, or accepted. Locus,
 broker, runtime, session, and externally trusted evidence remain inactive and
 fail closed; enterprise packaging remains a separately commissioned plan.
 
@@ -321,8 +322,8 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 ## Common Use Cases
 
 1. **Solo developer with Claude Code**: `phantom init` then `phantom exec -- claude` — code safely
-2. **Delegate the bounded setup**: Add the MCP server, ask Claude to propose protection, then review mutations and complete secret entry in the trusted terminal; provider issuance remains hard-denied in 0.7.4
-3. **Same-keychain-machine backup**: `phantom login`, `phantom cloud push`, then `phantom cloud pull` where the original cloud encryption key remains available
+2. **Delegate the bounded setup**: Add the MCP server, ask Claude to propose protection, then review mutations and complete secret entry in the trusted terminal; provider issuance remains hard-denied in 0.7.5
+3. **Commissioned same-keychain-machine backup**: after separately verifying hosted deployment and entitlement, `phantom login`, `phantom cloud push`, then `phantom cloud pull` where the original cloud encryption key remains available
 4. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
 5. **Provider-backed machine setup**: `phantom pull --from vercel --project prj_xxx` (requires Vercel credentials)
 6. **Vault backup**: from a terminal outside agent authority, run `phantom export --output backup.enc`, review/type its exact challenge, and enter a hidden passphrase. Export rejects passphrase files. Import requires its own exact terminal ceremony; only non-Windows import may read a bounded private passphrase file.

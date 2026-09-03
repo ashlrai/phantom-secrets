@@ -6,6 +6,11 @@ snapshots on the machine that holds their OS-keychain encryption key. Login does
 not transfer or recover that key. Team vault sharing is a separate fixed-membership
 workflow that encrypts a shared vault key to registered members.
 
+The CLI and protocol are source-backed, but the public hosted service is not
+currently commissioned for authenticated use. The commands below describe the
+intended operator flow after a deployment and account entitlement have been
+independently verified; they are not a claim that `phm.dev` can complete it now.
+
 Login requires attached stdin, stdout, and stderr. Phantom first shows a
 value-blind provider-access plan and requires its fresh typed challenge. Before
 opening the browser, polling the provider, or storing a keychain token, it shows
@@ -23,7 +28,8 @@ phantom login
 1. Review and type the first terminal challenge before Phantom reads existing
    cloud credentials or contacts the provider.
 2. Review and type the second challenge before browser, polling, and keychain effects.
-3. Phantom opens `phm.dev` in your browser (or prints the URL if it cannot open automatically).
+3. With a commissioned service, Phantom opens `phm.dev` in your browser (or
+   prints the URL if it cannot open automatically).
 4. A short confirmation code is displayed in the terminal — enter it on the page.
 5. Phantom polls for approval in the foreground.
 6. Once you approve in the browser, the access token is stored in the OS keychain.
@@ -81,7 +87,7 @@ challenge before the keychain token is deleted.
 
 ---
 
-## Using cloud sync after login
+## Using cloud sync after a verified hosted commissioning
 
 Push the local vault to Phantom Cloud:
 

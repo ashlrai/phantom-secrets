@@ -26,9 +26,9 @@ const HOSTED_SERVICES: Record<HostedService, HostedServiceConfig> = {
  * Hosted services are admitted independently and only by an exact, server-side
  * value. Missing, malformed, and loosely truthy values all remain closed.
  *
- * Device authorization and the value-blind `/api/v1/me` account status route
- * are intentionally outside these gates: they establish CLI identity, not a
- * billing, personal-vault, or team entitlement.
+ * Device authorization is part of the hosted Phantom Cloud trust boundary and
+ * shares the personal-vault commissioning gate. The value-blind `/api/v1/me`
+ * account status route remains available independently after authentication.
  */
 export function isHostedServiceCommissioned(service: HostedService): boolean {
   return process.env[HOSTED_SERVICES[service].env] === "true";

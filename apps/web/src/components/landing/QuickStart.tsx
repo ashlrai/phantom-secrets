@@ -7,13 +7,13 @@ import { CopyButton } from "./CopyButton";
 const STEPS = [
   {
     n: "01",
-    title: "Install v0.7.3 on macOS",
+    title: "Install v0.7.4 on macOS",
     body: "Use the reviewed Homebrew tap, trust, and fully qualified formula path.",
     cmd: "brew tap ashlrai/phantom\nbrew trust --formula ashlrai/phantom/phantom\nbrew install ashlrai/phantom/phantom",
     out: `$ phantom --version
-phantom 0.7.3
+phantom 0.7.4
 $ phantom-mcp --version
-phantom-mcp 0.7.3`,
+phantom-mcp 0.7.4`,
   },
   {
     n: "02",
@@ -53,7 +53,7 @@ export function QuickStart() {
           <p className="mt-4 text-[0.98rem] text-t2 leading-[1.65]">
             Three commands with illustrative output; ports, routes, and vault
             backends vary by configuration. Linux and Windows use the exact
-            v0.7.3 GitHub release assets linked in the repository. For exact
+            v0.7.4 GitHub release assets linked in the repository. For exact
             local state, run{" "}
             <code className="font-mono text-blue-b">phantom agent doctor</code>.
           </p>

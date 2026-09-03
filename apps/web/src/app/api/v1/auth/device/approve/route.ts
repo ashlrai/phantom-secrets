@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase-server";
 import { verifiedGithubLoginForUser } from "@/lib/auth";
+import { requireHostedService } from "@/lib/commissioning";
 import { isValidDeviceUserCode, normalizeDeviceUserCode } from "@/lib/device-code";
 import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createClient } from "@supabase/supabase-js";
@@ -7,6 +8,9 @@ import { createClient } from "@supabase/supabase-js";
 const MAX_DEVICE_AUTH_BODY_BYTES = 4_096;
 
 export async function POST(req: Request) {
+  const commissioningGate = requireHostedService("personal_vaults");
+  if (commissioningGate) return commissioningGate;
+
   let body: { user_code?: string };
   try {
     body = await readBoundedJsonObject(req, MAX_DEVICE_AUTH_BODY_BYTES);

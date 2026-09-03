@@ -27,12 +27,12 @@ test("current workspace version release notes include the complete candidate tra
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`^## \\[${version.replaceAll(".", "\\.")}\\]`, "m"));
   assert.match(result.stdout, /^### Breaking changes and migration$/m);
-  assert.match(result.stdout, /Initialization admission now retains the reviewed project-root identity/);
-  assert.match(result.stdout, /CommittedVerifiedButDurabilityUncertain/);
-  assert.match(result.stdout, /On Windows, new private anchored files and directories establish and verify/);
-  assert.match(result.stdout, /Phantom uses Rama's upstream main snapshot/);
+  assert.match(result.stdout, /Windows where `FlushFileBuffers` rejects a read-only/);
+  assert.match(result.stdout, /archive mode `0755` to the[\s\S]*private cache mode `0700`/);
+  assert.match(result.stdout, /Preserve a checksum-matched previous-version cache byte-for-byte/);
+  assert.match(result.stdout, /failed downloads, extraction, flushes, or version checks/);
   assert.doesNotMatch(result.stdout, /^## \\[Unreleased\\]$/m);
-  assert.doesNotMatch(result.stdout, /after the `0\.7\.4` candidate/);
+  assert.match(result.stdout, /immutable[\s\S]*`0\.7\.4` npm versions[\s\S]*`release-candidate`/);
 });
 
 test("missing release notes fail closed", () => {

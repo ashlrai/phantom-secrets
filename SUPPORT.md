@@ -29,10 +29,13 @@ Do not put a vulnerability in a public issue or discussion. Follow the
 5. Redact real credentials, cookies, device codes, vault contents, cloud
    tokens, and `phm_` mappings. Persistent mappings are sensitive metadata.
 
-The reviewed public distribution is `v0.7.3`. Repository source currently
-stages `0.7.4`; source, CI configuration, or a changelog section is not proof
-that a `0.7.4` artifact, package, deployment, provider integration, or hosted
-entitlement has been released or commissioned.
+Release-state snapshot, verified 2026-09-02 before any `v0.7.5` publication:
+the reviewed immutable GitHub/Homebrew distribution is `v0.7.4`. Both npm
+`0.7.4` wrappers remain public only under the failed `release-candidate` track,
+and npm `latest` remains `0.6.0`. Repository source is versioned for the
+then-unpublished `0.7.5` fix-forward; source, CI configuration, or a changelog section
+is not proof that a `0.7.5` artifact, package, deployment, provider integration,
+or hosted entitlement has been released or commissioned.
 
 ## Response expectations
 
