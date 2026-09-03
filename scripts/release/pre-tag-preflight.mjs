@@ -136,7 +136,7 @@ function verifyNpmReservationsAbsent(commandRunner, cwd, version) {
         [
           "stage",
           "list",
-          `${name}@${version}`,
+          name,
           "--json",
           `--registry=${npmRegistry}`,
         ],
@@ -150,7 +150,21 @@ function verifyNpmReservationsAbsent(commandRunner, cwd, version) {
         `${name} npm stage reservation lookup returned a non-array response`,
       );
     }
-    if (stages.length !== 0) {
+    if (
+      stages.some(
+        (stage) =>
+          !stage ||
+          typeof stage !== "object" ||
+          stage.packageName !== name ||
+          typeof stage.version !== "string" ||
+          stage.version.length === 0,
+      )
+    ) {
+      throw new Error(
+        `${name} npm stage reservation lookup returned a malformed stage record`,
+      );
+    }
+    if (stages.some((stage) => stage?.version === version)) {
       throw new Error(`${name}@${version} already has an npm stage reservation`);
     }
   }
