@@ -1,12 +1,16 @@
 import { CopyButton } from "./CopyButton";
+import {
+  PUBLIC_RELEASE_RECEIPT,
+  PUBLIC_RELEASE_TAG,
+} from "@/lib/public-release";
 
 const STEPS = [
   {
-    step: "Install v0.7.4 on macOS",
+    step: `Install ${PUBLIC_RELEASE_TAG} on macOS`,
     body: "Use the reviewed Homebrew tap, trust, and fully qualified formula path.",
     command:
       "brew tap ashlrai/phantom\nbrew trust --formula ashlrai/phantom/phantom\nbrew install ashlrai/phantom/phantom",
-    receipt: "phantom 0.7.4\nphantom-mcp 0.7.4",
+    receipt: PUBLIC_RELEASE_RECEIPT,
   },
   {
     step: "Protect and inspect",
@@ -33,7 +37,7 @@ export function QuickStart() {
           <p>
             The output below is illustrative output. Ports, routes, vault
             backends, and local findings vary by machine and configuration.
-            Linux and Windows use the exact v0.7.4 GitHub release assets linked
+            Linux and Windows use the exact {PUBLIC_RELEASE_TAG} GitHub release assets linked
             in the repository.
           </p>
         </div>

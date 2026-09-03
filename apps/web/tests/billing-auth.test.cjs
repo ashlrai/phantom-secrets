@@ -503,6 +503,10 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
     path.join(repoDir, "src/lib/commercial-offerings.ts"),
     "utf8",
   );
+  const offeringGrid = fs.readFileSync(
+    path.join(repoDir, "src/components/landing/OfferingGrid.tsx"),
+    "utf8",
+  );
   const billingDashboard = fs.readFileSync(
     path.join(repoDir, "src/app/dashboard/billing/page.tsx"),
     "utf8",
@@ -511,7 +515,8 @@ test("billing routes opt into browser auth without widening CLI API routes", () 
   assert.doesNotMatch(pricing, /signInWithOAuth/);
   assert.doesNotMatch(pricing, /subscription_exists/);
   assert.doesNotMatch(pricing, /Start with Pro/);
-  assert.match(pricing, /COMMERCIAL_OFFERINGS/);
+  assert.match(pricing, /OfferingGrid/);
+  assert.match(offeringGrid, /COMMERCIAL_OFFERINGS/);
   assert.match(
     commercialOfferings,
     /No generally available Phantom Cloud service or hosted control plane/,

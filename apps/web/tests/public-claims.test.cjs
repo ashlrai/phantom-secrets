@@ -33,6 +33,7 @@ const claimPaths = [
   "src/app/government/page.tsx",
   "src/app/security/page.tsx",
   "src/app/sitemap.ts",
+  "src/lib/public-release.ts",
   ...filesUnder("src/app/dashboard", [".tsx"]),
   ...filesUnder("src/components/landing", [".tsx"]),
   ...filesUnder("public", [".json", ".txt"]),
@@ -558,10 +559,12 @@ test("released setup guidance uses the verified v0.7.4 fail-closed local runtime
 
 test("HowTo and delegation guidance avoid timing and unpinned quickstart claims", () => {
   const installHowTo = structuredMetadataBlock(claims["src/app/layout.tsx"], "HowTo");
+  const publicRelease = claims["src/lib/public-release.ts"];
   const delegation = repositoryGuidanceClaims["docs/delegation-quickstart.md"];
 
   assert.doesNotMatch(installHowTo, /totalTime|PT1M/i);
-  assert.match(installHowTo, /Released v0\.7\.4 records its bundled local `phantom mcp serve`/i);
+  assert.match(installHowTo, /Released \$\{PUBLIC_RELEASE_TAG\} records its bundled local/i);
+  assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.4"/);
   assert.match(installHowTo, /no network package-runner fallback and fails closed/i);
   assert.match(delegation, /both `phantom` and `phantom-mcp` from the reviewed `v0\.7\.4`[^\n]*distribution/i);
   assert.match(delegation, /phantom agent setup --dry-run/i);
@@ -598,15 +601,19 @@ test("dashboard surfaces describe uncommissioned pilot metadata, not live entitl
 
 test("current SoftwareApplication and HowTo metadata point at the verified release", () => {
   const layout = claims["src/app/layout.tsx"];
+  const publicRelease = claims["src/lib/public-release.ts"];
   const softwareApplication = structuredMetadataBlock(layout, "SoftwareApplication");
   const installHowTo = structuredMetadataBlock(layout, "HowTo");
 
-  assert.match(softwareApplication, /softwareVersion:\s*"0\.7\.4"/);
-  assert.match(softwareApplication, /releases\/tag\/v0\.7\.4/);
+  assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.4"/);
+  assert.match(publicRelease, /PUBLIC_RELEASE_TAG\s*=\s*`v\$\{PUBLIC_RELEASE_VERSION\}`/);
+  assert.match(publicRelease, /releases\/tag\/\$\{PUBLIC_RELEASE_TAG\}/);
+  assert.match(softwareApplication, /softwareVersion:\s*PUBLIC_RELEASE_VERSION/);
+  assert.match(softwareApplication, /downloadUrl:\s*PUBLIC_RELEASE_URL/);
   assert.doesNotMatch(softwareApplication, /npmjs\.com\/package\/phantom-secrets/i);
   assert.match(
     installHowTo,
-    /(?:releases\/tag\/v0\.7\.4|brew trust --formula ashlrai\/phantom\/phantom)/i,
+    /(?:PUBLIC_RELEASE_URL|brew trust --formula ashlrai\/phantom\/phantom)/i,
   );
   assert.doesNotMatch(
     installHowTo,
@@ -615,9 +622,9 @@ test("current SoftwareApplication and HowTo metadata point at the verified relea
 
   const quickStart = claims["src/components/landing/QuickStart.tsx"];
   const install = claims["src/components/landing/Install.tsx"];
-  assert.match(quickStart, /Install v0\.7\.4 on macOS/);
-  assert.match(quickStart, /phantom-mcp 0\.7\.4/);
-  assert.match(install, /both reviewed v0\.7\.4 binaries/);
+  assert.match(quickStart, /Install \$\{PUBLIC_RELEASE_TAG\} on macOS/);
+  assert.match(quickStart, /PUBLIC_RELEASE_RECEIPT/);
+  assert.match(install, /both reviewed \{PUBLIC_RELEASE_TAG\} binaries/);
   assert.doesNotMatch(`${quickStart}\n${install}`, /(?:Install|reviewed) v0\.7\.3/i);
 });
 
@@ -733,8 +740,8 @@ test("persistent placeholders remain inert and the proxy bearer stays distinct",
 
 test("connection strings are detection-only and absent from proxy visuals", () => {
   const proxyVisuals = [
-    claims["src/components/landing/BrandLogos.tsx"],
-    claims["src/components/landing/Transformation.tsx"],
+    claims["src/components/landing/RequestTrace.tsx"],
+    claims["src/components/landing/TrustBoundary.tsx"],
   ].join("\n");
   assert.doesNotMatch(proxyVisuals, /DATABASE_URL|MONGODB_URI/);
 

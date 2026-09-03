@@ -2,7 +2,6 @@ export type CommercialOffering = {
   id: "community" | "enterprise" | "government";
   name: string;
   price: string;
-  cadence: string;
   pitch: string;
   featured: boolean;
   features: readonly string[];
@@ -16,7 +15,6 @@ export const COMMERCIAL_OFFERINGS = [
     id: "community",
     name: "Open source",
     price: "$0",
-    cadence: "",
     pitch: "Use, modify, and distribute Phantom's local-first core under MIT.",
     featured: false,
     features: [
@@ -34,7 +32,6 @@ export const COMMERCIAL_OFFERINGS = [
     id: "enterprise",
     name: "Enterprise",
     price: "Scoped",
-    cadence: "",
     pitch: "Contract for evaluation, integration, and support around the MIT core.",
     featured: true,
     features: [
@@ -52,7 +49,6 @@ export const COMMERCIAL_OFFERINGS = [
     id: "government",
     name: "Government",
     price: "Scoped",
-    cadence: "",
     pitch: "Evaluate a local-first workflow against a named public-sector environment.",
     featured: false,
     features: [

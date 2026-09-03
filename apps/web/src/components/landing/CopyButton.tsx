@@ -10,30 +10,38 @@ interface CopyButtonProps {
 }
 
 export function CopyButton({ text, variant = "block" }: CopyButtonProps) {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(text);
-      posthog.capture("command_copied", { command: text });
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
+      posthog.capture("command_copied", { variant });
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1800);
     } catch {
       // Clipboard write can reject if the page lacks user-gesture context
       // or if the browser denies permission (Firefox over HTTP, etc.).
-      // Stay silent — the button keeps its idle state so users see the failure.
+      setCopyState("failed");
+      window.setTimeout(() => setCopyState("idle"), 3000);
     }
   };
+
+  const label =
+    copyState === "copied"
+      ? "Copied"
+      : copyState === "failed"
+        ? "Copy failed; select the command manually"
+        : "Copy command";
 
   if (variant === "inline") {
     return (
       <button
         type="button"
         onClick={handleCopy}
-        aria-label={copied ? "Copied" : "Copy command"}
+        aria-label={label}
         className="copy-command copy-command--inline"
       >
-        {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+        {copyState === "copied" ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
       </button>
     );
   }
@@ -42,7 +50,7 @@ export function CopyButton({ text, variant = "block" }: CopyButtonProps) {
     <button
       type="button"
       onClick={handleCopy}
-      aria-label="Copy command"
+      aria-label={label}
       className="copy-command"
     >
       <span>
@@ -50,8 +58,9 @@ export function CopyButton({ text, variant = "block" }: CopyButtonProps) {
         {text}
       </span>
       <span className="copy-command__icon" aria-hidden="true">
-        {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+        {copyState === "copied" ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
       </span>
+      <span className="sr-only" aria-live="polite">{copyState === "idle" ? "" : label}</span>
     </button>
   );
 }

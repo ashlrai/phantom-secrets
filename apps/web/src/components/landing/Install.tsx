@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { PUBLIC_RELEASE_TAG } from "@/lib/public-release";
 import { CopyButton } from "./CopyButton";
 
 const CLIENTS = [
@@ -47,7 +48,7 @@ export function Install() {
           <p className="landing-kicker">Client connection</p>
           <h2>Put the value-blind tools where agents work.</h2>
           <p>
-            After installing both reviewed v0.7.4 binaries, write the supported
+            After installing both reviewed {PUBLIC_RELEASE_TAG} binaries, write the supported
             client&apos;s local MCP entry and inspect the generated file. Setup uses
             a local Phantom runtime and has no network package-runner fallback.
           </p>

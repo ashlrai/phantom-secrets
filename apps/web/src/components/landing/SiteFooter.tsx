@@ -26,7 +26,7 @@ export function SiteFooter() {
             <a href="https://ashlr.ai" className="text-t2 hover:text-blue-b">
               Ashlr AI
             </a>
-            . Enterprise evaluations and government programs are scoped by
+            . Enterprise and government evaluations are scoped by
             written agreement.
           </p>
         </div>
