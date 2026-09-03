@@ -1,6 +1,6 @@
 BEGIN;
 
-SELECT plan(39);
+SELECT plan(44);
 
 -- One shared matrix definition feeds both the cardinality guards and every
 -- effective-privilege cell. Removing a role, table, or PostgreSQL 17 privilege
@@ -45,6 +45,20 @@ INSERT INTO expected_table_privileges (privilege_name) VALUES
   ('REFERENCES'),
   ('TRIGGER'),
   ('MAINTAIN');
+
+CREATE TEMP TABLE expected_data_api_functions (
+  function_name text PRIMARY KEY,
+  authenticated_execute boolean NOT NULL,
+  service_execute boolean NOT NULL
+) ON COMMIT DROP;
+INSERT INTO expected_data_api_functions (
+  function_name, authenticated_execute, service_execute
+) VALUES
+  ('public.update_updated_at()', false, false),
+  ('public.prevent_user_billing_self_update()', false, false),
+  ('public.issue_device_code(text,text,text,timestamptz)', false, true),
+  ('public.process_stripe_billing_event(text,text,bigint,uuid,uuid,text,text,timestamptz)', false, true),
+  ('app_private.current_user_is_team_member(uuid)', true, false);
 
 -- Fixed identities make failures reproducible and keep this transaction fully
 -- disposable. The postgres test role seeds rows before switching to the same
@@ -186,22 +200,66 @@ SELECT is(
 );
 SELECT is(
   (
-    SELECT count(*)
-    FROM pg_catalog.pg_default_acl AS defaults
-    JOIN pg_catalog.pg_namespace AS namespace
-      ON namespace.oid = defaults.defaclnamespace
-    CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
-    WHERE defaults.defaclrole = 'postgres'::regrole
-      AND namespace.nspname = 'public'
-      AND (
-        CASE
-          WHEN privilege.grantee = 0 THEN 'public'
-          ELSE pg_catalog.pg_get_userbyid(privilege.grantee)
-        END
-      ) = ANY (ARRAY['public', 'anon', 'authenticated', 'service_role'])
+    WITH object_types(object_type) AS (
+      VALUES ('r'::"char"), ('S'::"char"), ('f'::"char")
+    ),
+    global_defaults(acl) AS (
+      SELECT coalesce(
+        defaults.defaclacl,
+        pg_catalog.acldefault(
+          object_types.object_type,
+          'postgres'::regrole
+        )
+      )
+      FROM object_types
+      LEFT JOIN pg_catalog.pg_default_acl AS defaults
+        ON defaults.defaclrole = 'postgres'::regrole
+        AND defaults.defaclnamespace = 0
+        AND defaults.defaclobjtype = object_types.object_type
+    ),
+    forbidden_defaults AS (
+      SELECT privilege.grantee
+      FROM global_defaults
+      CROSS JOIN LATERAL pg_catalog.aclexplode(global_defaults.acl) AS privilege
+      WHERE privilege.grantee = 0
+        OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
+          ARRAY['anon', 'authenticated', 'service_role']
+        )
+      UNION ALL
+      SELECT privilege.grantee
+      FROM pg_catalog.pg_default_acl AS defaults
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = defaults.defaclnamespace
+      CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
+      WHERE namespace.nspname = 'public'
+        AND (
+          privilege.grantee = 0
+          OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
+            ARRAY['anon', 'authenticated', 'service_role']
+          )
+        )
+    )
+    SELECT count(*) FROM forbidden_defaults
   ),
   0::bigint,
-  'future public objects grant no Data API privilege by default'
+  'global and public-schema defaults grant no future Data API privilege'
+);
+
+CREATE FUNCTION public.phantom_default_acl_probe()
+RETURNS void
+LANGUAGE sql
+SET search_path = pg_catalog
+AS 'SELECT';
+
+SELECT ok(
+  NOT has_function_privilege(
+    'anon', 'public.phantom_default_acl_probe()', 'EXECUTE'
+  ) AND NOT has_function_privilege(
+    'authenticated', 'public.phantom_default_acl_probe()', 'EXECUTE'
+  ) AND NOT has_function_privilege(
+    'service_role', 'public.phantom_default_acl_probe()', 'EXECUTE'
+  ),
+  'a newly created postgres function does not inherit global PUBLIC EXECUTE'
 );
 SELECT is(
   (SELECT count(*) FROM expected_data_api_roles),
@@ -217,6 +275,11 @@ SELECT is(
   (SELECT count(*) FROM expected_table_privileges),
   8::bigint,
   'effective privilege matrix covers all eight PostgreSQL 17 table privileges'
+);
+SELECT is(
+  (SELECT count(*) FROM expected_data_api_functions),
+  5::bigint,
+  'effective function matrix covers exactly five reviewed functions'
 );
 SELECT is(
   (
@@ -240,6 +303,61 @@ SELECT is(
   ),
   0::bigint,
   'all 264 effective table privileges exactly match the reviewed role matrix'
+);
+SELECT is(
+  (
+    SELECT count(*)
+    FROM expected_data_api_roles AS roles
+    CROSS JOIN expected_data_api_functions AS functions
+    WHERE has_function_privilege(
+      roles.role_name,
+      functions.function_name,
+      'EXECUTE'
+    ) IS DISTINCT FROM (
+      CASE roles.role_name
+        WHEN 'authenticated' THEN functions.authenticated_execute
+        WHEN 'service_role' THEN functions.service_execute
+        ELSE false
+      END
+    )
+  ),
+  0::bigint,
+  'all 15 effective function privileges match the reviewed role matrix'
+);
+SELECT is(
+  (
+    SELECT count(*)
+    FROM (
+      SELECT 1
+      FROM expected_data_api_roles AS roles
+      CROSS JOIN expected_data_api_tables AS tables
+      CROSS JOIN expected_table_privileges AS privileges
+      WHERE has_table_privilege(
+        roles.role_name,
+        'public.' || tables.table_name,
+        privileges.privilege_name || ' WITH GRANT OPTION'
+      )
+      UNION ALL
+      SELECT 1
+      FROM expected_data_api_roles AS roles
+      CROSS JOIN expected_data_api_functions AS functions
+      WHERE has_function_privilege(
+        roles.role_name,
+        functions.function_name,
+        'EXECUTE WITH GRANT OPTION'
+      )
+    ) AS grant_options
+  ),
+  0::bigint,
+  'Data API table and function privileges include no grant option'
+);
+SELECT ok(
+  has_schema_privilege('authenticated', 'public', 'USAGE')
+    AND has_schema_privilege('service_role', 'public', 'USAGE')
+    AND has_schema_privilege('authenticated', 'app_private', 'USAGE')
+    AND NOT has_schema_privilege('anon', 'app_private', 'USAGE')
+    AND NOT has_schema_privilege('service_role', 'app_private', 'USAGE'),
+  'schema usage is exactly sufficient for browser reads and the RLS helper'
 );
 
 SELECT ok(

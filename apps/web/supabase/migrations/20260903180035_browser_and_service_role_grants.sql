@@ -59,6 +59,14 @@ $$;
 -- Keep future public objects closed until a reviewed migration grants a route
 -- the exact operation it needs. These are the defaults used by migrations run
 -- as postgres; they do not modify any Supabase-managed schema.
+--
+-- PostgreSQL's built-in function default is global PUBLIC EXECUTE. A
+-- schema-scoped revoke cannot subtract that global grant, so this intentionally
+-- changes every future function created by postgres in every schema. Callers
+-- must explicitly grant EXECUTE on each reviewed function after creation. This
+-- does not change existing functions or functions owned by another role.
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
   REVOKE ALL ON TABLES FROM PUBLIC, anon, authenticated, service_role;
 ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
@@ -86,6 +94,7 @@ FROM PUBLIC, anon, authenticated, service_role;
 -- Schema reachability is explicit for the two Data API roles that have an
 -- object grant below. anon can resolve the schema through Supabase defaults,
 -- but has no privilege on any Phantom table or RPC.
+REVOKE ALL ON SCHEMA public FROM anon, authenticated, service_role;
 GRANT USAGE ON SCHEMA public TO authenticated, service_role;
 
 -- Browser dashboard queries are read-only. Existing RLS policies restrict

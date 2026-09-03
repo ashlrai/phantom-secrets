@@ -29,13 +29,26 @@ DECLARE
     'SELECT', 'INSERT', 'UPDATE', 'DELETE',
     'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN'
   ];
+  expected_functions constant text[] := ARRAY[
+    'public.update_updated_at()',
+    'public.prevent_user_billing_self_update()',
+    'public.issue_device_code(text,text,text,timestamptz)',
+    'public.process_stripe_billing_event(text,text,bigint,uuid,uuid,text,text,timestamptz)',
+    'app_private.current_user_is_team_member(uuid)'
+  ];
   matrix_cells integer;
   matrix_mismatches integer;
   matrix_distinct_tables integer;
   matrix_reviewed_tables integer;
+  table_grant_options integer;
   function_cells integer;
   function_mismatches integer;
+  function_distinct_names integer;
+  function_reviewed_names integer;
+  function_grant_options integer;
   rls_tables integer;
+  global_default_grants integer;
+  public_default_grants integer;
 BEGIN
   IF current_user <> 'postgres' THEN
     RAISE EXCEPTION
@@ -45,12 +58,14 @@ BEGIN
 
   IF cardinality(expected_roles) <> 3
     OR cardinality(expected_tables) <> 11
-    OR cardinality(expected_privileges) <> 8 THEN
+    OR cardinality(expected_privileges) <> 8
+    OR cardinality(expected_functions) <> 5 THEN
     RAISE EXCEPTION
-      'hosted grant receipt matrix cardinality changed: roles %, tables %, privileges %',
+      'hosted grant receipt matrix cardinality changed: roles %, tables %, privileges %, functions %',
       cardinality(expected_roles),
       cardinality(expected_tables),
-      cardinality(expected_privileges);
+      cardinality(expected_privileges),
+      cardinality(expected_functions);
   END IF;
 
   WITH roles(role_name) AS (
@@ -89,7 +104,12 @@ BEGIN
         roles.role_name,
         'public.' || tables.table_name,
         privileges.privilege_name
-      ) AS actual
+      ) AS actual,
+      has_table_privilege(
+        roles.role_name,
+        'public.' || tables.table_name,
+        privileges.privilege_name || ' WITH GRANT OPTION'
+      ) AS grantable
     FROM roles
     CROSS JOIN tables
     CROSS JOIN privileges
@@ -100,24 +120,28 @@ BEGIN
     count(DISTINCT table_name),
     count(DISTINCT table_name) FILTER (
       WHERE table_name = ANY (expected_tables)
-    )
+    ),
+    count(*) FILTER (WHERE grantable)
   INTO
     matrix_cells,
     matrix_mismatches,
     matrix_distinct_tables,
-    matrix_reviewed_tables
+    matrix_reviewed_tables,
+    table_grant_options
   FROM matrix;
 
   IF matrix_cells <> 264
     OR matrix_mismatches <> 0
     OR matrix_distinct_tables <> 11
-    OR matrix_reviewed_tables <> 11 THEN
+    OR matrix_reviewed_tables <> 11
+    OR table_grant_options <> 0 THEN
     RAISE EXCEPTION
-      'effective table ACL receipt failed: cells %, mismatches %, distinct tables %, reviewed tables %',
+      'effective table ACL receipt failed: cells %, mismatches %, distinct tables %, reviewed tables %, grant options %',
       matrix_cells,
       matrix_mismatches,
       matrix_distinct_tables,
-      matrix_reviewed_tables;
+      matrix_reviewed_tables,
+      table_grant_options;
   END IF;
 
   WITH roles(role_name) AS (
@@ -145,16 +169,39 @@ BEGIN
           ELSE false
         END
       )
+    ),
+    count(DISTINCT functions.function_name),
+    count(DISTINCT functions.function_name) FILTER (
+      WHERE functions.function_name = ANY (expected_functions)
+    ),
+    count(*) FILTER (
+      WHERE has_function_privilege(
+        roles.role_name,
+        functions.function_name,
+        'EXECUTE WITH GRANT OPTION'
+      )
     )
-  INTO function_cells, function_mismatches
+  INTO
+    function_cells,
+    function_mismatches,
+    function_distinct_names,
+    function_reviewed_names,
+    function_grant_options
   FROM roles
   CROSS JOIN functions;
 
-  IF function_cells <> 15 OR function_mismatches <> 0 THEN
+  IF function_cells <> 15
+    OR function_mismatches <> 0
+    OR function_distinct_names <> 5
+    OR function_reviewed_names <> 5
+    OR function_grant_options <> 0 THEN
     RAISE EXCEPTION
-      'effective function ACL receipt failed: cells %, mismatches %',
+      'effective function ACL receipt failed: cells %, mismatches %, distinct functions %, reviewed functions %, grant options %',
       function_cells,
-      function_mismatches;
+      function_mismatches,
+      function_distinct_names,
+      function_reviewed_names,
+      function_grant_options;
   END IF;
 
   SELECT count(*)
@@ -174,22 +221,62 @@ BEGIN
       rls_tables;
   END IF;
 
-  IF EXISTS (
-    SELECT 1
-    FROM pg_catalog.pg_default_acl AS defaults
-    JOIN pg_catalog.pg_namespace AS namespace
-      ON namespace.oid = defaults.defaclnamespace
-    CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
-    WHERE namespace.nspname = 'public'
-      AND (
-        CASE
-          WHEN privilege.grantee = 0 THEN 'public'
-          ELSE pg_catalog.pg_get_userbyid(privilege.grantee)
-        END
-      ) = ANY (ARRAY['public', 'anon', 'authenticated', 'service_role'])
-  ) THEN
+  -- Global defaults are effective even when pg_default_acl has no row. In
+  -- particular, acldefault('f', owner) includes PUBLIC EXECUTE. Coalescing the
+  -- catalog row with acldefault prevents that implicit grant from disappearing
+  -- from this receipt.
+  WITH object_types(object_type) AS (
+    VALUES ('r'::"char"), ('S'::"char"), ('f'::"char")
+  ),
+  global_defaults(object_type, acl) AS (
+    SELECT
+      object_types.object_type,
+      coalesce(
+        defaults.defaclacl,
+        pg_catalog.acldefault(
+          object_types.object_type,
+          'postgres'::regrole
+        )
+      )
+    FROM object_types
+    LEFT JOIN pg_catalog.pg_default_acl AS defaults
+      ON defaults.defaclrole = 'postgres'::regrole
+      AND defaults.defaclnamespace = 0
+      AND defaults.defaclobjtype = object_types.object_type
+  )
+  SELECT count(*)
+  INTO global_default_grants
+  FROM global_defaults
+  CROSS JOIN LATERAL pg_catalog.aclexplode(global_defaults.acl) AS privilege
+  WHERE privilege.grantee = 0
+    OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
+      ARRAY['anon', 'authenticated', 'service_role']
+    );
+
+  IF global_default_grants <> 0 THEN
     RAISE EXCEPTION
-      'hosted grant receipt found a default public-schema Data API grant';
+      'hosted grant receipt found % global default Data API grants',
+      global_default_grants;
+  END IF;
+
+  SELECT count(*)
+  INTO public_default_grants
+  FROM pg_catalog.pg_default_acl AS defaults
+  JOIN pg_catalog.pg_namespace AS namespace
+    ON namespace.oid = defaults.defaclnamespace
+  CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
+  WHERE namespace.nspname = 'public'
+    AND (
+      privilege.grantee = 0
+      OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
+        ARRAY['anon', 'authenticated', 'service_role']
+      )
+    );
+
+  IF public_default_grants <> 0 THEN
+    RAISE EXCEPTION
+      'hosted grant receipt found % public-schema default Data API grants',
+      public_default_grants;
   END IF;
 
   IF pg_catalog.has_schema_privilege('anon', 'public', 'CREATE')
@@ -197,6 +284,38 @@ BEGIN
     OR pg_catalog.has_schema_privilege('service_role', 'public', 'CREATE') THEN
     RAISE EXCEPTION
       'hosted grant receipt found Data API object-creation authority';
+  END IF;
+
+  IF NOT pg_catalog.has_schema_privilege(
+    'authenticated', 'public', 'USAGE'
+  ) OR NOT pg_catalog.has_schema_privilege(
+    'service_role', 'public', 'USAGE'
+  ) OR NOT pg_catalog.has_schema_privilege(
+    'authenticated', 'app_private', 'USAGE'
+  ) OR pg_catalog.has_schema_privilege(
+    'anon', 'app_private', 'USAGE'
+  ) OR pg_catalog.has_schema_privilege(
+    'service_role', 'app_private', 'USAGE'
+  ) THEN
+    RAISE EXCEPTION
+      'hosted grant receipt found schema usage drift';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_namespace AS namespace
+    CROSS JOIN LATERAL pg_catalog.aclexplode(namespace.nspacl) AS privilege
+    WHERE namespace.nspname IN ('public', 'app_private')
+      AND (
+        privilege.grantee = 0
+        OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
+          ARRAY['anon', 'authenticated', 'service_role']
+        )
+      )
+      AND privilege.is_grantable
+  ) THEN
+    RAISE EXCEPTION
+      'hosted grant receipt found Data API schema WITH GRANT OPTION';
   END IF;
 END
 $$;
@@ -208,10 +327,14 @@ SELECT jsonb_build_object(
   'table_privileges', 8,
   'effective_table_acl_cells', 264,
   'table_acl_mismatches', 0,
+  'table_grant_options', 0,
+  'functions', 5,
   'effective_function_acl_cells', 15,
   'function_acl_mismatches', 0,
+  'function_grant_options', 0,
   'rls_tables', 11,
-  'default_acl_grants', 0
+  'global_default_acl_grants', 0,
+  'public_default_acl_grants', 0
 ) AS hosted_grants_receipt;
 
 ROLLBACK;

@@ -145,6 +145,43 @@ BEGIN
       'Data API roles must not create objects in the public schema';
   END IF;
 
+  IF NOT pg_catalog.has_schema_privilege(
+    'authenticated', 'public', 'USAGE'
+  ) OR NOT pg_catalog.has_schema_privilege(
+    'service_role', 'public', 'USAGE'
+  ) OR NOT pg_catalog.has_schema_privilege(
+    'authenticated', 'app_private', 'USAGE'
+  ) THEN
+    RAISE EXCEPTION
+      'required Data API schema usage is missing';
+  END IF;
+
+  IF pg_catalog.has_schema_privilege(
+    'anon', 'app_private', 'USAGE'
+  ) OR pg_catalog.has_schema_privilege(
+    'service_role', 'app_private', 'USAGE'
+  ) THEN
+    RAISE EXCEPTION
+      'app_private schema usage is broader than the authenticated RLS helper requires';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_namespace AS namespace
+    CROSS JOIN LATERAL pg_catalog.aclexplode(namespace.nspacl) AS privilege
+    WHERE namespace.nspname IN ('public', 'app_private')
+      AND (
+        privilege.grantee = 0
+        OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
+          ARRAY['anon', 'authenticated', 'service_role']
+        )
+      )
+      AND privilege.is_grantable
+  ) THEN
+    RAISE EXCEPTION
+      'Data API schema privileges must not include WITH GRANT OPTION';
+  END IF;
+
   SELECT
     count(*),
     count(*) FILTER (WHERE owner.rolname <> 'postgres'),
@@ -191,9 +228,69 @@ BEGIN
       foreign_owned_functions;
   END IF;
 
-  -- The migration changes defaults only for objects later created by postgres.
-  -- Fail if another creator has a public-schema default grant that would reopen
-  -- Data API access outside that controlled default ACL.
+  -- PostgreSQL's implicit global defaults are not stored in pg_default_acl
+  -- until altered. Model those defaults explicitly and allow only the built-in,
+  -- non-grantable PUBLIC EXECUTE that this migration intentionally removes.
+  IF EXISTS (
+    WITH object_types(object_type) AS (
+      VALUES ('r'::"char"), ('S'::"char"), ('f'::"char")
+    ),
+    global_defaults(object_type, acl) AS (
+      SELECT
+        object_types.object_type,
+        coalesce(
+          defaults.defaclacl,
+          pg_catalog.acldefault(
+            object_types.object_type,
+            'postgres'::regrole
+          )
+        )
+      FROM object_types
+      LEFT JOIN pg_catalog.pg_default_acl AS defaults
+        ON defaults.defaclrole = 'postgres'::regrole
+        AND defaults.defaclnamespace = 0
+        AND defaults.defaclobjtype = object_types.object_type
+    )
+    SELECT 1
+    FROM global_defaults
+    CROSS JOIN LATERAL pg_catalog.aclexplode(global_defaults.acl) AS privilege
+    WHERE (
+      privilege.grantee = 0
+      OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
+        ARRAY['anon', 'authenticated', 'service_role']
+      )
+    )
+      AND NOT (
+        privilege.grantee = 0
+        AND global_defaults.object_type = 'f'::"char"
+        AND privilege.privilege_type = 'EXECUTE'
+        AND NOT privilege.is_grantable
+      )
+  ) THEN
+    RAISE EXCEPTION
+      'postgres has an unreviewed global default Data API grant';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_default_acl AS defaults
+    CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
+    WHERE defaults.defaclnamespace = 0
+      AND defaults.defaclrole <> 'postgres'::regrole
+      AND (
+        privilege.grantee = 0
+        OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
+          ARRAY['anon', 'authenticated', 'service_role']
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION
+      'a non-postgres owner has a global default Data API grant';
+  END IF;
+
+  -- The migration also resets public-schema defaults for objects later created
+  -- by postgres. Fail if another creator has a schema-specific grant that would
+  -- reopen Data API access outside that controlled default ACL.
   IF EXISTS (
     SELECT 1
     FROM pg_catalog.pg_default_acl AS defaults
