@@ -54,3 +54,92 @@ BEGIN
   END IF;
 END
 $$;
+
+DO $$
+DECLARE
+  encrypted_token_columns integer;
+  hardened_oauth_functions integer;
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'platform_tokens'
+      AND column_name = 'access_token'
+  ) THEN
+    RAISE EXCEPTION 'platform_tokens must not retain a plaintext access_token column';
+  END IF;
+
+  SELECT count(*)
+  INTO encrypted_token_columns
+  FROM information_schema.columns
+  WHERE table_schema = 'public'
+    AND table_name = 'platform_tokens'
+    AND column_name IN (
+      'access_token_ciphertext',
+      'access_token_nonce',
+      'access_token_tag',
+      'encryption_key_version'
+    );
+
+  IF encrypted_token_columns <> 4 THEN
+    RAISE EXCEPTION 'platform_tokens encrypted envelope is incomplete';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_class AS relation
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND relation.relname = 'oauth_states'
+      AND relation.relrowsecurity
+  ) THEN
+    RAISE EXCEPTION 'oauth_states must have RLS enabled';
+  END IF;
+
+  IF has_table_privilege('anon', 'public.oauth_states', 'SELECT')
+    OR has_table_privilege('authenticated', 'public.oauth_states', 'SELECT')
+    OR has_table_privilege('anon', 'public.platform_tokens', 'SELECT')
+    OR has_table_privilege('authenticated', 'public.platform_tokens', 'SELECT')
+  THEN
+    RAISE EXCEPTION 'public clients must not read OAuth state or platform tokens';
+  END IF;
+
+  SELECT count(*)
+  INTO hardened_oauth_functions
+  FROM pg_proc AS proc
+  JOIN pg_namespace AS namespace ON namespace.oid = proc.pronamespace
+  WHERE namespace.nspname = 'public'
+    AND proc.proname IN (
+      'issue_vercel_oauth_state',
+      'consume_vercel_oauth_state'
+    )
+    AND pg_get_function_identity_arguments(proc.oid) = 'p_state_hash bytea, p_user_id uuid'
+    AND NOT proc.prosecdef
+    AND 'search_path=pg_catalog' = ANY(proc.proconfig);
+
+  IF hardened_oauth_functions <> 2 THEN
+    RAISE EXCEPTION 'OAuth state functions must be invoker-safe with pinned paths';
+  END IF;
+
+  IF has_function_privilege(
+    'anon',
+    'public.consume_vercel_oauth_state(bytea, uuid)',
+    'EXECUTE'
+  ) OR has_function_privilege(
+    'authenticated',
+    'public.consume_vercel_oauth_state(bytea, uuid)',
+    'EXECUTE'
+  ) OR has_function_privilege(
+    'anon',
+    'public.issue_vercel_oauth_state(bytea, uuid)',
+    'EXECUTE'
+  ) OR has_function_privilege(
+    'authenticated',
+    'public.issue_vercel_oauth_state(bytea, uuid)',
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'public clients must not execute OAuth state consumption';
+  END IF;
+END
+$$;
