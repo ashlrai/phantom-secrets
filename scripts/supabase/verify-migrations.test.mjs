@@ -152,6 +152,10 @@ test("workflow remains local-only and supply-chain pinned", async () => {
   );
   assert.match(
     webJob,
+    /psql --host 127\.0\.0\.1 --port 54322[\s\S]*receipt-hosted-grants\.sql/,
+  );
+  assert.match(
+    webJob,
     /supabase db lint --local --level warning --fail-on warning/,
   );
   assert.match(
@@ -180,9 +184,48 @@ test("hosted grant preflight is read-only and fail-closed", async () => {
   assert.match(preflight, /owner\.rolname <> 'postgres'/g);
   assert.match(preflight, /relation\.relrowsecurity/);
   assert.match(preflight, /rolname = 'service_role'[\s\S]*rolbypassrls/);
+  assert.match(preflight, /rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication/);
+  assert.match(preflight, /pg_catalog\.pg_has_role\([\s\S]*'USAGE'/);
+  assert.match(preflight, /pg_has_role\('anon', 'service_role', 'MEMBER'\)/);
+  assert.match(preflight, /public_schema_owner <> ALL/);
+  assert.match(preflight, /has_schema_privilege\('anon', 'public', 'CREATE'\)/);
   assert.match(preflight, /defaults\.defaclrole <> 'postgres'::regrole/);
   assert.match(preflight, /ROLLBACK;\s*$/);
-  assert.doesNotMatch(preflight, /\b(?:INSERT|UPDATE|DELETE|GRANT|REVOKE|ALTER|CREATE|DROP)\b/);
+  assert.doesNotMatch(
+    preflight,
+    /^\s*(?:INSERT|UPDATE|DELETE|GRANT|REVOKE|ALTER|CREATE|DROP)\b/m,
+  );
+});
+
+test("hosted grant receipt proves the exact PostgreSQL 17 authority matrix", async () => {
+  const receipt = await readFile(
+    join(repositoryRoot, "scripts/supabase/receipt-hosted-grants.sql"),
+    "utf8",
+  );
+  assert.match(receipt, /BEGIN TRANSACTION READ ONLY;/);
+  assert.match(receipt, /cardinality\(expected_roles\) <> 3/);
+  assert.match(receipt, /cardinality\(expected_tables\) <> 11/);
+  assert.match(receipt, /cardinality\(expected_privileges\) <> 8/);
+  assert.match(
+    receipt,
+    /'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN'/,
+  );
+  assert.match(receipt, /matrix_cells <> 264/);
+  assert.match(receipt, /matrix_mismatches <> 0/);
+  assert.match(receipt, /matrix_distinct_tables <> 11/);
+  assert.match(receipt, /matrix_reviewed_tables <> 11/);
+  assert.match(receipt, /function_cells <> 15/);
+  assert.match(receipt, /has_table_privilege\(/);
+  assert.match(receipt, /has_function_privilege\(/);
+  assert.match(receipt, /relation\.relrowsecurity/);
+  assert.match(receipt, /phantom-hosted-data-api-authority-v1/);
+  assert.match(receipt, /'effective_table_acl_cells', 264/);
+  assert.match(receipt, /'effective_function_acl_cells', 15/);
+  assert.match(receipt, /ROLLBACK;\s*$/);
+  assert.doesNotMatch(
+    receipt,
+    /^\s*(?:INSERT|UPDATE|DELETE|GRANT|REVOKE|ALTER|CREATE|DROP)\b/m,
+  );
 });
 
 test("runtime authority assertions preserve the hardened user boundary", async () => {

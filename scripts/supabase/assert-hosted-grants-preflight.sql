@@ -35,11 +35,20 @@ DECLARE
   rls_tables integer;
   found_functions integer;
   foreign_owned_functions integer;
+  public_schema_owner name;
 BEGIN
   IF current_user <> 'postgres' THEN
     RAISE EXCEPTION
       'hosted grant preflight requires current_user postgres; found %',
       current_user;
+  END IF;
+
+  IF (
+    SELECT count(*)
+    FROM pg_catalog.pg_roles
+    WHERE rolname = ANY (ARRAY['anon', 'authenticated', 'service_role'])
+  ) <> 3 THEN
+    RAISE EXCEPTION 'anon, authenticated, and service_role must all exist';
   END IF;
 
   IF NOT EXISTS (
@@ -58,6 +67,82 @@ BEGIN
       AND rolbypassrls
   ) THEN
     RAISE EXCEPTION 'anon and authenticated must not bypass RLS';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_roles
+    WHERE rolname = ANY (ARRAY['anon', 'authenticated', 'service_role'])
+      AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication)
+  ) THEN
+    RAISE EXCEPTION
+      'Data API roles must not have superuser or cluster-management authority';
+  END IF;
+
+  -- A grant inherited from another role would survive direct revokes. Reject
+  -- any effective inherited membership instead of assuming direct ACLs are the
+  -- whole client authority surface.
+  IF EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_roles AS client_role
+    CROSS JOIN pg_catalog.pg_roles AS inherited_role
+    WHERE client_role.rolname = ANY (
+      ARRAY['anon', 'authenticated', 'service_role']
+    )
+      AND inherited_role.oid <> client_role.oid
+      AND pg_catalog.pg_has_role(
+        client_role.oid,
+        inherited_role.oid,
+        'USAGE'
+      )
+  ) THEN
+    RAISE EXCEPTION
+      'a Data API role has an effective inherited role membership';
+  END IF;
+
+  IF pg_catalog.pg_has_role('anon', 'service_role', 'MEMBER')
+    OR pg_catalog.pg_has_role('authenticated', 'service_role', 'MEMBER')
+    OR pg_catalog.pg_has_role('anon', 'postgres', 'MEMBER')
+    OR pg_catalog.pg_has_role('authenticated', 'postgres', 'MEMBER') THEN
+    RAISE EXCEPTION
+      'a browser client role can assume a privileged server or migration role';
+  END IF;
+
+  SELECT owner.rolname
+  INTO public_schema_owner
+  FROM pg_catalog.pg_namespace AS namespace
+  JOIN pg_catalog.pg_roles AS owner
+    ON owner.oid = namespace.nspowner
+  WHERE namespace.nspname = 'public';
+
+  IF public_schema_owner IS NULL THEN
+    RAISE EXCEPTION 'public schema must exist';
+  END IF;
+
+  IF public_schema_owner <> ALL (ARRAY['postgres', 'pg_database_owner']) THEN
+    RAISE EXCEPTION
+      'public schema has unreviewed owner %',
+      public_schema_owner;
+  END IF;
+
+  -- Hosted Supabase intentionally makes postgres a non-superuser. Object
+  -- ownership below supplies table/function/default-ACL authority; schema
+  -- ownership (including implicit pg_database_owner membership) supplies the
+  -- remaining schema grant authority.
+  IF NOT (
+    public_schema_owner = current_user
+    OR pg_catalog.pg_has_role(current_user, public_schema_owner, 'USAGE')
+  ) THEN
+    RAISE EXCEPTION
+      'postgres lacks authority over public schema owned by %',
+      public_schema_owner;
+  END IF;
+
+  IF pg_catalog.has_schema_privilege('anon', 'public', 'CREATE')
+    OR pg_catalog.has_schema_privilege('authenticated', 'public', 'CREATE')
+    OR pg_catalog.has_schema_privilege('service_role', 'public', 'CREATE') THEN
+    RAISE EXCEPTION
+      'Data API roles must not create objects in the public schema';
   END IF;
 
   SELECT

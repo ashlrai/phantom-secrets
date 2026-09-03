@@ -1,6 +1,50 @@
 BEGIN;
 
-SELECT plan(36);
+SELECT plan(39);
+
+-- One shared matrix definition feeds both the cardinality guards and every
+-- effective-privilege cell. Removing a role, table, or PostgreSQL 17 privilege
+-- therefore fails a dedicated count before it can reduce the matrix silently.
+CREATE TEMP TABLE expected_data_api_roles (
+  role_name text PRIMARY KEY
+) ON COMMIT DROP;
+INSERT INTO expected_data_api_roles (role_name) VALUES
+  ('anon'),
+  ('authenticated'),
+  ('service_role');
+
+CREATE TEMP TABLE expected_data_api_tables (
+  table_name text PRIMARY KEY,
+  authenticated_privileges text[] NOT NULL,
+  service_privileges text[] NOT NULL
+) ON COMMIT DROP;
+INSERT INTO expected_data_api_tables (
+  table_name, authenticated_privileges, service_privileges
+) VALUES
+  ('users', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'UPDATE']),
+  ('device_tokens', ARRAY[]::text[], ARRAY['SELECT', 'UPDATE']),
+  ('vault_blobs', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'UPDATE']),
+  ('teams', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'DELETE']),
+  ('team_members', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
+  ('team_vault_blobs', ARRAY[]::text[], ARRAY['SELECT', 'INSERT', 'UPDATE']),
+  ('team_key_shares', ARRAY[]::text[], ARRAY[]::text[]),
+  ('stripe_processed_events', ARRAY[]::text[], ARRAY[]::text[]),
+  ('platform_tokens', ARRAY[]::text[], ARRAY[]::text[]),
+  ('stripe_subscription_users', ARRAY[]::text[], ARRAY[]::text[]),
+  ('device_auth_rate_limits', ARRAY[]::text[], ARRAY[]::text[]);
+
+CREATE TEMP TABLE expected_table_privileges (
+  privilege_name text PRIMARY KEY
+) ON COMMIT DROP;
+INSERT INTO expected_table_privileges (privilege_name) VALUES
+  ('SELECT'),
+  ('INSERT'),
+  ('UPDATE'),
+  ('DELETE'),
+  ('TRUNCATE'),
+  ('REFERENCES'),
+  ('TRIGGER'),
+  ('MAINTAIN');
 
 -- Fixed identities make failures reproducible and keep this transaction fully
 -- disposable. The postgres test role seeds rows before switching to the same
@@ -160,34 +204,26 @@ SELECT is(
   'future public objects grant no Data API privilege by default'
 );
 SELECT is(
+  (SELECT count(*) FROM expected_data_api_roles),
+  3::bigint,
+  'effective privilege matrix covers exactly three Data API roles'
+);
+SELECT is(
+  (SELECT count(*) FROM expected_data_api_tables),
+  11::bigint,
+  'effective privilege matrix covers exactly eleven Phantom tables'
+);
+SELECT is(
+  (SELECT count(*) FROM expected_table_privileges),
+  8::bigint,
+  'effective privilege matrix covers all eight PostgreSQL 17 table privileges'
+);
+SELECT is(
   (
-    WITH roles(role_name) AS (
-      SELECT unnest(ARRAY['anon', 'authenticated', 'service_role'])
-    ),
-    tables(table_name, authenticated_privileges, service_privileges) AS (
-      VALUES
-        ('users', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'UPDATE']),
-        ('device_tokens', ARRAY[]::text[], ARRAY['SELECT', 'UPDATE']),
-        ('vault_blobs', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'UPDATE']),
-        ('teams', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'DELETE']),
-        ('team_members', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
-        ('team_vault_blobs', ARRAY[]::text[], ARRAY['SELECT', 'INSERT', 'UPDATE']),
-        ('team_key_shares', ARRAY[]::text[], ARRAY[]::text[]),
-        ('stripe_processed_events', ARRAY[]::text[], ARRAY[]::text[]),
-        ('platform_tokens', ARRAY[]::text[], ARRAY[]::text[]),
-        ('stripe_subscription_users', ARRAY[]::text[], ARRAY[]::text[]),
-        ('device_auth_rate_limits', ARRAY[]::text[], ARRAY[]::text[])
-    ),
-    privileges(privilege_name) AS (
-      SELECT unnest(ARRAY[
-        'SELECT', 'INSERT', 'UPDATE', 'DELETE',
-        'TRUNCATE', 'REFERENCES', 'TRIGGER'
-      ])
-    )
     SELECT count(*)
-    FROM roles
-    CROSS JOIN tables
-    CROSS JOIN privileges
+    FROM expected_data_api_roles AS roles
+    CROSS JOIN expected_data_api_tables AS tables
+    CROSS JOIN expected_table_privileges AS privileges
     WHERE has_table_privilege(
       roles.role_name,
       'public.' || tables.table_name,
@@ -203,7 +239,7 @@ SELECT is(
     )
   ),
   0::bigint,
-  'all effective table privileges exactly match the reviewed role matrix'
+  'all 264 effective table privileges exactly match the reviewed role matrix'
 );
 
 SELECT ok(
