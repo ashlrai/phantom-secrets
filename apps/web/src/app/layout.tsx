@@ -50,6 +50,14 @@ export const metadata: Metadata = {
     "open source",
     "Rust CLI",
     "AI security",
+    "AI agent security",
+    "AI coding agents",
+    "agentic engineering",
+    "Claude Code secrets",
+    "Cursor secrets",
+    "Codex MCP server",
+    "MCP secrets management",
+    "secure API keys for AI",
     "phantom tokens",
     "vault",
   ],
@@ -137,6 +145,16 @@ export default function RootLayout({
               sameAs: [
                 "https://github.com/ashlrai/phantom-secrets",
               ],
+              codeRepository: "https://github.com/ashlrai/phantom-secrets",
+              programmingLanguage: "Rust",
+              isAccessibleForFree: true,
+              featureList: [
+                "Local-first encrypted secret vault",
+                "Authenticated exact-route HTTP credential injection",
+                "Value-blind MCP tools for coding agents",
+                "Claude Code, Cursor, Windsurf, and Codex setup",
+                "macOS, Linux, and Windows release artifacts",
+              ],
               license: "https://opensource.org/licenses/MIT",
               softwareVersion: PUBLIC_RELEASE_VERSION,
               downloadUrl: PUBLIC_RELEASE_URL,
@@ -151,6 +169,26 @@ export default function RootLayout({
                 "@type": "Organization",
                 name: "Ashlr AI",
                 url: "https://ashlr.ai",
+              },
+            }),
+          }}
+        />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "SoftwareSourceCode",
+              name: "Phantom Secrets",
+              codeRepository: "https://github.com/ashlrai/phantom-secrets",
+              runtimePlatform: "macOS, Linux, Windows",
+              programmingLanguage: "Rust",
+              license: "https://opensource.org/licenses/MIT",
+              description: DESCRIPTION,
+              targetProduct: {
+                "@type": "SoftwareApplication",
+                name: "Phantom",
+                applicationCategory: "DeveloperApplication",
               },
             }),
           }}

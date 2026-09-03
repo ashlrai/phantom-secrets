@@ -1,5 +1,4 @@
 [
-  { "source": "/docs", "file": "getting-started.md" },
   { "source": "/docs/getting-started", "file": "getting-started.md" },
   { "source": "/docs/delegation-quickstart", "file": "delegation-quickstart.md" },
   { "source": "/docs/enterprise-adoption", "file": "enterprise-adoption.md" },

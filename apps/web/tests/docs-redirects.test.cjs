@@ -29,7 +29,6 @@ test("public docs redirects are closed, unique, and point to present guides", ()
   }
 
   for (const required of [
-    "/docs",
     "/docs/getting-started",
     "/docs/delegation-quickstart",
     "/docs/enterprise-adoption",
@@ -39,6 +38,7 @@ test("public docs redirects are closed, unique, and point to present guides", ()
   ]) {
     assert.equal(sources.has(required), true, `missing ${required}`);
   }
+  assert.equal(sources.has("/docs"), false, "the on-site docs hub must not redirect");
 });
 
 test("Next config derives temporary redirects from the reviewed manifest", () => {

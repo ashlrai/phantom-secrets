@@ -4,6 +4,7 @@ const SITE_URL = "https://phm.dev";
 
 const pages = [
   { path: "/", changeFrequency: "weekly", priority: 1 },
+  { path: "/docs", changeFrequency: "weekly", priority: 0.9 },
   { path: "/pricing", changeFrequency: "monthly", priority: 0.8 },
   { path: "/enterprise", changeFrequency: "monthly", priority: 0.8 },
   { path: "/government", changeFrequency: "monthly", priority: 0.8 },

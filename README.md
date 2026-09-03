@@ -16,6 +16,7 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
 
 [**Quick start**](#quick-start) ·
+[**⭐ Star Phantom**](https://github.com/ashlrai/phantom-secrets) ·
 [**Delegate safely**](docs/delegation-quickstart.md) ·
 [**Why Phantom?**](#why-phantom) ·
 [**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex) ·

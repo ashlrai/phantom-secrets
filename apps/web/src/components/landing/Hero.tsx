@@ -31,9 +31,10 @@ export function Hero() {
             <a
               className="sealed-button sealed-button--quiet"
               href="https://github.com/ashlrai/phantom-secrets"
+              aria-label="Star Phantom on GitHub"
             >
               <Github aria-hidden="true" />
-              Inspect the source
+              Star Phantom on GitHub
             </a>
           </div>
 
@@ -56,6 +57,10 @@ export function Hero() {
               <dd>Claude · Cursor · Windsurf · Codex</dd>
             </div>
           </dl>
+          <p className="sealed-hero__community">
+            Useful already? Star the repository so more coding agents and
+            developers can find the open-source project.
+          </p>
         </div>
 
         <RequestTrace />
