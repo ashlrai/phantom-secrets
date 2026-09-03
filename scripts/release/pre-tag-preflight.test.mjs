@@ -160,6 +160,7 @@ function createRunner({
     }
     if (file === npmCommand && args[0] === "stage") {
       assert.equal(args[1], "list");
+      assert.ok(!args[2].includes("@"));
       assert.deepEqual(args.slice(3), [
         "--json",
         "--registry=https://registry.npmjs.org/",
@@ -273,15 +274,23 @@ test("fails closed on unsupported npm, public versions, and stage reservations",
     },
     {
       npmStages: {
-        "phantom-secrets@0.7.6": [{ id: "reserved-stage" }],
+        "phantom-secrets": [
+          { id: "reserved-stage", packageName: "phantom-secrets", version: "0.7.6" },
+        ],
       },
       message: /phantom-secrets@0\.7\.6 already has an npm stage reservation/,
     },
     {
       npmStages: {
-        "phantom-secrets@0.7.6": {},
+        "phantom-secrets": {},
       },
       message: /non-array response/,
+    },
+    {
+      npmStages: {
+        "phantom-secrets": [{ id: "missing-version", packageName: "phantom-secrets" }],
+      },
+      message: /malformed stage record/,
     },
   ];
 
@@ -298,6 +307,41 @@ test("fails closed on unsupported npm, public versions, and stage reservations",
       message,
     );
   }
+});
+
+test("lists npm stages by package and ignores reservations for other versions", () => {
+  const { runner, calls } = createRunner({
+    npmStages: {
+      "phantom-secrets": [
+        { id: "older-stage", packageName: "phantom-secrets", version: "0.7.4" },
+      ],
+      "phantom-secrets-mcp": [
+        {
+          id: "older-mcp-stage",
+          packageName: "phantom-secrets-mcp",
+          version: "0.7.4",
+        },
+      ],
+    },
+  });
+
+  const result = runPreTagPreflight({
+    tag: "v0.7.6",
+    runInput: runId,
+    cwd: "/fixture/repo",
+    commandRunner: runner,
+  });
+
+  assert.equal(result.receipt.reservations.npm.exact_version_staged, false);
+  assert.deepEqual(
+    calls
+      .filter(({ file, args }) => file === npmCommand && args[0] === "stage")
+      .map(({ args }) => args.slice(0, 3)),
+    [
+      ["stage", "list", "phantom-secrets"],
+      ["stage", "list", "phantom-secrets-mcp"],
+    ],
+  );
 });
 
 test("accepts a positive run ID directly", () => {
