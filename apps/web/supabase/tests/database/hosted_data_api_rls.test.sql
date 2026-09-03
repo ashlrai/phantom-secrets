@@ -1,6 +1,6 @@
 BEGIN;
 
-SELECT plan(35);
+SELECT plan(36);
 
 -- Fixed identities make failures reproducible and keep this transaction fully
 -- disposable. The postgres test role seeds rows before switching to the same
@@ -31,56 +31,88 @@ INSERT INTO public.team_members (team_id, user_id, role) VALUES
   ('20000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000003', 'owner');
 
 SELECT ok(
-  NOT has_table_privilege('anon', 'public.users', 'SELECT,INSERT,UPDATE,DELETE'),
+  NOT has_table_privilege('anon', 'public.users', 'SELECT')
+    AND NOT has_table_privilege('anon', 'public.users', 'INSERT')
+    AND NOT has_table_privilege('anon', 'public.users', 'UPDATE')
+    AND NOT has_table_privilege('anon', 'public.users', 'DELETE'),
   'anon has no user-table access'
 );
 SELECT ok(
-  NOT has_table_privilege('anon', 'public.vault_blobs', 'SELECT,INSERT,UPDATE,DELETE'),
+  NOT has_table_privilege('anon', 'public.vault_blobs', 'SELECT')
+    AND NOT has_table_privilege('anon', 'public.vault_blobs', 'INSERT')
+    AND NOT has_table_privilege('anon', 'public.vault_blobs', 'UPDATE')
+    AND NOT has_table_privilege('anon', 'public.vault_blobs', 'DELETE'),
   'anon has no personal-vault access'
 );
 SELECT ok(
-  NOT has_table_privilege('anon', 'public.teams', 'SELECT,INSERT,UPDATE,DELETE'),
+  NOT has_table_privilege('anon', 'public.teams', 'SELECT')
+    AND NOT has_table_privilege('anon', 'public.teams', 'INSERT')
+    AND NOT has_table_privilege('anon', 'public.teams', 'UPDATE')
+    AND NOT has_table_privilege('anon', 'public.teams', 'DELETE'),
   'anon has no team access'
 );
 SELECT ok(
-  NOT has_table_privilege('anon', 'public.team_members', 'SELECT,INSERT,UPDATE,DELETE'),
+  NOT has_table_privilege('anon', 'public.team_members', 'SELECT')
+    AND NOT has_table_privilege('anon', 'public.team_members', 'INSERT')
+    AND NOT has_table_privilege('anon', 'public.team_members', 'UPDATE')
+    AND NOT has_table_privilege('anon', 'public.team_members', 'DELETE'),
   'anon has no team-membership access'
 );
 
 SELECT ok(
   has_table_privilege('authenticated', 'public.users', 'SELECT')
-    AND NOT has_table_privilege('authenticated', 'public.users', 'INSERT,UPDATE,DELETE'),
+    AND NOT has_table_privilege('authenticated', 'public.users', 'INSERT')
+    AND NOT has_table_privilege('authenticated', 'public.users', 'UPDATE')
+    AND NOT has_table_privilege('authenticated', 'public.users', 'DELETE'),
   'authenticated can only select users'
 );
 SELECT ok(
   has_table_privilege('authenticated', 'public.vault_blobs', 'SELECT')
-    AND NOT has_table_privilege('authenticated', 'public.vault_blobs', 'INSERT,UPDATE,DELETE'),
+    AND NOT has_table_privilege('authenticated', 'public.vault_blobs', 'INSERT')
+    AND NOT has_table_privilege('authenticated', 'public.vault_blobs', 'UPDATE')
+    AND NOT has_table_privilege('authenticated', 'public.vault_blobs', 'DELETE'),
   'authenticated can only select personal vaults'
 );
 SELECT ok(
   has_table_privilege('authenticated', 'public.teams', 'SELECT')
-    AND NOT has_table_privilege('authenticated', 'public.teams', 'INSERT,UPDATE,DELETE'),
+    AND NOT has_table_privilege('authenticated', 'public.teams', 'INSERT')
+    AND NOT has_table_privilege('authenticated', 'public.teams', 'UPDATE')
+    AND NOT has_table_privilege('authenticated', 'public.teams', 'DELETE'),
   'authenticated can only select teams'
 );
 SELECT ok(
   has_table_privilege('authenticated', 'public.team_members', 'SELECT')
-    AND NOT has_table_privilege('authenticated', 'public.team_members', 'INSERT,UPDATE,DELETE'),
+    AND NOT has_table_privilege('authenticated', 'public.team_members', 'INSERT')
+    AND NOT has_table_privilege('authenticated', 'public.team_members', 'UPDATE')
+    AND NOT has_table_privilege('authenticated', 'public.team_members', 'DELETE'),
   'authenticated can only select team memberships'
 );
 SELECT ok(
-  NOT has_table_privilege('authenticated', 'public.device_tokens', 'SELECT,INSERT,UPDATE,DELETE'),
+  NOT has_table_privilege('authenticated', 'public.device_tokens', 'SELECT')
+    AND NOT has_table_privilege('authenticated', 'public.device_tokens', 'INSERT')
+    AND NOT has_table_privilege('authenticated', 'public.device_tokens', 'UPDATE')
+    AND NOT has_table_privilege('authenticated', 'public.device_tokens', 'DELETE'),
   'authenticated cannot access device tokens directly'
 );
 SELECT ok(
-  NOT has_table_privilege('authenticated', 'public.team_vault_blobs', 'SELECT,INSERT,UPDATE,DELETE'),
+  NOT has_table_privilege('authenticated', 'public.team_vault_blobs', 'SELECT')
+    AND NOT has_table_privilege('authenticated', 'public.team_vault_blobs', 'INSERT')
+    AND NOT has_table_privilege('authenticated', 'public.team_vault_blobs', 'UPDATE')
+    AND NOT has_table_privilege('authenticated', 'public.team_vault_blobs', 'DELETE'),
   'authenticated cannot access team ciphertext directly'
 );
 SELECT ok(
-  NOT has_table_privilege('authenticated', 'public.team_key_shares', 'SELECT,INSERT,UPDATE,DELETE'),
+  NOT has_table_privilege('authenticated', 'public.team_key_shares', 'SELECT')
+    AND NOT has_table_privilege('authenticated', 'public.team_key_shares', 'INSERT')
+    AND NOT has_table_privilege('authenticated', 'public.team_key_shares', 'UPDATE')
+    AND NOT has_table_privilege('authenticated', 'public.team_key_shares', 'DELETE'),
   'authenticated cannot access legacy team key shares directly'
 );
 SELECT ok(
-  NOT has_table_privilege('authenticated', 'public.platform_tokens', 'SELECT,INSERT,UPDATE,DELETE'),
+  NOT has_table_privilege('authenticated', 'public.platform_tokens', 'SELECT')
+    AND NOT has_table_privilege('authenticated', 'public.platform_tokens', 'INSERT')
+    AND NOT has_table_privilege('authenticated', 'public.platform_tokens', 'UPDATE')
+    AND NOT has_table_privilege('authenticated', 'public.platform_tokens', 'DELETE'),
   'authenticated cannot access platform credentials'
 );
 SELECT is(
@@ -127,43 +159,111 @@ SELECT is(
   0::bigint,
   'future public objects grant no Data API privilege by default'
 );
+SELECT is(
+  (
+    WITH roles(role_name) AS (
+      SELECT unnest(ARRAY['anon', 'authenticated', 'service_role'])
+    ),
+    tables(table_name, authenticated_privileges, service_privileges) AS (
+      VALUES
+        ('users', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'UPDATE']),
+        ('device_tokens', ARRAY[]::text[], ARRAY['SELECT', 'UPDATE']),
+        ('vault_blobs', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'UPDATE']),
+        ('teams', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'DELETE']),
+        ('team_members', ARRAY['SELECT'], ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
+        ('team_vault_blobs', ARRAY[]::text[], ARRAY['SELECT', 'INSERT', 'UPDATE']),
+        ('team_key_shares', ARRAY[]::text[], ARRAY[]::text[]),
+        ('stripe_processed_events', ARRAY[]::text[], ARRAY[]::text[]),
+        ('platform_tokens', ARRAY[]::text[], ARRAY[]::text[]),
+        ('stripe_subscription_users', ARRAY[]::text[], ARRAY[]::text[]),
+        ('device_auth_rate_limits', ARRAY[]::text[], ARRAY[]::text[])
+    ),
+    privileges(privilege_name) AS (
+      SELECT unnest(ARRAY[
+        'SELECT', 'INSERT', 'UPDATE', 'DELETE',
+        'TRUNCATE', 'REFERENCES', 'TRIGGER'
+      ])
+    )
+    SELECT count(*)
+    FROM roles
+    CROSS JOIN tables
+    CROSS JOIN privileges
+    WHERE has_table_privilege(
+      roles.role_name,
+      'public.' || tables.table_name,
+      privileges.privilege_name
+    ) IS DISTINCT FROM (
+      CASE roles.role_name
+        WHEN 'authenticated' THEN
+          privileges.privilege_name = ANY (tables.authenticated_privileges)
+        WHEN 'service_role' THEN
+          privileges.privilege_name = ANY (tables.service_privileges)
+        ELSE false
+      END
+    )
+  ),
+  0::bigint,
+  'all effective table privileges exactly match the reviewed role matrix'
+);
 
 SELECT ok(
-  has_table_privilege('service_role', 'public.users', 'SELECT,INSERT,UPDATE')
+  has_table_privilege('service_role', 'public.users', 'SELECT')
+    AND has_table_privilege('service_role', 'public.users', 'INSERT')
+    AND has_table_privilege('service_role', 'public.users', 'UPDATE')
     AND NOT has_table_privilege('service_role', 'public.users', 'DELETE'),
   'service_role has only required user operations'
 );
 SELECT ok(
-  has_table_privilege('service_role', 'public.device_tokens', 'SELECT,UPDATE')
-    AND NOT has_table_privilege('service_role', 'public.device_tokens', 'INSERT,DELETE'),
+  has_table_privilege('service_role', 'public.device_tokens', 'SELECT')
+    AND has_table_privilege('service_role', 'public.device_tokens', 'UPDATE')
+    AND NOT has_table_privilege('service_role', 'public.device_tokens', 'INSERT')
+    AND NOT has_table_privilege('service_role', 'public.device_tokens', 'DELETE'),
   'service_role has only required device-token operations'
 );
 SELECT ok(
-  has_table_privilege('service_role', 'public.vault_blobs', 'SELECT,INSERT,UPDATE')
+  has_table_privilege('service_role', 'public.vault_blobs', 'SELECT')
+    AND has_table_privilege('service_role', 'public.vault_blobs', 'INSERT')
+    AND has_table_privilege('service_role', 'public.vault_blobs', 'UPDATE')
     AND NOT has_table_privilege('service_role', 'public.vault_blobs', 'DELETE'),
   'service_role has only required personal-vault operations'
 );
 SELECT ok(
-  has_table_privilege('service_role', 'public.teams', 'SELECT,INSERT,DELETE')
+  has_table_privilege('service_role', 'public.teams', 'SELECT')
+    AND has_table_privilege('service_role', 'public.teams', 'INSERT')
+    AND has_table_privilege('service_role', 'public.teams', 'DELETE')
     AND NOT has_table_privilege('service_role', 'public.teams', 'UPDATE'),
   'service_role has only required team operations'
 );
 SELECT ok(
-  has_table_privilege('service_role', 'public.team_members', 'SELECT,INSERT,UPDATE,DELETE'),
+  has_table_privilege('service_role', 'public.team_members', 'SELECT')
+    AND has_table_privilege('service_role', 'public.team_members', 'INSERT')
+    AND has_table_privilege('service_role', 'public.team_members', 'UPDATE')
+    AND has_table_privilege('service_role', 'public.team_members', 'DELETE'),
   'service_role has required team-membership operations'
 );
 SELECT ok(
-  has_table_privilege('service_role', 'public.team_vault_blobs', 'SELECT,INSERT,UPDATE')
+  has_table_privilege('service_role', 'public.team_vault_blobs', 'SELECT')
+    AND has_table_privilege('service_role', 'public.team_vault_blobs', 'INSERT')
+    AND has_table_privilege('service_role', 'public.team_vault_blobs', 'UPDATE')
     AND NOT has_table_privilege('service_role', 'public.team_vault_blobs', 'DELETE'),
   'service_role has only required team-vault operations'
 );
 SELECT ok(
-  NOT has_table_privilege('service_role', 'public.platform_tokens', 'SELECT,INSERT,UPDATE,DELETE'),
+  NOT has_table_privilege('service_role', 'public.platform_tokens', 'SELECT')
+    AND NOT has_table_privilege('service_role', 'public.platform_tokens', 'INSERT')
+    AND NOT has_table_privilege('service_role', 'public.platform_tokens', 'UPDATE')
+    AND NOT has_table_privilege('service_role', 'public.platform_tokens', 'DELETE'),
   'disabled platform integration has no service-role table path'
 );
 SELECT ok(
-  NOT has_table_privilege('service_role', 'public.stripe_processed_events', 'SELECT,INSERT,UPDATE,DELETE')
-    AND NOT has_table_privilege('service_role', 'public.stripe_subscription_users', 'SELECT,INSERT,UPDATE,DELETE'),
+  NOT has_table_privilege('service_role', 'public.stripe_processed_events', 'SELECT')
+    AND NOT has_table_privilege('service_role', 'public.stripe_processed_events', 'INSERT')
+    AND NOT has_table_privilege('service_role', 'public.stripe_processed_events', 'UPDATE')
+    AND NOT has_table_privilege('service_role', 'public.stripe_processed_events', 'DELETE')
+    AND NOT has_table_privilege('service_role', 'public.stripe_subscription_users', 'SELECT')
+    AND NOT has_table_privilege('service_role', 'public.stripe_subscription_users', 'INSERT')
+    AND NOT has_table_privilege('service_role', 'public.stripe_subscription_users', 'UPDATE')
+    AND NOT has_table_privilege('service_role', 'public.stripe_subscription_users', 'DELETE'),
   'billing internals are reachable only through the billing RPC'
 );
 SELECT ok(

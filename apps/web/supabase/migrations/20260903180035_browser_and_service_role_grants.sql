@@ -2,9 +2,59 @@
 -- current defaults no longer guarantee automatic grants for new objects, and
 -- older projects may still retain broad grants. Reset only Phantom-owned
 -- objects, then grant back the operations exercised by the checked-in browser
--- and server clients. Row-level policies remain the authorization boundary.
+-- and server clients. RLS is the authenticated-browser row boundary;
+-- service_role bypasses RLS, so server-route authentication, authorization,
+-- predicates, validation, and commissioning gates remain its row boundary.
 
 BEGIN;
+
+-- Fail before changing privileges if this database does not match the owner
+-- assumptions used below. The matching read-only operator preflight lives at
+-- scripts/supabase/assert-hosted-grants-preflight.sql.
+DO $$
+DECLARE
+  expected_tables constant text[] := ARRAY[
+    'users',
+    'device_tokens',
+    'vault_blobs',
+    'teams',
+    'team_members',
+    'team_vault_blobs',
+    'team_key_shares',
+    'stripe_processed_events',
+    'platform_tokens',
+    'stripe_subscription_users',
+    'device_auth_rate_limits'
+  ];
+  found_tables integer;
+  foreign_owned_tables integer;
+BEGIN
+  IF current_user <> 'postgres' THEN
+    RAISE EXCEPTION
+      'hosted grant migration must run as postgres; current_user is %',
+      current_user;
+  END IF;
+
+  SELECT count(*), count(*) FILTER (WHERE owner.rolname <> 'postgres')
+  INTO found_tables, foreign_owned_tables
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_namespace AS namespace
+    ON namespace.oid = relation.relnamespace
+  JOIN pg_catalog.pg_roles AS owner
+    ON owner.oid = relation.relowner
+  WHERE namespace.nspname = 'public'
+    AND relation.relkind IN ('r', 'p')
+    AND relation.relname = ANY (expected_tables);
+
+  IF found_tables <> cardinality(expected_tables) OR foreign_owned_tables <> 0 THEN
+    RAISE EXCEPTION
+      'hosted grant migration expected % postgres-owned tables; found %, with % foreign-owned',
+      cardinality(expected_tables),
+      found_tables,
+      foreign_owned_tables;
+  END IF;
+END
+$$;
 
 -- Keep future public objects closed until a reviewed migration grants a route
 -- the exact operation it needs. These are the defaults used by migrations run

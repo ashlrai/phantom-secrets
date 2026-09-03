@@ -144,6 +144,10 @@ test("workflow remains local-only and supply-chain pinned", async () => {
   );
   assert.match(
     webJob,
+    /psql --host 127\.0\.0\.1 --port 54322[\s\S]*assert-hosted-grants-preflight\.sql/,
+  );
+  assert.match(
+    webJob,
     /supabase test db --local supabase\/tests\/database/,
   );
   assert.match(
@@ -164,6 +168,21 @@ test("workflow remains local-only and supply-chain pinned", async () => {
     webJob,
     /--linked|--project-ref|SUPABASE_ACCESS_TOKEN|SUPABASE_DB_PASSWORD/,
   );
+});
+
+test("hosted grant preflight is read-only and fail-closed", async () => {
+  const preflight = await readFile(
+    join(repositoryRoot, "scripts/supabase/assert-hosted-grants-preflight.sql"),
+    "utf8",
+  );
+  assert.match(preflight, /BEGIN TRANSACTION READ ONLY;/);
+  assert.match(preflight, /current_user <> 'postgres'/);
+  assert.match(preflight, /owner\.rolname <> 'postgres'/g);
+  assert.match(preflight, /relation\.relrowsecurity/);
+  assert.match(preflight, /rolname = 'service_role'[\s\S]*rolbypassrls/);
+  assert.match(preflight, /defaults\.defaclrole <> 'postgres'::regrole/);
+  assert.match(preflight, /ROLLBACK;\s*$/);
+  assert.doesNotMatch(preflight, /\b(?:INSERT|UPDATE|DELETE|GRANT|REVOKE|ALTER|CREATE|DROP)\b/);
 });
 
 test("runtime authority assertions preserve the hardened user boundary", async () => {
