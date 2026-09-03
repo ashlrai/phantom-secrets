@@ -28,6 +28,7 @@ DECLARE
   ];
   found_tables integer;
   foreign_owned_tables integer;
+  found_columns integer;
 BEGIN
   IF current_user <> 'postgres' THEN
     RAISE EXCEPTION
@@ -52,6 +53,37 @@ BEGIN
       cardinality(expected_tables),
       found_tables,
       foreign_owned_tables;
+  END IF;
+
+  SELECT count(*)
+  INTO found_columns
+  FROM pg_catalog.pg_attribute AS attribute
+  JOIN pg_catalog.pg_class AS relation
+    ON relation.oid = attribute.attrelid
+  JOIN pg_catalog.pg_namespace AS namespace
+    ON namespace.oid = relation.relnamespace
+  WHERE namespace.nspname = 'public'
+    AND relation.relname = ANY (expected_tables)
+    AND relation.relkind IN ('r', 'p')
+    AND attribute.attnum > 0
+    AND NOT attribute.attisdropped;
+
+  IF found_columns <> 84 THEN
+    RAISE EXCEPTION
+      'hosted grant migration expected 84 reviewed columns; found %',
+      found_columns;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_namespace AS namespace
+    JOIN pg_catalog.pg_roles AS owner
+      ON owner.oid = namespace.nspowner
+    WHERE namespace.nspname = 'app_private'
+      AND owner.rolname = 'postgres'
+  ) THEN
+    RAISE EXCEPTION
+      'hosted grant migration requires postgres-owned app_private schema';
   END IF;
 END
 $$;
@@ -91,11 +123,68 @@ REVOKE ALL ON TABLE
   public.device_auth_rate_limits
 FROM PUBLIC, anon, authenticated, service_role;
 
+-- Table-level revokes do not remove column ACLs. Enumerate every reviewed live
+-- column and clear the four PostgreSQL privileges that can be granted at column
+-- scope. Dynamic identifiers come only from the system catalogs and are quoted.
+DO $$
+DECLARE
+  target record;
+  privilege_name text;
+BEGIN
+  FOR target IN
+    SELECT
+      format('%I.%I', namespace.nspname, relation.relname) AS table_name,
+      string_agg(
+        format('%I', attribute.attname),
+        ', '
+        ORDER BY attribute.attnum
+      ) AS column_names
+    FROM pg_catalog.pg_attribute AS attribute
+    JOIN pg_catalog.pg_class AS relation
+      ON relation.oid = attribute.attrelid
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND relation.relname = ANY (ARRAY[
+        'users',
+        'device_tokens',
+        'vault_blobs',
+        'teams',
+        'team_members',
+        'team_vault_blobs',
+        'team_key_shares',
+        'stripe_processed_events',
+        'platform_tokens',
+        'stripe_subscription_users',
+        'device_auth_rate_limits'
+      ])
+      AND relation.relkind IN ('r', 'p')
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+    GROUP BY namespace.nspname, relation.relname
+  LOOP
+    FOREACH privilege_name IN ARRAY ARRAY[
+      'SELECT', 'INSERT', 'UPDATE', 'REFERENCES'
+    ]
+    LOOP
+      EXECUTE format(
+        'REVOKE %s (%s) ON TABLE %s FROM PUBLIC, anon, authenticated, service_role',
+        privilege_name,
+        target.column_names,
+        target.table_name
+      );
+    END LOOP;
+  END LOOP;
+END
+$$;
+
 -- Schema reachability is explicit for the two Data API roles that have an
 -- object grant below. anon can resolve the schema through Supabase defaults,
 -- but has no privilege on any Phantom table or RPC.
 REVOKE ALL ON SCHEMA public FROM anon, authenticated, service_role;
 GRANT USAGE ON SCHEMA public TO authenticated, service_role;
+REVOKE ALL ON SCHEMA app_private FROM anon, authenticated, service_role;
+GRANT USAGE ON SCHEMA app_private TO authenticated;
 
 -- Browser dashboard queries are read-only. Existing RLS policies restrict
 -- users and personal vaults to auth.uid(), and team rows to current members.

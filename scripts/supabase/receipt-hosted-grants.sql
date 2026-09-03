@@ -29,6 +29,9 @@ DECLARE
     'SELECT', 'INSERT', 'UPDATE', 'DELETE',
     'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN'
   ];
+  expected_column_privileges constant text[] := ARRAY[
+    'SELECT', 'INSERT', 'UPDATE', 'REFERENCES'
+  ];
   expected_functions constant text[] := ARRAY[
     'public.update_updated_at()',
     'public.prevent_user_billing_self_update()',
@@ -41,6 +44,9 @@ DECLARE
   matrix_distinct_tables integer;
   matrix_reviewed_tables integer;
   table_grant_options integer;
+  reviewed_columns integer;
+  column_acl_cells integer;
+  column_acl_mismatches integer;
   function_cells integer;
   function_mismatches integer;
   function_distinct_names integer;
@@ -49,6 +55,8 @@ DECLARE
   rls_tables integer;
   global_default_grants integer;
   public_default_grants integer;
+  other_owner_global_default_grants integer;
+  app_private_schema_owner name;
 BEGIN
   IF current_user <> 'postgres' THEN
     RAISE EXCEPTION
@@ -59,13 +67,28 @@ BEGIN
   IF cardinality(expected_roles) <> 3
     OR cardinality(expected_tables) <> 11
     OR cardinality(expected_privileges) <> 8
+    OR cardinality(expected_column_privileges) <> 4
     OR cardinality(expected_functions) <> 5 THEN
     RAISE EXCEPTION
-      'hosted grant receipt matrix cardinality changed: roles %, tables %, privileges %, functions %',
+      'hosted grant receipt matrix cardinality changed: roles %, tables %, table privileges %, column privileges %, functions %',
       cardinality(expected_roles),
       cardinality(expected_tables),
       cardinality(expected_privileges),
+      cardinality(expected_column_privileges),
       cardinality(expected_functions);
+  END IF;
+
+  SELECT owner.rolname
+  INTO app_private_schema_owner
+  FROM pg_catalog.pg_namespace AS namespace
+  JOIN pg_catalog.pg_roles AS owner
+    ON owner.oid = namespace.nspowner
+  WHERE namespace.nspname = 'app_private';
+
+  IF app_private_schema_owner IS DISTINCT FROM 'postgres' THEN
+    RAISE EXCEPTION
+      'hosted grant receipt requires postgres-owned app_private schema; found %',
+      coalesce(app_private_schema_owner, '<missing>');
   END IF;
 
   WITH roles(role_name) AS (
@@ -142,6 +165,64 @@ BEGIN
       matrix_distinct_tables,
       matrix_reviewed_tables,
       table_grant_options;
+  END IF;
+
+  WITH roles(role_name) AS (
+    SELECT unnest(expected_roles)
+  ),
+  privileges(privilege_name) AS (
+    SELECT unnest(expected_column_privileges)
+  ),
+  columns(table_name, column_name, column_acl) AS (
+    SELECT
+      relation.relname,
+      attribute.attname,
+      attribute.attacl
+    FROM pg_catalog.pg_attribute AS attribute
+    JOIN pg_catalog.pg_class AS relation
+      ON relation.oid = attribute.attrelid
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND relation.relname = ANY (expected_tables)
+      AND relation.relkind IN ('r', 'p')
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+  ),
+  matrix AS (
+    SELECT
+      roles.role_name,
+      columns.table_name,
+      columns.column_name,
+      privileges.privilege_name,
+      EXISTS (
+        SELECT 1
+        FROM pg_catalog.aclexplode(columns.column_acl) AS acl
+        WHERE (
+          acl.grantee = 0
+          OR pg_catalog.pg_get_userbyid(acl.grantee) = roles.role_name
+        )
+          AND acl.privilege_type = privileges.privilege_name
+      ) AS has_column_acl
+    FROM roles
+    CROSS JOIN columns
+    CROSS JOIN privileges
+  )
+  SELECT
+    count(DISTINCT (table_name, column_name)),
+    count(*),
+    count(*) FILTER (WHERE has_column_acl)
+  INTO reviewed_columns, column_acl_cells, column_acl_mismatches
+  FROM matrix;
+
+  IF reviewed_columns <> 84
+    OR column_acl_cells <> 1008
+    OR column_acl_mismatches <> 0 THEN
+    RAISE EXCEPTION
+      'column ACL receipt failed: columns %, cells %, grants %',
+      reviewed_columns,
+      column_acl_cells,
+      column_acl_mismatches;
   END IF;
 
   WITH roles(role_name) AS (
@@ -259,6 +340,30 @@ BEGIN
       global_default_grants;
   END IF;
 
+  -- Do not synthesize acldefault() for every cluster role: most roles cannot
+  -- create in either reviewed schema, and doing so would falsely report the
+  -- built-in function default for unrelated Supabase-managed owners. Do inspect
+  -- every explicit global default-ACL row, regardless of owner, because it is
+  -- persistent drift that can grant these Data API roles directly or via PUBLIC.
+  SELECT count(*)
+  INTO other_owner_global_default_grants
+  FROM pg_catalog.pg_default_acl AS defaults
+  CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
+  WHERE defaults.defaclnamespace = 0
+    AND defaults.defaclrole <> 'postgres'::regrole
+    AND (
+      privilege.grantee = 0
+      OR pg_catalog.pg_get_userbyid(privilege.grantee) = ANY (
+        ARRAY['anon', 'authenticated', 'service_role']
+      )
+    );
+
+  IF other_owner_global_default_grants <> 0 THEN
+    RAISE EXCEPTION
+      'hosted grant receipt found % non-postgres global default Data API grants',
+      other_owner_global_default_grants;
+  END IF;
+
   SELECT count(*)
   INTO public_default_grants
   FROM pg_catalog.pg_default_acl AS defaults
@@ -284,6 +389,17 @@ BEGIN
     OR pg_catalog.has_schema_privilege('service_role', 'public', 'CREATE') THEN
     RAISE EXCEPTION
       'hosted grant receipt found Data API object-creation authority';
+  END IF;
+
+  IF pg_catalog.has_schema_privilege('anon', 'app_private', 'CREATE')
+    OR pg_catalog.has_schema_privilege(
+      'authenticated', 'app_private', 'CREATE'
+    )
+    OR pg_catalog.has_schema_privilege(
+      'service_role', 'app_private', 'CREATE'
+    ) THEN
+    RAISE EXCEPTION
+      'hosted grant receipt found app_private object-creation authority';
   END IF;
 
   IF NOT pg_catalog.has_schema_privilege(
@@ -328,12 +444,17 @@ SELECT jsonb_build_object(
   'effective_table_acl_cells', 264,
   'table_acl_mismatches', 0,
   'table_grant_options', 0,
+  'columns', 84,
+  'column_privileges', 4,
+  'effective_column_acl_cells', 1008,
+  'column_acl_grants', 0,
   'functions', 5,
   'effective_function_acl_cells', 15,
   'function_acl_mismatches', 0,
   'function_grant_options', 0,
   'rls_tables', 11,
   'global_default_acl_grants', 0,
+  'other_owner_global_default_acl_grants', 0,
   'public_default_acl_grants', 0
 ) AS hosted_grants_receipt;
 

@@ -23,12 +23,12 @@ DECLARE
     'stripe_subscription_users',
     'device_auth_rate_limits'
   ];
-  expected_functions constant regprocedure[] := ARRAY[
-    'public.update_updated_at()'::regprocedure,
-    'public.prevent_user_billing_self_update()'::regprocedure,
-    'public.issue_device_code(text,text,text,timestamptz)'::regprocedure,
-    'public.process_stripe_billing_event(text,text,bigint,uuid,uuid,text,text,timestamptz)'::regprocedure,
-    'app_private.current_user_is_team_member(uuid)'::regprocedure
+  expected_functions constant text[] := ARRAY[
+    'public.update_updated_at()',
+    'public.prevent_user_billing_self_update()',
+    'public.issue_device_code(text,text,text,timestamptz)',
+    'public.process_stripe_billing_event(text,text,bigint,uuid,uuid,text,text,timestamptz)',
+    'app_private.current_user_is_team_member(uuid)'
   ];
   found_tables integer;
   foreign_owned_tables integer;
@@ -36,6 +36,10 @@ DECLARE
   found_functions integer;
   foreign_owned_functions integer;
   public_schema_owner name;
+  app_private_schema_owner name;
+  found_columns integer;
+  column_acl_cells integer;
+  column_acl_mismatches integer;
 BEGIN
   IF current_user <> 'postgres' THEN
     RAISE EXCEPTION
@@ -138,11 +142,35 @@ BEGIN
       public_schema_owner;
   END IF;
 
+  SELECT owner.rolname
+  INTO app_private_schema_owner
+  FROM pg_catalog.pg_namespace AS namespace
+  JOIN pg_catalog.pg_roles AS owner
+    ON owner.oid = namespace.nspowner
+  WHERE namespace.nspname = 'app_private';
+
+  IF app_private_schema_owner IS DISTINCT FROM 'postgres' THEN
+    RAISE EXCEPTION
+      'app_private schema must be owned by postgres; found %',
+      coalesce(app_private_schema_owner, '<missing>');
+  END IF;
+
   IF pg_catalog.has_schema_privilege('anon', 'public', 'CREATE')
     OR pg_catalog.has_schema_privilege('authenticated', 'public', 'CREATE')
     OR pg_catalog.has_schema_privilege('service_role', 'public', 'CREATE') THEN
     RAISE EXCEPTION
       'Data API roles must not create objects in the public schema';
+  END IF;
+
+  IF pg_catalog.has_schema_privilege('anon', 'app_private', 'CREATE')
+    OR pg_catalog.has_schema_privilege(
+      'authenticated', 'app_private', 'CREATE'
+    )
+    OR pg_catalog.has_schema_privilege(
+      'service_role', 'app_private', 'CREATE'
+    ) THEN
+    RAISE EXCEPTION
+      'Data API roles must not create objects in the app_private schema';
   END IF;
 
   IF NOT pg_catalog.has_schema_privilege(
@@ -210,6 +238,65 @@ BEGIN
       rls_tables;
   END IF;
 
+  WITH roles(role_name) AS (
+    SELECT unnest(ARRAY['anon', 'authenticated', 'service_role'])
+  ),
+  privileges(privilege_name) AS (
+    SELECT unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES'])
+  ),
+  columns(table_oid, table_name, column_name, column_acl) AS (
+    SELECT
+      relation.oid,
+      relation.relname,
+      attribute.attname,
+      attribute.attacl
+    FROM pg_catalog.pg_attribute AS attribute
+    JOIN pg_catalog.pg_class AS relation
+      ON relation.oid = attribute.attrelid
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND relation.relname = ANY (expected_tables)
+      AND relation.relkind IN ('r', 'p')
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+  ),
+  matrix AS (
+    SELECT
+      roles.role_name,
+      columns.table_name,
+      columns.column_name,
+      privileges.privilege_name,
+      EXISTS (
+        SELECT 1
+        FROM pg_catalog.aclexplode(columns.column_acl) AS acl
+        WHERE (
+          acl.grantee = 0
+          OR pg_catalog.pg_get_userbyid(acl.grantee) = roles.role_name
+        )
+          AND acl.privilege_type = privileges.privilege_name
+      ) AS has_column_acl
+    FROM roles
+    CROSS JOIN columns
+    CROSS JOIN privileges
+  )
+  SELECT
+    count(*),
+    count(*) FILTER (WHERE has_column_acl)
+  INTO column_acl_cells, column_acl_mismatches
+  FROM matrix;
+
+  found_columns := column_acl_cells / 12;
+  IF found_columns <> 84
+    OR column_acl_cells <> 1008
+    OR column_acl_mismatches <> 0 THEN
+    RAISE EXCEPTION
+      'column ACL preflight failed: columns %, cells %, grants %',
+      found_columns,
+      column_acl_cells,
+      column_acl_mismatches;
+  END IF;
+
   SELECT
     count(*),
     count(*) FILTER (WHERE owner.rolname <> 'postgres')
@@ -217,7 +304,10 @@ BEGIN
   FROM pg_catalog.pg_proc AS function
   JOIN pg_catalog.pg_roles AS owner
     ON owner.oid = function.proowner
-  WHERE function.oid = ANY (expected_functions);
+  WHERE function.oid = ANY (
+    SELECT signature::regprocedure
+    FROM unnest(expected_functions) AS signature
+  );
 
   IF found_functions <> cardinality(expected_functions)
     OR foreign_owned_functions <> 0 THEN

@@ -138,6 +138,20 @@ test("hosted migration closes PostgreSQL's global function execute default", asy
     migration,
     /REVOKE ALL ON SCHEMA public FROM anon, authenticated, service_role;/,
   );
+  assert.match(migration, /found_columns <> 84/);
+  assert.match(
+    migration,
+    /'SELECT', 'INSERT', 'UPDATE', 'REFERENCES'/,
+  );
+  assert.match(
+    migration,
+    /REVOKE %s \(%s\) ON TABLE %s FROM PUBLIC, anon, authenticated, service_role/,
+  );
+  assert.match(
+    migration,
+    /REVOKE ALL ON SCHEMA app_private FROM anon, authenticated, service_role;/,
+  );
+  assert.match(migration, /GRANT USAGE ON SCHEMA app_private TO authenticated;/);
 });
 
 test("workflow remains local-only and supply-chain pinned", async () => {
@@ -212,6 +226,10 @@ test("hosted grant preflight is read-only and fail-closed", async () => {
   assert.match(preflight, /pg_catalog\.acldefault\(/);
   assert.match(preflight, /privilege\.is_grantable/);
   assert.match(preflight, /'authenticated', 'app_private', 'USAGE'/);
+  assert.match(preflight, /app_private_schema_owner IS DISTINCT FROM 'postgres'/);
+  assert.match(preflight, /'authenticated', 'app_private', 'CREATE'/);
+  assert.match(preflight, /column_acl_cells <> 1008/);
+  assert.match(preflight, /column_acl_mismatches <> 0/);
   assert.match(preflight, /defaults\.defaclrole <> 'postgres'::regrole/);
   assert.match(preflight, /ROLLBACK;\s*$/);
   assert.doesNotMatch(
@@ -229,6 +247,7 @@ test("hosted grant receipt proves the exact PostgreSQL 17 authority matrix", asy
   assert.match(receipt, /cardinality\(expected_roles\) <> 3/);
   assert.match(receipt, /cardinality\(expected_tables\) <> 11/);
   assert.match(receipt, /cardinality\(expected_privileges\) <> 8/);
+  assert.match(receipt, /cardinality\(expected_column_privileges\) <> 4/);
   assert.match(receipt, /cardinality\(expected_functions\) <> 5/);
   assert.match(
     receipt,
@@ -243,6 +262,12 @@ test("hosted grant receipt proves the exact PostgreSQL 17 authority matrix", asy
   assert.match(receipt, /function_reviewed_names <> 5/);
   assert.match(receipt, /table_grant_options <> 0/);
   assert.match(receipt, /function_grant_options <> 0/);
+  assert.match(receipt, /reviewed_columns <> 84/);
+  assert.match(receipt, /column_acl_cells <> 1008/);
+  assert.match(receipt, /column_acl_mismatches <> 0/);
+  assert.match(receipt, /other_owner_global_default_grants <> 0/);
+  assert.match(receipt, /app_private_schema_owner IS DISTINCT FROM 'postgres'/);
+  assert.match(receipt, /'authenticated', 'app_private', 'CREATE'/);
   assert.match(receipt, /defaults\.defaclnamespace = 0/);
   assert.match(receipt, /pg_catalog\.acldefault\(/);
   assert.match(receipt, /'authenticated', 'app_private', 'USAGE'/);
@@ -251,6 +276,7 @@ test("hosted grant receipt proves the exact PostgreSQL 17 authority matrix", asy
   assert.match(receipt, /relation\.relrowsecurity/);
   assert.match(receipt, /phantom-hosted-data-api-authority-v1/);
   assert.match(receipt, /'effective_table_acl_cells', 264/);
+  assert.match(receipt, /'effective_column_acl_cells', 1008/);
   assert.match(receipt, /'effective_function_acl_cells', 15/);
   assert.match(receipt, /'global_default_acl_grants', 0/);
   assert.match(receipt, /'public_default_acl_grants', 0/);

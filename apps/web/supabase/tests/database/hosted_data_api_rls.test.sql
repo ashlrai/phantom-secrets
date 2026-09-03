@@ -1,6 +1,6 @@
 BEGIN;
 
-SELECT plan(44);
+SELECT plan(50);
 
 -- One shared matrix definition feeds both the cardinality guards and every
 -- effective-privilege cell. Removing a role, table, or PostgreSQL 17 privilege
@@ -59,6 +59,15 @@ INSERT INTO expected_data_api_functions (
   ('public.issue_device_code(text,text,text,timestamptz)', false, true),
   ('public.process_stripe_billing_event(text,text,bigint,uuid,uuid,text,text,timestamptz)', false, true),
   ('app_private.current_user_is_team_member(uuid)', true, false);
+
+CREATE TEMP TABLE expected_column_privileges (
+  privilege_name text PRIMARY KEY
+) ON COMMIT DROP;
+INSERT INTO expected_column_privileges (privilege_name) VALUES
+  ('SELECT'),
+  ('INSERT'),
+  ('UPDATE'),
+  ('REFERENCES');
 
 -- Fixed identities make failures reproducible and keep this transaction fully
 -- disposable. The postgres test role seeds rows before switching to the same
@@ -282,6 +291,85 @@ SELECT is(
   'effective function matrix covers exactly five reviewed functions'
 );
 SELECT is(
+  (SELECT count(*) FROM expected_column_privileges),
+  4::bigint,
+  'column ACL matrix covers all four column-grantable privileges'
+);
+SELECT is(
+  (
+    SELECT count(*)
+    FROM pg_catalog.pg_attribute AS attribute
+    JOIN pg_catalog.pg_class AS relation
+      ON relation.oid = attribute.attrelid
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    JOIN expected_data_api_tables AS tables
+      ON tables.table_name = relation.relname
+    WHERE namespace.nspname = 'public'
+      AND relation.relkind IN ('r', 'p')
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+  ),
+  84::bigint,
+  'column ACL matrix covers exactly 84 reviewed live columns'
+);
+SELECT is(
+  (
+    SELECT count(*)
+    FROM expected_data_api_roles AS roles
+    CROSS JOIN expected_column_privileges AS privileges
+    CROSS JOIN LATERAL (
+      SELECT attribute.attname
+      FROM pg_catalog.pg_attribute AS attribute
+      JOIN pg_catalog.pg_class AS relation
+        ON relation.oid = attribute.attrelid
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = relation.relnamespace
+      JOIN expected_data_api_tables AS tables
+        ON tables.table_name = relation.relname
+      WHERE namespace.nspname = 'public'
+        AND relation.relkind IN ('r', 'p')
+        AND attribute.attnum > 0
+        AND NOT attribute.attisdropped
+    ) AS columns
+  ),
+  1008::bigint,
+  'column ACL matrix covers exactly 3 roles x 84 columns x 4 privileges'
+);
+SELECT is(
+  (
+    WITH columns(column_acl) AS (
+      SELECT attribute.attacl
+      FROM pg_catalog.pg_attribute AS attribute
+      JOIN pg_catalog.pg_class AS relation
+        ON relation.oid = attribute.attrelid
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = relation.relnamespace
+      JOIN expected_data_api_tables AS tables
+        ON tables.table_name = relation.relname
+      WHERE namespace.nspname = 'public'
+        AND relation.relkind IN ('r', 'p')
+        AND attribute.attnum > 0
+        AND NOT attribute.attisdropped
+    )
+    SELECT count(*)
+    FROM expected_data_api_roles AS roles
+    CROSS JOIN expected_column_privileges AS privileges
+    CROSS JOIN columns
+    WHERE EXISTS (
+      SELECT 1
+      FROM pg_catalog.aclexplode(columns.column_acl) AS acl
+      WHERE (
+        acl.grantee = 0
+        OR pg_catalog.pg_get_userbyid(acl.grantee) = roles.role_name
+      )
+        AND acl.privilege_type = privileges.privilege_name
+    )
+  ),
+  0::bigint,
+  'no Data API role inherits an explicit column-level privilege'
+);
+SELECT is(
   (
     SELECT count(*)
     FROM expected_data_api_roles AS roles
@@ -356,9 +444,48 @@ SELECT ok(
     AND has_schema_privilege('service_role', 'public', 'USAGE')
     AND has_schema_privilege('authenticated', 'app_private', 'USAGE')
     AND NOT has_schema_privilege('anon', 'app_private', 'USAGE')
-    AND NOT has_schema_privilege('service_role', 'app_private', 'USAGE'),
+    AND NOT has_schema_privilege('service_role', 'app_private', 'USAGE')
+    AND NOT has_schema_privilege('anon', 'app_private', 'CREATE')
+    AND NOT has_schema_privilege('authenticated', 'app_private', 'CREATE')
+    AND NOT has_schema_privilege('service_role', 'app_private', 'CREATE'),
   'schema usage is exactly sufficient for browser reads and the RLS helper'
 );
+SELECT is(
+  (
+    SELECT owner.rolname
+    FROM pg_catalog.pg_namespace AS namespace
+    JOIN pg_catalog.pg_roles AS owner
+      ON owner.oid = namespace.nspowner
+    WHERE namespace.nspname = 'app_private'
+  ),
+  'postgres'::name,
+  'app_private schema ownership remains pinned to postgres'
+);
+
+GRANT SELECT (email) ON TABLE public.users TO anon;
+SELECT throws_ok(
+  $$
+    DO $column_acl_gate$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_attribute AS attribute
+        CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS acl
+        WHERE attribute.attrelid = 'public.users'::regclass
+          AND attribute.attname = 'email'
+          AND pg_catalog.pg_get_userbyid(acl.grantee) = 'anon'
+          AND acl.privilege_type = 'SELECT'
+      ) THEN
+        RAISE EXCEPTION 'column-level Data API grant detected';
+      END IF;
+    END
+    $column_acl_gate$;
+  $$,
+  'P0001',
+  'column-level Data API grant detected',
+  'an injected column grant is rejected by the column ACL gate'
+);
+REVOKE SELECT (email) ON TABLE public.users FROM anon;
 
 SELECT ok(
   has_table_privilege('service_role', 'public.users', 'SELECT')
