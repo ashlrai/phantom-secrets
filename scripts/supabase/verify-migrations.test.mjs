@@ -178,7 +178,10 @@ test("runtime authority assertions preserve the hardened user boundary", async (
   assert.match(assertions, /NOT proc\.prosecdef/);
   assert.match(assertions, /'search_path=pg_catalog' = ANY\(proc\.proconfig\)/);
   assert.match(assertions, /platform_tokens must not retain a plaintext access_token column/);
-  assert.match(assertions, /relation\.relname = 'oauth_states'/);
+  assert.match(assertions, /relation\.relname IN \('oauth_states', 'platform_tokens'\)/);
+  assert.match(assertions, /tablename IN \('oauth_states', 'platform_tokens'\)/);
+  assert.match(assertions, /ARRAY\['SELECT', 'INSERT', 'UPDATE', 'DELETE'\]/);
+  assert.match(assertions, /service role OAuth table grants are incomplete/);
   assert.match(assertions, /consume_vercel_oauth_state\(bytea, uuid\)/);
   assert.match(assertions, /issue_vercel_oauth_state\(bytea, uuid\)/);
   assert.match(assertions, /public clients must not execute OAuth state consumption/);

@@ -11,11 +11,15 @@ const STATE_BYTES = 32;
 const TOKEN_NONCE_BYTES = 12;
 const TOKEN_TAG_BYTES = 16;
 const MAX_TOKEN_BYTES = 65_536;
+const MAX_POSTGRES_INTEGER = 2_147_483_647;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BASE64URL_STATE = /^[A-Za-z0-9_-]{43}$/;
 
-type QueryResult<T> = Promise<{ data: T | null; error: unknown | null }>;
+// Supabase PostgREST builders are lazy PromiseLike values, not native Promise
+// instances. Keeping this structural preserves test doubles while accepting
+// the real createServiceClient() return type.
+type QueryResult<T> = PromiseLike<{ data: T | null; error: unknown | null }>;
 
 interface EncryptedTokenRow {
   user_id: string;
@@ -67,6 +71,7 @@ interface PlatformTokenContext {
   userId: string;
   platformAccountId: string;
   teamId?: string | null;
+  scope?: string | null;
 }
 
 function requireUuid(value: string, label: string): void {
@@ -100,6 +105,7 @@ function tokenAad(
       context.userId,
       context.platformAccountId,
       context.teamId ?? null,
+      context.scope ?? null,
       keyVersion,
     ]),
     "utf8",
@@ -110,8 +116,14 @@ function validateKey(key: PlatformTokenKey): void {
   if (!Buffer.isBuffer(key.key) || key.key.length !== 32) {
     throw new Error("platform token encryption key must be 32 bytes");
   }
-  if (!Number.isSafeInteger(key.version) || key.version <= 0) {
-    throw new Error("platform token encryption key version must be positive");
+  if (
+    !Number.isSafeInteger(key.version) ||
+    key.version <= 0 ||
+    key.version > MAX_POSTGRES_INTEGER
+  ) {
+    throw new Error(
+      "platform token encryption key version must fit a positive PostgreSQL integer",
+    );
   }
 }
 
@@ -124,6 +136,14 @@ function stateHash(state: string): Buffer {
   return createHash("sha256").update(decoded).digest();
 }
 
+/**
+ * Load the one active key used by the dormant source foundation.
+ *
+ * This is deliberately not a key-rotation mechanism: replacing the configured
+ * key makes rows encrypted under an earlier version unavailable. A reviewed
+ * multi-version key provider and re-encryption procedure remain commissioning
+ * prerequisites before these helpers may be connected to HTTP routes.
+ */
 export function platformTokenKeyFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): PlatformTokenKey {
@@ -153,6 +173,9 @@ export function encryptVercelAccessToken(
   requireBoundedText(context.platformAccountId, "platformAccountId", 256);
   if (context.teamId !== null && context.teamId !== undefined) {
     requireBoundedText(context.teamId, "teamId", 256);
+  }
+  if (context.scope !== null && context.scope !== undefined) {
+    requireBoundedText(context.scope, "scope", 4096);
   }
   requireBoundedText(accessToken, "accessToken", MAX_TOKEN_BYTES);
   if (!Buffer.isBuffer(nonce) || nonce.length !== TOKEN_NONCE_BYTES) {
@@ -191,6 +214,9 @@ export function decryptVercelAccessToken(
   requireBoundedText(context.platformAccountId, "platformAccountId", 256);
   if (context.teamId !== null && context.teamId !== undefined) {
     requireBoundedText(context.teamId, "teamId", 256);
+  }
+  if (context.scope !== null && context.scope !== undefined) {
+    requireBoundedText(context.scope, "scope", 4096);
   }
   if (encrypted.keyVersion !== key.version) {
     throw new Error("platform token encryption key version is unavailable");
@@ -310,7 +336,7 @@ export async function storeEncryptedVercelAccessToken({
   if (scope !== null) requireBoundedText(scope, "scope", 4096);
   const encrypted = encryptVercelAccessToken(
     accessToken,
-    { userId, platformAccountId, teamId },
+    { userId, platformAccountId, teamId, scope },
     key,
   );
   const { error } = await client.from("platform_tokens").upsert(

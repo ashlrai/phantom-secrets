@@ -59,6 +59,7 @@ DO $$
 DECLARE
   encrypted_token_columns integer;
   hardened_oauth_functions integer;
+  protected_oauth_tables integer;
 BEGIN
   IF EXISTS (
     SELECT 1
@@ -86,23 +87,68 @@ BEGIN
     RAISE EXCEPTION 'platform_tokens encrypted envelope is incomplete';
   END IF;
 
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_class AS relation
-    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
-    WHERE namespace.nspname = 'public'
-      AND relation.relname = 'oauth_states'
-      AND relation.relrowsecurity
-  ) THEN
-    RAISE EXCEPTION 'oauth_states must have RLS enabled';
+  SELECT count(*)
+  INTO protected_oauth_tables
+  FROM pg_class AS relation
+  JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+  WHERE namespace.nspname = 'public'
+    AND relation.relname IN ('oauth_states', 'platform_tokens')
+    AND relation.relrowsecurity;
+
+  IF protected_oauth_tables <> 2 THEN
+    RAISE EXCEPTION 'OAuth state and platform token tables must have RLS enabled';
   END IF;
 
-  IF has_table_privilege('anon', 'public.oauth_states', 'SELECT')
-    OR has_table_privilege('authenticated', 'public.oauth_states', 'SELECT')
-    OR has_table_privilege('anon', 'public.platform_tokens', 'SELECT')
-    OR has_table_privilege('authenticated', 'public.platform_tokens', 'SELECT')
-  THEN
-    RAISE EXCEPTION 'public clients must not read OAuth state or platform tokens';
+  IF EXISTS (
+    SELECT 1
+    FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename IN ('oauth_states', 'platform_tokens')
+  ) THEN
+    RAISE EXCEPTION 'OAuth state and platform token tables must not expose RLS policies';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM unnest(ARRAY['anon', 'authenticated']) AS roles(role_name)
+    CROSS JOIN unnest(
+      ARRAY['public.oauth_states', 'public.platform_tokens']
+    ) AS target_tables(table_name)
+    CROSS JOIN unnest(
+      ARRAY[
+        'SELECT',
+        'INSERT',
+        'UPDATE',
+        'DELETE',
+        'TRUNCATE',
+        'REFERENCES',
+        'TRIGGER'
+      ]
+    ) AS requested_privileges(privilege_name)
+    WHERE has_table_privilege(
+      roles.role_name,
+      target_tables.table_name,
+      requested_privileges.privilege_name
+    )
+  ) THEN
+    RAISE EXCEPTION 'public clients must not access OAuth state or platform tokens';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM unnest(
+      ARRAY['public.oauth_states', 'public.platform_tokens']
+    ) AS target_tables(table_name)
+    CROSS JOIN unnest(
+      ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']
+    ) AS requested_privileges(privilege_name)
+    WHERE NOT has_table_privilege(
+      'service_role',
+      target_tables.table_name,
+      requested_privileges.privilege_name
+    )
+  ) THEN
+    RAISE EXCEPTION 'service role OAuth table grants are incomplete';
   END IF;
 
   SELECT count(*)

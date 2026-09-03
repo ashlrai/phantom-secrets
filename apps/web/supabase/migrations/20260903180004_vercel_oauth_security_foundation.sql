@@ -37,7 +37,7 @@ ALTER TABLE public.platform_tokens
   ADD CONSTRAINT platform_tokens_tag_length
     CHECK (octet_length(access_token_tag) = 16),
   ADD CONSTRAINT platform_tokens_key_version_positive
-    CHECK (encryption_key_version > 0),
+    CHECK (encryption_key_version BETWEEN 1 AND 2147483647),
   ADD CONSTRAINT platform_tokens_team_id_length
     CHECK (team_id IS NULL OR char_length(team_id) BETWEEN 1 AND 256),
   ADD CONSTRAINT platform_tokens_scope_length
@@ -97,7 +97,41 @@ SET search_path = pg_catalog
 AS $$
 DECLARE
   v_now timestamptz := clock_timestamp();
+  v_active_states bigint;
 BEGIN
+  -- Serialize this RPC per user so the active-state cap remains exact even
+  -- under concurrent install attempts. This lock never spans a provider call.
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_user_id::text, 0));
+
+  -- Bound opportunistic retention work. Expired hashes remain for one hour,
+  -- preserving a replay tombstone beyond their acceptance window; a separately
+  -- commissioned global maintenance job is still required for inactive users.
+  WITH stale_states AS (
+    SELECT state.id
+    FROM public.oauth_states AS state
+    WHERE state.user_id = p_user_id
+      AND state.expires_at < v_now - interval '1 hour'
+    ORDER BY state.expires_at
+    LIMIT 100
+    FOR UPDATE
+  )
+  DELETE FROM public.oauth_states AS state
+  USING stale_states
+  WHERE state.id = stale_states.id;
+
+  SELECT count(*)
+  INTO v_active_states
+  FROM public.oauth_states AS state
+  WHERE state.user_id = p_user_id
+    AND state.provider = 'vercel'
+    AND state.consumed_at IS NULL
+    AND state.expires_at > v_now;
+
+  IF v_active_states >= 8 THEN
+    RAISE EXCEPTION 'too many active Vercel OAuth states for user'
+      USING ERRCODE = '54000';
+  END IF;
+
   RETURN QUERY
   INSERT INTO public.oauth_states AS state (
     user_id,

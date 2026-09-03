@@ -13,6 +13,10 @@ const migrationPath = path.join(
   repoDir,
   "supabase/migrations/20260903180004_vercel_oauth_security_foundation.sql",
 );
+const commissioningPath = path.join(
+  repoDir,
+  "supabase/VERCEL_OAUTH_COMMISSIONING.md",
+);
 
 const USER_A = "11111111-1111-4111-8111-111111111111";
 const USER_B = "22222222-2222-4222-8222-222222222222";
@@ -73,6 +77,16 @@ function createMemoryClient(now = new Date("2030-01-01T00:00:00.000Z")) {
     },
     async rpc(name, args) {
       if (name === "issue_vercel_oauth_state") {
+        const activeStates = [...states.values()].filter(
+          (state) =>
+            state.user_id === args.p_user_id &&
+            state.provider === "vercel" &&
+            state.consumed_at === null &&
+            Date.parse(state.expires_at) > currentNow.getTime(),
+        );
+        if (activeStates.length >= 8) {
+          return { data: null, error: new Error("active state cap") };
+        }
         if (states.has(args.p_state_hash)) {
           return { data: null, error: new Error("duplicate") };
         }
@@ -136,6 +150,7 @@ test("AES-256-GCM encrypts tokens and authenticates their owner context", () => 
     userId: USER_A,
     platformAccountId: "vercel-user-123",
     teamId: "team-123",
+    scope: "read-write:project",
   };
   const token = "vercel-test-token-not-a-real-secret";
   const encrypted = encryptVercelAccessToken(
@@ -161,6 +176,23 @@ test("AES-256-GCM encrypts tokens and authenticates their owner context", () => 
         key,
       ),
     /authenticate data|unable to authenticate/i,
+  );
+  assert.throws(
+    () =>
+      decryptVercelAccessToken(
+        encrypted,
+        { ...context, scope: "read-only:project" },
+        key,
+      ),
+    /authenticate data|unable to authenticate/i,
+  );
+  assert.throws(
+    () =>
+      decryptVercelAccessToken(encrypted, context, {
+        key: Buffer.alloc(32, 7),
+        version: 4,
+      }),
+    /version is unavailable/,
   );
 
   const tampered = {
@@ -196,6 +228,22 @@ test("fresh nonces produce distinct ciphertext for the same token", () => {
 
   assert.notDeepEqual(first.nonce, second.nonce);
   assert.notDeepEqual(first.ciphertext, second.ciphertext);
+});
+
+test("key versions must fit the PostgreSQL integer storage contract", () => {
+  const { encryptVercelAccessToken } = loadFoundation();
+  assert.throws(
+    () =>
+      encryptVercelAccessToken(
+        "test-token",
+        {
+          userId: USER_A,
+          platformAccountId: "vercel-user-123",
+        },
+        { key: Buffer.alloc(32, 3), version: 2_147_483_648 },
+      ),
+    /positive PostgreSQL integer/,
+  );
 });
 
 test("token storage writes only authenticated ciphertext fields", async () => {
@@ -281,6 +329,34 @@ test("expired and malformed OAuth states are denied", async () => {
   );
 });
 
+test("per-user issuance is capped before provider activation", async () => {
+  const { issueVercelOAuthState } = loadFoundation();
+  const client = createMemoryClient();
+
+  for (let index = 1; index <= 8; index += 1) {
+    await issueVercelOAuthState({
+      client,
+      actor: ACTOR_A,
+      entropy: Buffer.alloc(32, index),
+    });
+  }
+
+  await assert.rejects(
+    issueVercelOAuthState({
+      client,
+      actor: ACTOR_A,
+      entropy: Buffer.alloc(32, 9),
+    }),
+    /failed to issue OAuth state/,
+  );
+
+  await issueVercelOAuthState({
+    client,
+    actor: ACTOR_B,
+    entropy: Buffer.alloc(32, 10),
+  });
+});
+
 test("migration removes plaintext storage and atomically consumes state", () => {
   const migration = fs.readFileSync(migrationPath, "utf8");
 
@@ -289,6 +365,10 @@ test("migration removes plaintext storage and atomically consumes state", () => 
   assert.match(migration, /access_token_ciphertext bytea NOT NULL/);
   assert.match(migration, /access_token_nonce bytea NOT NULL/);
   assert.match(migration, /access_token_tag bytea NOT NULL/);
+  assert.match(
+    migration,
+    /encryption_key_version BETWEEN 1 AND 2147483647/,
+  );
   assert.match(migration, /ALTER TABLE public\.oauth_states ENABLE ROW LEVEL SECURITY/);
   assert.match(
     migration,
@@ -300,9 +380,22 @@ test("migration removes plaintext storage and atomically consumes state", () => 
     migration,
     /INSERT INTO public\.oauth_states[\s\S]*v_now \+ interval '5 minutes'/,
   );
+  assert.match(migration, /pg_advisory_xact_lock/);
+  assert.match(migration, /LIMIT 100[\s\S]*FOR UPDATE/);
+  assert.match(migration, /v_active_states >= 8/);
   assert.match(
     migration,
     /UPDATE public\.oauth_states AS state[\s\S]*state\.user_id = p_user_id[\s\S]*state\.consumed_at IS NULL[\s\S]*state\.expires_at > v_now[\s\S]*RETURNING/,
   );
   assert.doesNotMatch(migration, /SECURITY DEFINER/);
+});
+
+test("commissioning guidance preserves rotation and retention blockers", () => {
+  const guidance = fs.readFileSync(commissioningPath, "utf8");
+
+  assert.match(guidance, /routes remain disabled and return HTTP 503/i);
+  assert.match(guidance, /multi-version key provider/i);
+  assert.match(guidance, /does not provide rotation by itself/i);
+  assert.match(guidance, /scheduled global retention job/i);
+  assert.match(guidance, /not evidence that the database migration has been applied/i);
 });
