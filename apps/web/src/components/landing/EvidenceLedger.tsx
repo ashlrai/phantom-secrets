@@ -1,3 +1,5 @@
+import { COMMERCIAL_CONTACT } from "@/lib/commercial-offerings";
+
 const EVIDENCE = [
   {
     artifact: "Security boundary",
@@ -69,7 +71,7 @@ export function EvidenceLedger() {
           </p>
           <a
             className="sealed-button sealed-button--primary"
-            href="mailto:mason@ashlr.ai?subject=Phantom%20enterprise%20or%20public-sector%20evaluation"
+            href={`mailto:${COMMERCIAL_CONTACT}?subject=Phantom%20enterprise%20or%20public-sector%20evaluation`}
           >
             Scope an evaluation
           </a>

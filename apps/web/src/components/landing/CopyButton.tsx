@@ -1,28 +1,53 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { posthog } from "@/lib/posthog";
 import { Check, Copy } from "./Icons";
 
 interface CopyButtonProps {
   text: string;
-  variant?: "block" | "inline";
 }
 
-export function CopyButton({ text, variant = "block" }: CopyButtonProps) {
+export function CopyButton({ text }: CopyButtonProps) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const resetTimer = useRef<number | null>(null);
+  const attempt = useRef(0);
+
+  useEffect(
+    () => () => {
+      attempt.current += 1;
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    },
+    [],
+  );
+
+  const resetAfter = (delay: number) => {
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    resetTimer.current = window.setTimeout(() => {
+      setCopyState("idle");
+      resetTimer.current = null;
+    }, delay);
+  };
 
   const handleCopy = async () => {
+    const currentAttempt = ++attempt.current;
+    if (resetTimer.current !== null) {
+      window.clearTimeout(resetTimer.current);
+      resetTimer.current = null;
+    }
+
     try {
       await navigator.clipboard.writeText(text);
-      posthog.capture("command_copied", { variant });
+      if (currentAttempt !== attempt.current) return;
+      posthog.capture("command_copied");
       setCopyState("copied");
-      window.setTimeout(() => setCopyState("idle"), 1800);
+      resetAfter(1800);
     } catch {
       // Clipboard write can reject if the page lacks user-gesture context
       // or if the browser denies permission (Firefox over HTTP, etc.).
+      if (currentAttempt !== attempt.current) return;
       setCopyState("failed");
-      window.setTimeout(() => setCopyState("idle"), 3000);
+      resetAfter(3000);
     }
   };
 
@@ -32,19 +57,6 @@ export function CopyButton({ text, variant = "block" }: CopyButtonProps) {
       : copyState === "failed"
         ? "Copy failed; select the command manually"
         : "Copy command";
-
-  if (variant === "inline") {
-    return (
-      <button
-        type="button"
-        onClick={handleCopy}
-        aria-label={label}
-        className="copy-command copy-command--inline"
-      >
-        {copyState === "copied" ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-      </button>
-    );
-  }
 
   return (
     <button

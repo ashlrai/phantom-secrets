@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import { COMMERCIAL_CONTACT } from "@/lib/commercial-offerings";
 
 const linkClass =
   "text-[0.84rem] text-t3 no-underline transition-colors hover:text-t1";
@@ -79,7 +80,7 @@ export function SiteFooter() {
             </li>
             <li>
               <a
-                href="mailto:mason@ashlr.ai?subject=Phantom%20organization%20evaluation"
+                href={`mailto:${COMMERCIAL_CONTACT}?subject=Phantom%20organization%20evaluation`}
                 className={linkClass}
               >
                 Contact Ashlr AI

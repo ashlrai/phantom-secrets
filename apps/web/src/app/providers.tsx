@@ -2,7 +2,6 @@
 
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
-import { MotionConfig } from "motion/react";
 import { initPostHog, posthog } from "@/lib/posthog";
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
@@ -20,9 +19,5 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     }
   }, [pathname]);
 
-  return (
-    <MotionConfig reducedMotion="user">
-      {children}
-    </MotionConfig>
-  );
+  return <>{children}</>;
 }

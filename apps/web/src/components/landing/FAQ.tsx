@@ -1,3 +1,5 @@
+import { COMMERCIAL_CONTACT } from "@/lib/commercial-offerings";
+
 // FAQ section — visible counterpart to the FAQPage JSON-LD in layout.tsx.
 // Uses native <details>/<summary> so it works without JS, with a small
 // CSS rotation on the chevron when open.
@@ -128,7 +130,7 @@ export function FAQ() {
             Security claims are useful only when their assumptions and failure
             modes are visible. For a question not covered here, open a GitHub
             issue or email{" "}
-            <a href="mailto:mason@ashlr.ai">mason@ashlr.ai</a>.
+            <a href={`mailto:${COMMERCIAL_CONTACT}`}>{COMMERCIAL_CONTACT}</a>.
           </p>
         </div>
 

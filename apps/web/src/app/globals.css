@@ -71,28 +71,6 @@ code, pre, .mono {
   background: #252538;
 }
 
-/* Marquees for the hero key wall — left + right */
-@keyframes marqueeLeft {
-  from { transform: translateX(0); }
-  to   { transform: translateX(-50%); }
-}
-@keyframes marqueeRight {
-  from { transform: translateX(-50%); }
-  to   { transform: translateX(0); }
-}
-.marquee-pause-on-hover:hover .marquee-track {
-  animation-play-state: paused;
-}
-
-/* Marquee respects reduced-motion: stop entirely instead of snapping
-   to the end frame (which would leave cards half-rendered). */
-@media (prefers-reduced-motion: reduce) {
-  .marquee-track {
-    animation: none !important;
-    transform: none !important;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;
@@ -110,7 +88,7 @@ code, pre, .mono {
   --paper-soft: #e6eef1;
   --ink: #071c26;
   --ink-soft: #38505b;
-  --ink-faint: #687d86;
+  --ink-faint: #5d707a;
   --rule: #b9c8ce;
   --rule-strong: #80949d;
   --seal: #f05a28;
@@ -341,12 +319,6 @@ code, pre, .mono {
 .copy-command__icon svg {
   width: 1rem;
   height: 1rem;
-}
-
-.copy-command--inline {
-  width: auto;
-  min-height: 2.75rem;
-  padding: 0.6rem;
 }
 
 .request-trace {
