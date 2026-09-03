@@ -29,11 +29,11 @@ test("the committed migration set matches its ordered digest manifest", async ()
   const result = await verifyMigrationManifest({
     supabaseDirectory: projectSupabaseDirectory,
   });
-  assert.equal(result.count, 11);
+  assert.equal(result.count, 12);
   assert.equal(result.files[0], "001_initial.sql");
   assert.equal(
     result.files.at(-1),
-    "20260902000000_harden_rls_and_function_paths.sql",
+    "20260903180035_browser_and_service_role_grants.sql",
   );
 });
 
@@ -141,6 +141,10 @@ test("workflow remains local-only and supply-chain pinned", async () => {
   assert.match(
     webJob,
     /psql --host 127\.0\.0\.1 --port 54322[\s\S]*assert-local-authority\.sql/,
+  );
+  assert.match(
+    webJob,
+    /supabase test db --local supabase\/tests\/database/,
   );
   assert.match(
     webJob,
