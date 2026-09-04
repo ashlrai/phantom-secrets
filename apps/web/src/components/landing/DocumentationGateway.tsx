@@ -1,14 +1,14 @@
 const GUIDES = [
   {
-    title: "Start in five minutes",
+    title: "Start with one project",
     body: "Install a reviewed release, protect one project, inspect the boundary, and launch a supported client.",
-    href: "/docs",
+    href: "/docs/getting-started",
     action: "Open the quickstart",
   },
   {
     title: "Connect your coding agent",
     body: "Exact setup paths for Claude Code, Cursor, Windsurf, and Codex, including the files each command writes.",
-    href: "https://github.com/ashlrai/phantom-secrets/blob/main/docs/README.md#agent-and-editor-integrations",
+    href: "/docs#connect-an-agent",
     action: "Choose an agent guide",
   },
   {
@@ -20,7 +20,7 @@ const GUIDES = [
   {
     title: "Adopt with a team",
     body: "Evaluate local workflows first, define acceptance evidence, and keep hosted commissioning separate.",
-    href: "https://github.com/ashlrai/phantom-secrets/blob/main/docs/enterprise-adoption.md",
+    href: "/docs/enterprise-adoption",
     action: "Plan an evaluation",
   },
 ] as const;

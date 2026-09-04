@@ -196,15 +196,15 @@ test('direct installers bind normal use to the canonical repository and exact ca
   const powerShell = readFileSync(psInstaller, 'utf8');
   for (const source of [shell, powerShell]) {
     assert.match(source, /ashlrai\/phantom-secrets/);
-    assert.match(source, /v0\.7\.6/);
+    assert.match(source, /v0\.7\.7/);
     assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/);
     assert.doesNotMatch(source, /releases\/latest|api\.github\.com/);
   }
 
-  const { log, result } = runInstaller({ version: '0.7.6', useCandidateDefaults: true });
+  const { log, result } = runInstaller({ version: '0.7.7', useCandidateDefaults: true });
   assert.equal(result.status, 0, result.stderr);
   const curlLog = readFileSync(log, 'utf8');
-  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.7\.6\//);
+  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.7\.7\//);
   assert.doesNotMatch(curlLog, /releases\/latest|api\.github\.com/);
 });
 
@@ -461,12 +461,17 @@ test('PowerShell installer has a strict offline-verifiable security contract', (
   assert.match(source, /Move-Item[\s\S]+backupPath[\s\S]+failed-live/);
   assert.match(source, /FileMode\]::CreateNew/);
   assert.match(source, /Assert-NoReparsePathComponents/);
+  assert.match(source, /function Get-NativeUserProfilePath/);
+  assert.match(source, /GetFolderPath\([\s\S]+\[System\.Environment\+SpecialFolder\]::UserProfile/);
+  assert.match(source, /@\(\$env:USERPROFILE, \$platformProfile, \$env:HOME\)/);
+  assert.match(source, /\^\[A-Za-z\]:\[\\\\\/\]/);
+  assert.doesNotMatch(source, /\$homeDir = if \(\$env:HOME\)/);
   assert.match(source, /MoveFileEx/);
   assert.match(source, /StructuralEqualityComparer/);
   assert.match(source, /PHANTOM_INSTALL_DIR must be a local absolute path/);
   assert.match(source, /install source receipt failed final validation/);
   assert.match(source, /\$CanonicalRepo = 'ashlrai\/phantom-secrets'/);
-  assert.match(source, /\$CandidateTag = 'v0\.7\.6'/);
+  assert.match(source, /\$CandidateTag = 'v0\.7\.7'/);
   assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1'/);
   assert.match(source, /PHANTOM_TEST_LOCAL_RELEASE_DIR/);
   assert.match(source, /PHANTOM_TEST_DISABLE_PATH_PERSISTENCE/);

@@ -7,15 +7,34 @@ const webRoot = path.resolve(__dirname, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(webRoot, relativePath), "utf8");
 
-test("landing restores ecosystem proof without claiming universal proxy support", () => {
-  const ecosystem = read("src/components/landing/Ecosystem.tsx");
+test("landing restores credential proof without claiming universal proxy support", () => {
+  const hero = read("src/components/landing/Hero.tsx");
   const page = read("src/app/page.tsx");
 
-  assert.match(page, /<Ecosystem \/>/);
   assert.match(page, /<Transformation \/>/);
-  assert.match(ecosystem, /do not imply[\s\S]*universal proxy support/i);
-  assert.match(ecosystem, /exact-match proxy routes/i);
-  assert.doesNotMatch(ecosystem, /every service is supported/i);
+  assert.match(page, /<Comparison \/>/);
+  assert.match(hero, /<CredentialWall \/>/);
+  assert.match(hero, /not endorsement or universal[\s\S]*proxy support/i);
+  assert.match(hero, /unsupported[\s\S]*fail closed/i);
+  assert.doesNotMatch(hero, /every service is supported/i);
+});
+
+test("platform chooser links every reviewed release target with bounded evidence", () => {
+  const quickStart = read("src/components/landing/QuickStart.tsx");
+
+  for (const target of [
+    "phantom-aarch64-apple-darwin.tar.gz",
+    "phantom-x86_64-apple-darwin.tar.gz",
+    "phantom-aarch64-unknown-linux-gnu.tar.gz",
+    "phantom-x86_64-unknown-linux-gnu.tar.gz",
+    "phantom-aarch64-pc-windows-msvc.zip",
+    "phantom-x86_64-pc-windows-msvc.zip",
+  ]) {
+    assert.match(quickStart, new RegExp(target.replaceAll(".", "\\.")));
+  }
+  assert.match(quickStart, /Credential Manager/);
+  assert.match(quickStart, /session-persistent, not reboot-persistent/);
+  assert.match(quickStart, /not every local shell, policy, or credential-store state/);
 });
 
 test("GitHub starring is a named action across the primary adoption surfaces", () => {
@@ -43,11 +62,24 @@ test("on-site docs hub and machine-readable discovery are indexed", () => {
   assert.match(docs, /The reviewed public release is/);
   assert.match(
     read("src/components/landing/DocumentationGateway.tsx"),
-    /#agent-and-editor-integrations/,
+    /\/docs#connect-an-agent/,
   );
   assert.match(layout, /"@type": "SoftwareSourceCode"/);
   assert.match(layout, /codeRepository: "https:\/\/github\.com\/ashlrai\/phantom-secrets"/);
+  assert.doesNotMatch(layout, /"@type": "FAQPage"|"@type": "HowTo"/);
+  assert.match(read("src/components/landing/LandingStructuredData.tsx"), /QUESTIONS\.map/);
   assert.match(sitemap, /path: "\/docs"/);
+});
+
+test("landing documentation cards use the first-party rendered guides", () => {
+  const gateway = read("src/components/landing/DocumentationGateway.tsx");
+
+  assert.match(gateway, /href: "\/docs\/getting-started"/);
+  assert.match(gateway, /href: "\/docs\/enterprise-adoption"/);
+  assert.doesNotMatch(
+    gateway,
+    /github\.com\/ashlrai\/phantom-secrets\/blob\/main\/docs\/(?:getting-started|enterprise-adoption)\.md/,
+  );
 });
 
 test("dotenv transformation uses only explicit synthetic examples", () => {

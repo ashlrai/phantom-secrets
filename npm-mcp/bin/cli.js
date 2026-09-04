@@ -23,9 +23,9 @@ const {
 } = require("fs");
 const https = require("https");
 const { homedir } = require("os");
-const { basename, dirname, isAbsolute, join, resolve } = require("path");
+const { basename, dirname, join, posix: posixPath, resolve, win32: win32Path } = require("path");
 
-const VERSION = "0.7.6";
+const VERSION = "0.7.7";
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom-mcp";
 const REVIEWED_RELEASE_URL = `https://github.com/${REPO}/releases/tag/v${VERSION}`;
@@ -72,13 +72,33 @@ function getBinaryFilename(platform = process.platform) {
   return platform === "win32" ? `${BINARY_NAME}.exe` : BINARY_NAME;
 }
 
-function getCacheDir({ env = process.env, homedirImpl = homedir } = {}) {
-  const home = env.HOME || env.USERPROFILE || homedirImpl();
-  if (!home || !isAbsolute(home)) {
+function getCacheDir({ env = process.env, homedirImpl = homedir, platform = process.platform } = {}) {
+  // Native Windows tools cannot safely consume MSYS-style HOME values such as
+  // /c/Users/name. Prefer the native profile there so npm, PowerShell, and the
+  // Rust binary share one cache; retain HOME-first behavior on Unix.
+  let platformHome;
+  try {
+    platformHome = homedirImpl();
+  } catch {
+    // A valid explicit native profile remains sufficient when OS lookup is
+    // unavailable (for example under a constrained service account).
+  }
+  const pathApi = platform === "win32" ? win32Path : posixPath;
+  const candidates = platform === "win32"
+    ? [env.USERPROFILE, platformHome, env.HOME]
+    : [env.HOME, platformHome, env.USERPROFILE];
+  const home = candidates.find((candidate) => {
+    if (!candidate || !pathApi.isAbsolute(candidate)) return false;
+    // path.win32 treats `/c/Users/name` as rooted on the current drive, even
+    // though native Node would resolve it to `C:\\c\\Users\\name`. Require an
+    // explicit local drive so an MSYS HOME can never redirect the cache.
+    return platform !== "win32" || /^[A-Za-z]:[\\/]/.test(candidate);
+  });
+  if (!home) {
     throw new Error("cannot determine an absolute private home directory for phantom-mcp cache");
   }
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- home is required to be absolute and is resolved before fixed components are appended.
-  return join(resolve(home), ".phantom-secrets", "bin");
+  return pathApi.join(pathApi.resolve(home), ".phantom-secrets", "bin");
 }
 
 function pathSet(cacheDir, platform = process.platform) {

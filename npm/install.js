@@ -5,12 +5,9 @@
 
 const { existsSync } = require("fs");
 const { join } = require("path");
+const { getCacheDir } = require("./bin/cli.js");
 
-const CACHE_DIR = join(
-  process.env.HOME || process.env.USERPROFILE || "/tmp",
-  ".phantom-secrets",
-  "bin"
-);
+const CACHE_DIR = getCacheDir();
 
 const binaryExt = process.platform === "win32" ? ".exe" : "";
 const binaryPath = join(CACHE_DIR, `phantom${binaryExt}`);

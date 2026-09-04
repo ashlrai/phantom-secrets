@@ -831,21 +831,7 @@ fn now_unix() -> u64 {
 }
 
 fn home_dir() -> std::io::Result<PathBuf> {
-    // Respect HOME / USERPROFILE overrides (used in tests).
-    if let Ok(h) = std::env::var("HOME") {
-        if !h.is_empty() {
-            return Ok(PathBuf::from(h));
-        }
-    }
-    if let Ok(h) = std::env::var("USERPROFILE") {
-        if !h.is_empty() {
-            return Ok(PathBuf::from(h));
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
-        "cannot resolve home directory",
-    ))
+    crate::home::home_dir()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

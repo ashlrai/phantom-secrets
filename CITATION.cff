@@ -10,7 +10,7 @@ authors:
 repository-code: https://github.com/ashlrai/phantom-secrets
 url: https://phm.dev
 license: MIT
-version: 0.7.6
+version: 0.7.7
 keywords:
   - AI agents
   - credential management

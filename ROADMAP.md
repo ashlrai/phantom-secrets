@@ -52,7 +52,7 @@ native credential-store, ACL, editor, or every-device acceptance.
 ### 3. Reconcile remaining distribution tracks — gated
 
 - Preserve the immutable GitHub and Homebrew `v0.7.5` receipts while the
-  `v0.7.6` Windows npm-path fix-forward candidate completes its independent
+  `v0.7.7` adoption and cross-platform fix-forward candidate completes its independent
   release and package gates.
 - Publish crates.io, npm, MCP Registry, and future Homebrew updates only through
   their separately approved workflows.

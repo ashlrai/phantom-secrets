@@ -40,10 +40,29 @@ if (!semverPattern.test(workspaceVersion)) {
 const npmCliVersion = json("npm/package.json").version;
 const npmMcpVersion = json("npm-mcp/package.json").version;
 const webVersion = json("apps/web/package.json").version;
+const webLock = json("apps/web/package-lock.json");
+const webLockVersion = webLock.version;
+const webLockRootVersion = webLock.packages?.[""]?.version;
 const citationVersion = requireMatch(
   read("CITATION.cff"),
   /^version:\s*([^\s]+)$/m,
   "citation metadata version"
+);
+const readme = read("README.md");
+const readmeSourceVersion = requireMatch(
+  readme,
+  /source_version-v([0-9]+\.[0-9]+\.[0-9]+)-/,
+  "README source badge version"
+);
+const roadmapCandidateVersion = requireMatch(
+  read("ROADMAP.md"),
+  /`v([0-9]+\.[0-9]+\.[0-9]+)` adoption and cross-platform fix-forward candidate/,
+  "roadmap candidate version"
+);
+const changelogCandidateVersion = requireMatch(
+  read("CHANGELOG.md"),
+  /^## \[([0-9]+\.[0-9]+\.[0-9]+)\] - /m,
+  "current changelog candidate version"
 );
 const registry = json("mcp-registry/server.json");
 const registryPackage = registry.packages.find(
@@ -78,17 +97,28 @@ const rehearsalDefaultVersion = requireMatch(
   /^        default:\s*v([^\s]+)$/m,
   "release rehearsal default tag"
 );
+const npmAcceptanceDefaultVersion = requireMatch(
+  read(".github/workflows/npm-candidate-acceptance.yml"),
+  /^      version:\n[\s\S]*?^        default:\s*([^\s]+)$/m,
+  "npm candidate acceptance default version"
+);
 const versions = new Map([
   ["Cargo workspace", workspaceVersion],
   ["npm CLI package", npmCliVersion],
   ["npm MCP package", npmMcpVersion],
   ["Hosted web application", webVersion],
+  ["Hosted web lockfile", webLockVersion],
+  ["Hosted web lockfile root", webLockRootVersion],
   ["Citation metadata", citationVersion],
+  ["README source badge", readmeSourceVersion],
+  ["Roadmap candidate", roadmapCandidateVersion],
+  ["Current changelog candidate", changelogCandidateVersion],
   ["npm CLI wrapper", cliWrapperVersion],
   ["npm MCP wrapper", wrapperVersion],
   ["Unix direct installer", shellInstallerVersion],
   ["PowerShell direct installer", powershellInstallerVersion],
   ["Release rehearsal default", rehearsalDefaultVersion],
+  ["npm candidate acceptance default", npmAcceptanceDefaultVersion],
   ["MCP registry server", registry.version],
   ["MCP registry npm package", registryPackage.version],
 ]);
@@ -99,6 +129,13 @@ if (process.argv.length > 3 || (expectedTag && !tagPattern.test(expectedTag))) {
 }
 if (expectedTag) {
   versions.set("release tag", expectedTag.slice(1));
+}
+
+const changelogAnchor = workspaceVersion.replaceAll(".", "");
+if (!readme.includes(`](CHANGELOG.md#${changelogAnchor}---`)) {
+  throw new Error(
+    `README source badge does not link to the ${workspaceVersion} changelog entry`
+  );
 }
 
 const mismatches = [...versions].filter(([, version]) => version !== workspaceVersion);

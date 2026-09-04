@@ -7,6 +7,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 
 const webDir = path.resolve(__dirname, "..");
+const repositoryDir = path.resolve(webDir, "..", "..");
 const nextCli = path.join(webDir, "node_modules/next/dist/bin/next");
 const PUBLIC_CONFIGURATION = {
   NEXT_PUBLIC_SUPABASE_URL: "https://phantom-build-test.supabase.co",
@@ -151,10 +152,24 @@ test(
     const temporaryRoot = fs.mkdtempSync(
       path.join(os.tmpdir(), "phantom-web-readiness-"),
     );
-    const withoutPublicConfig = path.join(temporaryRoot, "without-public");
-    const withPublicConfig = path.join(temporaryRoot, "with-public");
+    const temporaryRepository = path.join(temporaryRoot, "repository");
+    const withoutPublicConfig = path.join(
+      temporaryRepository,
+      "apps",
+      "without-public",
+    );
+    const withPublicConfig = path.join(
+      temporaryRepository,
+      "apps",
+      "with-public",
+    );
 
     try {
+      fs.cpSync(
+        path.join(repositoryDir, "docs"),
+        path.join(temporaryRepository, "docs"),
+        { recursive: true },
+      );
       copyApplication(withoutPublicConfig);
       buildApplication(withoutPublicConfig, {});
       const runtimeInjection = await readProductionReadiness(
@@ -170,7 +185,7 @@ test(
       assert.deepEqual(runtimeInjection.body, {
         status: "not_ready",
         service: "phantom-web",
-        release_version: "0.7.6",
+        release_version: "0.7.7",
       });
 
       copyApplication(withPublicConfig);
@@ -184,7 +199,7 @@ test(
       assert.deepEqual(builtConfiguration.body, {
         status: "configuration_ready",
         service: "phantom-web",
-        release_version: "0.7.6",
+        release_version: "0.7.7",
       });
     } finally {
       fs.rmSync(temporaryRoot, { force: true, recursive: true });

@@ -11,9 +11,11 @@ function read(relativePath) {
 
 const nav = read("src/components/landing/Nav.tsx");
 const footer = read("src/components/landing/SiteFooter.tsx");
+const landingStructuredData = read("src/components/landing/LandingStructuredData.tsx");
 const layout = read("src/app/layout.tsx");
 const sitemap = read("src/app/sitemap.ts");
 const robots = read("src/app/robots.ts");
+const manifest = JSON.parse(read("public/manifest.webmanifest"));
 const publicPages = {
   "/": read("src/app/page.tsx"),
   "/pricing": read("src/app/pricing/page.tsx"),
@@ -71,11 +73,57 @@ test("root metadata supplies a title template without forcing every route canoni
   assert.match(layout, /referrer: "origin-when-cross-origin"/);
   assert.doesNotMatch(layout, /alternates:\s*\{\s*canonical:\s*"\/"/);
   assert.doesNotMatch(layout, /openGraph:\s*\{[\s\S]{0,120}url:\s*SITE_URL/);
+  assert.match(layout, /manifest: "\/manifest\.webmanifest"/);
+  assert.equal(manifest.name, "Phantom Secrets");
+  assert.equal(manifest.start_url, "/");
+  assert.equal(manifest.scope, "/");
+  assert.equal(manifest.theme_color, "#050508");
+  assert.deepEqual(manifest.icons, [
+    { src: "/favicon.svg", sizes: "any", type: "image/svg+xml" },
+  ]);
+});
+
+test("landing JSON-LD escapes closing-script payloads before raw insertion", () => {
+  assert.match(
+    landingStructuredData,
+    /JSON\.stringify\(value\)\.replace\(\/<\/g, "\\\\u003c"\)/,
+  );
+  assert.match(
+    landingStructuredData,
+    /serializeStructuredData\(howTo\)/,
+  );
+  assert.match(
+    landingStructuredData,
+    /serializeStructuredData\(faqPage\)/,
+  );
+
+  const payload = { text: "</script><script>alert(1)</script>" };
+  const serialized = JSON.stringify(payload).replace(/</g, "\\u003c");
+  assert.doesNotMatch(serialized, /<\/script>|<script>/i);
+  assert.match(serialized, /\\u003c\/script>/);
+});
+
+test("root JSON-LD uses script-safe serialization at every raw insertion", () => {
+  assert.match(
+    layout,
+    /function serializeStructuredData\(value: unknown\): string \{\s*return JSON\.stringify\(value\)\.replace\(\/<\/g, "\\\\u003c"\);\s*\}/,
+  );
+  assert.equal(
+    (layout.match(/__html: serializeStructuredData\(\{/g) ?? []).length,
+    3,
+  );
+  assert.doesNotMatch(layout, /__html:\s*JSON\.stringify\(/);
+
+  const payload = { text: "</script><script>alert(1)</script>" };
+  const serialized = JSON.stringify(payload).replace(/</g, "\\u003c");
+  assert.doesNotMatch(serialized, /<\/script>|<script>/i);
+  assert.match(serialized, /\\u003c\/script>/);
 });
 
 test("each public route owns its canonical and social metadata", () => {
   assert.match(publicPages["/"], /alternates: \{ canonical: "\/" \}/);
-  assert.match(publicPages["/"], /openGraph: \{ url: "\/" \}/);
+  assert.match(publicPages["/"], /openGraph:\s*\{[\s\S]*?url: "\/"/);
+  assert.match(publicPages["/"], /images: \[\{ url: "\/og-image\.png"/);
 
   for (const route of ["/pricing", "/enterprise", "/government", "/security"]) {
     const source = publicPages[route];
@@ -114,11 +162,16 @@ test("sitemap contains only canonical same-host public surfaces", () => {
   assert.doesNotMatch(sitemap, /new Date\(\)/);
 });
 
-test("crawler policy applies sensitive-route exclusions to every user agent", () => {
+test("crawler policy blocks APIs while sensitive pages expose observable noindex headers", () => {
+  const nextConfig = read("next.config.ts");
   assert.match(robots, /userAgent: "\*"/);
-  for (const route of ["/api/", "/dashboard", "/device", "/integrations/"]) {
-    assert.match(robots, new RegExp(`"${route.replaceAll("/", "\\/")}"`));
+  assert.match(robots, /"\/api\/"/);
+  for (const route of ["/dashboard/:path*", "/device/:path*", "/integrations/:path*"]) {
+    assert.match(nextConfig, new RegExp(`source: "${route.replaceAll("/", "\\/").replace("*", "\\*")}"`));
   }
+  assert.match(nextConfig, /X-Robots-Tag/);
+  assert.match(nextConfig, /noindex, nofollow/);
+  assert.doesNotMatch(robots, /dashboard|device|integrations/);
   assert.doesNotMatch(
     robots,
     /GPTBot|ClaudeBot|Claude-Web|anthropic-ai|PerplexityBot|Google-Extended|CCBot|cohere-ai/,

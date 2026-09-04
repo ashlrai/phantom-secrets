@@ -480,7 +480,7 @@ phantom-core
   error types, auth, cloud API client, smart secret detection heuristics.
 
 phantom-vault
-  VaultBackend trait with OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager) and encrypted file fallback.
+  VaultBackend trait with OS credential storage (macOS Keychain, Linux keyutils by default with explicit `phantom vault migrate-linux` support for desktop Secret Service, Windows Credential Manager) and encrypted file fallback. Linux keyutils entries do not survive a reboot.
   Shared crypto module: ChaCha20-Poly1305 with Argon2id key derivation (32-byte salt, 256-bit key).
 
 phantom-proxy
@@ -755,7 +755,7 @@ Do not commit:
 ## Common Use Cases
 
 1. Solo developer with Claude Code: phantom init, then phantom exec -- claude
-2. Delegate to Claude: add MCP server, say "protect my API keys" — Claude runs phantom_init
+2. Delegate the bounded setup: add the MCP server, ask Claude to propose protection, then review mutations and complete secret entry in the trusted terminal; MCP effects are disabled by default and provider issuance remains hard-denied in 0.7.5
 3. Commissioned same-keychain-machine backup: after separately verifying hosted deployment and entitlement, phantom login, phantom cloud push, then phantom cloud pull where the original cloud encryption key remains available
 4. Deploy to Vercel: phantom sync --platform vercel --project prj_xxx
 5. Provider-backed machine setup: phantom pull --from vercel --project prj_xxx (requires Vercel credentials)

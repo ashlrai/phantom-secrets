@@ -1,3 +1,4 @@
+use super::start::{detect_shell_syntax, format_export, ShellSyntax};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use colored::Colorize;
@@ -1168,7 +1169,7 @@ fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
             );
             println!(
                 "   Add to your shell profile: {}",
-                "export PHANTOM_AUDIT_ENCRYPTION=local".cyan()
+                audit_mode_profile_command(detect_shell_syntax()).cyan()
             );
             println!("   Use `phantom audit verify --with-context` to decrypt event metadata.");
         }
@@ -1181,25 +1182,14 @@ fn run_audit_mode_setup(mode: AuditMode) -> Result<()> {
     Ok(())
 }
 
-fn home_dir() -> Result<PathBuf> {
-    select_home_dir(
-        std::env::var_os("HOME"),
-        std::env::var_os("USERPROFILE"),
-        dirs::home_dir(),
-    )
-    .ok_or_else(|| anyhow::anyhow!("Could not resolve home dir"))
+fn audit_mode_profile_command(syntax: ShellSyntax) -> String {
+    format_export(syntax, "PHANTOM_AUDIT_ENCRYPTION", "local")
+        .trim_start()
+        .to_string()
 }
 
-fn select_home_dir(
-    home: Option<std::ffi::OsString>,
-    user_profile: Option<std::ffi::OsString>,
-    platform_fallback: Option<PathBuf>,
-) -> Option<PathBuf> {
-    home.into_iter()
-        .chain(user_profile)
-        .map(PathBuf::from)
-        .chain(platform_fallback)
-        .find(|path| !path.as_os_str().is_empty() && path.is_absolute())
+fn home_dir() -> Result<PathBuf> {
+    phantom_core::home::home_dir_with_platform_fallback().map_err(Into::into)
 }
 
 fn display(path: &Path) -> String {
@@ -1617,28 +1607,14 @@ mod tests {
     }
 
     #[test]
-    fn home_resolution_honors_absolute_overrides_cross_platform() {
-        let home = tempdir().unwrap();
-        let user_profile = tempdir().unwrap();
-        let platform = tempdir().unwrap();
-
+    fn audit_mode_profile_command_uses_native_fish_syntax() {
         assert_eq!(
-            select_home_dir(
-                Some(home.path().as_os_str().to_owned()),
-                Some(user_profile.path().as_os_str().to_owned()),
-                Some(platform.path().to_path_buf()),
-            )
-            .unwrap(),
-            home.path()
+            audit_mode_profile_command(ShellSyntax::Fish),
+            "set -gx PHANTOM_AUDIT_ENCRYPTION 'local'"
         );
         assert_eq!(
-            select_home_dir(
-                Some(std::ffi::OsString::from("relative-home")),
-                Some(user_profile.path().as_os_str().to_owned()),
-                None,
-            )
-            .unwrap(),
-            user_profile.path()
+            audit_mode_profile_command(ShellSyntax::Bash),
+            "export PHANTOM_AUDIT_ENCRYPTION='local'"
         );
     }
 

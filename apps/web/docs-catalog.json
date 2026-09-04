@@ -1,0 +1,62 @@
+[
+  {
+    "slug": "getting-started",
+    "file": "getting-started.md",
+    "title": "Getting started",
+    "description": "Install a reviewed Phantom release, protect one project, connect a supported coding client, and verify the local credential boundary."
+  },
+  {
+    "slug": "delegation-quickstart",
+    "file": "delegation-quickstart.md",
+    "title": "Safe delegation quickstart",
+    "description": "Delegate a bounded coding task through Phantom without putting real provider credentials in the managed agent context."
+  },
+  {
+    "slug": "claude-code",
+    "file": "claude-code.md",
+    "title": "Phantom with Claude Code",
+    "description": "Connect Phantom to Claude Code and run supported credentialed HTTP workflows through the local proxy boundary."
+  },
+  {
+    "slug": "cursor",
+    "file": "cursor.md",
+    "title": "Phantom with Cursor",
+    "description": "Connect Phantom to Cursor and verify value-blind MCP and proxy-scoped development workflows."
+  },
+  {
+    "slug": "windsurf",
+    "file": "windsurf.md",
+    "title": "Phantom with Windsurf",
+    "description": "Connect Phantom to Windsurf and use supported local credential workflows without exposing provider values through MCP."
+  },
+  {
+    "slug": "codex",
+    "file": "codex.md",
+    "title": "Phantom with Codex",
+    "description": "Configure Phantom for Codex and keep supported agent workflows inside the authenticated local proxy boundary."
+  },
+  {
+    "slug": "platform-support",
+    "file": "platform-support.md",
+    "title": "Platform support",
+    "description": "Review Phantom's explicit macOS, Linux, and Windows build, installer, and native-acceptance boundaries."
+  },
+  {
+    "slug": "troubleshooting",
+    "file": "troubleshooting.md",
+    "title": "Troubleshooting",
+    "description": "Diagnose Phantom installation, vault, proxy, client-integration, recovery, and platform-specific failures."
+  },
+  {
+    "slug": "architecture",
+    "file": "architecture.md",
+    "title": "Architecture",
+    "description": "Understand Phantom's local vault, authenticated proxy, MCP, authority, transaction, and fail-closed design boundaries."
+  },
+  {
+    "slug": "enterprise-adoption",
+    "file": "enterprise-adoption.md",
+    "title": "Enterprise adoption",
+    "description": "Evaluate Phantom with explicit technical, organizational, commissioning, evidence, and acceptance gates."
+  }
+]

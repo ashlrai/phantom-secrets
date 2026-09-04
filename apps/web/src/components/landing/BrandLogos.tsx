@@ -6,7 +6,7 @@
 // For brands not in any major icon library (Cursor, Pinecone, Neon
 // database), we fall back to hand-drawn approximations.
 
-import type { SVGProps } from "react";
+import { useId, type SVGProps } from "react";
 import {
   SiAnthropic,
   SiClaude,
@@ -52,6 +52,7 @@ function asIconProps(props: LogoProps, color: string): IconBaseProps {
     className: props.className as string | undefined,
     style: props.style,
     "aria-label": props["aria-label"],
+    "aria-hidden": props["aria-hidden"],
   };
 }
 
@@ -74,6 +75,7 @@ export function XaiLogo(props: LogoProps) {
 }
 
 export function GeminiLogo(props: LogoProps) {
+  const gradientId = useId();
   // Google Gemini 2025 mark — the 4-pointed star with the official
   // vertical rainbow gradient that ships on gemini.google.com:
   // red top → yellow → green → blue bottom. Matches the Wikimedia
@@ -85,7 +87,7 @@ export function GeminiLogo(props: LogoProps) {
             bottom-left. Matches the actual 2025 Gemini icon better
             than a vertical Google-brand rainbow (which has yellow/
             green that aren't visible in the real mark). */}
-        <linearGradient id="gemini-grad" x1="80%" y1="0%" x2="20%" y2="100%">
+        <linearGradient id={gradientId} x1="80%" y1="0%" x2="20%" y2="100%">
           <stop offset="0%" stopColor="#FF6B5C" />
           <stop offset="30%" stopColor="#E94B85" />
           <stop offset="55%" stopColor="#9168C0" />
@@ -95,7 +97,7 @@ export function GeminiLogo(props: LogoProps) {
       </defs>
       <path
         d="M12 24A14.304 14.304 0 0 0 0 12 14.304 14.304 0 0 0 12 0a14.304 14.304 0 0 0 12 12 14.304 14.304 0 0 0-12 12Z"
-        fill="url(#gemini-grad)"
+        fill={`url(#${gradientId})`}
       />
     </svg>
   );

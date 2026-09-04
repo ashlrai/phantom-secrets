@@ -15,7 +15,7 @@ const {
   utimesSync,
 } = require("fs");
 const { tmpdir } = require("os");
-const { basename, dirname, join } = require("path");
+const { basename, dirname, join, win32: win32Path } = require("path");
 
 const {
   acquireInstallLock,
@@ -72,7 +72,7 @@ async function assertPreviousVersionCachePreserved(stage) {
     const archiveExt = process.platform === "win32" ? "zip" : "tar.gz";
     const archiveName = `phantom-${target}.${archiveExt}`;
     const archiveUrl =
-      `https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.6/${archiveName}`;
+      `https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.7/${archiveName}`;
     const archiveBytes = Buffer.from(`verified archive for ${stage}`);
     const archiveSha = crypto.createHash("sha256").update(archiveBytes).digest("hex");
     const observedUrls = [];
@@ -107,7 +107,7 @@ async function assertPreviousVersionCachePreserved(stage) {
         },
       }),
       stage === "version"
-        ? /did not report exact version 0\.7\.6/
+        ? /did not report exact version 0\.7\.7/
         : (error) => error === stagedFailure
     );
 
@@ -130,6 +130,46 @@ async function assertPreviousVersionCachePreserved(stage) {
   assert.throws(
     () => getCacheDir({ env: {}, homedirImpl: () => "relative-home" }),
     /absolute private home/
+  );
+  assert.strictEqual(
+    getCacheDir({
+      env: { HOME: "/c/Users/msys-user", USERPROFILE: "C:\\Users\\native-user" },
+      homedirImpl: () => "C:\\Users\\platform-user",
+      platform: "win32",
+    }),
+    win32Path.join("C:\\Users\\native-user", ".phantom-secrets", "bin")
+  );
+  assert.strictEqual(
+    getCacheDir({
+      env: { USERPROFILE: "C:\\Users\\service-user" },
+      homedirImpl: () => { throw new Error("OS home unavailable"); },
+      platform: "win32",
+    }),
+    win32Path.join("C:\\Users\\service-user", ".phantom-secrets", "bin")
+  );
+  assert.strictEqual(
+    getCacheDir({
+      env: { HOME: "/c/Users/msys-user" },
+      homedirImpl: () => "D:\\Users\\platform-user",
+      platform: "win32",
+    }),
+    win32Path.join("D:\\Users\\platform-user", ".phantom-secrets", "bin")
+  );
+  assert.throws(
+    () => getCacheDir({
+      env: { HOME: "/c/Users/msys-user" },
+      homedirImpl: () => "/c/Users/msys-platform-user",
+      platform: "win32",
+    }),
+    /absolute private home/
+  );
+  assert.strictEqual(
+    getCacheDir({
+      env: { HOME: "/unix/home", USERPROFILE: "/native/windows-user" },
+      homedirImpl: () => "/platform/home",
+      platform: "linux",
+    }),
+    join("/unix/home", ".phantom-secrets", "bin")
   );
 
   let fsyncOpenMode;
@@ -314,7 +354,7 @@ async function assertPreviousVersionCachePreserved(stage) {
       },
       execFileSyncImpl: (_path, _args, options) => {
         assert.ok(options.timeout > 0 && options.timeout < 120_000);
-        return Buffer.from("phantom-mcp 0.7.6\n");
+        return Buffer.from("phantom-mcp 0.7.7\n");
       },
     });
     assert.ok(dirname(observedArchivePath).startsWith(join(fixtureDir, ".install-")));

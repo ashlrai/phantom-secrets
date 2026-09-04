@@ -9,11 +9,6 @@ export default function robots(): MetadataRoute.Robots {
       allow: "/",
       disallow: [
         "/api/",
-        "/dashboard",
-        "/dashboard/",
-        "/device",
-        "/device/",
-        "/integrations/",
       ],
     },
     sitemap: `${SITE_URL}/sitemap.xml`,

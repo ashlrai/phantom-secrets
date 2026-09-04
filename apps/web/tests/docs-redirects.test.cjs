@@ -8,9 +8,12 @@ const repoRoot = path.resolve(webRoot, "..", "..");
 const routes = JSON.parse(
   fs.readFileSync(path.join(webRoot, "docs-routes.json"), "utf8"),
 );
+const renderedDocs = JSON.parse(
+  fs.readFileSync(path.join(webRoot, "docs-catalog.json"), "utf8"),
+);
 
-test("public docs redirects are closed, unique, and point to present guides", () => {
-  assert.ok(routes.length >= 15, "expected the canonical public guide set");
+test("legacy docs redirects are closed, unique, and do not shadow rendered guides", () => {
+  assert.ok(routes.length >= 8, "expected the remaining source-only guide set");
 
   const sources = new Set();
   for (const route of routes) {
@@ -29,14 +32,19 @@ test("public docs redirects are closed, unique, and point to present guides", ()
   }
 
   for (const required of [
-    "/docs/getting-started",
-    "/docs/delegation-quickstart",
-    "/docs/enterprise-adoption",
-    "/docs/architecture",
     "/docs/release-readiness",
-    "/docs/platform-support",
+    "/docs/audit-index",
+    "/docs/ci-cd",
   ]) {
     assert.equal(sources.has(required), true, `missing ${required}`);
+  }
+
+  for (const doc of renderedDocs) {
+    assert.equal(
+      sources.has(`/docs/${doc.slug}`),
+      false,
+      `/docs/${doc.slug} must resolve to the first-party renderer`,
+    );
   }
   assert.equal(sources.has("/docs"), false, "the on-site docs hub must not redirect");
 });

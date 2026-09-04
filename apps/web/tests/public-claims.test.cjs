@@ -114,7 +114,7 @@ const machineReadableGuides = Object.entries(machineReadableClaims).filter(
 const verifiedReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5";
 const candidateReleaseUrl =
-  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.6";
+  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.7";
 
 function structuredMetadataBlock(source, type) {
   const marker = `"@type": "${type}"`;
@@ -320,6 +320,45 @@ test("authority-sensitive command guidance stays fail-closed and value-blind", (
   assert.match(cli, /ownership transfer is not exposed/i);
 });
 
+test("MCP setup guidance stays proposal-first and Linux storage matches the built backend", () => {
+  const setupGuides = {
+    "docs/llms-full.txt": machineReadableClaims["docs/llms-full.txt"],
+    "apps/web/public/llms-full.txt":
+      machineReadableClaims["apps/web/public/llms-full.txt"],
+  };
+
+  for (const [file, source] of Object.entries(setupGuides)) {
+    assert.match(source, /ask Claude to propose protection/i, file);
+    assert.match(source, /review mutations[\s\S]{0,120}trusted terminal/i, file);
+    assert.doesNotMatch(source, /Claude runs phantom_init/i, file);
+  }
+
+  const linuxVaultStorageGuides = [
+    "README.md",
+    "docs/llms.txt",
+    "docs/platform-support.md",
+    "docs/troubleshooting.md",
+    "apps/web/public/llms.txt",
+    "apps/web/public/llms-full.txt",
+  ];
+
+  for (const file of linuxVaultStorageGuides) {
+    const source = readRepo(file);
+    assert.match(source, /Linux[\s\S]{0,120}(?:keyutils|kernel keyring)/i, file);
+    assert.match(
+      source,
+      /(?:migrate-linux|explicit[\s\S]{0,120}Secret Service|Secret Service[\s\S]{0,120}migrat)/i,
+      file,
+    );
+    assert.match(source, /(?:does not|do not) survive a reboot/i, file);
+  }
+
+  const loginGuide = readRepo("docs/login.md");
+  assert.match(loginGuide, /Linux[\s\S]{0,120}kernel keyring/i);
+  assert.match(loginGuide, /(?:does not|do not) survive a reboot/i);
+  assert.doesNotMatch(loginGuide, /Secret Service/i);
+});
+
 test("Railway guidance separates deployment sync from encrypted cloud backup", () => {
   const railway = repositoryGuidanceClaims["integrations/railway/README.md"];
   assert.match(railway, /sends selected values directly to the\s+Railway API/i);
@@ -476,7 +515,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       assert.ok(source.includes(candidateReleaseUrl), file);
       assert.match(
         source,
-        /version `0\.7\.6`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
+        /version `0\.7\.7`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
         file,
       );
       assert.match(
@@ -486,7 +525,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       );
       assert.match(
         source,
-        /Version `0\.7\.6`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
+        /Version `0\.7\.7`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
         file,
       );
       assert.doesNotMatch(source, /releases\/tag\/v0\.7\.3/i, file);
@@ -526,7 +565,7 @@ test("registry README catalog exactly matches the staged 54-tool schema", () => 
   assert.equal(new Set(documentedNames).size, 54, "README catalog names must be unique");
   assert.deepEqual(documentedNames.sort(), schemaNames.sort());
   assert.match(registryReadme, /npm `0\.7\.4` wrappers are public only under `release-candidate`/i);
-  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.6`/i);
+  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.7`/i);
   assert.match(registryReadme, /do not publish this manifest until/i);
 });
 
@@ -558,14 +597,14 @@ test("released setup guidance uses the verified v0.7.5 fail-closed local runtime
 });
 
 test("HowTo and delegation guidance avoid timing and unpinned quickstart claims", () => {
-  const installHowTo = structuredMetadataBlock(claims["src/app/layout.tsx"], "HowTo");
+  const installHowTo = claims["src/components/landing/LandingStructuredData.tsx"];
   const publicRelease = claims["src/lib/public-release.ts"];
   const delegation = repositoryGuidanceClaims["docs/delegation-quickstart.md"];
 
   assert.doesNotMatch(installHowTo, /totalTime|PT1M/i);
-  assert.match(installHowTo, /Released \$\{PUBLIC_RELEASE_TAG\} records its bundled local/i);
+  assert.match(installHowTo, /review the generated local MCP entry/i);
   assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.5"/);
-  assert.match(installHowTo, /no network package-runner fallback and fails closed/i);
+  assert.match(installHowTo, /no network package-runner fallback/i);
   assert.match(delegation, /both `phantom` and `phantom-mcp` from the reviewed `v0\.7\.5`[^\n]*GitHub release/i);
   assert.match(delegation, /phantom agent setup --dry-run/i);
   assert.doesNotMatch(delegation, /npx(?:\s+-y)?\s+phantom-secrets\s+agent setup/i);
@@ -608,7 +647,7 @@ test("current SoftwareApplication and HowTo metadata point at the verified relea
   const layout = claims["src/app/layout.tsx"];
   const publicRelease = claims["src/lib/public-release.ts"];
   const softwareApplication = structuredMetadataBlock(layout, "SoftwareApplication");
-  const installHowTo = structuredMetadataBlock(layout, "HowTo");
+  const installHowTo = claims["src/components/landing/LandingStructuredData.tsx"];
 
   assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.5"/);
   assert.match(publicRelease, /PUBLIC_RELEASE_TAG\s*=\s*`v\$\{PUBLIC_RELEASE_VERSION\}`/);
@@ -763,7 +802,6 @@ test("dotenv recovery copy does not confuse init, unwrap, and encrypted recovery
 
 test("persistent placeholders remain inert and the proxy bearer stays distinct", () => {
   for (const file of [
-    "src/app/layout.tsx",
     "src/components/landing/FAQ.tsx",
     "public/llms.txt",
     "public/llms-full.txt",
@@ -856,13 +894,13 @@ test("public guidance preserves upstream and production-authority boundaries", (
 });
 
 test("structured metadata preserves supported-route and fail-closed boundaries", () => {
-  const layout = claims["src/app/layout.tsx"];
-  assert.match(layout, /supported HTTP SDK routes/);
-  assert.match(layout, /exact supported route match/);
-  assert.match(layout, /route-owned authentication/);
-  assert.match(layout, /placeholders remain inert/);
-  assert.match(layout, /database connection strings fail closed/);
-  assert.doesNotMatch(layout, /Any tool that reads \.env files works automatically/i);
+  const metadata = `${claims["src/app/layout.tsx"]}\n${claims["src/components/landing/LandingStructuredData.tsx"]}`;
+  assert.match(metadata, /supported HTTP SDK routes/);
+  assert.match(metadata, /Exact matched routes/);
+  assert.match(metadata, /route-owned authentication/);
+  assert.match(metadata, /placeholders stay inert/);
+  assert.match(metadata, /database connection strings fail closed/);
+  assert.doesNotMatch(metadata, /Any tool that reads \.env files works automatically/i);
 });
 
 test("team and support copy distinguishes source-backed pilots from hosted service", () => {
@@ -888,7 +926,7 @@ test("monorepo guidance scopes execution to one initialized subproject", () => {
 
 test("visible and structured FAQs retain conservative latency language", () => {
   assert.match(claims["src/components/landing/FAQ.tsx"], /Measure overhead in your own/);
-  assert.match(claims["src/app/layout.tsx"], /measure overhead in your own/);
+  assert.match(claims["src/components/landing/LandingStructuredData.tsx"], /QUESTIONS\.map/);
 });
 
 test("community health metadata preserves release and support boundaries", () => {
@@ -934,7 +972,7 @@ test("community health metadata preserves release and support boundaries", () =>
 
   const citation = readRepo("CITATION.cff");
   assert.match(citation, /^cff-version: 1\.2\.0$/m);
-  assert.match(citation, /^version: 0\.7\.6$/m);
+  assert.match(citation, /^version: 0\.7\.7$/m);
   assert.match(citation, /immutable v0\.7\.5 GitHub release/i);
   assert.match(citation, /repository URL and full commit SHA/i);
   assert.doesNotMatch(
@@ -979,7 +1017,7 @@ test("add guidance keeps headless creation separate from replacement authority",
 
 test("contributor templates keep secrets and evidence layers separated", () => {
   const bug = readRepo(".github/ISSUE_TEMPLATE/bug_report.yml");
-  assert.match(bug, /placeholder: "phantom 0\.7\.6"/);
+  assert.match(bug, /placeholder: "phantom 0\.7\.7"/);
   assert.match(bug, /persistent `phm_` mappings; mappings are sensitive metadata/i);
   assert.doesNotMatch(bug, /phm_ tokens are safe to share/i);
   assert.match(bug, /private vulnerability reporting/i);

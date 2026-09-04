@@ -10,49 +10,67 @@ export const metadata: Metadata = {
   description:
     "Install Phantom, connect Claude Code, Cursor, Windsurf, or Codex, and verify the local credential boundary with current open-source documentation.",
   alternates: { canonical: "/docs" },
-  openGraph: { url: "/docs" },
+  openGraph: {
+    type: "website",
+    siteName: "Phantom",
+    title: "Phantom Documentation — Install, connect, and verify",
+    description: "Install Phantom, connect Claude Code, Cursor, Windsurf, or Codex, and verify the local credential boundary with current open-source documentation.",
+    url: "/docs",
+    locale: "en_US",
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Phantom open-source documentation and credential boundary." }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@ashlrai",
+    creator: "@ashlrai",
+    title: "Phantom Documentation — Install, connect, and verify",
+    description: "Current installation, agent setup, platform, and security-boundary documentation for Phantom.",
+    images: ["/og-image.png"],
+  },
 };
 
 const COLLECTIONS = [
   {
     title: "Use Phantom",
+    id: "use-phantom",
     links: [
-      ["Complete getting started guide", "docs/getting-started.md"],
-      ["Safe delegation quickstart", "docs/delegation-quickstart.md"],
-      ["Documentation map", "docs/README.md"],
-      ["Troubleshooting", "docs/troubleshooting.md"],
+      ["Complete getting started guide", "/docs/getting-started"],
+      ["Safe delegation quickstart", "/docs/delegation-quickstart"],
+      ["Documentation map", "https://github.com/ashlrai/phantom-secrets/blob/main/docs/README.md"],
+      ["Troubleshooting", "/docs/troubleshooting"],
     ],
   },
   {
     title: "Connect an agent",
+    id: "connect-an-agent",
     links: [
-      ["Claude Code", "docs/claude-code.md"],
-      ["Cursor", "docs/cursor.md"],
-      ["Windsurf", "docs/windsurf.md"],
-      ["Codex", "docs/codex.md"],
+      ["Claude Code", "/docs/claude-code"],
+      ["Cursor", "/docs/cursor"],
+      ["Windsurf", "/docs/windsurf"],
+      ["Codex", "/docs/codex"],
     ],
   },
   {
     title: "Evaluate trust",
+    id: "evaluate-trust",
     links: [
-      ["Security model", "SECURITY.md"],
-      ["Threat model", "THREAT_MODEL.md"],
-      ["Architecture", "docs/architecture.md"],
-      ["Platform support", "docs/platform-support.md"],
+      ["Security model", "https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md"],
+      ["Threat model", "https://github.com/ashlrai/phantom-secrets/blob/main/THREAT_MODEL.md"],
+      ["Architecture", "/docs/architecture"],
+      ["Platform support", "/docs/platform-support"],
     ],
   },
   {
     title: "Adopt and contribute",
+    id: "adopt-and-contribute",
     links: [
-      ["Enterprise adoption", "docs/enterprise-adoption.md"],
-      ["Government evaluation", "docs/government-evaluation.md"],
-      ["Contributing", "CONTRIBUTING.md"],
-      ["Project roadmap", "ROADMAP.md"],
+      ["Enterprise adoption", "/docs/enterprise-adoption"],
+      ["Government evaluation", "https://github.com/ashlrai/phantom-secrets/blob/main/docs/government-evaluation.md"],
+      ["Contributing", "https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md"],
+      ["Project roadmap", "https://github.com/ashlrai/phantom-secrets/blob/main/ROADMAP.md"],
     ],
   },
 ] as const;
-
-const REPO = "https://github.com/ashlrai/phantom-secrets/blob/main/";
 
 export default function DocsPage() {
   return (
@@ -82,11 +100,11 @@ export default function DocsPage() {
         <section className="landing-frame docs-page__collections" aria-label="Documentation collections">
           {COLLECTIONS.map((collection) => (
             <article key={collection.title}>
-              <h2>{collection.title}</h2>
+              <h2 id={collection.id}>{collection.title}</h2>
               <ul>
-                {collection.links.map(([label, path]) => (
-                  <li key={path}>
-                    <a href={`${REPO}${path}`}>{label}</a>
+                {collection.links.map(([label, href]) => (
+                  <li key={href}>
+                    <Link href={href}>{label}</Link>
                   </li>
                 ))}
               </ul>

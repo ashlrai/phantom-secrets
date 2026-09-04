@@ -49,7 +49,11 @@ The device code shown in the terminal is not a secret. It expires after a short 
 
 ## Token storage
 
-The access token is stored in the OS keychain under the service name `phantom-cloud`. On macOS this is Keychain Access. On Linux it is the Secret Service (GNOME Keyring or KWallet).
+The access token is stored through the platform credential backend under the
+service name `phantom-cloud`. On macOS this is Keychain Access, on Windows it
+is Credential Manager, and Linux uses the in-memory kernel keyring. Linux
+kernel-keyring entries do not survive a reboot, so log in again if the entry is
+no longer available.
 
 The token is never written to disk, never included in `.phantom.toml`, and never committed to version control.
 

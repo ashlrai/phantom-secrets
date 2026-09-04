@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::IsTerminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShellSyntax {
+pub(super) enum ShellSyntax {
     Bash,
     Fish,
     PowerShell,
@@ -17,7 +17,7 @@ enum ShellSyntax {
     Cmd,
 }
 
-fn detect_shell_syntax() -> ShellSyntax {
+pub(super) fn detect_shell_syntax() -> ShellSyntax {
     // PHANTOM_SHELL is the explicit override for nested shells. SHELL usually
     // names the login shell and is only a fallback hint.
     if let Ok(shell) = std::env::var("PHANTOM_SHELL") {
@@ -59,7 +59,7 @@ fn shell_syntax_from_name(shell: &str) -> Option<ShellSyntax> {
     }
 }
 
-fn format_export(syntax: ShellSyntax, var: &str, value: &str) -> String {
+pub(super) fn format_export(syntax: ShellSyntax, var: &str, value: &str) -> String {
     match syntax {
         ShellSyntax::Bash => format!("  export {}='{}'", var, quote_posix_single(value)),
         ShellSyntax::Fish => format!("  set -gx {} '{}'", var, quote_fish_single(value)),

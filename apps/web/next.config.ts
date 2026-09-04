@@ -35,6 +35,10 @@ const SECURITY_HEADERS = [
   },
 ];
 
+const NOINDEX_HEADERS = [
+  { key: "X-Robots-Tag", value: "noindex, nofollow" },
+];
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   env: {
@@ -56,6 +60,18 @@ const nextConfig: NextConfig = {
       {
         source: "/:path*",
         headers: SECURITY_HEADERS,
+      },
+      {
+        source: "/dashboard/:path*",
+        headers: NOINDEX_HEADERS,
+      },
+      {
+        source: "/device/:path*",
+        headers: NOINDEX_HEADERS,
+      },
+      {
+        source: "/integrations/:path*",
+        headers: NOINDEX_HEADERS,
       },
     ];
   },

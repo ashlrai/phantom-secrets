@@ -142,10 +142,10 @@ function nativeArchiveFixture(t, options = {}) {
       return "";
     }
     if (label === "phantom --version") {
-      return `${options.phantomVersion ?? "phantom 0.7.6"}\n`;
+      return `${options.phantomVersion ?? "phantom 0.7.7"}\n`;
     }
     if (label === "phantom-mcp --version") {
-      return `${options.phantomMcpVersion ?? "phantom-mcp 0.7.6"}\n`;
+      return `${options.phantomMcpVersion ?? "phantom-mcp 0.7.7"}\n`;
     }
     if (label === "MCP stdio schema smoke") {
       if (options.failMcp) throw new Error("synthetic MCP schema failure");
@@ -162,7 +162,7 @@ function nativeArchiveFixture(t, options = {}) {
       runNativeReleaseSmoke({
         archivePath,
         target: fixtureTarget,
-        tag: "v0.7.6",
+        tag: "v0.7.7",
         env: fixtureEnv,
         runtime: fixtureRuntime,
         runCommand,
@@ -227,7 +227,7 @@ test("native archive smoke exercises the complete accepted artifact path", (t) =
   assert.deepEqual(fixture.smoke(), {
     archive: "phantom-x86_64-unknown-linux-gnu.tar.gz",
     target: fixtureTarget,
-    version: "0.7.6",
+    version: "0.7.7",
   });
   assert.deepEqual(
     fixture.commands.map(({ label }) => label),
@@ -312,7 +312,7 @@ test("native archive smoke rejects a binary built at the wrong version", (t) => 
   const fixture = nativeArchiveFixture(t, { phantomVersion: "phantom 0.7.3" });
   assert.throws(
     fixture.smoke,
-    /phantom --version must equal phantom 0\.7\.6; got phantom 0\.7\.3/,
+    /phantom --version must equal phantom 0\.7\.7; got phantom 0\.7\.3/,
   );
   assert.doesNotMatch(
     fixture.commands.map(({ label }) => label).join("\n"),
@@ -360,6 +360,25 @@ test("release workflow binds every exact artifact to one native runner", () => {
   }
 });
 
+test("every native release runner exercises both npm wrappers without publication authority", () => {
+  const native = job(workflow, "native-acceptance", "verify-artifacts");
+  assert.match(native, /Exercise npm wrappers on the native filesystem/);
+  for (const command of [
+    "node npm/test/platform-matrix.test.js",
+    "node npm/test/version-cache.test.js",
+    "node npm/test/valid-cache.test.js",
+    "node npm/test/hardening.test.js",
+    "node npm-mcp/test/platform-matrix.test.js",
+    "node npm-mcp/test/version-cache.test.js",
+    "node npm-mcp/test/valid-cache.test.js",
+    "node npm-mcp/test/hardening.test.js",
+    "node npm-mcp/test/schema-contract.test.js",
+  ]) {
+    assert.match(native, new RegExp(command.replaceAll(".", "\\.")));
+  }
+  assert.doesNotMatch(native, /(?:npm|cargo|mcp-publisher) publish|gh release/);
+});
+
 test("attestation cannot begin before every build and native acceptance succeeds", () => {
   const verificationJob = job(workflow, "verify-artifacts");
   const attestJob = job(releaseWorkflow, "attest", "release");
@@ -398,7 +417,7 @@ test("platform documentation binds the immutable release receipt to every native
   assert.equal(
     platformSupport.match(/`v0\.7\.5` release-native acceptance passed/g)?.length,
     6,
-    "every native row must name the exact v0.7.6 release receipt",
+    "every native row must name the exact v0.7.7 release receipt",
   );
   assert.match(platformSupport, /no exact npm `0\.7\.5` acceptance receipt is claimed/i);
   assert.match(

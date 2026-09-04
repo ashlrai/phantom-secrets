@@ -53,12 +53,12 @@ export function SiteFooter() {
               </Link>
             </li>
             <li>
-              <a
+              <Link
                 href="/docs"
                 className={linkClass}
               >
                 Documentation
-              </a>
+              </Link>
             </li>
           </ul>
         </nav>

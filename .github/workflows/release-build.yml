@@ -396,6 +396,18 @@ jobs:
           PHANTOM_RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/release/native-installer-acceptance.mjs
 
+      - name: Exercise npm wrappers on the native filesystem
+        run: |
+          node npm/test/platform-matrix.test.js
+          node npm/test/version-cache.test.js
+          node npm/test/valid-cache.test.js
+          node npm/test/hardening.test.js
+          node npm-mcp/test/platform-matrix.test.js
+          node npm-mcp/test/version-cache.test.js
+          node npm-mcp/test/valid-cache.test.js
+          node npm-mcp/test/hardening.test.js
+          node npm-mcp/test/schema-contract.test.js
+
   verify-artifacts:
     name: Verify checksums, artifacts, and SBOMs
     needs: [build, native-acceptance]

@@ -221,7 +221,7 @@ Detection and runtime injection are different capabilities. Database connection 
 12-crate Rust workspace:
 
 - `phantom-core` — config (`.phantom.toml`), `.env` parsing, token generation (256-bit CSPRNG, `phm_` prefix)
-- `phantom-vault` — `VaultBackend` trait. macOS Keychain / Linux Secret Service / Windows Credential Manager / encrypted file fallback. ChaCha20-Poly1305 + Argon2id (hardened to OWASP balanced m=64 MiB / t=3 / p=1, with legacy-default fallback for older vaults).
+- `phantom-vault` — `VaultBackend` trait. macOS Keychain / Linux keyutils by default with explicit trusted-terminal migration to desktop Secret Service / Windows Credential Manager / encrypted file fallback. Linux keyutils entries do not survive a reboot. ChaCha20-Poly1305 + Argon2id (hardened to OWASP balanced m=64 MiB / t=3 / p=1, with legacy-default fallback for older vaults).
 - `phantom-proxy` — Authenticated HTTP reverse proxy on 127.0.0.1. It matches exact routes, drops client control of the route auth header, and injects only the route-owned value into that fixed header. Client bodies are bounded and forwarded byte-for-byte; responses can stream, including SSE.
 - `phantom-cli` — `clap` binary with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows.
 - `phantom-mcp` — `rmcp` stdio server with a release-checked tool schema; use runtime `tools/list` for the current catalog.

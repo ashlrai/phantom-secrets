@@ -27,6 +27,39 @@ const STEPS = [
   },
 ] as const;
 
+const RELEASE_ASSET_BASE =
+  `https://github.com/ashlrai/phantom-secrets/releases/download/${PUBLIC_RELEASE_TAG}`;
+
+const PLATFORMS = [
+  {
+    name: "macOS",
+    vault: "Keychain",
+    detail: "Homebrew or release archives for Apple Silicon and Intel.",
+    targets: [
+      ["Apple Silicon", "phantom-aarch64-apple-darwin.tar.gz"],
+      ["Intel", "phantom-x86_64-apple-darwin.tar.gz"],
+    ],
+  },
+  {
+    name: "Windows",
+    vault: "Credential Manager",
+    detail: "Native MSVC archives for Windows on ARM and x64.",
+    targets: [
+      ["ARM64", "phantom-aarch64-pc-windows-msvc.zip"],
+      ["x64", "phantom-x86_64-pc-windows-msvc.zip"],
+    ],
+  },
+  {
+    name: "Linux",
+    vault: "Kernel keyring",
+    detail: "GNU/glibc 2.35+ archives. The default keyring is session-persistent, not reboot-persistent.",
+    targets: [
+      ["ARM64", "phantom-aarch64-unknown-linux-gnu.tar.gz"],
+      ["x64", "phantom-x86_64-unknown-linux-gnu.tar.gz"],
+    ],
+  },
+] as const;
+
 export function QuickStart() {
   return (
     <section className="passage-section" aria-labelledby="passage-title">
@@ -41,6 +74,36 @@ export function QuickStart() {
             in the repository.
           </p>
         </div>
+
+        <div className="platform-install-grid" aria-label="Release downloads by operating system">
+          {PLATFORMS.map((platform) => (
+            <article key={platform.name} className="platform-install-card">
+              <div className="platform-install-card__heading">
+                <h3>{platform.name}</h3>
+                <span>{platform.vault}</span>
+              </div>
+              <p>{platform.detail}</p>
+              <div className="platform-install-card__targets">
+                {platform.targets.map(([label, filename]) => (
+                  <a
+                    key={filename}
+                    href={`${RELEASE_ASSET_BASE}/${filename}`}
+                    aria-label={`Download Phantom ${PUBLIC_RELEASE_TAG} for ${platform.name} ${label}`}
+                  >
+                    <span>{label}</span>
+                    <small>download {PUBLIC_RELEASE_TAG}</small>
+                  </a>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+
+        <p className="platform-install-note">
+          Every archive is produced by the release workflow with native smoke tests,
+          an SPDX SBOM, and a published SHA-256 manifest. That evidence covers the
+          release artifact—not every local shell, policy, or credential-store state.
+        </p>
 
         <ol className="passage-steps">
           {STEPS.map((item, index) => (

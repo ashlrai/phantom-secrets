@@ -65,7 +65,10 @@ never resolve them, but a stolen live proxy bearer can authorize exact routes
 that inject their own credentials. Rotate an exposed project token. Non-secret config values such as `NODE_ENV` and `PORT`
 are normally left untouched by the detection heuristics.
 
-Your real secrets are stored in the OS keychain (macOS Keychain, Linux Secret Service, or an encrypted file fallback for CI environments).
+Your real secrets are stored through the platform credential backend (macOS
+Keychain, the Linux kernel keyring, or Windows Credential Manager), with an
+encrypted-file fallback when its passphrase can be persisted and verified.
+Linux kernel-keyring entries do not survive a reboot.
 
 ## The reverse proxy: route-owned authentication
 

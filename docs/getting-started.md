@@ -512,6 +512,35 @@ Click "Always Allow" for the `phantom-secrets` entry. This appears once per appl
 
 ### Linux keychain unavailable / CI environments
 
+Linux starts with the kernel keyutils backend, whose entries do not survive a
+reboot. On a desktop with an unlocked Secret Service, migrate one initialized
+project from a terminal you exclusively control:
+
+```bash
+phantom vault migrate-linux
+```
+
+Phantom previews a value-free, state-bound plan and requires its exact
+challenge before reading vault values. It copies and verifies every indexed
+credential, keeps the keyutils source entries, and only then publishes
+independent owner-only config-root and data-root backend records. Conflicting
+persistent values or an
+unavailable/locked Secret Service fail closed. If a completed project's Secret
+Service is later unavailable, normal vault access fails rather than silently
+falling back to keyutils.
+
+Keep Phantom's private application-data and configuration directories in your
+workstation backup. Migration writes independent anchored records beneath both
+roots plus a Secret Service corroboration sentinel. If either local record is
+missing after a reboot, ordinary access fails closed without probing or
+prompting Secret Service; the explicit migration command can verify and repair
+the prepared state. Normal projects with neither marker remain on keyutils. If
+all local Phantom state is deleted, restore a verified backup; Phantom cannot
+infer the former backend safely.
+
+For CI, WSL, servers, or any environment without a reliably unlocked desktop
+Secret Service, select the encrypted-file vault explicitly:
+
 Set a passphrase and Phantom falls back to an encrypted file vault:
 
 ```bash
