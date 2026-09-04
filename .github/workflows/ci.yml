@@ -13,6 +13,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  PHANTOM_NPM_AUDIT_VERSION: 11.15.0
 
 jobs:
   test:
@@ -213,9 +214,24 @@ jobs:
       - name: Verify immutable migration source contract
         run: node --test ../../scripts/supabase/verify-migrations.test.mjs
       - name: Install from the lockfile
-        run: npm ci
+        run: npm ci --no-audit
+      - name: Install the exact npm audit CLI
+        run: |
+          npm install \
+            --prefix "${RUNNER_TEMP}/phantom-npm-audit" \
+            --cache "${RUNNER_TEMP}/phantom-npm-audit-cache" \
+            --registry=https://registry.npmjs.org/ \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund \
+            --no-save \
+            --package-lock=false \
+            "npm@${PHANTOM_NPM_AUDIT_VERSION}"
+          "${RUNNER_TEMP}/phantom-npm-audit/node_modules/.bin/npm" --version | grep -Fx "${PHANTOM_NPM_AUDIT_VERSION}"
       - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=moderate
+        run: >-
+          "${RUNNER_TEMP}/phantom-npm-audit/node_modules/.bin/npm"
+          audit --omit=dev --audit-level=moderate
       - name: Lint web source
         run: npm run lint
       - name: Run web security and auth tests

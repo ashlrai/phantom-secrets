@@ -1,6 +1,6 @@
 {
   "name": "phantom-secrets",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "description": "Reduce API-key exposure in supported AI-agent workflows with managed placeholders, value-blind tools, and exact route-owned proxy authentication.",
   "bin": {
     "phantom-secrets": "bin/cli.js",

@@ -1,21 +1,27 @@
 import type { MetadataRoute } from "next";
+import { PUBLIC_DOCS } from "@/lib/public-docs";
 
 const SITE_URL = "https://phm.dev";
 
 const pages = [
-  { path: "/", changeFrequency: "weekly", priority: 1 },
-  { path: "/pricing", changeFrequency: "monthly", priority: 0.8 },
-  { path: "/enterprise", changeFrequency: "monthly", priority: 0.8 },
-  { path: "/government", changeFrequency: "monthly", priority: 0.8 },
-  { path: "/security", changeFrequency: "monthly", priority: 0.8 },
-  { path: "/llms.txt", changeFrequency: "weekly", priority: 0.7 },
-  { path: "/llms-full.txt", changeFrequency: "weekly", priority: 0.7 },
+  { path: "/", modified: "2026-09-04" },
+  { path: "/docs", modified: "2026-09-04" },
+  { path: "/pricing", modified: "2026-09-03" },
+  { path: "/enterprise", modified: "2026-09-03" },
+  { path: "/government", modified: "2026-09-03" },
+  { path: "/security", modified: "2026-09-03" },
+  { path: "/llms.txt", modified: "2026-09-04" },
+  { path: "/llms-full.txt", modified: "2026-09-03" },
 ] as const;
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  return pages.map(({ path, changeFrequency, priority }) => ({
+  const documentationPages = PUBLIC_DOCS.map(({ slug, modified }) => ({
+    path: `/docs/${slug}`,
+    modified,
+  }));
+
+  return [...pages, ...documentationPages].map(({ path, modified }) => ({
     url: new URL(path, SITE_URL).toString(),
-    changeFrequency,
-    priority,
+    lastModified: modified,
   }));
 }

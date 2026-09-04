@@ -16,7 +16,7 @@ warn() { printf "  \033[1;33m!\033[0m phantom: %s\n" "$1" >&2; }
 die()  { printf "  \033[1;31m✗\033[0m phantom: %s\n" "$1" >&2; exit 1; }
 
 CANONICAL_REPO="ashlrai/phantom-secrets"
-CANDIDATE_TAG="v0.7.6"
+CANDIDATE_TAG="v0.7.7"
 REPO="$CANONICAL_REPO"
 RELEASES_URL="https://github.com/ashlrai/phantom-secrets/releases"
 INSTALL_DIR="${PHANTOM_INSTALL_DIR:-$HOME/.phantom-secrets/bin}"

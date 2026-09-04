@@ -64,9 +64,17 @@ pub fn try_create_vault(project_id: &str) -> Result<Box<dyn VaultBackend>> {
         }
     }
 
-    match keychain::KeychainVault::new(project_id) {
-        Ok(vault) => Ok(Box::new(vault)),
-        Err(keychain_err) => {
+    // Retain one project lock across backend selection, its availability
+    // probe, and any implicit encrypted-file fallback setup. Migration cannot
+    // publish a one-sided or committed marker state between those decisions.
+    let selection_lock = keychain::acquire_project_lock(project_id)?;
+    match keychain::KeychainVault::new_with_project_lock(project_id, &selection_lock) {
+        Ok(vault) => {
+            drop(selection_lock);
+            Ok(Box::new(vault))
+        }
+        Err(keychain::KeychainOpenError::Authoritative(error)) => Err(error),
+        Err(keychain::KeychainOpenError::Unavailable(keychain_err)) => {
             if require_keychain {
                 return Err(PhantomError::VaultError(format!(
                     "OS keychain unavailable while PHANTOM_REQUIRE_KEYCHAIN is set: {keychain_err}. Unlock/configure the OS keychain, or unset PHANTOM_REQUIRE_KEYCHAIN and set PHANTOM_VAULT_PASSPHRASE for an explicit encrypted-file vault"
@@ -74,10 +82,6 @@ pub fn try_create_vault(project_id: &str) -> Result<Box<dyn VaultBackend>> {
             }
 
             let vault_dir = file_vault_dir();
-            // Serialize fallback-key resolution with every other per-project
-            // keychain/index operation. Otherwise two processes can each
-            // persist and verify a different generated passphrase.
-            let _fallback_lock = keychain::acquire_project_lock(project_id)?;
             let encrypted_vault_exists = file::encrypted_vault_exists(&vault_dir, project_id)?;
             let passphrase =
                 get_or_create_passphrase(project_id, !encrypted_vault_exists).map_err(|error| {
@@ -90,9 +94,9 @@ pub fn try_create_vault(project_id: &str) -> Result<Box<dyn VaultBackend>> {
                 "phantom: WARNING — OS keychain unavailable; using encrypted file vault at {} with a passphrase verified in durable secure storage.\n  Reason: {keychain_err}\n  To hard-fail instead of falling back, set PHANTOM_REQUIRE_KEYCHAIN=1.",
                 vault_dir.display()
             );
-            Ok(Box::new(file::FileVault::new(
-                &vault_dir, project_id, passphrase,
-            )?))
+            let vault = file::FileVault::new(&vault_dir, project_id, passphrase)?;
+            drop(selection_lock);
+            Ok(Box::new(vault))
         }
     }
 }
@@ -186,11 +190,12 @@ fn get_or_create_passphrase(project_id: &str, allow_generation: bool) -> Result<
     }
 
     let keychain_key = format!("{PASSPHRASE_SERVICE}:{project_id}");
-    let entry = keyring::Entry::new(PASSPHRASE_SERVICE, &keychain_key).map_err(|error| {
-        PhantomError::VaultError(format!(
-            "could not create the secure passphrase entry: {error}"
-        ))
-    })?;
+    let entry =
+        keychain::unmigrated_os_entry(PASSPHRASE_SERVICE, &keychain_key).map_err(|error| {
+            PhantomError::VaultError(format!(
+                "could not create the secure passphrase entry: {error}"
+            ))
+        })?;
     resolve_persisted_passphrase(
         &KeyringPassphraseStore { entry },
         allow_generation,
@@ -214,7 +219,7 @@ fn dirs_fallback() -> std::path::PathBuf {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     #[test]
@@ -253,6 +258,42 @@ mod tests {
         fn set(&self, passphrase: &str) -> std::result::Result<(), String> {
             self.set_calls.lock().unwrap().push(passphrase.to_string());
             self.set_result.clone()
+        }
+    }
+
+    #[derive(Clone)]
+    struct RestartablePassphraseStore {
+        persisted: Arc<Mutex<Option<String>>>,
+        reject_writes: bool,
+    }
+
+    impl RestartablePassphraseStore {
+        fn new(reject_writes: bool) -> Self {
+            Self {
+                persisted: Arc::new(Mutex::new(None)),
+                reject_writes,
+            }
+        }
+
+        fn restart(&self) -> Self {
+            Self {
+                persisted: Arc::clone(&self.persisted),
+                reject_writes: self.reject_writes,
+            }
+        }
+    }
+
+    impl PassphraseStore for RestartablePassphraseStore {
+        fn get(&self) -> std::result::Result<Option<String>, String> {
+            Ok(self.persisted.lock().unwrap().clone())
+        }
+
+        fn set(&self, passphrase: &str) -> std::result::Result<(), String> {
+            if self.reject_writes {
+                return Err("mock secure storage rejected write".to_string());
+            }
+            *self.persisted.lock().unwrap() = Some(passphrase.to_string());
+            Ok(())
         }
     }
 
@@ -354,5 +395,46 @@ mod tests {
             resolve_persisted_passphrase(&durable, true, || "candidate".to_string()).unwrap(),
             "candidate"
         );
+    }
+
+    #[test]
+    fn persisted_passphrase_reopens_file_vault_after_mocked_process_restart() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let first_process = RestartablePassphraseStore::new(false);
+        let passphrase =
+            resolve_persisted_passphrase(&first_process, true, || "durable-key".to_string())
+                .unwrap();
+        let vault = file::FileVault::new(&root, "restart-project", passphrase).unwrap();
+        vault.store("API_KEY", "existing-value").unwrap();
+        drop(vault);
+
+        let restarted_process = first_process.restart();
+        let recovered = resolve_persisted_passphrase(&restarted_process, false, || {
+            panic!("restart must reuse the verified secure-store passphrase")
+        })
+        .unwrap();
+        let reopened = file::FileVault::new(&root, "restart-project", recovered).unwrap();
+
+        assert_eq!(
+            reopened.retrieve("API_KEY").unwrap().as_str(),
+            "existing-value"
+        );
+    }
+
+    #[test]
+    fn rejected_passphrase_persistence_never_creates_a_file_vault_across_restarts() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let first_process = RestartablePassphraseStore::new(true);
+
+        for process in [first_process.clone(), first_process.restart()] {
+            let error =
+                resolve_persisted_passphrase(&process, true, || "ephemeral-key".to_string())
+                    .unwrap_err();
+            assert!(error.to_string().contains("could not persist"));
+            assert!(process.persisted.lock().unwrap().is_none());
+            assert!(!file::encrypted_vault_exists(&root, "failed-project").unwrap());
+        }
     }
 }

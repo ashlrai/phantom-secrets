@@ -627,31 +627,7 @@ fn validate_request_id(request_id: &str) -> Result<()> {
 }
 
 fn phantom_home() -> std::io::Result<PathBuf> {
-    // `dirs::home_dir()` consults the Windows profile APIs directly and ignores
-    // an explicit `HOME` override there. Phantom's other machine-local stores
-    // deliberately honor `HOME` first so callers can isolate a process (and so
-    // trusted-terminal and MCP processes agree on the same HMAC keys). Fall
-    // back to `USERPROFILE` for native Windows launches, then to the platform
-    // resolver for environments which provide neither variable.
-    let home = select_home_dir(
-        std::env::var_os("HOME"),
-        std::env::var_os("USERPROFILE"),
-        dirs::home_dir(),
-    )
-    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME directory not found"))?;
-    Ok(home.join(".phantom"))
-}
-
-fn select_home_dir(
-    home: Option<std::ffi::OsString>,
-    user_profile: Option<std::ffi::OsString>,
-    platform_fallback: Option<PathBuf>,
-) -> Option<PathBuf> {
-    home.into_iter()
-        .chain(user_profile)
-        .map(PathBuf::from)
-        .chain(platform_fallback)
-        .find(|path| !path.as_os_str().is_empty() && path.is_absolute())
+    Ok(crate::home::home_dir_with_platform_fallback()?.join(".phantom"))
 }
 
 fn requests_dir() -> std::io::Result<PathBuf> {
@@ -862,54 +838,6 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         result
-    }
-
-    #[test]
-    fn home_resolution_prefers_home_and_falls_back_to_userprofile() {
-        let home = TempDir::new().unwrap();
-        let user_profile = TempDir::new().unwrap();
-        let platform = TempDir::new().unwrap();
-
-        assert_eq!(
-            select_home_dir(
-                Some(home.path().as_os_str().to_owned()),
-                Some(user_profile.path().as_os_str().to_owned()),
-                Some(platform.path().to_path_buf()),
-            )
-            .unwrap(),
-            home.path()
-        );
-        assert_eq!(
-            select_home_dir(
-                None,
-                Some(user_profile.path().as_os_str().to_owned()),
-                Some(platform.path().to_path_buf()),
-            )
-            .unwrap(),
-            user_profile.path()
-        );
-        assert_eq!(
-            select_home_dir(None, None, Some(platform.path().to_path_buf())).unwrap(),
-            platform.path()
-        );
-    }
-
-    #[test]
-    fn home_resolution_rejects_empty_and_relative_overrides() {
-        let user_profile = TempDir::new().unwrap();
-        assert_eq!(
-            select_home_dir(
-                Some(std::ffi::OsString::new()),
-                Some(user_profile.path().as_os_str().to_owned()),
-                None,
-            )
-            .unwrap(),
-            user_profile.path()
-        );
-        assert_eq!(
-            select_home_dir(Some(std::ffi::OsString::from("relative-home")), None, None,),
-            None
-        );
     }
 
     #[test]

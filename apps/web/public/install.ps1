@@ -68,6 +68,26 @@ function Assert-SafeInstallDirectoryOverride {
     }
 }
 
+function Get-NativeUserProfilePath {
+    # Git Bash and MSYS can export HOME as /c/Users/name. PowerShell treats
+    # that as C:\c\Users\name, so only accept an explicit local drive path
+    # for native installer and shell-profile mutations.
+    $platformProfile = $null
+    try {
+        $platformProfile = [System.Environment]::GetFolderPath(
+            [System.Environment+SpecialFolder]::UserProfile
+        )
+    } catch {}
+    foreach ($candidate in @($env:USERPROFILE, $platformProfile, $env:HOME)) {
+        if ($candidate -and
+            $candidate -match '^[A-Za-z]:[\\/]' -and
+            [System.IO.Path]::IsPathFullyQualified($candidate)) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+    return $null
+}
+
 function ConvertTo-BashPath {
     param([Parameter(Mandatory)][string]$WinPath)
     $path = $WinPath -replace '\\', '/'
@@ -79,8 +99,11 @@ function ConvertTo-BashPath {
 
 function Add-ToBashrcPath {
     param([Parameter(Mandatory)][string]$WinBinDir)
-    $homeDir = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
-    if (-not $homeDir) { return }
+    $homeDir = Get-NativeUserProfilePath
+    if (-not $homeDir) {
+        Write-PhWarn 'could not determine a local native profile for Git Bash PATH'
+        return
+    }
     $bashPath = ConvertTo-BashPath -WinPath $WinBinDir
     if ($bashPath -match "[`r`n']") {
         Write-PhWarn 'could not safely add the install directory to Git Bash PATH'
@@ -416,7 +439,7 @@ function Assert-ExactVersion {
 }
 
 $CanonicalRepo = 'ashlrai/phantom-secrets'
-$CandidateTag = 'v0.7.6'
+$CandidateTag = 'v0.7.7'
 $Repo = $CanonicalRepo
 $PinTag = $CandidateTag
 $script:TestLocalReleaseDir = $null
@@ -456,7 +479,11 @@ $InstallDir = if ($env:PHANTOM_INSTALL_DIR) {
     Assert-SafeInstallDirectoryOverride -Path $env:PHANTOM_INSTALL_DIR
     $env:PHANTOM_INSTALL_DIR
 } else {
-    Join-Path $env:USERPROFILE '.phantom-secrets\bin'
+    $nativeProfile = Get-NativeUserProfilePath
+    if (-not $nativeProfile) {
+        Write-PhDie 'cannot determine a local native Windows user profile'
+    }
+    Join-Path $nativeProfile '.phantom-secrets\bin'
 }
 
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()

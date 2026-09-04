@@ -450,3 +450,24 @@ test("documentation redirects are a closed canonical allowlist", async () => {
   );
   assert.equal(redirects.some(({ source }) => source.includes(":")), false);
 });
+
+test("retired network installer URLs return a non-executable 410 response", async () => {
+  class TestNextResponse extends Response {}
+  const retiredInstaller = compileModule(
+    path.join(webDir, "src/middleware.ts"),
+    (specifier) => {
+      if (specifier === "next/server") return { NextResponse: TestNextResponse };
+      return require(specifier);
+    },
+  );
+
+  for (const pathName of ["/install.sh", "/install.ps1"]) {
+    assert.ok(retiredInstaller.config.matcher.includes(pathName));
+    const response = retiredInstaller.middleware();
+    assert.equal(response.status, 410);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.match(await response.text(), /network installer endpoint is unavailable/i);
+  }
+});

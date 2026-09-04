@@ -53,12 +53,12 @@ export function SiteFooter() {
               </Link>
             </li>
             <li>
-              <a
-                href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md"
+              <Link
+                href="/docs"
                 className={linkClass}
               >
                 Documentation
-              </a>
+              </Link>
             </li>
           </ul>
         </nav>
@@ -99,7 +99,7 @@ export function SiteFooter() {
                 href="https://github.com/ashlrai/phantom-secrets"
                 className={linkClass}
               >
-                GitHub repository
+                Star on GitHub
               </a>
             </li>
             <li>

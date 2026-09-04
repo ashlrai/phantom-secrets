@@ -35,6 +35,10 @@ const SECURITY_HEADERS = [
   },
 ];
 
+const NOINDEX_HEADERS = [
+  { key: "X-Robots-Tag", value: "noindex, nofollow" },
+];
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   env: {
@@ -45,17 +49,31 @@ const nextConfig: NextConfig = {
       publicAuthConfigurationFingerprint(process.env) ?? "unconfigured",
   },
   async redirects() {
-    return docsRoutes.map(({ source, file }) => ({
+    const legacyDocs = docsRoutes.map(({ source, file }) => ({
       source,
       destination: `https://github.com/ashlrai/phantom-secrets/blob/main/docs/${file}`,
       permanent: false,
     }));
+
+    return legacyDocs;
   },
   async headers() {
     return [
       {
         source: "/:path*",
         headers: SECURITY_HEADERS,
+      },
+      {
+        source: "/dashboard/:path*",
+        headers: NOINDEX_HEADERS,
+      },
+      {
+        source: "/device/:path*",
+        headers: NOINDEX_HEADERS,
+      },
+      {
+        source: "/integrations/:path*",
+        headers: NOINDEX_HEADERS,
       },
     ];
   },

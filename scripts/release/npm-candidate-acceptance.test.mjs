@@ -30,10 +30,10 @@ const primaryIntegrity = `sha512-${Buffer.alloc(64, 1).toString("base64")}`;
 const mcpIntegrity = `sha512-${Buffer.alloc(64, 2).toString("base64")}`;
 const prepublicationEnv = Object.freeze({
   PHANTOM_NPM_ACCEPTANCE_MODE: "prepublication",
-  PHANTOM_NPM_ACCEPTANCE_VERSION: "0.7.6",
+  PHANTOM_NPM_ACCEPTANCE_VERSION: "0.7.7",
   PHANTOM_PREVIOUS_NPM_LATEST: "0.6.0",
   PHANTOM_PREVIOUS_NPM_CANDIDATE: "0.7.4",
-  PHANTOM_RELEASE_TAG: "v0.7.6",
+  PHANTOM_RELEASE_TAG: "v0.7.7",
   PHANTOM_RELEASE_SOURCE_SHA: sourceSha,
   PHANTOM_APPROVED_PRIMARY_INTEGRITY: "",
   PHANTOM_APPROVED_MCP_INTEGRITY: "",
@@ -73,14 +73,14 @@ test("workflow identity is bound to the tagged release definition and source SHA
   const config = validateAcceptanceConfig(prepublicationEnv);
   const workflowEnv = {
     GITHUB_REPOSITORY: "ashlrai/phantom-secrets",
-    GITHUB_REF: "refs/tags/v0.7.6",
+    GITHUB_REF: "refs/tags/v0.7.7",
     GITHUB_SHA: sourceSha,
     GITHUB_WORKFLOW_SHA: sourceSha,
     GITHUB_WORKFLOW_REF:
-      "ashlrai/phantom-secrets/.github/workflows/npm-candidate-acceptance.yml@refs/tags/v0.7.6",
+      "ashlrai/phantom-secrets/.github/workflows/npm-candidate-acceptance.yml@refs/tags/v0.7.7",
   };
   assert.deepEqual(validateWorkflowIdentity(workflowEnv, config), {
-    githubRef: "refs/tags/v0.7.6",
+    githubRef: "refs/tags/v0.7.7",
     githubSha: sourceSha,
     workflowRef: workflowEnv.GITHUB_WORKFLOW_REF,
     workflowSha: sourceSha,
@@ -144,10 +144,10 @@ test("candidate children receive only a minimal host environment and empty npm c
 test("prepublication mode rejects burned-version ambiguity and public integrity inputs", () => {
   assert.deepEqual(validateAcceptanceConfig(prepublicationEnv), {
     mode: "prepublication",
-    version: "0.7.6",
+    version: "0.7.7",
     previousLatest: "0.6.0",
     previousCandidate: "0.7.4",
-    releaseTag: "v0.7.6",
+    releaseTag: "v0.7.7",
     releaseSha: sourceSha,
     primaryIntegrity: null,
     mcpIntegrity: null,
@@ -163,9 +163,9 @@ test("prepublication mode rejects burned-version ambiguity and public integrity 
   assert.throws(
     () =>
       validateCandidateTagState(
-        { latest: "0.6.0", "release-candidate": "0.7.6" },
+        { latest: "0.6.0", "release-candidate": "0.7.7" },
         "prepublication",
-        "0.7.6",
+        "0.7.7",
         "0.6.0",
         "0.7.4",
         "phantom-secrets",
@@ -176,7 +176,7 @@ test("prepublication mode rejects burned-version ambiguity and public integrity 
     validateCandidateTagState(
       { latest: "0.6.0", "release-candidate": "0.7.4" },
       "prepublication",
-      "0.7.6",
+      "0.7.7",
       "0.6.0",
       "0.7.4",
       "phantom-secrets",
@@ -190,12 +190,12 @@ test("prepublication mode rejects burned-version ambiguity and public integrity 
 
 test("local tarball specs preserve native Windows 8.3 paths for npm to encode once", () => {
   const windowsTarball =
-    String.raw`C:\Users\RUNNER~1\AppData\Local\Temp\phantom-npm-packs\phantom-secrets-0.7.6.tgz`;
+    String.raw`C:\Users\RUNNER~1\AppData\Local\Temp\phantom-npm-packs\phantom-secrets-0.7.7.tgz`;
   assert.equal(localTarballSpec(windowsTarball), windowsTarball);
   assert.doesNotMatch(localTarballSpec(windowsTarball), /%7E/i);
   assert.equal(
-    localTarballSpec("/tmp/phantom-secrets-0.7.6.tgz"),
-    "/tmp/phantom-secrets-0.7.6.tgz",
+    localTarballSpec("/tmp/phantom-secrets-0.7.7.tgz"),
+    "/tmp/phantom-secrets-0.7.7.tgz",
   );
   assert.throws(() => localTarballSpec(""), /non-empty native path/);
 });
@@ -220,21 +220,21 @@ test("published-candidate mode requires approved integrity and exact candidate t
   );
   assert.deepEqual(
     validateCandidateTagState(
-      { latest: "0.6.0", "release-candidate": "0.7.6" },
+      { latest: "0.6.0", "release-candidate": "0.7.7" },
       "published-candidate",
-      "0.7.6",
+      "0.7.7",
       "0.6.0",
       "0.7.4",
       "phantom-secrets-mcp",
     ),
-    { latest: "0.6.0", "release-candidate": "0.7.6" },
+    { latest: "0.6.0", "release-candidate": "0.7.7" },
   );
   assert.throws(
     () =>
       validateCandidateTagState(
         { latest: "0.6.0", "release-candidate": "0.7.4" },
         "published-candidate",
-        "0.7.6",
+        "0.7.7",
         "0.6.0",
         "0.7.4",
         "phantom-secrets-mcp",
@@ -246,8 +246,8 @@ test("published-candidate mode requires approved integrity and exact candidate t
 test("local package receipts enforce the exact five-file wrapper closure", () => {
   const pack = {
     name: "phantom-secrets",
-    version: "0.7.6",
-    filename: "phantom-secrets-0.7.6.tgz",
+    version: "0.7.7",
+    filename: "phantom-secrets-0.7.7.tgz",
     entryCount: 5,
     integrity: primaryIntegrity,
     shasum: "b".repeat(40),
@@ -259,13 +259,13 @@ test("local package receipts enforce the exact five-file wrapper closure", () =>
       { path: "LICENSE" },
     ],
   };
-  assert.equal(validatePackReceipt([pack], "phantom-secrets", "0.7.6"), pack);
+  assert.equal(validatePackReceipt([pack], "phantom-secrets", "0.7.7"), pack);
   assert.throws(
     () =>
       validatePackReceipt(
         [{ ...pack, entryCount: 6, files: [...pack.files, { path: "unexpected" }] }],
         "phantom-secrets",
-        "0.7.6",
+        "0.7.7",
       ),
     /closed package contract/,
   );

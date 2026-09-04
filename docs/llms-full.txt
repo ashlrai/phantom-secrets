@@ -1,6 +1,6 @@
 # Phantom — Delegate Supported Secret Workflows to AI
 
-Phantom is an open-source CLI that helps keep real API keys out of AI-agent context. It replaces heuristically detected, managed dotenv secrets with random `phm_` placeholders and uses an authenticated local proxy for reviewed HTTP API routes. It reduces one credential-exposure path; it does not eliminate risk from unmanaged files, same-user processes, provider endpoints, arbitrary tools, or unsupported protocols.
+Phantom is an open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces heuristically detected, managed dotenv values with random `phm_` placeholders and uses an authenticated local proxy for reviewed HTTP API routes. It reduces one credential-exposure path; it does not eliminate risk from unmanaged files, same-user processes, proxy-bearer theft, provider endpoints, arbitrary tools, or unsupported protocols.
 
 Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
@@ -37,7 +37,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 
 - `phantom init` — Import .env secrets into vault and rewrite managed values. `--all <DIR>` processes eligible repositories found within a five-level scan, stops below the first matching repository, and supports `--dry-run` plus `--jobs N` / `-j N` (default 4).
 - `phantom agent report --json` — Read-only AI-agent readiness report with status, risk_level, findings, fixes, commands, files, requires_approval, and exit_code.
-- `phantom agent doctor` — Human-readable view of the same readiness policy. Status values: unsafe, protected, verified, team-ready, compliance-ready.
+- `phantom agent doctor` — Human-readable view of the same readiness policy. Status values: unsafe, protected, verified, team-ready, compliance-ready. `compliance-ready` is a local readiness label meaning its configured predicates passed; it is not regulatory compliance, certification, centralized retention, or an independent audit.
 - `phantom agent setup --dry-run|--apply` — Preview or apply safe defaults for agent use, including MCP wiring and .env.example generation.
 - `phantom exec -- <cmd>` — Start an authenticated proxy, run command, shut down proxy on exit.
 - `phantom login` — After separate hosted commissioning and entitlement, from attached stdin/stdout/stderr approve an exact network plan, then separately approve browser opening/polling and OS-keychain persistence for the GitHub device flow. The public hosted service is not currently commissioned for authenticated use.
@@ -331,7 +331,7 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 5. **Provider-backed machine setup**: `phantom pull --from vercel --project prj_xxx` (requires Vercel credentials)
 6. **Vault backup**: from a terminal outside agent authority, run `phantom export --output backup.enc`, review/type its exact challenge, and enter a hidden passphrase. Export rejects passphrase files. Import requires its own exact terminal ceremony; only non-Windows import may read a bounded private passphrase file.
 6b. **Migrate from Doppler/Infisical/dotenvx/1Password**: `phantom import --from doppler --file dump.json`
-6c. **Audit trail**: `PHANTOM_AUDIT=1` + `phantom audit show/tail/verify` for compliance and forensics
+6c. **Local audit support**: `PHANTOM_AUDIT=1` + `phantom audit show/tail/verify` can aid troubleshooting and forensics; it is not compliance evidence by itself
 7. **Team onboarding**: `phantom env` generates .env.example with placeholders
 8. **CI/CD**: Use `phantom check` as a bounded dotenv/key-prefix gate and pair it with a broader repository scanner; preview selected provider sync targets before applying
 9. **Pre-commit safety**: Add `phantom check --staged` to hooks while remembering hooks can be skipped or bypassed

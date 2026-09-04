@@ -90,12 +90,28 @@ refuses this operation in scripts, pipes, CI, or agent tool calls.
 
 On macOS, you may see a keychain access prompt the first time. Click "Always Allow" for the `phantom-secrets` entry.
 
-On Linux, ensure the Secret Service daemon is running:
-```bash
-# GNOME
-systemctl --user start gnome-keyring-daemon
+On Linux, Phantom uses the kernel keyring by default. Its entries do not
+survive a reboot. On a headed desktop with an unlocked Secret Service, run
+`phantom vault migrate-linux` from a terminal you exclusively control. Phantom
+copies and verifies the project before switching; conflicts, a locked service,
+or missing source entries fail closed. After migration, Secret Service remains
+authoritative and its unavailability does not silently revive keyutils. For
+headless Linux, WSL, and CI, set `PHANTOM_VAULT_PASSPHRASE` to select the
+encrypted-file backend explicitly.
 
-# For headless/CI environments, set the passphrase env var instead:
+The persistent selection requires matching owner-only records under Phantom's
+application-data and configuration roots; the migration also stores a Secret
+Service corroboration sentinel used by the explicit migration/recovery path.
+Loss of one local record, including across a reboot, fails closed without a
+desktop-service probe. Unmarked headless vault opens do not probe a desktop
+service. If all local Phantom state was deleted, restore a verified backup
+rather than recreating backend records by hand.
+Kernel-keyring entries do not survive a reboot, and the per-user key quota is
+finite. If an entry is unavailable after reboot, create it again through the
+normal trusted-terminal workflow. For an explicit encrypted-file backend in
+headless or CI environments, provide the passphrase through a protected
+environment or process manager:
+```bash
 export PHANTOM_VAULT_PASSPHRASE="your-secure-passphrase"
 ```
 
@@ -248,7 +264,10 @@ Phantom is designed for local development and CI/CD. In production, your deploym
 
 ### What happens if I lose access to my vault?
 
-If using OS keychain: secrets are tied to your user account. They persist across reboots.
+If using macOS Keychain or Windows Credential Manager, secrets are tied to your
+user account and can persist across reboots. Linux kernel-keyring entries do
+not survive a reboot; recover from an independently protected backup or re-add
+the credential through the trusted-terminal workflow.
 
 If using file vault: you need the `PHANTOM_VAULT_PASSPHRASE` to decrypt. If lost, re-pull from your deployment platform:
 ```bash
@@ -272,7 +291,7 @@ launched outside the proxy environment.
 
 Phantom stores your real secret values in one of two locations:
 
-- **OS keychain (primary):** macOS Keychain or Linux Secret Service. This is the default on desktop systems. Secrets are tied to your user account and persist across reboots.
+- **Platform credential backend (primary):** macOS Keychain, Linux keyutils or explicitly migrated desktop Secret Service, or Windows Credential Manager. Linux keyutils entries are in-memory and do not survive a reboot; `phantom vault migrate-linux` is a per-project trusted-terminal transition, not a headless default.
 - **Encrypted file vault (explicit or guarded fallback):** stored below the operating system's Phantom application-data directory (the exact path varies across macOS, Linux, and Windows). Setting a non-empty `PHANTOM_VAULT_PASSPHRASE` selects this backend explicitly. Otherwise Phantom falls back only after the OS keychain is unavailable and a generated passphrase has been persisted to secure storage and verified by an exact read-after-write. If an encrypted vault already exists but its secure passphrase entry is missing, Phantom refuses to generate a replacement key. Set `PHANTOM_REQUIRE_KEYCHAIN=1` to reject any fallback. Phantom prints a warning whenever an automatic fallback changes the storage posture. Vault payloads use ChaCha20-Poly1305 with an Argon2id-derived key; provide automation passphrases through a protected environment or process manager, not shell history.
 
 ### How to back up your secrets

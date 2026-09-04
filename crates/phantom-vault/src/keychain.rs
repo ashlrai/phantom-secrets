@@ -12,6 +12,67 @@ use zeroize::Zeroizing;
 
 const SERVICE_PREFIX: &str = "phantom-secrets";
 const PROCESS_LOCK_SHARDS: usize = 64;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_BACKEND_MARKER_VERSION: u8 = 1;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_SECRET_SERVICE_BACKEND: &str = "linux-secret-service";
+#[cfg(target_os = "linux")]
+const LINUX_MIGRATION_SENTINEL_SUFFIX: &str = "__linux_backend_migration__";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CredentialStore {
+    #[cfg(not(target_os = "linux"))]
+    OsKeychain,
+    #[cfg(target_os = "linux")]
+    LinuxKeyutils,
+    #[cfg(target_os = "linux")]
+    LinuxSecretService,
+}
+
+fn credential_entry(
+    store: CredentialStore,
+    service: &str,
+    account: &str,
+) -> keyring::Result<keyring::Entry> {
+    #[cfg(target_os = "linux")]
+    {
+        let credential: Box<keyring::Credential> = match store {
+            CredentialStore::LinuxKeyutils => Box::new(
+                keyring::keyutils::KeyutilsCredential::new_with_target(None, service, account)?,
+            ),
+            CredentialStore::LinuxSecretService => Box::new(
+                keyring::secret_service::SsCredential::new_with_target(None, service, account)?,
+            ),
+        };
+        Ok(keyring::Entry::new_with_credential(credential))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        match store {
+            CredentialStore::OsKeychain => keyring::Entry::new(service, account),
+        }
+    }
+}
+
+/// Construct the platform store used before any explicit per-project Linux
+/// migration. This also prevents Cargo feature unification from redirecting
+/// fallback-passphrase entries when Secret Service support is compiled in.
+pub(crate) fn unmigrated_os_entry(service: &str, account: &str) -> keyring::Result<keyring::Entry> {
+    #[cfg(target_os = "linux")]
+    let store = CredentialStore::LinuxKeyutils;
+    #[cfg(not(target_os = "linux"))]
+    let store = CredentialStore::OsKeychain;
+    credential_entry(store, service, account)
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, serde::Deserialize, serde::Serialize, Eq, PartialEq)]
+struct LinuxBackendMarker {
+    version: u8,
+    backend: String,
+    project_digest: String,
+}
 
 /// Process-local lock shards complement the filesystem lock. Some OS locking
 /// APIs treat locks from one process as mutually compatible even when they use
@@ -53,6 +114,35 @@ pub(crate) struct ProjectLock {
     _legacy_file: AnchoredLock,
     _stable_file: AnchoredLock,
     _process: Vec<MutexGuard<'static, ()>>,
+}
+
+pub(crate) enum KeychainOpenError {
+    Unavailable(PhantomError),
+    Authoritative(PhantomError),
+}
+
+impl KeychainOpenError {
+    pub(crate) fn into_inner(self) -> PhantomError {
+        match self {
+            Self::Unavailable(error) | Self::Authoritative(error) => error,
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn authoritative_linux_selection<T>(
+    result: Result<T>,
+) -> std::result::Result<T, KeychainOpenError> {
+    result.map_err(KeychainOpenError::Authoritative)
+}
+
+fn classify_keychain_probe_error(store: CredentialStore, error: PhantomError) -> KeychainOpenError {
+    #[cfg(target_os = "linux")]
+    if store == CredentialStore::LinuxSecretService {
+        return KeychainOpenError::Authoritative(error);
+    }
+    let _ = store;
+    KeychainOpenError::Unavailable(error)
 }
 
 fn safe_project_component(project_id: &str) -> String {
@@ -103,13 +193,19 @@ fn hash_secret_name(project_id: &str, name: &str) -> String {
     hex::encode(&out[..8])
 }
 
-/// Vault backend that uses the OS keychain (macOS Keychain, Linux Secret Service).
+/// Vault backend that uses the platform credential store selected by `keyring`.
+///
+/// The current Linux feature selects kernel keyutils. Unlike macOS Keychain and
+/// Windows Credential Manager, that store is not durable across a reboot. Keep
+/// the Linux backend label explicit so callers never mistake it for Secret
+/// Service or infer reboot durability from the generic "OS keychain" name.
 pub struct KeychainVault {
     project_id: String,
     /// We track stored keys in a special keychain entry since keychain APIs
     /// don't support listing by prefix on all platforms.
     index_key: String,
     sidecars: KeychainSidecars,
+    store: CredentialStore,
 }
 
 // ── Metadata sidecar helpers ─────────────────────────────────────────────────
@@ -123,10 +219,16 @@ pub struct KeychainVault {
 struct KeychainSidecars {
     _app_data: Arc<TrustedAnchor>,
     _metadata: Arc<TrustedAnchor>,
+    #[cfg(target_os = "linux")]
+    _backend_config: Arc<TrustedAnchor>,
     stable_lock: AnchoredTarget,
     legacy_lock: AnchoredTarget,
     metadata: AnchoredTarget,
     validation: AnchoredTarget,
+    #[cfg(target_os = "linux")]
+    linux_backend: AnchoredTarget,
+    #[cfg(target_os = "linux")]
+    linux_backend_corroboration: AnchoredTarget,
     legacy_metadata: AnchoredTarget,
     legacy_validation: AnchoredTarget,
     legacy_name_is_ambiguous: bool,
@@ -152,6 +254,21 @@ fn open_app_data_anchor() -> Result<TrustedAnchor> {
     open_configured_app_data_anchor(&target)
 }
 
+#[cfg(target_os = "linux")]
+fn open_backend_config_anchor() -> Result<TrustedAnchor> {
+    let _environment = phantom_core::PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let target = directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
+        .map(|dirs| dirs.config_dir().join("linux-backends"))
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join(".phantom/linux-backends")
+        });
+    open_configured_app_data_anchor(&target)
+}
+
 fn open_configured_app_data_anchor(target: &Path) -> Result<TrustedAnchor> {
     // The OS/configured app-data path is the explicit ambient authority. It may
     // legitimately traverse aliases (macOS `/var`, redirected HOME/XDG roots),
@@ -166,14 +283,177 @@ fn open_configured_app_data_anchor(target: &Path) -> Result<TrustedAnchor> {
     TrustedAnchor::open_canonical_private(target).map_err(Into::into)
 }
 
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LinuxMigrationState {
+    Unmigrated,
+    Incomplete,
+    Persistent,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn classify_local_linux_markers(
+    primary: Option<&[u8]>,
+    corroboration: Option<&[u8]>,
+    project_id: &str,
+) -> Result<LinuxMigrationState> {
+    match (primary, corroboration) {
+        (None, None) => Ok(LinuxMigrationState::Unmigrated),
+        (Some(primary), Some(corroboration)) => {
+            validate_linux_backend_marker(primary, project_id)?;
+            validate_linux_backend_marker(corroboration, project_id)?;
+            if primary != corroboration {
+                return Err(PhantomError::VaultError(
+                    "Linux backend marker records diverge; refusing to guess which local record is authoritative"
+                        .to_string(),
+                ));
+            }
+            Ok(LinuxMigrationState::Persistent)
+        }
+        (Some(marker), None) | (None, Some(marker)) => {
+            validate_linux_backend_marker(marker, project_id)?;
+            Ok(LinuxMigrationState::Incomplete)
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_backend_decision(state: LinuxMigrationState) -> Result<bool> {
+    match state {
+        LinuxMigrationState::Unmigrated => Ok(false),
+        LinuxMigrationState::Persistent => Ok(true),
+        LinuxMigrationState::Incomplete => Err(PhantomError::VaultError(
+            "Linux backend migration records are incomplete. Normal vault access is denied; rerun `phantom vault migrate-linux` from a trusted terminal to resume and verify the migration"
+                .to_string(),
+        )),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_migration_sentinel_entry(
+    project_id: &str,
+    store: CredentialStore,
+) -> Result<keyring::Entry> {
+    credential_entry(
+        store,
+        &format!("{SERVICE_PREFIX}:{project_id}"),
+        &format!("{SERVICE_PREFIX}:{project_id}:{LINUX_MIGRATION_SENTINEL_SUFFIX}"),
+    )
+    .map_err(|error| PhantomError::VaultError(format!("Linux migration sentinel error: {error}")))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_migration_state(
+    sidecars: &KeychainSidecars,
+    project_id: &str,
+) -> Result<LinuxMigrationState> {
+    let primary = sidecars.linux_backend.read_regular()?;
+    let corroboration = sidecars.linux_backend_corroboration.read_regular()?;
+    let local_state = classify_local_linux_markers(
+        primary.as_ref().map(AnchoredRead::bytes),
+        corroboration.as_ref().map(AnchoredRead::bytes),
+        project_id,
+    )?;
+    match local_state {
+        LinuxMigrationState::Persistent => {
+            sidecars.linux_backend.repair_private_regular()?;
+            sidecars
+                .linux_backend_corroboration
+                .repair_private_regular()?;
+            let durable_sentinel =
+                linux_migration_sentinel_entry(project_id, CredentialStore::LinuxSecretService)?;
+            let durable = read_credential(&durable_sentinel, "durable Linux migration sentinel")?
+                .ok_or_else(|| {
+                    PhantomError::VaultError(
+                        "Linux backend markers exist without their durable Secret Service corroboration sentinel; refusing credential access"
+                            .to_string(),
+                    )
+                })?;
+            validate_linux_backend_marker(durable.as_bytes(), project_id)?;
+            return Ok(LinuxMigrationState::Persistent);
+        }
+        LinuxMigrationState::Incomplete => return Ok(LinuxMigrationState::Incomplete),
+        LinuxMigrationState::Unmigrated => {}
+    }
+    let sentinel = linux_migration_sentinel_entry(project_id, CredentialStore::LinuxKeyutils)?;
+    match read_credential(&sentinel, "Linux migration sentinel")? {
+        None => Ok(LinuxMigrationState::Unmigrated),
+        Some(bytes) => {
+            validate_linux_backend_marker(bytes.as_bytes(), project_id)?;
+            Ok(LinuxMigrationState::Incomplete)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn durable_linux_migration_sentinel_exists(project_id: &str) -> Result<bool> {
+    // Only the explicit trusted-terminal migration workflow probes Secret
+    // Service when no local marker exists. Ambient vault opens must continue
+    // to support deliberately unmarked/headless keyutils projects without a
+    // desktop prompt.
+    let sentinel = linux_migration_sentinel_entry(project_id, CredentialStore::LinuxSecretService)?;
+    match read_credential(&sentinel, "durable Linux migration sentinel")? {
+        None => Ok(false),
+        Some(bytes) => {
+            validate_linux_backend_marker(bytes.as_bytes(), project_id)?;
+            Ok(true)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_store_from_marker(
+    sidecars: &KeychainSidecars,
+    project_id: &str,
+) -> Result<CredentialStore> {
+    if linux_backend_decision(linux_migration_state(sidecars, project_id)?)? {
+        Ok(CredentialStore::LinuxSecretService)
+    } else {
+        Ok(CredentialStore::LinuxKeyutils)
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn validate_linux_backend_marker(bytes: &[u8], project_id: &str) -> Result<()> {
+    let marker: LinuxBackendMarker = serde_json::from_slice(bytes).map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Corrupt Linux vault backend marker; refusing to guess which credential store is authoritative: {error}"
+        ))
+    })?;
+    let expected = LinuxBackendMarker {
+        version: LINUX_BACKEND_MARKER_VERSION,
+        backend: LINUX_SECRET_SERVICE_BACKEND.to_string(),
+        project_digest: project_digest(project_id),
+    };
+    if marker != expected {
+        return Err(PhantomError::VaultError(
+            "Linux vault backend marker is unsupported or belongs to another project; refusing to redirect credential access"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 impl KeychainSidecars {
     fn open(project_id: &str) -> Result<Self> {
-        Self::from_anchor(open_app_data_anchor()?, project_id)
+        let sidecars = Self::from_anchor(open_app_data_anchor()?, project_id)?;
+        #[cfg(target_os = "linux")]
+        let sidecars = {
+            let mut sidecars = sidecars;
+            let backend_config = Arc::new(open_backend_config_anchor()?);
+            sidecars.linux_backend_corroboration =
+                backend_config.target(format!("{}.json", project_digest(project_id)))?;
+            sidecars._backend_config = backend_config;
+            sidecars
+        };
+        Ok(sidecars)
     }
 
     fn from_anchor(app_data: TrustedAnchor, project_id: &str) -> Result<Self> {
         let app_data = Arc::new(app_data);
         let metadata = Arc::new(app_data.private_subdirectory("metadata")?);
+        #[cfg(target_os = "linux")]
+        let backend_config = Arc::new(app_data.private_subdirectory("linux-backends-test")?);
         let digest = project_digest(project_id);
         let legacy = safe_project_component(project_id);
         Ok(Self {
@@ -181,6 +461,10 @@ impl KeychainSidecars {
             legacy_lock: app_data.target_with_private_parents(legacy_lock_path(project_id))?,
             metadata: metadata.target(format!("{digest}.meta.json"))?,
             validation: metadata.target(format!("{digest}.validation.json"))?,
+            #[cfg(target_os = "linux")]
+            linux_backend: metadata.target(format!("{digest}.linux-backend.json"))?,
+            #[cfg(target_os = "linux")]
+            linux_backend_corroboration: backend_config.target(format!("{digest}.json"))?,
             legacy_metadata: metadata.target(format!("{legacy}.meta.json"))?,
             legacy_validation: metadata.target(format!("{legacy}.validation.json"))?,
             // Older sidecars used the project identifier directly after a
@@ -189,6 +473,8 @@ impl KeychainSidecars {
             legacy_name_is_ambiguous: !legacy_project_name_is_unambiguous(project_id),
             _app_data: app_data,
             _metadata: metadata,
+            #[cfg(target_os = "linux")]
+            _backend_config: backend_config,
         })
     }
 
@@ -639,34 +925,63 @@ impl KeychainVault {
     /// Create a new keychain vault for a project.
     /// Returns an error if the keychain is not available.
     pub fn new(project_id: &str) -> Result<Self> {
+        let project_lock = acquire_project_lock(project_id)?;
+        Self::new_with_project_lock(project_id, &project_lock)
+            .map_err(KeychainOpenError::into_inner)
+    }
+
+    /// Select and probe the keychain while the caller retains the migration
+    /// lock. This prevents backend state from changing between an unavailable
+    /// keyutils probe and the caller's encrypted-file fallback transaction.
+    pub(crate) fn new_with_project_lock(
+        project_id: &str,
+        _project_lock: &ProjectLock,
+    ) -> std::result::Result<Self, KeychainOpenError> {
+        let sidecars =
+            KeychainSidecars::open(project_id).map_err(KeychainOpenError::Authoritative)?;
+        sidecars
+            .reconcile_legacy()
+            .map_err(KeychainOpenError::Authoritative)?;
+        #[cfg(target_os = "linux")]
+        let store = authoritative_linux_selection(linux_store_from_marker(&sidecars, project_id))?;
+        #[cfg(not(target_os = "linux"))]
+        let store = CredentialStore::OsKeychain;
+
         // Test that keychain is accessible by trying a no-op
-        let test_entry = keyring::Entry::new(SERVICE_PREFIX, "__phantom_test__")
-            .map_err(|e| PhantomError::VaultError(format!("Keychain not available: {e}")))?;
+        let test_entry = credential_entry(store, SERVICE_PREFIX, "__phantom_test__")
+            .map_err(|e| PhantomError::VaultError(format!("Keychain not available: {e}")))
+            .map_err(|error| classify_keychain_probe_error(store, error))?;
 
         // Try to access it (will fail with NotFound, which is fine)
         match test_entry.get_password() {
             Ok(_) | Err(keyring::Error::NoEntry) => {}
             Err(e) => {
-                return Err(PhantomError::VaultError(format!(
-                    "Keychain not accessible: {e}"
-                )));
+                return Err(classify_keychain_probe_error(
+                    store,
+                    PhantomError::VaultError(format!("Keychain not accessible: {e}")),
+                ));
             }
         }
 
         let vault = Self {
             index_key: format!("{SERVICE_PREFIX}:{project_id}:__index__"),
             project_id: project_id.to_string(),
-            sidecars: KeychainSidecars::open(project_id)?,
+            sidecars,
+            store,
         };
-        // Reconcile value-free sidecars while both the stable lock and the
-        // rolling legacy bridge are held. No ambient pathname is consulted.
-        let _lock = vault.lock_sidecars()?;
         Ok(vault)
     }
 
     fn lock_sidecars(&self) -> Result<ProjectLock> {
         let lock = self.sidecars.acquire_project_lock(&self.project_id)?;
         self.sidecars.reconcile_legacy()?;
+        #[cfg(target_os = "linux")]
+        if linux_store_from_marker(&self.sidecars, &self.project_id)? != self.store {
+            return Err(PhantomError::VaultError(
+                "Linux vault backend changed while this process was running; restart the Phantom command before accessing credentials"
+                    .to_string(),
+            ));
+        }
         Ok(lock)
     }
 
@@ -712,12 +1027,12 @@ impl KeychainVault {
         // uses (service, account) as the lookup key on most backends, and we
         // want neither to leak the plaintext name.
         let account = self.hash_name(name);
-        keyring::Entry::new(&self.entry_key(name), &account)
+        credential_entry(self.store, &self.entry_key(name), &account)
             .map_err(|e| PhantomError::VaultError(format!("Keychain error: {e}")))
     }
 
     fn legacy_entry_for(&self, name: &str) -> Option<keyring::Entry> {
-        keyring::Entry::new(&self.legacy_entry_key(name), name).ok()
+        credential_entry(self.store, &self.legacy_entry_key(name), name).ok()
     }
 
     /// Best-effort deletion of the legacy plaintext-named entry for `name`.
@@ -731,7 +1046,8 @@ impl KeychainVault {
 
     /// Load the index of stored secret names.
     fn load_index(&self) -> Result<Vec<String>> {
-        let entry = keyring::Entry::new(
+        let entry = credential_entry(
+            self.store,
             &format!("{SERVICE_PREFIX}:{}", self.project_id),
             &self.index_key,
         )
@@ -752,7 +1068,8 @@ impl KeychainVault {
 
     /// Save the index of stored secret names.
     fn save_index(&self, names: &[String]) -> Result<()> {
-        let entry = keyring::Entry::new(
+        let entry = credential_entry(
+            self.store,
             &format!("{SERVICE_PREFIX}:{}", self.project_id),
             &self.index_key,
         )
@@ -891,6 +1208,323 @@ impl KeychainVault {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinuxMigrationPreview {
+    pub source_secret_count: usize,
+    pub source_state_id: String,
+    pub already_persistent: bool,
+    pub indexed_names: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinuxMigrationReceipt {
+    pub migrated_secret_count: usize,
+    pub source_state_id: String,
+    pub already_persistent: bool,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn migration_state_id(names: &[String]) -> Result<String> {
+    let bytes = serde_json::to_vec(names)
+        .map_err(|error| PhantomError::VaultError(format!("Serialize index error: {error}")))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_marker_for(project_id: &str) -> LinuxBackendMarker {
+    LinuxBackendMarker {
+        version: LINUX_BACKEND_MARKER_VERSION,
+        backend: LINUX_SECRET_SERVICE_BACKEND.to_string(),
+        project_digest: project_digest(project_id),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn explicit_linux_vault(
+    project_id: &str,
+    sidecars: KeychainSidecars,
+    store: CredentialStore,
+) -> KeychainVault {
+    KeychainVault {
+        index_key: format!("{SERVICE_PREFIX}:{project_id}:__index__"),
+        project_id: project_id.to_string(),
+        sidecars,
+        store,
+    }
+}
+
+/// Inspect only the value-free keyutils index used to bind a trusted-terminal
+/// Linux migration challenge. Secret values and Secret Service are untouched.
+pub fn preview_linux_persistent_migration(project_id: &str) -> Result<LinuxMigrationPreview> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = project_id;
+        Err(PhantomError::VaultError(
+            "Linux Secret Service migration is available only on Linux".to_string(),
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let sidecars = KeychainSidecars::open(project_id)?;
+        let _lock = sidecars.acquire_project_lock(project_id)?;
+        sidecars.reconcile_legacy()?;
+        let state = linux_migration_state(&sidecars, project_id)?;
+        let already_persistent = state == LinuxMigrationState::Persistent;
+        let destination_prepared =
+            !already_persistent && durable_linux_migration_sentinel_exists(project_id)?;
+        let source = explicit_linux_vault(
+            project_id,
+            sidecars,
+            if already_persistent || destination_prepared {
+                CredentialStore::LinuxSecretService
+            } else {
+                CredentialStore::LinuxKeyutils
+            },
+        );
+        let names = source.load_index()?;
+        Ok(LinuxMigrationPreview {
+            source_secret_count: names.len(),
+            source_state_id: migration_state_id(&names)?,
+            already_persistent,
+            indexed_names: names,
+        })
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn reconcile_destination(
+    source: &str,
+    label: &str,
+    mut read: impl FnMut() -> Result<Option<Zeroizing<String>>>,
+    mut write: impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    match read()? {
+        Some(existing) if existing.as_str() == source => return Ok(()),
+        Some(_) => {
+            return Err(PhantomError::VaultError(format!(
+                "Persistent {label} conflicts with the keyutils source; refusing to overwrite either copy"
+            )))
+        }
+        None => {}
+    }
+    write(source)?;
+    let verified = read()?;
+    if verified.as_deref().map(|value| value.as_str()) != Some(source) {
+        return Err(PhantomError::VaultError(format!(
+            "Persistent {label} did not return the exact source bytes after writing; backend marker was not committed"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn reconcile_destination_entry(
+    destination: &keyring::Entry,
+    source: &str,
+    label: &str,
+) -> Result<()> {
+    reconcile_destination(
+        source,
+        label,
+        || read_credential(destination, label),
+        |value| {
+            destination.set_password(value).map_err(|error| {
+                PhantomError::VaultError(format!("Failed to write persistent {label}: {error}"))
+            })
+        },
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn publish_linux_marker(target: &AnchoredTarget, marker: &[u8], label: &str) -> Result<()> {
+    match target.read_regular()? {
+        Some(existing) if existing.bytes() == marker => {
+            target.repair_private_regular()?;
+            Ok(())
+        }
+        Some(_) => Err(PhantomError::VaultError(format!(
+            "Existing {label} conflicts with the reviewed migration marker; refusing to overwrite it"
+        ))),
+        None => require_durable_sidecar_effect(
+            target.replace_if_exact(None, marker)?,
+            &format!("{label} publication"),
+        )
+        .map(|_| ()),
+    }
+}
+
+/// Copy the current project's Linux keyutils entries into Secret Service and
+/// publish two independent per-project backend records only after every exact
+/// read-after-write succeeds. Their project lock and fail-closed intermediate
+/// state make publication retryable. Source keyutils entries are kept.
+pub fn migrate_linux_to_secret_service(
+    project_id: &str,
+    expected_source_state_id: &str,
+) -> Result<LinuxMigrationReceipt> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (project_id, expected_source_state_id);
+        Err(PhantomError::VaultError(
+            "Linux Secret Service migration is available only on Linux".to_string(),
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let sidecars = KeychainSidecars::open(project_id)?;
+        let lock = sidecars.acquire_project_lock(project_id)?;
+        sidecars.reconcile_legacy()?;
+        if linux_migration_state(&sidecars, project_id)? == LinuxMigrationState::Persistent {
+            let persistent =
+                explicit_linux_vault(project_id, sidecars, CredentialStore::LinuxSecretService);
+            let names = persistent.load_index()?;
+            let source_state_id = migration_state_id(&names)?;
+            drop(lock);
+            return Ok(LinuxMigrationReceipt {
+                migrated_secret_count: names.len(),
+                source_state_id,
+                already_persistent: true,
+            });
+        }
+
+        // A durable sentinel is written only after every Secret Service value
+        // and the index have passed exact read-after-write verification. It is
+        // therefore a recoverable prepared state even if the process crashed
+        // before publishing the final data-root commit record and keyutils
+        // later rebooted.
+        if durable_linux_migration_sentinel_exists(project_id)? {
+            let persistent =
+                explicit_linux_vault(project_id, sidecars, CredentialStore::LinuxSecretService);
+            let names = persistent.load_index()?;
+            let source_state_id = migration_state_id(&names)?;
+            if source_state_id != expected_source_state_id {
+                return Err(PhantomError::VaultError(
+                    "Prepared Secret Service index changed after review; no backend marker was committed"
+                        .to_string(),
+                ));
+            }
+            for name in &names {
+                persistent.current_value_locked(name)?.ok_or_else(|| {
+                    PhantomError::VaultError(format!(
+                        "Prepared Secret Service index references a missing secret ({name}); no backend marker was committed"
+                    ))
+                })?;
+            }
+            let marker =
+                serde_json::to_vec_pretty(&linux_marker_for(project_id)).map_err(|error| {
+                    PhantomError::VaultError(format!(
+                        "Serialize Linux backend marker error: {error}"
+                    ))
+                })?;
+            publish_linux_marker(
+                &persistent.sidecars.linux_backend_corroboration,
+                &marker,
+                "Linux Secret Service config corroboration marker",
+            )?;
+            publish_linux_marker(
+                &persistent.sidecars.linux_backend,
+                &marker,
+                "Linux Secret Service backend marker recovery",
+            )?;
+            drop(lock);
+            return Ok(LinuxMigrationReceipt {
+                migrated_secret_count: names.len(),
+                source_state_id,
+                already_persistent: false,
+            });
+        }
+
+        let source = explicit_linux_vault(project_id, sidecars, CredentialStore::LinuxKeyutils);
+        let names = source.load_index()?;
+        let source_state_id = migration_state_id(&names)?;
+        if source_state_id != expected_source_state_id {
+            return Err(PhantomError::VaultError(
+                "Linux keyutils index changed after review; no backend marker was committed. Review and confirm a fresh migration plan"
+                    .to_string(),
+            ));
+        }
+        let unique: std::collections::BTreeSet<_> = names.iter().collect();
+        if unique.len() != names.len() {
+            return Err(PhantomError::VaultError(
+                "Linux keyutils index contains duplicate names; refusing ambiguous migration"
+                    .to_string(),
+            ));
+        }
+
+        for name in &names {
+            let source_value = source.current_value_locked(name)?.ok_or_else(|| {
+                PhantomError::VaultError(format!(
+                    "Linux keyutils index references a missing secret ({name}); no backend marker was committed"
+                ))
+            })?;
+            let account = source.hash_name(name);
+            let destination = credential_entry(
+                CredentialStore::LinuxSecretService,
+                &source.entry_key(name),
+                &account,
+            )
+            .map_err(|error| {
+                PhantomError::VaultError(format!(
+                    "Secret Service is unavailable; migration stopped before backend selection changed: {error}"
+                ))
+            })?;
+            reconcile_destination_entry(&destination, source_value.as_str(), "secret")?;
+        }
+
+        let index_json = serde_json::to_string(&names)
+            .map_err(|error| PhantomError::VaultError(format!("Serialize index error: {error}")))?;
+        let destination_index = credential_entry(
+            CredentialStore::LinuxSecretService,
+            &format!("{SERVICE_PREFIX}:{project_id}"),
+            &source.index_key,
+        )
+        .map_err(|error| {
+            PhantomError::VaultError(format!(
+                "Secret Service is unavailable; migration stopped before backend selection changed: {error}"
+            ))
+        })?;
+        reconcile_destination_entry(&destination_index, &index_json, "secret index")?;
+
+        let marker = serde_json::to_vec_pretty(&linux_marker_for(project_id)).map_err(|error| {
+            PhantomError::VaultError(format!("Serialize Linux backend marker error: {error}"))
+        })?;
+        // Publish the independent config-root record immediately after every
+        // copied value and the destination index have been verified. A crash
+        // anywhere after this point leaves a one-sided local state, so even a
+        // reboot that clears keyutils cannot make ambient access look
+        // unmigrated. The data-root record remains the final commit record.
+        publish_linux_marker(
+            &source.sidecars.linux_backend_corroboration,
+            &marker,
+            "Linux Secret Service config corroboration marker",
+        )?;
+        let durable_sentinel =
+            linux_migration_sentinel_entry(project_id, CredentialStore::LinuxSecretService)?;
+        let marker_text = std::str::from_utf8(&marker).map_err(|error| {
+            PhantomError::VaultError(format!("Linux backend marker encoding error: {error}"))
+        })?;
+        reconcile_destination_entry(
+            &durable_sentinel,
+            marker_text,
+            "durable Linux migration sentinel",
+        )?;
+        let sentinel = linux_migration_sentinel_entry(project_id, CredentialStore::LinuxKeyutils)?;
+        reconcile_destination_entry(&sentinel, marker_text, "Linux migration sentinel")?;
+        publish_linux_marker(
+            &source.sidecars.linux_backend,
+            &marker,
+            "Linux Secret Service backend marker",
+        )?;
+        drop(lock);
+        Ok(LinuxMigrationReceipt {
+            migrated_secret_count: names.len(),
+            source_state_id,
+            already_persistent: false,
+        })
+    }
+}
+
 impl VaultBackend for KeychainVault {
     fn store(&self, name: &str, value: &str) -> Result<()> {
         let _lock = self.lock_sidecars()?;
@@ -900,6 +1534,7 @@ impl VaultBackend for KeychainVault {
     }
 
     fn retrieve(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
+        let _lock = self.lock_sidecars()?;
         let entry = self.entry_for(name)?;
         match entry.get_password() {
             Ok(value) => {
@@ -907,7 +1542,6 @@ impl VaultBackend for KeychainVault {
                 Ok(zeroize::Zeroizing::new(value))
             }
             Err(keyring::Error::NoEntry) => {
-                let _lock = self.lock_sidecars()?;
                 // F13 migration: older phantom versions stored entries under
                 // the plaintext name. The migration spans the hashed entry,
                 // index, and legacy deletion as one compensated transaction.
@@ -975,7 +1609,7 @@ impl VaultBackend for KeychainVault {
     }
 
     fn backend_name(&self) -> &str {
-        "os-keychain"
+        backend_name_for_store(self.store)
     }
 
     fn get_metadata(&self, name: &str) -> Result<Option<SecretMetadata>> {
@@ -1113,6 +1747,17 @@ impl VaultBackend for KeychainVault {
     }
 }
 
+const fn backend_name_for_store(store: CredentialStore) -> &'static str {
+    match store {
+        #[cfg(target_os = "linux")]
+        CredentialStore::LinuxKeyutils => "linux-keyutils (volatile across reboot)",
+        #[cfg(target_os = "linux")]
+        CredentialStore::LinuxSecretService => "linux-secret-service (persistent)",
+        #[cfg(not(target_os = "linux"))]
+        CredentialStore::OsKeychain => "os-keychain",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1123,6 +1768,177 @@ mod tests {
 
     const MIGRATION_NAME: &str = "API_KEY";
     const MIGRATION_VALUE: &str = "test-legacy-value";
+
+    #[test]
+    fn backend_label_never_claims_secret_service_for_linux_keyutils() {
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                backend_name_for_store(CredentialStore::LinuxKeyutils),
+                "linux-keyutils (volatile across reboot)"
+            );
+            assert_eq!(
+                backend_name_for_store(CredentialStore::LinuxSecretService),
+                "linux-secret-service (persistent)"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            backend_name_for_store(CredentialStore::OsKeychain),
+            "os-keychain"
+        );
+    }
+
+    #[test]
+    fn linux_backend_marker_is_bound_to_version_backend_and_project() {
+        let marker = LinuxBackendMarker {
+            version: LINUX_BACKEND_MARKER_VERSION,
+            backend: LINUX_SECRET_SERVICE_BACKEND.to_string(),
+            project_digest: project_digest("project-a"),
+        };
+        let bytes = serde_json::to_vec(&marker).unwrap();
+        validate_linux_backend_marker(&bytes, "project-a").unwrap();
+        assert!(validate_linux_backend_marker(&bytes, "project-b")
+            .unwrap_err()
+            .to_string()
+            .contains("belongs to another project"));
+
+        let unsupported = serde_json::to_vec(&LinuxBackendMarker {
+            version: LINUX_BACKEND_MARKER_VERSION + 1,
+            ..marker
+        })
+        .unwrap();
+        assert!(validate_linux_backend_marker(&unsupported, "project-a")
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported"));
+        assert!(validate_linux_backend_marker(b"not-json", "project-a")
+            .unwrap_err()
+            .to_string()
+            .contains("Corrupt Linux vault backend marker"));
+    }
+
+    #[test]
+    fn durable_corroboration_prevents_reboot_downgrade_after_primary_marker_loss() {
+        let marker = serde_json::to_vec(&LinuxBackendMarker {
+            version: LINUX_BACKEND_MARKER_VERSION,
+            backend: LINUX_SECRET_SERVICE_BACKEND.to_string(),
+            project_digest: project_digest("project-a"),
+        })
+        .unwrap();
+
+        // Completed state selects the persistent backend.
+        let complete = classify_local_linux_markers(
+            Some(marker.as_slice()),
+            Some(marker.as_slice()),
+            "project-a",
+        )
+        .unwrap();
+        assert!(linux_backend_decision(complete).unwrap());
+
+        // Simulate reboot (the keyutils sentinel is gone) plus deletion of the
+        // primary data-root marker. The independent config-root record still
+        // makes ambient access fail closed without probing Secret Service.
+        let marker_lost =
+            classify_local_linux_markers(None, Some(marker.as_slice()), "project-a").unwrap();
+        let error = linux_backend_decision(marker_lost).unwrap_err();
+        assert!(error.to_string().contains("Normal vault access is denied"));
+
+        // Only a project with neither durable marker is treated as untouched.
+        let untouched = classify_local_linux_markers(None, None, "project-a").unwrap();
+        assert!(!linux_backend_decision(untouched).unwrap());
+    }
+
+    #[test]
+    fn concurrent_marker_transition_is_authoritative_not_fallback_eligible() {
+        let marker = serde_json::to_vec(&LinuxBackendMarker {
+            version: LINUX_BACKEND_MARKER_VERSION,
+            backend: LINUX_SECRET_SERVICE_BACKEND.to_string(),
+            project_digest: project_digest("project-a"),
+        })
+        .unwrap();
+
+        // The old split precheck could observe this untouched state, release
+        // its lock, and then race with migration publishing its first record.
+        let before = classify_local_linux_markers(None, None, "project-a").unwrap();
+        assert!(!linux_backend_decision(before).unwrap());
+
+        let after =
+            classify_local_linux_markers(None, Some(marker.as_slice()), "project-a").unwrap();
+        let classified = authoritative_linux_selection(linux_backend_decision(after));
+        match classified {
+            Err(KeychainOpenError::Authoritative(error)) => {
+                assert!(error.to_string().contains("Normal vault access is denied"));
+            }
+            Err(KeychainOpenError::Unavailable(_)) => {
+                panic!("an incomplete migration must never permit encrypted-file fallback")
+            }
+            Ok(_) => panic!("an incomplete migration must not select a backend"),
+        }
+    }
+
+    #[test]
+    fn migration_state_id_binds_exact_value_free_index() {
+        let first = migration_state_id(&["A".to_string(), "B".to_string()]).unwrap();
+        let reordered = migration_state_id(&["B".to_string(), "A".to_string()]).unwrap();
+        let changed = migration_state_id(&["A".to_string(), "C".to_string()]).unwrap();
+        assert_ne!(first, reordered);
+        assert_ne!(first, changed);
+    }
+
+    #[test]
+    fn persistent_copy_retries_exact_values_and_refuses_conflicts() {
+        let state = RefCell::new(None::<String>);
+        reconcile_destination(
+            "source-value",
+            "secret",
+            || Ok(state.borrow().clone().map(Zeroizing::new)),
+            |value| {
+                *state.borrow_mut() = Some(value.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(state.borrow().as_deref(), Some("source-value"));
+
+        // A retry is read-only when the exact destination already exists.
+        let writes = RefCell::new(0_u8);
+        reconcile_destination(
+            "source-value",
+            "secret",
+            || Ok(Some(Zeroizing::new("source-value".to_string()))),
+            |_| {
+                *writes.borrow_mut() += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*writes.borrow(), 0);
+
+        let error = reconcile_destination(
+            "source-value",
+            "secret",
+            || Ok(Some(Zeroizing::new("other-value".to_string()))),
+            |_| panic!("a conflicting destination must never be overwritten"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("conflicts"));
+    }
+
+    #[test]
+    fn persistent_copy_requires_exact_read_after_write() {
+        let reads = RefCell::new(vec![None, Some("different-value".to_string())].into_iter());
+        let error = reconcile_destination(
+            "source-value",
+            "secret",
+            || Ok(reads.borrow_mut().next().unwrap().map(Zeroizing::new)),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("did not return the exact source bytes"));
+    }
 
     #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
     enum MigrationFault {
@@ -1823,7 +2639,7 @@ mod tests {
     /// default because it touches the user's actual keychain (and CI
     /// may not have one without `keyring`'s mock backend). Run with
     /// `cargo test -p phantom-secrets-vault -- --ignored` on each
-    /// platform (macOS Keychain, Linux Secret Service, Windows
+    /// platform (macOS Keychain, Linux kernel keyutils, Windows
     /// Credential Manager) to confirm the backend is wired up.
     #[test]
     #[ignore = "touches OS keychain — run with --ignored on each platform"]

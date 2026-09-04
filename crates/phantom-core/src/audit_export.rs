@@ -786,20 +786,7 @@ fn load_hmac_key(audit_log_path: &Path) -> std::io::Result<Vec<u8>> {
 }
 
 fn home_dir() -> std::io::Result<PathBuf> {
-    if let Ok(h) = std::env::var("HOME") {
-        if !h.is_empty() {
-            return Ok(PathBuf::from(h));
-        }
-    }
-    if let Ok(h) = std::env::var("USERPROFILE") {
-        if !h.is_empty() {
-            return Ok(PathBuf::from(h));
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
-        "cannot resolve home directory",
-    ))
+    crate::home::home_dir()
 }
 
 fn now_unix() -> u64 {

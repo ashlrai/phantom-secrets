@@ -36,6 +36,7 @@ pub mod unwrap;
 pub mod upgrade;
 pub mod validate;
 pub mod validation_scheduler;
+pub mod vault;
 pub mod watch;
 pub mod why;
 pub mod workspace;

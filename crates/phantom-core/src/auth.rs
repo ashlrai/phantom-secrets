@@ -7,6 +7,22 @@ const CLOUD_VAULT_KEY_PREFIX: &str = "phantom-cloud:vault_key";
 const TEAM_PUBKEY: &str = "phantom-cloud:team_pubkey";
 const TEAM_SECKEY: &str = "phantom-cloud:team_seckey";
 
+fn os_keychain_entry(service: &str, account: &str) -> keyring::Result<keyring::Entry> {
+    #[cfg(target_os = "linux")]
+    {
+        // The vault crate also compiles Secret Service support for an explicit,
+        // per-project migration. Cargo feature unification must never change
+        // pre-existing cloud credentials from keyutils to a different store.
+        let credential =
+            keyring::keyutils::KeyutilsCredential::new_with_target(None, service, account)?;
+        Ok(keyring::Entry::new_with_credential(Box::new(credential)))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        keyring::Entry::new(service, account)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DeviceFlowResponse {
     pub device_code: String,
@@ -111,7 +127,7 @@ pub async fn get_user_info(api_base: &str, token: &str) -> Result<UserInfo> {
 
 /// Store the access token in the OS keychain.
 pub fn store_token(token: &str) -> Result<()> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, TOKEN_KEY)
+    let entry = os_keychain_entry(KEYCHAIN_SERVICE, TOKEN_KEY)
         .map_err(|e| PhantomError::AuthError(format!("Keychain error: {e}")))?;
     entry
         .set_password(token)
@@ -121,7 +137,7 @@ pub fn store_token(token: &str) -> Result<()> {
 
 /// Load the access token from the OS keychain.
 pub fn load_token() -> Option<String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, TOKEN_KEY).ok()?;
+    let entry = os_keychain_entry(KEYCHAIN_SERVICE, TOKEN_KEY).ok()?;
     entry.get_password().ok()
 }
 
@@ -132,7 +148,7 @@ pub fn require_token() -> Result<String> {
 
 /// Clear the access token from the OS keychain.
 pub fn clear_token() -> Result<()> {
-    if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, TOKEN_KEY) {
+    if let Ok(entry) = os_keychain_entry(KEYCHAIN_SERVICE, TOKEN_KEY) {
         let _ = entry.delete_credential();
     }
     Ok(())
@@ -141,7 +157,7 @@ pub fn clear_token() -> Result<()> {
 /// Get or create a cloud vault encryption passphrase.
 /// Stored in OS keychain — never transmitted to the server.
 pub fn get_or_create_cloud_passphrase() -> Result<String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, CLOUD_VAULT_KEY_PREFIX)
+    let entry = os_keychain_entry(KEYCHAIN_SERVICE, CLOUD_VAULT_KEY_PREFIX)
         .map_err(|e| PhantomError::AuthError(format!("Keychain error: {e}")))?;
 
     // Try to load existing
@@ -166,9 +182,9 @@ pub fn get_or_create_cloud_passphrase() -> Result<String> {
 /// and persisting one in the OS keychain on first call. The private key
 /// never leaves the keychain.
 pub fn get_or_create_team_keypair() -> Result<crate::team_crypto::MemberKeypair> {
-    let pub_entry = keyring::Entry::new(KEYCHAIN_SERVICE, TEAM_PUBKEY)
+    let pub_entry = os_keychain_entry(KEYCHAIN_SERVICE, TEAM_PUBKEY)
         .map_err(|e| PhantomError::AuthError(format!("Keychain error: {e}")))?;
-    let sec_entry = keyring::Entry::new(KEYCHAIN_SERVICE, TEAM_SECKEY)
+    let sec_entry = os_keychain_entry(KEYCHAIN_SERVICE, TEAM_SECKEY)
         .map_err(|e| PhantomError::AuthError(format!("Keychain error: {e}")))?;
 
     if let (Ok(pub_b64), Ok(sec_b64)) = (pub_entry.get_password(), sec_entry.get_password()) {

@@ -44,7 +44,10 @@ The `native-acceptance` matrix is configured to download each exact build
 artifact on its matching runner, reject extra or unsafe archive members, verify
 archive integrity through extraction, assert the runner OS and architecture,
 run both binaries' exact tagged `--version`, and complete the MCP stdio schema
-smoke. It then runs the real direct installer from that exact local archive in
+smoke. On those same six native filesystems, it also runs both npm wrappers'
+platform mapping, cache validation, rollback, lock, archive, process-failure,
+and closed-schema tests without downloading or publishing an npm package. It
+then runs the real direct installer from that exact local archive in
 an isolated home/profile, validates both installed binaries and the source
 receipt, injects a test-only failure immediately after candidate promotion,
 and verifies that the sentinel-bearing accepted tree is restored with no
@@ -92,7 +95,7 @@ remaining operating-system integrations below.
 | Feature | macOS | Linux | Windows |
 |---|---|---|---|
 | Core CLI, vault, proxy, MCP source | Implemented | Implemented | Implemented |
-| Native credential store | Keychain integration | Secret Service/keyring integration, with encrypted-file fallback | Credential Manager integration |
+| Native credential store | Keychain integration | Kernel keyutils by default; explicit trusted-terminal migration to persistent desktop Secret Service; encrypted-file fallback for CI/headless use | Credential Manager integration |
 | Provider-grant design source and value-free metadata | Present | Present | Present |
 | Provider issuance/enrollment/renewal/revocation | Hard-denied before credential/network access in 0.7.5 | Hard-denied before credential/network access in 0.7.5 | Hard-denied before credential/network access in 0.7.5 |
 | Workspace inspect/propose/request | Implemented | Implemented | Inspect/propose only |
@@ -115,10 +118,31 @@ remaining operating-system integrations below.
 | Created-parent rollback | Identity-bound receipts remove only exact, empty transaction-created directories after descendant handles are dropped | Unknown creation state without a receipt remains explicitly unresolved |
 
 Native credential-store and ACL source are likewise not acceptance. In
-particular, mapping the `keyring` backend to Windows Credential Manager and
-source-testing protected current-user DACL behavior do not prove that an exact
-Windows archive passed those operations under a real user policy. That evidence
-still requires protected native Windows CI against the exact candidate.
+particular, the configured `keyring` crate features select macOS Keychain,
+Linux keyutils or Secret Service, and Windows Credential Manager. Linux
+keyutils entries are in-memory and do not survive a reboot. On a headed Linux
+desktop, `phantom vault migrate-linux` can copy and read-after-write verify the
+current project's entries in Secret Service before atomically selecting it.
+The command retains keyutils source entries, is safe to retry after a partial
+copy, refuses conflicting destination values, and requires an exact attached-
+terminal challenge before reading any secret value. A project that completed
+the migration fails closed when Secret Service is unavailable; it never
+silently treats the retained volatile copy as authoritative. CI, WSL, and
+headless systems should use the explicit encrypted-file vault instead. The
+migration writes a Secret Service corroboration sentinel for explicit recovery
+checks. An independent owner-only corroboration record under Phantom's
+configuration root prevents loss of only the data-root marker plus a reboot
+from silently selecting keyutils: one missing record fails closed without a
+Secret Service probe, while the explicit migration command can reconcile the
+prepared state. Normal unmarked/headless vault opens do not probe Secret
+Service because doing so can prompt or hang without a desktop session. Loss or
+deletion of all local Phantom state is not recoverable automatically; restore
+that state from a verified backup before accessing the vault.
+
+Those source mappings, plus source-tested protected current-user DACL behavior, do
+not prove that an exact archive passed credential-store operations under a real
+user policy. That evidence still requires protected native CI against the exact
+candidate on each claimed platform.
 
 Provider-grant support in source does not prove that a provider application is
 configured, consent completed, a credential accepted, renewal succeeded, or a
@@ -156,8 +180,10 @@ that target:
 
 The release workflow automates steps 1 and 2, a bounded portion of step 3
 (fresh direct install, receipt validation, post-promotion rollback, and
-checksum-failure preservation), and MCP schema initialization from step 5 on
-all six native runners. Upgrade,
+checksum-failure preservation), native-filesystem source tests for both npm
+wrappers, and MCP schema initialization from step 5 on all six native runners.
+Those wrapper tests do not prove installation of a packed or registry-hosted
+npm artifact; the separate npm candidate workflow owns that evidence. Upgrade,
 interruption, cache recovery, persistent PATH/shell behavior, credential stores,
 an authenticated proxy request, editors, and platform trust still require
 separately retained evidence. No repository-local source test or workflow

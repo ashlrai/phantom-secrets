@@ -1,6 +1,6 @@
 # Phantom
 
-> Open-source CLI that helps keep real API keys out of AI-agent context by replacing managed dotenv secrets with non-provider `phm_` tokens and proxying supported API routes through an authenticated local service.
+> Open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces managed dotenv values with non-provider `phm_` tokens and proxies exact supported API routes through an authenticated local service. Unmanaged files, same-user processes, proxy-bearer theft, and provider content remain outside that boundary.
 
 ## Install
 
@@ -84,7 +84,7 @@ does not start checkout or collect payment.
 - Inert client requests — no client-controlled header or body resolves a `phm_` token; bodies are accepted under a hard size cap, a missing route credential fails before upstream contact, and only route-owned auth injection can contain a real value
 - Response scrubbing — redacts configured vault values and recognized key formats from supported response paths before returning them to the caller
 - Public key awareness — detects and skips publishable/public keys that don't need protection
-- OS keychain storage — macOS Keychain, Linux Secret Service, Windows Credential Manager, encrypted file fallback. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
+- OS credential storage — macOS Keychain, Linux keyutils by default with explicit `phantom vault migrate-linux` support for desktop Secret Service, Windows Credential Manager, and encrypted file fallback. Linux keyutils entries do not survive a reboot. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
 - Personal cloud backup — client-encrypted restore on the same keychain machine; cloud-key transfer and recovery are not shipped, and deployed service and account configuration remain separate gates
 - Multi-project scanner — `phantom init --all <DIR>` processes eligible repos found within five levels, stops below the first matching repo, and supports `--dry-run` plus `--jobs N`
 - Multi-IDE setup — `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool

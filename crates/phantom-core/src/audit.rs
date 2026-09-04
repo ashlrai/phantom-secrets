@@ -1377,17 +1377,7 @@ pub fn log_path() -> std::io::Result<PathBuf> {
 }
 
 fn dirs_home_dir() -> Option<PathBuf> {
-    if let Ok(h) = std::env::var("HOME") {
-        if !h.is_empty() {
-            return Some(PathBuf::from(h));
-        }
-    }
-    if let Ok(h) = std::env::var("USERPROFILE") {
-        if !h.is_empty() {
-            return Some(PathBuf::from(h));
-        }
-    }
-    None
+    crate::home::home_dir().ok()
 }
 
 fn now_unix() -> u64 {

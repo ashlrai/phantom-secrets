@@ -4,7 +4,57 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No unreleased changes are recorded after the `0.7.6` release candidate.
+No unreleased changes are recorded after the `0.7.7` release candidate.
+
+## [0.7.7] - 2026-09-03
+
+This fix-forward patch moves the completed adoption and cross-platform work to
+a new release identity. The remote annotated `v0.7.6` tag remains immutably
+bound to source commit `618f9f261433d99449ab1541db8a326f40c6493a` and has no
+GitHub Release. It must not be moved or reused for the newer source.
+
+### Added
+
+- Render the primary installation, client-integration, architecture, platform,
+  troubleshooting, and enterprise guides as first-party static documentation
+  with canonical metadata, structured data, sitemap entries, and bounded
+  Markdown link handling.
+- Add an explicit trusted-terminal Linux migration from the existing volatile
+  kernel keyring to Secret Service. Unmigrated projects retain their existing
+  backend, partial or contradictory migration state fails closed, and the
+  encrypted-file vault remains the documented headless option.
+- Exercise both npm wrappers inside every matching native release runner after
+  the exact archive and transactional installer have passed acceptance.
+
+### Fixed
+
+- Preserve the six-host package acceptance boundary while passing native
+  absolute npm tarball paths through unchanged.
+- Keep Windows short-path tildes such as `RUNNER~1` from being encoded as a
+  literal `%7E` path segment.
+- Resolve native home and cache paths consistently on Windows, including when
+  Git Bash or MSYS exports a Unix-shaped `HOME`, without widening accepted
+  filesystem authority.
+- Restore the adoption-focused landing experience, direct GitHub star actions,
+  six-target download chooser, machine-readable discovery files, and truthful
+  public release metadata while keeping hosted-service and deployment claims
+  separately gated.
+- Strengthen encrypted-file restart coverage and Linux backend reporting so a
+  volatile kernel-keyring project is not described as reboot-persistent.
+- Carry forward dedicated security, pricing, enterprise, and government pages
+  from the unpublished `0.7.6` public-site tranche.
+- Retain its privacy-preserving analytics, accessibility, responsive behavior,
+  and fail-closed rendering when hosted dependencies are not commissioned.
+
+### Breaking changes and migration
+
+There are no intentional CLI, MCP, proxy, or configuration breaking changes.
+Linux users must explicitly run and approve `phantom vault migrate-linux` from
+an attached trusted terminal before a project switches to Secret Service. The
+source and automation are release-candidate evidence only until an immutable
+`v0.7.7` GitHub Release and its six native acceptance rows are verified.
+Existing direct or Homebrew `v0.7.5` installations can remain in place until
+that release is available and independently verified.
 
 ## [0.7.6] - 2026-09-03
 
@@ -477,7 +527,8 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.7...HEAD
+[0.7.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.3...v0.7.4

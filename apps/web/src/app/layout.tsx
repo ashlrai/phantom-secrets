@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Inter_Tight, JetBrains_Mono } from "next/font/google";
 import {
-  PUBLIC_RELEASE_TAG,
   PUBLIC_RELEASE_URL,
   PUBLIC_RELEASE_VERSION,
 } from "@/lib/public-release";
@@ -23,9 +22,13 @@ const mono = JetBrains_Mono({
 });
 
 const SITE_URL = "https://phm.dev";
-const TITLE = "Phantom — Delegate credentialed API work to AI";
+const TITLE = "Phantom — API key security for AI coding agents";
 const DESCRIPTION =
-  "Open-source, local-first infrastructure for delegating supported HTTP API work to AI agents with value-blind controls and exact-route credential injection. Works with Claude Code, Cursor, Windsurf, and Codex.";
+  "Open-source, local-first credential boundary for AI coding agents. Managed dotenv values move to a local vault, and supported exact HTTP routes receive route-owned authentication.";
+
+function serializeStructuredData(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -50,6 +53,14 @@ export const metadata: Metadata = {
     "open source",
     "Rust CLI",
     "AI security",
+    "AI agent security",
+    "AI coding agents",
+    "agentic engineering",
+    "Claude Code secrets",
+    "Cursor secrets",
+    "Codex MCP server",
+    "MCP secrets management",
+    "secure API keys for AI",
     "phantom tokens",
     "vault",
   ],
@@ -125,7 +136,7 @@ export default function RootLayout({
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
-            __html: JSON.stringify({
+            __html: serializeStructuredData({
               "@context": "https://schema.org",
               "@type": "SoftwareApplication",
               name: "Phantom",
@@ -136,6 +147,16 @@ export default function RootLayout({
               url: SITE_URL,
               sameAs: [
                 "https://github.com/ashlrai/phantom-secrets",
+              ],
+              codeRepository: "https://github.com/ashlrai/phantom-secrets",
+              programmingLanguage: "Rust",
+              isAccessibleForFree: true,
+              featureList: [
+                "Local-first vault using OS credential stores or a ChaCha20-Poly1305 encrypted-file backend",
+                "Authenticated exact-route HTTP credential injection",
+                "Value-blind MCP tools for coding agents",
+                "Claude Code, Cursor, Windsurf, and Codex setup",
+                "macOS, Linux, and Windows release artifacts",
               ],
               license: "https://opensource.org/licenses/MIT",
               softwareVersion: PUBLIC_RELEASE_VERSION,
@@ -155,112 +176,45 @@ export default function RootLayout({
             }),
           }}
         />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: serializeStructuredData({
+              "@context": "https://schema.org",
+              "@type": "SoftwareSourceCode",
+              name: "Phantom Secrets",
+              codeRepository: "https://github.com/ashlrai/phantom-secrets",
+              runtimePlatform: "macOS, Linux, Windows",
+              programmingLanguage: "Rust",
+              license: "https://opensource.org/licenses/MIT",
+              description: DESCRIPTION,
+              targetProduct: {
+                "@type": "SoftwareApplication",
+                name: "Phantom",
+                applicationCategory: "DeveloperApplication",
+              },
+            }),
+          }}
+        />
         {/* JSON-LD: Organization */}
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
-            __html: JSON.stringify({
+            __html: serializeStructuredData({
               "@context": "https://schema.org",
               "@type": "Organization",
-              name: "Phantom",
-              url: SITE_URL,
-              logo: `${SITE_URL}/favicon.svg`,
-              sameAs: ["https://github.com/ashlrai/phantom-secrets"],
-            }),
-          }}
-        />
-        {/* JSON-LD: HowTo — install steps, surface for rich Google results
-            and AI agent indexing */}
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{
-            __html: JSON.stringify({
-              "@context": "https://schema.org",
-              "@type": "HowTo",
-              name: "Install Phantom Secrets",
-              description:
-                "Set up Phantom so supported AI-agent workflows receive placeholders instead of real API keys.",
-              tool: [
-                { "@type": "HowToTool", name: `Homebrew on macOS, or an exact ${PUBLIC_RELEASE_TAG} GitHub release asset` },
-                { "@type": "HowToTool", name: "Claude Code, Cursor, Windsurf, or Codex" },
+              name: "Ashlr AI",
+              url: "https://ashlr.ai",
+              sameAs: [
+                "https://github.com/ashlrai",
+                "https://github.com/ashlrai/phantom-secrets",
               ],
-              step: [
-                {
-                  "@type": "HowToStep",
-                  name: "Install Phantom and protect your .env",
-                  text: `Install the reviewed release from ${PUBLIC_RELEASE_URL}. On macOS run \`brew tap ashlrai/phantom\`, \`brew trust --formula ashlrai/phantom/phantom\`, then the fully qualified install; on Linux or Windows, checksum-verify the exact ${PUBLIC_RELEASE_TAG} GitHub asset. Then run \`phantom init\` in the project root.`,
-                },
-                {
-                  "@type": "HowToStep",
-                  name: "Register the MCP server with your editor",
-                  text: `Install both ${PUBLIC_RELEASE_TAG} binaries, then run \`phantom setup --client claude\`, \`cursor\`, \`windsurf\`, or \`codex\`. Released ${PUBLIC_RELEASE_TAG} records its bundled local \`phantom mcp serve\` runtime when available, otherwise it uses a local \`phantom-mcp\` executable. It has no network package-runner fallback and fails closed when no local MCP runtime is available; review the generated entry.`,
-                },
-                {
-                  "@type": "HowToStep",
-                  name: "Run your code with the proxy injecting real keys",
-                  text: "Use `phantom exec -- <command>` to launch a child process with authenticated base-URL overrides for Phantom's supported HTTP SDK routes. After an exact route match, the local proxy injects only that route's vault value into its fixed authentication header; client placeholders remain inert and unsupported connection strings fail closed.",
-                },
-              ],
-            }),
-          }}
-        />
-        {/* JSON-LD: FAQPage — common questions, surfaces in Google AI overviews */}
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{
-            __html: JSON.stringify({
-              "@context": "https://schema.org",
-              "@type": "FAQPage",
-              mainEntity: [
-                {
-                  "@type": "Question",
-                  name: "Does Phantom slow down my AI requests?",
-                  acceptedAnswer: {
-                    "@type": "Answer",
-                    text: "Phantom adds a local Rust HTTP proxy bound to 127.0.0.1. Request bodies are processed under byte and time limits; measure overhead in your own latency-critical workload.",
-                  },
-                },
-                {
-                  "@type": "Question",
-                  name: "What does AI see when Phantom is installed?",
-                  acceptedAnswer: {
-                    "@type": "Answer",
-                    text: "A managed .env file contains persistent phm_xxxxxxxx placeholders instead of provider credentials. phantom exec creates fresh child placeholders and a separate proxy bearer. The authenticated proxy injects route-owned authentication only after an exact supported route match; client placeholders remain inert.",
-                  },
-                },
-                {
-                  "@type": "Question",
-                  name: "What happens if a phm_ token leaks from AI logs?",
-                  acceptedAnswer: {
-                    "@type": "Answer",
-                    text: "The managed .env phm_ placeholder persists until rotation and is not the provider credential. phantom exec separately creates fresh child placeholders and a fresh PHANTOM_PROXY_TOKEN; placeholders are never client-resolved, while the bearer stops working when that proxy session ends.",
-                  },
-                },
-                {
-                  "@type": "Question",
-                  name: "How are real keys stored?",
-                  acceptedAnswer: {
-                    "@type": "Answer",
-                    text: "OS keychain on macOS and Linux (Keychain / Secret Service). Encrypted file fallback for CI and Docker, using ChaCha20-Poly1305 with Argon2id key derivation.",
-                  },
-                },
-                {
-                  "@type": "Question",
-                  name: "Which editors does Phantom work with?",
-                  acceptedAnswer: {
-                    "@type": "Answer",
-                    text: "Phantom provides MCP setup for Claude Code, Cursor, Windsurf, and Codex. Other programs can run under phantom exec when their HTTP SDK accepts a supported base-URL override; protected database connection strings fail closed.",
-                  },
-                },
-                {
-                  "@type": "Question",
-                  name: "Is Phantom open source?",
-                  acceptedAnswer: {
-                    "@type": "Answer",
-                    text: "Yes. MIT licensed. Source at github.com/ashlrai/phantom-secrets. Rust workspace — phantom-core, phantom-vault, phantom-proxy, phantom-cli, phantom-mcp.",
-                  },
-                },
-              ],
+              brand: {
+                "@type": "Brand",
+                name: "Phantom",
+                url: SITE_URL,
+                logo: `${SITE_URL}/favicon.svg`,
+              },
             }),
           }}
         />

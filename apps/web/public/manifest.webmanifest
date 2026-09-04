@@ -1,0 +1,19 @@
+{
+  "name": "Phantom Secrets",
+  "short_name": "Phantom",
+  "description": "Local-first credential protection for supported AI coding-agent workflows.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "minimal-ui",
+  "background_color": "#050508",
+  "theme_color": "#050508",
+  "categories": ["developer tools", "security", "utilities"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

@@ -149,6 +149,13 @@ enum Commands {
         action: WorkspaceCliAction,
     },
 
+    /// Manage the local credential backend from a trusted terminal
+    #[command(next_help_heading = "Setup")]
+    Vault {
+        #[command(subcommand)]
+        action: VaultAction,
+    },
+
     // ─────────────────────────── Daily use ───────────────────────────
     /// Start the proxy and run a command
     #[command(next_help_heading = "Daily use")]
@@ -744,6 +751,13 @@ enum AgentAction {
 }
 
 #[derive(Subcommand)]
+enum VaultAction {
+    /// Copy this Linux project's volatile keyutils vault into Secret Service
+    #[command(name = "migrate-linux")]
+    MigrateLinux,
+}
+
+#[derive(Subcommand)]
 enum TeamAction {
     /// List teams after an exact trusted-terminal challenge authorizes provider access
     List,
@@ -1141,6 +1155,9 @@ fn run() -> anyhow::Result<()> {
             WorkspaceCliAction::Status { request, json } => {
                 commands::workspace::run_status(&request, json)
             }
+        },
+        Commands::Vault { action } => match action {
+            VaultAction::MigrateLinux => commands::vault::run_migrate_linux(cli.json),
         },
         Commands::SecretsExpiringSoon {
             days,
