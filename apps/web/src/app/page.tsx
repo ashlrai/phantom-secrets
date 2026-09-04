@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { CTA } from "@/components/landing/CTA";
 import { Comparison } from "@/components/landing/Comparison";
 import { DocumentationGateway } from "@/components/landing/DocumentationGateway";
+import { Ecosystem } from "@/components/landing/Ecosystem";
 import { EvidenceLedger } from "@/components/landing/EvidenceLedger";
 import { FAQ } from "@/components/landing/FAQ";
 import { Features } from "@/components/landing/Features";
@@ -35,12 +36,13 @@ export default function Home() {
       <LandingStructuredData />
       <main id="main-content" tabIndex={-1} className="landing-shell elite-landing">
         <Hero />
+        <Ecosystem />
         <Transformation />
+        <QuickStart />
+        <Install />
         <TrustBoundary />
         <Features />
         <Comparison />
-        <QuickStart />
-        <Install />
         <DocumentationGateway />
         <EvidenceLedger />
         <Pricing />

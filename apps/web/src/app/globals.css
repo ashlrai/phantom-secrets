@@ -304,7 +304,9 @@ code, pre, .mono {
 
 .copy-command > span:first-child {
   min-width: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
@@ -756,6 +758,10 @@ code, pre, .mono {
 }
 
 .connection-console__tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
   min-height: 3.5rem;
   border: 0;
   border-right: 1px solid var(--rule);
@@ -770,9 +776,15 @@ code, pre, .mono {
   border-right: 0;
 }
 
-.connection-console__tabs button[aria-pressed="true"] {
+.connection-console__tabs button[aria-selected="true"] {
   box-shadow: inset 0 -3px 0 var(--verified);
   color: var(--ink);
+}
+
+.connection-console__client-logo {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
 }
 
 .connection-console__panel {
@@ -1409,8 +1421,8 @@ code, pre, .mono {
    sealed-passage palette and its evidence-first hierarchy. */
 .ecosystem-section {
   overflow: hidden;
-  border-bottom: 1px solid #28424d;
-  background: var(--ink);
+  border-bottom: 1px solid #252538;
+  background: #050508;
   padding: clamp(4.5rem, 8vw, 7rem) 0;
   color: #edf6f8;
 }
@@ -1450,6 +1462,44 @@ code, pre, .mono {
   margin-top: clamp(2.5rem, 5vw, 4rem);
 }
 
+.ecosystem-section__controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1.25rem;
+}
+
+.logo-marquee__motion-toggle {
+  display: inline-flex;
+  min-height: 2.25rem;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid #31505c;
+  border-radius: 999px;
+  background: #0b2631;
+  padding: 0.4rem 0.75rem;
+  color: #b8c8ce;
+  cursor: pointer;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.65rem;
+}
+
+.logo-marquee__motion-toggle:hover,
+.logo-marquee__motion-toggle:focus-visible {
+  border-color: #7faeff;
+  color: #fff;
+}
+
+.elite-hero .logo-marquee__motion-toggle {
+  border-color: #252538;
+  background: #101018;
+  color: #a1a1aa;
+}
+
+.logo-marquee--paused .ecosystem-track,
+.logo-marquee--paused .elite-marquee__track {
+  animation-play-state: paused;
+}
+
 .ecosystem-marquee::before,
 .ecosystem-marquee::after {
   position: absolute;
@@ -1463,17 +1513,30 @@ code, pre, .mono {
 
 .ecosystem-marquee::before {
   left: 0;
-  background: linear-gradient(90deg, var(--ink), transparent);
+  background: linear-gradient(90deg, #050508, transparent);
 }
 
 .ecosystem-marquee::after {
   right: 0;
-  background: linear-gradient(270deg, var(--ink), transparent);
+  background: linear-gradient(270deg, #050508, transparent);
 }
 
 .ecosystem-row {
+  position: relative;
   overflow: hidden;
-  padding-block: 0.2rem;
+  padding-block: 1.75rem 0.2rem;
+}
+
+.ecosystem-row__label {
+  position: absolute;
+  top: 0;
+  left: max(1.5rem, calc((100vw - 76rem) / 2));
+  z-index: 3;
+  color: #88a0aa;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .ecosystem-track {
@@ -1503,9 +1566,9 @@ code, pre, .mono {
   grid-template-columns: 2.7rem minmax(0, 1fr);
   align-items: center;
   gap: 0.8rem;
-  border: 1px solid #31505c;
+  border: 1px solid #252538;
   border-radius: 0.35rem;
-  background: #0b2631;
+  background: #0a0a12;
   padding: 0.8rem;
 }
 
@@ -1514,9 +1577,9 @@ code, pre, .mono {
   width: 2.7rem;
   height: 2.7rem;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--brand) 48%, #31505c);
+  border: 1px solid color-mix(in srgb, var(--brand) 48%, #252538);
   border-radius: 0.3rem;
-  background: #071c26;
+  background: #101018;
 }
 
 .ecosystem-card__logo svg {
@@ -2032,10 +2095,20 @@ code, pre, .mono {
 }
 
 .platform-install-grid {
+  --landing-line: var(--rule);
+  --landing-paper: var(--paper);
+  --landing-blue: var(--verified);
+  --landing-muted: var(--ink-soft);
+  --landing-ink: var(--ink);
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem;
   margin: 2.5rem 0 1rem;
+}
+
+#install,
+#connect {
+  scroll-margin-top: 5rem;
 }
 
 .platform-install-card {
@@ -2059,9 +2132,21 @@ code, pre, .mono {
 
 .platform-install-card__heading h3 {
   margin: 0;
-  font-family: var(--font-display), sans-serif;
+  font-family: var(--font-sans), sans-serif;
   font-size: 1.15rem;
   letter-spacing: -0.025em;
+}
+
+.platform-install-card__identity {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.platform-install-card__identity svg {
+  width: 1.35rem;
+  height: 1.35rem;
+  color: var(--landing-blue);
 }
 
 .platform-install-card__heading span {
@@ -2089,6 +2174,12 @@ code, pre, .mono {
   margin-top: auto;
 }
 
+.platform-install-card__target {
+  display: grid;
+  align-content: start;
+  gap: 0.4rem;
+}
+
 .platform-install-card__targets a {
   display: flex;
   min-width: 0;
@@ -2100,6 +2191,11 @@ code, pre, .mono {
   color: var(--landing-ink);
   text-decoration: none;
   transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.platform-install-card__target > a:last-child {
+  padding: 0.45rem 0.75rem;
+  border-style: dashed;
 }
 
 .platform-install-card__targets a:hover,
@@ -2122,6 +2218,46 @@ code, pre, .mono {
   white-space: nowrap;
 }
 
+.platform-install-card__command {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.25rem;
+}
+
+.platform-install-card__command > strong {
+  color: var(--landing-ink);
+  font-size: 0.72rem;
+}
+
+.platform-install-card__source {
+  width: fit-content;
+  color: var(--verified-dark);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-underline-offset: 0.16em;
+}
+
+.platform-install-card__command .copy-command {
+  align-items: flex-start;
+  min-height: 12rem;
+  border-radius: 0.65rem;
+  background: #071018;
+  color: #dcecff;
+  font-size: 0.62rem;
+}
+
+.platform-install-card__command .copy-command > span:first-child > span {
+  color: #78a8ff;
+}
+
+.platform-install-card__caveat {
+  margin-top: auto;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--landing-line);
+  color: var(--landing-muted);
+  font-size: 0.7rem !important;
+}
+
 .platform-install-note {
   max-width: 62rem;
   margin: 0 0 2.5rem;
@@ -2131,10 +2267,27 @@ code, pre, .mono {
   to { transform: translateX(calc(-50% - 0.375rem)); }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1120px) {
   .platform-install-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.comparison-section {
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.comparison-section h2 {
+  color: var(--ink);
+}
+
+.comparison-section__intro > p {
+  color: var(--ink-soft);
+}
+
+.comparison-section table {
+  color: var(--ink);
 }
 
 @media (max-width: 520px) {
@@ -2145,7 +2298,24 @@ code, pre, .mono {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .elite-marquee__track {
+  .elite-marquee,
+  .ecosystem-row {
+    overflow-x: auto;
+  }
+
+  .elite-marquee__track,
+  .ecosystem-track {
+    width: auto;
+    flex-wrap: wrap;
     animation: none;
+  }
+
+  .elite-marquee__track > article[aria-hidden="true"],
+  .ecosystem-track > article[aria-hidden="true"] {
+    display: none;
+  }
+
+  .logo-marquee__motion-toggle {
+    display: none;
   }
 }

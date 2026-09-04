@@ -92,7 +92,9 @@ crates.io remains on `0.5.1`.
 
 ```bash
 phantom --version
+phantom-mcp --version
 # phantom 0.7.5
+# phantom-mcp 0.7.5
 ```
 
 ---

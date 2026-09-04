@@ -17,6 +17,7 @@ import {
   SiDocker,
   SiFigma,
   SiGithub,
+  SiHuggingface,
   SiLinear,
   SiMistralai,
   SiMongodb,
@@ -37,7 +38,6 @@ import {
   SiUpstash,
   SiVercel,
   SiWindsurf,
-  SiX,
 } from "react-icons/si";
 import { TbBrandAws } from "react-icons/tb";
 import type { IconBaseProps } from "react-icons";
@@ -71,7 +71,14 @@ export function AnthropicLogo(props: LogoProps) {
 }
 
 export function XaiLogo(props: LogoProps) {
-  return <SiX {...asIconProps(props, "#ffffff")} />;
+  return (
+    <svg viewBox="0 0 34 24" aria-label="xAI" {...props}>
+      <path
+        d="M1 5h3l3.5 5L11 5h3l-5 7 5 7h-3l-3.5-5L4 19H1l5-7-5-7Zm17 0h3l6 14h-3l-1.2-3h-6.6L15 19h-3l6-14Zm1.6 3.8L17.3 14h4.6l-2.3-5.2ZM29 5h3v14h-3V5Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
 }
 
 export function GeminiLogo(props: LogoProps) {
@@ -113,6 +120,25 @@ export function PerplexityLogo(props: LogoProps) {
 
 export function ReplicateLogo(props: LogoProps) {
   return <SiReplicate {...asIconProps(props, "#ffffff")} />;
+}
+
+export function HuggingFaceLogo(props: LogoProps) {
+  return <SiHuggingface {...asIconProps(props, "#ffd21e")} />;
+}
+
+export function CohereLogo(props: LogoProps) {
+  // Compact rendering of Cohere's three-part mark, based on the official
+  // newsroom asset. The wordmark stays in the adjacent text label.
+  return (
+    <svg viewBox="0 0 24 24" aria-label="Cohere" {...props}>
+      <path
+        d="M4 4h7.2a6.8 6.8 0 0 1 0 13.6H4V4Z"
+        fill="#d6ff6b"
+      />
+      <circle cx="17.5" cy="7" r="2.5" fill="#ff7759" />
+      <circle cx="17.5" cy="15" r="2.5" fill="#8d76ff" />
+    </svg>
+  );
 }
 
 /* ── Editors ─────────────────────────────────────────────────── */
@@ -314,17 +340,20 @@ interface LogoEntry {
   category: "ai" | "editor" | "infra" | "db" | "comms" | "dev" | "auth" | "obs";
   env: string;
   token: string;
+  exactRoute?: boolean;
 }
 
 export const KEY_ENTRIES: LogoEntry[] = [
   // AI APIs
-  { Logo: OpenAILogo,     name: "OpenAI",      color: "#ffffff", category: "ai",     env: "OPENAI_API_KEY",      token: "phm_a8f2c4d9" },
-  { Logo: ClaudeLogo,     name: "Anthropic",   color: "#d97757", category: "ai",     env: "ANTHROPIC_API_KEY",   token: "phm_e1b773c0" },
-  { Logo: XaiLogo,        name: "xAI",         color: "#ffffff", category: "ai",     env: "XAI_API_KEY",         token: "phm_4a91c70b" },
-  { Logo: GeminiLogo,     name: "Gemini",      color: "#8e72e1", category: "ai",     env: "GEMINI_API_KEY",      token: "phm_38d2e6a4" },
-  { Logo: MistralLogo,    name: "Mistral",     color: "#fa520f", category: "ai",     env: "MISTRAL_API_KEY",     token: "phm_b6c1f827" },
-  { Logo: PerplexityLogo, name: "Perplexity",  color: "#20b8cd", category: "ai",     env: "PERPLEXITY_API_KEY",  token: "phm_05fa9d3e" },
-  { Logo: ReplicateLogo,  name: "Replicate",   color: "#ffffff", category: "ai",     env: "REPLICATE_API_TOKEN", token: "phm_e8c40b71" },
+  { Logo: OpenAILogo,     name: "OpenAI",       color: "#ffffff", category: "ai", env: "OPENAI_API_KEY",      token: "phm_a8f2c4d9", exactRoute: true },
+  { Logo: AnthropicLogo,  name: "Anthropic",    color: "#d97757", category: "ai", env: "ANTHROPIC_API_KEY",   token: "phm_e1b773c0", exactRoute: true },
+  { Logo: XaiLogo,        name: "xAI",          color: "#ffffff", category: "ai", env: "XAI_API_KEY",         token: "phm_4a91c70b", exactRoute: true },
+  { Logo: GeminiLogo,     name: "Gemini",       color: "#8e72e1", category: "ai", env: "GEMINI_API_KEY",      token: "phm_38d2e6a4", exactRoute: true },
+  { Logo: MistralLogo,    name: "Mistral",      color: "#fa520f", category: "ai", env: "MISTRAL_API_KEY",     token: "phm_b6c1f827", exactRoute: true },
+  { Logo: PerplexityLogo, name: "Perplexity",   color: "#20b8cd", category: "ai", env: "PERPLEXITY_API_KEY",  token: "phm_05fa9d3e", exactRoute: true },
+  { Logo: ReplicateLogo,  name: "Replicate",    color: "#ffffff", category: "ai", env: "REPLICATE_API_TOKEN", token: "phm_e8c40b71", exactRoute: true },
+  { Logo: CohereLogo,     name: "Cohere",       color: "#d6ff6b", category: "ai", env: "COHERE_API_KEY",      token: "phm_6d213fa4", exactRoute: true },
+  { Logo: HuggingFaceLogo,name: "Hugging Face", color: "#ffd21e", category: "ai", env: "HUGGINGFACE_API_KEY", token: "phm_c0478ab2", exactRoute: true },
 
   // Editors
   { Logo: CursorLogo,     name: "Cursor",      color: "#ffffff", category: "editor", env: "CURSOR_API_KEY",      token: "phm_77b3e5f1" },
@@ -335,21 +364,21 @@ export const KEY_ENTRIES: LogoEntry[] = [
   { Logo: RailwayLogo,    name: "Railway",     color: "#c6c6f5", category: "infra",  env: "RAILWAY_TOKEN",       token: "phm_8b4d6f93" },
   { Logo: AwsLogo,        name: "AWS",         color: "#ff9900", category: "infra",  env: "AWS_SECRET_KEY",      token: "phm_5e2a8d61" },
   { Logo: GcpLogo,        name: "GCP",         color: "#4285f4", category: "infra",  env: "GCP_API_KEY",         token: "phm_c7f9b203" },
-  { Logo: CloudflareLogo, name: "Cloudflare",  color: "#f48120", category: "infra",  env: "CF_API_TOKEN",        token: "phm_ae15f627" },
+  { Logo: CloudflareLogo, name: "Cloudflare",  color: "#f48120", category: "infra",  env: "CLOUDFLARE_API_TOKEN", token: "phm_ae15f627", exactRoute: true },
 
   // Databases
-  { Logo: SupabaseLogo,   name: "Supabase",    color: "#3ecf8e", category: "db",     env: "SUPABASE_KEY",        token: "phm_4f1c8ae3" },
+  { Logo: SupabaseLogo,   name: "Supabase",    color: "#3ecf8e", category: "db",     env: "SUPABASE_SERVICE_ROLE_KEY", token: "phm_4f1c8ae3", exactRoute: true },
   { Logo: PostgresLogo,   name: "Postgres",    color: "#6f9ed4", category: "db",     env: "DATABASE_URL",        token: "phm_3a2e7c81" },
   { Logo: MongoLogo,      name: "MongoDB",     color: "#47a248", category: "db",     env: "MONGODB_URI",         token: "phm_6e0fb529" },
   { Logo: NeonLogo,       name: "Neon",        color: "#00e699", category: "db",     env: "NEON_API_KEY",        token: "phm_aa9d34f0" },
   { Logo: UpstashLogo,    name: "Upstash",     color: "#00e9a3", category: "db",     env: "UPSTASH_REDIS_TOKEN", token: "phm_3fc0e851" },
-  { Logo: PineconeLogo,   name: "Pinecone",    color: "#ffffff", category: "db",     env: "PINECONE_API_KEY",    token: "phm_b71204e5" },
+  { Logo: PineconeLogo,   name: "Pinecone",    color: "#ffffff", category: "db",     env: "PINECONE_API_KEY",    token: "phm_b71204e5", exactRoute: true },
 
   // Comms
-  { Logo: StripeLogo,     name: "Stripe",      color: "#635bff", category: "comms",  env: "STRIPE_SECRET_KEY",   token: "phm_2ccb5a91" },
-  { Logo: TwilioLogo,     name: "Twilio",      color: "#f22f46", category: "comms",  env: "TWILIO_AUTH_TOKEN",   token: "phm_9d4b3e12" },
-  { Logo: ResendLogo,     name: "Resend",      color: "#ffffff", category: "comms",  env: "RESEND_API_KEY",      token: "phm_f1a82b57" },
-  { Logo: SendGridLogo,   name: "SendGrid",    color: "#1a82e2", category: "comms",  env: "SENDGRID_API_KEY",    token: "phm_2940bf16" },
+  { Logo: StripeLogo,     name: "Stripe",      color: "#635bff", category: "comms",  env: "STRIPE_SECRET_KEY",   token: "phm_2ccb5a91", exactRoute: true },
+  { Logo: TwilioLogo,     name: "Twilio",      color: "#f22f46", category: "comms",  env: "TWILIO_AUTH_TOKEN",   token: "phm_9d4b3e12", exactRoute: true },
+  { Logo: ResendLogo,     name: "Resend",      color: "#ffffff", category: "comms",  env: "RESEND_API_KEY",      token: "phm_f1a82b57", exactRoute: true },
+  { Logo: SendGridLogo,   name: "SendGrid",    color: "#1a82e2", category: "comms",  env: "SENDGRID_API_KEY",    token: "phm_2940bf16", exactRoute: true },
   { Logo: SlackLogo,      name: "Slack",       color: "#e01e5a", category: "comms",  env: "SLACK_BOT_TOKEN",     token: "phm_71e0d493" },
   { Logo: DiscordLogo,    name: "Discord",     color: "#5865f2", category: "comms",  env: "DISCORD_BOT_TOKEN",   token: "phm_e74cb201" },
 
@@ -362,7 +391,7 @@ export const KEY_ENTRIES: LogoEntry[] = [
   { Logo: DatadogLogo,    name: "Datadog",     color: "#9d6bd1", category: "obs",    env: "DATADOG_API_KEY",     token: "phm_f5e290bc" },
 
   // Dev
-  { Logo: GitHubLogo,     name: "GitHub",      color: "#ffffff", category: "dev",    env: "GITHUB_TOKEN",        token: "phm_99a8d2bf" },
+  { Logo: GitHubLogo,     name: "GitHub",      color: "#ffffff", category: "dev",    env: "GITHUB_TOKEN",        token: "phm_99a8d2bf", exactRoute: true },
   { Logo: DockerLogo,     name: "Docker",      color: "#2496ed", category: "dev",    env: "DOCKER_TOKEN",        token: "phm_b5817d4c" },
   { Logo: NotionLogo,     name: "Notion",      color: "#ffffff", category: "dev",    env: "NOTION_API_KEY",      token: "phm_d04c1f86" },
   { Logo: LinearLogo,     name: "Linear",      color: "#5e6ad2", category: "dev",    env: "LINEAR_API_KEY",      token: "phm_e2f37a91" },
@@ -370,3 +399,5 @@ export const KEY_ENTRIES: LogoEntry[] = [
 ];
 
 export const LOGOS = KEY_ENTRIES.map(({ Logo, name }) => ({ Logo, name }));
+
+export const EXACT_ROUTE_ENTRIES = KEY_ENTRIES.filter((entry) => entry.exactRoute);

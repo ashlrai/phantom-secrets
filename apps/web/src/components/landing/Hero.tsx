@@ -1,10 +1,7 @@
-import { CopyButton } from "./CopyButton";
-import { KEY_ENTRIES } from "./BrandLogos";
+import { EXACT_ROUTE_ENTRIES } from "./BrandLogos";
+import { CarouselPauseButton } from "./CarouselPauseButton";
 import { Github } from "./Icons";
 import { SocialProof } from "./SocialProof";
-
-const INSTALL_COMMAND =
-  "brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom";
 
 export function Hero() {
   return (
@@ -17,36 +14,27 @@ export function Hero() {
         </p>
 
         <h1 className="mt-7 text-[clamp(2.7rem,6.4vw,4.9rem)] font-extrabold leading-[0.98] tracking-[-0.05em] text-white">
-          API key security for AI coding agents.
+          Let AI coding agents use APIs.
           {" "}
           <span className="mt-2 block bg-gradient-to-br from-blue-b via-blue to-blue-d bg-clip-text text-transparent">
-            Use supported APIs. Keep the values out of context.
+            Keep provider keys out of their context.
           </span>
         </h1>
 
         <p className="mx-auto mt-6 max-w-[650px] text-[1rem] leading-[1.7] text-t2 sm:text-[1.06rem]">
-          Phantom is an open-source, local-first credential boundary. It replaces
-          managed project secrets with value-blind{" "}
+          Phantom is an open-source, local-first credential boundary. It moves
+          managed project secrets behind value-blind{" "}
           <code className="font-mono text-[0.92em] text-blue-b">phm_</code>{" "}
-          placeholders in the managed dotenv and MCP path. For explicitly supported HTTP routes, an authenticated
-          local proxy injects only the route-owned credential into its fixed
-          authentication header. Phantom does not sandbox the agent, and
-          upstream traffic still reaches the provider.
+          placeholders, then injects route-owned credentials through an
+          authenticated local proxy for explicitly supported HTTP routes.
         </p>
 
-        <div className="mx-auto mt-8 w-full max-w-[560px]">
-          <p className="mb-2 text-left text-[0.7rem] font-medium text-t3">
-            macOS · pinned public v0.7.5
-          </p>
-          <CopyButton text={INSTALL_COMMAND} />
-        </div>
-
-        <div className="mt-5 flex flex-wrap justify-center gap-2.5">
+        <div className="mt-8 flex flex-wrap justify-center gap-2.5">
           <a
             href="#install"
             className="inline-flex min-h-11 items-center rounded-lg bg-blue px-5 py-2.5 text-[0.9rem] font-semibold text-white no-underline transition-colors hover:bg-blue-d"
           >
-            Install Phantom
+            Choose macOS, Windows, or Linux
           </a>
           <a
             href="https://github.com/ashlrai/phantom-secrets"
@@ -67,26 +55,29 @@ export function Hero() {
 }
 
 function CredentialWall() {
-  const firstRow = KEY_ENTRIES.filter((_, index) => index % 2 === 0);
-  const secondRow = KEY_ENTRIES.filter((_, index) => index % 2 === 1);
+  const firstRow = EXACT_ROUTE_ENTRIES.filter((_, index) => index % 2 === 0);
+  const secondRow = EXACT_ROUTE_ENTRIES.filter((_, index) => index % 2 === 1);
 
   return (
     <section
       className="relative mt-16 border-b border-border pb-20 sm:mt-20 sm:pb-24"
-      aria-label="Examples of common credential names Phantom can vault"
+      aria-label="Provider identities in Phantom's closed trusted-route registry"
     >
       <p className="mx-auto mb-7 max-w-[940px] px-7 text-center text-[0.72rem] font-medium tracking-[0.12em] text-t3">
-        {KEY_ENTRIES.length} common credential names Phantom can detect for local vaulting
+        {EXACT_ROUTE_ENTRIES.length} provider identities in Phantom&apos;s closed trusted-route registry
       </p>
-      <div className="elite-marquee space-y-3 sm:space-y-4">
+      <div className="mx-auto mb-4 flex max-w-[940px] justify-end px-7">
+        <CarouselPauseButton controls="trusted-route-marquee" label="trusted-route carousel" />
+      </div>
+      <div id="trusted-route-marquee" className="elite-marquee space-y-3 sm:space-y-4">
         <CredentialRow items={firstRow} />
         <CredentialRow items={secondRow} reverse />
       </div>
       <p className="mx-auto mt-6 max-w-[760px] px-7 text-center text-[0.72rem] leading-6 text-t3">
-        Logos identify common developer services, not endorsement or universal
-        proxy support. Managed entries can be rewritten as non-provider placeholders;
-        those mappings remain sensitive metadata. Vaulting and runtime injection
-        are separate, and unsupported protocols fail closed.
+        A registry entry defines an available exact HTTP route, not automatic setup,
+        endorsement, or support for every provider operation. Some routes require
+        explicit configuration; unsupported destinations and protocols fail closed.
+        Phantom is not a sandbox, and upstream traffic still reaches the provider.
       </p>
     </section>
   );
@@ -96,7 +87,7 @@ function CredentialRow({
   items,
   reverse = false,
 }: {
-  items: typeof KEY_ENTRIES;
+  items: typeof EXACT_ROUTE_ENTRIES;
   reverse?: boolean;
 }) {
   return (

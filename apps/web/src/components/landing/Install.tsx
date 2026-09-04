@@ -3,12 +3,19 @@
 import Link from "next/link";
 import { useState } from "react";
 import { PUBLIC_RELEASE_TAG } from "@/lib/public-release";
+import {
+  ClaudeClientLogo,
+  CodexClientLogo,
+  CursorClientLogo,
+  WindsurfClientLogo,
+} from "./ClientLogos";
 import { CopyButton } from "./CopyButton";
 
 const CLIENTS = [
   {
     id: "claude",
     label: "Claude Code",
+    Logo: ClaudeClientLogo,
     preview: "phantom setup --client claude --print",
     command: "phantom setup --client claude",
     launch: "phantom exec -- claude",
@@ -18,6 +25,7 @@ const CLIENTS = [
   {
     id: "cursor",
     label: "Cursor",
+    Logo: CursorClientLogo,
     preview: "phantom setup --client cursor --print",
     command: "phantom setup --client cursor",
     launch: "phantom exec -- cursor .",
@@ -27,6 +35,7 @@ const CLIENTS = [
   {
     id: "windsurf",
     label: "Windsurf",
+    Logo: WindsurfClientLogo,
     preview: "phantom setup --client windsurf --print",
     command: "phantom setup --client windsurf",
     launch: "phantom exec -- windsurf .",
@@ -36,6 +45,7 @@ const CLIENTS = [
   {
     id: "codex",
     label: "Codex",
+    Logo: CodexClientLogo,
     preview: "phantom setup --client codex --print",
     command: "phantom setup --client codex",
     launch: 'phantom exec -- codex "<your task>"',
@@ -49,6 +59,14 @@ type ClientId = (typeof CLIENTS)[number]["id"];
 export function Install() {
   const [active, setActive] = useState<ClientId>("claude");
   const client = CLIENTS.find((item) => item.id === active) ?? CLIENTS[0];
+
+  function selectAdjacentClient(currentId: ClientId, offset: number) {
+    const currentIndex = CLIENTS.findIndex((item) => item.id === currentId);
+    const nextIndex = (currentIndex + offset + CLIENTS.length) % CLIENTS.length;
+    const next = CLIENTS[nextIndex];
+    setActive(next.id);
+    document.getElementById(`client-tab-${next.id}`)?.focus();
+  }
 
   return (
     <section id="connect" className="connection-section">
@@ -67,22 +85,47 @@ export function Install() {
         </div>
 
         <div className="connection-console">
-          <div className="connection-console__tabs" role="group" aria-label="Choose an AI client">
+          <div className="connection-console__tabs" role="tablist" aria-label="Choose an AI client">
             {CLIENTS.map((item) => (
               <button
                 key={item.id}
+                id={`client-tab-${item.id}`}
                 type="button"
-                aria-pressed={active === item.id}
+                role="tab"
+                aria-selected={active === item.id}
+                aria-controls="client-connection-panel"
+                tabIndex={active === item.id ? 0 : -1}
                 onClick={() => setActive(item.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowRight") {
+                    event.preventDefault();
+                    selectAdjacentClient(item.id, 1);
+                  } else if (event.key === "ArrowLeft") {
+                    event.preventDefault();
+                    selectAdjacentClient(item.id, -1);
+                  } else if (event.key === "Home") {
+                    event.preventDefault();
+                    setActive(CLIENTS[0].id);
+                    document.getElementById(`client-tab-${CLIENTS[0].id}`)?.focus();
+                  } else if (event.key === "End") {
+                    event.preventDefault();
+                    const last = CLIENTS[CLIENTS.length - 1];
+                    setActive(last.id);
+                    document.getElementById(`client-tab-${last.id}`)?.focus();
+                  }
+                }}
               >
+                <item.Logo className="connection-console__client-logo" aria-hidden="true" />
                 {item.label}
               </button>
             ))}
           </div>
 
           <div
+            id="client-connection-panel"
             className="connection-console__panel"
-            aria-live="polite"
+            role="tabpanel"
+            aria-labelledby={`client-tab-${client.id}`}
           >
             <dl>
               <div>
