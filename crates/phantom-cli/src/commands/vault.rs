@@ -51,7 +51,6 @@ pub fn run_migrate_linux(json: bool) -> Result<()> {
             emit_receipt(
                 json,
                 config.local_project_id(),
-                preview.source_secret_count,
                 &preview.source_state_id,
                 true,
             )?;
@@ -85,15 +84,13 @@ pub fn run_migrate_linux(json: bool) -> Result<()> {
         }
 
         let challenge = format!(
-            "MIGRATE LINUX VAULT {} COUNT {} STATE {}",
+            "MIGRATE LINUX VAULT {} STATE {}",
             config.local_project_id(),
-            preview.source_secret_count,
             preview.source_state_id
         );
         eprintln!(
-            "This copies the current project's keyutils credentials into the desktop Secret Service, verifies every copy, then selects Secret Service for this project. Existing keyutils entries are retained. If Secret Service is unavailable later, Phantom will fail closed instead of silently using the volatile copy.\nProject: {}\nIndexed secret count: {}\nSource state: {}\nType this exact challenge to continue:\n{}",
+            "This copies the current project's keyutils credentials into the desktop Secret Service, verifies every copy, then selects Secret Service for this project. Existing keyutils entries are retained. If Secret Service is unavailable later, Phantom will fail closed instead of silently using the volatile copy.\nProject: {}\nSource state: {}\nType this exact challenge to continue:\n{}",
             project_dir.display(),
-            preview.source_secret_count,
             preview.source_state_id,
             challenge
         );
@@ -108,7 +105,6 @@ pub fn run_migrate_linux(json: bool) -> Result<()> {
         emit_receipt(
             json,
             config.local_project_id(),
-            receipt.migrated_secret_count,
             &receipt.source_state_id,
             receipt.already_persistent,
         )
@@ -134,7 +130,6 @@ fn confirm_exact<R: std::io::BufRead>(expected: &str, reader: &mut R) -> Result<
 fn emit_receipt(
     json: bool,
     project_id: &str,
-    secret_count: usize,
     source_state_id: &str,
     already_persistent: bool,
 ) -> Result<()> {
@@ -144,21 +139,16 @@ fn emit_receipt(
             serde_json::to_string_pretty(&serde_json::json!({
                 "backend": "linux-secret-service",
                 "project_id": project_id,
-                "secret_count": secret_count,
                 "source_state_id": source_state_id,
                 "already_persistent": already_persistent,
                 "source_keyutils_entries_retained": true,
             }))?
         );
     } else if already_persistent {
-        println!(
-            "Linux vault already uses Secret Service for this project ({} indexed secret(s)).",
-            secret_count
-        );
+        println!("Linux vault already uses Secret Service for this project.");
     } else {
         println!(
-            "Migrated {} indexed secret(s) to Linux Secret Service. Source keyutils entries were retained.",
-            secret_count
+            "Migrated indexed secrets to Linux Secret Service. Source keyutils entries were retained."
         );
     }
     Ok(())
