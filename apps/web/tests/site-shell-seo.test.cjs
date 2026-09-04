@@ -169,7 +169,7 @@ test("crawler policy blocks APIs while sensitive pages expose observable noindex
   assert.match(robots, /userAgent: "\*"/);
   assert.match(robots, /"\/api\/"/);
   for (const route of ["/dashboard/:path*", "/device/:path*", "/integrations/:path*"]) {
-    assert.match(nextConfig, new RegExp(`source: "${route.replaceAll("/", "\\/").replace("*", "\\*")}"`));
+    assert.match(nextConfig, new RegExp(`source: "${route.replaceAll("/", "\\/").replaceAll("*", "\\*")}"`));
   }
   assert.match(nextConfig, /X-Robots-Tag/);
   assert.match(nextConfig, /noindex, nofollow/);

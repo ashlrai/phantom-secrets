@@ -138,7 +138,9 @@ export function MarkdownDocument({
   markdown,
   sourceFile,
 }: MarkdownDocumentProps) {
-  const lines = markdown.replace(/<!--[^]*?-->/g, "").split(/\r?\n/);
+  // React escapes every text node produced below. Keep the Markdown source intact
+  // instead of treating HTML comments as a sanitization boundary.
+  const lines = markdown.split(/\r?\n/);
   const blocks: ReactNode[] = [];
   const headingCounts = new Map<string, number>();
   let index = 0;
