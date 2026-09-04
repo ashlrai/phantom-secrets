@@ -20,8 +20,8 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "Phantom",
-    title: "Phantom — Delegate credentialed API work to AI",
-    description: "Open-source, local-first infrastructure for delegating supported HTTP API work to AI agents with value-blind controls and exact-route credential injection.",
+    title: "Phantom — API key security for AI coding agents",
+    description: "Phantom helps keep provider values out of the managed dotenv and MCP path for Claude Code, Cursor, Windsurf, and Codex, with exact-route HTTP credential injection.",
     url: "/",
     locale: "en_US",
     images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Phantom keeps a provider credential behind the local boundary while an AI workflow receives a placeholder." }],
@@ -39,8 +39,8 @@ export default function Home() {
         <TrustBoundary />
         <Features />
         <Comparison />
-        <Install />
         <QuickStart />
+        <Install />
         <DocumentationGateway />
         <EvidenceLedger />
         <Pricing />

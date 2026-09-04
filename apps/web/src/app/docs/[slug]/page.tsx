@@ -88,6 +88,7 @@ export default async function PublicDocPage({ params }: PublicDocPageProps) {
         url: "https://ashlr.ai",
       },
       license: "https://opensource.org/licenses/MIT",
+      dateModified: doc.modified,
       sameAs: doc.sourceUrl,
     },
     {
@@ -147,6 +148,7 @@ export default async function PublicDocPage({ params }: PublicDocPageProps) {
               This page is rendered from the repository Markdown at build time.
               Source can be ahead of the reviewed public release.
             </p>
+            <p>Content last reviewed {doc.modified}.</p>
             <a href={doc.sourceUrl}>View {doc.file} on GitHub</a>
             <Link href="/docs">Browse all public guides</Link>
           </aside>

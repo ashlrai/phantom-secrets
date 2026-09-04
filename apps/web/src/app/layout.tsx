@@ -22,9 +22,9 @@ const mono = JetBrains_Mono({
 });
 
 const SITE_URL = "https://phm.dev";
-const TITLE = "Phantom — Delegate credentialed API work to AI";
+const TITLE = "Phantom — API key security for AI coding agents";
 const DESCRIPTION =
-  "Open-source, local-first infrastructure for delegating supported HTTP API work to AI agents with value-blind controls and exact-route credential injection. Works with Claude Code, Cursor, Windsurf, and Codex.";
+  "Open-source, local-first credential boundary for AI coding agents. Managed dotenv values move to a local vault, and supported exact HTTP routes receive route-owned authentication.";
 
 function serializeStructuredData(value: unknown): string {
   return JSON.stringify(value).replace(/</g, "\\u003c");
@@ -152,7 +152,7 @@ export default function RootLayout({
               programmingLanguage: "Rust",
               isAccessibleForFree: true,
               featureList: [
-                "Local-first encrypted secret vault",
+                "Local-first vault using OS credential stores or a ChaCha20-Poly1305 encrypted-file backend",
                 "Authenticated exact-route HTTP credential injection",
                 "Value-blind MCP tools for coding agents",
                 "Claude Code, Cursor, Windsurf, and Codex setup",

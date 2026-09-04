@@ -24,11 +24,12 @@ export const QUESTIONS: { q: string; schemaAnswer: string; a: React.ReactNode }[
     ),
   },
   {
-    q: "What does AI actually see when Phantom is installed?",
-    schemaAnswer: "Managed dotenv files contain phm_ placeholders instead of provider values. phantom exec creates fresh child placeholders and a separate proxy bearer; exact supported routes receive only route-owned authentication.",
+    q: "What does a supported child process see after phantom init and phantom exec?",
+    schemaAnswer: "Installation alone changes nothing. After successful initialization and a managed exec session, managed dotenv files contain phm_ placeholders instead of provider values. The child receives fresh placeholders and a separate proxy bearer; exact supported routes receive only route-owned authentication.",
     a: (
       <>
-        Your <Tok>.env</Tok> file contains <Tok>phm_xxxxxxxx</Tok> tokens
+        Installation alone changes nothing. After successful initialization,
+        your <Tok>.env</Tok> file contains <Tok>phm_xxxxxxxx</Tok> tokens
         instead of real values. In the managed workflow, supported clients
         read those placeholders rather than provider values from the rewritten
         dotenv file. <Tok>phantom exec</Tok> gives the child fresh placeholders
@@ -64,9 +65,10 @@ export const QUESTIONS: { q: string; schemaAnswer: string; a: React.ReactNode }[
         provide reboot persistence; Linux users who need durable storage should
         select the encrypted-file vault with a protected persistent passphrase.
         The file backend uses ChaCha20-Poly1305 with Argon2id key derivation.
-        Vault retrieval returns{" "}
-        <Tok>Zeroizing&lt;String&gt;</Tok> so plaintext is scrubbed from
-        RAM by Drop. Phantom&apos;s managed init path writes the vault before
+        Vault retrieval uses <Tok>Zeroizing&lt;String&gt;</Tok> buffers that zero
+        those allocations on Drop. This is defense in depth, not a guarantee
+        that every plaintext copy is erased from process or OS memory.
+        Phantom&apos;s managed init path writes the vault before
         atomically replacing dotenv values and does not create a plaintext
         project-local backup. Existing backups, logs, and unmanaged tools are
         outside that boundary.

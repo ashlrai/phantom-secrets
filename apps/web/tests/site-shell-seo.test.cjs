@@ -157,9 +157,11 @@ test("sitemap contains only canonical same-host public surfaces", () => {
   }
 
   assert.match(sitemap, /new URL\(path, SITE_URL\)\.toString\(\)/);
+  assert.match(sitemap, /lastModified: modified/);
   assert.doesNotMatch(sitemap, /github\.com|REPO_URL/);
   assert.doesNotMatch(sitemap, /\/api\/|\/dashboard|\/device|\/integrations\//);
   assert.doesNotMatch(sitemap, /new Date\(\)/);
+  assert.doesNotMatch(sitemap, /changeFrequency|priority/);
 });
 
 test("crawler policy blocks APIs while sensitive pages expose observable noindex headers", () => {

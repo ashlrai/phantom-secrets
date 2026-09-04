@@ -36,7 +36,8 @@ const COLLECTIONS = [
     links: [
       ["Complete getting started guide", "/docs/getting-started"],
       ["Safe delegation quickstart", "/docs/delegation-quickstart"],
-      ["Documentation map", "https://github.com/ashlrai/phantom-secrets/blob/main/docs/README.md"],
+      ["Protect API keys from coding agents", "/docs/protect-api-keys-from-ai-coding-agents"],
+      ["MCP secrets manager guide", "/docs/mcp-secrets-manager"],
       ["Troubleshooting", "/docs/troubleshooting"],
     ],
   },
@@ -65,6 +66,7 @@ const COLLECTIONS = [
     id: "adopt-and-contribute",
     links: [
       ["Enterprise adoption", "/docs/enterprise-adoption"],
+      ["Versioned public fact sheet", "/docs/public-fact-sheet"],
       ["Government evaluation", "https://github.com/ashlrai/phantom-secrets/blob/main/docs/government-evaluation.md"],
       ["Contributing", "https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md"],
       ["Project roadmap", "https://github.com/ashlrai/phantom-secrets/blob/main/ROADMAP.md"],
@@ -80,11 +82,11 @@ export default function DocsPage() {
         <header className="docs-page__hero">
           <div className="landing-frame">
             <p className="landing-kicker">Phantom documentation</p>
-            <h1>Give an agent capability without handing it the key.</h1>
+            <h1>Secure API keys for AI coding agents.</h1>
             <p>
-              Start with one local project. Verify what crosses the boundary,
-              connect your coding client, and expand only after the evidence
-              matches your environment.
+              Give an agent supported API access without placing the real key in
+              its context. Start with one local project, verify the boundary,
+              and expand only after the evidence matches your environment.
             </p>
             <div className="docs-page__command">
               <CopyButton text={"phantom init\nphantom agent doctor\nphantom exec -- claude"} />

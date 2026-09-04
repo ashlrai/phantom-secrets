@@ -1,6 +1,6 @@
 # Phantom
 
-> Open-source CLI that helps keep real API keys out of AI-agent context by replacing managed dotenv secrets with non-provider `phm_` tokens and proxying supported API routes through an authenticated local service.
+> Open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces managed dotenv values with non-provider `phm_` tokens and proxies exact supported API routes through an authenticated local service. Unmanaged files, same-user processes, proxy-bearer theft, and provider content remain outside that boundary.
 
 ## Install
 

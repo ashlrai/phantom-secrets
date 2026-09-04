@@ -3,60 +3,91 @@
     "slug": "getting-started",
     "file": "getting-started.md",
     "title": "Getting started",
-    "description": "Install a reviewed Phantom release, protect one project, connect a supported coding client, and verify the local credential boundary."
+    "description": "Install a reviewed Phantom release, protect one project, connect a supported coding client, and verify the local credential boundary.",
+    "modified": "2026-09-03"
   },
   {
     "slug": "delegation-quickstart",
     "file": "delegation-quickstart.md",
     "title": "Safe delegation quickstart",
-    "description": "Delegate a bounded coding task through Phantom without putting real provider credentials in the managed agent context."
+    "description": "Delegate a bounded coding task through Phantom without putting real provider credentials in the managed agent context.",
+    "modified": "2026-09-03"
+  },
+  {
+    "slug": "protect-api-keys-from-ai-coding-agents",
+    "file": "protect-api-keys-from-ai-coding-agents.md",
+    "title": "Protect API keys from AI coding agents",
+    "description": "A practical, verifiable workflow for keeping managed dotenv secrets out of AI coding-agent context while preserving supported API access.",
+    "modified": "2026-09-04"
+  },
+  {
+    "slug": "mcp-secrets-manager",
+    "file": "mcp-secrets-manager.md",
+    "title": "MCP secrets manager for coding agents",
+    "description": "Use Phantom's value-blind MCP interface to inspect and manage protected secret metadata without sending plaintext credentials through tool arguments.",
+    "modified": "2026-09-04"
+  },
+  {
+    "slug": "public-fact-sheet",
+    "file": "public-fact-sheet.md",
+    "title": "Phantom public fact sheet",
+    "description": "Versioned, source-linked facts for reviewers, directories, journalists, researchers, and AI systems describing Phantom's shipped capabilities and explicit limits.",
+    "modified": "2026-09-04"
   },
   {
     "slug": "claude-code",
     "file": "claude-code.md",
     "title": "Phantom with Claude Code",
-    "description": "Connect Phantom to Claude Code and run supported credentialed HTTP workflows through the local proxy boundary."
+    "description": "Keep managed API keys out of Claude Code context and run supported credentialed HTTP workflows through Phantom's local proxy boundary.",
+    "modified": "2026-09-03"
   },
   {
     "slug": "cursor",
     "file": "cursor.md",
     "title": "Phantom with Cursor",
-    "description": "Connect Phantom to Cursor and verify value-blind MCP and proxy-scoped development workflows."
+    "description": "Stop Cursor from needing plaintext managed dotenv secrets by using Phantom's value-blind MCP and proxy-scoped development workflow.",
+    "modified": "2026-09-03"
   },
   {
     "slug": "windsurf",
     "file": "windsurf.md",
     "title": "Phantom with Windsurf",
-    "description": "Connect Phantom to Windsurf and use supported local credential workflows without exposing provider values through MCP."
+    "description": "Protect managed Windsurf API keys and dotenv secrets while using supported local credential workflows without exposing provider values through MCP.",
+    "modified": "2026-09-03"
   },
   {
     "slug": "codex",
     "file": "codex.md",
     "title": "Phantom with Codex",
-    "description": "Configure Phantom for Codex and keep supported agent workflows inside the authenticated local proxy boundary."
+    "description": "Configure API key security for Codex and keep supported agent workflows inside Phantom's authenticated local proxy boundary.",
+    "modified": "2026-09-03"
   },
   {
     "slug": "platform-support",
     "file": "platform-support.md",
     "title": "Platform support",
-    "description": "Review Phantom's explicit macOS, Linux, and Windows build, installer, and native-acceptance boundaries."
+    "description": "Review Phantom's explicit macOS, Linux, and Windows build, installer, and native-acceptance boundaries.",
+    "modified": "2026-09-03"
   },
   {
     "slug": "troubleshooting",
     "file": "troubleshooting.md",
     "title": "Troubleshooting",
-    "description": "Diagnose Phantom installation, vault, proxy, client-integration, recovery, and platform-specific failures."
+    "description": "Diagnose Phantom installation, vault, proxy, client-integration, recovery, and platform-specific failures.",
+    "modified": "2026-09-03"
   },
   {
     "slug": "architecture",
     "file": "architecture.md",
     "title": "Architecture",
-    "description": "Understand Phantom's local vault, authenticated proxy, MCP, authority, transaction, and fail-closed design boundaries."
+    "description": "Understand Phantom's local vault, authenticated proxy, MCP, authority, transaction, and fail-closed design boundaries.",
+    "modified": "2026-09-03"
   },
   {
     "slug": "enterprise-adoption",
     "file": "enterprise-adoption.md",
     "title": "Enterprise adoption",
-    "description": "Evaluate Phantom with explicit technical, organizational, commissioning, evidence, and acceptance gates."
+    "description": "Evaluate Phantom with explicit technical, organizational, commissioning, evidence, and acceptance gates.",
+    "modified": "2026-09-03"
   }
 ]

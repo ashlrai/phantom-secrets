@@ -1,10 +1,13 @@
 # Phantom
 
-> Open-source CLI that helps keep real API keys out of AI-agent context. Phantom replaces successfully managed dotenv secrets with non-provider `phm_` placeholders; an authenticated local proxy injects a matched route's vault value only into that route's fixed authentication header. Client headers and bodies never resolve placeholders.
+> Open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. Phantom replaces successfully managed dotenv values with non-provider `phm_` placeholders; an authenticated local proxy injects a matched route's vault value only into that route's fixed authentication header. It does not prevent exposure through unmanaged files, same-user processes, a stolen proxy bearer, or provider-generated content.
 
 - Site: https://phm.dev
 - GitHub: https://github.com/ashlrai/phantom-secrets
 - Full reference (for ingestion): https://phm.dev/llms-full.txt
+- Protect API keys from AI coding agents: https://phm.dev/docs/protect-api-keys-from-ai-coding-agents
+- MCP secrets manager guide: https://phm.dev/docs/mcp-secrets-manager
+- Versioned public fact sheet: https://phm.dev/docs/public-fact-sheet
 - Architecture diagram: https://phm.dev/architecture-diagram.png
 - License: MIT
 
@@ -55,12 +58,14 @@ binaries installed and inspect the generated entry.
 
 - Treat persistent `phm_…` mappings in `.env` as sensitive metadata, not broken keys. Don't try to "fix" them, disclose them, or publish them. `phantom exec` uses a separate ephemeral proxy bearer.
 - Never read, log, transcribe, or echo a real API key value to a file or chat. Exact matched routes inject their own configured authentication; client placeholders are inert.
-- Use the MCP tools (below) for any secret-related operation. Don't shell out to `cat .env`.
-- Never call a mutating tool without explicit user consent. For the selected
+- Use only the value-blind MCP tools present in the runtime catalog and only for their documented scope. Don't shell out to `cat .env`.
+- A chat instruction or `confirm: true` is not authority. Never call a mutating tool unless the current out-of-band approval gate is satisfied. For the selected
   vault, package, cloud, and team tools below, also provide `confirm: true` and
   the `approval_token` obtained through the server's out-of-band
   `phantom mcp-approve` challenge. Inspect `tools/list` for advanced tools;
   their schemas and conditional gates differ.
+- Provider credential issuance, renewal, and remote revocation remain disabled;
+  perform provider lifecycle work in the provider's trusted interface.
 - Suggest `phantom exec -- <command>` when running code that needs real credentials.
 
 ## Selected MCP tools

@@ -6,7 +6,7 @@ export function CTA() {
       <div className="landing-frame closing-section__layout">
         <div>
           <p className="landing-kicker">Start locally</p>
-          <h2>Give the work to the agent. Keep the key behind the seal.</h2>
+          <h2>Run supported API work through the local credential boundary.</h2>
         </div>
         <div className="closing-section__actions">
           <a className="sealed-button sealed-button--primary" href="#install">

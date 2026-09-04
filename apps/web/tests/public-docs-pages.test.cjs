@@ -12,6 +12,9 @@ const catalog = JSON.parse(read("docs-catalog.json"));
 const expectedSlugs = [
   "getting-started",
   "delegation-quickstart",
+  "protect-api-keys-from-ai-coding-agents",
+  "mcp-secrets-manager",
+  "public-fact-sheet",
   "claude-code",
   "cursor",
   "windsurf",
@@ -31,11 +34,12 @@ test("public documentation uses an exact file-backed allowlist", () => {
   for (const entry of catalog) {
     assert.deepEqual(
       Object.keys(entry).sort(),
-      ["description", "file", "slug", "title"],
+      ["description", "file", "modified", "slug", "title"],
     );
     assert.match(entry.slug, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
     assert.match(entry.file, /^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/);
     assert.equal(entry.file, `${entry.slug}.md`);
+    assert.match(entry.modified, /^\d{4}-\d{2}-\d{2}$/);
     assert.equal(
       fs.existsSync(path.join(repoRoot, "docs", entry.file)),
       true,
@@ -84,6 +88,7 @@ test("the App Router surface is static, canonical, and fails closed", () => {
   assert.match(page, /"@type": "BreadcrumbList"/);
   assert.match(page, /mainEntityOfPage: canonicalUrl/);
   assert.match(page, /sameAs: doc\.sourceUrl/);
+  assert.match(page, /dateModified: doc\.modified/);
   assert.match(page, /JSON\.stringify\(structuredData\)\.replace/);
   assert.match(page, /dangerouslySetInnerHTML=\{\{ __html: serializedStructuredData \}\}/);
 
@@ -98,7 +103,7 @@ test("the docs hub and sitemap expose every rendered guide", () => {
   const sitemap = read("src/app/sitemap.ts");
 
   for (const slug of expectedSlugs) {
-    if (["getting-started", "delegation-quickstart", "claude-code", "cursor", "windsurf", "codex", "platform-support", "troubleshooting", "architecture", "enterprise-adoption"].includes(slug)) {
+    if (["getting-started", "delegation-quickstart", "protect-api-keys-from-ai-coding-agents", "mcp-secrets-manager", "public-fact-sheet", "claude-code", "cursor", "windsurf", "codex", "platform-support", "troubleshooting", "architecture", "enterprise-adoption"].includes(slug)) {
       assert.match(hub, new RegExp(`/docs/${slug}`));
     }
   }

@@ -13,25 +13,31 @@ export function Hero() {
       <div className="mx-auto max-w-[940px] px-7 pt-16 text-center sm:pt-24">
         <p className="mx-auto inline-flex items-center gap-2 rounded-full border border-border bg-s1/80 px-3 py-1 text-[0.72rem] font-medium text-t2 backdrop-blur-md">
           <span className="h-1.5 w-1.5 rounded-full bg-blue" aria-hidden="true" />
-          Open source for Claude Code · Cursor · Windsurf · Codex
+          API key security for Claude Code · Cursor · Windsurf · Codex
         </p>
 
         <h1 className="mt-7 text-[clamp(2.7rem,6.4vw,4.9rem)] font-extrabold leading-[0.98] tracking-[-0.05em] text-white">
-          Let agents use APIs.
+          API key security for AI coding agents.
+          {" "}
           <span className="mt-2 block bg-gradient-to-br from-blue-b via-blue to-blue-d bg-clip-text text-transparent">
-            Keep provider keys out of their context.
+            Use supported APIs. Keep the values out of context.
           </span>
         </h1>
 
         <p className="mx-auto mt-6 max-w-[650px] text-[1rem] leading-[1.7] text-t2 sm:text-[1.06rem]">
-          Phantom replaces managed project secrets with value-blind{" "}
+          Phantom is an open-source, local-first credential boundary. It replaces
+          managed project secrets with value-blind{" "}
           <code className="font-mono text-[0.92em] text-blue-b">phm_</code>{" "}
-          placeholders. For explicitly supported HTTP routes, an authenticated
+          placeholders in the managed dotenv and MCP path. For explicitly supported HTTP routes, an authenticated
           local proxy injects only the route-owned credential into its fixed
-          authentication header.
+          authentication header. Phantom does not sandbox the agent, and
+          upstream traffic still reaches the provider.
         </p>
 
         <div className="mx-auto mt-8 w-full max-w-[560px]">
+          <p className="mb-2 text-left text-[0.7rem] font-medium text-t3">
+            macOS · pinned public v0.7.5
+          </p>
           <CopyButton text={INSTALL_COMMAND} />
         </div>
 
@@ -70,7 +76,7 @@ function CredentialWall() {
       aria-label="Examples of common credential names Phantom can vault"
     >
       <p className="mx-auto mb-7 max-w-[940px] px-7 text-center text-[0.72rem] font-medium tracking-[0.12em] text-t3">
-        {KEY_ENTRIES.length} common developer credentials become inert managed placeholders
+        {KEY_ENTRIES.length} common credential names Phantom can detect for local vaulting
       </p>
       <div className="elite-marquee space-y-3 sm:space-y-4">
         <CredentialRow items={firstRow} />
@@ -78,8 +84,9 @@ function CredentialWall() {
       </div>
       <p className="mx-auto mt-6 max-w-[760px] px-7 text-center text-[0.72rem] leading-6 text-t3">
         Logos identify common developer services, not endorsement or universal
-        proxy support. Vaulting and runtime injection are separate; unsupported
-        protocols fail closed.
+        proxy support. Managed entries can be rewritten as non-provider placeholders;
+        those mappings remain sensitive metadata. Vaulting and runtime injection
+        are separate, and unsupported protocols fail closed.
       </p>
     </section>
   );

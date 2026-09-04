@@ -24,7 +24,7 @@ const howTo = {
     {
       "@type": "HowToStep",
       name: "Install Phantom and protect your .env",
-      text: `Install the reviewed release from ${PUBLIC_RELEASE_URL}. On macOS use the trusted Homebrew formula; on Linux or Windows, checksum-verify the exact ${PUBLIC_RELEASE_TAG} GitHub asset. Then run phantom init in the project root.`,
+      text: `Install the pinned public release from ${PUBLIC_RELEASE_URL} and verify its published SHA-256 receipt. On macOS, review and explicitly trust the project formula before installing it; Homebrew publication evidence is separate from the GitHub release receipt. On Linux or Windows, checksum-verify the exact ${PUBLIC_RELEASE_TAG} GitHub asset. Current ${PUBLIC_RELEASE_TAG} Linux users begin with the non-reboot-persistent keyutils backend, or configure the encrypted-file backend before initialization when persistence is required. Then run phantom init in the project root.`,
     },
     {
       "@type": "HowToStep",

@@ -9,6 +9,7 @@ export interface PublicDocConfig {
   file: string;
   title: string;
   description: string;
+  modified: string;
 }
 
 export interface PublicDoc extends PublicDocConfig {
@@ -20,11 +21,16 @@ const REPOSITORY_URL = "https://github.com/ashlrai/phantom-secrets";
 const DOCS_ROOT = path.resolve(process.cwd(), "..", "..", "docs");
 const SAFE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SAFE_FILE = /^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export const PUBLIC_DOCS = docsCatalog as readonly PublicDocConfig[];
 
 for (const entry of PUBLIC_DOCS) {
-  if (!SAFE_SLUG.test(entry.slug) || !SAFE_FILE.test(entry.file)) {
+  if (
+    !SAFE_SLUG.test(entry.slug) ||
+    !SAFE_FILE.test(entry.file) ||
+    !ISO_DATE.test(entry.modified)
+  ) {
     throw new Error(`Unsafe public documentation catalog entry: ${entry.slug}`);
   }
 }

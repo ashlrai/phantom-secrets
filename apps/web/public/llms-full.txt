@@ -1,6 +1,6 @@
 # Phantom — Full Reference
 
-Phantom is an open-source CLI that helps keep real API keys out of AI-agent context. It replaces successfully managed dotenv secrets with persistent non-provider `phm_` placeholders. An authenticated local HTTP proxy matches exact supported routes and injects a route-owned vault value only into that route's fixed authentication header; client headers and bodies never resolve placeholders. Persistent mappings are sensitive metadata and must remain confidential.
+Phantom is an open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces successfully managed dotenv values with persistent non-provider `phm_` placeholders. An authenticated local HTTP proxy matches exact supported routes and injects a route-owned vault value only into that route's fixed authentication header; client headers and bodies never resolve placeholders. Persistent mappings are sensitive metadata. Phantom does not prevent exposure through unmanaged files, same-user processes, a stolen proxy bearer, or provider-generated content.
 
 Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
@@ -31,7 +31,7 @@ https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/
 
 4. Authenticated proxy sessions: each proxy run generates a fresh PHANTOM_PROXY_TOKEN. Header-aware clients can set PHANTOM_PROXY_HEADER_AUTH_ONLY=1 and send it as x-phantom-proxy-token instead of using path-authenticated local SDK URLs.
 
-5. In the supported managed workflow, the agent receives sensitive managed placeholders and scrubbed responses rather than real credential values. `phantom exec` supplies a fresh proxy bearer, which must be protected while active. Unmanaged files, logs, direct environment injection, custom tools, and provider behavior remain outside that claim.
+5. In the supported managed workflow, the agent receives sensitive managed placeholders rather than provider credential values through the dotenv and MCP path. Responses receive bounded redaction of recognized credential formats; this is not a general secret or content filter. `phantom exec` supplies a fresh proxy bearer, which must be protected while active. Unmanaged files, logs, direct environment injection, custom tools, and provider behavior remain outside that claim.
 
 
 ## Install
@@ -93,7 +93,7 @@ report --json: stable JSON with status, risk_level, findings, fixes, commands, f
 doctor: human-readable view of the same readiness policy.
 setup --dry-run: preview safe defaults for agent use.
 setup --apply: initialize safe defaults, wire MCP clients, generate .env.example, recommend script wrapping, and write a readiness report.
-Status values: unsafe, protected, verified, team-ready, compliance-ready.
+Status values: unsafe, protected, verified, team-ready, compliance-ready. `compliance-ready` is a local readiness label meaning its configured predicates passed. It is not regulatory compliance, certification, centralized retention, or an independent audit.
 
 ### phantom exec -- <cmd>
 Start an authenticated local proxy, set *_BASE_URL env vars, run command, shut down proxy on exit.
@@ -767,7 +767,7 @@ Do not commit:
 11. Monorepo: phantom init in each subdirectory — each gets its own vault and config
 12. Multi-IDE team: same MCP server works across Claude Code, Cursor, Windsurf, and Codex
 13. Migrate from Doppler/Infisical/dotenvx/1Password: phantom import --from <source> --file <path>
-14. Audit trail: PHANTOM_AUDIT=1 + phantom audit show/tail/verify for compliance and forensics
+14. Local audit support: PHANTOM_AUDIT=1 + phantom audit show/tail/verify can aid troubleshooting and forensics. It is not compliance evidence by itself.
 
 
 ## Test and quality evidence

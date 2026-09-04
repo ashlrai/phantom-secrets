@@ -666,9 +666,9 @@ test("current SoftwareApplication and HowTo metadata point at the verified relea
 
   const quickStart = claims["src/components/landing/QuickStart.tsx"];
   const install = claims["src/components/landing/Install.tsx"];
-  assert.match(quickStart, /Install \$\{PUBLIC_RELEASE_TAG\} on macOS/);
+  assert.match(quickStart, /Verify both \$\{PUBLIC_RELEASE_TAG\} binaries/);
   assert.match(quickStart, /PUBLIC_RELEASE_RECEIPT/);
-  assert.match(install, /both reviewed \{PUBLIC_RELEASE_TAG\} binaries/);
+  assert.match(install, /both pinned \{PUBLIC_RELEASE_TAG\} binaries/);
   assert.doesNotMatch(`${quickStart}\n${install}`, /(?:Install|reviewed) v0\.7\.3/i);
 });
 
@@ -912,8 +912,10 @@ test("team and support copy distinguishes source-backed pilots from hosted servi
 
 test("quickstart labels machine-dependent output as illustrative", () => {
   const quickstart = claims["src/components/landing/QuickStart.tsx"];
+  const install = claims["src/components/landing/Install.tsx"];
   assert.match(quickstart, /illustrative output/);
-  assert.match(quickstart, /ephemeral-port/);
+  assert.match(install, /phantom agent doctor/);
+  assert.match(install, /phantom exec --/);
   assert.doesNotMatch(quickstart, /127\.0\.0\.1:8484/);
 });
 

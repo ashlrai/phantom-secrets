@@ -34,7 +34,28 @@ test("platform chooser links every reviewed release target with bounded evidence
   }
   assert.match(quickStart, /Credential Manager/);
   assert.match(quickStart, /session-persistent, not reboot-persistent/);
+  assert.match(quickStart, /Keyutils initially/);
+  assert.match(quickStart, /encrypted-file[\s\S]*before <code>phantom init<\/code>/);
   assert.match(quickStart, /not every local shell, policy, or credential-store state/);
+  assert.match(quickStart, /id="install"/);
+  assert.match(quickStart, /Windows archives are not Authenticode-signed/);
+});
+
+test("activation orders installation before client connection and previews config writes", () => {
+  const page = read("src/app/page.tsx");
+  const connection = read("src/components/landing/Install.tsx");
+
+  assert.ok(page.indexOf("<QuickStart />") < page.indexOf("<Install />"));
+  assert.match(connection, /id="connect"/);
+  for (const client of ["claude", "cursor", "windsurf", "codex"]) {
+    assert.match(connection, new RegExp(`phantom setup --client ${client} --print`));
+  }
+  assert.match(connection, /phantom agent doctor/);
+  assert.match(connection, /phantom exec -- claude/);
+  assert.match(connection, /phantom exec -- cursor \./);
+  assert.match(connection, /phantom exec -- windsurf \./);
+  assert.match(connection, /phantom exec -- codex/);
+  assert.doesNotMatch(read("src/components/landing/QuickStart.tsx"), /phantom exec -- claude/);
 });
 
 test("GitHub starring is a named action across the primary adoption surfaces", () => {

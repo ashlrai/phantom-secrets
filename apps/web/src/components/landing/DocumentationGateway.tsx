@@ -1,7 +1,7 @@
 const GUIDES = [
   {
     title: "Start with one project",
-    body: "Install a reviewed release, protect one project, inspect the boundary, and launch a supported client.",
+    body: "Install a pinned public release, verify its receipt, protect one project, inspect the boundary, and launch a supported client.",
     href: "/docs/getting-started",
     action: "Open the quickstart",
   },

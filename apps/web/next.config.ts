@@ -49,11 +49,13 @@ const nextConfig: NextConfig = {
       publicAuthConfigurationFingerprint(process.env) ?? "unconfigured",
   },
   async redirects() {
-    return docsRoutes.map(({ source, file }) => ({
+    const legacyDocs = docsRoutes.map(({ source, file }) => ({
       source,
       destination: `https://github.com/ashlrai/phantom-secrets/blob/main/docs/${file}`,
       permanent: false,
     }));
+
+    return legacyDocs;
   },
   async headers() {
     return [

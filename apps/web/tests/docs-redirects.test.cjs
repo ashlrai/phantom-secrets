@@ -58,5 +58,6 @@ test("Next config derives temporary redirects from the reviewed manifest", () =>
     /https:\/\/github\.com\/ashlrai\/phantom-secrets\/blob\/main\/docs\/\$\{file\}/,
   );
   assert.match(config, /permanent: false/);
+  assert.doesNotMatch(config, /source: "\/install\.(?:sh|ps1)"/);
   assert.doesNotMatch(config, /destination:\s*["']https?:\/\/(?!github\.com\/ashlrai\/phantom-secrets\/blob\/main\/docs\/)/);
 });
