@@ -35,16 +35,17 @@ fn credential_entry(
     account: &str,
 ) -> keyring::Result<keyring::Entry> {
     #[cfg(target_os = "linux")]
-    let credential: Box<keyring::Credential> = match store {
-        CredentialStore::LinuxKeyutils => Box::new(
-            keyring::keyutils::KeyutilsCredential::new_with_target(None, service, account)?,
-        ),
-        CredentialStore::LinuxSecretService => Box::new(
-            keyring::secret_service::SsCredential::new_with_target(None, service, account)?,
-        ),
-    };
-    #[cfg(target_os = "linux")]
-    return Ok(keyring::Entry::new_with_credential(credential));
+    {
+        let credential: Box<keyring::Credential> = match store {
+            CredentialStore::LinuxKeyutils => Box::new(
+                keyring::keyutils::KeyutilsCredential::new_with_target(None, service, account)?,
+            ),
+            CredentialStore::LinuxSecretService => Box::new(
+                keyring::secret_service::SsCredential::new_with_target(None, service, account)?,
+            ),
+        };
+        Ok(keyring::Entry::new_with_credential(credential))
+    }
 
     #[cfg(not(target_os = "linux"))]
     {
