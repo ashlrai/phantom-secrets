@@ -15,7 +15,7 @@ fn os_keychain_entry(service: &str, account: &str) -> keyring::Result<keyring::E
         // pre-existing cloud credentials from keyutils to a different store.
         let credential =
             keyring::keyutils::KeyutilsCredential::new_with_target(None, service, account)?;
-        return Ok(keyring::Entry::new_with_credential(Box::new(credential)));
+        Ok(keyring::Entry::new_with_credential(Box::new(credential)))
     }
     #[cfg(not(target_os = "linux"))]
     {
