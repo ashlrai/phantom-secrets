@@ -14,6 +14,7 @@ import "./npm-candidate-acceptance.test.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
+const ci = readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8");
 const releaseBuild = readFileSync(
   join(repoRoot, ".github/workflows/release-build.yml"),
   "utf8"
@@ -106,6 +107,34 @@ test("release defaults and lockfiles are part of the exact version parity contra
     ).trim(),
     "release version parity passed: 0.7.7 across 19 surfaces and 12 crates"
   );
+});
+
+test("web dependency audits use the exact supported npm CLI and stay fail closed", () => {
+  for (const [name, workflow] of [
+    ["CI", ci],
+    ["release build", releaseBuild],
+  ]) {
+    assert.match(
+      workflow,
+      /^  PHANTOM_NPM_AUDIT_VERSION: 11\.15\.0$/m,
+      `${name} must pin the npm audit client`,
+    );
+    assert.match(
+      workflow,
+      /npm install \\\n[\s\S]*?--prefix "\$\{RUNNER_TEMP\}\/phantom-npm-audit"[\s\S]*?--ignore-scripts[\s\S]*?--no-audit[\s\S]*?"npm@\$\{PHANTOM_NPM_AUDIT_VERSION\}"/,
+      `${name} must install the audit client without lifecycle scripts`,
+    );
+    assert.match(
+      workflow,
+      /"\$\{RUNNER_TEMP\}\/phantom-npm-audit\/node_modules\/\.bin\/npm"\s+audit --omit=dev --audit-level=moderate/,
+      `${name} must fail on moderate-or-higher production advisories`,
+    );
+    assert.doesNotMatch(
+      workflow,
+      /^\s*run: npm audit --omit=dev --audit-level=moderate$/m,
+      `${name} must not fall back to the runner-bundled npm audit client`,
+    );
+  }
 });
 
 test("shared graph validates the exact tag before building and keeps native acceptance exact", () => {

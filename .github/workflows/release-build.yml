@@ -15,6 +15,7 @@ permissions:
 
 env:
   PHANTOM_RELEASE_TAG: ${{ inputs.release_tag }}
+  PHANTOM_NPM_AUDIT_VERSION: 11.15.0
 
 jobs:
   verify-source:
@@ -142,9 +143,25 @@ jobs:
         working-directory: apps/web
         run: npm ci
 
+      - name: Install the exact npm audit CLI
+        run: |
+          npm install \
+            --prefix "${RUNNER_TEMP}/phantom-npm-audit" \
+            --cache "${RUNNER_TEMP}/phantom-npm-audit-cache" \
+            --registry=https://registry.npmjs.org/ \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund \
+            --no-save \
+            --package-lock=false \
+            "npm@${PHANTOM_NPM_AUDIT_VERSION}"
+          "${RUNNER_TEMP}/phantom-npm-audit/node_modules/.bin/npm" --version | grep -Fx "${PHANTOM_NPM_AUDIT_VERSION}"
+
       - name: Audit production web dependencies
         working-directory: apps/web
-        run: npm audit --omit=dev --audit-level=moderate
+        run: >-
+          "${RUNNER_TEMP}/phantom-npm-audit/node_modules/.bin/npm"
+          audit --omit=dev --audit-level=moderate
 
       - name: Lint web source
         working-directory: apps/web
