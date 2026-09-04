@@ -141,7 +141,7 @@ jobs:
 
       - name: Install web dependencies from the lockfile
         working-directory: apps/web
-        run: npm ci
+        run: npm ci --no-audit
 
       - name: Install the exact npm audit CLI
         run: |

@@ -214,7 +214,7 @@ jobs:
       - name: Verify immutable migration source contract
         run: node --test ../../scripts/supabase/verify-migrations.test.mjs
       - name: Install from the lockfile
-        run: npm ci
+        run: npm ci --no-audit
       - name: Install the exact npm audit CLI
         run: |
           npm install \

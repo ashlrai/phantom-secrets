@@ -121,6 +121,11 @@ test("web dependency audits use the exact supported npm CLI and stay fail closed
     );
     assert.match(
       workflow,
+      /run: npm ci --no-audit/,
+      `${name} must leave advisory checking to the exact audit client`,
+    );
+    assert.match(
+      workflow,
       /npm install \\\n[\s\S]*?--prefix "\$\{RUNNER_TEMP\}\/phantom-npm-audit"[\s\S]*?--ignore-scripts[\s\S]*?--no-audit[\s\S]*?"npm@\$\{PHANTOM_NPM_AUDIT_VERSION\}"/,
       `${name} must install the audit client without lifecycle scripts`,
     );
