@@ -27,11 +27,11 @@ const {
 function writePair(binaryPath, manifestPath, contents) {
   writePrivateFile(binaryPath, contents, 0o700);
   const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
-  writePrivateFile(manifestPath, `${JSON.stringify({ version: "0.7.7", sha256 })}\n`, 0o600);
+  writePrivateFile(manifestPath, `${JSON.stringify({ version: "0.7.8", sha256 })}\n`, 0o600);
 }
 
-assert.strictEqual(parseBinaryVersion("phantom 0.7.7\n"), "0.7.7");
-assert.strictEqual(parseBinaryVersion("phantom 0.7.7\r\n"), "0.7.7");
+assert.strictEqual(parseBinaryVersion("phantom 0.7.8\n"), "0.7.8");
+assert.strictEqual(parseBinaryVersion("phantom 0.7.8\r\n"), "0.7.8");
 assert.strictEqual(
   parseBinaryVersion(Buffer.from("phantom 1.2.3-rc.1+build.7\n")),
   "1.2.3-rc.1+build.7"
@@ -39,12 +39,12 @@ assert.strictEqual(
 for (const malformed of [
   "",
   "phantom\n",
-  "phantom v0.7.7\n",
+  "phantom v0.7.8\n",
   "phantom 0.7.01\n",
   "phantom 1.2.3-01\n",
-  "phantom 0.7.7-untrusted\nextra\n",
-  "prefix phantom 0.7.7\n",
-  "phantom-mcp 0.7.7\n",
+  "phantom 0.7.8-untrusted\nextra\n",
+  "prefix phantom 0.7.8\n",
+  "phantom-mcp 0.7.8\n",
 ]) assert.strictEqual(parseBinaryVersion(malformed), null, malformed);
 
 const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-cache-test-"));
@@ -56,7 +56,7 @@ try {
   assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {
     execFileSyncImpl: () => {
       executions += 1;
-      return Buffer.from("phantom 0.7.7\n");
+      return Buffer.from("phantom 0.7.8\n");
     },
   }), false);
   assert.strictEqual(executions, 0, "binary without manifest must never execute");
@@ -65,7 +65,7 @@ try {
   writePair(paths.binaryPath, paths.manifestPath, "old-binary");
   assert.ok(readVerifiedManifest(paths.binaryPath, paths.manifestPath));
   assert.strictEqual(isCachedBinaryStale(paths.binaryPath, {
-    execFileSyncImpl: () => Buffer.from("phantom 0.7.7\n"),
+    execFileSyncImpl: () => Buffer.from("phantom 0.7.8\n"),
   }), false);
 
   let observedTimeout;

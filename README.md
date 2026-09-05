@@ -11,7 +11,7 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 [![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/stargazers)
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
 [![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-v0.7.5-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5)
-[![Source version](https://img.shields.io/badge/source_version-v0.7.7-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#077---2026-09-03)
+[![Source version](https://img.shields.io/badge/source_version-v0.7.8-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#078---2026-09-05)
 [![Pinned toolchain: Rust 1.95](https://img.shields.io/badge/pinned_toolchain-Rust_1.95-CE412B?style=for-the-badge&logo=rust&labelColor=0b0b14)](rust-toolchain.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
 

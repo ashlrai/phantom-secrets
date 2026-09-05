@@ -4,7 +4,36 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No unreleased changes are recorded after the `0.7.7` release candidate.
+No unreleased changes are recorded after the `0.7.8` release candidate.
+
+## [0.7.8] - 2026-09-05
+
+This patch fixes the Windows npm-wrapper failures exposed by the independent
+post-release package gate for `v0.7.7`. It does not move or replace the
+immutable `v0.7.7` tag or GitHub Release, and `0.7.8` remains a source
+candidate until its own tag-bound native, release, and distribution gates pass.
+
+### Fixed
+
+- Accept a Windows 8.3 lexical alias such as `RUNNER~1` only when bigint
+  `lstat` volume and file identifiers prove that the alias and native realpath
+  name the same filesystem object. Symlinks, junctions, other reparse escapes,
+  zero file identifiers, and identity mismatches remain fail-closed.
+- Run the bounded Windows ZIP extractor from a private temporary PowerShell
+  script with separately passed file arguments. Preserve the exact,
+  case-sensitive two-member archive contract and report sanitized extraction
+  or candidate-version phase failures without echoing child output or paths.
+- Make every native npm-wrapper regression command an independent workflow
+  step, so a later passing command cannot mask an earlier Windows failure.
+- Install and execute both wrappers from the exact matrix archive with fresh
+  caches on every native release runner, including Windows x64 and ARM64.
+
+### Breaking changes and migration
+
+There are no intentional CLI, MCP, proxy, configuration, or network-policy
+breaking changes. Existing `v0.7.7` GitHub artifacts remain immutable. Do not
+advertise or install `v0.7.8` as a public release until its separately reviewed
+release and package receipts exist.
 
 ## [0.7.7] - 2026-09-03
 
@@ -527,7 +556,8 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.7...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...HEAD
+[0.7.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.4...v0.7.5

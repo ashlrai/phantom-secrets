@@ -16,22 +16,22 @@ unsupported traffic.
 
 ## Install an exact published version
 
-This wrapper is version `0.7.7`. Its manifest and this README do not prove that
+This wrapper is version `0.7.8`. Its manifest and this README do not prove that
 the npm package or matching GitHub release has been published. Verify the exact
 npm version before installing it:
 
 ```bash
-npm view phantom-secrets@0.7.7 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
-npm install --global phantom-secrets@0.7.7 --registry=https://registry.npmjs.org/
+npm view phantom-secrets@0.7.8 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
+npm install --global phantom-secrets@0.7.8 --registry=https://registry.npmjs.org/
 phantom --version
 ```
 
 The first invocation downloads the matching native binary from the exact
-[`v0.7.7` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.7),
+[`v0.7.8` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8),
 verifies the archive against its `.sha256` sidecar, extracts only the expected
 binary from the closed two-binary archive, and records a private local cache
 manifest. The wrapper does not itself verify GitHub attestations or publisher
-identity. If the npm query, release, checksum, or expected `phantom 0.7.7`
+identity. If the npm query, release, checksum, or expected `phantom 0.7.8`
 version is unavailable, stop instead of substituting an unpinned package or
 release.
 
@@ -68,7 +68,7 @@ phantom setup --client windsurf
 phantom setup --client codex
 ```
 
-Version `0.7.7` records the installed local `phantom mcp serve` command when it
+Version `0.7.8` records the installed local `phantom mcp serve` command when it
 can resolve that executable, otherwise it looks for a local `phantom-mcp`.
 Setup has no network package-runner fallback and fails closed when neither
 local runtime is available. Inspect the generated command before trusting it.
@@ -148,7 +148,7 @@ and publish a new vault to the intended fixed membership when offboarding.
   initialization, but explicit reveal/export paths and unrelated copies remain
   the operator's responsibility.
 - Live provider issuance/rotation is hard-denied before credential or network
-  access in 0.7.7. Deployment sync, live validation, cloud operations, and team
+  access in 0.7.8. Deployment sync, live validation, cloud operations, and team
   workflows are separate network/persistent effects with their own gates.
 
 Read [SECURITY.md](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md)
@@ -159,7 +159,7 @@ for the full workflow.
 
 This directory is source for a thin npm wrapper. Its local `package.json`
 version does not prove npm publication, matching native-archive publication,
-signing, or platform acceptance. Verify `phantom-secrets@0.7.7` with the exact
+signing, or platform acceptance. Verify `phantom-secrets@0.7.8` with the exact
 `npm view` command above and verify the matching immutable GitHub release before
 installation. Maintainers should follow the guarded
 [npm publication runbook](https://github.com/ashlrai/phantom-secrets/blob/main/docs/npm-publication.md).

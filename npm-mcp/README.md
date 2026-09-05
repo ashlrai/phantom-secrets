@@ -13,22 +13,22 @@ into an agent conversation.
 
 ## Install an exact published version
 
-This wrapper is version `0.7.7`. Its manifest and this README do not prove npm,
+This wrapper is version `0.7.8`. Its manifest and this README do not prove npm,
 GitHub, or MCP Registry publication. Verify the exact npm version before
 installing it:
 
 ```bash
-npm view phantom-secrets-mcp@0.7.7 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
-npm install --global phantom-secrets-mcp@0.7.7 --registry=https://registry.npmjs.org/
+npm view phantom-secrets-mcp@0.7.8 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
+npm install --global phantom-secrets-mcp@0.7.8 --registry=https://registry.npmjs.org/
 phantom-mcp --version
 ```
 
 The first invocation downloads the matching native binary from the exact
-[`v0.7.7` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.7),
+[`v0.7.8` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8),
 verifies the archive against its `.sha256` sidecar, extracts only the expected
 binary from the closed two-binary archive, and records a private local cache
 manifest. The wrapper does not itself verify GitHub attestations or publisher
-identity. If the npm query, release, checksum, or expected `phantom-mcp 0.7.7`
+identity. If the npm query, release, checksum, or expected `phantom-mcp 0.7.8`
 version is unavailable, stop instead of substituting an unpinned launcher.
 
 The wrapper supports macOS arm64/x64, glibc Linux arm64/x64, and Windows
@@ -47,7 +47,7 @@ phantom setup --client windsurf
 phantom setup --client codex
 ```
 
-Version `0.7.7` records the installed local `phantom mcp serve` command when it
+Version `0.7.8` records the installed local `phantom mcp serve` command when it
 can resolve that executable, otherwise it looks for a local `phantom-mcp`.
 Setup has no network package-runner fallback and fails closed when neither
 local runtime is available. Inspect the generated command before trusting it.
@@ -97,7 +97,7 @@ Important boundaries:
 - `phantom_setup_workspace` can propose and request trusted-terminal setup; MCP
   does not claim or apply the request.
 - Provider enrollment and live issuance/refresh/renewal/rotation/revocation are
-  hard-denied before credential and network access in 0.7.7, including from
+  hard-denied before credential and network access in 0.7.8, including from
   MCP. Protocol source and test mocks confer no Locus, broker, provider,
   production, or deployment authority.
 - Validation, deployment sync, cloud, and team tools may
@@ -149,7 +149,7 @@ a new vault to the intended fixed membership.
 This directory is the source for a thin native-binary wrapper. The local
 `package.json` version is not proof of npm publication, native artifact parity,
 MCP Registry publication, or platform acceptance. Verify
-`phantom-secrets-mcp@0.7.7` with the exact `npm view` command above, then verify
+`phantom-secrets-mcp@0.7.8` with the exact `npm view` command above, then verify
 the matching immutable GitHub release. An npm publication still does not prove
 the separate MCP Registry entry. Maintainers should follow the guarded
 [npm](https://github.com/ashlrai/phantom-secrets/blob/main/docs/npm-publication.md)

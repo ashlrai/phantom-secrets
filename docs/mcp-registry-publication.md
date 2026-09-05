@@ -2,10 +2,10 @@
 
 This runbook publishes Phantom's server metadata to the official MCP Registry.
 It does not publish a native binary or npm wrapper. The manifest points to
-`phantom-secrets-mcp@0.7.7`, so the exact accepted npm package and immutable
+`phantom-secrets-mcp@0.7.8`, so the exact accepted npm package and immutable
 GitHub Release must be available first.
 
-For `0.7.7`, the required order is:
+For `0.7.8`, the required order is:
 
 1. verify the exact canonical source, annotated remote tag, and GitHub Release;
 2. complete all staging, integrity/provenance, six-target acceptance, and
@@ -41,15 +41,15 @@ capture disabled.
 
 ## Prerequisites
 
-- Work from the exact clean `v0.7.7` checkout used for the immutable GitHub
+- Work from the exact clean `v0.7.8` checkout used for the immutable GitHub
   Release and accepted npm packages.
 - Bind `origin` to `ashlrai/phantom-secrets`, then verify the remote tag is an
   annotated object peeled to local `HEAD` and current remote `main`.
 - Verify `mcp-registry/server.json`, `npm-mcp/package.json`, and runtime MCP
-  schema all describe `0.7.7`; the release gate performs the deeper stdio/schema
+  schema all describe `0.7.8`; the release gate performs the deeper stdio/schema
   parity smoke.
-- Require `phantom-secrets-mcp@0.7.7` exact integrity, accepted six-target npm
-  receipts, and `latest: 0.7.7` before registry login.
+- Require `phantom-secrets-mcp@0.7.8` exact integrity, accepted six-target npm
+  receipts, and `latest: 0.7.8` before registry login.
 - Confirm the trusted operator is authorized for the
   `io.github.ashlrai/*` namespace.
 - Use an x86_64 Linux trusted operator host. The repository script pins the
@@ -107,7 +107,7 @@ cleanup.
 The canonical-origin case must pass before the remote tag or branch is trusted:
 
 ```bash
-VERSION=0.7.7
+VERSION=0.7.8
 TAG="v${VERSION}"
 SOURCE_SHA="$(git rev-parse HEAD)"
 ORIGIN_URL="$(git remote get-url origin)"
@@ -179,8 +179,8 @@ esac
 ```
 
 The npm guard requires exact package identity, a SHA-512 integrity, and
-`latest: 0.7.7`; printing a tag map is not sufficient. The
-`include_deleted=true` query prevents a deleted `0.7.7` record from looking
+`latest: 0.7.8`; printing a tag map is not sufficient. The
+`include_deleted=true` query prevents a deleted `0.7.8` record from looking
 available for reuse. An HTTP `200` with active, deprecated, or deleted status
 means the version already exists. Compare `server.name`, `server.version`,
 repository, package identifier/version/registry, stdio transport, and official
@@ -285,7 +285,7 @@ case "${MCP_HTTP_STATUS}" in
       "${MCP_BODY}" >/dev/null
     ;;
   *)
-    echo "expected active MCP Registry 0.7.7, got HTTP ${MCP_HTTP_STATUS}" >&2
+    echo "expected active MCP Registry 0.7.8, got HTTP ${MCP_HTTP_STATUS}" >&2
     jq . "${MCP_BODY}" >&2 || true
     exit 1
     ;;
@@ -299,7 +299,7 @@ registry-generated metadata namespace before comparison, then checks lifecycle
 status separately. Do not normalize away unknown fields, array order, or any
 publisher-provided metadata.
 
-Independently re-query `phantom-secrets-mcp@0.7.7` and its `latest` dist-tag.
+Independently re-query `phantom-secrets-mcp@0.7.8` and its `latest` dist-tag.
 Record the source SHA, annotated tag, GitHub Release URL, npm integrity and
 provenance status, MCP server name/version, public JSON response, timestamp,
 operator, and pass/fail. Do not record authentication state, credentials,
@@ -317,7 +317,7 @@ deployment, or an authenticated user workflow.
   query. Treat an exact active match as success and do not republish blindly.
 - If npm is complete but MCP Registry publication fails, leave immutable npm
   state unchanged. Resolve the registry blocker and resume from inspection.
-- If `0.7.7` exists as deleted, deprecated, or conflicting metadata, stop. The
+- If `0.7.8` exists as deleted, deprecated, or conflicting metadata, stop. The
   official registry does not support overwriting that version; prepare a higher
   fix-forward source/npm/MCP version.
 - Lifecycle-status changes require a separate approval and are not authorized

@@ -8,6 +8,9 @@ const test = require("node:test");
 
 const webDir = path.resolve(__dirname, "..");
 const repositoryDir = path.resolve(webDir, "..", "..");
+const releaseVersion = JSON.parse(
+  fs.readFileSync(path.join(webDir, "package.json"), "utf8"),
+).version;
 const nextCli = path.join(webDir, "node_modules/next/dist/bin/next");
 const PUBLIC_CONFIGURATION = {
   NEXT_PUBLIC_SUPABASE_URL: "https://phantom-build-test.supabase.co",
@@ -185,7 +188,7 @@ test(
       assert.deepEqual(runtimeInjection.body, {
         status: "not_ready",
         service: "phantom-web",
-        release_version: "0.7.7",
+        release_version: releaseVersion,
       });
 
       copyApplication(withPublicConfig);
@@ -199,7 +202,7 @@ test(
       assert.deepEqual(builtConfiguration.body, {
         status: "configuration_ready",
         service: "phantom-web",
-        release_version: "0.7.7",
+        release_version: releaseVersion,
       });
     } finally {
       fs.rmSync(temporaryRoot, { force: true, recursive: true });

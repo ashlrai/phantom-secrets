@@ -4,11 +4,11 @@ This runbook stages, reviews, approves, accepts, and promotes Phantom's two thin
 native-binary wrappers on the public npm registry. It does not use the direct
 publication path or make `latest` point at unaccepted bytes.
 
-For `0.7.7`, the required order is:
+For `0.7.8`, the required order is:
 
 1. approve an exact clean source SHA;
 2. complete the read-only release rehearsal;
-3. create the human-approved annotated `v0.7.7` tag;
+3. create the human-approved annotated `v0.7.8` tag;
 4. complete and verify the gated immutable GitHub Release for that tag;
 5. pack the exact tagged wrappers and pass prepublication acceptance from
    fresh caches on all six supported native hosts while both npm versions are
@@ -19,8 +19,8 @@ For `0.7.7`, the required order is:
 8. approve each stage interactively with human 2FA;
 9. reconcile exact integrity and provenance;
 10. pass postpublication exact-version npm acceptance on all six targets;
-11. separately promote `phantom-secrets-mcp@0.7.7` to `latest`, then promote
-    `phantom-secrets@0.7.7` to `latest`;
+11. separately promote `phantom-secrets-mcp@0.7.8` to `latest`, then promote
+    `phantom-secrets@0.7.8` to `latest`;
 12. verify both promotions before removing both `release-candidate` tags; and
 13. only then consider the separate
     [MCP Registry publication](mcp-registry-publication.md).
@@ -64,7 +64,7 @@ the trusted terminal.
 
 ## Prerequisites
 
-- Work from the exact clean `v0.7.7` checkout used for the GitHub Release.
+- Work from the exact clean `v0.7.8` checkout used for the GitHub Release.
 - Bind `origin` to `ashlrai/phantom-secrets`, then verify the remote tag is an
   annotated tag object peeled to local `HEAD` and current remote `main`.
 - Complete the artifact, attestation, and immutable-release checks in
@@ -82,7 +82,7 @@ Run from the repository root. The canonical-origin case must pass before any
 remote identity is trusted:
 
 ```bash
-VERSION=0.7.7
+VERSION=0.7.8
 TAG="v${VERSION}"
 SOURCE_SHA="$(git rev-parse HEAD)"
 ORIGIN_URL="$(git remote get-url origin)"
@@ -130,10 +130,10 @@ five-file wrapper once per disposable host, and executes those local tarballs
 through fresh npm and Phantom binary caches:
 
 ```bash
-SOURCE_SHA="$(git rev-parse 'v0.7.7^{commit}')"
-gh workflow run npm-candidate-acceptance.yml --ref v0.7.7 \
+SOURCE_SHA="$(git rev-parse 'v0.7.8^{commit}')"
+gh workflow run npm-candidate-acceptance.yml --ref v0.7.8 \
   -f mode=prepublication \
-  -f version=0.7.7 \
+  -f version=0.7.8 \
   -f release_source_sha="${SOURCE_SHA}" \
   -f previous_latest=0.6.0 \
   -f previous_candidate=0.7.4
@@ -142,9 +142,9 @@ gh workflow run npm-candidate-acceptance.yml --ref v0.7.7 \
 Require six successful native jobs and retain every per-host receipt. Each
 receipt binds the tagged source, immutable release and target assets, exact
 pack file set and SHA-256/SHA-512 identities, before/after dist tags, executed
-binary versions, and verified cache manifests. A failure here leaves `0.7.7`
+binary versions, and verified cache manifests. A failure here leaves `0.7.8`
 unpublished on npm, but the immutable GitHub tag must not be moved; fix forward
-with a new version and release tag, and do not create a `0.7.7` npm stage.
+with a new version and release tag, and do not create a `0.7.8` npm stage.
 
 ## Recompute and stage both candidates
 
@@ -162,7 +162,7 @@ values recorded during planning, then create and validate the stage inputs:
 ```bash
 set -euo pipefail
 
-VERSION=0.7.7
+VERSION=0.7.8
 TAG="v${VERSION}"
 SOURCE_SHA="$(git rev-parse HEAD)"
 APPROVED_PRIMARY_INTEGRITY="sha512-copy-approved-primary-integrity"
@@ -286,7 +286,7 @@ STAGE_REVIEW_DIR="$(mktemp -d)"
   npm stage download "${MCP_STAGE_ID}" --json --registry=https://registry.npmjs.org/)
 ```
 
-Require each stage to name the exact package, `0.7.7`, public access, and
+Require each stage to name the exact package, `0.7.8`, public access, and
 `release-candidate`. Use the download JSON to identify each tarball, calculate
 its SHA-512 SRI value, and require it to equal the immediately preceding
 pack receipt integrity. For example:
@@ -317,7 +317,7 @@ npm stage approve "${MCP_STAGE_ID}" --registry=https://registry.npmjs.org/
 
 MCP_TAGS_JSON="$(npm view phantom-secrets-mcp dist-tags --json --registry=https://registry.npmjs.org/)"
 PRIMARY_TAGS_JSON="$(npm view phantom-secrets dist-tags --json --registry=https://registry.npmjs.org/)"
-node -e 'const [m,p]=process.argv.slice(1); const mt=JSON.parse(m),pt=JSON.parse(p); if(mt.latest!=="0.6.0"||pt.latest!=="0.6.0"||mt["release-candidate"]!=="0.7.7"||pt["release-candidate"]!=="0.7.4") process.exit(1)' \
+node -e 'const [m,p]=process.argv.slice(1); const mt=JSON.parse(m),pt=JSON.parse(p); if(mt.latest!=="0.6.0"||pt.latest!=="0.6.0"||mt["release-candidate"]!=="0.7.8"||pt["release-candidate"]!=="0.7.4") process.exit(1)' \
   "${MCP_TAGS_JSON}" "${PRIMARY_TAGS_JSON}"
 
 MCP_PUBLIC_JSON="$(npm view "phantom-secrets-mcp@${VERSION}" \
@@ -347,7 +347,7 @@ npm stage approve "${PRIMARY_STAGE_ID}" --registry=https://registry.npmjs.org/
 
 MCP_TAGS_JSON="$(npm view phantom-secrets-mcp dist-tags --json --registry=https://registry.npmjs.org/)"
 PRIMARY_TAGS_JSON="$(npm view phantom-secrets dist-tags --json --registry=https://registry.npmjs.org/)"
-node -e 'const [m,p]=process.argv.slice(1); const mt=JSON.parse(m),pt=JSON.parse(p); if(mt.latest!=="0.6.0"||pt.latest!=="0.6.0"||mt["release-candidate"]!=="0.7.7"||pt["release-candidate"]!=="0.7.7") process.exit(1)' \
+node -e 'const [m,p]=process.argv.slice(1); const mt=JSON.parse(m),pt=JSON.parse(p); if(mt.latest!=="0.6.0"||pt.latest!=="0.6.0"||mt["release-candidate"]!=="0.7.8"||pt["release-candidate"]!=="0.7.8") process.exit(1)' \
   "${MCP_TAGS_JSON}" "${PRIMARY_TAGS_JSON}"
 ```
 
@@ -355,9 +355,9 @@ The immutable `0.7.4` versions remain public and must not be overwritten,
 unpublished, or presented as withdrawn. Before either approval, record the
 expected starting maps: `latest: 0.6.0` and `release-candidate: 0.7.4` for both
 packages. Approval moves only that package's candidate tag. If MCP is approved
-first, require MCP `release-candidate: 0.7.7` while the primary package still
+first, require MCP `release-candidate: 0.7.8` while the primary package still
 has `release-candidate: 0.7.4`; after primary approval, require both candidate
-tags to resolve to `0.7.7`. The executable guards above enforce each state
+tags to resolve to `0.7.8`. The executable guards above enforce each state
 before the next irreversible approval. Any other transition is drift and must
 stop the sequence.
 
@@ -371,15 +371,15 @@ For both approved versions, require exact agreement between the final pack,
 downloaded staged tarball, and public `dist.integrity`:
 
 ```bash
-npm view phantom-secrets@0.7.7 version dist.integrity dist.tarball dist.attestations \
+npm view phantom-secrets@0.7.8 version dist.integrity dist.tarball dist.attestations \
   --json --registry=https://registry.npmjs.org/
-npm view phantom-secrets-mcp@0.7.7 version dist.integrity dist.tarball dist.attestations \
+npm view phantom-secrets-mcp@0.7.8 version dist.integrity dist.tarball dist.attestations \
   --json --registry=https://registry.npmjs.org/
 npm view phantom-secrets dist-tags --json --registry=https://registry.npmjs.org/
 npm view phantom-secrets-mcp dist-tags --json --registry=https://registry.npmjs.org/
 ```
 
-Both `release-candidate` tags must point to `0.7.7`; neither `latest` tag should
+Both `release-candidate` tags must point to `0.7.8`; neither `latest` tag should
 have changed. For the preferred OIDC path, require npm provenance for both
 packages and verify the downloaded exact packages with `npm audit signatures`
 using the current npm CLI. A manual-session exception may lack provenance;
@@ -398,9 +398,9 @@ workflow in `published-candidate` mode with the reconciled public integrity
 values:
 
 ```bash
-gh workflow run npm-candidate-acceptance.yml --ref v0.7.7 \
+gh workflow run npm-candidate-acceptance.yml --ref v0.7.8 \
   -f mode=published-candidate \
-  -f version=0.7.7 \
+  -f version=0.7.8 \
   -f release_source_sha="${SOURCE_SHA}" \
   -f primary_integrity="${APPROVED_PRIMARY_INTEGRITY}" \
   -f mcp_integrity="${APPROVED_MCP_INTEGRITY}" \
@@ -408,7 +408,7 @@ gh workflow run npm-candidate-acceptance.yml --ref v0.7.7 \
   -f previous_candidate=0.7.4
 ```
 
-It runs both exact public `0.7.7` wrappers on fresh disposable hosts for all
+It runs both exact public `0.7.8` wrappers on fresh disposable hosts for all
 six targets:
 
 | Target | Required host class |
@@ -425,13 +425,13 @@ On each host, the workflow asserts the resolved OS and architecture, Node
 dist tags, then executes the exact packages from the public registry:
 
 ```bash
-npm exec --yes --package=phantom-secrets-mcp@0.7.7 \
+npm exec --yes --package=phantom-secrets-mcp@0.7.8 \
   --registry=https://registry.npmjs.org/ -- phantom-mcp --version
-npm exec --yes --package=phantom-secrets@0.7.7 \
+npm exec --yes --package=phantom-secrets@0.7.8 \
   --registry=https://registry.npmjs.org/ -- phantom --version
 ```
 
-Require exact `phantom-mcp 0.7.7` and `phantom 0.7.7` output. Fresh hosts are
+Require exact `phantom-mcp 0.7.8` and `phantom 0.7.8` output. Fresh hosts are
 required so the wrappers exercise first-use archive download, checksum
 verification, extraction, cache receipt, and execution rather than accepting a
 pre-existing binary. Preserve all six immutable job URLs, resolved runner
@@ -462,7 +462,7 @@ npm dist-tag add "phantom-secrets-mcp@${VERSION}" latest --registry=https://regi
 npm view phantom-secrets-mcp dist-tags --json --registry=https://registry.npmjs.org/
 ```
 
-Only after that query proves `latest: 0.7.7`, separately approve and promote
+Only after that query proves `latest: 0.7.8`, separately approve and promote
 the primary CLI last. Immediately before its change, re-fetch both tag maps and
 require MCP `latest` to be the new version, primary `latest` to remain at the
 approved previous version, and both candidate tags to remain exact:
@@ -501,7 +501,7 @@ The second precondition necessarily requires the already removed MCP candidate
 to be absent while the primary candidate remains exact. Any other state is
 drift; stop rather than deleting another tag.
 
-Require both final maps to retain `latest: 0.7.7` and omit
+Require both final maps to retain `latest: 0.7.8` and omit
 `release-candidate`. Only then is npm distribution complete.
 
 ## Partial failure and recovery

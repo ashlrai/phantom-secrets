@@ -283,11 +283,13 @@ jobs:
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           cd target/${{ matrix.target }}/release
           7z a ../../../${{ matrix.artifact }}.zip phantom.exe phantom-mcp.exe
           cd ../../..
-        shell: bash
 
       - name: Install checksum-verified Syft 1.42.3
         shell: bash
@@ -413,17 +415,39 @@ jobs:
           PHANTOM_RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/release/native-installer-acceptance.mjs
 
-      - name: Exercise npm wrappers on the native filesystem
-        run: |
-          node npm/test/platform-matrix.test.js
-          node npm/test/version-cache.test.js
-          node npm/test/valid-cache.test.js
-          node npm/test/hardening.test.js
-          node npm-mcp/test/platform-matrix.test.js
-          node npm-mcp/test/version-cache.test.js
-          node npm-mcp/test/valid-cache.test.js
-          node npm-mcp/test/hardening.test.js
-          node npm-mcp/test/schema-contract.test.js
+      - name: Test primary npm wrapper platform mapping
+        run: node npm/test/platform-matrix.test.js
+
+      - name: Test primary npm wrapper version cache
+        run: node npm/test/version-cache.test.js
+
+      - name: Test primary npm wrapper valid cache
+        run: node npm/test/valid-cache.test.js
+
+      - name: Test primary npm wrapper hardening
+        run: node npm/test/hardening.test.js
+
+      - name: Test MCP npm wrapper platform mapping
+        run: node npm-mcp/test/platform-matrix.test.js
+
+      - name: Test MCP npm wrapper version cache
+        run: node npm-mcp/test/version-cache.test.js
+
+      - name: Test MCP npm wrapper valid cache
+        run: node npm-mcp/test/valid-cache.test.js
+
+      - name: Test MCP npm wrapper hardening
+        run: node npm-mcp/test/hardening.test.js
+
+      - name: Test MCP schema contract
+        run: node npm-mcp/test/schema-contract.test.js
+
+      - name: Install and execute the exact archive through both npm wrappers
+        env:
+          PHANTOM_NATIVE_ARCHIVE: native-artifact/${{ matrix.archive }}
+          PHANTOM_NATIVE_TARGET: ${{ matrix.target }}
+          PHANTOM_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/release/npm-wrapper-native-acceptance.mjs
 
   verify-artifacts:
     name: Verify checksums, artifacts, and SBOMs
