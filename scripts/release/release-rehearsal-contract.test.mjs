@@ -159,6 +159,11 @@ test("shared graph validates the exact tag before building and keeps native acce
 
   const build = jobBlock(releaseBuild, "build", "native-acceptance");
   assert.match(build, /strategy:\n      fail-fast: false/);
+  assert.match(
+    build,
+    /- name: Package \(Windows\)\n        if: runner\.os == 'Windows'\n        shell: pwsh\n        run: \|\n          \$ErrorActionPreference = 'Stop'\n          \$PSNativeCommandUseErrorActionPreference = \$true/,
+    "Windows packaging must use the PowerShell fail-fast statements under pwsh",
+  );
   const native = jobBlock(releaseBuild, "native-acceptance", "verify-artifacts");
   assert.match(native, /needs: build/);
   assert.match(native, /strategy:\n      fail-fast: false/);

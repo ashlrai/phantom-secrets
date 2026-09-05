@@ -283,13 +283,13 @@ jobs:
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           cd target/${{ matrix.target }}/release
           7z a ../../../${{ matrix.artifact }}.zip phantom.exe phantom-mcp.exe
           cd ../../..
-        shell: bash
 
       - name: Install checksum-verified Syft 1.42.3
         shell: bash
