@@ -29,11 +29,11 @@ test("the committed migration set matches its ordered digest manifest", async ()
   const result = await verifyMigrationManifest({
     supabaseDirectory: projectSupabaseDirectory,
   });
-  assert.equal(result.count, 11);
+  assert.equal(result.count, 12);
   assert.equal(result.files[0], "001_initial.sql");
   assert.equal(
     result.files.at(-1),
-    "20260902000000_harden_rls_and_function_paths.sql",
+    "20260903180035_browser_and_service_role_grants.sql",
   );
 });
 
@@ -121,6 +121,39 @@ test("fails closed when a SQL migration is a symlink", async () => {
   );
 });
 
+test("hosted migration closes PostgreSQL's global function execute default", async () => {
+  const migration = await readFile(
+    join(
+      projectSupabaseDirectory,
+      "migrations/20260903180035_browser_and_service_role_grants.sql",
+    ),
+    "utf8",
+  );
+  assert.match(
+    migration,
+    /ALTER DEFAULT PRIVILEGES FOR ROLE postgres\s+REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;/,
+  );
+  assert.match(migration, /changes every future function created by postgres in every schema/);
+  assert.match(
+    migration,
+    /REVOKE ALL ON SCHEMA public FROM anon, authenticated, service_role;/,
+  );
+  assert.match(migration, /found_columns <> 84/);
+  assert.match(
+    migration,
+    /'SELECT', 'INSERT', 'UPDATE', 'REFERENCES'/,
+  );
+  assert.match(
+    migration,
+    /REVOKE %s \(%s\) ON TABLE %s FROM PUBLIC, anon, authenticated, service_role/,
+  );
+  assert.match(
+    migration,
+    /REVOKE ALL ON SCHEMA app_private FROM anon, authenticated, service_role;/,
+  );
+  assert.match(migration, /GRANT USAGE ON SCHEMA app_private TO authenticated;/);
+});
+
 test("workflow remains local-only and supply-chain pinned", async () => {
   const workflow = await readFile(
     join(repositoryRoot, ".github/workflows/ci.yml"),
@@ -144,6 +177,18 @@ test("workflow remains local-only and supply-chain pinned", async () => {
   );
   assert.match(
     webJob,
+    /psql --host 127\.0\.0\.1 --port 54322[\s\S]*assert-hosted-grants-preflight\.sql/,
+  );
+  assert.match(
+    webJob,
+    /supabase test db --local supabase\/tests\/database/,
+  );
+  assert.match(
+    webJob,
+    /psql --host 127\.0\.0\.1 --port 54322[\s\S]*receipt-hosted-grants\.sql/,
+  );
+  assert.match(
+    webJob,
     /supabase db lint --local --level warning --fail-on warning/,
   );
   assert.match(
@@ -159,6 +204,88 @@ test("workflow remains local-only and supply-chain pinned", async () => {
   assert.doesNotMatch(
     webJob,
     /--linked|--project-ref|SUPABASE_ACCESS_TOKEN|SUPABASE_DB_PASSWORD/,
+  );
+});
+
+test("hosted grant preflight is read-only and fail-closed", async () => {
+  const preflight = await readFile(
+    join(repositoryRoot, "scripts/supabase/assert-hosted-grants-preflight.sql"),
+    "utf8",
+  );
+  assert.match(preflight, /BEGIN TRANSACTION READ ONLY;/);
+  assert.match(preflight, /current_user <> 'postgres'/);
+  assert.match(preflight, /owner\.rolname <> 'postgres'/g);
+  assert.match(preflight, /relation\.relrowsecurity/);
+  assert.match(preflight, /rolname = 'service_role'[\s\S]*rolbypassrls/);
+  assert.match(preflight, /rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication/);
+  assert.match(preflight, /pg_catalog\.pg_has_role\([\s\S]*'USAGE'/);
+  assert.match(preflight, /pg_has_role\('anon', 'service_role', 'MEMBER'\)/);
+  assert.match(preflight, /public_schema_owner <> ALL/);
+  assert.match(preflight, /has_schema_privilege\('anon', 'public', 'CREATE'\)/);
+  assert.match(preflight, /defaults\.defaclnamespace = 0/);
+  assert.match(preflight, /pg_catalog\.acldefault\(/);
+  assert.match(preflight, /privilege\.is_grantable/);
+  assert.match(preflight, /'authenticated', 'app_private', 'USAGE'/);
+  assert.match(preflight, /app_private_schema_owner IS DISTINCT FROM 'postgres'/);
+  assert.match(preflight, /'authenticated', 'app_private', 'CREATE'/);
+  assert.match(preflight, /column_acl_cells <> 1008/);
+  assert.match(preflight, /column_acl_mismatches <> 0/);
+  assert.match(preflight, /defaults\.defaclrole = 'postgres'::regrole/);
+  assert.match(preflight, /Supabase seeds separate platform-owned defaults/);
+  assert.match(preflight, /ROLLBACK;\s*$/);
+  assert.doesNotMatch(
+    preflight,
+    /^\s*(?:INSERT|UPDATE|DELETE|GRANT|REVOKE|ALTER|CREATE|DROP)\b/m,
+  );
+});
+
+test("hosted grant receipt proves the exact PostgreSQL 17 authority matrix", async () => {
+  const receipt = await readFile(
+    join(repositoryRoot, "scripts/supabase/receipt-hosted-grants.sql"),
+    "utf8",
+  );
+  assert.match(receipt, /BEGIN TRANSACTION READ ONLY;/);
+  assert.match(receipt, /cardinality\(expected_roles\) <> 3/);
+  assert.match(receipt, /cardinality\(expected_tables\) <> 11/);
+  assert.match(receipt, /cardinality\(expected_privileges\) <> 8/);
+  assert.match(receipt, /cardinality\(expected_column_privileges\) <> 4/);
+  assert.match(receipt, /cardinality\(expected_functions\) <> 5/);
+  assert.match(
+    receipt,
+    /'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN'/,
+  );
+  assert.match(receipt, /matrix_cells <> 264/);
+  assert.match(receipt, /matrix_mismatches <> 0/);
+  assert.match(receipt, /matrix_distinct_tables <> 11/);
+  assert.match(receipt, /matrix_reviewed_tables <> 11/);
+  assert.match(receipt, /function_cells <> 15/);
+  assert.match(receipt, /function_distinct_names <> 5/);
+  assert.match(receipt, /function_reviewed_names <> 5/);
+  assert.match(receipt, /table_grant_options <> 0/);
+  assert.match(receipt, /function_grant_options <> 0/);
+  assert.match(receipt, /reviewed_columns <> 84/);
+  assert.match(receipt, /column_acl_cells <> 1008/);
+  assert.match(receipt, /column_acl_mismatches <> 0/);
+  assert.match(receipt, /defaults\.defaclrole = 'postgres'::regrole/);
+  assert.match(receipt, /Supabase's stock runtime seeds platform-owned/);
+  assert.match(receipt, /app_private_schema_owner IS DISTINCT FROM 'postgres'/);
+  assert.match(receipt, /'authenticated', 'app_private', 'CREATE'/);
+  assert.match(receipt, /defaults\.defaclnamespace = 0/);
+  assert.match(receipt, /pg_catalog\.acldefault\(/);
+  assert.match(receipt, /'authenticated', 'app_private', 'USAGE'/);
+  assert.match(receipt, /has_table_privilege\(/);
+  assert.match(receipt, /has_function_privilege\(/);
+  assert.match(receipt, /relation\.relrowsecurity/);
+  assert.match(receipt, /phantom-hosted-data-api-authority-v1/);
+  assert.match(receipt, /'effective_table_acl_cells', 264/);
+  assert.match(receipt, /'effective_column_acl_cells', 1008/);
+  assert.match(receipt, /'effective_function_acl_cells', 15/);
+  assert.match(receipt, /'global_default_acl_grants', 0/);
+  assert.match(receipt, /'public_default_acl_grants', 0/);
+  assert.match(receipt, /ROLLBACK;\s*$/);
+  assert.doesNotMatch(
+    receipt,
+    /^\s*(?:INSERT|UPDATE|DELETE|GRANT|REVOKE|ALTER|CREATE|DROP)\b/m,
   );
 });
 

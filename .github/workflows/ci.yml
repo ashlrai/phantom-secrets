@@ -260,6 +260,12 @@ jobs:
         run: supabase db reset --local --no-seed
       - name: Verify local migration history
         run: supabase migration list --local
+      - name: Verify hosted grant ownership assumptions
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql --host 127.0.0.1 --port 54322 --username postgres --dbname postgres \
+            --file ../../scripts/supabase/assert-hosted-grants-preflight.sql
       - name: Assert local database authority boundaries
         env:
           PGPASSWORD: postgres
@@ -267,6 +273,14 @@ jobs:
           psql --version
           psql --host 127.0.0.1 --port 54322 --username postgres --dbname postgres \
             --file ../../scripts/supabase/assert-local-authority.sql
+      - name: Test Data API grants and row isolation
+        run: supabase test db --local supabase/tests/database
+      - name: Emit exact hosted Data API grant receipt
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql --host 127.0.0.1 --port 54322 --username postgres --dbname postgres \
+            --file ../../scripts/supabase/receipt-hosted-grants.sql
       - name: Lint local schema
         run: supabase db lint --local --level warning --fail-on warning
       - name: Run local security and performance advisors
