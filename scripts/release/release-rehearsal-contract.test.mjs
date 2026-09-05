@@ -88,10 +88,10 @@ test("manual rehearsal delegates to the shared graph with read-only authority", 
 });
 
 test("release defaults and lockfiles are part of the exact version parity contract", () => {
-  assert.match(rehearsal, /default: v0\.7\.7/);
+  assert.match(rehearsal, /default: v0\.7\.8/);
   assert.match(
     npmCandidateAcceptance,
-    /^      version:\n[\s\S]*?^        default: 0\.7\.7$/m
+    /^      version:\n[\s\S]*?^        default: 0\.7\.8$/m
   );
   assert.match(versionParity, /json\("apps\/web\/package-lock\.json"\)/);
   assert.match(versionParity, /Hosted web lockfile root/);
@@ -102,10 +102,10 @@ test("release defaults and lockfiles are part of the exact version parity contra
   assert.equal(
     execFileSync(
       process.execPath,
-      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.7.7"],
+      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.7.8"],
       { cwd: repoRoot, encoding: "utf8" }
     ).trim(),
-    "release version parity passed: 0.7.7 across 19 surfaces and 12 crates"
+    "release version parity passed: 0.7.8 across 19 surfaces and 12 crates"
   );
 });
 
@@ -165,9 +165,21 @@ test("shared graph validates the exact tag before building and keeps native acce
   assert.match(native, /run: node scripts\/release\/native-release-smoke\.mjs/);
   assert.match(native, /run: node scripts\/release\/native-installer-acceptance\.mjs/);
   assert.match(native, /Install the exact archive and prove transaction rollback/);
-  assert.match(native, /Exercise npm wrappers on the native filesystem/);
-  assert.match(native, /node npm\/test\/hardening\.test\.js/);
-  assert.match(native, /node npm-mcp\/test\/hardening\.test\.js/);
+  for (const command of [
+    "node npm/test/platform-matrix.test.js",
+    "node npm/test/version-cache.test.js",
+    "node npm/test/valid-cache.test.js",
+    "node npm/test/hardening.test.js",
+    "node npm-mcp/test/platform-matrix.test.js",
+    "node npm-mcp/test/version-cache.test.js",
+    "node npm-mcp/test/valid-cache.test.js",
+    "node npm-mcp/test/hardening.test.js",
+    "node npm-mcp/test/schema-contract.test.js",
+  ]) {
+    assert.match(native, new RegExp(`run: ${command.replaceAll(".", "\\.")}`));
+  }
+  assert.doesNotMatch(native, /run: \|\n(?:\s+node npm(?:-mcp)?\/test\/[^\n]+\n){2,}/);
+  assert.match(native, /node scripts\/release\/npm-wrapper-native-acceptance\.mjs/);
   assert.doesNotMatch(native, /(?:npm|cargo|mcp-publisher) publish|gh release/);
 });
 
@@ -254,9 +266,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   }
 
   for (const readme of [npmReadme, npmMcpReadme]) {
-    assert.match(readme, /This wrapper is version `0\.7\.7`/);
-    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.7/);
-    assert.match(readme, /releases\/tag\/v0\.7\.7/);
+    assert.match(readme, /This wrapper is version `0\.7\.8`/);
+    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.8/);
+    assert.match(readme, /releases\/tag\/v0\.7\.8/);
     assert.match(readme, /do not prove|does not prove/);
     assert.doesNotMatch(readme, /v0\.7\.3|older release track|Current main/);
   }
@@ -365,8 +377,8 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(npmPublication, /\| GNU Linux arm64 \| `ubuntu-22\.04-arm` \|/);
   assert.match(npmPublication, /\| Windows x64 \| `windows-latest` \|/);
   assert.match(npmPublication, /\| Windows arm64 \| `windows-11-vs2026-arm` \|/);
-  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.7/);
-  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.7/);
+  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.8/);
+  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.8/);
   assert.match(npmPublication, /dist\.attestations/);
   assert.match(npmPublication, /SHA-512 SRI/);
   assert.match(npmPublication, /verify-github-tag-binding\.mjs/);
@@ -711,7 +723,7 @@ test("npm package contents remain the exact five reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.7.7");
+    assert.equal(pack.version, "0.7.8");
     assert.equal(pack.entryCount, 5);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),

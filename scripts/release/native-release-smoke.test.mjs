@@ -142,10 +142,10 @@ function nativeArchiveFixture(t, options = {}) {
       return "";
     }
     if (label === "phantom --version") {
-      return `${options.phantomVersion ?? "phantom 0.7.7"}\n`;
+      return `${options.phantomVersion ?? "phantom 0.7.8"}\n`;
     }
     if (label === "phantom-mcp --version") {
-      return `${options.phantomMcpVersion ?? "phantom-mcp 0.7.7"}\n`;
+      return `${options.phantomMcpVersion ?? "phantom-mcp 0.7.8"}\n`;
     }
     if (label === "MCP stdio schema smoke") {
       if (options.failMcp) throw new Error("synthetic MCP schema failure");
@@ -162,7 +162,7 @@ function nativeArchiveFixture(t, options = {}) {
       runNativeReleaseSmoke({
         archivePath,
         target: fixtureTarget,
-        tag: "v0.7.7",
+        tag: "v0.7.8",
         env: fixtureEnv,
         runtime: fixtureRuntime,
         runCommand,
@@ -227,7 +227,7 @@ test("native archive smoke exercises the complete accepted artifact path", (t) =
   assert.deepEqual(fixture.smoke(), {
     archive: "phantom-x86_64-unknown-linux-gnu.tar.gz",
     target: fixtureTarget,
-    version: "0.7.7",
+    version: "0.7.8",
   });
   assert.deepEqual(
     fixture.commands.map(({ label }) => label),
@@ -312,7 +312,7 @@ test("native archive smoke rejects a binary built at the wrong version", (t) => 
   const fixture = nativeArchiveFixture(t, { phantomVersion: "phantom 0.7.3" });
   assert.throws(
     fixture.smoke,
-    /phantom --version must equal phantom 0\.7\.7; got phantom 0\.7\.3/,
+    /phantom --version must equal phantom 0\.7\.8; got phantom 0\.7\.3/,
   );
   assert.doesNotMatch(
     fixture.commands.map(({ label }) => label).join("\n"),
@@ -362,20 +362,27 @@ test("release workflow binds every exact artifact to one native runner", () => {
 
 test("every native release runner exercises both npm wrappers without publication authority", () => {
   const native = job(workflow, "native-acceptance", "verify-artifacts");
-  assert.match(native, /Exercise npm wrappers on the native filesystem/);
-  for (const command of [
-    "node npm/test/platform-matrix.test.js",
-    "node npm/test/version-cache.test.js",
-    "node npm/test/valid-cache.test.js",
-    "node npm/test/hardening.test.js",
-    "node npm-mcp/test/platform-matrix.test.js",
-    "node npm-mcp/test/version-cache.test.js",
-    "node npm-mcp/test/valid-cache.test.js",
-    "node npm-mcp/test/hardening.test.js",
-    "node npm-mcp/test/schema-contract.test.js",
+  for (const [name, command] of [
+    ["Test primary npm wrapper platform mapping", "node npm/test/platform-matrix.test.js"],
+    ["Test primary npm wrapper version cache", "node npm/test/version-cache.test.js"],
+    ["Test primary npm wrapper valid cache", "node npm/test/valid-cache.test.js"],
+    ["Test primary npm wrapper hardening", "node npm/test/hardening.test.js"],
+    ["Test MCP npm wrapper platform mapping", "node npm-mcp/test/platform-matrix.test.js"],
+    ["Test MCP npm wrapper version cache", "node npm-mcp/test/version-cache.test.js"],
+    ["Test MCP npm wrapper valid cache", "node npm-mcp/test/valid-cache.test.js"],
+    ["Test MCP npm wrapper hardening", "node npm-mcp/test/hardening.test.js"],
+    ["Test MCP schema contract", "node npm-mcp/test/schema-contract.test.js"],
   ]) {
-    assert.match(native, new RegExp(command.replaceAll(".", "\\.")));
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedCommand = command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(native, new RegExp(`- name: ${escapedName}\\n        run: ${escapedCommand}\\n`));
   }
+  assert.match(native, /run: node scripts\/release\/npm-wrapper-native-acceptance\.mjs/);
+  assert.doesNotMatch(
+    native,
+    /run: \|\n(?: {10}.*\n)*? {10}node npm(?:-mcp)?\/test\//,
+    "npm wrapper tests must remain independent fail-fast workflow steps",
+  );
   assert.doesNotMatch(native, /(?:npm|cargo|mcp-publisher) publish|gh release/);
 });
 
@@ -417,7 +424,7 @@ test("platform documentation binds the immutable release receipt to every native
   assert.equal(
     platformSupport.match(/`v0\.7\.5` release-native acceptance passed/g)?.length,
     6,
-    "every native row must name the exact v0.7.7 release receipt",
+    "every native row must name the exact v0.7.8 release receipt",
   );
   assert.match(platformSupport, /no exact npm `0\.7\.5` acceptance receipt is claimed/i);
   assert.match(

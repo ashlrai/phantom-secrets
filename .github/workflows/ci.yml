@@ -42,11 +42,12 @@ jobs:
         run: cargo build --workspace --all-targets --locked --verbose
       - name: Run tests
         run: cargo test --workspace --all-targets --locked --no-fail-fast --verbose
-      - name: Verify platform, installer, and release mappings
-        run: |
-          node --test scripts/examples-first-five-minutes.test.mjs
-          node scripts/check-platform-installers.mjs
-          node npm-mcp/test/platform-matrix.test.js
+      - name: Verify examples
+        run: node --test scripts/examples-first-five-minutes.test.mjs
+      - name: Verify platform and installer mappings
+        run: node scripts/check-platform-installers.mjs
+      - name: Verify MCP platform mappings
+        run: node npm-mcp/test/platform-matrix.test.js
       - name: Run direct installer offline tests
         if: runner.os == 'Linux'
         run: node --test scripts/installers.test.js scripts/release/native-installer-acceptance.test.mjs
@@ -54,6 +55,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           [void][scriptblock]::Create((Get-Content -LiteralPath scripts/install.ps1 -Raw))
           if ((Get-FileHash scripts/install.ps1).Hash -ne (Get-FileHash apps/web/public/install.ps1).Hash) {
             throw 'served PowerShell installer differs from scripts/install.ps1'
@@ -62,6 +65,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $archive = Join-Path $PWD 'phantom-x86_64-pc-windows-msvc.zip'
           Push-Location target/debug
           try {
@@ -155,6 +160,8 @@ jobs:
       - name: Verify native host and check the workspace
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $rustcDetails = rustc -vV | Out-String
           if ($rustcDetails -notmatch '(?m)^host: aarch64-pc-windows-msvc\r?$') {
             throw "expected native Windows ARM64 Rust host; got:`n$rustcDetails"

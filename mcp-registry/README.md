@@ -25,7 +25,7 @@ publication receipt. As last independently checked on September 3, 2026:
 - the separately managed trusted Homebrew formula publishes reviewed `v0.7.5`;
 - both npm `0.7.4` wrappers are public only under `release-candidate`, while
   `latest` remains `0.6.0`, and no `0.7.4` MCP Registry record was found; and
-- local `server.json` stages version `0.7.7` and points at a `0.7.7` npm wrapper,
+- local `server.json` stages version `0.7.8` and points at a `0.7.8` npm wrapper,
   but neither that file nor its README proves the package or registry entry was
   published.
 
