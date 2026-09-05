@@ -243,6 +243,8 @@ jobs:
         run: npm run lint
       - name: Run web security and auth tests
         run: npm test
+      - name: Verify credential-free SEO observation contract
+        run: node --test ../../scripts/seo/observe.test.mjs
       - name: Build the production application
         run: npm run build
       - name: Install pinned Supabase CLI
