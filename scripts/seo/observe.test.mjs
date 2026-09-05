@@ -8,10 +8,13 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertDefaultNetworkUrl,
+  containsExactUrl,
+  decodeEntities,
   JOB_SUMMARY_MAX_BYTES,
   observeProduction,
   requestWithinBoundary,
   renderSummary,
+  structuredData,
   validateAggregateInput,
   validateExperiments,
   writePrivateReport,
@@ -50,6 +53,43 @@ function jsonLd(type, extra = {}) {
   })}</script>`;
 }
 
+test("HTML entities are decoded exactly once", () => {
+  assert.equal(decodeEntities("&amp;&quot;&#39;&lt;&gt;"), "&\"'<>");
+  assert.equal(decodeEntities("&amp;lt;script&amp;gt;"), "&lt;script&gt;");
+});
+
+test("JSON-LD extraction accepts HTML-compatible script endings", () => {
+  const result = structuredData(
+    '<script type="application/ld+json">{"@type":"SoftwareApplication"}</ScRiPt >',
+  );
+  assert.deepEqual(result, {
+    values: [{ "@type": "SoftwareApplication" }],
+    errors: [],
+  });
+  assert.deepEqual(structuredData('<script type="application/ld+json">{broken}</script>'), {
+    values: [],
+    errors: ["invalid_json_ld"],
+  });
+  assert.deepEqual(structuredData('<script type="application/ld+json">{"value":1}'), {
+    values: [],
+    errors: ["invalid_json_ld"],
+  });
+});
+
+test("machine-readable links require exact canonical URLs", () => {
+  const expected = "https://github.com/ashlrai/phantom-secrets";
+  assert.equal(containsExactUrl(`Repository: ${expected}.`, expected), true);
+  for (const candidate of [
+    "https://evil.example/?next=https://github.com/ashlrai/phantom-secrets",
+    "https://github.com/ashlrai/phantom-secrets.evil",
+    "https://user@github.com/ashlrai/phantom-secrets",
+    "https://github.com/ashlrai/phantom-secrets?token=private",
+    "https://github.com/ashlrai/phantom-secrets#lookalike",
+  ]) {
+    assert.equal(containsExactUrl(candidate, expected), false);
+  }
+});
+
 function html(origin, route, options = {}) {
   const schema = route === "/"
     ? [
@@ -74,8 +114,9 @@ async function withFixtureServer(action, overrides = {}) {
   const server = createServer((request, response) => {
     const origin = `http://127.0.0.1:${server.address().port}`;
     requests.push(request.url);
-    if (overrides[request.url]) {
-      overrides[request.url](response, origin);
+    const override = Object.entries(overrides).find(([route]) => route === request.url)?.[1];
+    if (typeof override === "function") {
+      override(response, origin);
       return;
     }
     if (request.url === "/sitemap.xml") {

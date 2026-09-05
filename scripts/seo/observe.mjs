@@ -528,13 +528,15 @@ export async function requestWithinBoundary(input, options) {
   throw lastError;
 }
 
-function decodeEntities(value) {
-  return value
-    .replaceAll("&amp;", "&")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&#39;", "'")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">");
+export function decodeEntities(value) {
+  const entities = {
+    "&amp;": "&",
+    "&quot;": '"',
+    "&#39;": "'",
+    "&lt;": "<",
+    "&gt;": ">",
+  };
+  return value.replace(/&(?:amp|quot|#39|lt|gt);/g, (entity) => entities[entity]);
 }
 
 function cleanText(value) {
@@ -558,19 +560,60 @@ function tags(source, name) {
   );
 }
 
-function structuredData(source) {
+export function structuredData(source) {
   const values = [];
   const errors = [];
-  for (const match of source.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
-    const attrs = attributes(match[1]);
+  const lowerSource = source.toLowerCase();
+  let cursor = 0;
+  while (cursor < source.length) {
+    const start = lowerSource.indexOf("<script", cursor);
+    if (start === -1) break;
+    const boundary = lowerSource[start + "<script".length];
+    if (boundary && !/[\s/>]/.test(boundary)) {
+      cursor = start + "<script".length;
+      continue;
+    }
+    const openEnd = lowerSource.indexOf(">", start + "<script".length);
+    if (openEnd === -1) break;
+    const attrs = attributes(source.slice(start + "<script".length, openEnd));
+    let closing = lowerSource.indexOf("</script", openEnd + 1);
+    while (closing !== -1) {
+      const closingBoundary = lowerSource[closing + "</script".length];
+      if (!closingBoundary || /[\s>]/.test(closingBoundary)) break;
+      closing = lowerSource.indexOf("</script", closing + "</script".length);
+    }
+    if (closing === -1) {
+      if (attrs.type?.toLowerCase() === "application/ld+json") errors.push("invalid_json_ld");
+      break;
+    }
+    const closingEnd = lowerSource.indexOf(">", closing + "</script".length);
+    if (closingEnd === -1) {
+      if (attrs.type?.toLowerCase() === "application/ld+json") errors.push("invalid_json_ld");
+      break;
+    }
+    const body = source.slice(openEnd + 1, closing);
+    cursor = closingEnd + 1;
     if (attrs.type?.toLowerCase() !== "application/ld+json") continue;
     try {
-      values.push(JSON.parse(match[2]));
+      values.push(JSON.parse(body));
     } catch {
       errors.push("invalid_json_ld");
     }
   }
   return { values, errors };
+}
+
+export function containsExactUrl(text, expected) {
+  const expectedUrl = new URL(expected);
+  for (const match of text.matchAll(/https:\/\/[^\s<>"'`)\]}]+/g)) {
+    const raw = match[0].replace(/[.,;:!?]+$/, "");
+    try {
+      if (new URL(raw).href === expectedUrl.href) return true;
+    } catch {
+      // Ignore malformed public-text URL candidates.
+    }
+  }
+  return false;
 }
 
 function collectTypes(value, output = new Set()) {
@@ -857,10 +900,10 @@ export async function observeProduction(options = {}) {
       addFinding(findings, "fail", "machine_readable_content_short", "Machine-readable content is unexpectedly short", route.route);
     }
   }
-  if (llms && !llms.text.includes("https://phm.dev/llms-full.txt")) {
+  if (llms && !containsExactUrl(llms.text, "https://phm.dev/llms-full.txt")) {
     addFinding(findings, "fail", "llms_full_link_missing", "llms.txt does not link llms-full.txt", "/llms.txt");
   }
-  if (llms && !llms.text.includes("https://github.com/ashlrai/phantom-secrets")) {
+  if (llms && !containsExactUrl(llms.text, "https://github.com/ashlrai/phantom-secrets")) {
     addFinding(findings, "fail", "llms_repository_link_missing", "llms.txt does not link the canonical repository", "/llms.txt");
   }
 
