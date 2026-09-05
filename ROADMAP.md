@@ -1,5 +1,7 @@
 # Roadmap
 
+<!-- phantom-release-version: 0.7.8 -->
+
 This roadmap describes ordered engineering gates, not delivery dates or shipped
 capabilities. This status snapshot was verified on 2026-09-05. The immutable
 `v0.7.8` GitHub release binds 19 assets to source commit

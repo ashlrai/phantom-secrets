@@ -54,10 +54,10 @@ const readmeSourceVersion = requireMatch(
   /source_version-v([0-9]+\.[0-9]+\.[0-9]+)-/,
   "README source badge version"
 );
-const roadmapCandidateVersion = requireMatch(
+const roadmapReleaseVersion = requireMatch(
   read("ROADMAP.md"),
-  /`v([0-9]+\.[0-9]+\.[0-9]+)` adoption and cross-platform fix-forward candidate/,
-  "roadmap candidate version"
+  /<!-- phantom-release-version: ([0-9]+\.[0-9]+\.[0-9]+) -->/,
+  "roadmap release version"
 );
 const changelogCandidateVersion = requireMatch(
   read("CHANGELOG.md"),
@@ -111,7 +111,7 @@ const versions = new Map([
   ["Hosted web lockfile root", webLockRootVersion],
   ["Citation metadata", citationVersion],
   ["README source badge", readmeSourceVersion],
-  ["Roadmap candidate", roadmapCandidateVersion],
+  ["Roadmap release", roadmapReleaseVersion],
   ["Current changelog candidate", changelogCandidateVersion],
   ["npm CLI wrapper", cliWrapperVersion],
   ["npm MCP wrapper", wrapperVersion],
