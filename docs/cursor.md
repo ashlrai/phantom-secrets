@@ -24,7 +24,7 @@ contract enforces 54 unique tools; runtime `tools/list` is canonical.
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.5` binary using the platform-specific, checksum-
+Install the reviewed `v0.7.8` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -47,7 +47,7 @@ This writes `~/.cursor/mcp.json` with the `phantom` MCP server entry:
 }
 ```
 
-Install both `v0.7.5` release binaries before setup. Version `0.7.5` records the
+Install both `v0.7.8` release binaries before setup. Version `0.7.8` records the
 running `phantom` executable with `mcp serve` when it can resolve that runtime,
 otherwise it looks for a local `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is
@@ -138,7 +138,7 @@ cat ~/.cursor/mcp.json
 
 If it looks correct, restart Cursor. Cursor reads MCP config on startup only. If
 setup reports that the local MCP runtime is missing, reinstall both verified
-`v0.7.5` binaries. The released setup path fails closed instead of generating a
+`v0.7.8` binaries. The released setup path fails closed instead of generating a
 registry-backed command.
 
 **`phantom exec -- cursor .` opens Cursor but API calls fail**

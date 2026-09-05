@@ -45,7 +45,7 @@ const LIMITS = [
   "Equivalent same-user shell, debugger, filesystem, or terminal-control authority can defeat the separation.",
   "A compromised operating system, administrator, replaced binary, or malicious dependency remains outside the boundary.",
   "Audit evidence is local by default and is not an independently signed or centrally retained record.",
-  "Provider issuance and lifecycle operations are hard-denied in 0.7.5; source adapters and test mocks are not live integrations.",
+  "Provider issuance and lifecycle operations are hard-denied in 0.7.8; source adapters and test mocks are not live integrations.",
   "Independent binary signatures, macOS notarization, Windows Authenticode, and regulatory certifications are not claimed.",
 ] as const;
 

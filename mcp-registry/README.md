@@ -16,15 +16,15 @@ unchanged credential. Team invites accept only the hosted API's `member` and
 ## Publication status
 
 This directory is MCP Registry publication source, not an MCP Registry
-publication receipt. As last independently checked on September 3, 2026:
+publication receipt. The exact 2026-09-05 registry snapshot is:
 
-- the immutable GitHub `v0.7.5` release provides verified CLI and MCP binaries
+- the immutable GitHub `v0.7.8` release provides verified CLI and MCP binaries
   for six native targets from exact source
-  `d2969e73995cc139e6253e0c8a70f1d683f88e20`; workflow `33709338577`
-  published 19 assets after all native rows and release attestations passed;
-- the separately managed trusted Homebrew formula publishes reviewed `v0.7.5`;
+  `f065b13462f9eaf27e0443f8911f021575b7c409`; its 19 assets were published
+  after all native rows and release attestations passed;
+- the separately managed trusted Homebrew formula publishes reviewed `v0.7.8`;
 - both npm `0.7.4` wrappers are public only under `release-candidate`, while
-  `latest` remains `0.6.0`, and no `0.7.4` MCP Registry record was found; and
+  `latest` remains `0.6.0`, and no `0.7.8` MCP Registry record was found; and
 - local `server.json` stages version `0.7.8` and points at a `0.7.8` npm wrapper,
   but neither that file nor its README proves the package or registry entry was
   published.
@@ -36,8 +36,8 @@ an unpinned npm or package-runner command to configure the current runtime.
 ## Verified local runtime
 
 Install both current binaries from the
-[`v0.7.5` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5).
-The macOS trusted formula is the separately reviewed `v0.7.5` path:
+[`v0.7.8` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8).
+The macOS trusted formula is the separately reviewed `v0.7.8` path:
 
 ```bash
 brew tap ashlrai/phantom
@@ -62,10 +62,10 @@ phantom setup --client windsurf
 phantom setup --client codex
 ```
 
-Released `v0.7.5` records its bundled local `phantom mcp serve` command when it
+Released `v0.7.8` records its bundled local `phantom mcp serve` command when it
 can resolve that executable, otherwise it looks for local `phantom-mcp`. Setup
 has no network package-runner fallback and fails closed when no local MCP
-runtime is available. Install both verified `v0.7.5` GitHub release binaries and inspect the
+runtime is available. Install both verified `v0.7.8` GitHub release binaries and inspect the
 generated command.
 
 Manual stdio configuration can call the reviewed local executable:

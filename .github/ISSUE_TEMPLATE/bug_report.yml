@@ -16,7 +16,7 @@ body:
     attributes:
       label: Phantom version
       description: Output of `phantom --version`
-      placeholder: "phantom 0.7.7"
+      placeholder: "paste the exact phantom --version output"
     validations:
       required: true
 
@@ -41,9 +41,9 @@ body:
     attributes:
       label: How was Phantom installed?
       options:
-        - Reviewed v0.7.5 GitHub release archive
-        - Reviewed v0.7.5 Homebrew third-party tap
-        - npm or npx (latest 0.6.0; failed 0.7.4 candidate)
+        - Reviewed GitHub release archive (include exact version)
+        - Reviewed Homebrew third-party tap (include exact version)
+        - npm or npx (include exact version and dist-tag)
         - Cargo install (older distribution track)
         - Built from source (include full SHA below)
         - Other (describe below)

@@ -14,7 +14,7 @@ slice. Locus authority, the native broker, production engineering execution,
 and externally trusted execution receipts must remain inactive.
 
 The shipped `phantom grant` CLI exposes value-free metadata and compatibility
-commands, not live provider issuance. Version 0.7.5 hard-denies enrollment,
+commands, not live provider issuance. Version 0.7.8 hard-denies enrollment,
 refresh, renewal, rotation, and remote revocation before credential access and
 network I/O. Historical **provider-grant** records are not execution-kernel
 **authority grants** and do not activate Locus, a broker lease, or engineering
@@ -175,14 +175,16 @@ Reviewers should pay particular attention to these unresolved boundaries:
 - provider enrollment, issuance, refresh, renewal, rotation, and remote
   revocation are not active; shipped paths fail before credential or network
   access, while exact test mocks prove local scaffolding only; and
-- at the release-state snapshot verified 2026-09-03, the immutable `v0.7.5`
-  GitHub release resolves to source commit
-  `d2969e73995cc139e6253e0c8a70f1d683f88e20`; its 19 assets, checksums,
+- for the release-state snapshot verified on 2026-09-05, the immutable
+  `v0.7.8` GitHub release resolves to source commit
+  `f065b13462f9eaf27e0443f8911f021575b7c409`; its 19 assets, checksums,
   archive-specific SPDX SBOMs, GitHub attestations, and all six release-native
-  rows passed workflow 33709338577. Homebrew independently publishes the same
-  reviewed `v0.7.5` binaries. The npm `0.7.4` wrappers remain only under the
+  rows are bound to that immutable release by
+  [workflow 33952398697](https://github.com/ashlrai/phantom-secrets/actions/runs/33952398697).
+  In the exact 2026-09-05 registry snapshot, Homebrew independently publishes
+  the separately reviewed `v0.7.8` binaries. The npm `0.7.4` wrappers remain only under the
   failed `release-candidate` track, npm `latest` remains `0.6.0`, and no npm,
-  crates.io, or MCP Registry `0.7.5` publication is claimed. Native code
+  crates.io, or MCP Registry `0.7.8` publication is claimed. Native code
   signing/notarization, credential-store/ACL/editor acceptance on every host,
   hosted-service commissioning, provider activation, certification, and
   customer acceptance remain separate evidence gates.

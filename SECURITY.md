@@ -8,21 +8,21 @@ Phantom is still pre-1.0, so security support is focused on the reviewed public
 release and active development branch. Repository version metadata can move
 ahead of published artifacts.
 
-The table below is a release-state snapshot verified on 2026-09-03. The
-immutable `v0.7.5` GitHub release binds its 19 assets to source commit
-`d2969e73995cc139e6253e0c8a70f1d683f88e20`; all six native rows and the
-GitHub provenance and SPDX attestations passed in workflow 33709338577.
+The table below is a release-state snapshot verified on 2026-09-05. The
+immutable `v0.7.8` GitHub release binds its 19 assets to source commit
+`f065b13462f9eaf27e0443f8911f021575b7c409`; all six native rows and the
+GitHub provenance and SPDX attestations are bound to that immutable release.
 
 | Version or surface | Security support | Notes |
 |--------------------|------------------|-------|
-| Reviewed GitHub release, `v0.7.5` | Supported | Security fixes are prioritized for the immutable GitHub release and active development. Its native artifacts passed the tag-bound six-row release workflow; this is not a signing, notarization, certification, hosted-service, or customer-acceptance claim. |
-| Homebrew `v0.7.5` | Supported | The separately maintained formula passed native install and version checks on macOS and Linux before publication. The npm `0.7.4` wrappers remain failed release candidates, not the default install path. |
+| Reviewed GitHub release, `v0.7.8` | Supported | Security fixes are prioritized for the immutable GitHub release and active development. Its native artifacts passed the tag-bound six-row release workflow; this is not a signing, notarization, certification, hosted-service, or customer-acceptance claim. |
+| Registry distributions | Mixed | The exact 2026-09-05 snapshot has Homebrew `v0.7.8` supported after native macOS/Linux checks, while npm `latest` remains `0.6.0` and its `0.7.4` wrappers remain failed release candidates rather than the default install path. crates.io and MCP Registry do not yet publish `0.7.8`. |
 | Releases before `v0.7.4` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
 | Forks, unofficial builds, or modified binaries | Not supported | Maintainers cannot verify the provenance or behavior of modified distributions. |
 
 ### Urgent 0.7.0 upgrade notice
 
-`0.7.0` is superseded by the reviewed `v0.7.5` GitHub release. Upgrade before using
+`0.7.0` is superseded by the reviewed `v0.7.8` GitHub release. Upgrade before using
 Phantom Cloud, team-vault, local proxy, protected connection-string,
 provider-rotation, or agent execution workflows. The immutable `0.7.0` release
 remains available as historical evidence and will not be edited in place.
@@ -185,9 +185,9 @@ sandboxed principal.
   Credential Manager acceptance remains pending.
 - Audit logging is opt-in and local by default. It cannot prove deletion of both the audit log and its local checkpoint without external evidence.
 - Team member removal does not retroactively revoke access to vault pushes that were encrypted to that member before removal. Rotate affected secrets after offboarding.
-- All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.5. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.
+- All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.8. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.
 - `phantom grant revoke` currently fails closed before local mutation because remote revocation is not wired for the supported providers.
 - A provider grant is credential lifecycle state, not an execution-kernel authority grant. It cannot activate Locus verification, a broker lease, or production engineering execution.
-- GitHub immutable release controls, checksums, archive-specific SPDX SBOMs, and GitHub attestations protect the published exact `v0.7.5` release artifacts at source commit `d2969e73995cc139e6253e0c8a70f1d683f88e20`. All six native release rows and both attestation predicates passed in workflow 33709338577. Installers and the self-updater verify checksums but do not yet verify attestations directly. Independent signatures, macOS notarization, Windows Authenticode, protected native credential-store/ACL/editor acceptance, and npm-channel acceptance remain open.
+- GitHub immutable release controls, checksums, archive-specific SPDX SBOMs, and GitHub attestations protect the published exact `v0.7.8` release artifacts at source commit `f065b13462f9eaf27e0443f8911f021575b7c409`. All six native release rows and both attestation predicates are bound to that immutable release record. Installers and the self-updater verify checksums but do not yet verify attestations directly. Independent signatures, macOS notarization, Windows Authenticode, protected native credential-store/ACL/editor acceptance, and npm-channel acceptance remain open.
 
 See [THREAT_MODEL.md](./THREAT_MODEL.md#7-known-gaps-and-non-mitigations) for the full list of known gaps and non-mitigations.
