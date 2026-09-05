@@ -79,7 +79,7 @@ A GitHub OAuth token scoped to the user's GitHub identity, used to authenticate 
 
 ### 1.7 Provider issuance credentials and metadata
 
-Phantom 0.7.5 hard-denies `phantom grant add` and every live provider issuance,
+Phantom 0.7.8 hard-denies `phantom grant add` and every live provider issuance,
 enrollment exchange, refresh, renewal, rotation, and revocation path before
 provider credential access and network I/O. `.phantom.toml` may retain
 value-free provider, expiry, and renewal design metadata, but no issued root is
@@ -187,7 +187,7 @@ The table below is the primary reference. A mitigation is marked **covered** onl
 | Project and client configuration | A namespace effect commits, but post-publish verification or durability is unresolved | Effect APIs return `CommittedButUncertain` and callers report a **Partial** outcome. They do not claim rollback, absence of effect, or safe automatic retry; an exact receipt is returned only when Phantom can identify the committed object | Partial — operator reconciliation is required | `crates/phantom-core/src/fs/anchored.rs`, anchored effect-injection tests |
 | Project and vault state | A cross-domain lock inversion stalls a writer, or an init root/leaf is replaced while vault authority is resolved | Vault/application authority is resolved before the project transaction lock. The reviewed root is retained first; after lock acquisition Phantom compares stable directory identity and rereads exact config identity, bytes, and permissions. Initialization additionally binds the reviewed dotenv/config leaf identity, bytes, and permissions before vault provisioning and rejects byte-identical replacement leaves | Partial — coordinates Phantom paths, not an uncooperative same-user process | CLI init/workspace/rotation and MCP anchored-loader lock-order, same-path-decoy, and exact-leaf tests |
 | Project and client configuration | Windows replacement weakens file ACLs or writes secret bytes before protection exists | New private files/directories establish and verify a protected current-user DACL before bytes; replacement staging files receive and verify the reviewed exact DACL, inheritance state, and read-only state before content is written. NULL/nonrestrictive DACLs fail closed | Partial — source-contract tests exist; protected native Windows CI acceptance remains pending | `crates/phantom-core/src/fs/anchored.rs`, Windows ACL source-contract tests |
-| Provider issuance roots | Agent or operator attempts live issuance/renewal | Every production provider path is hard-denied before provider credential access and network I/O in 0.7.5; exact `cfg(test)` mocks are local transaction evidence only | Covered for the 0.7.5 denial boundary | `crates/phantom-core/src/rotation_provider.rs`, CLI/MCP provider-denial tests |
+| Provider issuance roots | Agent or operator attempts live issuance/renewal | Every production provider path is hard-denied before provider credential access and network I/O in 0.7.8; exact `cfg(test)` mocks are local transaction evidence only | Covered for the 0.7.8 denial boundary | `crates/phantom-core/src/rotation_provider.rs`, CLI/MCP provider-denial tests |
 | Provider consent | User assumes protocol source or enrollment metadata commissions a provider | Grant/issuance source remains design scaffolding; production enrollment exchange, issuance, refresh, renewal, and revocation execution is disabled | Covered as a denial, not provider functionality | `crates/phantom-core/src/issuance`, CLI grant dispatch |
 | Provider-grant lifecycle | User assumes local deletion remotely revokes a provider credential | `phantom grant revoke` fails closed before local mutation because remote revocation is not wired | Partial — credential must be revoked at the provider | `crates/phantom-cli/src/commands/grant/revoke.rs` |
 | Proxy session token | Sniffed on localhost | Token is only ever transmitted over the loopback interface (127.0.0.1), which is not network-accessible | Covered | `crates/phantom-proxy/src/server.rs:66` — bind to `[127, 0, 0, 1]` only |
@@ -284,7 +284,7 @@ Secret names stored in the OS keychain use a SHA-256 derived identifier (first 8
 | OS keychain | Access control is supplied by macOS Keychain, Linux Secret Service, or Windows Credential Manager and depends on platform and session policy. Phantom does not configure or claim hardware-bound storage. |
 | OS process model | The platform's user and process isolation restricts cross-user access to files, process memory, handles, and descriptors. Same-user processes remain in the threat model, and root/administrator compromise is out of scope. |
 | The user's terminal for confirmation prompts | `phantom_add_secret_interactive` initiates a terminal prompt outside any AI agent context. The terminal is trusted; the MCP channel is not. |
-| The user's terminal for future provider consent | No provider consent flow is active in 0.7.5. Any future activation must preserve trusted-terminal human consent, but that still would not create execution authority. |
+| The user's terminal for future provider consent | No provider consent flow is active in 0.7.8. Any future activation must preserve trusted-terminal human consent, but that still would not create execution authority. |
 | `rustls` system CA roots | Outbound TLS from the proxy uses `rustls` with system CA roots; no custom CA certificates are accepted, making a local CA injection attack ineffective. |
 
 ### What Phantom verifies
@@ -296,7 +296,7 @@ Secret names stored in the OS keychain use a SHA-256 derived identifier (first 8
 | Proxy requests are authenticated | Session token checked via constant-time compare before any request is processed; CLI-generated URLs use `/_phantom/<token>/` for SDK compatibility, while `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` requires `x-phantom-proxy-token` — `crates/phantom-proxy/src/server.rs` |
 | Vault ciphertext integrity | ChaCha20-Poly1305 AEAD — decryption fails with an error if ciphertext has been tampered with |
 | Team vault key registration before send | `seal_sym_key` requires the recipient's public key to be present before encrypting their share — `crates/phantom-core/src/team_crypto.rs:111` |
-| Provider denial boundary | Production issuance/rotation dispatch returns before provider credential lookup and network access; endpoint maps are inactive design source in 0.7.5 — `crates/phantom-core/src/rotation_provider.rs`, `crates/phantom-core/src/issuance/` |
+| Provider denial boundary | Production issuance/rotation dispatch returns before provider credential lookup and network access; endpoint maps are inactive design source in 0.7.8 — `crates/phantom-core/src/rotation_provider.rs`, `crates/phantom-core/src/issuance/` |
 | Governed local filesystem target | Project writers retain the acquisition-time project directory and resolve relative targets without following symlink/reparse-point components. File effects compare stable identity and bytes, require a regular single-link file where applicable, and expose durable versus committed-but-uncertain outcomes — `crates/phantom-core/src/fs/anchored.rs`, `crates/phantom-vault/src/transaction_lock.rs` |
 
 ### What Phantom does NOT trust
@@ -421,7 +421,7 @@ The audit log requires `PHANTOM_AUDIT=1` to be set. Teams that want audit trails
 ### 7.9 Provider issuance requires external acceptance and revocation
 
 All live provider issuance, enrollment exchange, refresh, renewal, and revocation
-paths are hard-denied before credential or network access in 0.7.5. Source
+paths are hard-denied before credential or network access in 0.7.8. Source
 adapters and exact `cfg(test)` mocks prove only local transaction scaffolding;
 they do not prove a configured provider application, consent correctness,
 activation, renewal, commissioning, or customer acceptance.

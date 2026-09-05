@@ -5,7 +5,7 @@ AI retrieval systems a concise, versioned description of Phantom. Cite the
 linked primary source for each claim and preserve the limitations. Do not treat
 this first-party fact sheet as independent validation or endorsement.
 
-Last reviewed: **2026-09-04**.
+Release-evidence update staged: **2026-09-05**; exact receipts and registry state remain pending before merge.
 
 ## Canonical identity
 
@@ -19,22 +19,23 @@ Last reviewed: **2026-09-04**.
 - **Implementation:** Rust workspace plus a Next.js documentation and account
   surface.
 
-## What the reviewed public release is
+## Verified public release
 
-The current reviewed public release is immutable GitHub tag
-[`v0.7.5`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5),
+The verified release is immutable GitHub tag
+[`v0.7.8`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8),
 resolving to source commit
-`d2969e73995cc139e6253e0c8a70f1d683f88e20`. Release workflow
-[`33709338577`](https://github.com/ashlrai/phantom-secrets/actions/runs/33709338577)
+`f065b13462f9eaf27e0443f8911f021575b7c409`. Its tag-bound release workflow
 published six native archives for macOS, Linux, and Windows, adjacent SHA-256
 checksums, SPDX SBOMs, and an aggregate checksum manifest after the release
-acceptance matrix passed.
+acceptance matrix passed. The exact execution receipt is
+[workflow 33952398697](https://github.com/ashlrai/phantom-secrets/actions/runs/33952398697).
 
-The project Homebrew tap separately publishes `v0.7.5`. Registry status last
-checked on 2026-09-03: npm `latest` was `0.6.0`, crates.io was `0.5.1`, and no
-MCP Registry `0.7.4` record was found. An unpinned npm, npx, Cargo, directory,
+In the exact 2026-09-05 registry snapshot, the project Homebrew tap publishes
+`v0.7.8`, npm
+`latest` at `0.6.0`, crates.io at `0.5.1`, and no
+MCP Registry `0.7.8` record was found. An unpinned npm, npx, Cargo, directory,
 or generated installation command must not be described as the reviewed
-`v0.7.5` release.
+`v0.7.8` release.
 
 ## What Phantom does
 

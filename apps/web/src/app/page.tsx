@@ -12,6 +12,7 @@ import { LandingStructuredData } from "@/components/landing/LandingStructuredDat
 import { Nav } from "@/components/landing/Nav";
 import { Pricing } from "@/components/landing/Pricing";
 import { QuickStart } from "@/components/landing/QuickStart";
+import { RequestTrace } from "@/components/landing/RequestTrace";
 import { SiteFooter } from "@/components/landing/SiteFooter";
 import { TrustBoundary } from "@/components/landing/TrustBoundary";
 import { Transformation } from "@/components/landing/Transformation";
@@ -38,6 +39,7 @@ export default function Home() {
         <Hero />
         <Ecosystem />
         <Transformation />
+        <RequestTrace />
         <QuickStart />
         <Install />
         <TrustBoundary />

@@ -9,7 +9,7 @@ The key distinction is simple: MCP carries control and value-free status;
 Phantom's local vault and authenticated proxy handle credential use. A secret
 value must never be accepted as a tool argument, result, log, or chat message.
 
-This guide describes the reviewed public `v0.7.5` release. The runtime
+This guide describes the reviewed public `v0.7.8` release. The runtime
 `tools/list` response for the installed binaries is the canonical tool catalog.
 
 ## Install both reviewed binaries
@@ -22,10 +22,10 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-On macOS, Linux, or Windows, you can instead use the exact `v0.7.5` archive for
-your platform from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5).
+On macOS, Linux, or Windows, you can instead use the exact `v0.7.8` archive for
+your platform from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8).
 Verify the adjacent SHA-256 checksum and place both `phantom` and `phantom-mcp`
-on `PATH`. Unpinned npm, npx, and Cargo installs are not the reviewed `v0.7.5`
+on `PATH`. Unpinned npm, npx, and Cargo installs are not the reviewed `v0.7.8`
 release path.
 
 ## Connect an MCP client

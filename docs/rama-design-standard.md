@@ -61,14 +61,14 @@ Phantom applies the same standard outside the proxy:
 
 ## Current differences
 
-| Area | Rama reference | Phantom 0.7.5 release |
+| Area | Rama reference | Phantom 0.7.8 release |
 |---|---|---|
 | Stack composition | Explicitly composed services, layers, transports, protocols, and typed context | A purpose-built authenticated HTTP/1 credential proxy with internal registry/interceptor/scrubber components; its stage order is documented but not exposed as a public service/layer API |
 | Crate modularity | Many focused crates expose separable protocol, transport, telemetry, and utility surfaces | Twelve workspace crates separate product and fail-closed authority foundations, but count alone is not equivalent modularity or adoption evidence |
 | Examples | Pinned runnable examples expose concrete stack composition | Phantom examples and smoke tests remain narrower; security-critical examples should become executable contracts without implying Rama coverage |
 | Protocol breadth | HTTP, WebSocket, gRPC, TCP, UDP, DNS, TLS, SOCKS5, proxy protocols, and platform networking | Deliberately narrow reviewed HTTP API routes; it is not a general network framework |
-| Platform CI | Pinned workflows implement tiered platform/toolchain coverage, including desktop tier distinctions and additional target checks | The immutable `v0.7.5` GitHub release passed all six native release rows in workflow 33709338577; this does not transfer Rama's tier claims or prove every-device acceptance |
-| Supply chain | Upstream reports `cargo vet` use | The 19-asset `v0.7.5` GitHub release includes checksums and archive-specific SPDX SBOMs with verified GitHub provenance and SPDX attestations; these are not `cargo vet`, independent signing, notarization, or certification equivalence |
+| Platform CI | Pinned workflows implement tiered platform/toolchain coverage, including desktop tier distinctions and additional target checks | The immutable `v0.7.8` GitHub release passed all six native release rows; this does not transfer Rama's tier claims or prove every-device acceptance |
+| Supply chain | Upstream reports `cargo vet` use | The 19-asset `v0.7.8` GitHub release includes checksums and archive-specific SPDX SBOMs with verified GitHub provenance and SPDX attestations; these are not `cargo vet`, independent signing, notarization, or certification equivalence |
 | Toolchain | Upstream currently reports Rust 1.96 | Phantom pins Rust 1.95.0; adding Rama now would require a reviewed MSRV/toolchain change |
 | Commercial model | Open source with commercial support and partner offerings | Open-source local product plus separately evidenced cloud/team and future enterprise plans |
 

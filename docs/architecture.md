@@ -28,7 +28,7 @@ provider-enabled, or accepted in a real customer workflow.
 | Layer | Components | Current responsibility and boundary |
 |---|---|---|
 | Product | `phantom-cli`, `phantom-core` | Project configuration, dotenv classification and rewriting, tokens, authentication, cloud clients, audit, sync, validation, and operator workflows. |
-| Provider foundations | `phantom-core/src/issuance`, CLI `grant` commands | Protocol/design source plus value-free lifecycle metadata. All live issuance/enrollment/renewal/revocation is hard-denied before credential or network access in 0.7.5. This is not execution authority. |
+| Provider foundations | `phantom-core/src/issuance`, CLI `grant` commands | Protocol/design source plus value-free lifecycle metadata. All live issuance/enrollment/renewal/revocation is hard-denied before credential or network access in 0.7.8. This is not execution authority. |
 | Secret storage | `phantom-vault` | Native credential-store and encrypted-file backends behind `VaultBackend`. Real values remain behind this interface. |
 | Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained directory capabilities, exact before-images, no-follow target resolution, effect receipts, and explicit durable versus committed-but-uncertain outcomes for governed project and client-config mutation. |
 | Network edge | `phantom-proxy` | Authenticated loopback HTTP proxy, fixed route-owned auth-header injection, inert client headers/bodies, response scrubbing, streaming, size/time/concurrency limits, and upstream dispatch. |
@@ -126,7 +126,7 @@ leases, or proof that the inactive execution kernel is active.
 ### Provider-grant foundations
 
 Provider protocol source and value-free metadata remain design foundations.
-In 0.7.5, CLI single-provider rotation, batch rotation, MCP rotation, enrollment
+In 0.7.8, CLI single-provider rotation, batch rotation, MCP rotation, enrollment
 exchange, additive issuance, rolling refresh, and remote revocation all fail
 before provider credential access and before network I/O. Exact `cfg(test)`
 mocks prove local transaction scaffolding only, not provider activation,

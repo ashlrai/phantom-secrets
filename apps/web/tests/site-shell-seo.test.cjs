@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { pathToFileURL } = require("node:url");
 
 const webDir = path.resolve(__dirname, "..");
 
@@ -16,6 +17,10 @@ const layout = read("src/app/layout.tsx");
 const sitemap = read("src/app/sitemap.ts");
 const robots = read("src/app/robots.ts");
 const manifest = JSON.parse(read("public/manifest.webmanifest"));
+const seoWorkflow = fs.readFileSync(
+  path.resolve(webDir, "../..", ".github/workflows/seo-observe.yml"),
+  "utf8",
+);
 const publicPages = {
   "/": read("src/app/page.tsx"),
   "/pricing": read("src/app/pricing/page.tsx"),
@@ -179,6 +184,26 @@ test("crawler policy blocks APIs while sensitive pages expose observable noindex
     /GPTBot|ClaudeBot|Claude-Web|anthropic-ai|PerplexityBot|Google-Extended|CCBot|cohere-ai/,
   );
   assert.match(robots, /sitemap: `\$\{SITE_URL\}\/sitemap\.xml`/);
+});
+
+test("SEO observation is scheduled, read-only, credential-free, and non-publishing", async () => {
+  const { assertReadOnlyWorkflowPolicy } = await import(
+    pathToFileURL(
+      path.resolve(webDir, "../..", "scripts/seo/workflow-policy.mjs"),
+    ).href
+  );
+  const policy = assertReadOnlyWorkflowPolicy(seoWorkflow);
+  assert.deepEqual(policy.workflowPermissions, { contents: "read" });
+  assert.deepEqual(policy.jobs, {
+    observe: { permissions: { contents: "read" } },
+  });
+  assert.match(seoWorkflow, /schedule:/);
+  assert.match(seoWorkflow, /workflow_dispatch:/);
+  assert.match(seoWorkflow, /scripts\/seo\/observe\.mjs/);
+  assert.match(seoWorkflow, /scripts\/seo\/observe\.test\.mjs/);
+  assert.match(seoWorkflow, /retention-days: 30/);
+  assert.doesNotMatch(seoWorkflow, /pull_request_target/);
+  assert.doesNotMatch(seoWorkflow, /gh issue|gh pr|vercel deploy|slack/i);
 });
 
 test("footer exposes product, organization, and open-source paths without live-service claims", () => {
