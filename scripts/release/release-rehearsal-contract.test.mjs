@@ -96,7 +96,8 @@ test("release defaults and lockfiles are part of the exact version parity contra
   assert.match(versionParity, /json\("apps\/web\/package-lock\.json"\)/);
   assert.match(versionParity, /Hosted web lockfile root/);
   assert.match(versionParity, /README source badge/);
-  assert.match(versionParity, /Roadmap candidate/);
+  assert.match(versionParity, /Roadmap release/);
+  assert.match(versionParity, /phantom-release-version/);
   assert.match(versionParity, /Current changelog candidate/);
   assert.match(versionParity, /npm candidate acceptance default/);
   assert.equal(
