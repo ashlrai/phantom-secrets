@@ -14,8 +14,8 @@ deployment changes, activate Locus, or prove that a customer workflow works.
 You need:
 
 - a Git repository and a supported local shell;
-- both `phantom` and `phantom-mcp` from the reviewed `v0.7.5` GitHub release,
-  or the separately published Homebrew `v0.7.5` distribution;
+- both `phantom` and `phantom-mcp` from the reviewed `v0.7.8` GitHub release,
+  or the separately reviewed Homebrew `v0.7.8` distribution;
 - the AI client you intend to use; and
 - an independent recoverable copy of each real credential, such as the
   provider's credential console or an approved password manager.
@@ -46,7 +46,7 @@ vault backend, atomically rewrites the managed dotenv file with `phm_`
 placeholders, writes Phantom configuration, generates `.env.example`, and
 attempts to install the repository pre-commit check.
 
-Install the reviewed `v0.7.5` GitHub release using the platform-specific path in
+Install the reviewed `v0.7.8` GitHub release using the platform-specific path in
 [getting started](./getting-started.md#install), then run `phantom init`.
 
 If auto-detection selects the wrong file, stop and use an explicit path shown by

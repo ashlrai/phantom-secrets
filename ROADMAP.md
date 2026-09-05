@@ -1,13 +1,13 @@
 # Roadmap
 
 This roadmap describes ordered engineering gates, not delivery dates or shipped
-capabilities. This status snapshot was verified on 2026-09-03. The immutable
-`v0.7.5` GitHub release binds 19 assets to source commit
-`d2969e73995cc139e6253e0c8a70f1d683f88e20`; all six native rows and GitHub
-provenance and SPDX attestations passed in workflow 33709338577. Homebrew
-publishes the same reviewed `v0.7.5`. Both npm `0.7.4` wrappers remain public only under the
+capabilities. This status snapshot was verified on 2026-09-05. The immutable
+`v0.7.8` GitHub release binds 19 assets to source commit
+`f065b13462f9eaf27e0443f8911f021575b7c409`; all six native rows and GitHub
+provenance and SPDX attestations passed in workflow 33952398697. Homebrew
+publishes the same reviewed `v0.7.8`. Both npm `0.7.4` wrappers remain public only under the
 failed `release-candidate` track, while npm `latest` remains `0.6.0`.
-No `0.7.5` npm, crates.io, or MCP Registry publication, hosted-service
+No `0.7.8` npm, crates.io, or MCP Registry publication, hosted-service
 commissioning, provider activation, certification, or customer acceptance is
 represented by the GitHub release receipt.
 
@@ -22,7 +22,7 @@ represented by the GitHub release receipt.
 
 ## Current milestones
 
-### 1. Close the 0.7.5 fix-forward source candidate — released
+### 1. Close the 0.7.8 fix-forward source candidate — released
 
 - Keep local mutations transactional and authority-sensitive operations
   fail-closed.
@@ -33,7 +33,7 @@ represented by the GitHub release receipt.
   and schema gates on one exact clean SHA.
 
 Completed at exact source commit
-`d2969e73995cc139e6253e0c8a70f1d683f88e20`; source completion was a
+`f065b13462f9eaf27e0443f8911f021575b7c409`; source completion was a
 prerequisite, not publication evidence by itself.
 
 ### 2. Produce and accept exact native artifacts — released on GitHub
@@ -51,9 +51,8 @@ native credential-store, ACL, editor, or every-device acceptance.
 
 ### 3. Reconcile remaining distribution tracks — gated
 
-- Preserve the immutable GitHub and Homebrew `v0.7.5` receipts while the
-  `v0.7.8` adoption and cross-platform fix-forward candidate completes its independent
-  release and package gates.
+- Preserve the immutable GitHub and Homebrew `v0.7.8` receipts while npm,
+  crates.io, and MCP Registry complete their independent publication gates.
 - Publish crates.io, npm, MCP Registry, and future Homebrew updates only through
   their separately approved workflows.
 - Verify exact version and byte identity for each immutable publication.

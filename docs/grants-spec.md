@@ -1,7 +1,7 @@
 # Phantom Grants — Design-Era Lifecycle Specification
 
 > **Status: historical design document, not shipped provider behavior.**
-> Phantom 0.7.5 hard-denies every live provider issuance, enrollment exchange,
+> Phantom 0.7.8 hard-denies every live provider issuance, enrollment exchange,
 > refresh, renewal, rotation, and revocation path before provider credential
 > access and before network I/O. Exact `cfg(test)` mocks exercise local
 > transaction scaffolding only; they are not provider activation,
@@ -21,7 +21,7 @@ credentials. It is separate from an execution-kernel **authority grant**. A
 provider grant cannot become a Locus credential, broker lease, or permission
 for an agent to execute work.
 
-## 0.7.5 enforced boundary
+## 0.7.8 enforced boundary
 
 - Production provider dispatch returns a hard denial before reading bootstrap
   credentials from the environment or vault and before opening a network
@@ -40,7 +40,7 @@ for an agent to execute work.
 
 Operators must rotate credentials through the provider's trusted interface and
 then use Phantom's trusted local secret-entry path. No README or example command
-in 0.7.5 should invite a live vendor issuance call.
+in 0.7.8 should invite a live vendor issuance call.
 
 ## Provider mechanics under consideration
 
@@ -63,7 +63,7 @@ verification fails after issuance. Enabling it requires:
 
 The source contains design foundations for Vercel, Google Secret Manager,
 GitHub App installation tokens, Sentry installation tokens, and Supabase modes.
-None is live in 0.7.5.
+None is live in 0.7.8.
 
 ### 2. Destructive or rolling refresh
 
@@ -120,7 +120,7 @@ The intended model separates metadata inspection from provider execution:
 grant list/status       value-blind local lifecycle metadata
 grant add/revoke        trusted-terminal provider ceremony, currently denied
 rotate --name/--provider provider execution, currently denied
-rotate --batch          metadata/manual guidance only in 0.7.5
+rotate --batch          metadata/manual guidance only in 0.7.8
 MCP provider rotation   effect-gated compatibility surface, still denied
 ```
 
@@ -141,5 +141,5 @@ remains in force even after confirmation.
 - [ ] Remote revocation that cannot destroy local recovery state first
 - [ ] Customer acceptance and operational rollback evidence per provider
 
-Until those gates are implemented and accepted, the correct 0.7.5 behavior is
+Until those gates are implemented and accepted, the correct 0.7.8 behavior is
 the universal pre-credential, pre-network denial described above.

@@ -53,7 +53,7 @@ and [audit index](audit-index.md) identify the canonical review sources.
 - No generally available Phantom hosted service or supported self-hosted
   enterprise control plane is represented.
 - SSO, SAML, and SCIM are not shipped.
-- Provider issuance and lifecycle operations are hard-denied in 0.7.5.
+- Provider issuance and lifecycle operations are hard-denied in 0.7.8.
 - Central audit retention and independently trusted execution receipts are not
   commissioned.
 - Independent binary signing, macOS notarization, Windows Authenticode, and
