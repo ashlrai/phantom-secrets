@@ -275,22 +275,19 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         }
     }
 
-    // Check 6: Claude Code MCP configuration
+    // Check 6: Claude Code permissions. MCP registrations belong in .mcp.json
+    // and are checked separately below; legacy settings entries are ineffective.
     let claude_settings = project_dir.join(".claude/settings.local.json");
     if claude_settings.exists() {
         let content = std::fs::read_to_string(&claude_settings)?;
-        if phantom_core::agent::mcp_config_has_local_runtime(&claude_settings) {
-            check_pass("Claude Code MCP server uses a local Phantom executable");
-        } else if content.contains("phantom") {
-            check_warn("Claude Code Phantom MCP entry is stale or network-capable");
-            check_fix("Run: phantom setup --client claude");
-            issues += 1;
-        } else {
-            check_info("Claude Code settings exist but no Phantom MCP");
-            check_fix("Run: phantom setup --client claude");
-        }
-
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+            if parsed["mcpServers"].get("phantom").is_some() {
+                check_warn(
+                    "Claude Code Phantom MCP entry is in legacy settings; move it to .mcp.json",
+                );
+                check_fix("Run: phantom setup --client claude");
+                issues += 1;
+            }
             let has_legacy_allow = parsed["permissions"]["allow"]
                 .as_array()
                 .is_some_and(|rules| {
@@ -598,8 +595,8 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         println!();
         println!("  {} MCP client wiring:", "info".blue());
 
-        // Claude Code — project-local .claude/settings.local.json
-        let claude_path = project_dir.join(".claude/settings.local.json");
+        // Claude Code — supported project-scoped MCP registration
+        let claude_path = project_dir.join(".mcp.json");
         issues += usize::from(check_mcp_client("claude", &claude_path, false));
 
         if let Some(home) = dirs::home_dir() {

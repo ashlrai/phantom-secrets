@@ -551,8 +551,12 @@ fn gitignore_has_env(path: &Path) -> bool {
 }
 
 fn has_any_mcp_wiring(project_dir: &Path) -> bool {
-    let mut candidates = vec![project_dir.join(".claude/settings.local.json")];
-    if let Some(home) = dirs::home_dir() {
+    has_mcp_wiring_with_home(project_dir, dirs::home_dir().as_deref())
+}
+
+fn has_mcp_wiring_with_home(project_dir: &Path, home: Option<&Path>) -> bool {
+    let mut candidates = vec![project_dir.join(".mcp.json")];
+    if let Some(home) = home {
         candidates.push(home.join(".cursor/mcp.json"));
         candidates.push(home.join(".codeium/windsurf/mcp_config.json"));
         candidates.push(home.join(".codex/config.toml"));
@@ -683,6 +687,27 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[test]
+    fn claude_wiring_requires_the_supported_project_registration_file() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".claude")).unwrap();
+        let registration = serde_json::to_vec(&serde_json::json!({
+            "mcpServers": {"phantom": {
+                "command": std::env::current_exe().unwrap(),
+                "args": ["mcp", "serve"]
+            }}
+        }))
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".claude/settings.local.json"),
+            &registration,
+        )
+        .unwrap();
+        assert!(!has_mcp_wiring_with_home(dir.path(), None));
+        std::fs::write(dir.path().join(".mcp.json"), registration).unwrap();
+        assert!(has_mcp_wiring_with_home(dir.path(), None));
+    }
+
     fn init_git_with_custom_hooks(dir: &Path) -> PathBuf {
         for args in [
             vec!["init", "--quiet"],
@@ -755,7 +780,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         let current_exe = std::env::current_exe().unwrap();
         std::fs::write(
-            dir.path().join(".claude/settings.local.json"),
+            dir.path().join(".mcp.json"),
             serde_json::to_vec(&serde_json::json!({
                 "mcpServers": {"phantom": {
                     "command": current_exe,
@@ -803,7 +828,7 @@ mod tests {
         std::fs::write(hook, "#!/bin/sh\nnpx phantom-secrets check --staged\n").unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         std::fs::write(
-            dir.path().join(".claude/settings.local.json"),
+            dir.path().join(".mcp.json"),
             r#"{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}"#,
         )
         .unwrap();

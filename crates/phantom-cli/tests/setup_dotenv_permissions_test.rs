@@ -124,11 +124,14 @@ fn init_migrates_npx_to_the_bundled_local_runtime() {
         .success();
 
     let settings: Value = serde_json::from_slice(&fs::read(settings_path).unwrap()).unwrap();
-    let phantom = &settings["mcpServers"]["phantom"];
+    let registration: Value =
+        serde_json::from_slice(&fs::read(dir.path().join(".mcp.json")).unwrap()).unwrap();
+    let phantom = &registration["mcpServers"]["phantom"];
     assert_ne!(phantom["command"], "npx");
     assert_eq!(phantom["args"], json!(["mcp", "serve"]));
     assert_eq!(settings["mcpServers"]["other"]["command"], "other-server");
     assert_eq!(settings["theme"], "dark");
+    assert!(settings["mcpServers"].get("phantom").is_none());
     assert!(!settings.to_string().contains("phantom-secrets-mcp"));
 }
 
@@ -193,9 +196,12 @@ fn rerun_init_migrates_stale_setup_without_rotating_tokens() {
         original_config
     );
     let settings: Value = serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
-    assert_ne!(settings["mcpServers"]["phantom"]["command"], "npx");
+    assert!(settings["mcpServers"].get("phantom").is_none());
+    let registration: Value =
+        serde_json::from_slice(&fs::read(dir.path().join(".mcp.json")).unwrap()).unwrap();
+    assert_ne!(registration["mcpServers"]["phantom"]["command"], "npx");
     assert_eq!(
-        settings["mcpServers"]["phantom"]["args"],
+        registration["mcpServers"]["phantom"]["args"],
         json!(["mcp", "serve"])
     );
     let repaired_hook = fs::read_to_string(&hook_path).unwrap();
@@ -212,10 +218,19 @@ fn rerun_init_migrates_stale_setup_without_rotating_tokens() {
 
 #[test]
 fn init_invalid_claude_config_fails_before_project_mutation() {
+    assert_invalid_claude_config_preserves_project(".claude/settings.local.json");
+}
+
+#[test]
+fn init_invalid_project_mcp_config_fails_before_project_mutation() {
+    assert_invalid_claude_config_preserves_project(".mcp.json");
+}
+
+fn assert_invalid_claude_config_preserves_project(relative_path: &str) {
     let dir = common::canonical_tempdir();
     let claude_dir = dir.path().join(".claude");
     fs::create_dir_all(&claude_dir).unwrap();
-    let settings_path = claude_dir.join("settings.local.json");
+    let settings_path = dir.path().join(relative_path);
     let invalid_settings = b"{ invalid json\n";
     fs::write(&settings_path, invalid_settings).unwrap();
     let env_path = dir.path().join(".env");

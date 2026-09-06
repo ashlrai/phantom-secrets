@@ -252,9 +252,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
             }
             let mut prepared_hook = hooks::prepare_precommit_hook(&project_dir)?;
             if let Some(prepared) = &claude_setup {
-                if let Some(file) = prepared.transaction_file() {
-                    files.push(file);
-                }
+                files.extend(prepared.transaction_files());
             }
             let mut guidance = docs::prepare_guidance(&project_dir)?;
             files.extend(guidance.take_files());
@@ -364,9 +362,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
 
     let mut prepared_hook = hooks::prepare_precommit_hook(&project_dir)?;
     if let Some(prepared) = &claude_setup {
-        if let Some(file) = prepared.transaction_file() {
-            files.push(file);
-        }
+        files.extend(prepared.transaction_files());
     }
     let mut guidance = docs::prepare_guidance(&project_dir)?;
     files.extend(guidance.take_files());

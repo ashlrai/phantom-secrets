@@ -26,9 +26,34 @@ verified path in [getting started](./getting-started.md#install), then run
 phantom setup --client claude
 ```
 
-This writes `.claude/settings.local.json` with two things at once:
-- The `phantom` MCP server entry (so Claude can call the Phantom tool catalog)
-- Removal of legacy Phantom-managed `.env` read grants; dotenv denies remain a defense-in-depth boundary while MCP exposes value-blind inventory
+In the corrected source implementation, this merges the `phantom` MCP server
+into the project's `.mcp.json`. Separately, it removes only the legacy Phantom
+MCP entry and Phantom-managed dotenv read grants from
+`.claude/settings.local.json`, preserving unrelated servers and permission
+rules. Dotenv denies remain a defense-in-depth boundary.
+
+**Release compatibility:** the published `v0.7.8` binaries wrote MCP registration
+into `.claude/settings.local.json`. That is not Claude Code's supported MCP
+registration location. Until you install a release containing this correction,
+run `phantom setup --client claude --print` and manually merge only its
+`mcpServers.phantom` entry into `.mcp.json`. Keep permission settings in
+`.claude/settings.local.json`; do not copy them into `.mcp.json` or overwrite
+unrelated server entries. The corrected writer migrates the legacy Phantom
+entry when run from a source build containing this fix.
+
+The corrected setup validates both files before writing and uses exact
+before-images to avoid overwriting concurrent edits. It attempts rollback after
+an observed later write failure; separate file replacements are not a
+crash-atomic filesystem operation. If setup reports a partial or uncertain
+result, inspect both files locally before retrying.
+
+Claude Code uses `.mcp.json` for project-scoped registration. In interactive
+sessions, review and approve the server when Claude prompts; Phantom setup
+does not grant that approval. Headless client behavior differs, so inspect the
+configuration before starting automated sessions. See the
+[Claude Code MCP scope documentation](https://code.claude.com/docs/en/mcp#project-scope).
+The generated command is a machine-local executable path; review it before
+sharing `.mcp.json` with teammates, whose installed paths may differ.
 
 Install both `v0.7.8` release binaries before setup. Version `0.7.8` records the
 running `phantom` executable with `mcp serve` when it can resolve that runtime,
@@ -41,8 +66,10 @@ Verify it registered:
 
 ```bash
 claude mcp list
-# phantom-secrets-mcp   phantom-mcp   enabled
+claude mcp get phantom
 ```
+
+Check that `phantom` is connected, not merely listed or pending approval.
 
 ### Step 3: run Claude with the proxy active
 
@@ -65,7 +92,7 @@ Use this before giving Claude broad autonomy. It checks the repo's `.env` files,
 
 ## Core MCP tools Claude can use
 
-Once `phantom-secrets-mcp` is registered, Claude can call the full runtime
+Once `phantom` is registered, Claude can call the full runtime
 catalog. The following table highlights the core workflows; use MCP
 `tools/list` for the canonical catalog.
 

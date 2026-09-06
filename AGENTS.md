@@ -26,7 +26,7 @@ commissioning, provider activation, certification, or customer acceptance.
 One command per client — Phantom writes the right config file for each:
 
 ```bash
-phantom setup --client claude     # .claude/settings.local.json (project)
+phantom setup --client claude     # .mcp.json; see docs/claude-code.md for v0.7.8 migration
 phantom setup --client cursor     # ~/.cursor/mcp.json
 phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
 phantom setup --client codex      # ~/.codex/config.toml

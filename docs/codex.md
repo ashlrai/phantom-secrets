@@ -136,13 +136,27 @@ does not deploy or authorize production credentials.
 
 **Codex does not list Phantom in its available tools**
 
-Check that `~/.codex/config.toml` contains the `[mcp_servers.phantom]` block:
+First confirm that the installed runtime responds, then preview only the
+Phantom entry that setup would generate:
 
 ```bash
-cat ~/.codex/config.toml
+phantom --version
+phantom setup --client codex --print
 ```
 
-If missing, re-run `phantom setup --client codex`. If present, restart Codex — MCP servers are read at startup.
+The preview does not inspect your existing Codex configuration. In your local
+editor, locate only `[mcp_servers.phantom]` in `~/.codex/config.toml` and compare
+its `command` and `args` with the preview. Do not paste or print the whole config:
+other server entries can contain credentials or private service configuration.
+If the Phantom entry is absent or stale, re-run `phantom setup --client codex`,
+which merges that entry, then restart Codex. A generated entry alone does not
+prove that the client connected; confirm Phantom's tools appear in Codex.
+
+To test the installed CLI and both MCP launch paths independently of your
+project and client configuration, run the
+[disposable runtime smoke example](../examples/agent-first-five-minutes/README.md)
+from a Phantom source checkout. It reports missing prerequisites as skipped
+and does not read a real vault or contact a provider.
 
 **Phantom proxy not active during Codex task execution**
 

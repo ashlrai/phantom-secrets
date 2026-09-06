@@ -10,8 +10,8 @@ pub struct PreparedClaudeSetup {
 }
 
 impl PreparedClaudeSetup {
-    pub fn transaction_file(&self) -> Option<phantom_vault::InitFile> {
-        self.plan.transaction_file()
+    pub fn transaction_files(&self) -> Vec<phantom_vault::InitFile> {
+        self.plan.transaction_files()
     }
 }
 
@@ -42,8 +42,8 @@ where
 /// Report a Claude settings update that was committed by the init transaction.
 pub fn finish_auto_setup_claude_code(prepared: &PreparedClaudeSetup) {
     crate::commands::setup::print_claude_changes(&prepared.plan, &prepared.mcp);
-    if prepared.plan.transaction_file().is_some() {
-        println!("{} Configured Claude Code MCP server", "ok".green().bold());
+    if !prepared.plan.transaction_files().is_empty() {
+        println!("{} Configured Claude Code project MCP server; restart Claude Code and approve it to activate", "ok".green().bold());
     }
 }
 

@@ -43,7 +43,22 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --locked --no-fail-fast --verbose
       - name: Verify examples
-        run: node --test scripts/examples-first-five-minutes.test.mjs
+        run: node --test scripts/examples-first-five-minutes.test.mjs scripts/agent-first-five-minutes.test.mjs
+      - name: Verify installed CLI and MCP onboarding
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          import { join } from 'node:path';
+          const suffix = process.platform === 'win32' ? '.exe' : '';
+          const result = spawnSync(process.execPath, [
+            'examples/agent-first-five-minutes/run.mjs',
+            '--phantom', join(process.cwd(), 'target', 'debug', `phantom${suffix}`),
+            '--mcp', join(process.cwd(), 'target', 'debug', `phantom-mcp${suffix}`),
+          ], { stdio: 'inherit' });
+          if (result.error || result.signal) process.exit(1);
+          process.exit(result.status ?? 1);
+          NODE
       - name: Verify platform and installer mappings
         run: node scripts/check-platform-installers.mjs
       - name: Verify MCP platform mappings

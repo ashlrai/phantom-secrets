@@ -39,6 +39,11 @@ it is not a security certification or permission for the agent to act.
 Stop if Phantom reports an unexpected dotenv path, an inaccessible vault, or a
 configuration you do not own.
 
+The readiness preview does not apply setup changes, but it probes the configured
+vault and cloud-login state, which can involve the OS keychain. For a disposable
+check that deliberately avoids those probes, run the
+[installed-runtime smoke example](../examples/agent-first-five-minutes/README.md).
+
 ## 2. Protect the project's managed dotenv file
 
 `init` is a local mutation: it stores detected secret values in the selected
@@ -145,9 +150,15 @@ the session is alive, so `phantom exec` is a credential-injection boundary, not
 a process sandbox.
 
 Agents can inspect secret names and protection state through MCP. If a secret is
-missing, the agent should request `phantom_add_secret_interactive`; enter the
-value only in the trusted terminal prompt. A `confirm: true` MCP parameter is a
-tool gate, not standing permission for unrelated changes.
+missing, have the agent report its name, then run `phantom add SECRET_NAME` in
+your trusted terminal and enter the value at the hidden prompt. Do not put the
+value in a command-line argument or an agent-controlled terminal.
+
+The compatibility tool `phantom_add_secret_interactive` only returns that
+terminal command; it does not open a prompt or receive the value. It requires
+MCP effects to be enabled outside agent authority, `confirm: true`, and a fresh
+out-of-band `approval_token`. Leave effects disabled for this basic workflow;
+the direct trusted-terminal command does not require enabling MCP effects.
 
 ## 7. Close the task with evidence
 

@@ -360,7 +360,7 @@ phantom reveal OPENAI_API_KEY --clipboard   # trusted terminal + exact typed con
 One command per AI client — Phantom writes the right config file in the right place:
 
 ```bash
-phantom setup --client claude     # .claude/settings.local.json (project)
+phantom setup --client claude     # project MCP; see claude-code.md for v0.7.8 migration
 phantom setup --client cursor     # ~/.cursor/mcp.json
 phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
 phantom setup --client codex      # ~/.codex/config.toml
