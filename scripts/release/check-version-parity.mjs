@@ -48,6 +48,16 @@ const citationVersion = requireMatch(
   /^version:\s*([^\s]+)$/m,
   "citation metadata version"
 );
+const npmCliReadmeVersion = requireMatch(
+  read("npm/README.md"),
+  /This wrapper is version `([0-9]+\.[0-9]+\.[0-9]+)`\./,
+  "npm CLI README version"
+);
+const npmMcpReadmeVersion = requireMatch(
+  read("npm-mcp/README.md"),
+  /This wrapper is version `([0-9]+\.[0-9]+\.[0-9]+)`\./,
+  "npm MCP README version"
+);
 const readme = read("README.md");
 const readmeSourceVersion = requireMatch(
   readme,
@@ -110,6 +120,8 @@ const versions = new Map([
   ["Hosted web lockfile", webLockVersion],
   ["Hosted web lockfile root", webLockRootVersion],
   ["Citation metadata", citationVersion],
+  ["npm CLI README", npmCliReadmeVersion],
+  ["npm MCP README", npmMcpReadmeVersion],
   ["README source badge", readmeSourceVersion],
   ["Roadmap release", roadmapReleaseVersion],
   ["Current changelog candidate", changelogCandidateVersion],

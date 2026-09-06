@@ -27,13 +27,13 @@ test("current workspace version release notes include the complete candidate tra
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`^## \\[${version.replaceAll(".", "\\.")}\\]`, "m"));
   assert.match(result.stdout, /^### Breaking changes and migration$/m);
-  assert.match(result.stdout, /Windows 8\.3 lexical alias such as `RUNNER~1`/);
-  assert.match(result.stdout, /Symlinks, junctions, other reparse escapes/);
-  assert.match(result.stdout, /private temporary PowerShell/);
-  assert.match(result.stdout, /independent workflow[\s\S]*cannot mask/);
-  assert.match(result.stdout, /Windows x64 and ARM64/);
+  assert.match(result.stdout, /metadata-only `phantom status --json`/);
+  assert.match(result.stdout, /without opening the vault, using a bearer/);
+  assert.match(result.stdout, /Claude project MCP registration to `.mcp.json`/);
+  assert.match(result.stdout, /legacy-only registration/);
+  assert.match(result.stdout, /cross-platform CI matrix/);
   assert.doesNotMatch(result.stdout, /^## \\[Unreleased\\]$/m);
-  assert.match(result.stdout, /Existing `v0\.7\.7` GitHub artifacts remain immutable/);
+  assert.match(result.stdout, /Existing `v0\.7\.8` artifacts stay immutable/);
 });
 
 test("missing release notes fail closed", () => {

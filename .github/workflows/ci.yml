@@ -66,15 +66,19 @@ jobs:
       - name: Run direct installer offline tests
         if: runner.os == 'Linux'
         run: node --test scripts/installers.test.js scripts/release/native-installer-acceptance.test.mjs
-      - name: Parse PowerShell installer and verify mirror
+      - name: Parse candidate and public-reference PowerShell installers
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           [void][scriptblock]::Create((Get-Content -LiteralPath scripts/install.ps1 -Raw))
-          if ((Get-FileHash scripts/install.ps1).Hash -ne (Get-FileHash apps/web/public/install.ps1).Hash) {
-            throw 'served PowerShell installer differs from scripts/install.ps1'
+          [void][scriptblock]::Create((Get-Content -LiteralPath apps/web/public/install.ps1 -Raw))
+          if (-not (Select-String -LiteralPath scripts/install.ps1 -Pattern '\$CandidateTag = ''v0.7.9''' -Quiet)) {
+            throw 'candidate PowerShell installer is not pinned to v0.7.9'
+          }
+          if (-not (Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\$CandidateTag = ''v0.7.8''' -Quiet)) {
+            throw 'public-reference PowerShell installer is not pinned to evidenced v0.7.8'
           }
       - name: Exercise the Windows installer with the existing debug binaries
         if: runner.os == 'Windows'

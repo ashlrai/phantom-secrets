@@ -26,7 +26,7 @@ const { homedir } = require("os");
 const { basename, dirname, join, posix: posixPath, resolve, win32: win32Path } = require("path");
 const { performance } = require("perf_hooks");
 
-const VERSION = "0.7.8";
+const VERSION = "0.7.9";
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom-mcp";
 const REVIEWED_RELEASE_URL = `https://github.com/${REPO}/releases/tag/v${VERSION}`;
