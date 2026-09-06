@@ -45,6 +45,10 @@
     {
       "file": "20260902000000_harden_rls_and_function_paths.sql",
       "sha256": "23f766bcb2b50b24f39b69f214c1e447ddb46c1531406eb64406fa2602b49cc0"
+    },
+    {
+      "file": "20260903180004_vercel_oauth_security_foundation.sql",
+      "sha256": "904dd4676130bc96e649404b0b2a20c8649f6adcacbc2b2fdc30e11758029db5"
     }
   ]
 }
