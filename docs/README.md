@@ -44,6 +44,8 @@ certification, or customer acceptance.
 These guides cover installation, MCP setup, the value-blind tool model, and daily workflows:
 
 - [Safe delegation quickstart](delegation-quickstart.md) for the common cross-client workflow
+- [Hub status contract](hub-status-contract.md) for value-free local-orchestrator inspection (post-v0.7.8 source)
+- [Installed-runtime smoke](../examples/agent-first-five-minutes/README.md) for disposable CLI and MCP checks
 - [Claude Code](claude-code.md)
 - [Codex](codex.md)
 - [Cursor](cursor.md)

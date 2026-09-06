@@ -3,9 +3,18 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::PhantomToken;
+use serde::Serialize;
+use std::path::Path;
 
-pub fn run(oneline: bool) -> Result<()> {
+pub fn run(oneline: bool, json: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&metadata_status(&project_dir))?
+        );
+        return Ok(());
+    }
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -147,6 +156,105 @@ pub fn run(oneline: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// An observation contract, not an authorization or vault-health result.
+/// Only fixed vocabulary and counts may cross this boundary; config values,
+/// managed dotenv contents, and arbitrary filesystem errors stay local.
+#[derive(Serialize)]
+struct MetadataStatus {
+    schema_version: u8,
+    initialized: bool,
+    inspection: &'static str,
+    managed_dotenv: DotenvStatus,
+    vault: VaultStatus,
+    proxy: ProxyStatus,
+    issues: Vec<StatusIssue>,
+}
+
+#[derive(Serialize)]
+struct VaultStatus {
+    inspected: bool,
+}
+
+#[derive(Serialize)]
+struct DotenvStatus {
+    inspected: bool,
+}
+
+#[derive(Serialize)]
+struct ProxyStatus {
+    lifecycle_lock: LifecycleLock,
+    listener_authenticated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum LifecycleLock {
+    NotInspected,
+    Missing,
+    Available,
+    Held,
+    Unknown,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum StatusIssue {
+    ConfigMissing,
+    ConfigUnreadable,
+    ConfigInvalid,
+    ProxyLockUnavailable,
+}
+
+fn metadata_status(project_dir: &Path) -> MetadataStatus {
+    let mut report = MetadataStatus {
+        schema_version: 1,
+        initialized: false,
+        inspection: "metadata-only",
+        managed_dotenv: DotenvStatus { inspected: false },
+        vault: VaultStatus { inspected: false },
+        proxy: ProxyStatus {
+            lifecycle_lock: LifecycleLock::NotInspected,
+            listener_authenticated: false,
+        },
+        issues: Vec::new(),
+    };
+    let config_path = project_dir.join(".phantom.toml");
+    // Unlike the legacy human status path, never follow a config symlink or
+    // open legacy proxy state (which contains a bearer and contacts a listener).
+    let bytes = match phantom_core::fs::read_regular_file(&config_path) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            report.issues.push(StatusIssue::ConfigMissing);
+            return report;
+        }
+        Err(_) => {
+            report.issues.push(StatusIssue::ConfigUnreadable);
+            return report;
+        }
+    };
+    let config = match PhantomConfig::load_from_bytes(&config_path, &bytes) {
+        Ok(config) => config,
+        Err(_) => {
+            report.issues.push(StatusIssue::ConfigInvalid);
+            return report;
+        }
+    };
+    // `initialized` means valid readable configuration only. It does not
+    // imply that the vault is accessible or any requested action is allowed.
+    report.initialized = true;
+
+    report.proxy.lifecycle_lock = match super::proxy_lifecycle::inspect(config.local_project_id()) {
+        Ok(super::proxy_lifecycle::ProxyLockState::Missing) => LifecycleLock::Missing,
+        Ok(super::proxy_lifecycle::ProxyLockState::Available) => LifecycleLock::Available,
+        Ok(super::proxy_lifecycle::ProxyLockState::Held) => LifecycleLock::Held,
+        Err(_) => {
+            report.issues.push(StatusIssue::ProxyLockUnavailable);
+            LifecycleLock::Unknown
+        }
+    };
+    report
 }
 
 #[cfg(test)]

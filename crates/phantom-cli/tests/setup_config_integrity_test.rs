@@ -21,6 +21,31 @@ fn explicit_claude_setup_preserves_invalid_json() {
         .failure();
 
     assert_eq!(fs::read(settings_path).unwrap(), original);
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
+fn explicit_claude_setup_rejects_invalid_project_mcp_before_settings_changes() {
+    let dir = common::canonical_tempdir();
+    let claude_dir = dir.path().join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let settings_path = claude_dir.join("settings.local.json");
+    let original = br#"{"permissions":{"allow":["Read(./.env)"]}}"#;
+    fs::write(&settings_path, original).unwrap();
+    let mcp_path = dir.path().join(".mcp.json");
+    let invalid = b"{ invalid project mcp\n";
+    fs::write(&mcp_path, invalid).unwrap();
+
+    Command::cargo_bin("phantom")
+        .unwrap()
+        .args(["setup", "--client", "claude"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .assert()
+        .failure();
+
+    assert_eq!(fs::read(settings_path).unwrap(), original);
+    assert_eq!(fs::read(mcp_path).unwrap(), invalid);
 }
 
 #[test]

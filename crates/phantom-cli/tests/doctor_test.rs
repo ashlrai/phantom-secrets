@@ -105,7 +105,8 @@ fn doctor_rejects_legacy_npx_mcp_entry() {
     let output = phantom(&dir).arg("doctor").assert().success();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     assert!(
-        stdout.contains("stale or network-capable") && stdout.contains("issue(s) found"),
+        stdout.contains("legacy settings; move it to .mcp.json")
+            && stdout.contains("issue(s) found"),
         "doctor must not certify a registry-backed MCP entry: {stdout}"
     );
 }
@@ -128,4 +129,21 @@ fn doctor_fix_refuses_to_overwrite_non_utf8_hook() {
     phantom(&dir).args(["doctor", "--fix"]).assert().failure();
 
     assert_eq!(fs::read(hook).unwrap(), original);
+}
+
+#[test]
+fn doctor_finds_the_supported_claude_project_registration() {
+    let dir = common::canonical_tempdir();
+    phantom(&dir)
+        .args(["setup", "--client", "claude"])
+        .assert()
+        .success();
+    let output = phantom(&dir).arg("doctor").assert().success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(
+        stdout.contains("claude uses a local Phantom executable"),
+        "{stdout}"
+    );
+    assert!(stdout.contains(".mcp.json"), "{stdout}");
+    assert!(!stdout.contains("legacy settings; move it"), "{stdout}");
 }

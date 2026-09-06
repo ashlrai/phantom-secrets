@@ -177,7 +177,7 @@ enum Commands {
     #[command(next_help_heading = "Daily use")]
     Stop,
 
-    /// Show proxy status and mapped secrets
+    /// Show project status (--json uses value-free metadata inspection)
     #[command(next_help_heading = "Daily use")]
     Status {
         /// Compact one-line output for shell prompts
@@ -909,7 +909,7 @@ fn run() -> anyhow::Result<()> {
             clipboard,
             yes,
         } => commands::reveal::run(&name, clipboard, yes),
-        Commands::Status { oneline } => commands::status::run(oneline),
+        Commands::Status { oneline } => commands::status::run(oneline, global_json),
         Commands::Rotate {
             sync,
             with_expiry,
