@@ -45,6 +45,10 @@
     {
       "file": "20260902000000_harden_rls_and_function_paths.sql",
       "sha256": "23f766bcb2b50b24f39b69f214c1e447ddb46c1531406eb64406fa2602b49cc0"
+    },
+    {
+      "file": "20260903180035_browser_and_service_role_grants.sql",
+      "sha256": "4cbc199d8ebad39a690646111ef56b6d4b995c364edb80bc784041709ffab53a"
     }
   ]
 }
