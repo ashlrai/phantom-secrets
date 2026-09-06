@@ -88,10 +88,10 @@ test("manual rehearsal delegates to the shared graph with read-only authority", 
 });
 
 test("release defaults and lockfiles are part of the exact version parity contract", () => {
-  assert.match(rehearsal, /default: v0\.7\.8/);
+  assert.match(rehearsal, /default: v0\.7\.9/);
   assert.match(
     npmCandidateAcceptance,
-    /^      version:\n[\s\S]*?^        default: 0\.7\.8$/m
+    /^      version:\n[\s\S]*?^        default: 0\.7\.9$/m
   );
   assert.match(versionParity, /json\("apps\/web\/package-lock\.json"\)/);
   assert.match(versionParity, /Hosted web lockfile root/);
@@ -99,14 +99,16 @@ test("release defaults and lockfiles are part of the exact version parity contra
   assert.match(versionParity, /Roadmap release/);
   assert.match(versionParity, /phantom-release-version/);
   assert.match(versionParity, /Current changelog candidate/);
+  assert.match(versionParity, /npm CLI README/);
+  assert.match(versionParity, /npm MCP README/);
   assert.match(versionParity, /npm candidate acceptance default/);
   assert.equal(
     execFileSync(
       process.execPath,
-      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.7.8"],
+      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.7.9"],
       { cwd: repoRoot, encoding: "utf8" }
     ).trim(),
-    "release version parity passed: 0.7.8 across 19 surfaces and 12 crates"
+    "release version parity passed: 0.7.9 across 21 surfaces and 12 crates"
   );
 });
 
@@ -271,10 +273,14 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
     });
   }
 
-  for (const readme of [npmReadme, npmMcpReadme]) {
-    assert.match(readme, /This wrapper is version `0\.7\.8`/);
-    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.8/);
-    assert.match(readme, /releases\/tag\/v0\.7\.8/);
+  for (const [readme, packageJson, packageName] of [
+    [npmReadme, npmPackage, "phantom-secrets"],
+    [npmMcpReadme, npmMcpPackage, "phantom-secrets-mcp"],
+  ]) {
+    const escapedVersion = packageJson.version.replaceAll(".", "\\.");
+    assert.match(readme, new RegExp("This wrapper is version `" + escapedVersion + "`"));
+    assert.match(readme, new RegExp(`npm view ${packageName}@${escapedVersion}`));
+    assert.match(readme, new RegExp(`releases/tag/v${escapedVersion}`));
     assert.match(readme, /do not prove|does not prove/);
     assert.doesNotMatch(readme, /v0\.7\.3|older release track|Current main/);
   }
@@ -290,6 +296,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(readiness, /stage both under `release-candidate`/);
   assert.match(readiness, /six-target npm-channel\s+acceptance gate/);
   assert.match(readiness, /MCP\s+wrapper to `latest` first and the primary CLI to `latest` last/);
+  assert.match(readiness, /release_tag=v0\.7\.9/);
+  assert.match(readiness, /pre-tag-preflight\.mjs v0\.7\.9/);
+  assert.match(readiness, /publish-crates\.sh --verify-only --version 0\.7\.9/);
 
   const npmPlan = markdownSection(
     npmPublication,
@@ -729,7 +738,7 @@ test("npm package contents remain the exact five reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.7.8");
+    assert.equal(pack.version, "0.7.9");
     assert.equal(pack.entryCount, 5);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),

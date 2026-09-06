@@ -4,7 +4,35 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No unreleased changes are recorded after the `0.7.8` release candidate.
+No additional unreleased changes are recorded after the `0.7.9` source candidate.
+
+## [0.7.9] - 2026-09-06
+
+This fix-forward source candidate repairs agent onboarding and Ashlr Hub
+inspection compatibility. It does not move or replace the immutable `v0.7.8`
+tag or its GitHub Release. Do not describe `0.7.9` as published until its
+tag-bound release, distribution, and deployment receipts exist.
+
+### Fixed
+
+- Emit a stable, metadata-only `phantom status --json` response so integrations
+  can inspect initialization state without opening the vault, using a bearer,
+  or probing the legacy proxy listener.
+- Write Claude project MCP registration to `.mcp.json`, preserve unrelated
+  settings in `.claude/settings.local.json`, and make legacy-only registration
+  visible in readiness diagnostics.
+- Exercise the installed CLI and MCP onboarding walkthrough in the
+  cross-platform CI matrix, in addition to source-level tests.
+
+### Breaking changes and migration
+
+There are no intentional CLI, proxy, vault, or network-policy breaking changes.
+For a project configured by an earlier Phantom build, run
+`phantom setup --client claude` from a trusted terminal and review the
+generated `.mcp.json`; existing permission settings remain in
+`.claude/settings.local.json`. Existing `v0.7.8` artifacts stay immutable and
+remain the current published GitHub release until `v0.7.9` completes its
+separate release gates.
 
 ## [0.7.8] - 2026-09-05
 
@@ -556,7 +584,8 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...HEAD
+[0.7.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.5...v0.7.6

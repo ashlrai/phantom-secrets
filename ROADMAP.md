@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- phantom-release-version: 0.7.8 -->
+<!-- phantom-release-version: 0.7.9 -->
 
 This roadmap describes ordered engineering gates, not delivery dates or shipped
 capabilities. This status snapshot was verified on 2026-09-05. The immutable
@@ -23,6 +23,19 @@ represented by the GitHub release receipt.
 | Exploratory | Research or design work with no compatibility or delivery commitment. |
 
 ## Current milestones
+
+### 0.7.9 agent onboarding and Hub status compatibility — staged
+
+- Register Claude project MCP configuration in `.mcp.json` while preserving
+  unrelated local permission settings, and diagnose legacy-only registration.
+- Provide an explicitly metadata-only `phantom status --json` contract for
+  bounded Hub inspection without vault, bearer, or network access.
+- Verify the installed CLI and MCP onboarding path in the cross-platform CI
+  matrix before publishing a new immutable release identity.
+
+This source candidate has no `v0.7.9` tag, GitHub Release, package, registry,
+or deployment receipt yet. The `v0.7.8` evidence above remains the current
+public release record.
 
 ### 1. Close the 0.7.8 fix-forward source candidate — released
 

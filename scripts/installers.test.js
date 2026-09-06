@@ -178,9 +178,15 @@ async function waitForPath(path, timeoutMs = 5000) {
   }
 }
 
-test('canonical installers exactly match the public mirrors', () => {
-  assert.deepEqual(readFileSync(shellInstaller), readFileSync(join(repo, 'apps/web/public/install.sh')));
-  assert.deepEqual(readFileSync(psInstaller), readFileSync(join(repo, 'apps/web/public/install.ps1')));
+test('web installer mirrors remain bound to the evidenced public release', () => {
+  // Release candidates can target a not-yet-published tag. The phm.dev copies
+  // must not advance until public-release.ts has immutable release evidence.
+  const publicShell = readFileSync(join(repo, 'apps/web/public/install.sh'), 'utf8');
+  const publicPowerShell = readFileSync(join(repo, 'apps/web/public/install.ps1'), 'utf8');
+  assert.match(publicShell, /CANDIDATE_TAG="v0\.7\.8"/);
+  assert.match(publicPowerShell, /\$CandidateTag = 'v0\.7\.8'/);
+  assert.doesNotMatch(publicShell, /v0\.7\.9/);
+  assert.doesNotMatch(publicPowerShell, /v0\.7\.9/);
 });
 
 test('Unix installer guidance never emits pipe-to-shell or older-registry fallbacks', () => {
@@ -196,15 +202,15 @@ test('direct installers bind normal use to the canonical repository and exact ca
   const powerShell = readFileSync(psInstaller, 'utf8');
   for (const source of [shell, powerShell]) {
     assert.match(source, /ashlrai\/phantom-secrets/);
-    assert.match(source, /v0\.7\.8/);
+    assert.match(source, /v0\.7\.9/);
     assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/);
     assert.doesNotMatch(source, /releases\/latest|api\.github\.com/);
   }
 
-  const { log, result } = runInstaller({ version: '0.7.8', useCandidateDefaults: true });
+  const { log, result } = runInstaller({ version: '0.7.9', useCandidateDefaults: true });
   assert.equal(result.status, 0, result.stderr);
   const curlLog = readFileSync(log, 'utf8');
-  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.7\.8\//);
+  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.7\.9\//);
   assert.doesNotMatch(curlLog, /releases\/latest|api\.github\.com/);
 });
 
@@ -471,7 +477,7 @@ test('PowerShell installer has a strict offline-verifiable security contract', (
   assert.match(source, /PHANTOM_INSTALL_DIR must be a local absolute path/);
   assert.match(source, /install source receipt failed final validation/);
   assert.match(source, /\$CanonicalRepo = 'ashlrai\/phantom-secrets'/);
-  assert.match(source, /\$CandidateTag = 'v0\.7\.8'/);
+  assert.match(source, /\$CandidateTag = 'v0\.7\.9'/);
   assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1'/);
   assert.match(source, /PHANTOM_TEST_LOCAL_RELEASE_DIR/);
   assert.match(source, /PHANTOM_TEST_DISABLE_PATH_PERSISTENCE/);

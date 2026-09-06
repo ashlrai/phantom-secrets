@@ -150,7 +150,7 @@ const publicReleaseEvidencePaths = [
 const verifiedReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8";
 const candidateReleaseUrl =
-  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8";
+  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9";
 
 function structuredMetadataBlock(source, type) {
   const marker = `"@type": "${type}"`;
@@ -551,7 +551,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       assert.ok(source.includes(candidateReleaseUrl), file);
       assert.match(
         source,
-        /version `0\.7\.8`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
+        /version `0\.7\.9`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
         file,
       );
       assert.match(
@@ -561,7 +561,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       );
       assert.match(
         source,
-        /Version `0\.7\.8`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
+        /Version `0\.7\.9`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
         file,
       );
       assert.doesNotMatch(source, /releases\/tag\/v0\.7\.3/i, file);
@@ -601,7 +601,7 @@ test("registry README catalog exactly matches the staged 54-tool schema", () => 
   assert.equal(new Set(documentedNames).size, 54, "README catalog names must be unique");
   assert.deepEqual(documentedNames.sort(), schemaNames.sort());
   assert.match(registryReadme, /npm `0\.7\.4` wrappers are public only under `release-candidate`/i);
-  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.8`/i);
+  assert.match(registryReadme, /local `server\.json` stages version `0\.7\.9`/i);
   assert.match(registryReadme, /do not publish this manifest until/i);
 });
 
@@ -793,13 +793,15 @@ test("public installer digests bind to the exact release-source bytes", () => {
 
   assert.match(tagObject, /^[a-f0-9]{40}$/);
   assert.match(sourceCommit, /^[a-f0-9]{40}$/);
-  assert.equal(unixDigest, sha256File("scripts/install.sh"));
-  assert.equal(windowsDigest, sha256File("scripts/install.ps1"));
+  // Candidate release assets may point at a future tag. Public download
+  // evidence stays anchored to the bytes phm.dev actually serves.
+  assert.equal(unixDigest, sha256File("apps/web/public/install.sh"));
+  assert.equal(windowsDigest, sha256File("apps/web/public/install.ps1"));
   // These blob OIDs were resolved from the annotated v0.7.8 tag. Together
   // with the SHA-256 assertions above, they bind the public checksums to the
   // exact repository bytes served by the immutable source-commit URLs.
-  assert.equal(unixBlobOid, gitBlobOid("scripts/install.sh"));
-  assert.equal(windowsBlobOid, gitBlobOid("scripts/install.ps1"));
+  assert.equal(unixBlobOid, gitBlobOid("apps/web/public/install.sh"));
+  assert.equal(windowsBlobOid, gitBlobOid("apps/web/public/install.ps1"));
   assert.match(
     exportedString(publicRelease, "PUBLIC_RELEASE_WORKFLOW_URL"),
     /\/actions\/runs\/\d+$/,
@@ -1090,10 +1092,11 @@ test("community health metadata preserves release and support boundaries", () =>
 
   const citation = readRepo("CITATION.cff");
   assert.match(citation, /^cff-version: 1\.2\.0$/m);
-  assert.match(citation, /^version: 0\.7\.8$/m);
-  assert.match(citation, /immutable v0\.7\.8 GitHub release/i);
+  assert.match(citation, /^version: 0\.7\.9$/m);
+  assert.match(citation, /current source candidate is 0\.7\.9/i);
+  assert.match(citation, /immutable v0\.7\.8 GitHub\s+release/i);
   assert.match(citation, /repository URL and full commit SHA/i);
-  assert.match(citation, /^date-released: 2026-09-05$/m);
+  assert.doesNotMatch(citation, /^date-released:/m);
 });
 
 test("cloud-signed audit remains an explicit network-free protocol foundation", () => {

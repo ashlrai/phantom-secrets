@@ -74,7 +74,7 @@ async function assertPreviousVersionCachePreserved(stage) {
     const archiveExt = process.platform === "win32" ? "zip" : "tar.gz";
     const archiveName = `phantom-${target}.${archiveExt}`;
     const archiveUrl =
-      `https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/${archiveName}`;
+      `https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/${archiveName}`;
     const archiveBytes = Buffer.from(`verified archive for ${stage}`);
     const archiveSha = crypto.createHash("sha256").update(archiveBytes).digest("hex");
     const observedUrls = [];
@@ -109,7 +109,7 @@ async function assertPreviousVersionCachePreserved(stage) {
         },
       }),
       stage === "version"
-        ? /did not report exact version 0\.7\.8/
+        ? /did not report exact version 0\.7\.9/
         : (error) => error === stagedFailure
     );
 
@@ -373,6 +373,9 @@ async function assertPreviousVersionCachePreserved(stage) {
     assert.notStrictEqual(staleOwner.ownerToken, successor.ownerToken);
     assert.strictEqual(staleOwner(), false, "old owner must not remove successor lock");
     assert.strictEqual(existsSync(paths.lockPath), true);
+    // Refresh synchronously before the contention assertion: timer scheduling
+    // granularity differs across supported Node releases.
+    successor.heartbeat();
     await assert.rejects(
       acquireInstallLock(paths.lockPath, {
         waitMs: 10,
@@ -402,7 +405,7 @@ async function assertPreviousVersionCachePreserved(stage) {
       },
       execFileSyncImpl: (_path, _args, options) => {
         assert.ok(options.timeout > 0 && options.timeout < 120_000);
-        return Buffer.from("phantom-mcp 0.7.8\n");
+        return Buffer.from("phantom-mcp 0.7.9\n");
       },
     });
     assert.ok(dirname(observedArchivePath).startsWith(join(fixtureDir, ".install-")));
