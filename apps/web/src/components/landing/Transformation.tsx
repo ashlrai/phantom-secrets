@@ -4,6 +4,7 @@ import {
   OpenAILogo,
   StripeLogo,
 } from "./BrandLogos";
+import { CodexClientLogo } from "./ClientLogos";
 
 const EXAMPLE_ROWS = [
   {
@@ -42,8 +43,11 @@ function EnvPanel({ managed }: { managed: boolean }) {
       </header>
       <div className="env-panel__rows">
         {EXAMPLE_ROWS.map((row) => (
-          <div key={row.name}>
-            <row.Logo aria-hidden="true" />
+          <div
+            key={row.name}
+            className={row.name === "GITHUB_TOKEN" ? "env-panel__row--github" : undefined}
+          >
+            <span className="env-panel__logo"><row.Logo aria-hidden="true" /></span>
             <code>
               <span>{row.name}=</span>
               <b>{managed ? row.after : row.before}</b>
@@ -57,6 +61,86 @@ function EnvPanel({ managed }: { managed: boolean }) {
           : "Synthetic examples of plaintext-shaped project configuration."}
       </footer>
     </article>
+  );
+}
+
+function BoundaryPanel() {
+  return (
+    <aside className="transformation-boundary" aria-label="Phantom's local credential boundary">
+      <div className="transformation-boundary__signal">
+        <span aria-hidden="true" />
+        Local credential boundary
+      </div>
+      <div className="transformation-boundary__mark" aria-hidden="true">phm_</div>
+      <p>
+        Phantom stores the value locally. The project, agent, and repository work
+        with a placeholder instead.
+      </p>
+      <ul>
+        <li>Vault keeps the real value out of the file</li>
+        <li>Explicit routes receive credentials at the local proxy</li>
+        <li>Unsupported routes fail closed</li>
+      </ul>
+    </aside>
+  );
+}
+
+function AgentTrace() {
+  return (
+    <div className="transformation-demo" aria-label="Synthetic Codex and GitHub workflow demo">
+      <article className="transformation-trace">
+        <header>
+          <span aria-hidden="true">$</span>
+          <strong>Current local workflow</strong>
+          <small>Synthetic trace</small>
+        </header>
+        <ol>
+          <li>
+            <code>phantom init</code>
+            <span>Moves detected values into the selected local vault.</span>
+          </li>
+          <li>
+            <code>phantom setup --client codex</code>
+            <span>Previews then writes Codex&apos;s local MCP entry.</span>
+          </li>
+          <li>
+            <code>phantom exec -- codex &quot;&lt;your task&gt;&quot;</code>
+            <span>Starts the agent through the supervised local session.</span>
+          </li>
+        </ol>
+      </article>
+
+      <article className="transformation-handoff">
+        <p>One project, three separate surfaces</p>
+        <div className="transformation-handoff__flow">
+          <div>
+            <span className="transformation-handoff__logo transformation-handoff__logo--codex">
+              <CodexClientLogo aria-hidden="true" />
+            </span>
+            <strong>Codex</strong>
+            <small>value-blind tools</small>
+          </div>
+          <span className="transformation-handoff__connector" aria-hidden="true">→</span>
+          <div>
+            <span className="transformation-handoff__logo transformation-handoff__logo--phantom">phm_</span>
+            <strong>Phantom</strong>
+            <small>local boundary</small>
+          </div>
+          <span className="transformation-handoff__connector" aria-hidden="true">→</span>
+          <div>
+            <span className="transformation-handoff__logo transformation-handoff__logo--github">
+              <GitHubLogo aria-hidden="true" />
+            </span>
+            <strong>GitHub</strong>
+            <small>placeholder diff</small>
+          </div>
+        </div>
+        <p className="transformation-handoff__note">
+          Codex sees managed names and status. GitHub can receive a diff with a
+          <code>phm_</code> placeholder—not a copied provider credential.
+        </p>
+      </article>
+    </div>
   );
 }
 
@@ -75,12 +159,10 @@ export function Transformation() {
         </div>
         <div className="transformation-grid">
           <EnvPanel managed={false} />
-          <div className="transformation-grid__passage" aria-hidden="true">
-            <span>phantom init</span>
-            <b>→</b>
-          </div>
+          <BoundaryPanel />
           <EnvPanel managed />
         </div>
+        <AgentTrace />
       </div>
     </section>
   );

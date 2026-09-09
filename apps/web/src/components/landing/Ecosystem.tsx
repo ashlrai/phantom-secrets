@@ -2,14 +2,14 @@ import { EXACT_ROUTE_ENTRIES, KEY_ENTRIES } from "./BrandLogos";
 import { CarouselPauseButton } from "./CarouselPauseButton";
 
 const exactRouteNames = new Set(EXACT_ROUTE_ENTRIES.map((item) => item.name));
-const agentAndDeployNames = new Set(["Cursor", "Windsurf", "Vercel", "Railway"]);
+const agentAndDeployNames = new Set(["Cursor", "Windsurf", "GitHub", "Vercel", "Railway"]);
 const agentAndDeployEntries = KEY_ENTRIES.filter((item) => agentAndDeployNames.has(item.name));
 const vaultExamples = KEY_ENTRIES.filter(
   (item) => !exactRouteNames.has(item.name) && !agentAndDeployNames.has(item.name),
 );
 
 const ROWS = [
-  { label: "Selected editor and deployment credentials", items: agentAndDeployEntries },
+  { label: "Selected editor, source-control, and deployment credentials", items: agentAndDeployEntries },
   { label: "Additional vault-detection examples", items: vaultExamples },
 ] as const;
 
