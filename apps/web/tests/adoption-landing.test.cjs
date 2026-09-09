@@ -18,7 +18,8 @@ test("landing restores credential proof without claiming universal proxy support
   assert.match(hero, /<CredentialWall \/>/);
   assert.match(hero, /not automatic setup[\s\S]*endorsement[\s\S]*explicit configuration/i);
   assert.match(hero, /unsupported[\s\S]*fail closed/i);
-  assert.match(ecosystem, /Selected editor and deployment credentials/);
+  assert.match(ecosystem, /Selected editor, source-control, and deployment credentials/);
+  assert.match(ecosystem, /GitHub/);
   assert.match(ecosystem, /Additional vault-detection examples/);
   assert.match(ecosystem, /Logos identify products, not endorsement/);
   assert.doesNotMatch(hero, /every service is supported/i);
@@ -158,6 +159,11 @@ test("dotenv transformation uses only explicit synthetic examples", () => {
   assert.match(transformation, /examples are[\s\S]*synthetic/i);
   assert.match(transformation, /example-redacted-openai-value/);
   assert.match(transformation, /GITHUB_TOKEN/);
+  assert.match(transformation, /CodexClientLogo/);
+  assert.match(transformation, /phantom setup --client codex/);
+  assert.match(transformation, /phantom exec -- codex/);
+  assert.match(transformation, /GitHub can receive a diff/);
+  assert.match(transformation, /Unsupported routes fail closed/);
   assert.doesNotMatch(transformation, /DATABASE_URL|MONGODB_URI/);
   assert.doesNotMatch(transformation, /sk-(?:live|proj|ant)-/i);
 });
