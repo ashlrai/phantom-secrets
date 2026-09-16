@@ -25,7 +25,7 @@ phantom-core = { workspace = true }
 phantom-vault = { workspace = true }
 phantom-workspace = { workspace = true }
 phantom-runtime = { workspace = true }
-rmcp = { version = "1", features = ["server", "transport-io"] }
+rmcp = { version = "2", features = ["server", "transport-io"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
