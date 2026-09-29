@@ -68,13 +68,28 @@ function copyApplication(destination) {
   );
 }
 
+// `next build` downloads the Google fonts used by src/app/layout.tsx. A
+// transient bad response from the font CDN fails the build inside `next/font`
+// (seen in CI as "TypeError: Cannot read properties of null (reading '1')"),
+// which has nothing to do with the readiness behavior under test. Retry only
+// that failure, once; every other build failure still fails immediately.
+const FONT_FETCH_FAILURE = "An error occurred in `next/font`";
+
 function buildApplication(directory, publicConfiguration) {
-  const result = spawnSync(process.execPath, [nextCli, "build"], {
-    cwd: directory,
-    env: cleanEnvironment(publicConfiguration),
-    encoding: "utf8",
-    maxBuffer: 10 * 1024 * 1024,
-  });
+  const runBuild = () =>
+    spawnSync(process.execPath, [nextCli, "build"], {
+      cwd: directory,
+      env: cleanEnvironment(publicConfiguration),
+      encoding: "utf8",
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  let result = runBuild();
+  if (
+    result.status !== 0 &&
+    `${result.stdout}${result.stderr}`.includes(FONT_FETCH_FAILURE)
+  ) {
+    result = runBuild();
+  }
   assert.equal(
     result.status,
     0,
