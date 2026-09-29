@@ -1022,11 +1022,11 @@ mod tests {
         let secrets = parsed.real_secret_entries();
         assert!(!secrets.is_empty());
         for entry in secrets {
+            // Name only: never format dotenv values into test output.
             assert!(
                 is_example_placeholder(&entry.value),
-                "{} = {:?} should be a generated placeholder",
-                entry.key,
-                entry.value
+                "{} should hold a generated placeholder",
+                entry.key
             );
         }
     }
