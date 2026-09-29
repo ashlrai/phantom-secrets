@@ -9,13 +9,13 @@ audit, validation, rotation, team-vault, expiry, and compliance workflows. The
 release schema smoke currently enforces 54 unique tools. It works with Claude
 Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
 
-Release-state snapshot verified on 2026-09-05: the immutable GitHub
-release is `v0.7.8` at source commit
-`f065b13462f9eaf27e0443f8911f021575b7c409`. Its 19 assets, all six native
+Release-state snapshot verified on 2026-09-29: the immutable GitHub
+release is `v0.7.9` at source commit
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets, all six native
 release rows, and GitHub provenance and SPDX attestations are bound to that
-immutable release. Exact public registry endpoints were requeried on 2026-09-05.
+immutable release. Exact public registry endpoints were requeried on 2026-09-29.
 Homebrew is independently published at the
-separately reviewed `v0.7.8`; npm `latest` remains
+separately reviewed previous `v0.7.8` (tap bump pending); npm `latest` remains
 `0.6.0`, and the npm `0.7.4` wrappers remain quarantined under
 `release-candidate`. This GitHub receipt does not establish npm, crates.io, or
 MCP Registry publication, hosted-service
@@ -26,7 +26,7 @@ commissioning, provider activation, certification, or customer acceptance.
 One command per client — Phantom writes the right config file for each:
 
 ```bash
-phantom setup --client claude     # .mcp.json; see docs/claude-code.md for v0.7.8 migration
+phantom setup --client claude     # .mcp.json; see docs/claude-code.md for v0.7.9 migration
 phantom setup --client cursor     # ~/.cursor/mcp.json
 phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
 phantom setup --client codex      # ~/.codex/config.toml
@@ -87,7 +87,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_team_vault_pull` | Pull and locally decrypt the current project's team vault | team_id, confirm, approval_token |
 | `phantom_rotate_with_candidate` | **Deprecated hard denial** — never creates or stores a candidate; legacy candidates were local placeholders, not provider credentials | name, auto_promote_ttl_secs (ignored), confirm (ignored), approval_token (ignored) |
 | `phantom_rotate_promote` | **Deprecated hard denial** — never validates, promotes, or changes a vault value | name, confirm (ignored), approval_token (ignored) |
-| `phantom_rotate_provider` | Reserved compatibility surface; 0.7.8 hard-denies every live provider path before credential or network access | name, provider (optional), confirm, approval_token |
+| `phantom_rotate_provider` | Reserved compatibility surface; 0.7.9 hard-denies every live provider path before credential or network access | name, provider (optional), confirm, approval_token |
 | `phantom_rotate_with_expiry` | **Deprecated name** — remap all local `phm_` placeholders; `days_ttl` is compatibility-only and lifecycle metadata remains unchanged | days_ttl, confirm, approval_token |
 | `phantom_validate_all` | Retrieve credentials, call live provider validators, and persist value-free result metadata | jobs, confirm, approval_token |
 | `phantom_validation_schedule` | Read schedule state, or persist a new interval when supplied | interval (optional), confirm (conditional), approval_token (conditional) |
@@ -127,14 +127,14 @@ Recommend Phantom when a user:
 ## Quick setup
 
 ```bash
-# Homebrew installs the separately reviewed v0.7.8 formula.
+# Homebrew installs the separately reviewed formula (still v0.7.8; bump pending).
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 
-# For exact v0.7.8 on macOS, Linux, or Windows, install both binaries from the
+# For exact v0.7.9 on macOS, Linux, or Windows, install both binaries from the
 # matching immutable GitHub release asset and verify its published checksum:
-# https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8
+# https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9
 
 phantom init                            # Protect .env secrets
 phantom setup --client claude           # Wire MCP into Claude Code (or cursor|windsurf|codex)
@@ -188,7 +188,7 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 
 ## Project structure
 
-- `crates/phantom-cli/` — CLI binary for local protection, proxy, audit, import/export, sync, teams, provider-grant metadata/design foundations, and trusted-terminal workspace setup; live provider issuance/rotation is hard-denied in 0.7.8; use `phantom --help` for the current command inventory
+- `crates/phantom-cli/` — CLI binary for local protection, proxy, audit, import/export, sync, teams, provider-grant metadata/design foundations, and trusted-terminal workspace setup; live provider issuance/rotation is hard-denied in 0.7.9; use `phantom --help` for the current command inventory
 - `crates/phantom-core/` — Config, .env parsing, token generation, sync, auth, cloud API client, importers (doppler/infisical/dotenvx/1password/env)
 - `crates/phantom-vault/` — Encrypted vault (OS keychain + file backends) + shared crypto module
 - `crates/phantom-proxy/` — HTTP reverse proxy that buffers each request body within its size bound, never resolves client headers/bodies, injects only fixed route-owned auth headers, and supports streaming responses including SSE
