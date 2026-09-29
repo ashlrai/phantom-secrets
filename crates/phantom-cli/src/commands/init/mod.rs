@@ -312,6 +312,8 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     )?;
     phantom_config.phantom.dotenv_path = Some(dotenv_basename);
     config::apply_detected_services(&mut phantom_config, &real_entries);
+    let connection_string_keys =
+        config::protected_connection_string_keys(&phantom_config, &real_entries);
 
     // Persist public key classifications
     if !public_entries.is_empty() {
@@ -436,6 +438,17 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         "done".green().bold(),
         real_entries.len()
     );
+    if !connection_string_keys.is_empty() {
+        // Say this now rather than letting the first `phantom exec` be the
+        // surprise: connection strings are vaulted but not proxied.
+        println!(
+            "{} {} {} a connection string. It is vaulted, but {} will not start in this project while it is protected (no database broker yet). See https://phm.dev/docs/getting-started before relying on it.",
+            "note".yellow().bold(),
+            connection_string_keys.join(", ").bold(),
+            if connection_string_keys.len() == 1 { "is" } else { "are each" },
+            "phantom exec".cyan()
+        );
+    }
 
     if let Some(prepared) = &claude_setup {
         prompts::finish_auto_setup_claude_code(prepared);
