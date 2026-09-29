@@ -5,7 +5,7 @@ AI retrieval systems a concise, versioned description of Phantom. Cite the
 linked primary source for each claim and preserve the limitations. Do not treat
 this first-party fact sheet as independent validation or endorsement.
 
-Release-evidence update staged: **2026-09-05**; exact receipts and registry state remain pending before merge.
+Release evidence verified: **2026-09-29** (GitHub release receipt, npm dist-tags, crates.io, and the Homebrew formula were requeried that day).
 
 ## Canonical identity
 
@@ -22,20 +22,20 @@ Release-evidence update staged: **2026-09-05**; exact receipts and registry stat
 ## Verified public release
 
 The verified release is immutable GitHub tag
-[`v0.7.8`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8),
+[`v0.7.9`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9),
 resolving to source commit
-`f065b13462f9eaf27e0443f8911f021575b7c409`. Its tag-bound release workflow
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its tag-bound release workflow
 published six native archives for macOS, Linux, and Windows, adjacent SHA-256
 checksums, SPDX SBOMs, and an aggregate checksum manifest after the release
 acceptance matrix passed. The exact execution receipt is
-[workflow 33952398697](https://github.com/ashlrai/phantom-secrets/actions/runs/33952398697).
+[workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
-In the exact 2026-09-05 registry snapshot, the project Homebrew tap publishes
-`v0.7.8`, npm
+In the exact 2026-09-29 registry snapshot, the project Homebrew tap still publishes the previous
+`v0.7.8` (a `v0.7.9` bump is pending), npm
 `latest` at `0.6.0`, crates.io at `0.5.1`, and no
-MCP Registry `0.7.8` record was found. An unpinned npm, npx, Cargo, directory,
+MCP Registry `0.7.9` record was found. An unpinned npm, npx, Cargo, directory,
 or generated installation command must not be described as the reviewed
-`v0.7.8` release.
+`v0.7.9` release.
 
 ## What Phantom does
 
