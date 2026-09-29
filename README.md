@@ -16,7 +16,6 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
 
 [**Quick start**](#quick-start) ·
-[**⭐ Star Phantom**](https://github.com/ashlrai/phantom-secrets) ·
 [**Delegate safely**](docs/delegation-quickstart.md) ·
 [**Why Phantom?**](#why-phantom) ·
 [**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex) ·
@@ -675,8 +674,6 @@ project does not assume that a `good first issue` label is populated. Follow
     <img alt="Phantom Secrets star history" src="https://api.star-history.com/svg?repos=ashlrai/phantom-secrets&type=Date" />
   </picture>
 </a>
-
-If Phantom saves you from leaking a key — or even just from worrying about it — please **[star the repo ⭐](https://github.com/ashlrai/phantom-secrets/stargazers)**. It's the single biggest signal we use to know what to build next.
 
 ## License
 

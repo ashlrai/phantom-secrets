@@ -955,6 +955,37 @@ pub fn is_public_key(key: &str) -> bool {
     public_prefixes.iter().any(|prefix| key.starts_with(prefix))
 }
 
+/// Committable dotenv template basenames (`.env.example`, `.env.sample`,
+/// `.env.template`). These are meant to be committed and hold placeholders.
+pub fn is_example_template_file(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    matches!(name, ".env.example" | ".env.sample" | ".env.template")
+}
+
+/// True if `value` is exactly the shape of a placeholder produced by
+/// [`DotenvFile::generate_example_content`] (`your_<name>_here`, lowercase
+/// ASCII letters, digits, `_` or `-`), or is empty. This is deliberately
+/// strict: anything else, including real key prefixes such as `sk-`, is not a
+/// placeholder.
+pub fn is_example_placeholder(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    if value.len() > 128 {
+        return false;
+    }
+    let Some(middle) = value
+        .strip_prefix("your_")
+        .and_then(|rest| rest.strip_suffix("_here"))
+    else {
+        return false;
+    };
+    !middle.is_empty()
+        && middle
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
 /// Generate a descriptive placeholder for a secret key.
 fn generate_placeholder(key: &str, config: Option<&crate::config::PhantomConfig>) -> String {
     // Check for service mapping to give helpful hints
@@ -980,6 +1011,49 @@ fn generate_placeholder(key: &str, config: Option<&crate::config::PhantomConfig>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_example_placeholders_are_recognized() {
+        let env = DotenvFile::parse_str(
+            "OPENAI_API_KEY=sk-proj-realish-value-1234567890\nDATABASE_URL=postgres://u:p@h/db\nDB_PASSWORD=hunter2\nSTRIPE_SECRET_KEY=sk_live_abc\nNODE_ENV=development\n",
+        );
+        let example = env.generate_example_content(None).unwrap();
+        let parsed = DotenvFile::parse_str(&example);
+        let secrets = parsed.real_secret_entries();
+        assert!(!secrets.is_empty());
+        for entry in secrets {
+            assert!(
+                is_example_placeholder(&entry.value),
+                "{} = {:?} should be a generated placeholder",
+                entry.key,
+                entry.value
+            );
+        }
+    }
+
+    #[test]
+    fn example_placeholder_is_strict() {
+        assert!(is_example_placeholder("your_openai_here"));
+        assert!(is_example_placeholder("your_stripe_secret_key_here"));
+        assert!(is_example_placeholder(""));
+        for value in [
+            "sk-proj-abc123",
+            "your_sk-live_Abc_here",
+            "your__here",
+            "your_openai_here sk-abc",
+            "prefix_your_openai_here",
+            "YOUR_OPENAI_HERE",
+            "your_openai_here\n",
+            "hunter2",
+        ] {
+            assert!(!is_example_placeholder(value), "{value:?}");
+        }
+        assert!(is_example_template_file(".env.example"));
+        assert!(is_example_template_file("apps/web/.env.sample"));
+        assert!(!is_example_template_file(".env"));
+        assert!(!is_example_template_file(".env.local"));
+        assert!(!is_example_template_file("x.env.example.bak"));
+    }
 
     #[test]
     fn test_parse_simple_env() {
