@@ -43,6 +43,29 @@ pub fn run(cmd: &[String], env: Option<&str>, quiet: bool) -> Result<()> {
     rt.block_on(run_async(cmd, env, quiet))
 }
 
+/// Actionable, value-free next steps for the connection-string denial.
+fn connection_string_hint(
+    blocked: &std::collections::BTreeSet<&str>,
+    protected: &HashSet<String>,
+) -> String {
+    let ambient: Vec<&str> = blocked
+        .iter()
+        .copied()
+        .filter(|key| !protected.contains(*key))
+        .collect();
+    let mut hint = String::from(
+        "Hint: connection strings are vaulted but not proxied yet, so `phantom exec` will not start while one is protected in the managed dotenv or set in the environment. Split database work from API-key work: run database commands (migrations, psql, ORMs) from a terminal you trust, outside `phantom exec`.",
+    );
+    if !ambient.is_empty() {
+        hint.push_str(&format!(
+            " {} is set in this shell's environment; unset it before running `phantom exec`.",
+            ambient.join(", ")
+        ));
+    }
+    hint.push_str(" Docs: https://phm.dev/docs/getting-started");
+    hint
+}
+
 async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
@@ -76,7 +99,8 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
     // Connection strings need a protocol-aware broker. Detect them from the
     // protected dotenv/config contract before opening or reading the vault, so
     // a missing entry can never turn this fail-closed decision into a bypass.
-    let blocked_connection_strings: Vec<&str> = config
+    // BTreeSet: configs written by older init runs can map one key twice.
+    let blocked_connection_strings: std::collections::BTreeSet<&str> = config
         .connection_string_services()
         .into_iter()
         .filter_map(|(_, service)| {
@@ -87,8 +111,9 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         .collect();
     if !blocked_connection_strings.is_empty() {
         anyhow::bail!(
-            "Refusing to expose connection-string secret(s) to the child process: {}. Phantom requires a protocol-aware broker for database credentials; direct environment injection is disabled.",
-            blocked_connection_strings.join(", ")
+            "Refusing to expose connection-string secret(s) to the child process: {}. Phantom requires a protocol-aware broker for database credentials; direct environment injection is disabled.\n{}",
+            blocked_connection_strings.iter().copied().collect::<Vec<_>>().join(", "),
+            connection_string_hint(&blocked_connection_strings, &preflight_protected_keys)
         );
     }
 
