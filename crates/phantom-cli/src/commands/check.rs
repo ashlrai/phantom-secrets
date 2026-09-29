@@ -1,7 +1,7 @@
 use anyhow::Result;
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
-use phantom_core::dotenv::DotenvFile;
+use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, DotenvFile};
 use phantom_core::token::PhantomToken;
 use std::path::{Path, PathBuf};
 
@@ -67,7 +67,13 @@ pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
                 let content = read_staged_file(&file)?;
                 let dotenv = DotenvFile::parse_str(&content);
                 dotenv.validate_for_mutation()?;
-                let real_secrets = dotenv.real_secret_entries();
+                let mut real_secrets = dotenv.real_secret_entries();
+                // Committable templates (.env.example etc.) may name secrets
+                // as long as each value is an empty or `phantom init`-style
+                // placeholder. Any other value is still reported.
+                if is_example_template_file(&file) {
+                    real_secrets.retain(|entry| !is_example_placeholder(&entry.value));
+                }
 
                 if !real_secrets.is_empty() {
                     if issues == 0 {
