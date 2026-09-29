@@ -4,14 +4,23 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No additional unreleased changes are recorded after the `0.7.9` source candidate.
+No additional unreleased changes are recorded after the `0.7.9` release.
 
 ## [0.7.9] - 2026-09-06
 
-This fix-forward source candidate repairs agent onboarding and Ashlr Hub
-inspection compatibility. It does not move or replace the immutable `v0.7.8`
-tag or its GitHub Release. Do not describe `0.7.9` as published until its
-tag-bound release, distribution, and deployment receipts exist.
+This fix-forward release repairs agent onboarding and Ashlr Hub inspection
+compatibility. It does not move or replace the immutable `v0.7.8` tag or its
+GitHub Release.
+
+**Release receipt:** the immutable
+[`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9)
+(published 2026-09-07) binds 19 assets to source commit
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Tag-bound workflow
+[34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556)
+passed source verification, all six native release rows, checksum and SPDX SBOM
+verification, and artifact attestations. As of 2026-09-29 the Homebrew formula
+still installs `v0.7.8`, npm `latest` remains `0.6.0`, and no crates.io or MCP
+Registry `0.7.9` publication exists.
 
 ### Fixed
 
@@ -30,9 +39,7 @@ There are no intentional CLI, proxy, vault, or network-policy breaking changes.
 For a project configured by an earlier Phantom build, run
 `phantom setup --client claude` from a trusted terminal and review the
 generated `.mcp.json`; existing permission settings remain in
-`.claude/settings.local.json`. Existing `v0.7.8` artifacts stay immutable and
-remain the current published GitHub release until `v0.7.9` completes its
-separate release gates.
+`.claude/settings.local.json`. Existing `v0.7.8` artifacts stay immutable.
 
 ## [0.7.8] - 2026-09-05
 
