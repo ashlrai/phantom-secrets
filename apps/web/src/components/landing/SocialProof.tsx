@@ -31,7 +31,7 @@ export function SocialProof() {
         className="inline-flex items-center gap-1.5 text-[0.78rem] font-medium text-t3 no-underline transition-colors hover:text-t1"
       >
         <Github className="h-3.5 w-3.5" aria-hidden="true" />
-        Open the repository and star Phantom
+        View the source on GitHub
       </a>
     </div>
   );

@@ -183,10 +183,11 @@ test('web installer mirrors remain bound to the evidenced public release', () =>
   // must not advance until public-release.ts has immutable release evidence.
   const publicShell = readFileSync(join(repo, 'apps/web/public/install.sh'), 'utf8');
   const publicPowerShell = readFileSync(join(repo, 'apps/web/public/install.ps1'), 'utf8');
-  assert.match(publicShell, /CANDIDATE_TAG="v0\.7\.8"/);
-  assert.match(publicPowerShell, /\$CandidateTag = 'v0\.7\.8'/);
-  assert.doesNotMatch(publicShell, /v0\.7\.9/);
-  assert.doesNotMatch(publicPowerShell, /v0\.7\.9/);
+  // v0.7.9 has its immutable tag-bound release receipt (workflow 34153902556).
+  assert.match(publicShell, /CANDIDATE_TAG="v0\.7\.9"/);
+  assert.match(publicPowerShell, /\$CandidateTag = 'v0\.7\.9'/);
+  assert.doesNotMatch(publicShell, /v0\.7\.8/);
+  assert.doesNotMatch(publicPowerShell, /v0\.7\.8/);
 });
 
 test('Unix installer guidance never emits pipe-to-shell or older-registry fallbacks', () => {
