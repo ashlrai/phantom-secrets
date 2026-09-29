@@ -245,3 +245,72 @@ fn check_staged_scans_only_added_code_lines() {
 
     phantom(&dir).args(["check", "--staged"]).assert().success();
 }
+
+fn git_repo_with_staged(dir: &TempDir, name: &str, content: &str) {
+    StdCommand::new("git")
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .expect("git init");
+    fs::write(dir.path().join(name), content).expect("write staged file");
+    StdCommand::new("git")
+        .args(["add", name])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add");
+}
+
+#[test]
+fn check_staged_allows_init_generated_env_example() {
+    // Regression: `phantom init` writes this file and tells the user to
+    // commit it, so its own pre-commit hook must not block it.
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".env"),
+        "OPENAI_API_KEY=sk-proj-FAKEdemo1234567890abcdefmnop\nDATABASE_URL=postgres://u:p@localhost/db\nNODE_ENV=development\n",
+    )
+    .unwrap();
+    phantom(&dir)
+        .args(["init", "--from", ".env"])
+        .env(
+            "PHANTOM_VAULT_PASSPHRASE",
+            "test-integration-passphrase-check",
+        )
+        .assert()
+        .success();
+    let example = fs::read_to_string(dir.path().join(".env.example")).expect(".env.example");
+    assert!(example.contains("OPENAI_API_KEY=your_"), "{example}");
+    assert!(!example.contains("sk-proj-FAKE"), "{example}");
+
+    git_repo_with_staged(&dir, ".env.example", &example);
+    let output = phantom(&dir).args(["check", "--staged"]).assert().success();
+    assert!(String::from_utf8_lossy(&output.get_output().stdout)
+        .contains("No unprotected secrets found"));
+}
+
+#[test]
+fn check_staged_still_blocks_real_secret_in_env_example() {
+    let dir = common::canonical_tempdir();
+    git_repo_with_staged(
+        &dir,
+        ".env.example",
+        "OPENAI_API_KEY=your_openai_here\nSTRIPE_SECRET_KEY=sk_live_realvalue123\nEMPTY_TOKEN=\n",
+    );
+    let output = phantom(&dir).args(["check", "--staged"]).assert().failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(
+        stderr.contains(".env.example") && stderr.contains("STRIPE_SECRET_KEY"),
+        "real value in .env.example must still be reported, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("OPENAI_API_KEY") && !stderr.contains("EMPTY_TOKEN"),
+        "placeholders must not be reported, got: {stderr}"
+    );
+}
+
+#[test]
+fn check_staged_placeholder_allowance_does_not_apply_to_dotenv() {
+    let dir = common::canonical_tempdir();
+    git_repo_with_staged(&dir, ".env", "OPENAI_API_KEY=your_openai_here\n");
+    phantom(&dir).args(["check", "--staged"]).assert().failure();
+}
