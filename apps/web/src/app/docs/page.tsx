@@ -129,7 +129,7 @@ export default function DocsPage() {
               <div className="docs-page__agent-links">
                 <Link href="/llms.txt">Read llms.txt</Link>
                 <Link href="/llms-full.txt">Read llms-full.txt</Link>
-                <a href="https://github.com/ashlrai/phantom-secrets">Star the source on GitHub</a>
+                <a href="https://github.com/ashlrai/phantom-secrets">View the source on GitHub</a>
               </div>
             </div>
           </div>

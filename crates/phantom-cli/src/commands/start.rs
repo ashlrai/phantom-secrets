@@ -139,7 +139,8 @@ async fn run_async() -> Result<()> {
         .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
         .map(|entry| entry.key.as_str())
         .collect();
-    let blocked_connection_strings: Vec<&str> = config
+    // BTreeSet: configs written by older init runs can map one key twice.
+    let blocked_connection_strings: std::collections::BTreeSet<&str> = config
         .connection_string_services()
         .into_iter()
         .filter_map(|(_, service)| {
@@ -150,8 +151,8 @@ async fn run_async() -> Result<()> {
         .collect();
     if !blocked_connection_strings.is_empty() {
         anyhow::bail!(
-            "Refusing standalone proxy start for configured connection-string credential(s): {}. Ambient values and phantom tokens require a protocol-aware broker.",
-            blocked_connection_strings.join(", ")
+            "Refusing standalone proxy start for configured connection-string credential(s): {}. Ambient values and phantom tokens require a protocol-aware broker.\nHint: connection strings are vaulted but not proxied yet. Run database commands separately from a terminal you trust, and unset any connection-string variable exported in this shell. Docs: https://phm.dev/docs/getting-started",
+            blocked_connection_strings.iter().copied().collect::<Vec<_>>().join(", ")
         );
     }
 
