@@ -39,7 +39,6 @@
         "required": [
           "name"
         ],
-        "title": "AddSecretParams",
         "type": "object"
       }
     },
@@ -70,7 +69,6 @@
         "required": [
           "name"
         ],
-        "title": "AddSecretInteractiveParams",
         "type": "object"
       }
     },
@@ -79,7 +77,6 @@
       "description": "Scan the vault, apply read-only demotion to secrets whose TTL has expired, and (optionally) re-promote secrets that were demoted but have since been rotated. This blocks future vault retrieval and new `phantom exec`/foreground `phantom start` mapped-secret preflight; it does not recall values already injected or cached. Returns: { demoted: [{ name, expires_at, secs_overdue }], promoted: [{ name }], skipped_count, total_scanned }. Requires confirm:true because it writes vault metadata.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_apply_expiry_policy`.\n\nScans the vault, identifies secrets whose TTL has expired, sets\n`vault_mode = ReadOnly` on each, and returns a list of affected secrets.\nThis is the demotion step that blocks future vault retrieval and new\n`phantom exec`/foreground `phantom start` mapped-secret preflight. It does\nnot recall values already injected into or cached by running processes.\n\nRequires `confirm: true` because it writes metadata.",
         "properties": {
           "also_promote_rotated": {
             "default": true,
@@ -100,7 +97,6 @@
             "type": "boolean"
           }
         },
-        "title": "ApplyExpiryPolicyParams",
         "type": "object"
       }
     },
@@ -110,7 +106,6 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Parameters for `phantom_audit_alerts`.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -138,7 +133,6 @@
             "type": "integer"
           }
         },
-        "title": "AuditAlertsParams",
         "type": "object"
       }
     },
@@ -147,7 +141,6 @@
       "description": "Export full audit analytics for compliance dashboards. Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, min_daily, anomaly_score) plus timestamped AccessRecords for the requested window. Supports JSON or CSV format. Use min_anomaly_score to filter to flagged secrets only. Never exposes secret values. Feed the output to Datadog, Grafana, CloudWatch, or any BI tool. window_days=0 returns all history; default is 30 days. format=\"csv\" produces RFC 4180 CSV; format=\"json\" produces structured JSON with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_audit_analytics` — full analytics + access-record export.",
         "properties": {
           "format": {
             "default": "json",
@@ -171,7 +164,6 @@
             "type": "integer"
           }
         },
-        "title": "AuditAnalyticsParams",
         "type": "object"
       }
     },
@@ -193,7 +185,6 @@
             "type": "string"
           }
         },
-        "title": "AuditAnomaliesParams",
         "type": "object"
       }
     },
@@ -202,7 +193,6 @@
       "description": "Check whether a secret (or all secrets) has been accessed unusually based on windowed rate and quiet-period analysis of the current audit log. Unlike phantom_audit_anomalies (which uses multi-day daily-bucket statistics), this tool evaluates: (1) accesses within the last rolling hour vs max_accesses_per_hour threshold; (2) re-access after a quiet period longer than max_consecutive_quiet_days. Returns a findings array with fields: name, anomaly_score (0.0–1.0), alert (bool), reason (string), accesses_last_hour, max_quiet_gap_days. Secret VALUES are never returned. Read-only; no confirm required. Use threshold (default 0.5) to filter results. Pass name to check a single secret. Per-secret overrides from .phantom.toml [phantom.secrets.{name}.audit] are respected when max_accesses_per_hour / max_consecutive_quiet_days are omitted.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_audit_anomalies_realtime` — windowed, per-second\nrate-based anomaly check against the current audit log state.",
         "properties": {
           "max_accesses_per_hour": {
             "default": null,
@@ -239,7 +229,6 @@
             "type": "number"
           }
         },
-        "title": "AuditAnomaliesRealtimeParams",
         "type": "object"
       }
     },
@@ -249,7 +238,6 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Parameters for `phantom_audit_export_report`.",
         "properties": {
           "action": {
             "default": "report",
@@ -312,7 +300,6 @@
             ]
           }
         },
-        "title": "AuditExportReportParams",
         "type": "object"
       }
     },
@@ -322,7 +309,6 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Parameters for `phantom_audit_hotspot_alerts` — inspect and acknowledge\nper-secret access-velocity spike alerts.",
         "properties": {
           "ack": {
             "default": false,
@@ -363,7 +349,6 @@
             "type": "integer"
           }
         },
-        "title": "AuditHotspotAlertsParams",
         "type": "object"
       }
     },
@@ -372,7 +357,6 @@
       "description": "Return active leak incidents derived from proxy.response_leak audit events. Incidents are correlated by (secret_name, location) within a 24-hour window. min_confidence (default 0.7) filters by confidence score: 0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. Each incident includes: incident_id, secret_name (never the value), location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. Incidents whose secret was subsequently stored are omitted. Reads only the persisted incident store; it does not run correlation or write state.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_audit_incidents`.",
         "properties": {
           "min_confidence": {
             "default": 0.7,
@@ -381,7 +365,6 @@
             "type": "number"
           }
         },
-        "title": "AuditIncidentsParams",
         "type": "object"
       }
     },
@@ -415,7 +398,6 @@
             ]
           }
         },
-        "title": "AuditRecentParams",
         "type": "object"
       }
     },
@@ -440,7 +422,6 @@
             "type": "string"
           }
         },
-        "title": "AuditStatsParams",
         "type": "object"
       }
     },
@@ -464,7 +445,6 @@
             "type": "boolean"
           }
         },
-        "title": "CheckParams",
         "type": "object"
       }
     },
@@ -493,7 +473,6 @@
             "type": "boolean"
           }
         },
-        "title": "CloudPullParams",
         "type": "object"
       }
     },
@@ -517,7 +496,6 @@
             "type": "boolean"
           }
         },
-        "title": "CloudPushParams",
         "type": "object"
       }
     },
@@ -527,7 +505,6 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Dual approval gate for tools whose only inputs are authority controls.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -543,7 +520,6 @@
             "type": "boolean"
           }
         },
-        "title": "ApprovalParams",
         "type": "object"
       }
     },
@@ -552,7 +528,6 @@
       "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (vault can be read), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in .env), secrets_have_ttl (all vault secrets have a rotation policy set). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "ComplianceStatusParams",
         "type": "object"
       }
     },
@@ -595,7 +570,6 @@
           "name",
           "target_dir"
         ],
-        "title": "CopySecretParams",
         "type": "object"
       }
     },
@@ -764,7 +738,6 @@
         "required": [
           "action"
         ],
-        "title": "EngineeringDoParams",
         "type": "object"
       }
     },
@@ -793,7 +766,6 @@
             "type": "boolean"
           }
         },
-        "title": "DoctorParams",
         "type": "object"
       }
     },
@@ -822,7 +794,6 @@
             "type": "string"
           }
         },
-        "title": "EnvParams",
         "type": "object"
       }
     },
@@ -831,7 +802,6 @@
       "description": "Scan .phantom.toml for expired secrets and return a structured list. Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), status (human-readable string). With fail_closed=true, secrets that have no expiry policy set are also included with status='no_expiry_policy'. Returns { expired: [...], ok_count, no_expiry_count, fail_closed, pass }. pass=true means no action is needed. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_expiry_enforce`.",
         "properties": {
           "fail_closed": {
             "default": false,
@@ -839,7 +809,6 @@
             "type": "boolean"
           }
         },
-        "title": "PhantomExpiryEnforceParams",
         "type": "object"
       }
     },
@@ -868,7 +837,6 @@
             "type": "string"
           }
         },
-        "title": "InitParams",
         "type": "object"
       }
     },
@@ -878,7 +846,6 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Parameters for `phantom_leak_incidents_realtime`.",
         "properties": {
           "min_confidence": {
             "default": 0.5,
@@ -887,7 +854,6 @@
             "type": "number"
           }
         },
-        "title": "LeakIncidentsRealtimeParams",
         "type": "object"
       }
     },
@@ -911,7 +877,6 @@
             "type": "boolean"
           }
         },
-        "title": "ListWithExpiryParams",
         "type": "object"
       }
     },
@@ -942,7 +907,6 @@
         "required": [
           "name"
         ],
-        "title": "RemoveSecretParams",
         "type": "object"
       }
     },
@@ -966,7 +930,6 @@
             "type": "boolean"
           }
         },
-        "title": "RotateParams",
         "type": "object"
       }
     },
@@ -975,7 +938,6 @@
       "description": "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Deprecated compatibility parameters for the hard-denied promotion path.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -998,7 +960,6 @@
         "required": [
           "name"
         ],
-        "title": "RotatePromoteParams",
         "type": "object"
       }
     },
@@ -1007,7 +968,6 @@
       "description": "Provider-rotation compatibility boundary. Shipped builds hard-deny automated live provider issuance before credential access or network I/O because the provider contract does not yet preserve a durable value-free recovery handle and verified abort path for local persistence failure. Unit-test mock providers are not production capability evidence. Current calls return a value-blind hard denial without consuming an approval or opening the vault. The confirm and approval fields are reserved for a future effectful, compensated implementation.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_rotate_provider`.\n\nCompatibility parameters for the shipped hard-denial boundary. Automated\nlive provider issuance is disabled before credential or network access until\na durable value-free recovery handle and verified abort path exist. No\nsecret value is accepted or returned.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1038,7 +998,6 @@
         "required": [
           "name"
         ],
-        "title": "RotateProviderParams",
         "type": "object"
       }
     },
@@ -1047,7 +1006,6 @@
       "description": "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Deprecated compatibility parameters for the hard-denied shadow path.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1080,7 +1038,6 @@
         "required": [
           "name"
         ],
-        "title": "RotateWithCandidateParams",
         "type": "object"
       }
     },
@@ -1113,7 +1070,6 @@
         "required": [
           "days_ttl"
         ],
-        "title": "RotateWithExpiryParams",
         "type": "object"
       }
     },
@@ -1122,7 +1078,6 @@
       "description": "Return the next scheduled rotation time for a named secret. Reads the secret's effective RotationSchedule (per-secret override or global policy) and computes when rotation is next due. Returns: { name, strategy, next_rotation_unix (u64 or null), next_rotation_iso (ISO-8601 or null), last_rotated_unix (u64 or null), last_rotated_iso (ISO-8601 or null), overdue (bool) }. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_rotation_schedule_next`.\n\nReturns the next scheduled rotation time (ISO-8601 + Unix epoch) for a\nnamed secret, based on its effective `RotationSchedule`.  Read-only; no\nconfirm required.",
         "properties": {
           "name": {
             "description": "Name of the secret to query (e.g. `OPENAI_API_KEY`).",
@@ -1132,7 +1087,6 @@
         "required": [
           "name"
         ],
-        "title": "RotationScheduleNextParams",
         "type": "object"
       }
     },
@@ -1150,7 +1104,6 @@
             "type": "integer"
           }
         },
-        "title": "RotationDueParams",
         "type": "object"
       }
     },
@@ -1159,7 +1112,6 @@
       "description": "DEPRECATED compatibility name: remap the local phm_ placeholder for one already-protected secret. This does not rotate or validate the provider credential, does not change `rotated_at` / `expires_at` / TTL policy, does not clear leak incidents, and cannot sync an unchanged credential (`sync: true` is rejected). When audit logging is enabled, success records `secret.token_remapped`. MUTATING — atomically rewrites .env and requires `confirm: true` plus an out-of-band approval token. Secret VALUES are never returned or logged.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_secrets_auto_rotate`.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1187,7 +1139,6 @@
         "required": [
           "name"
         ],
-        "title": "AutoRotateParams",
         "type": "object"
       }
     },
@@ -1196,7 +1147,6 @@
       "description": "Query the local vault for secrets that are expired or expiring soon. Returns a JSON array where each entry has: name (string), days_remaining (i64 — negative means already expired), expires_at (Unix epoch u64), status (human-readable string). Use the `days` parameter (default 7) to tune the look-ahead window. Secrets with no TTL set are omitted — use phantom_secret_rotation_due to also surface those. Secret VALUES are never returned. Read-only; no confirm required.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_secrets_expiry_check`.",
         "properties": {
           "days": {
             "default": 7,
@@ -1206,7 +1156,6 @@
             "type": "integer"
           }
         },
-        "title": "ExpiryCheckParams",
         "type": "object"
       }
     },
@@ -1281,7 +1230,6 @@
             ]
           }
         },
-        "title": "SetupWorkspaceParams",
         "type": "object"
       }
     },
@@ -1316,7 +1264,6 @@
             ]
           }
         },
-        "title": "SyncParams",
         "type": "object"
       }
     },
@@ -1347,7 +1294,6 @@
         "required": [
           "name"
         ],
-        "title": "TeamCreateParams",
         "type": "object"
       }
     },
@@ -1397,7 +1343,6 @@
           "team_id",
           "github_login"
         ],
-        "title": "TeamInviteParams",
         "type": "object"
       }
     },
@@ -1429,7 +1374,6 @@
         "required": [
           "team_id"
         ],
-        "title": "TeamIdParams",
         "type": "object"
       }
     },
@@ -1439,7 +1383,6 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Dual approval gate for tools whose only inputs are authority controls.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1455,7 +1398,6 @@
             "type": "boolean"
           }
         },
-        "title": "ApprovalParams",
         "type": "object"
       }
     },
@@ -1487,7 +1429,6 @@
         "required": [
           "team_id"
         ],
-        "title": "TeamIdParams",
         "type": "object"
       }
     },
@@ -1518,7 +1459,6 @@
         "required": [
           "team_id"
         ],
-        "title": "TeamVaultParams",
         "type": "object"
       }
     },
@@ -1549,7 +1489,6 @@
         "required": [
           "team_id"
         ],
-        "title": "TeamVaultParams",
         "type": "object"
       }
     },
@@ -1573,7 +1512,6 @@
             "type": "boolean"
           }
         },
-        "title": "UnwrapParams",
         "type": "object"
       }
     },
@@ -1605,7 +1543,6 @@
             "type": "integer"
           }
         },
-        "title": "ValidateAllParams",
         "type": "object"
       }
     },
@@ -1623,7 +1560,6 @@
         "required": [
           "name"
         ],
-        "title": "ValidateSecretParams",
         "type": "object"
       }
     },
@@ -1632,7 +1568,6 @@
       "description": "Retrieve the history of past automated validation runs. Each entry contains: started_at (Unix epoch), finished_at, total, pass, fail, unreachable, not_checked, and an optional error string. Use `limit` (default 20, max 100) to control how many recent entries are returned. Secret VALUES are never returned. Read-only; no confirm required.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_validation_history`.",
         "properties": {
           "limit": {
             "default": 20,
@@ -1642,7 +1577,6 @@
             "type": "integer"
           }
         },
-        "title": "ValidationHistoryParams",
         "type": "object"
       }
     },
@@ -1652,7 +1586,6 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Parameters for `phantom_validation_schedule` (get/set schedule).",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1676,7 +1609,6 @@
             ]
           }
         },
-        "title": "ValidationScheduleParams",
         "type": "object"
       }
     },
@@ -1694,7 +1626,6 @@
         "required": [
           "key"
         ],
-        "title": "WhyParams",
         "type": "object"
       }
     },
@@ -1734,7 +1665,6 @@
             "type": "array"
           }
         },
-        "title": "WrapParams",
         "type": "object"
       }
     }

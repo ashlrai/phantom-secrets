@@ -1,6 +1,6 @@
 // ── Error helpers ───────────────────────────────────────────────────
 
-use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
+use rmcp::{model::CallToolResult, model::ContentBlock, ErrorData as McpError};
 
 const MCP_EFFECTS_ENV: &str = "PHANTOM_MCP_EFFECTS";
 const TRUSTED_TERMINAL_MODE: &str = "trusted-terminal";
@@ -126,7 +126,9 @@ fn extract_token(combined: &str) -> String {
 }
 
 pub fn text_result(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::success(vec![Content::text(msg.into())]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(
+        msg.into(),
+    )]))
 }
 
 #[cfg(test)]
