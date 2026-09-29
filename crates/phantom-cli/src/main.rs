@@ -982,7 +982,7 @@ fn run() -> anyhow::Result<()> {
             AgentAction::Doctor => commands::agent::doctor(),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
-        Commands::Exec { cmd } => commands::exec::run(&cmd, None),
+        Commands::Exec { cmd } => commands::exec::run(&cmd, None, cli.quiet),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
         Commands::Check { staged, runtime } => commands::check::run(staged, runtime),
