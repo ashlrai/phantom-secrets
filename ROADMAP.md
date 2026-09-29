@@ -3,13 +3,14 @@
 <!-- phantom-release-version: 0.7.9 -->
 
 This roadmap describes ordered engineering gates, not delivery dates or shipped
-capabilities. This status snapshot was verified on 2026-09-05. The immutable
-`v0.7.8` GitHub release binds 19 assets to source commit
-`f065b13462f9eaf27e0443f8911f021575b7c409`; all six native rows and GitHub
-provenance and SPDX attestations passed in workflow 33952398697. Homebrew
-publishes the same reviewed `v0.7.8`. Both npm `0.7.4` wrappers remain public only under the
+capabilities. This status snapshot was verified on 2026-09-29. The immutable
+`v0.7.9` GitHub release binds 19 assets to source commit
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`; all six native rows and GitHub
+provenance and SPDX attestations passed in workflow 34153902556. Homebrew
+still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
+Both npm `0.7.4` wrappers remain public only under the
 failed `release-candidate` track, while npm `latest` remains `0.6.0`.
-No `0.7.8` npm, crates.io, or MCP Registry publication, hosted-service
+No `0.7.9` npm, crates.io, or MCP Registry publication, hosted-service
 commissioning, provider activation, certification, or customer acceptance is
 represented by the GitHub release receipt.
 
@@ -24,7 +25,7 @@ represented by the GitHub release receipt.
 
 ## Current milestones
 
-### 0.7.9 agent onboarding and Hub status compatibility — staged
+### 0.7.9 agent onboarding and Hub status compatibility — released
 
 - Register Claude project MCP configuration in `.mcp.json` while preserving
   unrelated local permission settings, and diagnose legacy-only registration.
@@ -33,9 +34,9 @@ represented by the GitHub release receipt.
 - Verify the installed CLI and MCP onboarding path in the cross-platform CI
   matrix before publishing a new immutable release identity.
 
-This source candidate has no `v0.7.9` tag, GitHub Release, package, registry,
-or deployment receipt yet. The `v0.7.8` evidence above remains the current
-public release record.
+Released as the immutable `v0.7.9` GitHub release (tag-bound workflow
+34153902556). No npm, crates.io, MCP Registry, or deployment receipt exists for
+`0.7.9`, and the Homebrew formula has not yet been bumped from `v0.7.8`.
 
 ### 1. Close the 0.7.8 fix-forward source candidate — released
 

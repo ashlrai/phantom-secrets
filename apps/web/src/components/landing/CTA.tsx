@@ -17,7 +17,7 @@ export function CTA() {
             href="https://github.com/ashlrai/phantom-secrets"
           >
             <Github aria-hidden="true" />
-            Star or fork on GitHub
+            View on GitHub
           </a>
         </div>
         <p>

@@ -331,6 +331,17 @@ fn protected_connection_string_is_denied_before_vault_decryption() {
         .output()
         .unwrap();
     assert_success(&init, "phantom init connection string");
+    let init_stdout = String::from_utf8_lossy(&init.stdout);
+    assert!(
+        init_stdout.contains("is a connection string") && init_stdout.contains("will not start"),
+        "init must warn that exec is blocked by a protected connection string: {init_stdout}"
+    );
+    let config = fs::read_to_string(project.path().join(".phantom.toml")).unwrap();
+    assert_eq!(
+        config.matches("secret_key = \"DATABASE_URL\"").count(),
+        1,
+        "init must not add a duplicate service for DATABASE_URL: {config}"
+    );
 
     let output = phantom_command(project.path(), home.path())
         .args(["exec", "--"])
@@ -346,6 +357,13 @@ fn protected_connection_string_is_denied_before_vault_decryption() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Refusing to expose connection-string secret(s)"));
     assert!(!stderr.contains("decrypt"));
+    assert!(
+        stderr.contains("child process: DATABASE_URL. "),
+        "each blocked key is named exactly once: {stderr}"
+    );
+    assert!(stderr.contains("Hint: connection strings are vaulted but not proxied yet"));
+    assert!(!stderr.contains("set in this shell's environment"));
+    assert!(!stderr.contains("example.invalid"));
 }
 
 #[test]
@@ -367,8 +385,10 @@ fn ambient_connection_string_is_denied_in_direct_mode() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("Refusing to expose connection-string secret(s)"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Refusing to expose connection-string secret(s)"));
+    assert!(stderr.contains("DATABASE_URL is set in this shell's environment; unset it"));
+    assert!(!stderr.contains("ambient.invalid"));
     assert!(!marker.exists());
 }
 
