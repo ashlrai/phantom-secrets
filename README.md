@@ -56,6 +56,7 @@ Phantom.
 | See the delegation boundary with no secret or setup | Run `node examples/first-five-minutes/run.mjs`, then read the [first-five-minutes walkthrough](examples/first-five-minutes/README.md) | A deterministic, read-only example contract; not vault, proxy, provider, or deployment acceptance. |
 | Protect a real local project | Follow [Quick Start](#quick-start) with the reviewed `v0.7.9` GitHub release | Local initialization and diagnostics on your machine. |
 | Connect an AI coding client | Complete the [first MCP task](#first-mcp-task-verify-the-boundary) | Value-blind capability, status, and repository checks; no provider action. |
+| Copy a tested client or CI setup | Run the [Claude Code](examples/claude-code/README.md), [Cursor](examples/cursor/README.md), or [GitHub Actions](examples/github-actions/README.md) recipe (`node examples/<name>/run.mjs`) | Each recipe runs your `phantom` binaries (from `PATH` or `--phantom <path>`) in a temporary HOME with a fake, non-provider key and is exercised in CI. |
 | Define a bounded task for an agent | Use the [safe delegation quickstart](docs/delegation-quickstart.md) | A reviewable task contract with explicit authority and acceptance boundaries. |
 | Evaluate a team rollout | Use the [enterprise adoption guide](docs/enterprise-adoption.md) | A controlled evaluation plan; not a claim of commissioned cloud or enterprise service. |
 | Audit the trust model first | Read the [security model](SECURITY.md) and [threat model](THREAT_MODEL.md) | Documented controls, assumptions, and residual risks. |

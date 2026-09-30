@@ -43,7 +43,7 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --locked --no-fail-fast --verbose
       - name: Verify examples
-        run: node --test scripts/examples-first-five-minutes.test.mjs scripts/agent-first-five-minutes.test.mjs
+        run: node --test scripts/examples-first-five-minutes.test.mjs scripts/agent-first-five-minutes.test.mjs scripts/examples-client-recipes.test.mjs
       - name: Verify installed CLI and MCP onboarding
         shell: bash
         run: |
