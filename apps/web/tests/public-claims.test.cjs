@@ -1029,6 +1029,15 @@ test("quickstart labels machine-dependent output as illustrative", () => {
   assert.match(quickstart, /illustrative output/);
   assert.match(install, /phantom agent doctor/);
   assert.match(install, /phantom exec --/);
+  const claude = install.match(/id: "claude",[\s\S]*?scope: "project"/);
+  assert.ok(claude, "Claude Code must retain its project-scoped setup option");
+  assert.match(claude[0], /config: "\.mcp\.json"/);
+  assert.doesNotMatch(claude[0], /config: "\.claude\/settings\.local\.json"/);
+  assert.match(
+    readRepo("crates/phantom-cli/src/commands/setup.rs"),
+    /Client::ClaudeCode => "\.mcp\.json \(project; approve this server in Claude Code\)"/,
+    "the landing label must match the native setup command's MCP registration path",
+  );
   assert.doesNotMatch(quickstart, /127\.0\.0\.1:8484/);
 });
 
