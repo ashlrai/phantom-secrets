@@ -19,7 +19,7 @@ const CLIENTS = [
     preview: "phantom setup --client claude --print",
     command: "phantom setup --client claude",
     launch: "phantom exec -- claude",
-    config: ".claude/settings.local.json",
+    config: ".mcp.json",
     scope: "project",
   },
   {

@@ -2,6 +2,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const ts = require("typescript");
+const markdownLoader = require("../scripts/public-doc-markdown-loader.cjs");
 
 const webRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(webRoot, "..", "..");
@@ -67,11 +69,90 @@ test("unknown and traversal-shaped slugs cannot select a documentation file", ()
   const source = read("src/lib/public-docs.ts");
   assert.match(source, /getPublicDocConfig\(slug\)/);
   assert.match(source, /if \(!entry\) return undefined/);
-  assert.match(source, /readFileSync\(path\.join\(DOCS_ROOT, entry\.file\)/);
-  assert.doesNotMatch(source, /readFileSync\([^\n]*slug/);
+  assert.match(source, /markdown: MARKDOWN_BY_FILE\[entry\.file\]/);
+  assert.doesNotMatch(source, /readFileSync|process\.cwd\(|node:fs/);
 
   const renderer = read("src/components/docs/MarkdownDocument.tsx");
   assert.match(renderer, /!href\.startsWith\("\/\/"\)/);
+});
+
+function textModule(file, contents) {
+  const dependencies = [];
+  const javascript = markdownLoader.call({
+    resourcePath: path.join(repoRoot, "docs", file),
+    addDependency: (dependency) => dependencies.push(dependency),
+  }, contents);
+  assert.deepEqual(dependencies, [path.join(webRoot, "docs-catalog.json")]);
+  assert.match(javascript, /^export default /);
+  // Parse the actual emitted JS string literal; no source text is executed.
+  return JSON.parse(javascript.slice("export default ".length, -1));
+}
+
+function loadDocs(entries = catalog) {
+  const file = path.join(webRoot, "src/lib/public-docs.ts");
+  const output = ts.transpileModule(fs.readFileSync(file, "utf8"), {
+    compilerOptions: {
+      esModuleInterop: true,
+      module: ts.ModuleKind.CommonJS,
+      resolveJsonModule: true,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: file,
+  }).outputText;
+  const loadedFiles = [];
+  const module = { exports: {} };
+  const localRequire = (specifier) => {
+    if (specifier === "server-only") return {};
+    if (specifier === "../../docs-catalog.json") return entries;
+    if (specifier.endsWith(".md")) {
+      const absolute = path.resolve(path.dirname(file), specifier);
+      loadedFiles.push(absolute);
+      return textModule(path.basename(absolute), fs.readFileSync(absolute, "utf8"));
+    }
+    throw new Error(`Runtime dependency must not be requested: ${specifier}`);
+  };
+  new Function("exports", "require", "module", output)(module.exports, localRequire, module);
+  return { docs: module.exports, loadedFiles };
+}
+
+test("bundled documentation preserves every authoritative Markdown byte without runtime filesystem access", () => {
+  const { docs, loadedFiles } = loadDocs();
+  assert.deepEqual(loadedFiles.sort(), catalog.map(({ file }) => path.join(repoRoot, "docs", file)).sort());
+  for (const entry of catalog) {
+    const doc = docs.getPublicDoc(entry.slug);
+    assert.equal(doc.markdown, fs.readFileSync(path.join(repoRoot, "docs", entry.file), "utf8"));
+    assert.equal(doc.sourceUrl, `https://github.com/ashlrai/phantom-secrets/blob/main/docs/${entry.file}`);
+  }
+  const initialLoads = loadedFiles.length;
+  for (const slug of ["", "missing", "../SECURITY", "getting-started.md", "..%2fSECURITY"]) {
+    assert.equal(docs.getPublicDoc(slug), undefined);
+  }
+  assert.equal(loadedFiles.length, initialLoads, "unknown slugs must not request another text module");
+});
+
+test("the text loader escapes arbitrary Markdown and rejects files outside its catalog", () => {
+  const source = 'quotes " backslash \\ newline\n</script> ${notCode} `code` \u2028\u2029 emoji 🧭';
+  assert.equal(textModule(catalog[0].file, source), source);
+  assert.equal(markdownLoader.raw, true);
+  assert.equal(textModule(catalog[0].file, Buffer.from(`\ufeff${source}`, "utf8")), `\ufeff${source}`);
+  for (const resourcePath of [
+    path.join(repoRoot, "SECURITY.md"),
+    path.join(repoRoot, "docs", "README.md"),
+    path.join(webRoot, catalog[0].file),
+  ]) {
+    assert.throws(() => markdownLoader.call({ resourcePath, addDependency() {} }, source), /outside the public documentation catalog/);
+  }
+});
+
+test("embedding fails closed when the catalog is empty, missing, duplicated or adds an unimported guide", () => {
+  for (const entries of [
+    [],
+    catalog.slice(1),
+    [...catalog, catalog[0]],
+    [...catalog, { ...catalog[0], slug: "new-guide", file: "new-guide.md" }],
+  ]) {
+    assert.throws(() => loadDocs(entries), /catalog|documentation catalog/);
+  }
 });
 
 test("the App Router surface is static, canonical, and fails closed", () => {

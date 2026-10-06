@@ -478,6 +478,35 @@ test("public Cloud guidance does not promise machine-portable recovery", () => {
   }
 });
 
+test("current distribution copy separates registry publication from native acceptance", () => {
+  const files = [
+    "docs/getting-started.md",
+    "docs/public-fact-sheet.md",
+    "docs/platform-support.md",
+    "docs/troubleshooting.md",
+    "docs/llms.txt",
+    "docs/llms-full.txt",
+    "apps/web/public/llms.txt",
+    "apps/web/public/llms-full.txt",
+  ];
+  for (const file of files) {
+    const source = readRepo(file);
+    assert.match(source, /2026-10-06/, file);
+    assert.match(source, /phantom-secrets@0\.7\.9/, file);
+    assert.match(source, /phantom-secrets-mcp@0\.7\.9/, file);
+    assert.match(source, /io\.github\.ashlrai\/phantom-secrets-mcp` version `0\.7\.9` as active/, file);
+    assert.match(source, /publication records do not establish six-platform npm-wrapper native\s+acceptance or commission Phantom Cloud/, file);
+    assert.match(source, /earlier `0\.7\.4` npm candidate\s+failed/, file);
+    assert.doesNotMatch(source, /npm `latest` remains|No MCP Registry `0\.7\.9` record|MCP Registry does not publish `0\.7\.9`/, file);
+  }
+});
+
+test("Claude setup destination is current in machine-readable guidance", () => {
+  assert.match(readRepo("docs/llms.txt"), /Claude Code: `phantom setup --client claude` \(writes \.mcp\.json\)/);
+  assert.match(readRepo("apps/web/public/llms.txt"), /\| Claude Code \| `phantom setup --client claude` \| `\.mcp\.json` \(project\) \|/);
+  assert.match(readRepo("apps/web/public/llms-full.txt"), /MCP registration in \.mcp\.json\.\s+Preserves unrelated permissions in \.claude\/settings\.local\.json/);
+});
+
 test("current-release guidance routes installs through verified GitHub or Homebrew artifacts", () => {
   const canonicalReleaseGuides = {
     "README.md": repositoryGuidanceClaims["README.md"],
@@ -739,8 +768,10 @@ test("public release references bind v0.7.9 to its immutable publication receipt
     assert.match(source, /19[-\s]assets/i);
     assert.match(source, /all six native|six-row native/i);
     assert.match(source, /attestations/i);
-    // Homebrew intentionally still names v0.7.8 until the tap is bumped.
-    assert.match(source, /Homebrew[^\n]*v0\.7\.8/i);
+    // The tap publication is separate from the retained Sep29 native receipt.
+    assert.match(source, /Homebrew[\s\S]{0,100}`v0\.7\.9`/i);
+    assert.match(source, /2026-10-06/);
+    assert.match(source, /(?:^|[\s(])https:\/\/github\.com\/ashlrai\/homebrew-phantom\/pull\/7(?=$|[\s)\]>]|[.,;!?](?=$|\s))/);
     assert.ok(source.includes(workflowUrl));
   }
 
@@ -1029,6 +1060,15 @@ test("quickstart labels machine-dependent output as illustrative", () => {
   assert.match(quickstart, /illustrative output/);
   assert.match(install, /phantom agent doctor/);
   assert.match(install, /phantom exec --/);
+  const claude = install.match(/id: "claude",[\s\S]*?scope: "project"/);
+  assert.ok(claude, "Claude Code must retain its project-scoped setup option");
+  assert.match(claude[0], /config: "\.mcp\.json"/);
+  assert.doesNotMatch(claude[0], /config: "\.claude\/settings\.local\.json"/);
+  assert.match(
+    readRepo("crates/phantom-cli/src/commands/setup.rs"),
+    /Client::ClaudeCode => "\.mcp\.json \(project; approve this server in Claude Code\)"/,
+    "the landing label must match the native setup command's MCP registration path",
+  );
   assert.doesNotMatch(quickstart, /127\.0\.0\.1:8484/);
 });
 
@@ -1077,6 +1117,9 @@ test("community health metadata preserves release and support boundaries", () =>
     readme,
     /Homebrew[\s\S]{0,100}(?:reviewed[\s\S]{0,30})?`v0\.7\.8`/i,
   );
+
+  assert.match(readme, /Homebrew \(macOS; reviewed v0\.7\.9 formula\)/);
+  assert.match(readme, /(?:^|[\s(])https:\/\/github\.com\/ashlrai\/homebrew-phantom\/pull\/7(?=$|[\s)\]>]|[.,;!?](?=$|\s))/);
 
   const roadmap = readRepo("ROADMAP.md");
   assert.match(roadmap, /ordered engineering gates, not delivery dates/i);

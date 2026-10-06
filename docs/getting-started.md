@@ -11,11 +11,9 @@ phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code with real secrets injected by proxy
 ```
 
-The Homebrew command above installs the independently verified formula, which
-is still at the previous `v0.7.8` release as of 2026-09-29 (a `v0.7.9` tap bump
-is pending). For the current `v0.7.9`, on Linux
-or Windows, or when you want to verify an exact archive directly, select the
-matching platform asset below.
+The Homebrew command above installs the reviewed `v0.7.9` formula as of
+2026-10-06. On Linux or Windows, or when you want to verify an exact archive
+directly, select the matching platform asset below.
 
 That's the local setup. Keep agent dotenv reads denied and launch supported API
 work through `phantom exec`; Phantom reduces credential exposure, but it does
@@ -41,7 +39,7 @@ For a detailed breakdown of assets protected, threat actors, mitigations, and kn
 
 ## Install
 
-### Homebrew (macOS; formula currently at v0.7.8)
+### Homebrew (macOS; reviewed v0.7.9 formula)
 
 ```bash
 brew tap ashlrai/phantom
@@ -50,10 +48,10 @@ brew install ashlrai/phantom/phantom
 ```
 
 The formula currently installs both `phantom` and `phantom-mcp` from the
-immutable [`v0.7.8` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8);
-it has not yet been bumped to the current `v0.7.9`. With the `v0.7.8` formula,
-`phantom setup --client claude` writes MCP registration to the legacy
-location; see the [Claude Code guide](./claude-code.md) for the manual step.
+immutable [`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
+As of 2026-10-06, the separately maintained Homebrew tap publishes `v0.7.9` after all four macOS/Linux native install and test jobs passed: https://github.com/ashlrai/homebrew-phantom/pull/7.
+After upgrading an older install, rerun `phantom setup --client claude`; see
+the [Claude Code guide](./claude-code.md) for MCP registration migration.
 Homebrew publication is independently tested and maintained from GitHub
 Releases; use a direct asset below when you want explicit archive verification.
 
@@ -88,11 +86,16 @@ git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-The full SHA above is the source commit resolved by `v0.7.9`. Do not treat an
-unpinned registry install as that release. In the exact 2026-09-29 registry snapshot, npm
-`latest` remains `0.6.0`; exact npm `0.7.4` wrappers exist only under the failed
-`release-candidate` track. No MCP Registry `0.7.9` record was found, and
-crates.io remains on `0.5.1`.
+The full SHA above is the source commit resolved by `v0.7.9`.
+
+As of 2026-10-06, the official npm `latest` endpoints resolve
+`phantom-secrets@0.7.9` and `phantom-secrets-mcp@0.7.9`. The MCP Registry lists
+`io.github.ashlrai/phantom-secrets-mcp` version `0.7.9` as active.
+These publication records do not establish six-platform npm-wrapper native
+acceptance or commission Phantom Cloud. The earlier `0.7.4` npm candidate
+failed its separate acceptance gate. The last verified crates.io snapshot
+(2026-09-29) remains `0.5.1`; use the exact GitHub assets for the native
+release path.
 
 ### Verify
 
@@ -103,7 +106,7 @@ phantom-mcp --version
 # phantom-mcp 0.7.9
 ```
 
-A Homebrew install prints `0.7.8` until the formula is bumped.
+A current Homebrew install prints `0.7.9` for both binaries.
 
 ---
 

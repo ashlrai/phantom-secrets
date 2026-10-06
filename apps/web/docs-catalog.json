@@ -4,14 +4,14 @@
     "file": "getting-started.md",
     "title": "Getting started",
     "description": "Install a reviewed Phantom release, protect one project, connect a supported coding client, and verify the local credential boundary.",
-    "modified": "2026-09-29"
+    "modified": "2026-10-06"
   },
   {
     "slug": "delegation-quickstart",
     "file": "delegation-quickstart.md",
     "title": "Safe delegation quickstart",
     "description": "Delegate a bounded coding task through Phantom without putting real provider credentials in the managed agent context.",
-    "modified": "2026-09-29"
+    "modified": "2026-10-06"
   },
   {
     "slug": "protect-api-keys-from-ai-coding-agents",
@@ -32,14 +32,14 @@
     "file": "public-fact-sheet.md",
     "title": "Phantom public fact sheet",
     "description": "Versioned, source-linked facts for reviewers, directories, journalists, researchers, and AI systems describing Phantom's shipped capabilities and explicit limits.",
-    "modified": "2026-09-29"
+    "modified": "2026-10-06"
   },
   {
     "slug": "claude-code",
     "file": "claude-code.md",
     "title": "Phantom with Claude Code",
     "description": "Keep managed API keys out of Claude Code context and run supported credentialed HTTP workflows through Phantom's local proxy boundary.",
-    "modified": "2026-09-29"
+    "modified": "2026-10-06"
   },
   {
     "slug": "cursor",
@@ -67,14 +67,14 @@
     "file": "platform-support.md",
     "title": "Platform support",
     "description": "Review Phantom's explicit macOS, Linux, and Windows build, installer, and native-acceptance boundaries.",
-    "modified": "2026-09-29"
+    "modified": "2026-10-06"
   },
   {
     "slug": "troubleshooting",
     "file": "troubleshooting.md",
     "title": "Troubleshooting",
     "description": "Diagnose Phantom installation, vault, proxy, client-integration, recovery, and platform-specific failures.",
-    "modified": "2026-09-29"
+    "modified": "2026-10-06"
   },
   {
     "slug": "architecture",
