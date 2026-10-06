@@ -771,7 +771,7 @@ test("public release references bind v0.7.9 to its immutable publication receipt
     // The tap publication is separate from the retained Sep29 native receipt.
     assert.match(source, /Homebrew[\s\S]{0,100}`v0\.7\.9`/i);
     assert.match(source, /2026-10-06/);
-    assert.ok(source.includes("https://github.com/ashlrai/homebrew-phantom/pull/7"));
+    assert.match(source, /(?:^|[\s(])https:\/\/github\.com\/ashlrai\/homebrew-phantom\/pull\/7(?=$|[\s)\]>]|[.,;!?](?=$|\s))/);
     assert.ok(source.includes(workflowUrl));
   }
 
@@ -1119,7 +1119,7 @@ test("community health metadata preserves release and support boundaries", () =>
   );
 
   assert.match(readme, /Homebrew \(macOS; reviewed v0\.7\.9 formula\)/);
-  assert.ok(readme.includes("https://github.com/ashlrai/homebrew-phantom/pull/7"));
+  assert.match(readme, /(?:^|[\s(])https:\/\/github\.com\/ashlrai\/homebrew-phantom\/pull\/7(?=$|[\s)\]>]|[.,;!?](?=$|\s))/);
 
   const roadmap = readRepo("ROADMAP.md");
   assert.match(roadmap, /ordered engineering gates, not delivery dates/i);
