@@ -7,7 +7,7 @@ GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
 Release evidence was verified on 2026-09-29. The immutable GitHub `v0.7.9` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
-Install: use the exact checksum-verified `v0.7.9` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
+Install: use the exact checksum-verified `v0.7.9` GitHub assets below on macOS, Linux, and Windows. As of 2026-10-06, the separately maintained Homebrew tap publishes `v0.7.9` after all four macOS/Linux native install and test jobs passed: https://github.com/ashlrai/homebrew-phantom/pull/7.
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`
 
 
@@ -36,7 +36,7 @@ https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/
 
 ## Install
 
-### Homebrew (macOS, formula still at reviewed v0.7.8)
+### Homebrew (macOS, reviewed v0.7.9 formula)
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom

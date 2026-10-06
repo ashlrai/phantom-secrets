@@ -35,7 +35,7 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-macOS via Homebrew; installs `phantom` and `phantom-mcp` (reviewed `v0.7.8`). Linux and Windows:
+macOS via Homebrew; installs `phantom` and `phantom-mcp` (reviewed `v0.7.9`). Linux and Windows:
 use the matching [release asset](#exact-v079-github-assets). Then run
 `phantom init` in your project and `phantom setup --client claude` (or
 `cursor`, `windsurf`, `codex`). Full walkthrough: [Quick Start](#quick-start).
@@ -89,8 +89,7 @@ evidence behind those boundaries.
 ## Quick Start
 
 Install both binaries from the reviewed [`v0.7.9` GitHub release](#installation).
-On macOS, the Homebrew formula is the shortest path; it currently installs the
-previous reviewed `v0.7.8` binaries until the tap is bumped to `v0.7.9`:
+On macOS, the Homebrew formula installs the reviewed `v0.7.9` binaries:
 
 ```bash
 $ brew tap ashlrai/phantom
@@ -485,7 +484,7 @@ fails closed before vendor execution. No single-provider exception exists.
 
 ## Installation
 
-### Homebrew (macOS; formula currently at v0.7.8)
+### Homebrew (macOS; reviewed v0.7.9 formula)
 
 Homebrew 6 requires explicit formula trust for third-party taps:
 
@@ -496,11 +495,10 @@ $ brew install ashlrai/phantom/phantom
 ```
 
 This formula installs both `phantom` and `phantom-mcp` from the immutable
-[`v0.7.8` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8).
-It has not yet been bumped to `v0.7.9`. Until it is, a Homebrew install writes
-Claude Code MCP registration to the legacy location; see the
-[Claude Code guide](docs/claude-code.md) for the manual `.mcp.json` step, or use
-the `v0.7.9` assets below.
+[`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
+As of 2026-10-06, the separately maintained Homebrew tap publishes `v0.7.9` after all four macOS/Linux native install and test jobs passed: https://github.com/ashlrai/homebrew-phantom/pull/7. The npm CLI and MCP `latest` releases are `0.7.9`, and the MCP Registry entry is active at `0.7.9`; see the [public fact sheet](docs/public-fact-sheet.md) for the separate publication evidence.
+After upgrading an older install, rerun `phantom setup --client claude` to
+migrate its MCP registration; see the [Claude Code guide](docs/claude-code.md).
 
 ### Exact v0.7.9 GitHub assets
 
@@ -537,9 +535,11 @@ Do not treat unpinned package-manager commands as `v0.7.9`. In the exact
 exist only under `release-candidate` after failing cross-platform acceptance.
 No npm `0.7.9`, crates.io `0.7.9`, or MCP Registry `0.7.9` publication is
 represented by this GitHub release receipt. Homebrew is separately published
-and verified through its tap, and currently remains at `v0.7.8`.
+and verified through its tap. In that dated snapshot, its formula was `v0.7.8`.
 
 ### Release-state snapshot
+
+The dated snapshot below is historical. As of 2026-10-06, the separately maintained Homebrew tap publishes `v0.7.9` after all four macOS/Linux native install and test jobs passed: https://github.com/ashlrai/homebrew-phantom/pull/7. The npm CLI and MCP `latest` releases are `0.7.9`, and the MCP Registry entry is active at `0.7.9`; see the [public fact sheet](docs/public-fact-sheet.md) for the separate publication evidence.
 
 > [!IMPORTANT]
 > **Release-state snapshot (verified 2026-09-29):** the current release is the

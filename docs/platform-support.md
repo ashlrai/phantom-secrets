@@ -171,8 +171,8 @@ acceptance and never place provider client secrets on the command line.
 - `scripts/install.sh` supports macOS and GNU Linux targets. Native Windows uses
   `scripts/install.ps1`; both scripts verify bounded HTTPS downloads, strict
   sidecar checksums, archive shape, and binary identity before promotion.
-- The Homebrew formula still publishes the previous reviewed `v0.7.8` as a separately managed
-  distribution surface. The repository's release workflow does not
+- The Homebrew formula publishes reviewed `v0.7.9` as of 2026-10-06 after
+  [all four macOS/Linux native install/test jobs passed](https://github.com/ashlrai/homebrew-phantom/pull/7), as a separately managed distribution surface. The repository's release workflow does not
   automatically update a tap.
 
 ## Configured and additional native acceptance

@@ -30,8 +30,10 @@ checksums, SPDX SBOMs, and an aggregate checksum manifest after the release
 acceptance matrix passed. The exact execution receipt is
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
-The last verified Homebrew snapshot (2026-09-29) publishes the previous
+The historical Homebrew snapshot (2026-09-29) publishes the previous
 `v0.7.8`; a `v0.7.9` tap bump is independently maintained.
+
+As of 2026-10-06, the separately maintained Homebrew tap publishes `v0.7.9` after all four macOS/Linux native install and test jobs passed: https://github.com/ashlrai/homebrew-phantom/pull/7.
 
 As of 2026-10-06, the official npm `latest` endpoints resolve
 `phantom-secrets@0.7.9` and `phantom-secrets-mcp@0.7.9`. The MCP Registry lists

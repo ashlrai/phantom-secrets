@@ -11,7 +11,7 @@
     "file": "delegation-quickstart.md",
     "title": "Safe delegation quickstart",
     "description": "Delegate a bounded coding task through Phantom without putting real provider credentials in the managed agent context.",
-    "modified": "2026-09-29"
+    "modified": "2026-10-06"
   },
   {
     "slug": "protect-api-keys-from-ai-coding-agents",
@@ -39,7 +39,7 @@
     "file": "claude-code.md",
     "title": "Phantom with Claude Code",
     "description": "Keep managed API keys out of Claude Code context and run supported credentialed HTTP workflows through Phantom's local proxy boundary.",
-    "modified": "2026-09-29"
+    "modified": "2026-10-06"
   },
   {
     "slug": "cursor",

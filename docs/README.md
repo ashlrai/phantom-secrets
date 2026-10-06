@@ -15,6 +15,8 @@ GitHub receipt alone does not establish `0.7.9` publication on npm, crates.io,
 or MCP Registry, or any hosted-service commissioning, provider activation,
 certification, or customer acceptance.
 
+As of 2026-10-06, the separately maintained Homebrew tap publishes `v0.7.9` after all four macOS/Linux native install and test jobs passed: https://github.com/ashlrai/homebrew-phantom/pull/7. The npm CLI and MCP `latest` releases are `0.7.9`, and the MCP Registry entry is active at `0.7.9`; see the [public fact sheet](public-fact-sheet.md) for the separate publication evidence.
+
 ## Start here
 
 | Goal | Guide |

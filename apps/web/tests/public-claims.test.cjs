@@ -768,8 +768,10 @@ test("public release references bind v0.7.9 to its immutable publication receipt
     assert.match(source, /19[-\s]assets/i);
     assert.match(source, /all six native|six-row native/i);
     assert.match(source, /attestations/i);
-    // Homebrew intentionally still names v0.7.8 until the tap is bumped.
-    assert.match(source, /Homebrew[^\n]*v0\.7\.8/i);
+    // The tap publication is separate from the retained Sep29 native receipt.
+    assert.match(source, /Homebrew[\s\S]{0,100}`v0\.7\.9`/i);
+    assert.match(source, /2026-10-06/);
+    assert.ok(source.includes("https://github.com/ashlrai/homebrew-phantom/pull/7"));
     assert.ok(source.includes(workflowUrl));
   }
 
@@ -1115,6 +1117,9 @@ test("community health metadata preserves release and support boundaries", () =>
     readme,
     /Homebrew[\s\S]{0,100}(?:reviewed[\s\S]{0,30})?`v0\.7\.8`/i,
   );
+
+  assert.match(readme, /Homebrew \(macOS; reviewed v0\.7\.9 formula\)/);
+  assert.ok(readme.includes("https://github.com/ashlrai/homebrew-phantom/pull/7"));
 
   const roadmap = readRepo("ROADMAP.md");
   assert.match(roadmap, /ordered engineering gates, not delivery dates/i);

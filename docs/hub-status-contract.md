@@ -7,8 +7,7 @@ Phantom configuration without opening its vault or managed dotenv file:
 phantom status --json
 ```
 
-This contract ships in the `v0.7.9` release. The earlier `v0.7.8` binary
-(still installed by the Homebrew formula until it is bumped) accepted `--json`
+This contract ships in the `v0.7.9` release. The earlier `v0.7.8` binary accepted `--json`
 but returned human-readable status;
 do not infer a configured project from that text. Consumers must reject missing
 or unsupported schema versions and treat parse failures as unknown status.
