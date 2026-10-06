@@ -17,20 +17,27 @@ documentation tranche. The immutable `v0.7.9` GitHub release resolves to
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`; its 19 assets were verified after all six
 native-release rows and release attestations passed in
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556). That
-does not validate the npm wrapper installation path. In the exact 2026-09-29
-registry snapshot, the `0.7.4` candidate failed on all six targets, npm `latest` remains `0.6.0`,
-and no exact npm `0.7.9` acceptance receipt is claimed.
+does not validate the npm wrapper installation path.
+
+As of 2026-10-06, the official npm `latest` endpoints resolve
+`phantom-secrets@0.7.9` and `phantom-secrets-mcp@0.7.9`. The MCP Registry lists
+`io.github.ashlrai/phantom-secrets-mcp` version `0.7.9` as active.
+These publication records do not establish six-platform npm-wrapper native
+acceptance or commission Phantom Cloud. The earlier `0.7.4` npm candidate
+failed its separate acceptance gate. The last verified crates.io snapshot
+(2026-09-29) remains `0.5.1`; use the exact GitHub assets for the native
+release path.
 
 ## Current matrix
 
 | Target | Release build host and mode | GitHub release workflow | Primary npm wrapper | Shell installer | Configured native acceptance / current evidence |
 |---|---:|---:|---:|---:|---:|
-| macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build | Archive + SBOM published and attested | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `macos-15` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
-| macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host | Archive + SBOM published and attested | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `macos-15-intel` X64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
-| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04 | Archive + SBOM published and attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `ubuntu-22.04-arm` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
-| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04 | Archive + SBOM published and attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `ubuntu-22.04` X64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
-| Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest` | ZIP + SBOM published and attested | Mapped | Mapped by `install.ps1` | `v0.7.9` release-native acceptance passed on `windows-latest` X64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
-| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm` | ZIP + SBOM published and attested | Mapped | Mapped by `install.ps1` | `v0.7.9` release-native acceptance passed on `windows-11-vs2026-arm` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
+| macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build | Archive + SBOM published and attested | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `macos-15` ARM64; npm `0.7.4` acceptance failed; no per-target npm `0.7.9` native acceptance receipt claimed here |
+| macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host | Archive + SBOM published and attested | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `macos-15-intel` X64; npm `0.7.4` acceptance failed; no per-target npm `0.7.9` native acceptance receipt claimed here |
+| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04 | Archive + SBOM published and attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `ubuntu-22.04-arm` ARM64; npm `0.7.4` acceptance failed; no per-target npm `0.7.9` native acceptance receipt claimed here |
+| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04 | Archive + SBOM published and attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `ubuntu-22.04` X64; npm `0.7.4` acceptance failed; no per-target npm `0.7.9` native acceptance receipt claimed here |
+| Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest` | ZIP + SBOM published and attested | Mapped | Mapped by `install.ps1` | `v0.7.9` release-native acceptance passed on `windows-latest` X64; npm `0.7.4` acceptance failed; no per-target npm `0.7.9` native acceptance receipt claimed here |
+| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm` | ZIP + SBOM published and attested | Mapped | Mapped by `install.ps1` | `v0.7.9` release-native acceptance passed on `windows-11-vs2026-arm` ARM64; npm `0.7.4` acceptance failed; no per-target npm `0.7.9` native acceptance receipt claimed here |
 
 The current workflow defines six target archives, each containing `phantom`
 and `phantom-mcp`: four Unix `.tar.gz` files and two Windows `.zip` files. Both
@@ -40,7 +47,7 @@ the exact tagged five-file npm tarballs from fresh caches on these same six
 native host classes before npm publication, then to repeat acceptance against
 the integrity-pinned public `release-candidate` packages before either `latest`
 tag changes. A workflow definition is not a receipt; retain all six successful
-jobs for each mode. No exact npm `0.7.9` receipt is claimed here.
+jobs for each mode. No six-target npm `0.7.9` native acceptance receipt is claimed here.
 The `native-acceptance` matrix is configured to download each exact build
 artifact on its matching runner, reject extra or unsafe archive members, verify
 archive integrity through extraction, assert the runner OS and architecture,
@@ -62,7 +69,7 @@ native matrix, completed release attestations, and created the immutable
 retain [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556)
 as the exact execution receipt.
 That receipt does not prove npm-wrapper installation: exact npm `0.7.4`
-acceptance failed independently and no exact npm `0.7.9` receipt is claimed.
+acceptance failed independently and no six-target npm `0.7.9` native acceptance receipt is claimed here.
 
 GitHub's current [hosted-runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 maps `windows-latest` to x64 and `macos-latest` to arm64. GNU/Linux release
@@ -157,9 +164,10 @@ acceptance and never place provider client secrets on the command line.
   `7a51ce512ec4aee12cc29ff859036af63fbe93db` and runs
   `cargo build --release --locked --bin phantom --bin phantom-mcp`. An unpinned
   crates.io install currently resolves the older `0.5.1` track.
-- The npm packages' `latest` tags currently resolve `0.6.0`. Exact `0.7.4`
-  wrappers exist only under `release-candidate` and failed the six-target npm
-  acceptance gate; they are not the reviewed `v0.7.9` GitHub release path.
+- The official npm `latest` endpoints resolve `phantom-secrets@0.7.9` and
+  `phantom-secrets-mcp@0.7.9` as of 2026-10-06. Publication is separate from
+  native npm-wrapper acceptance; the earlier `0.7.4` candidate failed that
+  gate. Exact GitHub archive acceptance remains separately recorded above.
 - `scripts/install.sh` supports macOS and GNU Linux targets. Native Windows uses
   `scripts/install.ps1`; both scripts verify bounded HTTPS downloads, strict
   sidecar checksums, archive shape, and binary identity before promotion.

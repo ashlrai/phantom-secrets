@@ -30,12 +30,17 @@ checksums, SPDX SBOMs, and an aggregate checksum manifest after the release
 acceptance matrix passed. The exact execution receipt is
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
-In the exact 2026-09-29 registry snapshot, the project Homebrew tap still publishes the previous
-`v0.7.8` (a `v0.7.9` bump is pending), npm
-`latest` at `0.6.0`, crates.io at `0.5.1`, and no
-MCP Registry `0.7.9` record was found. An unpinned npm, npx, Cargo, directory,
-or generated installation command must not be described as the reviewed
-`v0.7.9` release.
+The last verified Homebrew snapshot (2026-09-29) publishes the previous
+`v0.7.8`; a `v0.7.9` tap bump is independently maintained.
+
+As of 2026-10-06, the official npm `latest` endpoints resolve
+`phantom-secrets@0.7.9` and `phantom-secrets-mcp@0.7.9`. The MCP Registry lists
+`io.github.ashlrai/phantom-secrets-mcp` version `0.7.9` as active.
+These publication records do not establish six-platform npm-wrapper native
+acceptance or commission Phantom Cloud. The earlier `0.7.4` npm candidate
+failed its separate acceptance gate. The last verified crates.io snapshot
+(2026-09-29) remains `0.5.1`; use the exact GitHub assets for the native
+release path.
 
 ## What Phantom does
 
