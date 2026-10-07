@@ -175,16 +175,16 @@ Reviewers should pay particular attention to these unresolved boundaries:
 - provider enrollment, issuance, refresh, renewal, rotation, and remote
   revocation are not active; shipped paths fail before credential or network
   access, while exact test mocks prove local scaffolding only; and
-- for the release-state snapshot verified on 2026-09-05, the immutable
-  `v0.7.8` GitHub release resolves to source commit
-  `f065b13462f9eaf27e0443f8911f021575b7c409`; its 19 assets, checksums,
+- for the release-state snapshot verified on 2026-10-06, the immutable
+  `v0.7.9` GitHub release resolves to source commit
+  `7a51ce512ec4aee12cc29ff859036af63fbe93db`; its 19 assets, checksums,
   archive-specific SPDX SBOMs, GitHub attestations, and all six release-native
   rows are bound to that immutable release by
-  [workflow 33952398697](https://github.com/ashlrai/phantom-secrets/actions/runs/33952398697).
-  In the exact 2026-09-05 registry snapshot, Homebrew independently publishes
-  the separately reviewed `v0.7.8` binaries. The npm `0.7.4` wrappers remain only under the
-  failed `release-candidate` track, npm `latest` remains `0.6.0`, and no npm,
-  crates.io, or MCP Registry `0.7.8` publication is claimed. Native code
+  [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
+  In the exact 2026-10-06 independent readbacks, Homebrew publishes `v0.7.9`,
+  both npm `latest` packages and the active MCP Registry entry publish `0.7.9`,
+  and crates.io remains at `0.5.1`. Exact npm-wrapper six-host acceptance is
+  not established by those publications. Native code
   signing/notarization, credential-store/ACL/editor acceptance on every host,
   hosted-service commissioning, provider activation, certification, and
   customer acceptance remain separate evidence gates.

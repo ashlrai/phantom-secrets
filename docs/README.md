@@ -2,18 +2,20 @@
 
 This is the canonical map for Phantom's repository documentation. Start with the shortest guide that matches your task, then use the security and architecture material when evaluating trust boundaries.
 
-Release-state snapshot verified on 2026-09-05: the immutable GitHub release
-`v0.7.8` resolves to source commit
-`f065b13462f9eaf27e0443f8911f021575b7c409`. Its exact 19-asset set, all six
+Release-state snapshot verified on 2026-10-06: the immutable GitHub release
+`v0.7.9` resolves to source commit
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its exact 19-asset set, all six
 native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
 provenance and SPDX attestations are bound to that immutable release by
-[workflow 33952398697](https://github.com/ashlrai/phantom-secrets/actions/runs/33952398697).
-Exact public registry endpoints were requeried on 2026-09-05. Homebrew
-independently publishes reviewed `v0.7.8`; npm `latest` remains `0.6.0`, and both npm
-`0.7.4` wrappers remain only under the failed `release-candidate` track. The
-GitHub receipt alone does not establish `0.7.8` publication on npm, crates.io,
-or MCP Registry, or any hosted-service commissioning, provider activation,
-certification, or customer acceptance.
+[workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
+Exact public registry endpoints were requeried on 2026-10-06. Homebrew independently publishes reviewed `v0.7.9`; both npm packages publish
+`0.7.9` under `latest`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` is active at `0.7.9`. crates.io remains
+on `0.5.1`. Registry publication and matching npm tarball integrity do not
+prove six-host installation acceptance of those published wrappers.
+The GitHub receipt alone does not establish any separately published registry
+channel, hosted-service commissioning, provider activation, certification, or
+customer acceptance.
 
 ## Start here
 
@@ -44,7 +46,7 @@ certification, or customer acceptance.
 These guides cover installation, MCP setup, the value-blind tool model, and daily workflows:
 
 - [Safe delegation quickstart](delegation-quickstart.md) for the common cross-client workflow
-- [Hub status contract](hub-status-contract.md) for value-free local-orchestrator inspection (post-v0.7.8 source)
+- [Hub status contract](hub-status-contract.md) for value-free local-orchestrator inspection (released v0.7.9)
 - [Installed-runtime smoke](../examples/agent-first-five-minutes/README.md) for disposable CLI and MCP checks
 - [Claude Code](claude-code.md)
 - [Codex](codex.md)
@@ -116,7 +118,7 @@ or production acceptance.
   response targets, and known limitations
 - [Roadmap](../ROADMAP.md) — staged, gated, and exploratory milestones without
   delivery-date or activation claims
-- [Citation metadata](../CITATION.cff) — cite the reviewed `v0.7.8` release, or
+- [Citation metadata](../CITATION.cff) — cite the reviewed `v0.7.9` release, or
   include the exact commit SHA when discussing later unreleased source
 
 No donation or sponsorship program is represented by repository metadata at

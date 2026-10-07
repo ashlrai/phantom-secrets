@@ -2,15 +2,17 @@
 
 <img src="https://phm.dev/og-image.png" alt="Phantom — Delegate supported API work to AI" width="720" />
 
-<h1>Phantom</h1>
+<h1>Phantom Secrets</h1>
 
 **Delegate more to AI without putting real keys in agent context.**
+
+Phantom Secrets is the local credential boundary in **Phantom by [AshlrAI](https://ashlr.ai)**. Explore the [engineering workbench](https://verse.ashlr.ai) for interactive coding sessions and fleet workflows, or its [source repository](https://github.com/ashlrai/ashlr-hub). This repository contains the Secrets CLI, MCP server and credential service; its release versions and installation commands remain independent.
 
 Phantom replaces project secrets with scoped `phm_` placeholders. Applications use those placeholders through an authenticated local proxy, while agents use value-blind MCP tools for inventory, diagnostics, and governed requests.
 
 [![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/stargazers)
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
-[![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-v0.7.8-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8)
+[![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-v0.7.9-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9)
 [![Source version](https://img.shields.io/badge/source_version-v0.7.9-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#079---2026-09-06)
 [![Pinned toolchain: Rust 1.95](https://img.shields.io/badge/pinned_toolchain-Rust_1.95-CE412B?style=for-the-badge&logo=rust&labelColor=0b0b14)](rust-toolchain.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
@@ -34,17 +36,18 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 > **💬 [Discussions](https://github.com/ashlrai/phantom-secrets/discussions)**
 
 > [!IMPORTANT]
-> **Release-state snapshot (verified 2026-09-05):** the
-> immutable `v0.7.8` GitHub release at source commit
-> `f065b13462f9eaf27e0443f8911f021575b7c409`. Its 19-asset release set,
+> **Release-state snapshot (verified 2026-10-06):** the
+> immutable `v0.7.9` GitHub release at source commit
+> `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19-asset release set,
 > checksums, archive-specific SPDX SBOMs, GitHub provenance and SBOM
 > attestations, and all six native release rows are bound to that immutable
 > release record by tag-bound workflow
-> [33952398697](https://github.com/ashlrai/phantom-secrets/actions/runs/33952398697).
-> Exact public registry endpoints were requeried on 2026-09-05. Homebrew
-> independently publishes reviewed `v0.7.8`; npm `latest` remains `0.6.0`, and the npm
-> `0.7.4` wrappers remain quarantined under `release-candidate` after failed
-> npm-channel acceptance. The GitHub receipt alone does not prove the separately
+> [34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
+> Exact public registry endpoints were requeried on 2026-10-06. Homebrew independently publishes reviewed `v0.7.9`; both npm packages publish
+> `0.7.9` under `latest`, and the official MCP Registry entry
+> `io.github.ashlrai/phantom-secrets-mcp` is active at `0.7.9`. crates.io remains
+> on `0.5.1`. Registry publication and matching npm tarball integrity do not
+> prove six-host installation acceptance of those published wrappers. The GitHub receipt alone does not prove the separately
 > verified Homebrew formula, an npm or crates.io package, MCP Registry entry, hosted-service
 > commissioning, provider activation, signing/notarization, certification, or
 > customer acceptance. See
@@ -60,7 +63,7 @@ Phantom.
 | Goal | Start | What it establishes |
 |---|---|---|
 | See the delegation boundary with no secret or setup | Run `node examples/first-five-minutes/run.mjs`, then read the [first-five-minutes walkthrough](examples/first-five-minutes/README.md) | A deterministic, read-only example contract; not vault, proxy, provider, or deployment acceptance. |
-| Protect a real local project | Follow [Quick Start](#quick-start) with the reviewed `v0.7.8` GitHub release | Local initialization and diagnostics on your machine. |
+| Protect a real local project | Follow [Quick Start](#quick-start) with the reviewed `v0.7.9` GitHub release | Local initialization and diagnostics on your machine. |
 | Connect an AI coding client | Complete the [first MCP task](#first-mcp-task-verify-the-boundary) | Value-blind capability, status, and repository checks; no provider action. |
 | Define a bounded task for an agent | Use the [safe delegation quickstart](docs/delegation-quickstart.md) | A reviewable task contract with explicit authority and acceptance boundaries. |
 | Evaluate a team rollout | Use the [enterprise adoption guide](docs/enterprise-adoption.md) | A controlled evaluation plan; not a claim of commissioned cloud or enterprise service. |
@@ -73,7 +76,7 @@ AI coding agents routinely work in repositories that also contain local credenti
 Traditional secrets managers focus on keys *at rest* and *in transit*. Phantom adds a boundary for agent **context**:
 
 - 🔒 **Reduces one credential-exposure path** — managed project dotenv files contain sensitive `phm_` mappings, MCP responses remain value-blind, and exact proxy routes inject their own configured authentication values. Unmanaged files, broader shell authority, and same-user processes remain in the threat model.
-- ⚡ **Fast local setup** — after installing the reviewed `v0.7.8` GitHub release, `phantom init` protects a project without requiring an account, DNS changes, or a custom CA.
+- ⚡ **Fast local setup** — after installing the reviewed `v0.7.9` GitHub release, `phantom init` protects a project without requiring an account, DNS changes, or a custom CA.
 - 🧰 **Agent-native integrations** — setup helpers and value-blind MCP workflows for Claude Code, Cursor, Windsurf, and Codex, plus project instructions for GitHub Copilot.
 - 🦀 **Open source, local-first, MIT** — secrets use the native OS credential store when it is available, with an explicit encrypted-file fallback. Optional cloud sync encrypts vault payloads client-side before the server stores them.
 
@@ -93,8 +96,8 @@ evidence behind those boundaries.
 
 ## Quick Start
 
-Install both binaries from the reviewed [`v0.7.8` GitHub release](#installation).
-The Homebrew formula separately publishes the reviewed `v0.7.8` binaries:
+Install both binaries from the reviewed [`v0.7.9` GitHub release](#installation).
+The Homebrew formula separately publishes the reviewed `v0.7.9` binaries:
 
 ```bash
 $ brew tap ashlrai/phantom
@@ -102,7 +105,7 @@ $ brew trust --formula ashlrai/phantom/phantom
 $ brew install ashlrai/phantom/phantom
 ```
 
-For exact `v0.7.8` on macOS, Linux, or Windows, use the matching release asset
+For exact `v0.7.9` on macOS, Linux, or Windows, use the matching release asset
 in [Installation](#installation). Then protect and verify the project:
 
 ```bash
@@ -129,7 +132,7 @@ Teams evaluating a controlled rollout can start with the
 ### Windows
 
 The same core command surface is implemented for native Windows, with remaining
-native acceptance limits tracked in the platform matrix. Install the exact `v0.7.8`
+native acceptance limits tracked in the platform matrix. Install the exact `v0.7.9`
 Windows ZIP for your architecture from [Installation](#installation), verify its
 published `.sha256` sidecar, and place both executables on `PATH`. WSL is a
 separate Linux environment with its own filesystem and credential-store context.
@@ -167,7 +170,7 @@ Notes:
 - `PHANTOM_PROXY_TOKEN` is the proxy session authenticator. By default, `phantom exec` and `phantom start` include it in local `*_BASE_URL` values as `/_phantom/TOKEN/` so unmodified SDKs work. Header-aware clients can set `PHANTOM_PROXY_HEADER_AUTH_ONLY=1` and send `x-phantom-proxy-token: $PHANTOM_PROXY_TOKEN` instead.
 - If `phantom.exe` is blocked by Windows application-control policy, do not automatically remove Mark-of-the-Web. First verify the archive checksum and both binary identities against the release metadata. If local policy permits the verified binaries, a user may then remove the mark explicitly with PowerShell: `Get-ChildItem "$env:USERPROFILE\.phantom-secrets\bin\*.exe" | Unblock-File`.
 - The pre-commit hook installed by `phantom init` is a `#!/bin/sh` script. Native git from the command line invokes it via Git for Windows' bundled `sh.exe`, which is what the official Git for Windows installer ships. GUI clients (GitHub Desktop, some IDE integrations) may run with a stripped-down `PATH` that lacks `sh.exe` and silently skip the hook — for these, run commits from a terminal, or use `phantom check --staged` directly. CI is the durable safety net regardless.
-- The immutable `v0.7.8` release contains x64 and ARM64 Windows ZIPs, and both native Windows rows passed the tag-bound release acceptance workflow. The archives are not Authenticode-signed; this receipt does not prove every enterprise application-control policy will accept them. See the [platform support matrix](docs/platform-support.md).
+- The immutable `v0.7.9` release contains x64 and ARM64 Windows ZIPs, and both native Windows rows passed the tag-bound release acceptance workflow. The archives are not Authenticode-signed; this receipt does not prove every enterprise application-control policy will accept them. See the [platform support matrix](docs/platform-support.md).
 
 ## How It Works
 
@@ -221,7 +224,7 @@ values.
 
 Use this read-only path before exploring the full tool catalog:
 
-1. Install both binaries from the reviewed [`v0.7.8` GitHub release](#installation).
+1. Install both binaries from the reviewed [`v0.7.9` GitHub release](#installation).
 2. From the project you want to inspect, run `phantom setup --client codex`,
    replacing `codex` with `claude`, `cursor`, or `windsurf` when appropriate.
 3. Restart the AI client so it loads the generated MCP configuration.
@@ -287,14 +290,14 @@ operation.
 One command per AI client — Phantom writes the right config file in the right place:
 
 ```bash
-phantom setup --client claude     # project MCP; see docs/claude-code.md for v0.7.8 migration
+phantom setup --client claude     # project MCP; see docs/claude-code.md for migration from v0.7.8
 phantom setup --client cursor     # ~/.cursor/mcp.json
 phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
 phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Install both `v0.7.8` release binaries before setup. Version `0.7.8` records the
+Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
 running `phantom` executable with `mcp serve` when it can resolve that executable,
 otherwise it looks for a local standalone `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is
@@ -489,7 +492,7 @@ fails closed before vendor execution. No single-provider exception exists.
 
 ## Installation
 
-### Homebrew (macOS, v0.7.8)
+### Homebrew (macOS, v0.7.9)
 
 Homebrew 6 requires explicit formula trust for third-party taps:
 
@@ -500,44 +503,44 @@ $ brew install ashlrai/phantom/phantom
 ```
 
 This formula installs both `phantom` and `phantom-mcp` from the immutable
-[`v0.7.8` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8).
+[`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
 
-### Exact v0.7.8 GitHub assets
+### Exact v0.7.9 GitHub assets
 
 Use the asset matching your OS and architecture. Download its adjacent
 `.sha256` file from the release, verify it before extraction, and place both
 `phantom` and `phantom-mcp` (`.exe` on Windows) on `PATH`.
 
-| Platform | `v0.7.8` archive | Published checksum |
+| Platform | `v0.7.9` archive | Published checksum |
 |---|---|---|
-| macOS Apple Silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-aarch64-apple-darwin.tar.gz.sha256) |
-| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-x86_64-apple-darwin.tar.gz.sha256) |
-| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
-| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
-| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-x86_64-pc-windows-msvc.zip.sha256) |
-| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.8/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+| macOS Apple Silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz.sha256) |
+| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-apple-darwin.tar.gz.sha256) |
+| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
+| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip.sha256) |
+| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip.sha256) |
 
 On Linux, verify with `sha256sum -c <archive>.sha256`. On Windows, compare
 `Get-FileHash -Algorithm SHA256 <archive>` with the published sidecar.
 
 ### Build the exact release source
 
-The `v0.7.8` tag resolves to source commit
-`f065b13462f9eaf27e0443f8911f021575b7c409`:
+The `v0.7.9` tag resolves to source commit
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`:
 
 ```bash
 $ git clone https://github.com/ashlrai/phantom-secrets.git
 $ cd phantom-secrets
-$ git checkout f065b13462f9eaf27e0443f8911f021575b7c409
+$ git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 $ cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-Do not treat unpinned package-manager commands as `v0.7.8`. In the exact
-2026-09-05 registry snapshot, npm `latest` remains `0.6.0`; the immutable npm `0.7.4` wrappers
-exist only under `release-candidate` after failing cross-platform acceptance.
-No npm `0.7.8`, crates.io `0.7.8`, or MCP Registry `0.7.8` publication is
-represented by this GitHub release receipt. Homebrew is separately published
-and verified through its tap.
+Do not treat unpinned package-manager commands as an exact release receipt.
+The 2026-10-06 independent registry readback finds npm `0.7.9` on both `latest`
+tags, the active MCP Registry `0.7.9` listing, and Homebrew `v0.7.9`. crates.io
+remains on `0.5.1`. The historical npm `0.7.4` acceptance failure does not
+describe the newer packages. Exact published-wrapper six-host acceptance is
+not claimed by this native GitHub release receipt.
 
 ### Connect an MCP client
 
@@ -602,12 +605,12 @@ dependency, and the comparison is not a feature or platform-parity claim.
 
 **`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
 
-**Registry tracks**: npm `latest` currently resolves
+**Registry tracks (verified 2026-10-06)**: npm `latest` resolves
 [`phantom-secrets`](https://www.npmjs.com/package/phantom-secrets) and
 [`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) at
-`0.6.0`. Exact `0.7.4` wrappers remain public only under `release-candidate`
-after failing native npm-channel acceptance; do not use that candidate as the
-reviewed `v0.7.8` GitHub release path.
+`0.7.9`. The official MCP Registry entry is active at `0.7.9`. These independent
+publication and integrity receipts do not claim six-host installation acceptance
+of the published wrappers; direct native archives retain their own release receipt.
 
 CI runs locked, all-target workspace builds and tests on macOS, Linux, and Windows runner environments, plus formatting, Clippy, and npm release-mapping checks. Release builds and native end-to-end acceptance are separate evidence layers; see [Platform support](docs/platform-support.md).
 

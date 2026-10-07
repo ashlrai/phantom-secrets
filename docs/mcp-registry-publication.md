@@ -1,5 +1,11 @@
 # MCP Registry publication
 
+Current readback (2026-10-06): both npm `latest` packages and the active official
+MCP Registry listing are `0.7.9`. See [platform support](platform-support.md)
+for the separate native/archive and published-wrapper acceptance boundaries.
+The version-specific procedure below is the historical `0.7.8` runbook; it is
+not a current publication-status receipt.
+
 This runbook publishes Phantom's server metadata to the official MCP Registry.
 It does not publish a native binary or npm wrapper. The manifest points to
 `phantom-secrets-mcp@0.7.8`, so the exact accepted npm package and immutable

@@ -8,21 +8,21 @@ Phantom is still pre-1.0, so security support is focused on the reviewed public
 release and active development branch. Repository version metadata can move
 ahead of published artifacts.
 
-The table below is a release-state snapshot verified on 2026-09-05. The
-immutable `v0.7.8` GitHub release binds its 19 assets to source commit
-`f065b13462f9eaf27e0443f8911f021575b7c409`; all six native rows and the
+The table below is a release-state snapshot verified on 2026-10-06. The
+immutable `v0.7.9` GitHub release binds its 19 assets to source commit
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`; all six native rows and the
 GitHub provenance and SPDX attestations are bound to that immutable release.
 
 | Version or surface | Security support | Notes |
 |--------------------|------------------|-------|
-| Reviewed GitHub release, `v0.7.8` | Supported | Security fixes are prioritized for the immutable GitHub release and active development. Its native artifacts passed the tag-bound six-row release workflow; this is not a signing, notarization, certification, hosted-service, or customer-acceptance claim. |
-| Registry distributions | Mixed | The exact 2026-09-05 snapshot has Homebrew `v0.7.8` supported after native macOS/Linux checks, while npm `latest` remains `0.6.0` and its `0.7.4` wrappers remain failed release candidates rather than the default install path. crates.io and MCP Registry do not yet publish `0.7.8`. |
+| Reviewed GitHub release, `v0.7.9` | Supported | Security fixes are prioritized for the immutable GitHub release and active development. Its native artifacts passed the tag-bound six-row release workflow; this is not a signing, notarization, certification, hosted-service, or customer-acceptance claim. |
+| Registry distributions | Mixed | The exact 2026-10-06 independent readbacks find Homebrew `v0.7.9`, both npm `latest` packages at `0.7.9`, and the active MCP Registry `0.7.9` listing. crates.io remains at `0.5.1`. Published npm-wrapper six-host installation acceptance remains distinct from the native GitHub release receipt. |
 | Releases before `v0.7.4` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
 | Forks, unofficial builds, or modified binaries | Not supported | Maintainers cannot verify the provenance or behavior of modified distributions. |
 
 ### Urgent 0.7.0 upgrade notice
 
-`0.7.0` is superseded by the reviewed `v0.7.8` GitHub release. Upgrade before using
+`0.7.0` is superseded by the reviewed `v0.7.9` GitHub release. Upgrade before using
 Phantom Cloud, team-vault, local proxy, protected connection-string,
 provider-rotation, or agent execution workflows. The immutable `0.7.0` release
 remains available as historical evidence and will not be edited in place.
@@ -188,6 +188,6 @@ sandboxed principal.
 - All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.8. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.
 - `phantom grant revoke` currently fails closed before local mutation because remote revocation is not wired for the supported providers.
 - A provider grant is credential lifecycle state, not an execution-kernel authority grant. It cannot activate Locus verification, a broker lease, or production engineering execution.
-- GitHub immutable release controls, checksums, archive-specific SPDX SBOMs, and GitHub attestations protect the published exact `v0.7.8` release artifacts at source commit `f065b13462f9eaf27e0443f8911f021575b7c409`. All six native release rows and both attestation predicates are bound to that immutable release record. Installers and the self-updater verify checksums but do not yet verify attestations directly. Independent signatures, macOS notarization, Windows Authenticode, protected native credential-store/ACL/editor acceptance, and npm-channel acceptance remain open.
+- GitHub immutable release controls, checksums, archive-specific SPDX SBOMs, and GitHub attestations protect the published exact `v0.7.9` release artifacts at source commit `7a51ce512ec4aee12cc29ff859036af63fbe93db`. All six native release rows and both attestation predicates are bound to that immutable release record. Installers and the self-updater verify checksums but do not yet verify attestations directly. Independent signatures, macOS notarization, Windows Authenticode, protected native credential-store/ACL/editor acceptance, and npm-channel acceptance remain open.
 
 See [THREAT_MODEL.md](./THREAT_MODEL.md#7-known-gaps-and-non-mitigations) for the full list of known gaps and non-mitigations.

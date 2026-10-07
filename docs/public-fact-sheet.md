@@ -5,12 +5,13 @@ AI retrieval systems a concise, versioned description of Phantom. Cite the
 linked primary source for each claim and preserve the limitations. Do not treat
 this first-party fact sheet as independent validation or endorsement.
 
-Release-evidence update staged: **2026-09-05**; exact receipts and registry state remain pending before merge.
+Release evidence and independent registry readbacks verified: **2026-10-06**.
 
 ## Canonical identity
 
-- **Product:** Phantom, also published as Phantom Secrets where a less generic
-  name is needed.
+- **Component:** Phantom Secrets, the credential boundary in Phantom by AshlrAI.
+- **Workbench:** <https://verse.ashlr.ai>; its independent source and release identity
+  are <https://github.com/ashlrai/ashlr-hub>.
 - **Category:** open-source, local-first credential boundary for supported AI
   coding-agent workflows.
 - **Repository:** <https://github.com/ashlrai/phantom-secrets>
@@ -22,20 +23,21 @@ Release-evidence update staged: **2026-09-05**; exact receipts and registry stat
 ## Verified public release
 
 The verified release is immutable GitHub tag
-[`v0.7.8`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8),
+[`v0.7.9`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9),
 resolving to source commit
-`f065b13462f9eaf27e0443f8911f021575b7c409`. Its tag-bound release workflow
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its tag-bound release workflow
 published six native archives for macOS, Linux, and Windows, adjacent SHA-256
 checksums, SPDX SBOMs, and an aggregate checksum manifest after the release
 acceptance matrix passed. The exact execution receipt is
-[workflow 33952398697](https://github.com/ashlrai/phantom-secrets/actions/runs/33952398697).
+[workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
-In the exact 2026-09-05 registry snapshot, the project Homebrew tap publishes
-`v0.7.8`, npm
-`latest` at `0.6.0`, crates.io at `0.5.1`, and no
-MCP Registry `0.7.8` record was found. An unpinned npm, npx, Cargo, directory,
-or generated installation command must not be described as the reviewed
-`v0.7.8` release.
+In the exact 2026-10-06 registry snapshot, Homebrew independently publishes reviewed `v0.7.9`; both npm packages publish
+`0.7.9` under `latest`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` is active at `0.7.9`. crates.io remains
+on `0.5.1`. Registry publication and matching npm tarball integrity do not
+prove six-host installation acceptance of those published wrappers.
+An unpinned npm, npx, Cargo, directory, or generated installation command is
+not an exact immutable-release receipt.
 
 ## What Phantom does
 

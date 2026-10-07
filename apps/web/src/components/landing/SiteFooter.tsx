@@ -19,13 +19,13 @@ export function SiteFooter() {
             <span className="font-bold tracking-tight">Phantom</span>
           </Link>
           <p className="mt-4 text-[0.86rem] leading-6 text-t3">
-            Open-source, local-first infrastructure for governed credential
-            handling in agentic engineering workflows.
+            An engineering workbench and local credential tools for
+            working with agents and coordinating an engineering fleet.
           </p>
           <p className="mt-4 text-[0.78rem] leading-5 text-t3">
             Built by{" "}
             <a href="https://ashlr.ai" className="text-t2 underline underline-offset-2 hover:text-blue-b">
-              Ashlr AI
+              AshlrAI
             </a>
             . Enterprise and government evaluations are scoped by
             written agreement.
@@ -37,6 +37,8 @@ export function SiteFooter() {
             Product
           </h2>
           <ul className="mt-4 space-y-3">
+            <li><a href="https://verse.ashlr.ai" className={linkClass}>Phantom workbench</a></li>
+            <li><Link href="/#phantom-secrets" className={linkClass}>Phantom Secrets</Link></li>
             <li>
               <Link href="/#features" className={linkClass}>
                 Features
@@ -99,7 +101,7 @@ export function SiteFooter() {
                 href="https://github.com/ashlrai/phantom-secrets"
                 className={linkClass}
               >
-                Star on GitHub
+                Star Phantom Secrets on GitHub
               </a>
             </li>
             <li>

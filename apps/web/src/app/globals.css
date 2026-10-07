@@ -2701,3 +2701,52 @@ code, pre, .mono {
     display: none;
   }
 }
+
+/* Homepage-only umbrella introduction; existing Secrets sections retain their layout. */
+.phantom-workbench-surface { background: #050508; color: #f5f5f7; }
+.phantom-workbench { max-width: 1200px; margin: 0 auto; padding: 88px 28px 40px; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 48px; align-items: center; }
+.phantom-workbench__brand { font-size: 1.05rem; font-weight: 700; color: #f5f5f7; }
+.phantom-workbench__brand span { margin-left: 10px; font-size: .8rem; font-weight: 500; color: #a1a1b5; }
+.phantom-workbench h1 { margin-top: 24px; font-size: clamp(2.7rem, 5vw, 4.5rem); line-height: 1.04; letter-spacing: -.045em; font-weight: 800; color: #f5f5f7; }
+.phantom-workbench__description { margin-top: 24px; max-width: 570px; font-size: 1.05rem; line-height: 1.75; color: #a1a1b5; }
+.phantom-workbench__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 28px; }
+.phantom-workbench__primary { display: inline-flex; align-items: center; min-height: 44px; padding: 12px 18px; background: #2563eb; color: white; border-radius: 8px; font-weight: 600; text-decoration: none; }
+.phantom-workbench__primary:hover { background: #1e40af; }
+.phantom-workbench__secondary { color: #a1a1b5; font-size: .85rem; text-decoration: underline; text-underline-offset: 4px; }
+.phantom-workbench__secondary:hover { color: #f5f5f7; }
+.phantom-workbench__note { margin-top: 24px; max-width: 550px; font-size: .77rem; line-height: 1.7; color: #808096; }
+.phantom-workbench__note code { color: #a1a1b5; }
+.phantom-workbench__diagram { padding: 24px; border: 1px solid #252538; border-radius: 20px; background: #0a0a12; }
+.phantom-workbench__resources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 0; margin: 0; list-style: none; }
+.phantom-workbench__resources li { padding-bottom: 18px; border-bottom: 1px solid #252538; }
+.phantom-workbench__resources strong { display: block; font-size: .8rem; color: #f5f5f7; }
+.phantom-workbench__resources span { display: block; margin-top: 5px; font-size: .69rem; line-height: 1.5; color: #a1a1b5; }
+.phantom-workbench__center { display: grid; justify-items: center; margin: 28px 0; }
+.phantom-workbench__center strong { margin-top: 10px; font-size: 1.2rem; letter-spacing: -.025em; }
+.phantom-workbench__center span { margin-top: 4px; font-size: .75rem; color: #a1a1b5; }
+.phantom-workbench__modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.phantom-workbench__modes section { padding-left: 12px; border-left: 2px solid #3b82f6; }
+.phantom-workbench__modes section + section { border-color: #a78bfa; }
+.phantom-workbench__modes h2 { margin: 0; font-size: .85rem; font-weight: 700; }
+.phantom-workbench__modes p { margin-top: 7px; font-size: .75rem; line-height: 1.6; color: #a1a1b5; }
+.phantom-workbench__loop { display: flex; justify-content: center; flex-wrap: wrap; gap: 12px; padding-top: 24px; margin-top: 24px; border-top: 1px solid #252538; font-size: .78rem; color: #a1a1b5; }
+.phantom-workbench__loop span { color: #60a5fa; }
+.phantom-workbench__tools { margin-top: 12px; text-align: center; font-size: .68rem; color: #808096; }
+.phantom-workbench__ecosystem { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; padding-top: 32px; border-top: 1px solid #252538; }
+.phantom-workbench__ecosystem a { padding: 4px 0; color: #f5f5f7; text-decoration: none; }
+.phantom-workbench__ecosystem a:hover strong { color: #60a5fa; }
+.phantom-workbench__ecosystem strong { display: block; font-size: .9rem; }
+.phantom-workbench__ecosystem span { display: block; margin-top: 6px; font-size: .77rem; color: #a1a1b5; }
+#phantom-secrets { scroll-margin-top: 80px; }
+@media (max-width: 900px) {
+  .phantom-workbench { grid-template-columns: minmax(0, 1fr); gap: 32px; padding-top: 48px; }
+  .phantom-workbench__intro { max-width: 650px; }
+  .phantom-workbench__diagram { max-width: 650px; }
+}
+@media (max-width: 480px) {
+  .phantom-workbench { padding: 36px 20px 24px; }
+  .phantom-workbench__diagram { padding: 18px; }
+  .phantom-workbench__resources { gap: 8px; }
+  .phantom-workbench__ecosystem { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .phantom-workbench__actions { gap: 14px; }
+}

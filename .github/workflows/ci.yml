@@ -77,8 +77,8 @@ jobs:
           if (-not (Select-String -LiteralPath scripts/install.ps1 -Pattern '\$CandidateTag = ''v0.7.9''' -Quiet)) {
             throw 'candidate PowerShell installer is not pinned to v0.7.9'
           }
-          if (-not (Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\$CandidateTag = ''v0.7.8''' -Quiet)) {
-            throw 'public-reference PowerShell installer is not pinned to evidenced v0.7.8'
+          if (-not (Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\$CandidateTag = ''v0.7.9''' -Quiet)) {
+            throw 'public-reference PowerShell installer is not pinned to evidenced v0.7.9'
           }
       - name: Exercise the Windows installer with the existing debug binaries
         if: runner.os == 'Windows'

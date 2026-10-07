@@ -115,7 +115,7 @@ test("GitHub starring is a named action across the primary adoption surfaces", (
     "src/app/docs/page.tsx",
   ]) {
     const source = read(relativePath);
-    assert.match(source, /Star (?:Phantom )?(?:on|the source on) GitHub/i, relativePath);
+    assert.match(source, /Star (?:Phantom(?: Secrets)? )?(?:on|the source on) GitHub/i, relativePath);
     assert.match(source, /https:\/\/github\.com\/ashlrai\/phantom-secrets/, relativePath);
   }
 });

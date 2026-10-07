@@ -4,14 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No additional unreleased changes are recorded after the `0.7.9` source candidate.
+No additional unreleased changes are recorded after the `0.7.9` release.
 
 ## [0.7.9] - 2026-09-06
 
-This fix-forward source candidate repairs agent onboarding and Ashlr Hub
-inspection compatibility. It does not move or replace the immutable `v0.7.8`
-tag or its GitHub Release. Do not describe `0.7.9` as published until its
-tag-bound release, distribution, and deployment receipts exist.
+This fix-forward release repairs agent onboarding and Ashlr Hub inspection
+compatibility. The immutable `v0.7.9` GitHub release was published 2026-09-07
+from `7a51ce512ec4aee12cc29ff859036af63fbe93db`. It does not move or replace
+the older immutable `v0.7.8` tag. Independent registry and web-deployment
+acceptance remain separate from the native release receipt.
 
 ### Fixed
 
@@ -30,9 +31,8 @@ There are no intentional CLI, proxy, vault, or network-policy breaking changes.
 For a project configured by an earlier Phantom build, run
 `phantom setup --client claude` from a trusted terminal and review the
 generated `.mcp.json`; existing permission settings remain in
-`.claude/settings.local.json`. Existing `v0.7.8` artifacts stay immutable and
-remain the current published GitHub release until `v0.7.9` completes its
-separate release gates.
+`.claude/settings.local.json`. Existing `v0.7.8` artifacts stay immutable; current installation guidance
+uses the independently verified `v0.7.9` release.
 
 ## [0.7.8] - 2026-09-05
 

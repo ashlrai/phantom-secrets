@@ -8,8 +8,9 @@ import { capturePostHog } from "@/lib/posthog";
 import { Github } from "./Icons";
 
 const navigation = [
+  { label: "Workbench", href: "https://verse.ashlr.ai" },
+  { label: "Phantom Secrets", section: "phantom-secrets" },
   { label: "How it works", section: "how" },
-  { label: "Features", section: "features" },
   { label: "Pricing", href: "/pricing" },
   { label: "Enterprise", href: "/enterprise" },
   { label: "Security", href: "/security" },
@@ -112,7 +113,7 @@ export function Nav() {
         <div className="flex items-center gap-2 sm:gap-3">
           <a
             href="https://github.com/ashlrai/phantom-secrets"
-            aria-label="Star Phantom on GitHub"
+            aria-label="Star Phantom Secrets on GitHub"
             className="hidden min-h-10 items-center justify-center gap-2 rounded-md border border-border bg-s2 px-3.5 py-2 text-[0.82rem] font-semibold text-t2 no-underline transition-colors hover:border-blue hover:text-t1 sm:inline-flex"
           >
             <Github aria-hidden className="h-3.5 w-3.5" />
@@ -127,7 +128,7 @@ export function Nav() {
             }}
             className="inline-flex min-h-10 items-center rounded-md bg-blue-action px-3.5 py-2 text-[0.82rem] font-semibold text-white no-underline transition-all duration-200 hover:-translate-y-px hover:bg-blue-action-d hover:shadow-[0_4px_18px_rgba(59,130,246,0.4)] sm:px-4"
           >
-            Get started
+            Install Secrets
           </Link>
 
           <button
@@ -189,7 +190,7 @@ export function Nav() {
             className="flex items-center gap-2 rounded-lg px-3 py-3 text-[0.92rem] font-medium text-t2 no-underline transition-colors hover:bg-s2 hover:text-t1 sm:hidden"
           >
             <Github aria-hidden className="h-4 w-4" />
-            Star Phantom on GitHub
+            Star Phantom Secrets on GitHub
           </a>
         </div>
       </div>

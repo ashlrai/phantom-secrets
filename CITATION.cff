@@ -1,9 +1,9 @@
 cff-version: 1.2.0
 message: >-
-  The current source candidate is 0.7.9. Cite the immutable v0.7.8 GitHub
-  release until a v0.7.9 release receipt exists; for unreleased source, include
+  Cite the immutable v0.7.9 GitHub release at source commit
+  7a51ce512ec4aee12cc29ff859036af63fbe93db. For unreleased source, include
   the repository URL and full commit SHA.
-title: Phantom
+title: Phantom Secrets
 type: software
 authors:
   - family-names: Wyatt
@@ -12,6 +12,7 @@ repository-code: https://github.com/ashlrai/phantom-secrets
 url: https://phm.dev
 license: MIT
 version: 0.7.9
+date-released: 2026-09-07
 keywords:
   - AI agents
   - credential management

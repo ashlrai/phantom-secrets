@@ -16,17 +16,26 @@ import { RequestTrace } from "@/components/landing/RequestTrace";
 import { SiteFooter } from "@/components/landing/SiteFooter";
 import { TrustBoundary } from "@/components/landing/TrustBoundary";
 import { Transformation } from "@/components/landing/Transformation";
+import { WorkbenchHero } from "@/components/landing/WorkbenchHero";
 
 export const metadata: Metadata = {
+  title: { absolute: "Phantom — Engineering agents, together" },
+  description: "Phantom by AshlrAI brings interactive engineering sessions, autonomous fleet workflows and a local credential boundary into one ecosystem. Explore the workbench and Phantom Secrets.",
   alternates: { canonical: "/" },
   openGraph: {
     type: "website",
     siteName: "Phantom",
-    title: "Phantom — API key security for AI coding agents",
-    description: "Phantom helps keep provider values out of the managed dotenv and MCP path for Claude Code, Cursor, Windsurf, and Codex, with exact-route HTTP credential injection.",
+    title: "Phantom — Engineering agents, together",
+    description: "Explore the Phantom engineering workbench and Phantom Secrets, the local credential boundary for supported coding-agent workflows.",
     url: "/",
     locale: "en_US",
     images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Phantom keeps a provider credential behind the local boundary while an AI workflow receives a placeholder." }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Phantom — Engineering agents, together",
+    description: "Work with your agents or steer an engineering fleet. Explore the workbench and Phantom Secrets by AshlrAI.",
+    images: ["/og-image.png"],
   },
 };
 
@@ -36,6 +45,9 @@ export default function Home() {
       <Nav />
       <LandingStructuredData />
       <main id="main-content" tabIndex={-1} className="landing-shell elite-landing">
+        <div className="phantom-workbench-surface">
+          <WorkbenchHero />
+        </div>
         <Hero />
         <Ecosystem />
         <Transformation />
