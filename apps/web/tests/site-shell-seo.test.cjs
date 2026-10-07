@@ -278,8 +278,9 @@ test("only exact legacy Secrets fragments navigate from home, preserving new anc
   for (const hash of ["", "#", "install", "#phantom-world", "#main-content", "#phantom-secrets", "#workbench-title", "#unknown", "#%", "#//evil.example", "#https://evil.example", "#install?evil=true", "#install/../../dashboard"]) {
     assert.equal(legacySecretsDestination("/", hash), null, hash);
   }
-  assert.match(nav, /router\.replace\(destination\)/);
   assert.match(nav, /removeEventListener\("hashchange", preserveSecretsBookmark\)/);
+  assert.match(nav, /if \(destination\) window\.location\.replace\(destination\)/);
+  assert.doesNotMatch(nav, /router\.replace|useRouter/);
 });
 
 

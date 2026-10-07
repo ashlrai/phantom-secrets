@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { capturePostHog } from "@/lib/posthog";
 import { legacySecretsDestination } from "@/lib/legacy-secrets-fragment";
@@ -31,7 +31,6 @@ function isCurrentPath(pathname: string, href: string) {
 
 export function Nav() {
   const pathname = usePathname();
-  const router = useRouter();
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -56,12 +55,14 @@ export function Nav() {
     if (pathname !== "/") return;
     const preserveSecretsBookmark = () => {
       const destination = legacySecretsDestination(pathname, window.location.hash);
-      if (destination) router.replace(destination);
+      // A document replacement keeps legacy bookmarks from retaining the
+      // workbench metadata during Next.js's initial client hydration.
+      if (destination) window.location.replace(destination);
     };
     preserveSecretsBookmark();
     window.addEventListener("hashchange", preserveSecretsBookmark);
     return () => window.removeEventListener("hashchange", preserveSecretsBookmark);
-  }, [pathname, router]);
+  }, [pathname]);
 
   const isWorkbenchHome = pathname === "/";
   const installHref = isWorkbenchHome ? "https://verse.ashlr.ai/#start" : secretsSectionHref(pathname, "install");
