@@ -4,7 +4,8 @@ import { PUBLIC_DOCS } from "@/lib/public-docs";
 const SITE_URL = "https://phm.dev";
 
 const pages = [
-  { path: "/", modified: "2026-09-29" },
+  { path: "/", modified: "2026-10-06" },
+  { path: "/secrets", modified: "2026-10-06" },
   { path: "/docs", modified: "2026-09-29" },
   { path: "/pricing", modified: "2026-09-03" },
   { path: "/enterprise", modified: "2026-09-03" },

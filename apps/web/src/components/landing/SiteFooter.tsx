@@ -37,10 +37,10 @@ export function SiteFooter() {
             Product
           </h2>
           <ul className="mt-4 space-y-3">
-            <li><a href="https://verse.ashlr.ai" className={linkClass}>Phantom workbench</a></li>
-            <li><Link href="/#phantom-secrets" className={linkClass}>Phantom Secrets</Link></li>
+            <li><Link href="/" className={linkClass}>Phantom workbench</Link></li>
+            <li><Link href="/secrets" className={linkClass}>Phantom Secrets</Link></li>
             <li>
-              <Link href="/#features" className={linkClass}>
+              <Link href="/secrets#features" className={linkClass}>
                 Features
               </Link>
             </li>

@@ -21,7 +21,7 @@ export function WorkbenchHero() {
           <a className="phantom-workbench__primary" href="https://verse.ashlr.ai">
             Explore the workbench
           </a>
-          <a className="phantom-workbench__secondary" href="#phantom-secrets">
+          <a className="phantom-workbench__secondary" href="/secrets">
             Protect credentials with Phantom Secrets
           </a>
         </div>
@@ -51,7 +51,7 @@ export function WorkbenchHero() {
       </div>
 
       <div className="phantom-workbench__ecosystem" aria-label="Phantom ecosystem projects">
-        <a href="#phantom-secrets"><strong>Phantom Secrets</strong><span>Local credential boundary</span></a>
+        <a href="/secrets"><strong>Phantom Secrets</strong><span>Local credential boundary</span></a>
         <a href="https://github.com/ashlrai/locus"><strong>Locus</strong><span>Account and tenant identity</span></a>
         <a href="https://verse.ashlr.ai/ecosystem"><strong>The ecosystem</strong><span>Explore the connected projects</span></a>
       </div>

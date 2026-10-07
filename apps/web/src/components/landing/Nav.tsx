@@ -8,8 +8,8 @@ import { capturePostHog } from "@/lib/posthog";
 import { Github } from "./Icons";
 
 const navigation = [
-  { label: "Workbench", href: "https://verse.ashlr.ai" },
-  { label: "Phantom Secrets", section: "phantom-secrets" },
+  { label: "Workbench", href: "/" },
+  { label: "Phantom Secrets", href: "/secrets" },
   { label: "How it works", section: "how" },
   { label: "Pricing", href: "/pricing" },
   { label: "Enterprise", href: "/enterprise" },
@@ -20,8 +20,8 @@ const navigation = [
 const navLinkClass =
   "rounded-md px-2 py-2 text-[0.84rem] font-medium text-t2 no-underline transition-colors hover:text-t1 focus-visible:text-t1";
 
-function homeSectionHref(pathname: string, section: string) {
-  return pathname === "/" ? `#${section}` : `/#${section}`;
+function secretsSectionHref(pathname: string, section: string) {
+  return pathname === "/secrets" ? `#${section}` : `/secrets#${section}`;
 }
 
 function isCurrentPath(pathname: string, href: string) {
@@ -50,7 +50,9 @@ export function Nav() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [menuOpen]);
 
-  const installHref = homeSectionHref(pathname, "install");
+  const isWorkbenchHome = pathname === "/";
+  const installHref = isWorkbenchHome ? "https://verse.ashlr.ai/#start" : secretsSectionHref(pathname, "install");
+  const githubHref = isWorkbenchHome ? "https://github.com/ashlrai/ashlr-hub" : "https://github.com/ashlrai/phantom-secrets";
 
   return (
     <nav
@@ -93,7 +95,7 @@ export function Nav() {
         <div className="hidden items-center gap-1 lg:flex">
           {navigation.map((item) => {
             const href = "section" in item
-              ? homeSectionHref(pathname, item.section)
+              ? secretsSectionHref(pathname, item.section)
               : item.href;
             const active = "href" in item && isCurrentPath(pathname, item.href);
 
@@ -112,8 +114,8 @@ export function Nav() {
 
         <div className="flex items-center gap-2 sm:gap-3">
           <a
-            href="https://github.com/ashlrai/phantom-secrets"
-            aria-label="View Phantom Secrets source on GitHub"
+            href={githubHref}
+            aria-label={isWorkbenchHome ? "View Phantom workbench source on GitHub" : "View Phantom Secrets source on GitHub"}
             className="hidden min-h-10 items-center justify-center gap-2 rounded-md border border-border bg-s2 px-3.5 py-2 text-[0.82rem] font-semibold text-t2 no-underline transition-colors hover:border-blue hover:text-t1 sm:inline-flex"
           >
             <Github aria-hidden className="h-3.5 w-3.5" />
@@ -128,7 +130,7 @@ export function Nav() {
             }}
             className="inline-flex min-h-10 items-center rounded-md bg-blue-action px-3.5 py-2 text-[0.82rem] font-semibold text-white no-underline transition-all duration-200 hover:-translate-y-px hover:bg-blue-action-d hover:shadow-[0_4px_18px_rgba(59,130,246,0.4)] sm:px-4"
           >
-            Install Secrets
+            {isWorkbenchHome ? "Get Phantom" : "Install Secrets"}
           </Link>
 
           <button
@@ -166,7 +168,7 @@ export function Nav() {
         <div className="mx-auto grid max-w-[1200px] gap-1">
           {navigation.map((item) => {
             const href = "section" in item
-              ? homeSectionHref(pathname, item.section)
+              ? secretsSectionHref(pathname, item.section)
               : item.href;
             const active = "href" in item && isCurrentPath(pathname, item.href);
 

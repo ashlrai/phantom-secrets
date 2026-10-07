@@ -13,13 +13,13 @@ export function Hero() {
           Phantom Secrets · API key security for coding agents
         </p>
 
-        <h2 id="secrets-title" className="mt-7 text-[clamp(2.7rem,6.4vw,4.9rem)] font-extrabold leading-[0.98] tracking-[-0.05em] text-white">
+        <h1 id="secrets-title" className="mt-7 text-[clamp(2.7rem,6.4vw,4.9rem)] font-extrabold leading-[0.98] tracking-[-0.05em] text-white">
           Let AI coding agents use APIs.
           {" "}
           <span className="mt-2 block bg-gradient-to-br from-blue-b via-blue to-blue-d bg-clip-text text-transparent">
             Keep provider keys out of their context.
           </span>
-        </h2>
+        </h1>
 
         <p className="mx-auto mt-6 max-w-[650px] text-[1rem] leading-[1.7] text-t2 sm:text-[1.06rem]">
           Phantom Secrets is an open-source, local-first credential boundary. It moves

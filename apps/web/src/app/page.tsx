@@ -1,22 +1,9 @@
 import type { Metadata } from "next";
-import { CTA } from "@/components/landing/CTA";
-import { Comparison } from "@/components/landing/Comparison";
-import { DocumentationGateway } from "@/components/landing/DocumentationGateway";
-import { Ecosystem } from "@/components/landing/Ecosystem";
-import { EvidenceLedger } from "@/components/landing/EvidenceLedger";
-import { FAQ } from "@/components/landing/FAQ";
-import { Features } from "@/components/landing/Features";
-import { Hero } from "@/components/landing/Hero";
-import { Install } from "@/components/landing/Install";
-import { LandingStructuredData } from "@/components/landing/LandingStructuredData";
 import { Nav } from "@/components/landing/Nav";
-import { Pricing } from "@/components/landing/Pricing";
-import { QuickStart } from "@/components/landing/QuickStart";
-import { RequestTrace } from "@/components/landing/RequestTrace";
 import { SiteFooter } from "@/components/landing/SiteFooter";
-import { TrustBoundary } from "@/components/landing/TrustBoundary";
-import { Transformation } from "@/components/landing/Transformation";
 import { WorkbenchHero } from "@/components/landing/WorkbenchHero";
+import { PhantomWorldScene } from "@/components/landing/PhantomWorldScene";
+import { WorkbenchIntegrations } from "@/components/landing/WorkbenchIntegrations";
 
 export const metadata: Metadata = {
   title: { absolute: "Phantom — Engineering agents, together" },
@@ -40,30 +27,26 @@ export const metadata: Metadata = {
 };
 
 export default function Home() {
-  return (
-    <>
-      <Nav />
-      <LandingStructuredData />
-      <main id="main-content" tabIndex={-1} className="landing-shell elite-landing">
-        <div className="phantom-workbench-surface">
-          <WorkbenchHero />
+  return <><Nav /><main id="main-content" tabIndex={-1} className="phantom-workbench-surface">
+    <WorkbenchHero />
+    <div className="phantom-home-content">
+      <PhantomWorldScene />
+      <WorkbenchIntegrations />
+      <section id="phantom-secrets" className="phantom-secrets-bridge" aria-labelledby="secrets-bridge-title">
+        <h2 id="secrets-bridge-title">Phantom Secrets. A boundary for your credentials.</h2>
+        <p>The local-first Secrets CLI and MCP server keep real API keys out of supported agent paths. See its installation, client setup and reviewed release evidence on the dedicated product page.</p>
+        <a href="/secrets">Explore Phantom Secrets →</a>
+        <p>Looking for an existing Secrets section?</p>
+        <div className="phantom-workbench__actions">
+          <a id="how" href="/secrets#how">How it works</a>
+          <a id="features" href="/secrets#features">Secrets features</a>
+          <a id="install" href="/secrets#install">Install Secrets</a>
+          <a id="connect" href="/secrets#connect">Connect a client</a>
+          <a id="comparison" href="/secrets#comparison">Compare the credential boundary</a>
+          <a id="pricing" href="/secrets#pricing">Secrets pricing</a>
+          <a id="faq" href="/secrets#faq">Secrets questions</a>
         </div>
-        <Hero />
-        <Ecosystem />
-        <Transformation />
-        <RequestTrace />
-        <QuickStart />
-        <Install />
-        <TrustBoundary />
-        <Features />
-        <Comparison />
-        <DocumentationGateway />
-        <EvidenceLedger />
-        <Pricing />
-        <FAQ />
-        <CTA />
-      </main>
-      <SiteFooter />
-    </>
-  );
+      </section>
+    </div>
+  </main><SiteFooter /></>;
 }

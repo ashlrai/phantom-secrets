@@ -29,6 +29,7 @@ const claimPaths = [
   "src/app/layout.tsx",
   "src/app/manifest.ts",
   "src/app/page.tsx",
+  "src/app/secrets/page.tsx",
   "src/app/pricing/page.tsx",
   "src/app/enterprise/page.tsx",
   "src/app/government/page.tsx",
@@ -37,7 +38,11 @@ const claimPaths = [
   "src/lib/public-release.ts",
   ...filesUnder("src/app/dashboard", [".tsx"]),
   ...filesUnder("src/components/landing", [".tsx"]),
-  ...filesUnder("public", [".json", ".txt"]),
+  // Unmodified legal notices are attribution, not product capability claims.
+  ...filesUnder("public", [".json", ".txt"]).filter((file) => ![
+    "public/phantom-world/phantom-mark.LICENSE.txt",
+    "public/phantom-world/provider-marks-LICENSE.txt",
+  ].includes(file)),
 ];
 
 function read(relativePath) {
@@ -114,7 +119,11 @@ const repositoryGuidanceClaims = {
 };
 
 const machineReadablePaths = [
-  ...filesUnder("public", [".json", ".txt"]),
+  // Unmodified legal notices are attribution, not product capability claims.
+  ...filesUnder("public", [".json", ".txt"]).filter((file) => ![
+    "public/phantom-world/phantom-mark.LICENSE.txt",
+    "public/phantom-world/provider-marks-LICENSE.txt",
+  ].includes(file)),
   "src/app/layout.tsx",
   "src/app/manifest.ts",
   "src/app/sitemap.ts",

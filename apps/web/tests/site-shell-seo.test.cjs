@@ -23,6 +23,7 @@ const seoWorkflow = fs.readFileSync(
 );
 const publicPages = {
   "/": read("src/app/page.tsx"),
+  "/secrets": read("src/app/secrets/page.tsx"),
   "/pricing": read("src/app/pricing/page.tsx"),
   "/enterprise": read("src/app/enterprise/page.tsx"),
   "/government": read("src/app/government/page.tsx"),
@@ -33,7 +34,7 @@ test("primary navigation works from the home page and nested routes", () => {
   assert.match(nav, /usePathname/);
   assert.match(
     nav,
-    /pathname === "\/" \? `#\$\{section\}` : `\/#\$\{section\}`/,
+    /pathname === "\/secrets" \? `#\$\{section\}` : `\/secrets#\$\{section\}`/,
   );
   assert.match(nav, /href: "\/pricing"/);
   assert.match(nav, /href: "\/enterprise"/);
@@ -130,7 +131,7 @@ test("each public route owns its canonical and social metadata", () => {
   assert.match(publicPages["/"], /openGraph:\s*\{[\s\S]*?url: "\/"/);
   assert.match(publicPages["/"], /images: \[\{ url: "\/og-image\.png"/);
 
-  for (const route of ["/pricing", "/enterprise", "/government", "/security"]) {
+  for (const route of ["/secrets", "/pricing", "/enterprise", "/government", "/security"]) {
     const source = publicPages[route];
     const escapedRoute = route.replaceAll("/", "\\/");
     assert.match(source, /title: \{ absolute: title \}/, route);
@@ -151,6 +152,7 @@ test("each public route owns its canonical and social metadata", () => {
 test("sitemap contains only canonical same-host public surfaces", () => {
   for (const route of [
     "/",
+    "/secrets",
     "/pricing",
     "/enterprise",
     "/government",
