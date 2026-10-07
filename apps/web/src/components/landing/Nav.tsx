@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { capturePostHog } from "@/lib/posthog";
 import { legacySecretsDestination } from "@/lib/legacy-secrets-fragment";
 import { Github } from "./Icons";
@@ -33,6 +33,7 @@ export function Nav() {
   const pathname = usePathname();
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
@@ -45,7 +46,10 @@ export function Nav() {
     if (!menuOpen) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        setMenuOpen(false);
+        menuTrigger.current?.focus();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -148,6 +152,7 @@ export function Nav() {
           </Link>
 
           <button
+            ref={menuTrigger}
             type="button"
             aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"}
             aria-expanded={menuOpen}
@@ -201,7 +206,8 @@ export function Nav() {
             );
           })}
           <a
-            href="https://github.com/ashlrai/phantom-secrets"
+            href={githubHref}
+            aria-label={isWorkbenchHome ? "View Phantom workbench source on GitHub" : "View Phantom Secrets source on GitHub"}
             onClick={() => setMenuOpen(false)}
             className="flex items-center gap-2 rounded-lg px-3 py-3 text-[0.92rem] font-medium text-t2 no-underline transition-colors hover:bg-s2 hover:text-t1 sm:hidden"
           >

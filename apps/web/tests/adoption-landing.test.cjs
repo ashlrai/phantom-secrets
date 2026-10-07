@@ -191,12 +191,13 @@ test("site links to GitHub neutrally and never asks visitors to star or upvote",
 
   for (const file of [
     "src/components/landing/Hero.tsx",
-    "src/components/landing/Nav.tsx",
     "src/components/landing/SocialProof.tsx",
   ]) {
     assert.match(read(file), /href="https:\/\/github\.com\/ashlrai\/phantom-secrets"/, file);
     assert.match(read(file), /View (?:the source )?on GitHub/, file);
   }
+  // Nav chooses the product per route; landing-interactions tests its rendered
+  // desktop and mobile links instead of requiring a hardcoded Secrets href.
 });
 
 // The replay has a real lifecycle: client navigation must leave no listener,
