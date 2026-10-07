@@ -38,11 +38,11 @@ export function Hero() {
           </a>
           <a
             href="https://github.com/ashlrai/phantom-secrets"
-            aria-label="Star Phantom Secrets on GitHub"
+            aria-label="View Phantom Secrets source on GitHub"
             className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-border-l bg-s1 px-5 py-2.5 text-[0.9rem] font-semibold text-t1 no-underline transition-colors hover:border-blue"
           >
             <Github className="h-4 w-4" aria-hidden="true" />
-            Star Phantom Secrets on GitHub
+            View on GitHub
           </a>
         </div>
 

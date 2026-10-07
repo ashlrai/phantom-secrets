@@ -31,6 +31,15 @@ const RELEVANT_ENV_NAMES = [
   "PHANTOM_PUBLIC_AUTH_CONFIGURATION_FINGERPRINT",
 ];
 
+// This test runs two full `next build`s plus two `next start`s. Each build
+// takes about 55 s on an idle 8-core machine and over 100 s when the rest of
+// the suite (or a concurrent cargo test run) shares the CPU. The old 180 s
+// budget left under 2x headroom, so the test was cancelled under load even
+// though nothing was wrong. These budgets bound a hang; they are not a
+// performance assertion.
+const BUILD_TEST_TIMEOUT_MS = 600_000;
+const SERVER_READY_TIMEOUT_MS = 90_000;
+
 function cleanEnvironment(values = {}) {
   const env = { ...process.env, NEXT_TELEMETRY_DISABLED: "1", ...values };
   for (const name of RELEVANT_ENV_NAMES) {
@@ -59,13 +68,28 @@ function copyApplication(destination) {
   );
 }
 
+// `next build` downloads the Google fonts used by src/app/layout.tsx. A
+// transient bad response from the font CDN fails the build inside `next/font`
+// (seen in CI as "TypeError: Cannot read properties of null (reading '1')"),
+// which has nothing to do with the readiness behavior under test. Retry only
+// that failure, once; every other build failure still fails immediately.
+const FONT_FETCH_FAILURE = "An error occurred in `next/font`";
+
 function buildApplication(directory, publicConfiguration) {
-  const result = spawnSync(process.execPath, [nextCli, "build"], {
-    cwd: directory,
-    env: cleanEnvironment(publicConfiguration),
-    encoding: "utf8",
-    maxBuffer: 10 * 1024 * 1024,
-  });
+  const runBuild = () =>
+    spawnSync(process.execPath, [nextCli, "build"], {
+      cwd: directory,
+      env: cleanEnvironment(publicConfiguration),
+      encoding: "utf8",
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  let result = runBuild();
+  if (
+    result.status !== 0 &&
+    `${result.stdout}${result.stderr}`.includes(FONT_FETCH_FAILURE)
+  ) {
+    result = runBuild();
+  }
   assert.equal(
     result.status,
     0,
@@ -124,7 +148,7 @@ async function readProductionReadiness(directory, runtimeValues) {
 
   try {
     const url = `http://127.0.0.1:${port}/api/v1/ready`;
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + SERVER_READY_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (child.exitCode !== null) {
         assert.fail(`production server exited early (${child.exitCode}):\n${output}`);
@@ -150,7 +174,7 @@ async function readProductionReadiness(directory, runtimeValues) {
 
 test(
   "production readiness uses browser configuration frozen at build time",
-  { timeout: 180_000 },
+  { timeout: BUILD_TEST_TIMEOUT_MS },
   async () => {
     const temporaryRoot = fs.mkdtempSync(
       path.join(os.tmpdir(), "phantom-web-readiness-"),

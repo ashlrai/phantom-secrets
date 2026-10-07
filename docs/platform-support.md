@@ -17,11 +17,13 @@ documentation tranche. The immutable `v0.7.9` GitHub release resolves to
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`; its 19 assets were verified after all six
 native-release rows and release attestations passed in
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556). That
-does not validate the published npm wrapper installation path. The 2026-10-06
-registry readback finds both npm `latest` packages and the active MCP Registry
-listing at `0.7.9`; crates.io remains at `0.5.1`. The earlier `0.7.4` candidate
-failed independently. No exact published npm `0.7.9` six-host acceptance receipt
-is claimed here.
+does not validate the published npm wrapper installation path. The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 ## Current matrix
 
@@ -101,7 +103,7 @@ remaining operating-system integrations below.
 | Core CLI, vault, proxy, MCP source | Implemented | Implemented | Implemented |
 | Native credential store | Keychain integration | Kernel keyutils by default; explicit trusted-terminal migration to persistent desktop Secret Service; encrypted-file fallback for CI/headless use | Credential Manager integration |
 | Provider-grant design source and value-free metadata | Present | Present | Present |
-| Provider issuance/enrollment/renewal/revocation | Hard-denied before credential/network access in 0.7.8 | Hard-denied before credential/network access in 0.7.8 | Hard-denied before credential/network access in 0.7.8 |
+| Provider issuance/enrollment/renewal/revocation | Hard-denied before credential/network access in 0.7.9 | Hard-denied before credential/network access in 0.7.9 | Hard-denied before credential/network access in 0.7.9 |
 | Workspace inspect/propose/request | Implemented | Implemented | Inspect/propose only |
 | Durable workspace apply | Descriptor-relative Unix implementation | Descriptor-relative Unix implementation | Fails closed |
 | Durable broker replay foundation | Unix implementation | Unix implementation | Fails closed |
@@ -159,9 +161,9 @@ acceptance and never place provider client secrets on the command line.
   `7a51ce512ec4aee12cc29ff859036af63fbe93db` and runs
   `cargo build --release --locked --bin phantom --bin phantom-mcp`. An unpinned
   crates.io install currently resolves the older `0.5.1` track.
-- The npm packages' `latest` tags independently resolve `0.7.9` in the
-  2026-10-06 readback. Both exact tarballs match their registry SHA-512 integrity.
-  This is not a six-host installation-acceptance receipt for the published wrappers.
+- Both npm packages' `latest` tags resolve `0.7.9`; the downloaded exact
+  tarballs match registry SHA-512 integrity. This does not prove published-wrapper
+  six-host installation acceptance.
 - `scripts/install.sh` supports macOS and GNU Linux targets. Native Windows uses
   `scripts/install.ps1`; both scripts verify bounded HTTPS downloads, strict
   sidecar checksums, archive shape, and binary identity before promotion.

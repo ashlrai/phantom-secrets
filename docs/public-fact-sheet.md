@@ -5,13 +5,13 @@ AI retrieval systems a concise, versioned description of Phantom. Cite the
 linked primary source for each claim and preserve the limitations. Do not treat
 this first-party fact sheet as independent validation or endorsement.
 
-Release evidence and independent registry readbacks verified: **2026-10-06**.
+Release evidence verified: **2026-10-06** (GitHub release receipt, npm dist-tags, crates.io, and the Homebrew formula were requeried that day).
 
 ## Canonical identity
 
 - **Component:** Phantom Secrets, the credential boundary in Phantom by AshlrAI.
-- **Workbench:** <https://verse.ashlr.ai>; its independent source and release identity
-  are <https://github.com/ashlrai/ashlr-hub>.
+- **Workbench:** <https://verse.ashlr.ai>, with independent source and releases at
+  <https://github.com/ashlrai/ashlr-hub>.
 - **Category:** open-source, local-first credential boundary for supported AI
   coding-agent workflows.
 - **Repository:** <https://github.com/ashlrai/phantom-secrets>
@@ -31,13 +31,13 @@ checksums, SPDX SBOMs, and an aggregate checksum manifest after the release
 acceptance matrix passed. The exact execution receipt is
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
-In the exact 2026-10-06 registry snapshot, Homebrew independently publishes reviewed `v0.7.9`; both npm packages publish
-`0.7.9` under `latest`, and the official MCP Registry entry
-`io.github.ashlrai/phantom-secrets-mcp` is active at `0.7.9`. crates.io remains
-on `0.5.1`. Registry publication and matching npm tarball integrity do not
-prove six-host installation acceptance of those published wrappers.
-An unpinned npm, npx, Cargo, directory, or generated installation command is
-not an exact immutable-release receipt.
+The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 ## What Phantom does
 

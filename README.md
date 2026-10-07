@@ -18,7 +18,6 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
 
 [**Quick start**](#quick-start) ·
-[**⭐ Star Phantom**](https://github.com/ashlrai/phantom-secrets) ·
 [**Delegate safely**](docs/delegation-quickstart.md) ·
 [**Why Phantom?**](#why-phantom) ·
 [**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex) ·
@@ -30,29 +29,23 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 
 ---
 
+## Install
+
+```bash
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
+```
+
+macOS via Homebrew; installs `phantom` and `phantom-mcp` (reviewed `v0.7.9`). Linux and Windows:
+use the matching [release asset](#exact-v079-github-assets). Then run
+`phantom init` in your project and `phantom setup --client claude` (or
+`cursor`, `windsurf`, `codex`). Full walkthrough: [Quick Start](#quick-start).
+
 > **▶ [Historical v0.4 demo — current behavior differs](https://github.com/ashlrai/phantom-secrets/releases/download/v0.4.0/phantom-demo.mp4)** &nbsp;·&nbsp;
 > **🛡 [Security model](SECURITY.md)** &nbsp;·&nbsp;
 > **📋 [Threat model](THREAT_MODEL.md)** &nbsp;·&nbsp;
 > **💬 [Discussions](https://github.com/ashlrai/phantom-secrets/discussions)**
-
-> [!IMPORTANT]
-> **Release-state snapshot (verified 2026-10-06):** the
-> immutable `v0.7.9` GitHub release at source commit
-> `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19-asset release set,
-> checksums, archive-specific SPDX SBOMs, GitHub provenance and SBOM
-> attestations, and all six native release rows are bound to that immutable
-> release record by tag-bound workflow
-> [34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-> Exact public registry endpoints were requeried on 2026-10-06. Homebrew independently publishes reviewed `v0.7.9`; both npm packages publish
-> `0.7.9` under `latest`, and the official MCP Registry entry
-> `io.github.ashlrai/phantom-secrets-mcp` is active at `0.7.9`. crates.io remains
-> on `0.5.1`. Registry publication and matching npm tarball integrity do not
-> prove six-host installation acceptance of those published wrappers. The GitHub receipt alone does not prove the separately
-> verified Homebrew formula, an npm or crates.io package, MCP Registry entry, hosted-service
-> commissioning, provider activation, signing/notarization, certification, or
-> customer acceptance. See
-> [release readiness](docs/release-readiness.md) and
-> [platform support](docs/platform-support.md).
 
 ## Start here
 
@@ -65,6 +58,7 @@ Phantom.
 | See the delegation boundary with no secret or setup | Run `node examples/first-five-minutes/run.mjs`, then read the [first-five-minutes walkthrough](examples/first-five-minutes/README.md) | A deterministic, read-only example contract; not vault, proxy, provider, or deployment acceptance. |
 | Protect a real local project | Follow [Quick Start](#quick-start) with the reviewed `v0.7.9` GitHub release | Local initialization and diagnostics on your machine. |
 | Connect an AI coding client | Complete the [first MCP task](#first-mcp-task-verify-the-boundary) | Value-blind capability, status, and repository checks; no provider action. |
+| Copy a tested client or CI setup | Run the [Claude Code](examples/claude-code/README.md), [Cursor](examples/cursor/README.md), or [GitHub Actions](examples/github-actions/README.md) recipe (`node examples/<name>/run.mjs`) | Each recipe runs your `phantom` binaries (from `PATH` or `--phantom <path>`) in a temporary HOME with a fake, non-provider key and is exercised in CI. |
 | Define a bounded task for an agent | Use the [safe delegation quickstart](docs/delegation-quickstart.md) | A reviewable task contract with explicit authority and acceptance boundaries. |
 | Evaluate a team rollout | Use the [enterprise adoption guide](docs/enterprise-adoption.md) | A controlled evaluation plan; not a claim of commissioned cloud or enterprise service. |
 | Audit the trust model first | Read the [security model](SECURITY.md) and [threat model](THREAT_MODEL.md) | Documented controls, assumptions, and residual risks. |
@@ -87,7 +81,7 @@ Phantom's implemented user-facing surfaces are the CLI, vault, authenticated loc
 - `phantom_do` is **proposal-only**. It canonicalizes a closed Cargo action and reports its digest, effect, and activation blockers; `execute` is hard denied.
 - `phantom_setup_workspace` can propose setup, create a bearerless request, and report authenticated status. Applying a request remains a separate trusted-terminal operation.
 - Advanced MCP tools remain a compatibility catalog, disabled by default, with separate explicit confirmation and informed terminal-approval gates. They are not governed by the conversation facade's capability card.
-- `phantom grant` retains value-blind lifecycle metadata and design-source foundations, but 0.7.8 hard-denies every live provider issuance/renewal path before credential or network access. A provider grant is not an execution-kernel **authority grant**, broker lease, or permission for an agent to execute work.
+- `phantom grant` retains value-blind lifecycle metadata and design-source foundations, but 0.7.9 hard-denies every live provider issuance/renewal path before credential or network access. A provider grant is not an execution-kernel **authority grant**, broker lease, or permission for an agent to execute work.
 - The authority, broker, runtime, session, and evidence crates are **inactive, fail-closed foundations**. They do not establish live Locus authority, broker credentials, execute agent actions, or produce externally trusted receipts today.
 
 See the [documentation map](docs/README.md), [architecture](docs/architecture.md),
@@ -97,7 +91,7 @@ evidence behind those boundaries.
 ## Quick Start
 
 Install both binaries from the reviewed [`v0.7.9` GitHub release](#installation).
-The Homebrew formula separately publishes the reviewed `v0.7.9` binaries:
+On macOS, the separately verified Homebrew formula installs `v0.7.9`:
 
 ```bash
 $ brew tap ashlrai/phantom
@@ -200,14 +194,14 @@ Phantom does not grant AI tools permission to read `.env` or other dotenv files.
 ### Provider grants
 
 `phantom grant` retains value-blind lifecycle metadata and provider protocol
-design foundations. In 0.7.8, all live provider issuance, enrollment exchange,
+design foundations. In 0.7.9, all live provider issuance, enrollment exchange,
 refresh, renewal, and revocation execution is hard-denied before Phantom reads a
 provider credential or opens a provider network connection. Do not use grant or
 rotation commands expecting a vendor-side change. Test-only mocks demonstrate
 local transaction behavior only; they are not live-provider acceptance.
 
 In these docs, **provider grant** means design-era credential lifecycle metadata;
-no live grant flow runs in 0.7.8. **Authority grant** means the inactive, value-free execution
+no live grant flow runs in 0.7.9. **Authority grant** means the inactive, value-free execution
 authority type in `phantom-authority`. A provider grant cannot be reinterpreted
 as an authority grant, Locus credential, broker lease, or execution permit. See
 the [design-era grant lifecycle specification](docs/grants-spec.md); the
@@ -249,7 +243,7 @@ or accepted.
 compatibility names for approved local `phm_` token remaps. They do not rotate
 a provider credential, renew TTL/`rotated_at` metadata, clear leak incidents,
 or sync credentials. `phantom_rotate_provider` is also hard-denied before
-credential or network access in 0.7.8. Team invites may assign only `member` or `admin`; ownership transfer
+credential or network access in 0.7.9. Team invites may assign only `member` or `admin`; ownership transfer
 is not an invite role.
 
 Tools that write state, retrieve or use credentials, or make provider/network
@@ -273,7 +267,7 @@ reject any drift.
 54-tool compatibility catalog as deprecated hard denials. They never create,
 validate, or promote a candidate and never change vault or shadow metadata;
 `phantom_rotate_provider` is also hard-denied before credential or network
-access in 0.7.8. `phantom add` creates new names only and refuses existing-name
+access in 0.7.9. `phantom add` creates new names only and refuses existing-name
 replacement before reading a value. Replacing a credential therefore requires
 a separately reviewed provider rotation plus an explicit trusted-terminal
 remove-and-add sequence; those are distinct, non-atomic operations.
@@ -290,7 +284,7 @@ operation.
 One command per AI client — Phantom writes the right config file in the right place:
 
 ```bash
-phantom setup --client claude     # project MCP; see docs/claude-code.md for migration from v0.7.8
+phantom setup --client claude     # project MCP; see docs/claude-code.md for v0.7.9 migration
 phantom setup --client cursor     # ~/.cursor/mcp.json
 phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
 phantom setup --client codex      # ~/.codex/config.toml
@@ -396,8 +390,8 @@ dashboard is designed to show team memberships and member lists.
 | `phantom remove <KEY>` | After exact trusted-terminal confirmation, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping; headless use fails before value access or mutation |
 | `phantom reveal <KEY>` | From an attached trusted terminal, review and type the exact challenge before printing one value or copying it for an auto-cleared 30-second clipboard window |
 | `phantom status` | Show vault/mapping state and whether the machine-local lifecycle lock is held; a held lock does not authenticate or identify a listener |
-| `phantom rotate` | After an exact attached-terminal challenge bound to the project, config, managed dotenv, and sorted protected-name digest, regenerate every local phantom token (old mappings become invalid). Headless use fails before vault access or mutation. Provider-backed `--name`/`--provider` execution is hard-denied before credential or network access in 0.7.8. |
-| `phantom grant add <provider>` | Reserved provider-enrollment surface; hard-denied before credential or network access in 0.7.8. See [Provider grants](#provider-grants). |
+| `phantom rotate` | After an exact attached-terminal challenge bound to the project, config, managed dotenv, and sorted protected-name digest, regenerate every local phantom token (old mappings become invalid). Headless use fails before vault access or mutation. Provider-backed `--name`/`--provider` execution is hard-denied before credential or network access in 0.7.9. |
+| `phantom grant add <provider>` | Reserved provider-enrollment surface; hard-denied before credential or network access in 0.7.9. See [Provider grants](#provider-grants). |
 | `phantom grant list` / `status` | Read provider-grant names, providers, lifecycle state, and expiry metadata without returning credential values. |
 | `phantom grant revoke <provider>` | Reserved remote-revocation surface; currently fails closed before local mutation because provider revocation is not wired. |
 | `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair). Reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client |
@@ -426,7 +420,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom cloud status` | Authenticated provider read; requires attached trusted terminals and an exact challenge before stored-bearer or network access |
 | `phantom wrap` | Wrap package.json scripts with `phantom exec` automatically |
 | `phantom unwrap` | Restore original package.json scripts |
-| `phantom watch` | Watch managed dotenv files and report new unprotected secrets. `--auto` hard-denies before mutation in 0.7.8; use transactional `phantom init`. |
+| `phantom watch` | Watch managed dotenv files and report new unprotected secrets. `--auto` hard-denies before mutation in 0.7.9; use transactional `phantom init`. |
 | `phantom why <KEY>` | Explain why a key is or is not protected |
 | `phantom copy <KEY>` | Copy a secret to an initialized target after exact trusted-terminal confirmation; refuses existing target vault, config, or managed-dotenv ownership rather than overwriting |
 | `phantom team list/members` | Authenticated, value-blind provider reads. CLI requires attached trusted terminals and an exact challenge before bearer/network access; MCP requires `confirm` plus out-of-band approval. |
@@ -440,7 +434,7 @@ dashboard is designed to show team memberships and member lists.
 
 ## Rotating real provider credentials
 
-Phantom 0.7.8 does **not** execute live provider issuance or rotation. Every
+Phantom 0.7.9 does **not** execute live provider issuance or rotation. Every
 provider path—single-provider CLI, batch CLI, MCP, grant enrollment, additive
 issuance, and destructive/rolling refresh—is hard-denied before provider
 credential access and before network I/O. Operators must rotate at the vendor,
@@ -452,7 +446,7 @@ commissioning, or acceptance.
 
 | Provider | Support | Notes |
 |----------|---------|-------|
-| `vercel` | Hard denied | Additive issuance can orphan a live successor after a local failure; no provider call in 0.7.8 |
+| `vercel` | Hard denied | Additive issuance can orphan a live successor after a local failure; no provider call in 0.7.9 |
 | `google` | Hard denied | Secret Manager version creation remains disabled pending durable successor recovery and verified abort |
 | `github` | Hard denied | GitHub App installation-token issuance remains disabled pending the same recovery contract |
 | `stripe` | Hard denied | Raw keys are manual; rolling OAuth refresh can invalidate the predecessor before successor recovery |
@@ -492,7 +486,7 @@ fails closed before vendor execution. No single-provider exception exists.
 
 ## Installation
 
-### Homebrew (macOS, v0.7.9)
+### Homebrew (macOS; v0.7.9)
 
 Homebrew 6 requires explicit formula trust for third-party taps:
 
@@ -536,11 +530,30 @@ $ cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
 Do not treat unpinned package-manager commands as an exact release receipt.
-The 2026-10-06 independent registry readback finds npm `0.7.9` on both `latest`
-tags, the active MCP Registry `0.7.9` listing, and Homebrew `v0.7.9`. crates.io
-remains on `0.5.1`. The historical npm `0.7.4` acceptance failure does not
-describe the newer packages. Exact published-wrapper six-host acceptance is
-not claimed by this native GitHub release receipt.
+The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry active at `0.7.9`.
+crates.io remains at `0.5.1`. Matching npm integrity and registry discovery do
+not prove six-host installation acceptance of the published wrappers.
+
+
+### Release-state snapshot
+
+> [!IMPORTANT]
+> **Release-state snapshot (verified 2026-10-06):** the current release is the
+> immutable `v0.7.9` GitHub release at source commit
+> `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19-asset release set,
+> checksums, archive-specific SPDX SBOMs, GitHub provenance and SBOM
+> attestations, and all six native release rows are bound to that immutable
+> release record by tag-bound workflow
+> [34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
+> The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+> packages at `0.7.9`, and the official MCP Registry entry
+> `io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+> at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+> six-host installation acceptance of the published wrappers. The native GitHub
+> release receipt does not prove hosted commissioning, provider activation,
+> certification or customer acceptance.
+> See [release readiness](docs/release-readiness.md) and [platform support](docs/platform-support.md).
 
 ### Connect an MCP client
 
@@ -559,7 +572,7 @@ The Rust workspace is organized as product crates plus fail-closed execution-ker
 | Product | `phantom-proxy` | Authenticated loopback reverse proxy with fixed route-owned auth-header injection, inert client tokens, response scrubbing, and streaming support. |
 | Product | `phantom-cli` | Operator CLI for initialization, proxy lifecycle, readiness, audit, import/export, sync, team, and workspace workflows. |
 | Product | `phantom-mcp` | Stdio MCP server. The governed conversation facade is narrow; the advanced compatibility catalog uses separate legacy gates. |
-| Product | `phantom-core/src/issuance`, CLI `grant` | Provider protocol/design foundations and value-free grant metadata. All live provider issuance/enrollment execution is hard-denied before credential or network access in 0.7.8. |
+| Product | `phantom-core/src/issuance`, CLI `grant` | Provider protocol/design foundations and value-free grant metadata. All live provider issuance/enrollment execution is hard-denied before credential or network access in 0.7.9. |
 | Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained project/config directory capabilities, exact identity/content/permission before-images, no-follow targets, single-link checks, and typed durable, committed-verified-with-durability-warning, or `CommittedButUncertain` (**Partial**) effects. |
 | Setup kernel | `phantom-workspace` | Value-blind discovery, sealed planning, and recoverable trusted-terminal setup transactions. Non-Unix durable mutation fails closed. |
 | Inactive foundation | `phantom-authority` | Closed authority contracts and deny-all production verification boundary. No live Locus verifier. |
@@ -605,12 +618,9 @@ dependency, and the comparison is not a feature or platform-parity claim.
 
 **`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
 
-**Registry tracks (verified 2026-10-06)**: npm `latest` resolves
-[`phantom-secrets`](https://www.npmjs.com/package/phantom-secrets) and
-[`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) at
-`0.7.9`. The official MCP Registry entry is active at `0.7.9`. These independent
-publication and integrity receipts do not claim six-host installation acceptance
-of the published wrappers; direct native archives retain their own release receipt.
+**Registry tracks (verified 2026-10-06)**: both npm `latest` packages and the
+active official MCP Registry entry publish `0.7.9`; published-wrapper native
+acceptance remains separate from these metadata and integrity receipts.
 
 CI runs locked, all-target workspace builds and tests on macOS, Linux, and Windows runner environments, plus formatting, Clippy, and npm release-mapping checks. Release builds and native end-to-end acceptance are separate evidence layers; see [Platform support](docs/platform-support.md).
 
@@ -678,8 +688,6 @@ project does not assume that a `good first issue` label is populated. Follow
     <img alt="Phantom Secrets star history" src="https://api.star-history.com/svg?repos=ashlrai/phantom-secrets&type=Date" />
   </picture>
 </a>
-
-If Phantom saves you from leaking a key — or even just from worrying about it — please **[star the repo ⭐](https://github.com/ashlrai/phantom-secrets/stargazers)**. It's the single biggest signal we use to know what to build next.
 
 ## License
 

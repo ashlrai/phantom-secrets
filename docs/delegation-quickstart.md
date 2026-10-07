@@ -15,7 +15,7 @@ You need:
 
 - a Git repository and a supported local shell;
 - both `phantom` and `phantom-mcp` from the reviewed `v0.7.9` GitHub release,
-  or the separately reviewed Homebrew `v0.7.9` distribution;
+  or the separately reviewed Homebrew distribution (still `v0.7.8` until bumped);
 - the AI client you intend to use; and
 - an independent recoverable copy of each real credential, such as the
   provider's credential console or an approved password manager.

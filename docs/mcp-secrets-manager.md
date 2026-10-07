@@ -139,6 +139,6 @@ under a human-approved mandate. It should not let an agent accept legal terms,
 enter payment data, bypass CAPTCHA or MFA, alter account recovery, or obtain
 root/admin credentials.
 
-Inspect and star the
-[Phantom source repository](https://github.com/ashlrai/phantom-secrets) if the
-value-blind MCP model fits your workflow.
+Inspect the
+[Phantom source repository](https://github.com/ashlrai/phantom-secrets) to
+evaluate whether the value-blind MCP model fits your workflow.

@@ -33,13 +33,13 @@ Release-state snapshot, verified 2026-10-06: the reviewed immutable GitHub
 release is `v0.7.9` at source commit
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets, all six native
 release rows, checksums, archive-specific SPDX SBOMs, and GitHub attestations
-were verified. Homebrew independently publishes reviewed `v0.7.9`; both npm packages publish
-`0.7.9` under `latest`, and the official MCP Registry entry
-`io.github.ashlrai/phantom-secrets-mcp` is active at `0.7.9`. crates.io remains
-on `0.5.1`. Registry publication and matching npm tarball integrity do not
-prove six-host installation acceptance of those published wrappers. The GitHub release receipt alone is not proof of npm,
-crates.io, MCP Registry, or the independently verified Homebrew publication, a deployed provider integration,
-a commissioned hosted entitlement, certification, or customer acceptance.
+were verified. The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 ## Response expectations
 

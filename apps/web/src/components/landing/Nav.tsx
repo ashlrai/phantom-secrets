@@ -113,11 +113,11 @@ export function Nav() {
         <div className="flex items-center gap-2 sm:gap-3">
           <a
             href="https://github.com/ashlrai/phantom-secrets"
-            aria-label="Star Phantom Secrets on GitHub"
+            aria-label="View Phantom Secrets source on GitHub"
             className="hidden min-h-10 items-center justify-center gap-2 rounded-md border border-border bg-s2 px-3.5 py-2 text-[0.82rem] font-semibold text-t2 no-underline transition-colors hover:border-blue hover:text-t1 sm:inline-flex"
           >
             <Github aria-hidden className="h-3.5 w-3.5" />
-            Star on GitHub
+            View on GitHub
           </a>
 
           <Link
@@ -190,7 +190,7 @@ export function Nav() {
             className="flex items-center gap-2 rounded-lg px-3 py-3 text-[0.92rem] font-medium text-t2 no-underline transition-colors hover:bg-s2 hover:text-t1 sm:hidden"
           >
             <Github aria-hidden className="h-4 w-4" />
-            Star Phantom Secrets on GitHub
+            View on GitHub
           </a>
         </div>
       </div>

@@ -34,7 +34,7 @@ command to configure the current runtime.
 
 Install both current binaries from the
 [`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
-The macOS trusted formula is the separately reviewed `v0.7.9` path:
+The macOS trusted formula independently publishes reviewed `v0.7.9`:
 
 ```bash
 brew tap ashlrai/phantom

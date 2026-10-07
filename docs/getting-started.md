@@ -12,7 +12,7 @@ phantom exec -- claude     # run Claude Code with real secrets injected by proxy
 ```
 
 The Homebrew command above installs the independently verified `v0.7.9`
-formula from the exact 2026-10-06 registry snapshot. On Linux
+formula. On Linux
 or Windows, or when you want to verify an exact archive directly, select the
 matching platform asset below.
 
@@ -40,7 +40,7 @@ For a detailed breakdown of assets protected, threat actors, mitigations, and kn
 
 ## Install
 
-### Homebrew (macOS, reviewed v0.7.9)
+### Homebrew (macOS; v0.7.9)
 
 ```bash
 brew tap ashlrai/phantom
@@ -48,9 +48,8 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-The formula currently installs both `phantom` and `phantom-mcp` from the
-immutable [`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
-Homebrew publication is independently tested and maintained from GitHub
+The formula installs both `phantom` and `phantom-mcp` from the immutable
+`v0.7.9` release. Homebrew publication is independently maintained from GitHub
 Releases; use a direct asset below when you want explicit archive verification.
 
 ### Exact GitHub assets (macOS, Linux, and Windows)
@@ -85,10 +84,13 @@ cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
 The full SHA above is the source commit resolved by `v0.7.9`. Do not treat an
-unpinned registry install as that release. The 2026-10-06 independent readback
-finds both npm `latest` packages and the active official MCP Registry listing
-at `0.7.9`; crates.io remains at `0.5.1`. Matching npm integrity and registry
-discovery do not prove six-host installation acceptance of the published wrappers.
+unpinned registry install as that release. The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 ### Verify
 
@@ -98,6 +100,8 @@ phantom-mcp --version
 # phantom 0.7.9
 # phantom-mcp 0.7.9
 ```
+
+The independently verified Homebrew formula also installs `0.7.9`.
 
 ---
 

@@ -8,14 +8,13 @@ Release-state snapshot verified on 2026-10-06: the immutable GitHub release
 native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
 provenance and SPDX attestations are bound to that immutable release by
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-Exact public registry endpoints were requeried on 2026-10-06. Homebrew independently publishes reviewed `v0.7.9`; both npm packages publish
-`0.7.9` under `latest`, and the official MCP Registry entry
-`io.github.ashlrai/phantom-secrets-mcp` is active at `0.7.9`. crates.io remains
-on `0.5.1`. Registry publication and matching npm tarball integrity do not
-prove six-host installation acceptance of those published wrappers.
-The GitHub receipt alone does not establish any separately published registry
-channel, hosted-service commissioning, provider activation, certification, or
-customer acceptance.
+The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 ## Start here
 
@@ -30,7 +29,7 @@ customer acceptance.
 | Understand commercial support boundaries | [Commercial support](commercial-support.md) |
 | Use the project name or logo accurately | [Project name and logo use](trademark-policy.md) |
 | Diagnose an install, vault, proxy, or cloud problem | [Troubleshooting](troubleshooting.md) |
-| Understand the provider-grant design and 0.7.8 universal hard denial | [Provider grants](grants-spec.md) |
+| Understand the provider-grant design and 0.7.9 universal hard denial | [Provider grants](grants-spec.md) |
 | Understand components, trust boundaries, and activation status | [Architecture](architecture.md) |
 | Review the Rama-derived network engineering standard and adoption gates | [Rama design standard](rama-design-standard.md) |
 | Understand supported operating systems, architectures, and current validation | [Platform support](platform-support.md) |
@@ -46,7 +45,7 @@ customer acceptance.
 These guides cover installation, MCP setup, the value-blind tool model, and daily workflows:
 
 - [Safe delegation quickstart](delegation-quickstart.md) for the common cross-client workflow
-- [Hub status contract](hub-status-contract.md) for value-free local-orchestrator inspection (released v0.7.9)
+- [Hub status contract](hub-status-contract.md) for value-free local-orchestrator inspection (shipped in v0.7.9)
 - [Installed-runtime smoke](../examples/agent-first-five-minutes/README.md) for disposable CLI and MCP checks
 - [Claude Code](claude-code.md)
 - [Codex](codex.md)
@@ -57,7 +56,7 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 
 The small conversation facade and the advanced MCP compatibility catalog are separate contracts. `phantom_do` is proposal-only and does not execute an action. `phantom_setup_workspace` can propose, create a bearerless request, or report status; applying that request requires a separate attached trusted terminal. Effectful advanced tools are disabled by default; `PHANTOM_MCP_EFFECTS=trusted-terminal` may enable their confirmation and one-use approval gates only when configured outside agent authority. Approval requires attached stdin/stderr, an informed value-blind summary, and a fresh typed challenge. A same-user shell or agent-controlled PTY can defeat the ceremony, so the approval command and storage must also be outside agent authority.
 
-Provider issuance is not active in 0.7.8: every live enrollment exchange,
+Provider issuance is not active in 0.7.9: every live enrollment exchange,
 issuance, refresh, renewal, rotation, and revocation path is hard-denied before
 provider credential or network access. A **provider grant** is design-era
 lifecycle metadata; an **authority grant** is the inactive execution-kernel

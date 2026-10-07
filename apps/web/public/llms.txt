@@ -31,11 +31,13 @@ brew install ashlrai/phantom/phantom
 For the current macOS, Linux, or Windows release, select the exact `v0.7.9`
 archive for your architecture from
 the release, download its adjacent `.sha256` sidecar, verify it, and place both
-release executables on PATH. In the exact 2026-10-06 registry snapshot, both npm
-`latest` packages and the active official MCP Registry listing are `0.7.9`;
-crates.io remains on `0.5.1`. Matching package integrity and registry discovery
-do not prove six-host acceptance of the published npm wrappers. Unpinned npm, npx, and Cargo installs are not the exact reviewed
-`v0.7.9` GitHub release path.
+release executables on PATH. The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 ## Editor MCP setup
 
@@ -43,7 +45,7 @@ One command per AI client — Phantom writes the right config file for each:
 
 | Editor | Command | Writes to |
 |---|---|---|
-| Claude Code | `phantom setup --client claude` | `.mcp.json` (project; permission settings remain separate) |
+| Claude Code | `phantom setup --client claude` | `.claude/settings.local.json` (project) |
 | Cursor | `phantom setup --client cursor` | `~/.cursor/mcp.json` |
 | Windsurf | `phantom setup --client windsurf` | `~/.codeium/windsurf/mcp_config.json` |
 | Codex | `phantom setup --client codex` | `~/.codex/config.toml` |

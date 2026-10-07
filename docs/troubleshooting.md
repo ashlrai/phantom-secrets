@@ -197,10 +197,13 @@ support requires an explicit reviewed trust design and is not supported in this 
 
 The reviewed `v0.7.9` binaries ship through the immutable GitHub Release. The
 trusted Homebrew formula publishes reviewed `v0.7.9`; Homebrew publication is
-independent of the GitHub release. In the exact 2026-10-06 registry snapshot,
-both npm `latest` packages and the active official MCP Registry listing are
-`0.7.9`; crates.io remains on the older `0.5.1` track. Exact published-wrapper
-six-host acceptance is not proved by npm metadata or registry discovery.
+independent of the GitHub release. The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 1. Verify the immutable release exists: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9
 2. Use the exact `v0.7.9` asset and `.sha256` sidecar documented in

@@ -16,7 +16,7 @@ GitHub provenance and SPDX attestations are bound to that immutable release.
 | Version or surface | Security support | Notes |
 |--------------------|------------------|-------|
 | Reviewed GitHub release, `v0.7.9` | Supported | Security fixes are prioritized for the immutable GitHub release and active development. Its native artifacts passed the tag-bound six-row release workflow; this is not a signing, notarization, certification, hosted-service, or customer-acceptance claim. |
-| Registry distributions | Mixed | The exact 2026-10-06 independent readbacks find Homebrew `v0.7.9`, both npm `latest` packages at `0.7.9`, and the active MCP Registry `0.7.9` listing. crates.io remains at `0.5.1`. Published npm-wrapper six-host installation acceptance remains distinct from the native GitHub release receipt. |
+| Registry distributions | Mixed | Independent 2026-10-06 readbacks find Homebrew `v0.7.9`, both npm `latest` packages at `0.7.9`, and the active MCP Registry `0.7.9` listing. crates.io remains at `0.5.1`. Published npm-wrapper six-host installation acceptance remains distinct from the native GitHub release receipt. |
 | Releases before `v0.7.4` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
 | Forks, unofficial builds, or modified binaries | Not supported | Maintainers cannot verify the provenance or behavior of modified distributions. |
 
@@ -185,7 +185,7 @@ sandboxed principal.
   Credential Manager acceptance remains pending.
 - Audit logging is opt-in and local by default. It cannot prove deletion of both the audit log and its local checkpoint without external evidence.
 - Team member removal does not retroactively revoke access to vault pushes that were encrypted to that member before removal. Rotate affected secrets after offboarding.
-- All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.8. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.
+- All live provider issuance, enrollment exchange, refresh, renewal, and revocation paths are hard-denied before credential or network access in 0.7.9. Source adapters and exact `cfg(test)` mocks demonstrate local transaction scaffolding only; they do not prove provider activation, renewal, commissioning, or customer acceptance.
 - `phantom grant revoke` currently fails closed before local mutation because remote revocation is not wired for the supported providers.
 - A provider grant is credential lifecycle state, not an execution-kernel authority grant. It cannot activate Locus verification, a broker lease, or production engineering execution.
 - GitHub immutable release controls, checksums, archive-specific SPDX SBOMs, and GitHub attestations protect the published exact `v0.7.9` release artifacts at source commit `7a51ce512ec4aee12cc29ff859036af63fbe93db`. All six native release rows and both attestation predicates are bound to that immutable release record. Installers and the self-updater verify checksums but do not yet verify attestations directly. Independent signatures, macOS notarization, Windows Authenticode, protected native credential-store/ACL/editor acceptance, and npm-channel acceptance remain open.

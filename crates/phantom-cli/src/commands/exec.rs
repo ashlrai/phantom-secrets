@@ -20,16 +20,53 @@ fn header_auth_only() -> bool {
     )
 }
 
-pub fn run(cmd: &[String], env: Option<&str>) -> Result<()> {
+/// Print one of exec's own progress lines.
+///
+/// Progress goes to stderr so the child's stdout stays byte-for-byte what the
+/// child wrote: `phantom exec -- node gen.js > out.json` must produce valid
+/// JSON. `--quiet` suppresses these lines entirely; warnings and errors are
+/// unaffected.
+macro_rules! progress {
+    ($quiet:expr, $($arg:tt)*) => {
+        if !$quiet {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+pub fn run(cmd: &[String], env: Option<&str>, quiet: bool) -> Result<()> {
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd, env))
+    rt.block_on(run_async(cmd, env, quiet))
 }
 
-async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
+/// Actionable, value-free next steps for the connection-string denial.
+fn connection_string_hint(
+    blocked: &std::collections::BTreeSet<&str>,
+    protected: &HashSet<String>,
+) -> String {
+    let ambient: Vec<&str> = blocked
+        .iter()
+        .copied()
+        .filter(|key| !protected.contains(*key))
+        .collect();
+    let mut hint = String::from(
+        "Hint: connection strings are vaulted but not proxied yet, so `phantom exec` will not start while one is protected in the managed dotenv or set in the environment. Split database work from API-key work: run database commands (migrations, psql, ORMs) from a terminal you trust, outside `phantom exec`.",
+    );
+    if !ambient.is_empty() {
+        hint.push_str(&format!(
+            " {} is set in this shell's environment; unset it before running `phantom exec`.",
+            ambient.join(", ")
+        ));
+    }
+    hint.push_str(" Docs: https://phm.dev/docs/getting-started");
+    hint
+}
+
+async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
@@ -62,7 +99,8 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     // Connection strings need a protocol-aware broker. Detect them from the
     // protected dotenv/config contract before opening or reading the vault, so
     // a missing entry can never turn this fail-closed decision into a bypass.
-    let blocked_connection_strings: Vec<&str> = config
+    // BTreeSet: configs written by older init runs can map one key twice.
+    let blocked_connection_strings: std::collections::BTreeSet<&str> = config
         .connection_string_services()
         .into_iter()
         .filter_map(|(_, service)| {
@@ -73,8 +111,9 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         .collect();
     if !blocked_connection_strings.is_empty() {
         anyhow::bail!(
-            "Refusing to expose connection-string secret(s) to the child process: {}. Phantom requires a protocol-aware broker for database credentials; direct environment injection is disabled.",
-            blocked_connection_strings.join(", ")
+            "Refusing to expose connection-string secret(s) to the child process: {}. Phantom requires a protocol-aware broker for database credentials; direct environment injection is disabled.\n{}",
+            blocked_connection_strings.iter().copied().collect::<Vec<_>>().join(", "),
+            connection_string_hint(&blocked_connection_strings, &preflight_protected_keys)
         );
     }
 
@@ -149,7 +188,8 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     let registry = ServiceRegistry::from_config(&config.services);
     let interceptor = Interceptor::new_scoped(session_token_to_secret, secret_name_to_value);
 
-    println!(
+    progress!(
+        quiet,
         "{} Starting proxy with {} secret(s) (session-scoped tokens, env: {})...",
         "->".blue().bold(),
         secret_count,
@@ -176,7 +216,8 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     .map_err(|e| anyhow::anyhow!("Failed to start proxy: {e}"))?;
 
     let port = proxy.port();
-    println!(
+    progress!(
+        quiet,
         "{} Proxy running on {}",
         "ok".green().bold(),
         format!("127.0.0.1:{port}").cyan()
@@ -189,16 +230,24 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
         registry.base_url_overrides_with_token(port, Some(&proxy_token))
     };
     for (env_var, url) in &overrides {
-        println!("   {} {} = {}", "->".dimmed(), env_var.bold(), url.cyan());
+        progress!(
+            quiet,
+            "   {} {} = {}",
+            "->".dimmed(),
+            env_var.bold(),
+            url.cyan()
+        );
     }
     if header_auth_only {
-        println!(
+        progress!(
+            quiet,
             "   {} {} set for child process",
             "->".dimmed(),
             "PHANTOM_PROXY_TOKEN".bold()
         );
     } else {
-        println!(
+        progress!(
+            quiet,
             "   {} SDK-compatible proxy URLs include a session token; set {} for header-only mode",
             "->".dimmed(),
             "PHANTOM_PROXY_HEADER_AUTH_ONLY=1".bold()
@@ -211,7 +260,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     let is_node_project = package_json_path.exists();
 
     if is_node_project {
-        println!("   {} Detected Node.js project", "->".dimmed(),);
+        progress!(quiet, "   {} Detected Node.js project", "->".dimmed(),);
 
         // Detect Next.js: check if the command starts with "next" or package.json
         // lists "next" as a dependency
@@ -220,7 +269,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
             || detect_next_dependency(&package_json_path);
 
         if is_nextjs {
-            println!("   {} Detected Next.js framework", "->".dimmed(),);
+            progress!(quiet, "   {} Detected Next.js framework", "->".dimmed(),);
 
             // Pass through NEXT_PUBLIC_ prefixed vars from .env unchanged —
             // these are non-secret public vars that the Next.js build expects
@@ -236,7 +285,8 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
             }
 
             if !framework_env_vars.is_empty() {
-                println!(
+                progress!(
+                    quiet,
                     "   {} Passing through {} NEXT_PUBLIC_ env var(s)",
                     "->".dimmed(),
                     framework_env_vars.len(),
@@ -247,14 +297,16 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
 
     // Summary: proxied secrets vs injected env vars
     let injected_count = framework_env_vars.len();
-    println!(
+    progress!(
+        quiet,
         "\n{} {} secret(s) proxied, {} env var(s) injected directly",
         "->".blue().bold(),
         secret_count,
         injected_count,
     );
 
-    println!(
+    progress!(
+        quiet,
         "{} Launching: {}\n",
         "->".blue().bold(),
         cmd.join(" ").cyan().bold()
@@ -294,16 +346,21 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>) -> Result<()> {
     let status = child.wait().await?;
 
     // Shut down the proxy — session tokens are now invalid
-    println!("\n{} Shutting down proxy...", "->".blue().bold());
+    progress!(quiet, "\n{} Shutting down proxy...", "->".blue().bold());
     proxy.shutdown().await;
 
     if !status.success() {
         let code = status.code().unwrap_or(1);
-        println!("{} Command exited with code {}", "!".yellow().bold(), code);
+        progress!(
+            quiet,
+            "{} Command exited with code {}",
+            "!".yellow().bold(),
+            code
+        );
         std::process::exit(code);
     }
 
-    println!("{} Done.", "ok".green().bold());
+    progress!(quiet, "{} Done.", "ok".green().bold());
     Ok(())
 }
 

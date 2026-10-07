@@ -41,9 +41,8 @@ The example downloads immutable `v0.7.9`, whose tag resolves to source commit
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`, and verifies its published
 checksum before executing it; do not replace it with an unpinned registry
 command. In the exact 2026-10-06 registry snapshot, Homebrew independently
-publishes the reviewed `v0.7.9` binaries. Both npm packages publish `0.7.9`,
-while crates.io remains at `0.5.1`; each installation channel needs its own
-acceptance receipt.
+publishes reviewed `v0.7.9`. Both npm packages publish `0.7.9`; crates.io
+remains at `0.5.1`. Each installation channel needs its own acceptance receipt.
 Select the matching asset for ARM64 or a non-Linux runner.
 
 ## Vercel

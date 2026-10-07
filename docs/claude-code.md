@@ -26,22 +26,22 @@ verified path in [getting started](./getting-started.md#install), then run
 phantom setup --client claude
 ```
 
-In the verified `v0.7.9` implementation, this merges the `phantom` MCP server
+In `v0.7.9`, this merges the `phantom` MCP server
 into the project's `.mcp.json`. Separately, it removes only the legacy Phantom
 MCP entry and Phantom-managed dotenv read grants from
 `.claude/settings.local.json`, preserving unrelated servers and permission
 rules. Dotenv denies remain a defense-in-depth boundary.
 
-**Migration from v0.7.8:** the older published `v0.7.8` binaries wrote MCP registration
-into `.claude/settings.local.json`. That is not Claude Code's supported MCP
-registration location. If you must keep those older binaries,
-run `phantom setup --client claude --print` and manually merge only its
-`mcpServers.phantom` entry into `.mcp.json`. Keep permission settings in
-`.claude/settings.local.json`; do not copy them into `.mcp.json` or overwrite
-unrelated server entries. The corrected writer migrates the legacy Phantom
-entry when run from verified `v0.7.9`.
+**Release compatibility:** `v0.7.9` is the first release with this correction.
+`v0.7.8` and earlier binaries wrote MCP registration into `.claude/settings.local.json`, which is
+not Claude Code's supported MCP registration location. After upgrading to
+`v0.7.9`, rerun `phantom setup --client claude` to migrate the legacy entry. If
+you must stay on `v0.7.8`, run `phantom setup --client claude --print` and
+manually merge only its `mcpServers.phantom` entry into `.mcp.json`. Keep
+permission settings in `.claude/settings.local.json`; do not copy them into
+`.mcp.json` or overwrite unrelated server entries.
 
-The `v0.7.9` setup validates both files before writing and uses exact
+The corrected setup validates both files before writing and uses exact
 before-images to avoid overwriting concurrent edits. It attempts rollback after
 an observed later write failure; separate file replacements are not a
 crash-atomic filesystem operation. If setup reports a partial or uncertain

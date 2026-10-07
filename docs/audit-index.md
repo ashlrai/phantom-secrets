@@ -14,7 +14,7 @@ slice. Locus authority, the native broker, production engineering execution,
 and externally trusted execution receipts must remain inactive.
 
 The shipped `phantom grant` CLI exposes value-free metadata and compatibility
-commands, not live provider issuance. Version 0.7.8 hard-denies enrollment,
+commands, not live provider issuance. Version 0.7.9 hard-denies enrollment,
 refresh, renewal, rotation, and remote revocation before credential access and
 network I/O. Historical **provider-grant** records are not execution-kernel
 **authority grants** and do not activate Locus, a broker lease, or engineering
@@ -181,13 +181,13 @@ Reviewers should pay particular attention to these unresolved boundaries:
   archive-specific SPDX SBOMs, GitHub attestations, and all six release-native
   rows are bound to that immutable release by
   [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-  In the exact 2026-10-06 independent readbacks, Homebrew publishes `v0.7.9`,
-  both npm `latest` packages and the active MCP Registry entry publish `0.7.9`,
-  and crates.io remains at `0.5.1`. Exact npm-wrapper six-host acceptance is
-  not established by those publications. Native code
-  signing/notarization, credential-store/ACL/editor acceptance on every host,
-  hosted-service commissioning, provider activation, certification, and
-  customer acceptance remain separate evidence gates.
+  The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+  packages at `0.7.9`, and the official MCP Registry entry
+  `io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+  at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+  six-host installation acceptance of the published wrappers. The native GitHub
+  release receipt does not prove hosted commissioning, provider activation,
+  certification or customer acceptance.
 
 The inactive components deny production use while these activation findings
 remain open. Do not work around that denial with test constructors, caller

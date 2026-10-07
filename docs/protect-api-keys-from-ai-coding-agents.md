@@ -124,7 +124,7 @@ or mint production credentials.
 - [Codex](./codex.md)
 - [Value-blind MCP secrets manager](./mcp-secrets-manager.md)
 
-If the workflow matches your environment, inspect and star the
-[Phantom source repository](https://github.com/ashlrai/phantom-secrets). A star
-helps other developers discover the project; it is not evidence that a local
-security boundary passed.
+If the workflow matches your environment, inspect the
+[Phantom source repository](https://github.com/ashlrai/phantom-secrets) and its
+[threat model](https://github.com/ashlrai/phantom-secrets/blob/main/THREAT_MODEL.md)
+before relying on the boundary.

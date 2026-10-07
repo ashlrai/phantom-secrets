@@ -24,11 +24,16 @@ use tracing_subscriber::EnvFilter;
                   Its authenticated local proxy matches exact routes and injects only route-owned authentication into each route's fixed header; client headers and bodies never resolve placeholders.\n\
                   Agents confined to value-blind tools and supported proxy routes do not receive stored values.\n\
                   Unmanaged files, same-user processes, arbitrary tools, and unsupported protocols remain outside this boundary.\n\n\
-                  Commands are grouped (in display order):\n  \
-                    Setup        init · agent · setup · doctor · completion · mcp\n  \
-                    Daily use    exec · start · status · check · list · add · remove · reveal · copy · env · why\n  \
-                    Sync & teams login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
-                    Maintenance  upgrade · watch · rotate · open · audit",
+                  Quick start (from the project root):\n  \
+                    phantom init                  protect .env secrets and rewrite them as phm_ tokens\n  \
+                    phantom agent doctor          check the repo is ready for AI agents\n  \
+                    phantom setup --client codex  wire MCP into claude, cursor, windsurf, or codex\n  \
+                    phantom exec -- <command>     run your app or agent through the local proxy\n\n\
+                  Commands by task:\n  \
+                    Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
+                    Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
+                    Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
+                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit",
     version
 )]
 struct Cli {
@@ -977,7 +982,7 @@ fn run() -> anyhow::Result<()> {
             AgentAction::Doctor => commands::agent::doctor(),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
-        Commands::Exec { cmd } => commands::exec::run(&cmd, None),
+        Commands::Exec { cmd } => commands::exec::run(&cmd, None, cli.quiet),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
         Commands::Check { staged, runtime } => commands::check::run(staged, runtime),
@@ -1228,5 +1233,84 @@ fn run() -> anyhow::Result<()> {
                 commands::grant::revoke::run_revoke(&provider, json || global_json)
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::Cli;
+    use clap::CommandFactory;
+
+    fn grouped_section(about: &str) -> &str {
+        about
+            .split("Commands by task:")
+            .nth(1)
+            .expect("long help must list commands by task")
+    }
+
+    #[test]
+    fn every_visible_subcommand_appears_in_the_task_groups() {
+        let command = Cli::command();
+        let about = command
+            .get_long_about()
+            .expect("phantom has long help")
+            .to_string();
+        let groups = grouped_section(&about);
+        let listed: Vec<&str> = groups
+            .split(|c: char| c.is_whitespace() || c == '·')
+            .filter(|word| !word.is_empty())
+            .collect();
+
+        for subcommand in command.get_subcommands() {
+            if subcommand.is_hide_set() {
+                continue;
+            }
+            let name = subcommand.get_name();
+            assert!(
+                listed.contains(&name),
+                "`phantom {name}` is missing from the grouped --help overview"
+            );
+        }
+    }
+
+    #[test]
+    fn grouped_overview_lists_only_real_subcommands() {
+        let command = Cli::command();
+        let about = command.get_long_about().unwrap().to_string();
+        let names: Vec<String> = command
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name().to_string())
+            .collect();
+        for line in grouped_section(&about)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+        {
+            // Drop the group label ("Setup", "Daily use", "Sync & teams", ...).
+            let commands = line
+                .trim()
+                .split_once("  ")
+                .map_or("", |(_, rest)| rest)
+                .trim();
+            for word in commands.split('·').map(str::trim).filter(|w| !w.is_empty()) {
+                assert!(
+                    names.iter().any(|name| name == word),
+                    "unknown command `{word}` in --help"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn quick_start_commands_parse() {
+        for argv in [
+            vec!["phantom", "init"],
+            vec!["phantom", "agent", "doctor"],
+            vec!["phantom", "setup", "--client", "codex"],
+            vec!["phantom", "exec", "--", "true"],
+        ] {
+            Cli::command()
+                .try_get_matches_from(&argv)
+                .unwrap_or_else(|error| panic!("{argv:?} must parse: {error}"));
+        }
     }
 }
