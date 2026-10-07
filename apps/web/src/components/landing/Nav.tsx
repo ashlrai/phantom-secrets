@@ -2,9 +2,10 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { capturePostHog } from "@/lib/posthog";
+import { legacySecretsDestination } from "@/lib/legacy-secrets-fragment";
 import { Github } from "./Icons";
 
 const navigation = [
@@ -30,6 +31,7 @@ function isCurrentPath(pathname: string, href: string) {
 
 export function Nav() {
   const pathname = usePathname();
+  const router = useRouter();
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -49,6 +51,17 @@ export function Nav() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (pathname !== "/") return;
+    const preserveSecretsBookmark = () => {
+      const destination = legacySecretsDestination(pathname, window.location.hash);
+      if (destination) router.replace(destination);
+    };
+    preserveSecretsBookmark();
+    window.addEventListener("hashchange", preserveSecretsBookmark);
+    return () => window.removeEventListener("hashchange", preserveSecretsBookmark);
+  }, [pathname, router]);
 
   const isWorkbenchHome = pathname === "/";
   const installHref = isWorkbenchHome ? "https://verse.ashlr.ai/#start" : secretsSectionHref(pathname, "install");

@@ -135,8 +135,8 @@ test("on-site docs hub and machine-readable discovery are indexed", () => {
     read("src/components/landing/DocumentationGateway.tsx"),
     /\/docs#connect-an-agent/,
   );
-  assert.match(layout, /"@type": "SoftwareSourceCode"/);
-  assert.match(layout, /codeRepository: "https:\/\/github\.com\/ashlrai\/phantom-secrets"/);
+  assert.match(read("src/components/landing/LandingStructuredData.tsx"), /"@type": "SoftwareSourceCode"/);
+  assert.match(read("src/components/landing/LandingStructuredData.tsx"), /codeRepository: "https:\/\/github\.com\/ashlrai\/phantom-secrets"/);
   assert.doesNotMatch(layout, /"@type": "FAQPage"|"@type": "HowTo"/);
   assert.match(read("src/components/landing/LandingStructuredData.tsx"), /QUESTIONS\.map/);
   assert.match(sitemap, /path: "\/docs"/);

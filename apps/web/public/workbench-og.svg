@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <radialGradient id="ambient"><stop stop-color="#153d73"/><stop offset="1" stop-color="#050508"/></radialGradient>
+    <linearGradient id="line"><stop stop-color="#60a5fa"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#050508"/>
+  <ellipse cx="1020" cy="70" rx="660" ry="540" fill="url(#ambient)" opacity=".7"/>
+  <rect x="28" y="28" width="1144" height="574" rx="32" fill="none" stroke="#253349"/>
+  <g fill="none" stroke="#3b82f6" opacity=".12"><path d="M680 105H1080M740 200H1120M835 285H1100M900 95V410M1010 65V460"/></g>
+  <image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgZmlsbD0ibm9uZSI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSI1MCUiIHN0eWxlPSJzdG9wLWNvbG9yOiM2MGE1ZmEiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdHlsZT0ic3RvcC1jb2xvcjojM2I4MmY2O3N0b3Atb3BhY2l0eTowLjMiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgogIDxwYXRoIGQ9Ik0xNiAyQzEwLjUgMiA2IDYuNSA2IDEydjEwLjVjMCAuOC43IDEuNSAxLjUgMS41SDEwYzAtMiAxLjMtMy41IDIuNS0zLjVTMTUgMjIgMTUgMjRoMmMwLTIgMS4zLTMuNSAyLjUtMy41UzIyIDIyIDIyIDI0aDIuNWMuOCAwIDEuNS0uNyAxLjUtMS41VjEyYzAtNS41LTQuNS0xMC0xMC0xMHoiIGZpbGw9InVybCgjZykiLz4KICA8Y2lyY2xlIGN4PSIxMi41IiBjeT0iMTMuNSIgcj0iMi4yIiBmaWxsPSIjMDYwNjBiIi8+CiAgPGNpcmNsZSBjeD0iMTkuNSIgY3k9IjEzLjUiIHI9IjIuMiIgZmlsbD0iIzA2MDYwYiIvPgogIDxjaXJjbGUgY3g9IjEzIiBjeT0iMTMiIHI9IjAuOCIgZmlsbD0iI2ZmZiIvPgogIDxjaXJjbGUgY3g9IjIwIiBjeT0iMTMiIHI9IjAuOCIgZmlsbD0iI2ZmZiIvPgo8L3N2Zz4K" x="61" y="63" width="63" height="63"/>
+  <g font-family="Arial,Helvetica,sans-serif">
+    <text x="137" y="94" fill="#f5f5f7" font-size="32" font-weight="700">Phantom</text>
+    <text x="139" y="120" fill="#a1a1b5" font-size="17">by AshlrAI</text>
+    <text x="72" y="227" fill="#f5f5f7" font-size="63" font-weight="700" letter-spacing="-2">One place for your</text>
+    <text x="72" y="302" fill="#f5f5f7" font-size="63" font-weight="700" letter-spacing="-2">engineering agents.</text>
+    <text x="75" y="353" fill="#a1a1b5" font-size="23">Your models. Your tools. Your workflow.</text>
+    <rect x="72" y="397" width="355" height="105" rx="20" fill="#0b1525" stroke="#406da0"/>
+    <circle cx="103" cy="430" r="5" fill="#60a5fa"/>
+    <text x="122" y="438" fill="#f5f5f7" font-size="25" font-weight="700">Work with me</text>
+    <text x="102" y="474" fill="#a1a1b5" font-size="18">Converse · guide · review</text>
+    <rect x="452" y="397" width="355" height="105" rx="20" fill="#171225" stroke="#7864a5"/>
+    <circle cx="483" cy="430" r="5" fill="#a78bfa"/>
+    <text x="502" y="438" fill="#f5f5f7" font-size="25" font-weight="700">Work for me</text>
+    <text x="482" y="474" fill="#a1a1b5" font-size="18">Dispatch · trace · improve</text>
+    <text x="75" y="557" fill="#808096" font-size="17">CLI subscriptions · API credits · local models · MCP &amp; CLI tools</text>
+    <text x="1060" y="557" text-anchor="end" fill="#bfdbfe" font-size="23" font-weight="700">phm.dev</text>
+  </g>
+  <image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgZmlsbD0ibm9uZSI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSI1MCUiIHN0eWxlPSJzdG9wLWNvbG9yOiM2MGE1ZmEiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdHlsZT0ic3RvcC1jb2xvcjojM2I4MmY2O3N0b3Atb3BhY2l0eTowLjMiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgogIDxwYXRoIGQ9Ik0xNiAyQzEwLjUgMiA2IDYuNSA2IDEydjEwLjVjMCAuOC43IDEuNSAxLjUgMS41SDEwYzAtMiAxLjMtMy41IDIuNS0zLjVTMTUgMjIgMTUgMjRoMmMwLTIgMS4zLTMuNSAyLjUtMy41UzIyIDIyIDIyIDI0aDIuNWMuOCAwIDEuNS0uNyAxLjUtMS41VjEyYzAtNS41LTQuNS0xMC0xMC0xMHoiIGZpbGw9InVybCgjZykiLz4KICA8Y2lyY2xlIGN4PSIxMi41IiBjeT0iMTMuNSIgcj0iMi4yIiBmaWxsPSIjMDYwNjBiIi8+CiAgPGNpcmNsZSBjeD0iMTkuNSIgY3k9IjEzLjUiIHI9IjIuMiIgZmlsbD0iIzA2MDYwYiIvPgogIDxjaXJjbGUgY3g9IjEzIiBjeT0iMTMiIHI9IjAuOCIgZmlsbD0iI2ZmZiIvPgogIDxjaXJjbGUgY3g9IjIwIiBjeT0iMTMiIHI9IjAuOCIgZmlsbD0iI2ZmZiIvPgo8L3N2Zz4K" x="870" y="369" width="192" height="192" opacity=".88"/>
+</svg>

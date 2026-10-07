@@ -42,6 +42,8 @@ const claimPaths = [
   ...filesUnder("public", [".json", ".txt"]).filter((file) => ![
     "public/phantom-world/phantom-mark.LICENSE.txt",
     "public/phantom-world/provider-marks-LICENSE.txt",
+    "public/fonts/inter-tight-OFL.txt",
+    "public/fonts/jetbrains-mono-OFL.txt",
   ].includes(file)),
 ];
 
@@ -123,6 +125,8 @@ const machineReadablePaths = [
   ...filesUnder("public", [".json", ".txt"]).filter((file) => ![
     "public/phantom-world/phantom-mark.LICENSE.txt",
     "public/phantom-world/provider-marks-LICENSE.txt",
+    "public/fonts/inter-tight-OFL.txt",
+    "public/fonts/jetbrains-mono-OFL.txt",
   ].includes(file)),
   "src/app/layout.tsx",
   "src/app/manifest.ts",
@@ -691,7 +695,8 @@ test("dashboard surfaces describe uncommissioned pilot metadata, not live entitl
 test("current SoftwareApplication and HowTo metadata point at the verified release", () => {
   const layout = claims["src/app/layout.tsx"];
   const publicRelease = claims["src/lib/public-release.ts"];
-  const softwareApplication = structuredMetadataBlock(layout, "SoftwareApplication");
+  const softwareApplication = structuredMetadataBlock(claims["src/components/landing/LandingStructuredData.tsx"], "SoftwareApplication");
+  assert.doesNotMatch(layout, /"@type": "SoftwareApplication"|"@type": "SoftwareSourceCode"/);
   const installHowTo = claims["src/components/landing/LandingStructuredData.tsx"];
 
   assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.9"/);
@@ -966,7 +971,8 @@ test("scanner copy names the staged and bounded behavior", () => {
 test("enterprise claims remain explicitly unavailable or contractual", () => {
   for (const [file, source] of Object.entries(claims)) {
     for (const line of source.split("\n")) {
-      if (/SSO|SAML|on-prem/i.test(line)) {
+      // Match capability names, not JSX crossOrigin or legal "associated" text.
+      if (/\b(?:SSO|SAML|on-prem)\b/i.test(line)) {
         assert.match(
           line,
           /not shipped|planned|no\b.*\b(?:available|offered)|not (?:available|offered|represented)/i,

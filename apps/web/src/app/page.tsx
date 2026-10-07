@@ -4,6 +4,7 @@ import { SiteFooter } from "@/components/landing/SiteFooter";
 import { WorkbenchHero } from "@/components/landing/WorkbenchHero";
 import { PhantomWorldScene } from "@/components/landing/PhantomWorldScene";
 import { WorkbenchIntegrations } from "@/components/landing/WorkbenchIntegrations";
+import { WorkbenchStructuredData } from "@/components/landing/WorkbenchStructuredData";
 
 export const metadata: Metadata = {
   title: { absolute: "Phantom — Engineering agents, together" },
@@ -16,18 +17,18 @@ export const metadata: Metadata = {
     description: "Explore the Phantom engineering workbench and Phantom Secrets, the local credential boundary for supported coding-agent workflows.",
     url: "/",
     locale: "en_US",
-    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Phantom keeps a provider credential behind the local boundary while an AI workflow receives a placeholder." }],
+    images: [{ url: "/workbench-og.png", width: 1200, height: 630, alt: "Phantom by AshlrAI — one place for engineering agents, with Work with me and Work for me." }],
   },
   twitter: {
     card: "summary_large_image",
     title: "Phantom — Engineering agents, together",
     description: "Work with your agents or steer an engineering fleet. Explore the workbench and Phantom Secrets by AshlrAI.",
-    images: ["/og-image.png"],
+    images: ["/workbench-og.png"],
   },
 };
 
 export default function Home() {
-  return <><Nav /><main id="main-content" tabIndex={-1} className="phantom-workbench-surface">
+  return <><Nav /><WorkbenchStructuredData /><main id="main-content" tabIndex={-1} className="phantom-workbench-surface">
     <WorkbenchHero />
     <div className="phantom-home-content">
       <PhantomWorldScene />

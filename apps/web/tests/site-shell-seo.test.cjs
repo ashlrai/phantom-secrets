@@ -116,7 +116,7 @@ test("root JSON-LD uses script-safe serialization at every raw insertion", () =>
   );
   assert.equal(
     (layout.match(/__html: serializeStructuredData\(\{/g) ?? []).length,
-    3,
+    2,
   );
   assert.doesNotMatch(layout, /__html:\s*JSON\.stringify\(/);
 
@@ -129,7 +129,7 @@ test("root JSON-LD uses script-safe serialization at every raw insertion", () =>
 test("each public route owns its canonical and social metadata", () => {
   assert.match(publicPages["/"], /alternates: \{ canonical: "\/" \}/);
   assert.match(publicPages["/"], /openGraph:\s*\{[\s\S]*?url: "\/"/);
-  assert.match(publicPages["/"], /images: \[\{ url: "\/og-image\.png"/);
+  assert.match(publicPages["/"], /images: \[\{ url: "\/workbench-og\.png"/);
 
   for (const route of ["/secrets", "/pricing", "/enterprise", "/government", "/security"]) {
     const source = publicPages[route];
@@ -219,4 +219,91 @@ test("footer exposes product, organization, and open-source paths without live-s
   assert.match(footer, /Hosted services and support require separate commissioning/i);
   assert.match(footer, /MIT license/);
   assert.doesNotMatch(footer, /available now|guaranteed|certified|compliant/i);
+});
+
+
+test("local fonts preserve licensed bytes, glyph subsets and the two Latin preloads without a network loader", () => {
+  const crypto = require("node:crypto");
+  const fontCss = read("src/app/local-fonts.css");
+  const sources = read("public/fonts/SOURCES.md");
+  assert.doesNotMatch(layout, /next\/font\/google|fonts\.googleapis\.com/);
+  assert.match(layout, /import "\.\/local-fonts\.css"/);
+  assert.match(fontCss, /--font-sans-stack: "Inter Tight", "Inter Tight Fallback"/);
+  assert.match(fontCss, /--font-mono-stack: "JetBrains Mono", "JetBrains Mono Fallback"/);
+  assert.match(fontCss, /ascent-override:100\.51%/);
+  assert.match(fontCss, /ascent-override:75\.79%/);
+  const faces = [...fontCss.matchAll(/@font-face\{([^}]+)\}/g)].map((match) => match[1]);
+  const files = [...new Set([...fontCss.matchAll(/src:url\(\/fonts\/([^)]*)\)/g)].map((match) => match[1]))];
+  assert.equal(files.length, 13);
+  for (const file of files) {
+    const bytes = fs.readFileSync(path.join(webDir, "public/fonts", file));
+    assert.equal(bytes.subarray(0, 4).toString(), "wOF2");
+    const digest = crypto.createHash("sha256").update(bytes).digest("hex");
+    assert.ok(sources.includes(`| \`${file}\` |`) && sources.includes(`| \`${digest}\` |`), `manufacturer pin for ${file}`);
+  }
+  for (const family of ["Inter Tight", "JetBrains Mono"]) {
+    const familyFaces = faces.filter((face) => face.startsWith(`font-family:${family};`));
+    for (const glyphRange of ["u+00??", "u+0400-045f", "u+0370-0377", "u+0102-0103"]) {
+      assert.ok(familyFaces.some((face) => face.includes(glyphRange)), `${family} preserves ${glyphRange}`);
+    }
+  }
+  const preloads = [...layout.matchAll(/rel="preload" href="(\/fonts\/[^\"]+)"/g)].map((match) => match[1]);
+  assert.equal(preloads.length, 2);
+  for (const preload of preloads) {
+    assert.ok(faces.some((face) => face.includes(`url(${preload})`) && face.includes("unicode-range:u+00??")));
+  }
+  for (const file of ["inter-tight-OFL.txt", "jetbrains-mono-OFL.txt"]) {
+    assert.match(read(`public/fonts/${file}`), /SIL OPEN FONT LICENSE Version 1\.1/);
+  }
+});
+
+test("only exact legacy Secrets fragments navigate from home, preserving new anchors and safe route boundaries", () => {
+  const ts = require("typescript");
+  const source = read("src/lib/legacy-secrets-fragment.ts");
+  const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const exports = {};
+  new Function("exports", compiled)(exports);
+  const { legacySecretsDestination } = exports;
+  const knownIds = [...source.matchAll(/^  "([^\"]+)",$/gm)].map((match) => match[1]);
+  assert.equal(knownIds.length, 16);
+  const secretsPage = read("src/app/secrets/page.tsx");
+  const componentSources = [...secretsPage.matchAll(/@\/components\/landing\/([^\"]+)/g)].map((match) => read(`src/components/landing/${match[1]}.tsx`)).join("\n");
+  for (const id of knownIds) {
+    assert.ok(componentSources.includes(`id="${id}"`), `legacy destination ${id} exists`);
+    assert.equal(legacySecretsDestination("/", `#${id}`), `/secrets#${id}`);
+    assert.equal(legacySecretsDestination("/secrets", `#${id}`), null);
+    assert.equal(legacySecretsDestination("/dashboard", `#${id}`), null);
+  }
+  assert.equal(legacySecretsDestination("/", "#%69nstall"), "/secrets#install");
+  for (const hash of ["", "#", "install", "#phantom-world", "#main-content", "#phantom-secrets", "#workbench-title", "#unknown", "#%", "#//evil.example", "#https://evil.example", "#install?evil=true", "#install/../../dashboard"]) {
+    assert.equal(legacySecretsDestination("/", hash), null, hash);
+  }
+  assert.match(nav, /router\.replace\(destination\)/);
+  assert.match(nav, /removeEventListener\("hashchange", preserveSecretsBookmark\)/);
+});
+
+
+test("workbench and Secrets own distinct schema and social images with script-safe metadata", async () => {
+  const workbenchSchema = read("src/components/landing/WorkbenchStructuredData.tsx");
+  assert.match(layout, /"@type": "WebSite"/);
+  assert.match(layout, /"@type": "Organization"/);
+  assert.doesNotMatch(layout, /"@type": "SoftwareApplication"|"@type": "SoftwareSourceCode"|softwareVersion|SecretsManagement/);
+  assert.match(publicPages["/"], /<WorkbenchStructuredData \/>/);
+  assert.match(workbenchSchema, /codeRepository: "https:\/\/github\.com\/ashlrai\/ashlr-hub"/);
+  assert.doesNotMatch(workbenchSchema, /softwareVersion|operatingSystem|SecretsManagement|phantom-secrets/);
+  assert.match(publicPages["/secrets"], /<LandingStructuredData \/>/);
+  assert.match(landingStructuredData, /const SITE_URL = "https:\/\/phm\.dev\/secrets"/);
+  assert.match(landingStructuredData, /softwareVersion: PUBLIC_RELEASE_VERSION/);
+  assert.match(landingStructuredData, /downloadUrl: PUBLIC_RELEASE_URL/);
+  assert.match(landingStructuredData, /codeRepository: "https:\/\/github\.com\/ashlrai\/phantom-secrets"/);
+  assert.match(workbenchSchema, /JSON\.stringify\(value\)\.replace\(\/<\/g, "\\\\u003c"\)/);
+  assert.doesNotMatch(workbenchSchema, /__html:\s*JSON\.stringify\(/);
+  assert.match(publicPages["/secrets"], /url: "\/og-image\.png"/);
+  assert.match(layout, /url: "\/workbench-og\.png"/);
+  const sharp = require("sharp");
+  const metadata = await sharp(path.join(webDir, "public/workbench-og.png")).metadata();
+  assert.deepEqual([metadata.format, metadata.width, metadata.height], ["png", 1200, 630]);
+  const ghost = fs.readFileSync(path.join(webDir, "public/phantom-world/phantom-mark.svg"));
+  assert.ok(read("public/workbench-og.svg").includes(`data:image/svg+xml;base64,${ghost.toString("base64")}`));
+  assert.match(read("public/workbench-og-SOURCES.md"), /illustrated product card/);
 });
