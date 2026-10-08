@@ -12,7 +12,7 @@ export function WorkbenchStructuredData() {
       url: "https://phm.dev",
       applicationCategory: "DeveloperApplication",
       applicationSubCategory: "AgenticEngineering",
-      codeRepository: "https://github.com/ashlrai/ashlr-hub",
+      codeRepository: "https://github.com/ashlrai/phantom",
       downloadUrl: "https://verse.ashlr.ai/#start",
       description: "An engineering workbench for interactive agent sessions, autonomous fleet workflows and connected resources.",
       author: { "@type": "Organization", name: "AshlrAI, Inc.", url: "https://ashlr.ai" },
@@ -23,7 +23,7 @@ export function WorkbenchStructuredData() {
       "@context": "https://schema.org",
       "@type": "SoftwareSourceCode",
       name: "Phantom engineering workbench",
-      codeRepository: "https://github.com/ashlrai/ashlr-hub",
+      codeRepository: "https://github.com/ashlrai/phantom",
       license: "https://opensource.org/licenses/MIT",
       targetProduct: { "@type": "SoftwareApplication", name: "Phantom", url: "https://phm.dev" },
     }) }} />

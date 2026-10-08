@@ -290,7 +290,7 @@ test("workbench and Secrets own distinct schema and social images with script-sa
   assert.match(layout, /"@type": "Organization"/);
   assert.doesNotMatch(layout, /"@type": "SoftwareApplication"|"@type": "SoftwareSourceCode"|softwareVersion|SecretsManagement/);
   assert.match(publicPages["/"], /<WorkbenchStructuredData \/>/);
-  assert.match(workbenchSchema, /codeRepository: "https:\/\/github\.com\/ashlrai\/ashlr-hub"/);
+  assert.match(workbenchSchema, /codeRepository: "https:\/\/github\.com\/ashlrai\/phantom"/);
   assert.doesNotMatch(workbenchSchema, /softwareVersion|operatingSystem|SecretsManagement|phantom-secrets/);
   assert.match(publicPages["/secrets"], /<LandingStructuredData \/>/);
   assert.match(landingStructuredData, /const SITE_URL = "https:\/\/phm\.dev\/secrets"/);

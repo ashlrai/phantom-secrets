@@ -70,7 +70,7 @@ export function Nav() {
 
   const isWorkbenchHome = pathname === "/";
   const installHref = isWorkbenchHome ? "https://verse.ashlr.ai/#start" : secretsSectionHref(pathname, "install");
-  const githubHref = isWorkbenchHome ? "https://github.com/ashlrai/ashlr-hub" : "https://github.com/ashlrai/phantom-secrets";
+  const githubHref = isWorkbenchHome ? "https://github.com/ashlrai/phantom" : "https://github.com/ashlrai/phantom-secrets";
 
   return (
     <nav

@@ -110,7 +110,7 @@ function navigationFixture(pathname, menuOpen = false) {
   return { element: Nav(), window, effects, stateUpdates, trigger };
 }
 test("rendered desktop and mobile GitHub links choose the same correct product source", () => {
-  for (const [pathname, repository, label] of [["/", "ashlr-hub", "Phantom workbench"], ["/secrets", "phantom-secrets", "Phantom Secrets"], ["/docs/getting-started", "phantom-secrets", "Phantom Secrets"]]) {
+  for (const [pathname, repository, label] of [["/", "phantom", "Phantom workbench"], ["/secrets", "phantom-secrets", "Phantom Secrets"], ["/docs/getting-started", "phantom-secrets", "Phantom Secrets"]]) {
     const markup = renderToStaticMarkup(navigationFixture(pathname).element);
     const links = [...markup.matchAll(/<a\b[^>]*>[^]*?<\/a>/g)].map(([link]) => link).filter((link) => link.includes("View on GitHub"));
     assert.equal(links.length, 2, pathname);
