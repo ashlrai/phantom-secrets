@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="https://phm.dev/og-image.png" alt="Phantom — Delegate supported API work to AI" width="720" />
+<img src="https://phm.dev/og-image.png" alt="Phantom Secrets — Delegate supported API work to AI" width="720" />
 
 <h1>Phantom Secrets</h1>
 
 **Delegate more to AI without putting real keys in agent context.**
 
-Phantom Secrets is the local credential boundary in **Phantom by [AshlrAI](https://ashlr.ai)**. Explore the [engineering workbench](https://verse.ashlr.ai) for interactive coding sessions and fleet workflows, or its [source repository](https://github.com/ashlrai/ashlr-hub). This repository contains the Secrets CLI, MCP server and credential service; its release versions and installation commands remain independent.
+Phantom Secrets is the local credential boundary in **Phantom by [AshlrAI](https://ashlr.ai)**. Explore the [engineering workbench](https://phm.dev) for interactive coding sessions and fleet workflows, or its [source repository](https://github.com/ashlrai/phantom). This repository contains the Secrets CLI, MCP server and credential service; its release versions and installation commands remain independent.
 
 Phantom replaces project secrets with scoped `phm_` placeholders. Applications use those placeholders through an authenticated local proxy, while agents use value-blind MCP tools for inventory, diagnostics, and governed requests.
 
@@ -23,7 +23,7 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 [**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex) ·
 [**Docs**](docs/README.md) ·
 [**Contribute**](CONTRIBUTING.md) ·
-[**phm.dev**](https://phm.dev)
+[**Phantom Secrets**](https://phm.dev/secrets)
 
 </div>
 
@@ -616,7 +616,7 @@ standard](docs/rama-design-standard.md) for explicit network stacks, modular
 crates, runnable examples, and tiered platform CI. Rama is a benchmark, not a
 dependency, and the comparison is not a feature or platform-parity claim.
 
-**`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
+**`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from live deployment and authenticated acceptance of [Phantom Secrets](https://phm.dev/secrets).
 
 **Registry tracks (verified 2026-10-06)**: both npm `latest` packages and the
 active official MCP Registry entry publish `0.7.9`; published-wrapper native
@@ -652,7 +652,7 @@ written scope.
 
 ## Links
 
-- [phm.dev](https://phm.dev) -- Hosted site; deployment and authenticated acceptance remain separate from source
+- [Phantom Secrets](https://phm.dev/secrets) -- Product site; deployment and authenticated acceptance remain separate from source
 - [Documentation map](docs/README.md)
 - [Getting Started Guide](docs/getting-started.md)
 - [Safe delegation quickstart](docs/delegation-quickstart.md)

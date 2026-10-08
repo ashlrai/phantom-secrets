@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",
-    "next": "^15",
+    "next": "15.5.27",
     "posthog-js": "^1.364.2",
     "react": "^19",
     "react-dom": "^19",
@@ -27,7 +27,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "^15",
+    "eslint-config-next": "15.5.27",
     "postcss": "^8",
     "tailwindcss": "^4",
     "typescript": "^5"
