@@ -30,7 +30,7 @@ use tracing_subscriber::EnvFilter;
                     phantom setup --client codex  wire MCP into claude, cursor, windsurf, or codex\n  \
                     phantom exec -- <command>     run your app or agent through the local proxy\n\n\
                   Commands by task:\n  \
-                    Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
+                    Setup         init · onboard · agent · setup · doctor · workspace · vault · connector · completion · mcp · mcp-approve\n  \
                     Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit",
@@ -159,6 +159,28 @@ enum Commands {
     Vault {
         #[command(subcommand)]
         action: VaultAction,
+    },
+
+    /// Guided first-run setup: detect, protect, connect, verify
+    #[command(next_help_heading = "Setup")]
+    Onboard {
+        /// Only run detection and print the plan; never mutate anything
+        #[arg(long)]
+        plan: bool,
+        /// Answer "yes" to every prompt (still requires a trusted terminal
+        /// for the Protect and Connect phases)
+        #[arg(long)]
+        yes: bool,
+        /// Skip the MCP-client Connect phase entirely
+        #[arg(long)]
+        skip_connect: bool,
+    },
+
+    /// Install and manage signed provider connector packs
+    #[command(next_help_heading = "Setup")]
+    Connector {
+        #[command(subcommand)]
+        action: ConnectorAction,
     },
 
     // ─────────────────────────── Daily use ───────────────────────────
@@ -763,6 +785,79 @@ enum VaultAction {
 }
 
 #[derive(Subcommand)]
+enum ConnectorAction {
+    /// Verify and install a signed connector pack from a directory
+    Add {
+        /// Pack directory containing connector.json and connector.sig
+        dir: std::path::PathBuf,
+    },
+    /// List installed connector packs
+    List {
+        /// Emit JSON instead of the human-readable table
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove an installed connector pack
+    Remove {
+        /// Pack name
+        name: String,
+    },
+    /// Show a pack's capabilities (value-free)
+    Inspect {
+        /// Pack name
+        name: String,
+    },
+    /// Manage pack-signing trust anchors
+    Anchor {
+        #[command(subcommand)]
+        action: ConnectorAnchorAction,
+    },
+    /// Author connector packs (scaffold + sign)
+    Pack {
+        #[command(subcommand)]
+        action: ConnectorPackAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConnectorAnchorAction {
+    /// Register a trust anchor (hex-encoded 32-byte Ed25519 public key)
+    Add {
+        /// Hex-encoded Ed25519 public key (a public key — safe for argv)
+        #[arg(long)]
+        key: String,
+    },
+    /// List registered trust-anchor key ids
+    List,
+    /// Remove a trust anchor by key id
+    Remove {
+        /// Key id from `phantom connector anchor list`
+        key_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConnectorPackAction {
+    /// Scaffold a new pack directory with a template connector.json
+    Init {
+        /// Directory to create the pack in
+        dir: std::path::PathBuf,
+        /// Pack name (lowercase letters, digits, '-', '_')
+        #[arg(long)]
+        name: String,
+    },
+    /// Sign a pack's connector.json with an Ed25519 signing key
+    Sign {
+        /// Pack directory containing connector.json
+        dir: std::path::PathBuf,
+        /// File holding the 64-hex-char signing seed (mode 0600 on Unix).
+        /// Defaults to the PHANTOM_CONNECTOR_SIGNING_KEY env var.
+        #[arg(long)]
+        key_file: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum TeamAction {
     /// List teams after an exact trusted-terminal challenge authorizes provider access
     List,
@@ -1163,6 +1258,36 @@ fn run() -> anyhow::Result<()> {
         },
         Commands::Vault { action } => match action {
             VaultAction::MigrateLinux => commands::vault::run_migrate_linux(cli.json),
+        },
+        Commands::Onboard {
+            plan,
+            yes,
+            skip_connect,
+        } => commands::onboard::run(plan, yes, skip_connect, cli.json),
+        Commands::Connector { action } => match action {
+            ConnectorAction::Add { dir } => {
+                let dir = commands::connector::resolve_pack_dir(&dir)?;
+                commands::connector::run_add(&dir)
+            }
+            ConnectorAction::List { json } => commands::connector::run_list(json || cli.json),
+            ConnectorAction::Remove { name } => commands::connector::run_remove(&name),
+            ConnectorAction::Inspect { name } => commands::connector::run_inspect(&name),
+            ConnectorAction::Anchor { action } => match action {
+                ConnectorAnchorAction::Add { key } => commands::connector::run_anchor_add(&key),
+                ConnectorAnchorAction::List => commands::connector::run_anchor_list(),
+                ConnectorAnchorAction::Remove { key_id } => {
+                    commands::connector::run_anchor_remove(&key_id)
+                }
+            },
+            ConnectorAction::Pack { action } => match action {
+                ConnectorPackAction::Init { dir, name } => {
+                    commands::connector::run_pack_init(&dir, &name)
+                }
+                ConnectorPackAction::Sign { dir, key_file } => {
+                    let dir = commands::connector::resolve_pack_dir(&dir)?;
+                    commands::connector::run_pack_sign(&dir, key_file.as_deref())
+                }
+            },
         },
         Commands::SecretsExpiringSoon {
             days,
