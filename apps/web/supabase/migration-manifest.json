@@ -49,6 +49,10 @@
     {
       "file": "20261009225441_enforce_personal_vault_quota.sql",
       "sha256": "bd1ab6cda019fbcdd29d6b7464bbebcb2dafaa3ceefbc8925b45096c7399e104"
+    },
+    {
+      "file": "20261009231437_clamp_browser_table_authority.sql",
+      "sha256": "70c739e163e76e89c77d6f8d3fe0283fc9f7b40bef8ccc60982d6053ffde12fb"
     }
   ]
 }
