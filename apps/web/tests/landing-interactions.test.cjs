@@ -102,14 +102,31 @@ function navigationFixture(pathname, menuOpen = false) {
     if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
     if (name === "next/image") return { __esModule: true, default: ({ priority, ...props }) => React.createElement("img", props) };
     if (name === "@/lib/posthog") return { capturePostHog: async () => {} };
+    if (name === "@/lib/commercial-offerings") return { COMMERCIAL_CONTACT: "mason@ashlr.ai" };
     if (name === "@/lib/legacy-secrets-fragment") return { legacySecretsDestination: () => null };
     if (name === "./Icons") return { Github: () => React.createElement("svg") };
     return require(name);
   };
   const { Nav } = compile("Nav.tsx", localRequire, window, undefined);
-  return { element: Nav(), window, effects, stateUpdates, trigger };
+  return { element: Nav(), window, effects, stateUpdates, trigger, localRequire };
 }
 test("rendered desktop and mobile GitHub links choose the same correct product source", () => {
+  const { localRequire } = navigationFixture("/");
+  const { WorkbenchHero } = compile("WorkbenchHero.tsx", localRequire);
+  const hero = renderToStaticMarkup(WorkbenchHero());
+  assert.match(hero, /distributed as <code>@ashlr\/phantom@3\.26\.0<\/code> with the <code>phm<\/code> CLI/);
+  assert.match(hero, /<code>ashlr<\/code> alias remains compatible; <code>@ashlr\/hub<\/code> is the legacy package/);
+  const { SiteFooter } = compile("SiteFooter.tsx", localRequire);
+  const footer = renderToStaticMarkup(SiteFooter());
+  const sourceLinks = [...footer.matchAll(/<a\b[^>]*>[^]*?<\/a>/g)].map(([link]) => link);
+  for (const [repository, label] of [["phantom", "Phantom workbench on GitHub"], ["phantom-secrets", "Phantom Secrets on GitHub"]]) {
+    const matches = sourceLinks.filter((link) => link.includes(`href="https://github.com/ashlrai/${repository}"`));
+    assert.equal(matches.length, 1, repository);
+    assert.ok(matches[0].includes(label), repository);
+  }
+  for (const file of ["CONTRIBUTING.md", "ROADMAP.md", "LICENSE"]) {
+    assert.ok(sourceLinks.some((link) => link.includes(`href="https://github.com/ashlrai/phantom-secrets/blob/main/${file}"`)), file);
+  }
   for (const [pathname, repository, label] of [["/", "phantom", "Phantom workbench"], ["/secrets", "phantom-secrets", "Phantom Secrets"], ["/docs/getting-started", "phantom-secrets", "Phantom Secrets"]]) {
     const markup = renderToStaticMarkup(navigationFixture(pathname).element);
     const links = [...markup.matchAll(/<a\b[^>]*>[^]*?<\/a>/g)].map(([link]) => link).filter((link) => link.includes("View on GitHub"));

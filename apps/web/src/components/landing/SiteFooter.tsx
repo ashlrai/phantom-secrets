@@ -98,10 +98,18 @@ export function SiteFooter() {
           <ul className="mt-4 space-y-3">
             <li>
               <a
+                href="https://github.com/ashlrai/phantom"
+                className={linkClass}
+              >
+                Phantom workbench on GitHub
+              </a>
+            </li>
+            <li>
+              <a
                 href="https://github.com/ashlrai/phantom-secrets"
                 className={linkClass}
               >
-                View on GitHub
+                Phantom Secrets on GitHub
               </a>
             </li>
             <li>

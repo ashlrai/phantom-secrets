@@ -26,7 +26,8 @@ export function WorkbenchHero() {
           </a>
         </div>
         <p className="phantom-workbench__note">
-          The workbench is distributed as <code>@ashlr/hub</code> with the <code>ashlr</code> CLI.
+          The workbench is distributed as <code>@ashlr/phantom@3.26.0</code> with the <code>phm</code> CLI.
+          The <code>ashlr</code> alias remains compatible; <code>@ashlr/hub</code> is the legacy package.
           Your installed tools, account setup and permissions determine what can run.
         </p>
       </div>

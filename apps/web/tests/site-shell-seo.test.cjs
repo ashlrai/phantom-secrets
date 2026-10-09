@@ -212,6 +212,8 @@ test("footer exposes product, organization, and open-source paths without live-s
   assert.match(footer, /aria-label="Product links"/);
   assert.match(footer, /aria-label="Organization links"/);
   assert.match(footer, /aria-label="Open-source project links"/);
+  assert.match(footer, /href="https:\/\/github\.com\/ashlrai\/phantom"[\s\S]{0,100}Phantom workbench on GitHub/);
+  assert.match(footer, /href="https:\/\/github\.com\/ashlrai\/phantom-secrets"[\s\S]{0,100}Phantom Secrets on GitHub/);
   assert.match(footer, /href="\/enterprise"/);
   assert.match(footer, /href="\/government"/);
   assert.match(footer, /href="\/security"/);
