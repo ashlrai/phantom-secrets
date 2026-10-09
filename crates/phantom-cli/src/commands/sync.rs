@@ -90,6 +90,22 @@ async fn run_async(
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+
+    // Connector-pack sync targets are addressed by target name:
+    // `phantom sync --platform <pack-target>`.
+    if let Some(filter) = &platform_filter {
+        if let Some((pack_name, spec)) = phantom_core::connector::find_sync_target(filter)? {
+            if project_override.is_some() {
+                anyhow::bail!("--project cannot override a signed connector destination");
+            }
+            // reqwest::blocking must live outside Tokio's runtime thread.
+            return run_connector_worker(move || {
+                run_pack_sync(&config, cli_only, dry_run, json, &pack_name, &spec)
+            })
+            .await;
+        }
+    }
+
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Cheap precondition check before decrypting anything.
@@ -667,10 +683,243 @@ fn filter_key_names(secret_names: &[String], patterns: &[String]) -> (Vec<String
     (selected, skipped)
 }
 
+/// Sync vault secrets to a connector pack's declarative sync target.
+///
+/// The target's API credential comes from the vault (`credential_name` in the
+/// pack manifest — the operator stores it with `phantom add`; packs never
+/// ship credentials). The exact plan (target, endpoint host, secret names)
+/// is printed before anything is sent, and the push requires an attached
+/// trusted terminal plus explicit confirmation.
+fn run_pack_sync(
+    config: &PhantomConfig,
+    only: Vec<String>,
+    dry_run: bool,
+    json: bool,
+    pack_name: &str,
+    spec: &phantom_core::connector::SyncTargetSpec,
+) -> Result<()> {
+    let snapshot = phantom_core::connector::load_verified_pack(pack_name)?;
+    if !snapshot.manifest().capabilities.iter().any(|cap| {
+        matches!(cap,
+        phantom_core::connector::Capability::SyncTarget { targets } if targets.contains(spec))
+    }) {
+        anyhow::bail!("connector sync destination changed; reauthorize");
+    }
+    if !sync::validate_only_patterns(&only).is_empty() {
+        anyhow::bail!("invalid connector sync selection filter");
+    }
+    if dry_run {
+        // Opening a vault can migrate legacy files or reconcile sidecars. A
+        // headless preview only reports signed metadata, never opens a vault.
+        let plan = serde_json::json!({"mode":"dry-run", "pack":pack_name,
+            "target":spec, "signer":snapshot.signer(), "sha256":snapshot.sha256_pin(),
+            "filters":only, "secret_inventory":"unknown_without_authorized_vault_access",
+            "would_call_provider_api":false});
+        if !json {
+            println!("Connector sync preview (vault inventory not read):");
+        }
+        println!("{}", serde_json::to_string_pretty(&plan)?);
+        return Ok(());
+    }
+
+    if !std::io::stdin().is_terminal()
+        || !std::io::stdout().is_terminal()
+        || !std::io::stderr().is_terminal()
+    {
+        anyhow::bail!(
+            "Live pack sync requires attached stdin, stdout, and stderr terminals and cannot run headlessly. No vault plaintext was read and no provider request was sent. Use --dry-run for a value-blind headless preview."
+        );
+    }
+
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let mut secret_names = vault.list().context("Failed to list secrets")?;
+    secret_names.sort();
+    let (selected, _) = filter_key_names(&secret_names, &only);
+    if selected.is_empty() {
+        anyhow::bail!("no vault secrets selected for connector sync");
+    }
+    super::export_cmd::validate_consent_names(&selected)?;
+    let plan = pack_sync_plan(
+        config,
+        pack_name,
+        snapshot.signer(),
+        &snapshot.sha256_pin(),
+        spec,
+        &selected,
+    )?;
+    let digest = pack_sync_plan_digest(&plan)?;
+    super::export_cmd::require_trusted_terminal_effect(
+        &serde_json::to_string(&plan)?,
+        &format!(
+            "SYNC CONNECTOR DIGEST {digest} NONCE {}",
+            fresh_confirmation_nonce()
+        ),
+    )?;
+    let current = phantom_core::connector::load_verified_pack(pack_name)?;
+    if current.sha256_pin() != snapshot.sha256_pin() || current.signer() != snapshot.signer() {
+        anyhow::bail!(
+            "connector trust or destination changed; reauthorize before credential access"
+        );
+    }
+    let current_config = PhantomConfig::load(&std::env::current_dir()?.join(".phantom.toml"))?;
+    let current_selected = filter_key_names(&vault.list()?, &only).0;
+    if pack_sync_plan(
+        &current_config,
+        pack_name,
+        current.signer(),
+        &current.sha256_pin(),
+        spec,
+        &current_selected,
+    )? != plan
+    {
+        anyhow::bail!(
+            "connector sync configuration or selected names changed; reauthorize before credential access"
+        );
+    }
+
+    let credential = vault
+        .retrieve(&spec.credential_name)
+        .with_context(|| {
+            format!(
+                "Pack target {:?} needs vault secret {:?}; store it first with `phantom add {}` (value prompted on the trusted terminal).",
+                spec.name, spec.credential_name, spec.credential_name
+            )
+        })?;
+    let mut secrets: Vec<(String, Zeroizing<String>)> = Vec::new();
+    for name in &selected {
+        secrets.push((
+            name.clone(),
+            vault
+                .retrieve(name)
+                .context("connector sync selected secret unavailable; nothing sent")?,
+        ));
+    }
+
+    let report = phantom_core::connector::push_sync_target(&snapshot, spec, &credential, &secrets)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // `credential` is a Zeroizing<String>: scrubbed from memory on drop.
+    println!(
+        "\n{} Pushed {} secret(s) to pack target {} ({} skipped empty)",
+        "✓".green().bold(),
+        report.pushed,
+        spec.name.cyan(),
+        report.skipped_empty
+    );
+    Ok(())
+}
+
+async fn run_connector_worker<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .context("connector sync worker failed")?
+}
+
+fn pack_sync_plan(
+    config: &PhantomConfig,
+    pack: &str,
+    signer: &str,
+    pin: &str,
+    spec: &phantom_core::connector::SyncTargetSpec,
+    selected: &[String],
+) -> Result<serde_json::Value> {
+    Ok(serde_json::json!({"project_id":config.local_project_id(),
+        "config_sha256":hex::encode(Sha256::digest(serde_json::to_vec(config)?)),
+        "pack":pack,"signer":signer,"sha256":pin,"request":spec,"selected_names":selected}))
+}
+
+fn pack_sync_plan_digest(plan: &serde_json::Value) -> Result<String> {
+    let mut digest = Sha256::new();
+    digest.update(b"phantom.connector-sync.v1\0");
+    digest.update(serde_json::to_vec(plan)?);
+    Ok(hex::encode(digest.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn signed_pack_consent_binds_full_destination_request_and_provenance() {
+        let config = PhantomConfig::new_with_defaults("fixture".into());
+        let spec = phantom_core::connector::SyncTargetSpec {
+            name: "fixture-target".into(),
+            method: phantom_core::connector::HttpMethod::Post,
+            url: "https://example.invalid/api?a=1".into(),
+            auth_header: "Authorization".into(),
+            auth_scheme: "Bearer".into(),
+            credential_name: "TEST_CREDENTIAL".into(),
+        };
+        let selected = vec!["TEST_SECRET".into()];
+        let original = pack_sync_plan_digest(
+            &pack_sync_plan(&config, "fixture", "signer", "pin", &spec, &selected).unwrap(),
+        )
+        .unwrap();
+        for changed in [
+            phantom_core::connector::SyncTargetSpec {
+                url: "https://example.invalid/other?a=1".into(),
+                ..spec.clone()
+            },
+            phantom_core::connector::SyncTargetSpec {
+                url: "https://example.invalid/api?a=2".into(),
+                ..spec.clone()
+            },
+            phantom_core::connector::SyncTargetSpec {
+                method: phantom_core::connector::HttpMethod::Put,
+                ..spec.clone()
+            },
+            phantom_core::connector::SyncTargetSpec {
+                auth_header: "X-Auth".into(),
+                ..spec.clone()
+            },
+            phantom_core::connector::SyncTargetSpec {
+                credential_name: "OTHER".into(),
+                ..spec.clone()
+            },
+        ] {
+            assert_ne!(
+                original,
+                pack_sync_plan_digest(
+                    &pack_sync_plan(&config, "fixture", "signer", "pin", &changed, &selected)
+                        .unwrap()
+                )
+                .unwrap()
+            );
+        }
+        assert_ne!(
+            original,
+            pack_sync_plan_digest(
+                &pack_sync_plan(&config, "fixture", "changed", "pin", &spec, &selected).unwrap()
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            original,
+            pack_sync_plan_digest(
+                &pack_sync_plan(&config, "fixture", "signer", "changed", &spec, &selected).unwrap()
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn connector_transport_runs_off_runtime_without_network_or_credentials() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let result = run_connector_worker(|| {
+                // Entering a nested blocking runtime panics on an async
+                // worker; the production connector worker must isolate it.
+                let nested = tokio::runtime::Runtime::new()?;
+                nested.block_on(async {});
+                drop(nested);
+                Ok(())
+            })
+            .await;
+            result.unwrap();
+        });
+    }
 
     #[test]
     fn live_sync_source_omits_decrypted_map_size_from_progress() {

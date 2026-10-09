@@ -482,10 +482,30 @@ fn parse_competitor_source(
         "dotenvx" => phantom_core::importers::dotenvx::DotenvxImporter::parse(bytes),
         "1password" => phantom_core::importers::onepassword::OnePasswordImporter::parse(bytes),
         "env" => parse_env_source(bytes),
-        other => anyhow::bail!(
-            "Unknown import source '{}'. Supported: doppler, infisical, dotenvx, 1password, env",
-            other
-        ),
+        other => {
+            // Installed connector packs may declare import sources.
+            match phantom_core::connector::find_import_source(other) {
+                Ok(Some((pack_name, spec))) => {
+                    println!(
+                        "{} Using import source {:?} from connector pack {:?}",
+                        "info".blue(),
+                        spec.name,
+                        pack_name
+                    );
+                    let parsed = phantom_core::connector::parse_import_source(&spec, bytes)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    Ok(parsed
+                        .into_iter()
+                        .map(|(k, v)| (k, Zeroizing::new(v)))
+                        .collect())
+                }
+                Ok(None) => anyhow::bail!(
+                    "Unknown import source '{}'. Supported: doppler, infisical, dotenvx, 1password, env, or an installed connector pack's import source (see `phantom connector list`).",
+                    other
+                ),
+                Err(e) => anyhow::bail!("Failed to look up connector packs: {e}"),
+            }
+        }
     }
 }
 

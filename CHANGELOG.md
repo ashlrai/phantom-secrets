@@ -4,7 +4,42 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No additional unreleased changes are recorded after the `0.7.9` release.
+### Added
+
+- `INTEGRATION.md`: documents how this repo plugs into the Phantom workbench
+  (formerly Ashlr Hub) — the opt-in delegation model, the `phm_` token-swap
+  flow, trust boundaries, and opt-out. No library dependency in either
+  direction; integration is via the CLI, the local MCP server, and versioned
+  JSON contracts.
+- Phase-1 design documents describe the proposed onboarding and connector-pack
+  boundaries. Phase-2 source changes remain unreleased; no deployed workbench
+  wizard or provider commissioning is implied.
+- `phantom onboard`: a local CLI sequencer with metadata-only detection and
+  `--plan` that never constructs or migrates a vault. Protect, Connect and
+  Verify each require attended terminals and explicit confirmation, retaining
+  underlying commands' consent safeguards. JSON version-1 receipts record
+  success, failure, decline and planned outcomes plus completed steps, even
+  when a child command exits early. Completed work is not rolled back across
+  phases; reruns detect current state. Verify may reconcile existing local
+  backend storage only after consent.
+- `phantom connector`: signed provider connector-pack MVP. Packs are
+  declarative, Ed25519-signed manifests installed from a local directory —
+  no third-party code runs in the credential path. Capabilities: `validate`
+  (pack validators join `phantom validate` automatically),
+  `sync-target` (addressable as `phantom sync --platform <name>`), and
+  `import-source` (addressable as `phantom import --from <name>`). Trust
+  anchors are operator-managed (`phantom connector anchor add/list/remove`,
+  explicit local key trust); installed packs are SHA-256 hash-pinned and
+  re-verified against current signatures/anchors on every load. Live validation
+  and sync consent bind the project and signed destination; sync previews never
+  open the vault. No registry, expiry or anti-rollback policy is implemented. `phantom connector pack init/sign` scaffolds
+  and signs new packs (signing key via `PHANTOM_CONNECTOR_SIGNING_KEY` or a
+  0600 `--key-file`, never argv).
+
+### Changed
+
+- `docs/hub-status-contract.md`: "Ashlr Hub" renamed to "Phantom workbench
+  (formerly Ashlr Hub)" following the `ashlr-hub` → `ashlrai/phantom` rename.
 
 ## [0.7.9] - 2026-09-06
 

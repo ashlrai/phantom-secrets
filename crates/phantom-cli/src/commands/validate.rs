@@ -16,6 +16,7 @@ use phantom_core::validator::{
     default_validators, run_validation_pipeline, ValidationMetadata, ValidationReport,
     ValidationStatus,
 };
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -77,6 +78,10 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)?;
     let project_id = config.local_project_id().to_string();
 
+    // Backend constructors may migrate legacy files or reconcile sidecars.
+    // Refuse headless access before opening any vault.
+    require_validation_terminal()?;
+
     if watch {
         return run_watch_loop(
             &project_dir,
@@ -97,7 +102,9 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
 
     if names.is_empty() {
         if json {
-            println!("{{\"total\":0,\"valid\":0,\"invalid\":0,\"unreachable\":0,\"not_checked\":0,\"entries\":[]}}");
+            println!(
+                "{{\"total\":0,\"valid\":0,\"invalid\":0,\"unreachable\":0,\"not_checked\":0,\"entries\":[]}}"
+            );
         } else {
             println!("{} No secrets in vault to validate.", "info".blue());
         }
@@ -112,6 +119,7 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
 
     let n_jobs = jobs.unwrap_or(DEFAULT_JOBS).clamp(1, 16);
     let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+    let pack_plan = phantom_core::connector::pack_validation_plan()?;
     let metadata_before = snapshot_validation_metadata(vault.as_ref(), &names)?;
     require_trusted_terminal_validation(
         &project_dir,
@@ -121,7 +129,13 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
         n_jobs,
         timeout.as_secs(),
         false,
+        &pack_plan,
     )?;
+
+    phantom_core::connector::verify_validation_plan(&pack_plan)?;
+    if phantom_core::fs::read_regular_file(&config_path)?.as_deref() != Some(&config_before) {
+        anyhow::bail!("validation configuration changed; reauthorize before credential access");
+    }
 
     // Collect secrets, apply per-secret timeout override where configured.
     // For one-shot mode, we use the global default timeout but respect the
@@ -144,7 +158,8 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
         );
     }
 
-    let validators = default_validators();
+    let mut validators = default_validators();
+    validators.extend(phantom_core::connector::validators_for_plan(&pack_plan));
     let report = run_validation_pipeline(secrets, &validators, n_jobs, timeout);
 
     persist_validation_metadata(vault.as_ref(), &report, &metadata_before)?;
@@ -199,6 +214,7 @@ fn run_watch_loop(
         })
         .max()
         .unwrap_or(30);
+    let pack_plan = phantom_core::connector::pack_validation_plan()?;
     require_trusted_terminal_validation(
         project_dir,
         project_id,
@@ -207,6 +223,7 @@ fn run_watch_loop(
         n_jobs,
         watch_timeout_secs,
         true,
+        &pack_plan,
     )?;
     phantom_core::fs::ensure_real_parent(&report_path)?;
 
@@ -224,6 +241,7 @@ fn run_watch_loop(
     let poll_interval = Duration::from_secs(60);
 
     loop {
+        phantom_core::connector::verify_validation_plan(&pack_plan)?;
         if phantom_core::fs::read_regular_file(config_path)?.as_deref() != Some(config_before) {
             anyhow::bail!(
                 "Validation watch authorization ended because .phantom.toml changed; restart and reauthorize"
@@ -283,7 +301,8 @@ fn run_watch_loop(
                 .as_secs();
 
             let timeout = Duration::from_secs(watch_timeout_secs);
-            let validators = default_validators();
+            let mut validators = default_validators();
+            validators.extend(phantom_core::connector::validators_for_plan(&pack_plan));
             let report = run_validation_pipeline(due_secrets, &validators, n_jobs, timeout);
 
             if let Err(error) =
@@ -375,6 +394,24 @@ fn snapshot_validation_metadata(
         .collect()
 }
 
+fn require_validation_terminal() -> Result<()> {
+    if !std::io::stdin().is_terminal()
+        || !std::io::stdout().is_terminal()
+        || !std::io::stderr().is_terminal()
+    {
+        anyhow::bail!(
+            "live validation requires attached stdin, stdout, and stderr terminals; no credential was retrieved and no provider request was made"
+        );
+    }
+    Ok(())
+}
+
+fn fresh_validation_nonce() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn require_trusted_terminal_validation(
     project_dir: &std::path::Path,
@@ -384,15 +421,9 @@ fn require_trusted_terminal_validation(
     jobs: usize,
     timeout_secs: u64,
     watch: bool,
+    pack_plan: &[phantom_core::connector::PackValidationPlan],
 ) -> Result<()> {
-    if !std::io::stdin().is_terminal()
-        || !std::io::stdout().is_terminal()
-        || !std::io::stderr().is_terminal()
-    {
-        anyhow::bail!(
-            "live validation requires attached stdin, stdout, and stderr terminals; no credential was retrieved and no provider request was made"
-        );
-    }
+    require_validation_terminal()?;
     let mut digest = Sha256::new();
     digest.update(b"phantom-validation-authority-v1\0");
     digest.update(config_before);
@@ -403,16 +434,25 @@ fn require_trusted_terminal_validation(
     digest.update(jobs.to_le_bytes());
     digest.update(timeout_secs.to_le_bytes());
     digest.update([u8::from(watch)]);
+    let pack_bytes = serde_json::to_vec(pack_plan)?;
+    digest.update(&pack_bytes);
+    if !pack_plan.is_empty() {
+        eprintln!(
+            "Exact signed connector destinations and request templates: {}",
+            String::from_utf8_lossy(&pack_bytes)
+        );
+    }
     let digest = hex::encode(digest.finalize());
     let mode = if watch { "WATCH" } else { "ONCE" };
     let challenge = format!(
-        "VALIDATE {mode} {} SECRETS IN {} ID {} JOBS {} TIMEOUT {} DIGEST {}",
+        "VALIDATE {mode} {} SECRETS IN {} ID {} JOBS {} TIMEOUT {} DIGEST {} NONCE {}",
         names.len(),
         project_dir.display(),
         project_id,
         jobs,
         timeout_secs,
-        digest
+        digest,
+        fresh_validation_nonce()
     );
     eprintln!(
         "Live validation sends each selected credential to its configured provider.{}\nSelected name count: {}\nType this exact challenge to continue:\n{}",
@@ -584,6 +624,15 @@ mod tests {
     }
 
     #[test]
+    fn validation_nonce_is_fresh_and_full_length() {
+        let first = fresh_validation_nonce();
+        let second = fresh_validation_nonce();
+        assert_eq!(first.len(), 32);
+        assert!(first.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn headless_validation_authority_fails_before_effects() {
         if !std::io::stdin().is_terminal()
             || !std::io::stdout().is_terminal()
@@ -597,6 +646,7 @@ mod tests {
                 1,
                 10,
                 false,
+                &[],
             )
             .unwrap_err()
             .to_string();

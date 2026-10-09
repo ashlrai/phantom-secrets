@@ -122,6 +122,65 @@ the [copyable policy and task templates](examples/agent-delegation/README.md).
 Teams evaluating a controlled rollout can start with the
 [enterprise adoption guide](docs/enterprise-adoption.md).
 
+### Guided local onboarding (unreleased)
+
+The source branch adds a CLI sequencer over existing local commands:
+
+```bash
+$ phantom onboard --plan     # metadata-only plan; never opens the vault
+$ phantom onboard            # detect, protect, connect, verify with consent
+$ phantom onboard --plan --json
+```
+
+1. **Detect** checks dotenv/config presence and bounded local MCP profiles.
+   It does not read secret values, count vault entries, migrate legacy vaults,
+   or claim an existing config is valid. Planning creates no vault or sidecar.
+2. **Protect** runs `phantom init` for `.env` after confirmation in an attended
+   terminal. Init retains its own exact challenge and transaction safeguards.
+3. **Connect** confirms each missing Claude Code, Cursor, Windsurf or Codex
+   MCP profile separately, then confirms `phantom agent setup --apply`.
+   `--skip-connect` skips both profile writes and agent defaults.
+4. **Verify** confirms `doctor`, `check` and `agent report`; all three must pass
+   for `done: true`. Their existing local vault probes may reconcile legacy
+   backend storage, so this phase also requires an attended terminal.
+
+Live phases require attached stdin, stdout and stderr outside agent authority.
+`--yes` answers wizard prompts but does not waive terminal checks or the exact
+consent required by underlying commands. No account, provider, service or
+long-lived proxy is started. Each phase runs the installed current executable
+with fixed arguments; a child's early exit cannot terminate the receipt writer.
+
+`--json` reserves stdout for one version-1 receipt. Prompts and live command
+output use stderr; bounded diagnostic details are included in the receipt.
+Outcomes are `planned`, `complete`, `declined` and `failed`; all four phases
+have statuses and connection steps record completed work. Reruns detect the
+current state. Earlier completed changes remain applied after a later failure
+or decline; there is no transaction or rollback across phases. These receipts
+are a CLI integration contract, not evidence of a deployed workbench wizard.
+
+The unreleased source also adds local **connector packs** for declarative
+validators, sync targets and import sources. These are signed manifests with
+operator-managed anchors; they do not execute third-party plugin code:
+
+```bash
+$ phantom connector anchor add --key <hex-pubkey>   # add an independently authenticated key
+$ phantom connector add ./stripe-pack               # verify signature + install
+$ phantom validate --check-all                     # pack validators join the run
+$ phantom sync --platform stripe-target --dry-run  # pack sync targets work too
+```
+
+Authoring your own pack is two commands: `phantom connector pack init
+--name my-pack` scaffolds the manifest, and `phantom connector pack sign`
+signs it with your Ed25519 key. See [INTEGRATION.md](INTEGRATION.md) for the
+trust model, and [the connector design](DESIGN-connector-packs.md) for limits.
+Signatures authenticate a configured key, not official provider identity or
+endpoint safety. Live validation and sync require review of the exact signed
+destination and a project-bound terminal challenge. Schema v1 has no expiration
+or anti-rollback policy; there is no automatic fetch, update or credential
+issuance. Removing an anchor prevents installed capabilities from loading.
+`connector remove` removes registry ownership and retains inert signed cache
+files; it does not recursively delete through ambient paths.
+
 ### Windows
 
 The same core command surface is implemented for native Windows, with remaining
@@ -397,6 +456,10 @@ dashboard is designed to show team memberships and member lists.
 | `phantom agent report` | Emit a read-only AI-agent readiness report (`--json` for automation). Reports `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready` |
 | `phantom agent doctor` | Human-readable agent readiness view backed by the same policy engine |
 | `phantom agent setup` | Preview or apply safe defaults for agent use (`--dry-run` first, `--apply` to write changes) |
+| `phantom onboard` | Unreleased CLI sequencer: metadata-only `--plan`; separately confirmed Protect, Connect and Verify in an attended terminal. `--json` emits one version-1 receipt with outcomes and completed steps. Existing phase safeguards apply; completed changes are not rolled back after a later failure. |
+| `phantom connector add <dir>` / `list` / `remove` / `inspect` | Install and manage signed provider connector packs (trusted terminal required for add/remove). Packs are declarative signed manifests — no third-party code runs in the credential path. Capabilities: `validate` (extra live validators in `phantom validate`), `sync-target` (`phantom sync --platform <name>`), `import-source` (`phantom import --from <name>`). |
+| `phantom connector anchor add --key <hex>` / `list` / `remove` | Manage Ed25519 trust anchors that vouch for pack signatures (trust-on-first-use). |
+| `phantom connector pack init --name <n>` / `sign` | Scaffold a new pack manifest and sign it (key from `PHANTOM_CONNECTOR_SIGNING_KEY` or a 0600 `--key-file`). |
 | `phantom workspace plan [--json]` | Build an exact sealed setup plan and create a value-free pending request; does not change the workspace or vault |
 | `phantom workspace apply --request <ID>` | Recompute and claim the exact request in an attached trusted terminal, require typed confirmation, then apply transactionally with rollback on failure |
 | `phantom workspace status --request <ID> [--json]` | Read authenticated, value-free request state |
