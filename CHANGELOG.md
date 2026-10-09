@@ -14,6 +14,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 - `DESIGN-onboarding-wizard.md` and `DESIGN-connector-packs.md`: proposals
   (not implemented) for a unified `phantom onboard` flow and a signed provider
   connector-pack model. Both need Mason's input before any implementation.
+- `phantom onboard`: guided first-run setup in one flow — detect (read-only),
+  protect (`init` on a trusted terminal), connect (MCP client configs + agent
+  defaults), verify (`doctor` + `check` + `agent report` must all be clean).
+  `--plan` previews without mutating; `--json` emits a machine-readable
+  receipt for the Phantom workbench. Reruns resume from detection.
+- `phantom connector`: signed provider connector-pack MVP. Packs are
+  declarative, Ed25519-signed manifests installed from a local directory —
+  no third-party code runs in the credential path. Capabilities: `validate`
+  (pack validators join `phantom validate` automatically),
+  `sync-target` (addressable as `phantom sync --platform <name>`), and
+  `import-source` (addressable as `phantom import --from <name>`). Trust
+  anchors are operator-managed (`phantom connector anchor add/list/remove`,
+  trust-on-first-use); installed packs are SHA-256 hash-pinned and
+  re-verified on every load. `phantom connector pack init/sign` scaffolds
+  and signs new packs (signing key via `PHANTOM_CONNECTOR_SIGNING_KEY` or a
+  0600 `--key-file`, never argv).
 
 ### Changed
 

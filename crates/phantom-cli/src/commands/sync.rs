@@ -90,6 +90,15 @@ async fn run_async(
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+
+    // Connector-pack sync targets are addressed by target name:
+    // `phantom sync --platform <pack-target>`.
+    if let Some(filter) = &platform_filter {
+        if let Ok(Some((pack_name, spec))) = phantom_core::connector::find_sync_target(filter) {
+            return run_pack_sync(&config, cli_only, dry_run, json, &pack_name, &spec);
+        }
+    }
+
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     // Cheap precondition check before decrypting anything.
@@ -665,6 +674,129 @@ fn filter_key_names(secret_names: &[String], patterns: &[String]) -> (Vec<String
     selected.sort();
     skipped.sort();
     (selected, skipped)
+}
+
+/// Sync vault secrets to a connector pack's declarative sync target.
+///
+/// The target's API credential comes from the vault (`credential_name` in the
+/// pack manifest — the operator stores it with `phantom add`; packs never
+/// ship credentials). The exact plan (target, endpoint host, secret names)
+/// is printed before anything is sent, and the push requires an attached
+/// trusted terminal plus explicit confirmation.
+fn run_pack_sync(
+    config: &PhantomConfig,
+    only: Vec<String>,
+    dry_run: bool,
+    json: bool,
+    pack_name: &str,
+    spec: &phantom_core::connector::SyncTargetSpec,
+) -> Result<()> {
+    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let mut secret_names = vault.list().context("Failed to list secrets")?;
+    secret_names.sort();
+
+    let (selected, _skipped) = filter_key_names(&secret_names, &only);
+    if selected.is_empty() {
+        anyhow::bail!("No vault secrets selected for pack target {:?}.", spec.name);
+    }
+
+    let host = spec
+        .url
+        .strip_prefix("https://")
+        .unwrap_or(&spec.url)
+        .split('/')
+        .next()
+        .unwrap_or(&spec.url);
+
+    if dry_run {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "mode": "dry-run",
+                    "pack": pack_name,
+                    "target": spec.name,
+                    "host": host,
+                    "secret_count": selected.len(),
+                    "secret_names": selected,
+                    "credential_name": spec.credential_name,
+                    "would_call_provider_api": true,
+                }))?
+            );
+        } else {
+            println!("{} Pack sync dry run", "info".blue());
+            println!("  pack:       {}", pack_name.cyan());
+            println!("  target:     {}", spec.name.cyan());
+            println!("  endpoint:   https://{}", host.dimmed());
+            println!("  credential: {} (from vault)", spec.credential_name);
+            println!(
+                "  secrets:    {} would be pushed: {}",
+                selected.len(),
+                selected.join(", ")
+            );
+        }
+        return Ok(());
+    }
+
+    if !std::io::stdin().is_terminal()
+        || !std::io::stdout().is_terminal()
+        || !std::io::stderr().is_terminal()
+    {
+        anyhow::bail!(
+            "Live pack sync requires attached stdin, stdout, and stderr terminals and cannot run headlessly. No vault plaintext was read and no provider request was sent. Use --dry-run for a value-blind headless preview."
+        );
+    }
+
+    // Exact plan before mutation — values never printed.
+    println!("{} Pack sync plan", "->".blue().bold());
+    println!("  pack:       {}", pack_name.cyan().bold());
+    println!("  target:     {}", spec.name.cyan().bold());
+    println!("  endpoint:   https://{}", host.dimmed());
+    println!(
+        "  credential: {} (from vault, never shown)",
+        spec.credential_name
+    );
+    println!(
+        "  secrets:    {} to push: {}",
+        selected.len(),
+        selected.join(", ")
+    );
+    if !super::connector::prompt_yes_no("Push these secrets to the pack target?", false)? {
+        println!("Aborted — nothing was sent.");
+        return Ok(());
+    }
+
+    let credential = vault
+        .retrieve(&spec.credential_name)
+        .with_context(|| {
+            format!(
+                "Pack target {:?} needs vault secret {:?}; store it first with `phantom add {}` (value prompted on the trusted terminal).",
+                spec.name, spec.credential_name, spec.credential_name
+            )
+        })?;
+    let mut secrets: Vec<(String, Zeroizing<String>)> = Vec::new();
+    for name in &selected {
+        match vault.retrieve(name) {
+            Ok(v) => secrets.push((name.clone(), v)),
+            Err(_) => eprintln!(
+                "{} Could not retrieve {}; skipping it (provider was not called for this key)",
+                "warn".yellow(),
+                name
+            ),
+        }
+    }
+
+    let report = phantom_core::connector::push_sync_target(pack_name, spec, &credential, &secrets)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // `credential` is a Zeroizing<String>: scrubbed from memory on drop.
+    println!(
+        "\n{} Pushed {} secret(s) to pack target {} ({} skipped empty)",
+        "✓".green().bold(),
+        report.pushed,
+        spec.name.cyan(),
+        report.skipped_empty
+    );
+    Ok(())
 }
 
 #[cfg(test)]
