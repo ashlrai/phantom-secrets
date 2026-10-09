@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes, randomInt } from "node:crypto";
 import { promisify } from "node:util";
+import { readFile } from "node:fs/promises";
 
 const port = Number(process.env.PHANTOM_CI_DB_PORT);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -86,6 +87,38 @@ assert.equal(await query("SELECT bool_and(has_table_privilege('service_role', ta
 assert.equal(await query("SELECT bool_and(relrowsecurity) FROM pg_class WHERE oid IN ('public.users'::regclass,'public.device_tokens'::regclass,'public.vault_blobs'::regclass)"), "t");
 assert.equal(await query("SELECT count(*) = 11 AND bool_and(c.relrowsecurity) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p')"), "t");
 
+// Effective privileges include inherited role and PUBLIC grants. A fresh replay
+// alone misses the hosted project's legacy broad ACLs, so reproduce them and
+// reapply the exact additive migration before exercising the real RPC/RLS paths.
+const browserTables = ["users", "vault_blobs", "device_tokens", "teams", "team_members", "team_vault_blobs", "team_key_shares", "platform_tokens", "stripe_processed_events", "stripe_subscription_users", "device_auth_rate_limits"];
+const browserReadTables = new Set(["users", "vault_blobs", "teams", "team_members", "team_vault_blobs"]);
+const tablePrivileges = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"];
+async function assertBrowserAuthority() {
+  for (const role of ["anon", "authenticated"]) {
+    for (const table of browserTables) {
+      const allowed = role === "authenticated" && browserReadTables.has(table);
+      const result = JSON.parse(await query(`SELECT json_agg(has_table_privilege('${role}','public.${table}',privilege) ORDER BY ord) FROM unnest(ARRAY['${tablePrivileges.join("','")}']) WITH ORDINALITY AS p(privilege,ord)`));
+      assert.deepEqual(result, tablePrivileges.map((privilege) => allowed && privilege === "SELECT"), `${role} effective privileges on ${table}`);
+      const columns = await query(`SELECT bool_and(NOT has_column_privilege('${role}',a.attrelid,a.attnum,p.privilege)) FROM pg_attribute a CROSS JOIN (VALUES ('INSERT'),('UPDATE'),('REFERENCES')) p(privilege) WHERE a.attrelid='public.${table}'::regclass AND a.attnum>0 AND NOT a.attisdropped`);
+      assert.equal(columns, "t", `${role} column writes on ${table}`);
+      if (!allowed) assert.equal(await query(`SELECT bool_and(NOT has_column_privilege('${role}',a.attrelid,a.attnum,'SELECT')) FROM pg_attribute a WHERE a.attrelid='public.${table}'::regclass AND a.attnum>0 AND NOT a.attisdropped`), "t", `${role} column reads on ${table}`);
+    }
+  }
+}
+assert.equal(await query("SELECT count(*) FROM supabase_migrations.schema_migrations WHERE version='20261009231437'"), "1");
+await assertBrowserAuthority();
+const serviceAclSql = `SELECT json_agg(json_build_object('table',c.relname,'privilege',a.privilege_type,'grantable',a.is_grantable) ORDER BY c.relname,a.privilege_type,a.is_grantable) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE n.nspname='public' AND c.relname IN ('${browserTables.join("','")}') AND a.grantee='service_role'::regrole`;
+const originalServiceAcl = await query(serviceAclSql);
+const functionAuthoritySql = "SELECT json_agg(json_build_object('schema',n.nspname,'name',p.proname,'arguments',pg_get_function_identity_arguments(p.oid),'definer',p.prosecdef,'config',p.proconfig,'acl',p.proacl) ORDER BY n.nspname,p.proname,pg_get_function_identity_arguments(p.oid)) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname IN ('public','app_private') AND p.prokind='f'";
+const originalFunctionAuthority = await query(functionAuthoritySql);
+const clampMigration = await readFile(new URL("../../apps/web/supabase/migrations/20261009231437_clamp_browser_table_authority.sql", import.meta.url), "utf8");
+// Seed only ACLs on this admitted empty local fixture. The candidate must remove
+// PUBLIC inheritance as well as grants directly attached to both browser roles.
+await query(`BEGIN; GRANT ALL PRIVILEGES ON TABLE ${browserTables.map((table) => `public.${table}`).join(",")} TO PUBLIC, anon, authenticated; GRANT SELECT(github_login) ON public.users TO anon; GRANT UPDATE(encrypted_blob) ON public.vault_blobs TO authenticated; ${clampMigration} COMMIT;`);
+await assertBrowserAuthority();
+assert.equal(await query(serviceAclSql), originalServiceAcl, "service-role ACL must be unchanged");
+assert.equal(await query(functionAuthoritySql), originalFunctionAuthority, "RPC and membership-helper authority must be unchanged");
+
 let fixturesCreated = false;
 try {
   await query(`BEGIN;
@@ -127,13 +160,31 @@ try {
     await denied(`BEGIN; SET LOCAL ROLE ${role}; ${rpc(ids[1], "foreign", "fixture", 0)}; COMMIT;`);
     await denied(`BEGIN; SET LOCAL ROLE ${role}; INSERT INTO public.vault_blobs(user_id,project_id,encrypted_blob) VALUES ('${ids[0]}','bypass','fixture'); COMMIT;`);
   }
+  // Membership-backed reads remain available without widening visibility.
+  const teamIds = ["20000000-0000-4000-8000-000000000001", "20000000-0000-4000-8000-000000000002"];
+  await query(`BEGIN;
+    INSERT INTO public.teams(id,name,owner_id) VALUES ('${teamIds[0]}','fixture-team-a','${ids[0]}'),('${teamIds[1]}','fixture-team-b','${ids[1]}');
+    INSERT INTO public.team_members(team_id,user_id,role) VALUES ('${teamIds[0]}','${ids[0]}','owner'),('${teamIds[1]}','${ids[1]}','owner');
+    INSERT INTO public.team_vault_blobs(team_id,project_id,encrypted_blob) VALUES ('${teamIds[0]}','fixture','cipher-a'),('${teamIds[1]}','fixture','cipher-b');
+    COMMIT;`);
+  for (const table of ["users", "teams", "team_members", "team_vault_blobs"]) {
+    const visible = await query(`BEGIN; SET LOCAL ROLE authenticated; SELECT set_config('request.jwt.claims','{"sub":"${ids[0]}","role":"authenticated"}',true); SELECT count(*) FROM public.${table}; COMMIT;`);
+    assert.equal(visible.split("\n").at(-1), "1", `${table} own account/team read remains isolated`);
+  }
+  for (const role of ["anon", "authenticated"]) {
+    // TRUNCATE is specifically outside RLS; denial must come from table ACLs.
+    await denied(`BEGIN; SET LOCAL ROLE ${role}; TRUNCATE public.vault_blobs; COMMIT;`);
+    for (const table of ["device_tokens", "platform_tokens", "team_key_shares", "stripe_processed_events", "stripe_subscription_users", "device_auth_rate_limits"]) {
+      await denied(`BEGIN; SET LOCAL ROLE ${role}; SELECT * FROM public.${table}; COMMIT;`);
+    }
+  }
   const read = await query(`BEGIN; SET LOCAL ROLE authenticated; SELECT set_config('request.jwt.claims','{"sub":"${ids[0]}","role":"authenticated"}',true); SELECT count(*) FROM public.vault_blobs; SELECT count(*) FROM public.vault_blobs WHERE user_id='${ids[1]}'; COMMIT;`);
   assert.deepEqual(read.split("\n").slice(-2), ["1", "0"]);
   await denied(`BEGIN; SET LOCAL ROLE authenticated; UPDATE public.users SET plan='pro' WHERE id='${ids[1]}'; COMMIT;`);
   await denied(`BEGIN; SET LOCAL ROLE authenticated; UPDATE public.vault_blobs SET encrypted_blob='bypass' WHERE user_id='${ids[1]}'; COMMIT;`);
   await assert.rejects(query(asService(`SELECT * FROM public.push_personal_vault('${ids[1]}','same',repeat('x',1000001),2)`)), (error) => /invalid personal vault push/.test(error.stderr ?? ""));
   assert.equal(await query(`SELECT version FROM public.vault_blobs WHERE user_id='${ids[1]}' AND project_id='same'`), "2");
-  console.log("PASS: deterministic two-session quota/CAS, legacy plans and backups, service grants, role denial and cross-account RLS");
+  console.log("PASS: deterministic two-session quota/CAS, legacy plans and backups, service grants, legacy ACL clamp, role denial and account/team RLS");
 } finally {
   if (fixturesCreated) {
     await query(`BEGIN; DROP TRIGGER ${trigger} ON public.vault_blobs; DROP SCHEMA ${schema} CASCADE; DELETE FROM auth.users WHERE id IN ('${ids.join("','")}'); COMMIT;`);
