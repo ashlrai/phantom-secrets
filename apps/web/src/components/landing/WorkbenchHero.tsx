@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { WORKBENCH_RELEASE } from "@/lib/workbench-release";
 
 const resourceTypes = [
   { name: "Subscriptions", detail: "Through signed-in CLIs" },
@@ -24,12 +25,15 @@ export function WorkbenchHero() {
           <a className="phantom-workbench__secondary" href="/secrets">
             Protect credentials with Phantom Secrets
           </a>
+          {WORKBENCH_RELEASE?.macDownloadUrl && <a className="phantom-workbench__secondary" href={WORKBENCH_RELEASE.macDownloadUrl}>Download for Mac</a>}
         </div>
         <p className="phantom-workbench__note">
-          The workbench is distributed as <code>@ashlr/phantom@3.26.0</code> with the <code>phm</code> CLI.
+          The workbench is distributed as <code>{WORKBENCH_RELEASE ? `@ashlr/phantom@${WORKBENCH_RELEASE.version}` : '@ashlr/phantom'}</code> with the <code>phm</code> CLI.
+          {WORKBENCH_RELEASE && <> <a href={WORKBENCH_RELEASE.releaseUrl}>Published release</a> · <a href={WORKBENCH_RELEASE.registryUrl}>npm package</a>.</>}
           The <code>ashlr</code> alias remains compatible; <code>@ashlr/hub</code> is the legacy package.
           Your installed tools, account setup and permissions determine what can run.
         </p>
+        {WORKBENCH_RELEASE && <p className="phantom-workbench__note"><code>{WORKBENCH_RELEASE.installCommand}</code></p>}
       </div>
 
       <div className="phantom-workbench__diagram" aria-label="Illustrated engineering workflow, not live account status">

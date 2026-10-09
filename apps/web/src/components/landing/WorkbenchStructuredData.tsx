@@ -1,3 +1,5 @@
+import { WORKBENCH_RELEASE } from "@/lib/workbench-release";
+
 function serializeStructuredData(value: unknown): string {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }
@@ -13,7 +15,8 @@ export function WorkbenchStructuredData() {
       applicationCategory: "DeveloperApplication",
       applicationSubCategory: "AgenticEngineering",
       codeRepository: "https://github.com/ashlrai/phantom",
-      downloadUrl: "https://verse.ashlr.ai/#start",
+      downloadUrl: WORKBENCH_RELEASE?.macDownloadUrl ?? "https://verse.ashlr.ai/#start",
+      ...(WORKBENCH_RELEASE ? { softwareVersion: WORKBENCH_RELEASE.version, datePublished: WORKBENCH_RELEASE.publishedAt } : {}),
       description: "An engineering workbench for interactive agent sessions, autonomous fleet workflows and connected resources.",
       author: { "@type": "Organization", name: "AshlrAI, Inc.", url: "https://ashlr.ai" },
       license: "https://opensource.org/licenses/MIT",

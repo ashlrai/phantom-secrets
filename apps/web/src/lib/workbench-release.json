@@ -1,0 +1,15 @@
+{
+  "v": 1,
+  "product": "workbench",
+  "repository": "ashlrai/phantom",
+  "packageName": "@ashlr/phantom",
+  "version": "3.27.0",
+  "sourceSha": "ecfefbf3b731ead5e1eada1704a686fae3e70ba7",
+  "publishedAt": "2026-10-09T06:29:14.000Z",
+  "observedAt": "2026-10-09T06:39:29.120Z",
+  "releaseUrl": "https://github.com/ashlrai/phantom/releases/tag/v3.27.0",
+  "registryUrl": "https://www.npmjs.com/package/@ashlr/phantom/v/3.27.0",
+  "installCommand": "npm install -g @ashlr/phantom@3.27.0",
+  "macDownloadUrl": "https://github.com/ashlrai/phantom/releases/download/v3.27.0/Phantom_3.27.0_aarch64.dmg",
+  "factsDigest": "4256e24ca04bd4b3465ae3f775e124da6b57c4385a09a384aea40d92fff7ae5c"
+}
