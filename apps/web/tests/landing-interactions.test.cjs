@@ -5,6 +5,9 @@ const test = require("node:test");
 const ts = require("typescript");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
+const { pathToFileURL } = require("node:url");
+const workbenchRelease = import(pathToFileURL(path.join(__dirname, "../src/lib/workbench-release-contract.mjs")).href)
+  .then(({ parseWorkbenchRelease }) => parseWorkbenchRelease(require("../src/lib/workbench-release.json")));
 
 function compile(name, localRequire, window, document) {
   const input = fs.readFileSync(path.join(__dirname, "../src/components/landing", name), "utf8");
@@ -89,7 +92,7 @@ test("without IntersectionObserver visibility and reduced motion still control t
   f.hidden(true); assert.equal(f.paused, true); f.hidden(false); assert.equal(f.paused, false);
   f.reduced(true); assert.equal(f.paused, true); controller.dispose();
 });
-function navigationFixture(pathname, menuOpen = false) {
+function navigationFixture(pathname, menuOpen = false, release = null) {
   const window = new Surface(); window.scrollY = 0; window.location = { hash: "", replace() { assert.fail("not a legacy bookmark"); } };
   const effects = []; const stateUpdates = []; const trigger = { focusCount: 0, focus() { this.focusCount++; } }; let stateIndex = 0;
   const hooks = { ...React,
@@ -104,17 +107,24 @@ function navigationFixture(pathname, menuOpen = false) {
     if (name === "@/lib/posthog") return { capturePostHog: async () => {} };
     if (name === "@/lib/commercial-offerings") return { COMMERCIAL_CONTACT: "mason@ashlr.ai" };
     if (name === "@/lib/legacy-secrets-fragment") return { legacySecretsDestination: () => null };
+    if (name === "@/lib/workbench-release") return { WORKBENCH_RELEASE: release };
     if (name === "./Icons") return { Github: () => React.createElement("svg") };
     return require(name);
   };
   const { Nav } = compile("Nav.tsx", localRequire, window, undefined);
   return { element: Nav(), window, effects, stateUpdates, trigger, localRequire };
 }
-test("rendered desktop and mobile GitHub links choose the same correct product source", () => {
-  const { localRequire } = navigationFixture("/");
+test("rendered desktop and mobile GitHub links choose the same correct product source", async () => {
+  const release = await workbenchRelease;
+  assert.ok(release, "the homepage record must pass the actual release parser");
+  const { localRequire } = navigationFixture("/", false, release);
   const { WorkbenchHero } = compile("WorkbenchHero.tsx", localRequire);
   const hero = renderToStaticMarkup(WorkbenchHero());
-  assert.match(hero, /distributed as <code>@ashlr\/phantom@3\.26\.0<\/code> with the <code>phm<\/code> CLI/);
+  assert.ok(hero.includes(`distributed as <code>@ashlr/phantom@${release.version}</code> with the <code>phm</code> CLI`));
+  for (const url of [release.releaseUrl, release.registryUrl, release.macDownloadUrl].filter(Boolean)) {
+    assert.ok(hero.includes(`href="${url}"`), url);
+  }
+  assert.ok(hero.includes(release.installCommand));
   assert.match(hero, /<code>ashlr<\/code> alias remains compatible; <code>@ashlr\/hub<\/code> is the legacy package/);
   const { SiteFooter } = compile("SiteFooter.tsx", localRequire);
   const footer = renderToStaticMarkup(SiteFooter());
