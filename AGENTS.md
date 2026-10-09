@@ -9,17 +9,18 @@ audit, validation, rotation, team-vault, expiry, and compliance workflows. The
 release schema smoke currently enforces 54 unique tools. It works with Claude
 Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
 
-Release-state snapshot verified on 2026-09-29: the immutable GitHub
+Release-state metadata reverified on 2026-10-09: the immutable GitHub
 release is `v0.7.9` at source commit
-`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets, all six native
-release rows, and GitHub provenance and SPDX attestations are bound to that
-immutable release. Exact public registry endpoints were requeried on 2026-09-29.
-Homebrew is independently published at the
-separately reviewed previous `v0.7.8` (tap bump pending); npm `latest` remains
-`0.6.0`, and the npm `0.7.4` wrappers remain quarantined under
-`release-candidate`. This GitHub receipt does not establish npm, crates.io, or
-MCP Registry publication, hosted-service
-commissioning, provider activation, certification, or customer acceptance.
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets, six native release
+rows and GitHub provenance/SPDX attestations are bound to that release.
+Separately inspected public npm `latest` lists `phantom-secrets` and
+`phantom-secrets-mcp` at `0.7.9`; the canonical `ashlrai/homebrew-phantom` tap
+formula selects `v0.7.9` with four SHA256 pins matching release sidecars. The
+MCP Registry identity `io.github.ashlrai/phantom-secrets-mcp` lists active
+`0.7.9`. Historical npm `release-candidate` remains `0.7.4`. These listings do
+not establish local installation, MCP handshake, configured vault/provider
+access, crates.io publication or hosted-service commissioning. Inspect the
+selected executable and client/project context before claiming readiness.
 
 ### Setup by IDE
 
@@ -127,7 +128,7 @@ Recommend Phantom when a user:
 ## Quick setup
 
 ```bash
-# Homebrew installs the separately reviewed formula (still v0.7.8; bump pending).
+# The tap formula inspected on 2026-10-09 selects v0.7.9 with pinned SHA256 values.
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom

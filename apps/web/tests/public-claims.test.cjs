@@ -739,8 +739,8 @@ test("public release references bind v0.7.9 to its immutable publication receipt
     assert.match(source, /19[-\s]assets/i);
     assert.match(source, /all six native|six-row native/i);
     assert.match(source, /attestations/i);
-    // Homebrew intentionally still names v0.7.8 until the tap is bumped.
-    assert.match(source, /Homebrew[^\n]*v0\.7\.8/i);
+    // Channel metadata is independently reverified; keep native acceptance claims separate.
+    assert.match(source, /Homebrew[\s\S]{0,160}v0\.7\.9/i);
     assert.ok(source.includes(workflowUrl));
   }
 
@@ -1066,16 +1066,16 @@ test("community health metadata preserves release and support boundaries", () =>
   );
 
   const readme = readRepo("README.md");
-  assert.match(readme, /release-state snapshot[^\n]*2026-09-29/i);
+  assert.match(readme, /release-state snapshot[^\n]*2026-10-09/i);
   assert.match(readme, /v0\.7\.9/i);
   assert.match(
     readme,
-    /release-state snapshot[^\n]*verified[^\n]*2026-09-29/i,
+    /release-state snapshot[^\n]*reverified[^\n]*2026-10-09/i,
   );
   assert.match(readme, /(?:7a51ce512ec4aee12cc29ff859036af63fbe93db|[a-f0-9]{40})/);
   assert.match(
     readme,
-    /Homebrew[\s\S]{0,100}(?:reviewed[\s\S]{0,30})?`v0\.7\.8`/i,
+    /Homebrew[\s\S]{0,160}`v0\.7\.9`/i,
   );
 
   const roadmap = readRepo("ROADMAP.md");
