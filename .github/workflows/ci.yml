@@ -325,6 +325,8 @@ jobs:
           psql --version
           psql --host 127.0.0.1 --port "$PHANTOM_CI_DB_PORT" --username postgres --dbname postgres \
             --file ../../scripts/supabase/assert-local-authority.sql
+      - name: Assert atomic personal vault quota, concurrency, and isolation
+        run: node ../../scripts/supabase/assert-personal-vault-authority.mjs
       - name: Lint local schema
         run: supabase db lint --local --level warning --fail-on warning
       - name: Run local security and performance advisors
