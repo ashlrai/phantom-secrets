@@ -71,6 +71,11 @@ async function assertPreviousVersionCachePreserved(stage) {
     writePrivateFile(paths.manifestPath, previousManifest, 0o600);
 
     const target = getPlatformTarget(process);
+    const nativeReceiptPath = join(cacheDir, ".phantom-install-source.json");
+    const nativeReceipt = Buffer.from(`${JSON.stringify({
+      schema_version: 1, source: "direct", version: "0.7.4", target,
+    })}\n`);
+    writePrivateFile(nativeReceiptPath, nativeReceipt, 0o600);
     const archiveExt = process.platform === "win32" ? "zip" : "tar.gz";
     const archiveName = `phantom-${target}.${archiveExt}`;
     const archiveUrl =
@@ -115,6 +120,8 @@ async function assertPreviousVersionCachePreserved(stage) {
 
     assert.deepStrictEqual(readFileSync(paths.binaryPath), previousBinary, `${stage} binary bytes`);
     assert.deepStrictEqual(readFileSync(paths.manifestPath), previousManifest, `${stage} manifest bytes`);
+    assert.deepStrictEqual(readFileSync(nativeReceiptPath), nativeReceipt, `${stage} native source receipt`);
+    assert.strictEqual(existsSync(paths.sourceMarkerPath), false, `${stage} must not claim npm ownership`);
     assert.strictEqual(existsSync(paths.backupBinaryPath), false, `${stage} backup binary cleanup`);
     assert.strictEqual(existsSync(paths.backupManifestPath), false, `${stage} backup manifest cleanup`);
     assert.strictEqual(existsSync(paths.transactionPath), false, `${stage} transaction cleanup`);
@@ -410,6 +417,59 @@ async function assertPreviousVersionCachePreserved(stage) {
     });
     assert.ok(dirname(observedArchivePath).startsWith(join(fixtureDir, ".install-")));
     assert.ok(readVerifiedManifest(installed, `${installed}.manifest.json`));
+    assert.strictEqual(readFileSync(paths.sourceMarkerPath, "utf8"), "npm\n", "successful promotion commits npm ownership");
+
+    const nativeReceiptPath = join(fixtureDir, ".phantom-install-source.json");
+    const nativeReceipt = Buffer.from(`${JSON.stringify({
+      schema_version: 1, source: "direct", version: "0.7.9", target: getPlatformTarget(process),
+    })}\n`);
+    writePrivateFile(nativeReceiptPath, nativeReceipt, 0o600);
+    rmSync(paths.sourceMarkerPath);
+    const adopted = await ensureBinary({
+      cacheDir: fixtureDir,
+      execFileSyncImpl: () => {
+        assert.strictEqual(existsSync(paths.sourceMarkerPath), false, "cached version check precedes npm ownership");
+        return Buffer.from("phantom-mcp 0.7.9\n");
+      },
+      downloadImpl: async () => { throw new Error("verified native cache must not download"); },
+    });
+    assert.strictEqual(adopted, installed);
+    assert.deepStrictEqual(readFileSync(nativeReceiptPath), nativeReceipt, "cached adoption preserves the native receipt");
+    assert.strictEqual(readFileSync(paths.sourceMarkerPath, "utf8"), "npm\n");
+
+    rmSync(paths.sourceMarkerPath);
+    const priorBinaryBytes = readFileSync(installed);
+    const priorManifestBytes = readFileSync(paths.manifestPath);
+    const retryFailure = new Error("synthetic retry download failure");
+    await assert.rejects(ensureBinary({
+      cacheDir: fixtureDir,
+      execFileSyncImpl: () => Buffer.from("phantom-mcp 0.5.0\n"),
+      downloadImpl: async () => { throw retryFailure; },
+    }), (error) => error === retryFailure);
+    assert.deepStrictEqual(readFileSync(installed), priorBinaryBytes);
+    assert.deepStrictEqual(readFileSync(paths.manifestPath), priorManifestBytes);
+    assert.deepStrictEqual(readFileSync(nativeReceiptPath), nativeReceipt, "failed cached validation preserves native receipt");
+    assert.strictEqual(existsSync(paths.sourceMarkerPath), false, "failed cached validation must not claim npm ownership");
+
+    for (const markerKind of process.platform === "win32" ? ["invalid"] : ["invalid", "symlink"]) {
+      const unsafeCache = join(fixtureDir, `unsafe-marker-${markerKind}`);
+      ensurePrivateCacheDir(unsafeCache);
+      const unsafePaths = pathSet(unsafeCache);
+      const sentinel = join(unsafeCache, "sentinel");
+      writePrivateFile(sentinel, "npm\n", 0o600);
+      if (markerKind === "symlink") symlinkSync(sentinel, unsafePaths.sourceMarkerPath);
+      else writePrivateFile(unsafePaths.sourceMarkerPath, "invalid\n", 0o600);
+      let operations = 0;
+      await assert.rejects(ensureBinary({
+        cacheDir: unsafeCache,
+        execFileSyncImpl: () => { operations += 1; },
+        downloadImpl: async () => { operations += 1; },
+      }), markerKind === "symlink" ? /symbolic link/ : /invalid npm install-source marker/);
+      assert.strictEqual(operations, 0, "unsafe marker must fail before execution/download");
+      assert.strictEqual(readFileSync(sentinel, "utf8"), "npm\n");
+      assert.strictEqual(existsSync(unsafePaths.binaryPath), false);
+      assert.strictEqual(existsSync(unsafePaths.lockPath), false);
+    }
 
     const versionFailureCache = join(fixtureDir, "version-failure-cache");
     ensurePrivateCacheDir(versionFailureCache);
