@@ -1,8 +1,31 @@
 # Phantom — Full Reference
 
-Phantom is an open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces successfully managed dotenv values with persistent non-provider `phm_` placeholders. An authenticated local HTTP proxy matches exact supported routes and injects a route-owned vault value only into that route's fixed authentication header; client headers and bodies never resolve placeholders. Persistent mappings are sensitive metadata. Phantom does not prevent exposure through unmanaged files, same-user processes, a stolen proxy bearer, or provider-generated content.
+Phantom by AshlrAI is the engineering workbench for interactive agent sessions,
+autonomous fleet workflows and connected resources. Its main landing page is
+https://phm.dev; Phantom Secrets has its own product page at
+https://phm.dev/secrets.
+
+## Phantom workbench
 
 Website: https://phm.dev
+GitHub: https://github.com/ashlrai/phantom
+Package: https://www.npmjs.com/package/@ashlr/phantom
+CLI: `phm`; the `ashlr` alias remains compatible.
+Published release metadata and installation instructions: https://phm.dev
+
+Your installed tools, account setup and permissions determine what can run.
+Workbench release facts and Secrets release facts are separate. Refer to the
+workbench landing page's verified release record for its current published
+version; the `v0.7.9` evidence below describes Phantom Secrets only.
+
+## Phantom Secrets — Credential Reference
+
+The remaining reference describes Phantom Secrets and its `phantom` executable,
+which is distinct from the workbench's `phm` executable.
+
+Phantom Secrets is an open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces successfully managed dotenv values with persistent non-provider `phm_` placeholders. An authenticated local HTTP proxy matches exact supported routes and injects a route-owned vault value only into that route's fixed authentication header; client headers and bodies never resolve placeholders. Persistent mappings are sensitive metadata. Phantom Secrets does not prevent exposure through unmanaged files, same-user processes, a stolen proxy bearer, or provider-generated content.
+
+Website: https://phm.dev/secrets
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust

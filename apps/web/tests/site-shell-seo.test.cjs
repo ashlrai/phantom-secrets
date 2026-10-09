@@ -80,13 +80,32 @@ test("root metadata supplies a title template without forcing every route canoni
   assert.doesNotMatch(layout, /alternates:\s*\{\s*canonical:\s*"\/"/);
   assert.doesNotMatch(layout, /openGraph:\s*\{[\s\S]{0,120}url:\s*SITE_URL/);
   assert.match(layout, /manifest: "\/manifest\.webmanifest"/);
-  assert.equal(manifest.name, "Phantom Secrets");
+  assert.equal(manifest.name, "Phantom");
+  assert.equal(manifest.short_name, "Phantom");
+  assert.match(manifest.description, /engineering workbench/);
   assert.equal(manifest.start_url, "/");
   assert.equal(manifest.scope, "/");
   assert.equal(manifest.theme_color, "#050508");
   assert.deepEqual(manifest.icons, [
     { src: "/favicon.svg", sizes: "any", type: "image/svg+xml" },
   ]);
+});
+
+test("both installable manifests and machine references identify the workbench and dedicated Secrets page", () => {
+  const dynamicManifest = read("src/app/manifest.ts");
+  assert.match(dynamicManifest, /name: "Phantom"/);
+  assert.match(dynamicManifest, /engineering workbench/);
+  assert.match(dynamicManifest, /start_url: "\/"/);
+  assert.match(dynamicManifest, /scope: "\/"/);
+  for (const file of ["public/llms.txt", "public/llms-full.txt"]) {
+    const reference = read(file);
+    assert.match(reference, /## Phantom workbench/);
+    assert.match(reference, /https:\/\/github\.com\/ashlrai\/phantom\n/);
+    assert.match(reference, /https:\/\/www\.npmjs\.com\/package\/@ashlr\/phantom/);
+    assert.match(reference, /## Phantom Secrets/);
+    assert.match(reference, /https:\/\/phm\.dev\/secrets/);
+    assert.match(reference, /`v0\.7\.9` evidence below describes Phantom Secrets only/);
+  }
 });
 
 test("landing JSON-LD escapes closing-script payloads before raw insertion", () => {

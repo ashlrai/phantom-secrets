@@ -1,8 +1,26 @@
 # Phantom
 
-> Open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. Phantom replaces successfully managed dotenv values with non-provider `phm_` placeholders; an authenticated local proxy injects a matched route's vault value only into that route's fixed authentication header. It does not prevent exposure through unmanaged files, same-user processes, a stolen proxy bearer, or provider-generated content.
+> Phantom by AshlrAI is the engineering workbench for interactive agent sessions, autonomous fleet workflows and connected resources. The main landing page is https://phm.dev. Phantom Secrets has its own product page at https://phm.dev/secrets.
+
+## Phantom workbench
 
 - Site: https://phm.dev
+- GitHub: https://github.com/ashlrai/phantom
+- Package: https://www.npmjs.com/package/@ashlr/phantom
+- CLI: `phm`; the `ashlr` alias remains compatible.
+- Published release metadata and installation instructions: https://phm.dev
+- Full reference (for ingestion): https://phm.dev/llms-full.txt
+
+Your installed tools, account setup and permissions determine what can run.
+Workbench release facts and Secrets release facts are separate. Refer to the
+workbench landing page's verified release record for its current published
+version; the `v0.7.9` evidence below describes Phantom Secrets only.
+
+## Phantom Secrets
+
+Phantom Secrets is the open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces successfully managed dotenv values with non-provider `phm_` placeholders; an authenticated local proxy injects a matched route's vault value only into that route's fixed authentication header. It does not prevent exposure through unmanaged files, same-user processes, a stolen proxy bearer, or provider-generated content. The Secrets executable is `phantom`; the workbench executable is `phm`.
+
+- Site: https://phm.dev/secrets
 - GitHub: https://github.com/ashlrai/phantom-secrets
 - Full reference (for ingestion): https://phm.dev/llms-full.txt
 - Protect API keys from AI coding agents: https://phm.dev/docs/protect-api-keys-from-ai-coding-agents

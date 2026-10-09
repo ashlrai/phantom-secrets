@@ -2,11 +2,13 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Phantom — API key security for AI coding agents",
+    name: "Phantom",
     short_name: "Phantom",
     description:
-      "Open-source CLI that gives supported AI workflows placeholders while an authenticated local proxy injects route-owned authentication only for exact configured HTTP routes.",
+      "The engineering workbench for interactive agent sessions, autonomous fleet workflows and connected resources.",
+    id: "/",
     start_url: "/",
+    scope: "/",
     display: "standalone",
     background_color: "#050508",
     theme_color: "#050508",
