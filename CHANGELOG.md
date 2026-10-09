@@ -11,14 +11,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   flow, trust boundaries, and opt-out. No library dependency in either
   direction; integration is via the CLI, the local MCP server, and versioned
   JSON contracts.
-- `DESIGN-onboarding-wizard.md` and `DESIGN-connector-packs.md`: proposals
-  (not implemented) for a unified `phantom onboard` flow and a signed provider
-  connector-pack model. Both need Mason's input before any implementation.
-- `phantom onboard`: guided first-run setup in one flow — detect (read-only),
-  protect (`init` on a trusted terminal), connect (MCP client configs + agent
-  defaults), verify (`doctor` + `check` + `agent report` must all be clean).
-  `--plan` previews without mutating; `--json` emits a machine-readable
-  receipt for the Phantom workbench. Reruns resume from detection.
+- Phase-1 design documents describe the proposed onboarding and connector-pack
+  boundaries. Phase-2 source changes remain unreleased; no deployed workbench
+  wizard or provider commissioning is implied.
+- `phantom onboard`: a local CLI sequencer with metadata-only detection and
+  `--plan` that never constructs or migrates a vault. Protect, Connect and
+  Verify each require attended terminals and explicit confirmation, retaining
+  underlying commands' consent safeguards. JSON version-1 receipts record
+  success, failure, decline and planned outcomes plus completed steps, even
+  when a child command exits early. Completed work is not rolled back across
+  phases; reruns detect current state. Verify may reconcile existing local
+  backend storage only after consent.
 - `phantom connector`: signed provider connector-pack MVP. Packs are
   declarative, Ed25519-signed manifests installed from a local directory —
   no third-party code runs in the credential path. Capabilities: `validate`
@@ -26,8 +29,10 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `sync-target` (addressable as `phantom sync --platform <name>`), and
   `import-source` (addressable as `phantom import --from <name>`). Trust
   anchors are operator-managed (`phantom connector anchor add/list/remove`,
-  trust-on-first-use); installed packs are SHA-256 hash-pinned and
-  re-verified on every load. `phantom connector pack init/sign` scaffolds
+  explicit local key trust); installed packs are SHA-256 hash-pinned and
+  re-verified against current signatures/anchors on every load. Live validation
+  and sync consent bind the project and signed destination; sync previews never
+  open the vault. No registry, expiry or anti-rollback policy is implemented. `phantom connector pack init/sign` scaffolds
   and signs new packs (signing key via `PHANTOM_CONNECTOR_SIGNING_KEY` or a
   0600 `--key-file`, never argv).
 

@@ -1,554 +1,720 @@
-//! `phantom onboard` — one guided flow for first-run setup.
-//!
-//! First-run setup used to be split across four entry points (`init`,
-//! `setup`, `agent setup`, `workspace`) with overlapping responsibilities and
-//! different trust assumptions. `onboard` sequences them into four explicit
-//! phases with gates:
-//!
-//! 1. **Detect** (read-only, anywhere): find dotenv files, `.phantom.toml`,
-//!    and existing MCP client configs. Never mutates.
-//! 2. **Protect** (trusted terminal only): the `init` transaction — vault
-//!    selection, value intake, dotenv rewrite. Refuses to run without an
-//!    attached terminal, because real secret values are in play.
-//! 3. **Connect** (trusted terminal only): MCP client configs + safe
-//!    defaults for AI-agent use. Each step is previewed/confirmed.
-//! 4. **Verify** (anywhere): `doctor`, `check`, and the agent readiness
-//!    report. "Done" means all three are clean.
-//!
-//! The whole run emits a machine-readable receipt with `--json` so the
-//! Phantom workbench can render progress without parsing prose. Verify steps
-//! run as `phantom` subprocesses of the current executable so their prose can
-//! be captured into the receipt instead of interleaved with JSON.
-//!
-//! Product decisions (defaults; see INTEGRATION.md for the open questions):
-//! - The wizard is a thin sequencer over the existing commands — `agent
-//!   setup` and `workspace` are *not* refactored onto a phase engine.
-//! - "Done" = `phantom doctor`, `phantom check`, and `phantom agent report`
-//!   all exit clean.
-
-use std::io::IsTerminal;
-use std::path::PathBuf;
-use std::process::Command;
-
-use anyhow::Result;
-use colored::Colorize;
+//! Metadata-only planning followed by explicitly confirmed local command phases.
+//! Receipts describe completed work; they never imply rollback or provider setup.
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::{BufRead, Read, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
 
-use super::connector::prompt_yes_no;
-use super::{agent, init, setup};
-
-/// One wizard phase outcome in the receipt.
+const PHASES: [&str; 4] = ["detect", "protect", "connect", "verify"];
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseResult {
     pub phase: String,
     pub status: PhaseStatus,
     pub detail: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<PhaseResult>,
 }
-
-/// Outcome of a single phase.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PhaseStatus {
     Ok,
     Skipped,
+    Declined,
     Failed,
 }
-
-/// Machine-readable receipt for the whole onboard run.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OnboardOutcome {
+    Planned,
+    Complete,
+    Declined,
+    Failed,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OnboardReceipt {
     pub version: u8,
     pub done: bool,
+    pub outcome: OnboardOutcome,
+    pub rerun: String,
     pub phases: Vec<PhaseResult>,
 }
-
-/// Read-only detection of the project's current setup state.
 #[derive(Debug, Clone)]
 struct Detection {
-    initialized: bool,
+    config_present: bool,
     dotenv_files: Vec<String>,
     clients: Vec<(String, bool)>,
-    vault_secret_count: Option<usize>,
 }
-
-fn detect() -> Detection {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let initialized = cwd.join(".phantom.toml").exists();
-
-    let mut dotenv_files = Vec::new();
-    for name in [".env", ".env.local", ".env.development"] {
-        if cwd.join(name).exists() {
-            dotenv_files.push(name.to_string());
-        }
+fn phase(name: &str, status: PhaseStatus, detail: impl Into<String>) -> PhaseResult {
+    PhaseResult {
+        phase: name.into(),
+        status,
+        detail: detail.into(),
+        steps: Vec::new(),
     }
-
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let client_checks: Vec<(String, PathBuf)> = vec![
-        ("claude".to_string(), cwd.join(".mcp.json")),
-        ("cursor".to_string(), home.join(".cursor/mcp.json")),
-        (
-            "windsurf".to_string(),
-            home.join(".codeium/windsurf/mcp_config.json"),
-        ),
-        ("codex".to_string(), home.join(".codex/config.toml")),
-    ];
-    let clients = client_checks
+}
+fn local_mcp_entry(command: Option<&str>, args: Option<&serde_json::Value>) -> bool {
+    let binary = command
+        .and_then(|c| Path::new(c).file_name())
+        .and_then(|s| s.to_str());
+    match binary {
+        Some("phantom-mcp" | "phantom-mcp.exe") => true,
+        Some("phantom" | "phantom.exe") => {
+            args.and_then(|a| a.get(0)).and_then(|v| v.as_str()) == Some("mcp")
+        }
+        _ => false,
+    }
+}
+fn client_configured(path: &Path, codex: bool) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() > 64 * 1024 {
+        return false;
+    }
+    let Ok(Some(raw)) = phantom_core::fs::read_regular_file(path) else {
+        return false;
+    };
+    if raw.len() > 64 * 1024 {
+        return false;
+    }
+    let value = if codex {
+        let Ok(text) = std::str::from_utf8(&raw) else {
+            return false;
+        };
+        let Ok(document) = toml::from_str::<toml::Value>(text) else {
+            return false;
+        };
+        let Ok(value) = serde_json::to_value(document) else {
+            return false;
+        };
+        value
+            .get("mcp_servers")
+            .and_then(|v| v.get("phantom"))
+            .cloned()
+    } else {
+        serde_json::from_slice::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|v| v.get("mcpServers").and_then(|s| s.get("phantom")).cloned())
+    };
+    value.is_some_and(|entry| {
+        local_mcp_entry(
+            entry.get("command").and_then(|v| v.as_str()),
+            entry.get("args"),
+        )
+    })
+}
+fn detect() -> Result<Detection> {
+    let cwd = std::env::current_dir()?;
+    let home = phantom_core::home::home_dir()?;
+    let dotenv_files = [".env", ".env.local", ".env.development"]
         .into_iter()
-        .map(|(name, path)| {
-            let configured = path.exists()
-                && std::fs::read_to_string(&path)
-                    .map(|c| c.contains("phantom"))
-                    .unwrap_or(false);
-            (name, configured)
-        })
+        .filter(|name| std::fs::symlink_metadata(cwd.join(name)).is_ok())
+        .map(String::from)
         .collect();
-
-    // Best-effort vault census; failures just mean "unknown".
-    let vault_secret_count = if initialized {
-        read_vault_count().ok()
-    } else {
-        None
-    };
-
-    Detection {
-        initialized,
-        dotenv_files,
-        clients,
-        vault_secret_count,
-    }
-}
-
-fn read_vault_count() -> Result<usize> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
-    let config_path = project_dir.join(".phantom.toml");
-    let raw = phantom_core::fs::read_regular_file(&config_path)?
-        .ok_or_else(|| anyhow::anyhow!("not initialized"))?;
-    let config = phantom_core::config::PhantomConfig::load_from_bytes(&config_path, &raw)?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    Ok(vault.list()?.len())
-}
-
-fn require_trusted_terminal(phase: &str) -> Result<()> {
-    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "The {phase} phase handles real secret values, so it only runs on an attached trusted terminal.\n\
-         Rerun `phantom onboard` from a terminal you trust (not from an agent's shell or a pipe).\n\
-         `phantom onboard --plan` works anywhere and shows what would happen."
-    )
-}
-
-/// Run a `phantom` subcommand as a child process, capturing its output for
-/// the receipt. Returns (exit_ok, combined_output).
-fn run_subcommand(args: &[&str]) -> (bool, String) {
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(_) => return (false, "cannot locate phantom executable".to_string()),
-    };
-    let output = Command::new(exe).args(args).output();
-    match output {
-        Ok(o) => {
-            let mut combined = String::from_utf8_lossy(&o.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            if !stderr.trim().is_empty() {
-                combined.push_str("\n[stderr]\n");
-                combined.push_str(&stderr);
-            }
-            // Bound the receipt: keep the tail, where the verdict lives.
-            const MAX: usize = 4000;
-            let detail = if combined.len() > MAX {
-                format!("…(truncated)…\n{}", &combined[combined.len() - MAX..])
-            } else {
-                combined
-            };
-            (o.status.success(), detail)
-        }
-        Err(e) => (
+    let profiles = [
+        ("claude", cwd.join(".mcp.json"), false),
+        ("cursor", home.join(".cursor/mcp.json"), false),
+        (
+            "windsurf",
+            home.join(".codeium/windsurf/mcp_config.json"),
             false,
-            format!("failed to run phantom {}: {e}", args.join(" ")),
         ),
-    }
+        ("codex", home.join(".codex/config.toml"), true),
+    ];
+    // Vault construction can migrate plaintext or reconcile sidecars. Do not
+    // open any vault or count secrets during detection, including live runs.
+    Ok(Detection {
+        config_present: std::fs::symlink_metadata(cwd.join(".phantom.toml")).is_ok(),
+        dotenv_files,
+        clients: profiles
+            .into_iter()
+            .map(|(name, path, codex)| (name.into(), client_configured(&path, codex)))
+            .collect(),
+    })
 }
-
-fn client_from_name(name: &str) -> Option<setup::Client> {
-    match name {
-        "claude" => Some(setup::Client::ClaudeCode),
-        "cursor" => Some(setup::Client::Cursor),
-        "windsurf" => Some(setup::Client::Windsurf),
-        "codex" => Some(setup::Client::Codex),
-        _ => None,
-    }
+trait Runtime {
+    fn terminal(&mut self, phase: &str) -> Result<()>;
+    fn confirm(&mut self, question: &str, yes: bool) -> Result<bool>;
+    fn effect(&mut self, args: &[&str], json: bool) -> Result<bool>;
+    fn verify(&mut self, args: &[&str]) -> (bool, String);
 }
-
-/// `phantom onboard [--plan] [--yes] [--skip-connect]`.
-pub fn run(plan_only: bool, yes: bool, skip_connect: bool, json: bool) -> Result<()> {
-    let mut receipt = OnboardReceipt {
-        version: 1,
-        done: false,
-        phases: Vec::new(),
-    };
-    let quiet_json = json;
-
-    if !quiet_json {
-        println!("{}", "Phantom onboarding".bold());
-        println!("{}", "──────────────────".dimmed());
+struct LocalRuntime;
+impl Runtime for LocalRuntime {
+    fn terminal(&mut self, phase: &str) -> Result<()> {
+        super::export_cmd::require_attached_terminals(&format!("Onboarding {phase}"))
     }
-
-    // ── Phase 1: Detect (read-only, anywhere) ────────────────────────────
-    let d = detect();
-    let detail = format!(
-        "initialized={} dotenv=[{}] clients=[{}]{}",
-        d.initialized,
-        d.dotenv_files.join(","),
-        d.clients
-            .iter()
-            .map(|(n, c)| format!("{n}:{}", if *c { "yes" } else { "no" }))
-            .collect::<Vec<_>>()
-            .join(","),
-        d.vault_secret_count
-            .map(|n| format!(" vault_secrets={n}"))
-            .unwrap_or_default()
-    );
-    receipt.phases.push(PhaseResult {
-        phase: "detect".to_string(),
-        status: PhaseStatus::Ok,
-        detail: detail.clone(),
-    });
-    if !quiet_json {
-        println!("\n{} {}", "●".cyan().bold(), "Detect".bold());
-        println!(
-            "  Project: {}",
-            if d.initialized {
-                "protected (.phantom.toml present)".green().to_string()
-            } else {
-                "not protected yet".yellow().to_string()
-            }
-        );
-        println!(
-            "  Dotenv files: {}",
-            if d.dotenv_files.is_empty() {
-                "none found".dimmed().to_string()
-            } else {
-                d.dotenv_files.join(", ")
-            }
-        );
-        if let Some(n) = d.vault_secret_count {
-            println!("  Vault secrets: {n}");
+    fn confirm(&mut self, question: &str, yes: bool) -> Result<bool> {
+        if yes {
+            return Ok(true);
         }
-        println!("  MCP clients:");
-        for (name, configured) in &d.clients {
-            println!(
-                "    {name}: {}",
-                if *configured {
-                    "configured".green().to_string()
-                } else {
-                    "not configured".dimmed().to_string()
+        eprint!("{question} [y/N] ");
+        std::io::stderr().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().lock().take(4096).read_line(&mut answer)?;
+        Ok(matches!(
+            answer.trim().to_ascii_lowercase().as_str(),
+            "y" | "yes"
+        ))
+    }
+    fn effect(&mut self, args: &[&str], json: bool) -> Result<bool> {
+        let mut child = Command::new(std::env::current_exe()?);
+        child
+            .args(args)
+            .stdin(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        child.stdout(if json {
+            terminal_stderr()?
+        } else {
+            Stdio::inherit()
+        });
+        // Early exits in agent setup stay in this child; the parent always
+        // records the phase outcome and stops after a failed phase.
+        Ok(child
+            .status()
+            .context("could not run onboarding phase")?
+            .success())
+    }
+    fn verify(&mut self, args: &[&str]) -> (bool, String) {
+        let result = std::env::current_exe()
+            .and_then(|exe| Command::new(exe).args(args).stdin(Stdio::null()).output());
+        match result {
+            Ok(output) => {
+                let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+                if !output.stderr.is_empty() {
+                    text.push_str("\n[stderr]\n");
+                    text.push_str(&String::from_utf8_lossy(&output.stderr));
                 }
-            );
+                (output.status.success(), bounded_tail(&text, 4000))
+            }
+            Err(_) => (false, "could not run local verification command".into()),
         }
     }
-
-    let needs_protect = !d.initialized;
-    let unconfigured: Vec<String> = d
-        .clients
-        .iter()
-        .filter(|(_, c)| !c)
-        .map(|(n, _)| n.clone())
-        .collect();
-    let needs_connect = !skip_connect && !unconfigured.is_empty();
-
-    if !quiet_json {
-        println!("\n{} {}", "●".cyan().bold(), "Plan".bold());
-        println!(
-            "  Protect: {}",
-            if needs_protect {
-                "run `phantom init` (trusted terminal required)".to_string()
-            } else {
-                "skip — already protected".dimmed().to_string()
-            }
-        );
-        println!(
-            "  Connect: {}",
-            if needs_connect {
-                format!("configure {}", unconfigured.join(", "))
-            } else if skip_connect {
-                "skip — --skip-connect".dimmed().to_string()
-            } else {
-                "skip — all clients configured".dimmed().to_string()
-            }
-        );
-        println!("  Verify: run doctor, check, and the agent readiness report");
+}
+// Duplicate the already attached stderr, preserving child terminal gates.
+// Never open a new terminal or manufacture a PTY to authorize a phase.
+#[cfg(unix)]
+fn terminal_stderr() -> Result<Stdio> {
+    use std::os::fd::AsFd;
+    Ok(Stdio::from(std::io::stderr().as_fd().try_clone_to_owned()?))
+}
+#[cfg(windows)]
+fn terminal_stderr() -> Result<Stdio> {
+    use std::os::windows::io::AsHandle;
+    Ok(Stdio::from(
+        std::io::stderr().as_handle().try_clone_to_owned()?,
+    ))
+}
+#[cfg(not(any(unix, windows)))]
+fn terminal_stderr() -> Result<Stdio> {
+    anyhow::bail!("live JSON onboarding unsupported on this platform")
+}
+fn bounded_tail(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.into();
     }
-
+    let mut start = text.len() - limit;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("...(truncated)...\n{}", &text[start..])
+}
+fn preserve_connection_error<T>(
+    result: Result<T>,
+    connected: &PhaseResult,
+    step: &str,
+    receipt: &mut OnboardReceipt,
+) -> Result<T> {
+    result.inspect_err(|error| {
+        let mut failed = connected.clone();
+        failed.status = PhaseStatus::Failed;
+        failed.steps.push(phase(
+            step,
+            PhaseStatus::Failed,
+            "confirmation or child execution failed; inspect terminal output",
+        ));
+        failed.detail = format!(
+            "connection stopped; earlier completed steps remain applied: {}",
+            bounded_tail(&error.to_string(), 1000)
+        );
+        receipt.phases.push(failed);
+    })
+}
+fn flow(
+    d: &Detection,
+    plan_only: bool,
+    yes: bool,
+    skip_connect: bool,
+    json: bool,
+    runtime: &mut impl Runtime,
+    receipt: &mut OnboardReceipt,
+) -> Result<()> {
+    receipt.phases.push(phase(
+        "detect",
+        PhaseStatus::Ok,
+        format!(
+            "config_present={} dotenv=[{}] clients=[{}]; vault not inspected",
+            d.config_present,
+            d.dotenv_files.join(","),
+            d.clients
+                .iter()
+                .map(|(name, ready)| format!("{name}:{ready}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    ));
+    if !json {
+        println!("Detect: {}", receipt.phases[0].detail);
+        println!(
+            "Protect: {}",
+            if d.config_present {
+                ".phantom.toml present; verification pending"
+            } else {
+                "run phantom init for .env after terminal consent"
+            }
+        );
+        println!(
+            "Connect: {}",
+            if skip_connect {
+                "skip requested"
+            } else {
+                "confirm each missing MCP client and agent defaults"
+            }
+        );
+        println!("Verify: doctor, check and agent report");
+    }
     if plan_only {
-        receipt.phases.push(PhaseResult {
-            phase: "protect".to_string(),
-            status: PhaseStatus::Skipped,
-            detail: "--plan: no mutations performed".to_string(),
-        });
-        receipt.phases.push(PhaseResult {
-            phase: "connect".to_string(),
-            status: PhaseStatus::Skipped,
-            detail: "--plan: no mutations performed".to_string(),
-        });
-        receipt.phases.push(PhaseResult {
-            phase: "verify".to_string(),
-            status: PhaseStatus::Skipped,
-            detail: "--plan: no mutations performed".to_string(),
-        });
-        emit_receipt(&receipt, json);
+        for name in &PHASES[1..] {
+            receipt.phases.push(phase(
+                name,
+                PhaseStatus::Skipped,
+                "--plan: no phase commands or vault access",
+            ));
+        }
+        receipt.outcome = OnboardOutcome::Planned;
         return Ok(());
     }
-
-    // ── Phase 2: Protect (trusted terminal only) ─────────────────────────
-    if needs_protect {
-        require_trusted_terminal("Protect")?;
-        if !quiet_json {
-            println!("\n{} {}", "●".cyan().bold(), "Protect".bold());
-            println!(
-                "  This runs {}: values move into the encrypted vault and",
-                "`phantom init`".bold()
-            );
-            println!("  the dotenv file is rewritten with phm_ placeholders.");
-        }
-        let proceed = yes || prompt_yes_no("Run `phantom init` now?", true)?;
-        if !proceed {
-            receipt.phases.push(PhaseResult {
-                phase: "protect".to_string(),
-                status: PhaseStatus::Skipped,
-                detail: "operator declined".to_string(),
-            });
-        } else {
-            match init::run(".env") {
-                Ok(()) => receipt.phases.push(PhaseResult {
-                    phase: "protect".to_string(),
-                    status: PhaseStatus::Ok,
-                    detail: "phantom init completed".to_string(),
-                }),
-                Err(e) => {
-                    receipt.phases.push(PhaseResult {
-                        phase: "protect".to_string(),
-                        status: PhaseStatus::Failed,
-                        detail: format!("phantom init failed: {e:#}"),
-                    });
-                    emit_receipt(&receipt, json);
-                    anyhow::bail!(
-                        "Protect phase failed: {e:#}\nFix the error above, then rerun `phantom onboard` — it resumes from detection."
-                    );
-                }
-            }
-        }
+    if d.config_present {
+        receipt.phases.push(phase(
+            "protect",
+            PhaseStatus::Skipped,
+            "configuration present; verification pending",
+        ));
     } else {
-        receipt.phases.push(PhaseResult {
-            phase: "protect".to_string(),
-            status: PhaseStatus::Skipped,
-            detail: "project already protected".to_string(),
-        });
-    }
-
-    // ── Phase 3: Connect (trusted terminal only) ─────────────────────────
-    if needs_connect {
-        require_trusted_terminal("Connect")?;
-        if !quiet_json {
-            println!("\n{} {}", "●".cyan().bold(), "Connect".bold());
+        runtime.terminal("Protect")?;
+        if !runtime.confirm(
+            "Run phantom init for this project's .env? Existing exact init consent still applies.",
+            yes,
+        )? {
+            receipt.phases.push(phase(
+                "protect",
+                PhaseStatus::Declined,
+                "operator declined; no protection command ran",
+            ));
+            receipt.outcome = OnboardOutcome::Declined;
+            return Ok(());
         }
-        let mut all_ok = true;
-        for name in &unconfigured {
-            let Some(client) = client_from_name(name) else {
-                continue;
-            };
-            let proceed = yes || prompt_yes_no(&format!("Configure the {name} MCP client?"), true)?;
-            if !proceed {
-                continue;
-            }
-            match setup::run(Some(client), false, None) {
-                Ok(()) => {
-                    if !quiet_json {
-                        println!("  {} {name} configured", "✓".green());
-                    }
-                }
-                Err(e) => {
-                    all_ok = false;
-                    if !quiet_json {
-                        println!("  {} {name}: {e:#}", "✗".red());
-                    }
-                }
-            }
-        }
-        // Safe defaults for AI-agent use.
-        let do_agent_setup = yes
-            || prompt_yes_no(
-                "Initialize safe defaults for AI-agent use (`phantom agent setup --apply`)?",
-                true,
-            )?;
-        if do_agent_setup {
-            if let Err(e) = agent::setup(false, true) {
-                all_ok = false;
-                if !quiet_json {
-                    println!("  {} agent setup: {e:#}", "✗".red());
-                }
-            } else if !quiet_json {
-                println!("  {} agent defaults applied", "✓".green());
-            }
-        }
-        receipt.phases.push(PhaseResult {
-            phase: "connect".to_string(),
-            status: if all_ok {
+        let ok = runtime.effect(&["init"], json)?;
+        receipt.phases.push(phase(
+            "protect",
+            if ok {
                 PhaseStatus::Ok
             } else {
                 PhaseStatus::Failed
             },
-            detail: if all_ok {
-                "client configs written".to_string()
+            if ok {
+                "init completed; its own transaction and consent gates applied"
             } else {
-                "one or more connect steps failed; see output above".to_string()
+                "init failed; inspect terminal output before rerunning"
             },
-        });
+        ));
+        if !ok {
+            anyhow::bail!("protection phase failed");
+        }
+    }
+    if skip_connect {
+        receipt.phases.push(phase(
+            "connect",
+            PhaseStatus::Skipped,
+            "--skip-connect; no client or agent configuration commands ran",
+        ));
     } else {
-        receipt.phases.push(PhaseResult {
-            phase: "connect".to_string(),
-            status: PhaseStatus::Skipped,
-            detail: if skip_connect {
-                "--skip-connect".to_string()
+        runtime.terminal("Connect")?;
+        let mut connected = phase(
+            "connect",
+            PhaseStatus::Ok,
+            "confirmed connection steps completed",
+        );
+        for (name, configured) in &d.clients {
+            if *configured {
+                connected.steps.push(phase(
+                    name,
+                    PhaseStatus::Skipped,
+                    "local Phantom MCP entry already present",
+                ));
+                continue;
+            }
+            if !preserve_connection_error(
+                runtime.confirm(
+                    &format!("Configure the {name} MCP profile for local Phantom?"),
+                    yes,
+                ),
+                &connected,
+                name,
+                receipt,
+            )? {
+                connected.steps.push(phase(
+                    name,
+                    PhaseStatus::Declined,
+                    "operator declined; profile unchanged",
+                ));
+                connected.status = PhaseStatus::Declined;
+                connected.detail =
+                    "connection declined; earlier completed steps remain applied".into();
+                receipt.phases.push(connected);
+                receipt.outcome = OnboardOutcome::Declined;
+                return Ok(());
+            }
+            let ok = preserve_connection_error(
+                runtime.effect(&["setup", "--client", name], json),
+                &connected,
+                name,
+                receipt,
+            )?;
+            connected.steps.push(phase(
+                name,
+                if ok {
+                    PhaseStatus::Ok
+                } else {
+                    PhaseStatus::Failed
+                },
+                if ok {
+                    "client setup completed"
+                } else {
+                    "client setup failed"
+                },
+            ));
+            if !ok {
+                connected.status = PhaseStatus::Failed;
+                connected.detail =
+                    "connection failed; earlier completed steps remain applied".into();
+                receipt.phases.push(connected);
+                anyhow::bail!("connection phase failed");
+            }
+        }
+        if !preserve_connection_error(
+            runtime.confirm(
+                "Apply local agent defaults with phantom agent setup --apply?",
+                yes,
+            ),
+            &connected,
+            "agent-defaults",
+            receipt,
+        )? {
+            connected.steps.push(phase(
+                "agent-defaults",
+                PhaseStatus::Declined,
+                "operator declined; agent defaults unchanged",
+            ));
+            connected.status = PhaseStatus::Declined;
+            connected.detail =
+                "agent defaults declined; earlier completed steps remain applied".into();
+            receipt.phases.push(connected);
+            receipt.outcome = OnboardOutcome::Declined;
+            return Ok(());
+        }
+        let ok = preserve_connection_error(
+            runtime.effect(&["agent", "setup", "--apply"], json),
+            &connected,
+            "agent-defaults",
+            receipt,
+        )?;
+        connected.steps.push(phase(
+            "agent-defaults",
+            if ok {
+                PhaseStatus::Ok
             } else {
-                "all clients already configured".to_string()
+                PhaseStatus::Failed
             },
-        });
+            if ok {
+                "agent setup completed"
+            } else {
+                "agent setup child failed; verification was not run"
+            },
+        ));
+        if !ok {
+            connected.status = PhaseStatus::Failed;
+        }
+        receipt.phases.push(connected);
+        if !ok {
+            anyhow::bail!("agent setup phase failed");
+        }
     }
-
-    // ── Phase 4: Verify (anywhere) ───────────────────────────────────────
-    if !quiet_json {
-        println!("\n{} {}", "●".cyan().bold(), "Verify".bold());
+    // Existing diagnostic commands instantiate vault backends, which can
+    // reconcile legacy storage. Do not present that as a headless observer.
+    runtime.terminal("Verify")?;
+    if !runtime.confirm("Run doctor, check and agent report for this project? Vault probes may reconcile existing local backend storage; no provider request is sent.", yes)? {
+        receipt.phases.push(phase("verify", PhaseStatus::Declined, "operator declined; no diagnostic commands ran"));
+        receipt.outcome = OnboardOutcome::Declined;
+        return Ok(());
     }
-    let mut verify_ok = true;
-    let mut verify_notes = Vec::new();
-    for (label, args) in [
+    let mut verification = phase("verify", PhaseStatus::Ok, "local checks completed");
+    for (name, args) in [
         ("doctor", &["doctor"] as &[&str]),
         ("check", &["check"] as &[&str]),
-        ("agent report", &["agent", "report"] as &[&str]),
+        ("agent-report", &["agent", "report"] as &[&str]),
     ] {
-        let (ok, output) = run_subcommand(args);
-        if !quiet_json {
-            println!("  {} {label}", if ok { "✓".green() } else { "✗".red() });
-        }
+        let (ok, detail) = runtime.verify(args);
+        verification.steps.push(phase(
+            name,
+            if ok {
+                PhaseStatus::Ok
+            } else {
+                PhaseStatus::Failed
+            },
+            detail,
+        ));
         if !ok {
-            verify_ok = false;
-            verify_notes.push(format!("{label} failed"));
-        }
-        verify_notes.push(format!("--- {label} ---\n{output}"));
-    }
-    receipt.phases.push(PhaseResult {
-        phase: "verify".to_string(),
-        status: if verify_ok {
-            PhaseStatus::Ok
-        } else {
-            PhaseStatus::Failed
-        },
-        detail: verify_notes.join("\n"),
-    });
-    receipt.done = verify_ok
-        && receipt
-            .phases
-            .iter()
-            .all(|p| p.status != PhaseStatus::Failed);
-
-    if !quiet_json {
-        println!();
-        if receipt.done {
-            println!(
-                "{} Onboarding complete — this project is protected and agent-ready.",
-                "✓".green().bold()
-            );
-            println!(
-                "  Next: {} to run your agent through the proxy.",
-                "`phantom exec -- <command>`".cyan()
-            );
-        } else {
-            println!(
-                "{} Onboarding finished with issues — see the phases above.",
-                "!".yellow().bold()
-            );
-            println!("  Rerunning `phantom onboard` resumes from detection.");
+            verification.status = PhaseStatus::Failed;
         }
     }
-
-    emit_receipt(&receipt, json);
-    if !receipt.done {
-        anyhow::bail!("onboarding verify phase reported failures");
+    let ok = verification.status == PhaseStatus::Ok;
+    receipt.phases.push(verification);
+    if !ok {
+        anyhow::bail!("local verification failed; completed changes remain applied");
     }
+    receipt.done = true;
+    receipt.outcome = OnboardOutcome::Complete;
     Ok(())
 }
-
-fn emit_receipt(receipt: &OnboardReceipt, json: bool) {
-    if json {
-        match serde_json::to_string_pretty(receipt) {
-            Ok(s) => println!("{s}"),
-            Err(e) => eprintln!("failed to serialize onboard receipt: {e}"),
+fn finish(receipt: &mut OnboardReceipt, error: Option<&anyhow::Error>) {
+    if let Some(error) = error {
+        receipt.outcome = OnboardOutcome::Failed;
+        if !receipt
+            .phases
+            .iter()
+            .any(|p| p.status == PhaseStatus::Failed)
+        {
+            let name = PHASES[receipt.phases.len().min(PHASES.len() - 1)];
+            receipt.phases.push(phase(
+                name,
+                PhaseStatus::Failed,
+                bounded_tail(&error.to_string(), 1000),
+            ));
+        }
+    }
+    for name in PHASES {
+        if !receipt.phases.iter().any(|p| p.phase == name) {
+            receipt.phases.push(phase(
+                name,
+                PhaseStatus::Skipped,
+                "not run after an earlier failure or decline",
+            ));
         }
     }
 }
-
-/// Human-readable one-line summary of a detection, for tests.
-#[cfg(test)]
-fn detection_summary(d: &Detection) -> String {
-    format!(
-        "initialized={} dotenv={} clients={}",
-        d.initialized,
-        d.dotenv_files.len(),
-        d.clients.iter().filter(|(_, c)| *c).count()
-    )
+pub fn run(plan_only: bool, yes: bool, skip_connect: bool, json: bool) -> Result<()> {
+    let mut receipt = OnboardReceipt { version: 1, done: false, outcome: OnboardOutcome::Failed,
+        rerun: "Rerun phantom onboard to detect current state; completed phases are not rolled back. --plan never opens the vault.".into(), phases: Vec::new() };
+    let result = detect().and_then(|d| {
+        flow(
+            &d,
+            plan_only,
+            yes,
+            skip_connect,
+            json,
+            &mut LocalRuntime,
+            &mut receipt,
+        )
+    });
+    finish(&mut receipt, result.as_ref().err());
+    if json {
+        println!("{}", serde_json::to_string_pretty(&receipt)?);
+    } else {
+        println!("Onboarding {:?}: {}", receipt.outcome, receipt.rerun);
+        for p in &receipt.phases {
+            println!("{}: {:?}: {}", p.phase, p.status, p.detail);
+        }
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn receipt_serializes_with_all_statuses() {
-        let receipt = OnboardReceipt {
+    use std::collections::VecDeque;
+    #[derive(Default)]
+    struct FakeRuntime {
+        effects: Vec<Vec<String>>,
+        verifies: usize,
+        answers: VecDeque<bool>,
+        failures: VecDeque<bool>,
+        error_after: Option<usize>,
+        verify_failed: bool,
+    }
+    impl Runtime for FakeRuntime {
+        fn terminal(&mut self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn confirm(&mut self, _: &str, yes: bool) -> Result<bool> {
+            Ok(yes || self.answers.pop_front().unwrap_or(false))
+        }
+        fn effect(&mut self, args: &[&str], _: bool) -> Result<bool> {
+            self.effects
+                .push(args.iter().map(|s| s.to_string()).collect());
+            if self.error_after == Some(self.effects.len()) {
+                anyhow::bail!("synthetic child spawn failure");
+            }
+            Ok(!self.failures.pop_front().unwrap_or(false))
+        }
+        fn verify(&mut self, _: &[&str]) -> (bool, String) {
+            self.verifies += 1;
+            (!self.verify_failed, "local fixture result".into())
+        }
+    }
+    fn exercise(
+        d: Detection,
+        plan: bool,
+        yes: bool,
+        skip: bool,
+        runtime: &mut FakeRuntime,
+    ) -> OnboardReceipt {
+        let mut receipt = OnboardReceipt {
             version: 1,
             done: false,
-            phases: vec![
-                PhaseResult {
-                    phase: "detect".to_string(),
-                    status: PhaseStatus::Ok,
-                    detail: "d".to_string(),
-                },
-                PhaseResult {
-                    phase: "protect".to_string(),
-                    status: PhaseStatus::Skipped,
-                    detail: "s".to_string(),
-                },
-                PhaseResult {
-                    phase: "verify".to_string(),
-                    status: PhaseStatus::Failed,
-                    detail: "f".to_string(),
-                },
-            ],
+            outcome: OnboardOutcome::Failed,
+            rerun: "detect again".into(),
+            phases: vec![],
         };
-        let s = serde_json::to_string(&receipt).unwrap();
-        assert!(s.contains("\"done\":false"));
-        assert!(s.contains("\"ok\"") && s.contains("\"skipped\"") && s.contains("\"failed\""));
+        let result = flow(&d, plan, yes, skip, true, runtime, &mut receipt);
+        finish(&mut receipt, result.as_ref().err());
+        receipt
     }
-
+    fn detected(present: bool, configured: bool) -> Detection {
+        Detection {
+            config_present: present,
+            dotenv_files: vec![".env".into()],
+            clients: vec![("claude".into(), configured)],
+        }
+    }
     #[test]
-    fn detection_summary_counts() {
-        let d = Detection {
-            initialized: true,
-            dotenv_files: vec![".env".to_string()],
-            clients: vec![("claude".to_string(), true), ("cursor".to_string(), false)],
-            vault_secret_count: Some(3),
+    fn spawn_error_preserves_completed_connection_steps() {
+        let mut runtime = FakeRuntime {
+            error_after: Some(2),
+            ..Default::default()
         };
-        assert_eq!(detection_summary(&d), "initialized=true dotenv=1 clients=1");
+        let mut d = detected(true, false);
+        d.clients.push(("cursor".into(), false));
+        let receipt = exercise(d, false, true, false, &mut runtime);
+        assert_eq!(receipt.outcome, OnboardOutcome::Failed);
+        assert_eq!(receipt.phases[2].status, PhaseStatus::Failed);
+        assert_eq!(receipt.phases[2].steps.len(), 2);
+        assert_eq!(receipt.phases[2].steps[0].phase, "claude");
+        assert_eq!(receipt.phases[2].steps[0].status, PhaseStatus::Ok);
+        assert_eq!(receipt.phases[2].steps[1].phase, "cursor");
+        assert_eq!(receipt.phases[2].steps[1].status, PhaseStatus::Failed);
+        assert_eq!(runtime.verifies, 0);
     }
-
     #[test]
-    fn client_from_name_maps_all() {
-        assert!(client_from_name("claude").is_some());
-        assert!(client_from_name("cursor").is_some());
-        assert!(client_from_name("windsurf").is_some());
-        assert!(client_from_name("codex").is_some());
-        assert!(client_from_name("bogus").is_none());
+    fn verification_decline_never_opens_diagnostic_commands() {
+        let mut runtime = FakeRuntime::default();
+        let receipt = exercise(detected(true, true), false, false, true, &mut runtime);
+        assert_eq!(receipt.outcome, OnboardOutcome::Declined);
+        assert_eq!(receipt.phases[3].status, PhaseStatus::Declined);
+        assert!(runtime.effects.is_empty());
+        assert_eq!(runtime.verifies, 0);
+    }
+    #[test]
+    fn failed_verification_keeps_all_results_and_never_claims_done() {
+        let mut runtime = FakeRuntime {
+            verify_failed: true,
+            ..Default::default()
+        };
+        let receipt = exercise(detected(true, true), false, true, true, &mut runtime);
+        assert_eq!(receipt.outcome, OnboardOutcome::Failed);
+        assert!(!receipt.done);
+        assert_eq!(receipt.phases[3].steps.len(), 3);
+        assert_eq!(runtime.verifies, 3);
+        assert_eq!(receipt.phases[3].status, PhaseStatus::Failed);
+    }
+    #[test]
+    fn plan_never_calls_effect_or_verification() {
+        let mut runtime = FakeRuntime::default();
+        let receipt = exercise(detected(false, false), true, true, false, &mut runtime);
+        assert_eq!(receipt.outcome, OnboardOutcome::Planned);
+        assert!(!receipt.done);
+        assert!(runtime.effects.is_empty());
+        assert_eq!(runtime.verifies, 0);
+        assert_eq!(receipt.phases.len(), 4);
+    }
+    #[test]
+    fn protection_decline_stops_before_connect_or_verify() {
+        let mut runtime = FakeRuntime::default();
+        let receipt = exercise(detected(false, false), false, false, false, &mut runtime);
+        assert_eq!(receipt.outcome, OnboardOutcome::Declined);
+        assert!(!receipt.done);
+        assert!(runtime.effects.is_empty());
+        assert_eq!(runtime.verifies, 0);
+        assert_eq!(receipt.phases[1].status, PhaseStatus::Declined);
+    }
+    #[test]
+    fn connection_decline_records_completed_protection() {
+        let mut runtime = FakeRuntime {
+            answers: VecDeque::from([true, false]),
+            ..Default::default()
+        };
+        let receipt = exercise(detected(false, false), false, false, false, &mut runtime);
+        assert_eq!(receipt.outcome, OnboardOutcome::Declined);
+        assert_eq!(receipt.phases[1].status, PhaseStatus::Ok);
+        assert_eq!(runtime.effects, vec![vec!["init"]]);
+        assert_eq!(runtime.verifies, 0);
+    }
+    #[test]
+    fn child_failure_cannot_skip_receipt_or_run_verifiers() {
+        let mut runtime = FakeRuntime {
+            failures: VecDeque::from([true]),
+            ..Default::default()
+        };
+        let receipt = exercise(detected(true, true), false, true, false, &mut runtime);
+        assert_eq!(runtime.effects, vec![vec!["agent", "setup", "--apply"]]);
+        assert_eq!(receipt.outcome, OnboardOutcome::Failed);
+        assert!(!receipt.done);
+        assert_eq!(receipt.phases[2].steps[1].status, PhaseStatus::Failed);
+        assert_eq!(runtime.verifies, 0);
+        assert!(serde_json::to_string(&receipt)
+            .unwrap()
+            .contains("agent-defaults"));
+    }
+    #[test]
+    fn rerun_skips_existing_profile_and_still_verifies() {
+        let mut runtime = FakeRuntime::default();
+        let receipt = exercise(detected(true, true), false, true, true, &mut runtime);
+        assert_eq!(receipt.outcome, OnboardOutcome::Complete);
+        assert!(receipt.done);
+        assert!(runtime.effects.is_empty());
+        assert_eq!(runtime.verifies, 3);
+    }
+    #[test]
+    fn receipt_tail_never_splits_utf8() {
+        let text = "é🙂".repeat(1001);
+        let tail = bounded_tail(&text, 4000);
+        assert!(tail.ends_with("é🙂"));
+        assert!(tail.len() <= 4018);
+    }
+    #[test]
+    fn local_entry_rejects_bootstrap_and_string_mentions() {
+        assert!(!local_mcp_entry(
+            Some("npx"),
+            Some(&serde_json::json!(["phantom"]))
+        ));
+        assert!(!local_mcp_entry(
+            Some("phantom"),
+            Some(&serde_json::json!(["exec"]))
+        ));
+        assert!(local_mcp_entry(
+            Some("/path with spaces/phantom"),
+            Some(&serde_json::json!(["mcp"]))
+        ));
+        assert!(local_mcp_entry(Some("phantom-mcp"), None));
     }
 }

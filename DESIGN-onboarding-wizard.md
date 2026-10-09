@@ -1,77 +1,65 @@
-# DESIGN: Unified onboarding wizard — IMPLEMENTED
+# Local onboarding sequencer
 
-Status: implemented as `phantom onboard` (thin sequencer over the existing
-commands). The design below was the proposal; the implementation notes at the
-end record the decisions taken.
+Status: unreleased CLI implementation, following the phase-1 design proposal.
+This document describes the source branch. It does not establish a published
+binary, deployed workbench UI, provider activation or hosted-service readiness.
 
-## Problem
+## Command and phases
 
-First-run setup is split across four entry points with overlapping
-responsibilities and different trust assumptions:
+`phantom onboard --plan [--json]` detects dotenv/config presence and bounded
+regular MCP profile files, without constructing a vault, counting secrets,
+creating directories, migrating legacy plaintext or reconciling sidecars.
+A config's presence is metadata, not proof of protection or validity. Detection
+accepts local bundled `phantom mcp` or standalone `phantom-mcp` profile entries;
+it never executes them or bootstraps a registry package.
 
-- `phantom init` — vault + managed dotenv rewrite (mutates secrets)
-- `phantom setup --client <x>` — writes MCP client config
-- `phantom agent setup [--dry-run]` — readiness report / doctor / setup workflows
-- `phantom workspace plan|apply|status` — trusted-terminal workspace setup transactions
+A live run sequences these existing commands in order:
 
-A new user (or a workbench driving setup on their behalf) must discover the
-right order, the right trust context for each step, and what "done" looks like.
+1. Protect: `phantom init` for the default `.env`, unless configuration is
+   already present. Init retains its exact project-bound consent and transaction.
+2. Connect: separately confirm each missing Claude, Cursor, Windsurf and Codex
+   MCP profile, then `phantom agent setup --apply`. `--skip-connect` skips both.
+3. Verify: `phantom doctor`, `phantom check`, and `phantom agent report`.
+   All three must succeed for `done: true`.
 
-## Proposal
+Protect, Connect and Verify require attached stdin, stdout and stderr outside
+agent authority, followed by confirmation. Verify is not a headless observer:
+existing diagnostic vault probes may reconcile legacy backend storage. `--yes`
+answers wizard prompts only; it cannot waive terminal checks, init's exact
+challenge, or any existing authorization boundary.
 
-One guided flow, `phantom onboard` (name TBD), that walks the operator through
-phases with explicit gates:
+## Receipt and failures
 
-1. **Detect** (read-only): find dotenv files, existing `.phantom.toml`, client
-   configs. Pure reads; safe to run anywhere.
-2. **Protect** (trusted terminal only): run the `init` transaction — vault
-   selection, value intake, dotenv rewrite, `.env.example`, pre-commit hook.
-   Refuses to run unless stdin/stdout are an attached terminal.
-3. **Connect** (trusted terminal): pick clients, preview then write MCP configs.
-4. **Verify** (anywhere): `doctor`, `check`, installed-runtime smoke; prints a
-   bounded summary the operator can hand to an agent.
+`--json` emits one version-1 receipt on stdout, including `done`, `outcome`,
+`rerun`, and four ordered phases. Outcomes are `planned`, `complete`, `declined`
+and `failed`. Phase and connection-step statuses are `ok`, `skipped`, `declined`
+and `failed`. Details are bounded at UTF-8 character boundaries.
 
-Each phase prints its exact plan before mutating (like `workspace plan`), and
-the whole run emits a machine-readable receipt (`--json`) so the Phantom
-workbench can render progress without parsing prose.
+Live commands run as subprocesses of the current executable with fixed
+arguments. Child stdin remains attached; JSON-mode child prose and prompts use
+the already attached stderr. No new terminal or PTY is manufactured. This also
+isolates an early exit from agent setup, allowing the parent to record failure.
+Diagnostic output is captured into the receipt. A failure or decline stops later
+phases and preserves the earlier completed steps in the receipt.
 
-## Non-goals
+There is no transaction across phases or automatic rollback of completed work.
+A rerun detects the current state and verifies it again; it does not guarantee
+that interrupted setup is complete. The existing workspace plan/apply ceremony
+remains separate.
 
-- No new trust model: the existing boundaries (values never in agent context,
-  approvals outside agent authority) are unchanged; the wizard only sequences
-  existing commands.
-- No hosted onboarding: no account creation, no telemetry.
+## Boundaries and acceptance
 
-## Questions for Mason
+The wizard does not create accounts, issue credentials, enable provider access,
+start paid requests, install packages, trust connector authors or start a proxy.
+`phantom exec` sessions remain user-owned. A receipt is available for consumers;
+no workbench UI implementation is claimed here.
 
-- Should this live in the CLI (`phantom onboard`) or in the workbench UI
-  driving the CLI's `--json` receipts?
-- Should `phantom agent setup` and `phantom workspace` be refactored onto the
-  wizard's phase engine, or left as-is with the wizard as a thin sequencer?
-- What is the "done" definition — `doctor` clean, or a stricter checklist?
-
-## Implementation notes (`phantom onboard`, phase 2)
-
-Decisions taken (defaults; reversible):
-
-- **CLI-first.** The wizard lives in the CLI; the workbench drives it through
-  `--json` receipts. This keeps one implementation and lets headless
-  workbench flows use `--plan` + receipt parsing.
-- **Thin sequencer.** `phantom agent setup --apply` runs as a prompted step
-  inside the Connect phase; `phantom workspace` is left as-is (its
-  trusted-terminal transaction ceremony is deliberately separate). No phase
-  engine refactor.
-- **Done = `doctor` + `check` + `agent report` all clean.** Stricter than
-  doctor-only, still fully local.
-- **Verify steps run as `phantom` subprocesses** of the current executable so
-  their prose can be captured into the JSON receipt instead of interleaved
-  with it. Protect/Connect run in-process because they need the terminal.
-- **Session-lifecycle default:** `phantom exec` sessions stay user-owned —
-  the wizard never starts long-lived processes; it only verifies with
-  read-only commands. (Answers the INTEGRATION.md open question: the
-  *user* owns `phantom exec` lifecycle, not the workbench.)
-
-Remaining for Mason: whether the workbench should auto-detect per-project
-protection status in its UI (the `--json` receipt + `phantom status --json`
-give it everything it needs either way), and whether the workbench needs an
-approval bridge routing MCP nonces to the human's terminal.
+Source tests use synthetic homes, fake phase outcomes and real CLI subprocesses
+with redirected streams. Unix legacy fixtures use effective synthetic HOME/XDG
+storage roots; Windows OS KnownFolders cannot be redirected by those variables,
+so Windows legacy-vault lifecycle acceptance is not claimed. Tests cover
+unchanged legacy-vault bytes and metadata
+in plan/refusal paths, one JSON receipt, terminal refusal, completed-step failure
+receipts, MCP profile parsing and UTF-8 bounds. Synthetic phase tests do not
+establish attended-terminal or live-provider acceptance. No real keychain or
+provider credentials are used.

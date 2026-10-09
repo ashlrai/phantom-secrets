@@ -164,14 +164,14 @@ enum Commands {
     /// Guided first-run setup: detect, protect, connect, verify
     #[command(next_help_heading = "Setup")]
     Onboard {
-        /// Only run detection and print the plan; never mutate anything
+        /// Metadata-only detection and plan; never open or migrate a vault
         #[arg(long)]
         plan: bool,
-        /// Answer "yes" to every prompt (still requires a trusted terminal
-        /// for the Protect and Connect phases)
+        /// Answer wizard prompts; Protect, Connect and Verify still require
+        /// attached trusted terminals and underlying exact consent
         #[arg(long)]
         yes: bool,
-        /// Skip the MCP-client Connect phase entirely
+        /// Skip both MCP-client setup and agent defaults in Connect
         #[arg(long)]
         skip_connect: bool,
     },
