@@ -13,8 +13,8 @@ use anyhow::Result;
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::validator::{
-    ValidationMetadata, ValidationReport, ValidationStatus, default_validators,
-    run_validation_pipeline,
+    default_validators, run_validation_pipeline, ValidationMetadata, ValidationReport,
+    ValidationStatus,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -572,8 +572,8 @@ fn format_now() -> String {
 mod tests {
     use super::*;
     use phantom_core::validator::ValidationEntry;
-    use phantom_vault::VaultBackend;
     use phantom_vault::file::FileVault;
+    use phantom_vault::VaultBackend;
 
     #[test]
     fn stale_validation_before_image_commits_nothing() {

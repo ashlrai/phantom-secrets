@@ -1480,11 +1480,10 @@ mod tests {
         let sig = Signature::try_from(hex::decode(sig_hex).unwrap().as_slice()).unwrap();
         let mut tampered = manifest.clone();
         tampered.description = "evil".to_string();
-        assert!(
-            key.verifying_key()
-                .verify_strict(&canonical_manifest_bytes(&tampered).unwrap(), &sig)
-                .is_err()
-        );
+        assert!(key
+            .verifying_key()
+            .verify_strict(&canonical_manifest_bytes(&tampered).unwrap(), &sig)
+            .is_err());
     }
 
     #[test]
@@ -1751,12 +1750,10 @@ mod tests {
         let mut index = read_index().unwrap();
         index.packs.get_mut("acme").unwrap().sha256_pin = hex::encode(Sha256::digest(raw));
         write_index(&index).unwrap();
-        assert!(
-            load_pack_manifest("acme")
-                .unwrap_err()
-                .to_string()
-                .contains("signature")
-        );
+        assert!(load_pack_manifest("acme")
+            .unwrap_err()
+            .to_string()
+            .contains("signature"));
     }
 
     #[test]
@@ -1821,15 +1818,13 @@ mod tests {
             panic!("fixture");
         };
         remove_anchor(&id).unwrap();
-        assert!(
-            push_sync_target(
-                &snapshot,
-                &targets[0],
-                &Zeroizing::new("synthetic".into()),
-                &[]
-            )
-            .is_err()
-        );
+        assert!(push_sync_target(
+            &snapshot,
+            &targets[0],
+            &Zeroizing::new("synthetic".into()),
+            &[]
+        )
+        .is_err());
         assert!(install_verified_pack(snapshot).is_err());
     }
 
@@ -1871,12 +1866,10 @@ mod tests {
         let mut index = read_index().unwrap();
         index.packs.get_mut("acme").unwrap().version = "..".into();
         write_index(&index).unwrap();
-        assert!(
-            load_pack_manifest("acme")
-                .unwrap_err()
-                .to_string()
-                .contains("indexed pack identity")
-        );
+        assert!(load_pack_manifest("acme")
+            .unwrap_err()
+            .to_string()
+            .contains("indexed pack identity"));
         assert!(remove_anchor("../../escape").is_err());
     }
 
@@ -1911,12 +1904,10 @@ mod tests {
             .unwrap()
             .join(format!("{}.pub", key_id_for_pubkey(&key)));
         write_pack_file(&path, hex::encode(identity).as_bytes()).unwrap();
-        assert!(
-            load_anchors()
-                .unwrap_err()
-                .to_string()
-                .contains("weak stored")
-        );
+        assert!(load_anchors()
+            .unwrap_err()
+            .to_string()
+            .contains("weak stored"));
     }
 
     #[cfg(unix)]
@@ -1979,12 +1970,10 @@ mod tests {
         remove_pack("acme").unwrap();
         assert!(list_packs().unwrap().is_empty());
         assert!(load_pack_manifest("acme").is_err());
-        assert!(
-            packs_dir()
-                .unwrap()
-                .join("acme/1.2.3/connector.json")
-                .is_file()
-        );
+        assert!(packs_dir()
+            .unwrap()
+            .join("acme/1.2.3/connector.json")
+            .is_file());
     }
 
     #[cfg(unix)]

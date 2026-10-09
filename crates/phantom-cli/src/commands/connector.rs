@@ -287,12 +287,13 @@ fn resolve_signing_key(key_file: Option<&Path>) -> Result<connector::ConnectorSi
         return connector::signing_key_from_hex(&hex_key)
             .map_err(|e| anyhow::anyhow!("key file: {e}"));
     }
-    let hex_key = zeroize::Zeroizing::new(std::env::var("PHANTOM_CONNECTOR_SIGNING_KEY").map_err(|_| {
-        anyhow::anyhow!(
+    let hex_key =
+        zeroize::Zeroizing::new(std::env::var("PHANTOM_CONNECTOR_SIGNING_KEY").map_err(|_| {
+            anyhow::anyhow!(
             "No signing key: set PHANTOM_CONNECTOR_SIGNING_KEY (hex) or pass --key-file <path>.\n\
              Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
         )
-    })?);
+        })?);
     connector::signing_key_from_hex(&hex_key)
         .map_err(|e| anyhow::anyhow!("PHANTOM_CONNECTOR_SIGNING_KEY: {e}"))
 }

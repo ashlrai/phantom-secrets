@@ -318,10 +318,8 @@ fn headless_validation_once_and_watch_leave_legacy_storage_unchanged() {
             .args(args)
             .assert()
             .failure();
-        assert!(
-            String::from_utf8_lossy(&out.get_output().stderr)
-                .contains("no credential was retrieved")
-        );
+        assert!(String::from_utf8_lossy(&out.get_output().stderr)
+            .contains("no credential was retrieved"));
         for (path, bytes, modified, mode) in &before {
             let metadata = fs::metadata(path).unwrap();
             assert_eq!(&fs::read(path).unwrap(), bytes);
