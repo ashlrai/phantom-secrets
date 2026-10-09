@@ -144,7 +144,24 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
         );
     }
 
-    let validators = default_validators();
+    let mut validators = default_validators();
+    // Installed connector packs contribute additional live validators.
+    // Each pack validator only fires for secrets matching its declared key
+    // prefixes, and packs can never add new ways to exfiltrate values.
+    let pack_validators = phantom_core::connector::pack_validators();
+    if !pack_validators.is_empty() && !json {
+        let names: Vec<String> = pack_validators
+            .iter()
+            .map(|v| format!("pack:{}", v.name()))
+            .collect();
+        println!(
+            "{} Including {} connector-pack validator(s): {}",
+            "info".blue(),
+            pack_validators.len(),
+            names.join(", ")
+        );
+    }
+    validators.extend(pack_validators);
     let report = run_validation_pipeline(secrets, &validators, n_jobs, timeout);
 
     persist_validation_metadata(vault.as_ref(), &report, &metadata_before)?;
