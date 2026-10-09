@@ -78,9 +78,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             Sign in to your dashboard
           </h1>
           <p className="mt-4 text-[0.95rem] text-t2 leading-[1.65]">
-            This source-backed dashboard is for explicitly commissioned pilot
-            accounts. Public cloud, team, and billing entitlements are not
-            commissioned; signing in does not create or activate one.
+            Sign in with GitHub to view your account and encrypted personal
+            backup when cloud backups are enabled on this deployment. Team
+            sharing and paid plans are not available.
           </p>
           <button
             type="button"
@@ -105,15 +105,14 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         <Nav />
         <main className="mx-auto max-w-[640px] px-7 pb-20 pt-24 text-center">
           <p className="font-mono text-[0.72rem] uppercase tracking-[0.16em] text-blue-b">
-            Hosted boundary closed
+            Sign-in unavailable
           </p>
           <h1 className="mt-4 text-[1.8rem] font-extrabold leading-[1.1] tracking-[-0.035em] text-white sm:text-[2.2rem]">
-            Dashboard access is not commissioned.
+            Dashboard sign-in is unavailable.
           </h1>
           <p className="mt-4 text-[0.95rem] leading-[1.65] text-t2">
-            This deployment has no usable browser-auth configuration. Phantom&apos;s
-            open-source local workflow remains separate from hosted dashboard,
-            cloud, team, and billing services.
+            This deployment has no usable browser-auth configuration. You can
+            still use Phantom&apos;s local CLI to protect your secrets.
           </p>
           <Link
             href="/"
@@ -156,9 +155,9 @@ function DashboardNav({ email }: { email: string | null }) {
           {email ? `Signed in as ${email}` : "Signed in"}
         </h1>
         <p className="mt-1 text-[0.85rem] text-t3">
-          Read-only pilot metadata when the hosted backend and account have
-          both been commissioned. Source code and sign-in alone do not prove
-          service availability.
+          Your account and encrypted backup metadata. Personal backups require
+          cloud access on this deployment; team sharing and paid plans are not
+          available.
         </p>
       </div>
       <nav className="flex flex-wrap gap-1 rounded-lg border border-border bg-s1 p-1">

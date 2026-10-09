@@ -659,7 +659,7 @@ test("HowTo and delegation guidance avoid timing and unpinned quickstart claims"
   assert.doesNotMatch(delegation, /npx(?:\s+-y)?\s+phantom-secrets\s+agent setup/i);
 });
 
-test("dashboard surfaces describe uncommissioned pilot metadata, not live entitlements", () => {
+test("personal backup copy follows server admission and explains recovery limits", () => {
   const dashboardPaths = filesUnder("src/app/dashboard", [".tsx"]);
   const dashboardClaims = dashboardPaths.map((file) => read(file)).join("\n");
   const dashboardLayout = read("src/app/dashboard/layout.tsx");
@@ -668,14 +668,13 @@ test("dashboard surfaces describe uncommissioned pilot metadata, not live entitl
     /\b1\s+cloud\s+vault\b/i,
     /Pro tier required/i,
     /View your cloud vaults, billing, and team membership/i,
-    /No cloud vaults yet/i,
-    /upload an encrypted backup/i,
+    /cross-machine sync/i,
+    /recover your encryption key with GitHub/i,
   ]) {
     assert.doesNotMatch(dashboardClaims, forbidden);
   }
 
   for (const file of [
-    "src/app/dashboard/layout.tsx",
     "src/app/dashboard/page.tsx",
     "src/app/dashboard/team/page.tsx",
     "src/app/dashboard/projects/[id]/page.tsx",
@@ -688,8 +687,20 @@ test("dashboard surfaces describe uncommissioned pilot metadata, not live entitl
   }
 
   assert.match(dashboardLayout, /"unavailable"/);
-  assert.match(dashboardLayout, /Hosted boundary closed/);
+  assert.match(dashboardLayout, /Sign-in unavailable/);
   assert.match(dashboardLayout, /browser-auth configuration/);
+  assert.match(dashboardLayout, /Team\s+sharing and paid plans are not available/);
+  const overview = read("src/app/dashboard/overview-client.tsx");
+  const detail = read("src/app/dashboard/projects/[id]/project-client.tsx");
+  for (const source of [overview, detail]) {
+    assert.doesNotMatch(source, /Uncommissioned|pilot metadata|written pilot scope/i);
+    assert.match(source, /original[\s\S]*keychain/i);
+    assert.match(source, /phantom cloud (?:push|pull)/);
+  }
+  assert.match(overview, /one project per account/);
+  assert.match(detail, /machine that\s+created the backup/);
+  assert.match(detail, /Signing in elsewhere cannot transfer or recover\s+that key/);
+  assert.doesNotMatch(detail, /phantom (?:reveal|rotate)/);
 });
 
 test("current SoftwareApplication and HowTo metadata point at the verified release", () => {

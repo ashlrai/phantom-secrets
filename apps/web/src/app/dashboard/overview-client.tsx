@@ -60,19 +60,19 @@ export default function DashboardOverviewClient() {
     <div className="grid gap-6">
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard
-          label="Access"
-          value="Uncommissioned"
-          hint="local CLI remains separate"
+          label="Personal backup"
+          value="Encrypted"
+          hint="one project per account"
         />
         <StatCard
-          label="Pilot metadata rows"
+          label="Backed-up projects"
           value={String(vaults.length)}
-          hint="not a public entitlement"
+          hint="encrypted snapshots"
         />
         <StatCard
-          label="Returned ciphertext"
+          label="Encrypted data"
           value={`${vaults.reduce((s, v) => s + bytesToKb(v.encrypted_blob), 0).toFixed(1)} kB`}
-          hint="size only; not availability evidence"
+          hint="secret values stay encrypted"
         />
       </section>
 
@@ -85,9 +85,11 @@ export default function DashboardOverviewClient() {
         </div>
         {vaults.length === 0 ? (
           <div className="px-5 py-10 text-center text-[0.88rem] text-t3">
-            No commissioned pilot metadata was returned. Phantom Cloud is not
-            a public entitlement; do not infer access or run a hosted write
-            from this page without written pilot scope.
+            No cloud backup yet. In your trusted terminal, run{" "}
+            <code className="font-mono text-blue-b">phantom cloud push</code>{" "}
+            in the project you want to back up. Keep the original keychain of
+            the machine that creates the backup: it holds the encryption key
+            needed to restore.
           </div>
         ) : (
           <table className="w-full text-left">

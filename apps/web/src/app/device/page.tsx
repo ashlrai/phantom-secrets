@@ -1,6 +1,9 @@
 import { isHostedServiceCommissioned } from "@/lib/commissioning";
 import DeviceAuthorizationClient from "./device-authorization-client";
 
+// Commissioning is runtime configuration, including for credential-free builds.
+export const dynamic = "force-dynamic";
+
 export default function DevicePage() {
   if (!isHostedServiceCommissioned("personal_vaults")) {
     return (
