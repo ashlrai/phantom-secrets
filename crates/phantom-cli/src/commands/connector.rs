@@ -12,7 +12,6 @@
 //! - Pack signing keys are read from `PHANTOM_CONNECTOR_SIGNING_KEY` or a
 //!   `--key-file`; never from argv (argv is observable) and never committed.
 
-use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -24,7 +23,19 @@ use super::export_cmd::require_attached_terminals;
 /// `phantom connector add <dir>` — verify and install a pack.
 pub fn run_add(dir: &Path) -> Result<()> {
     require_attached_terminals("Connector pack install")?;
-    let installed = connector::install_pack(dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let snapshot = connector::verify_pack_snapshot(dir)?;
+    let effect = serde_json::to_string(&serde_json::json!({
+        "install_connector": snapshot.manifest(), "sha256": snapshot.sha256_pin(), "signer": snapshot.signer(),
+    }))?;
+    let challenge = format!(
+        "INSTALL CONNECTOR {} SHA256 {} NONCE {:032x}",
+        snapshot.manifest().name,
+        snapshot.sha256_pin(),
+        rand::random::<u128>()
+    );
+    super::export_cmd::require_trusted_terminal_effect(&effect, &challenge)?;
+    let installed =
+        connector::install_verified_pack(snapshot).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!(
         "{} Installed connector pack {} v{}",
         "✓".green().bold(),
@@ -82,6 +93,13 @@ pub fn run_list(json: bool) -> Result<()> {
 /// `phantom connector remove <name>`.
 pub fn run_remove(name: &str) -> Result<()> {
     require_attached_terminals("Connector pack removal")?;
+    super::export_cmd::require_trusted_terminal_effect(
+        &serde_json::to_string(&serde_json::json!({"remove_connector": name}))?,
+        &format!(
+            "REMOVE CONNECTOR {name} NONCE {:032x}",
+            rand::random::<u128>()
+        ),
+    )?;
     connector::remove_pack(name).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!(
         "{} Removed connector pack {}",
@@ -159,6 +177,13 @@ pub fn run_inspect(name: &str) -> Result<()> {
 /// `phantom connector anchor add --key <hex>`.
 pub fn run_anchor_add(key_hex: &str) -> Result<()> {
     require_attached_terminals("Trust anchor registration")?;
+    super::export_cmd::require_trusted_terminal_effect(
+        &serde_json::to_string(&serde_json::json!({"register_connector_anchor": key_hex}))?,
+        &format!(
+            "REGISTER CONNECTOR ANCHOR {key_hex} NONCE {:032x}",
+            rand::random::<u128>()
+        ),
+    )?;
     let key_id = connector::add_anchor(key_hex).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!(
         "{} Registered connector trust anchor {}",
@@ -193,6 +218,13 @@ pub fn run_anchor_list() -> Result<()> {
 /// `phantom connector anchor remove <key-id>`.
 pub fn run_anchor_remove(key_id: &str) -> Result<()> {
     require_attached_terminals("Trust anchor removal")?;
+    super::export_cmd::require_trusted_terminal_effect(
+        &serde_json::to_string(&serde_json::json!({"remove_connector_anchor": key_id}))?,
+        &format!(
+            "REMOVE CONNECTOR ANCHOR {key_id} NONCE {:032x}",
+            rand::random::<u128>()
+        ),
+    )?;
     connector::remove_anchor(key_id).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!(
         "{} Removed trust anchor {}",
@@ -245,17 +277,22 @@ fn resolve_signing_key(key_file: Option<&Path>) -> Result<connector::ConnectorSi
             }
         }
         let _ = meta;
-        let hex_key = std::fs::read_to_string(path)
-            .with_context(|| format!("cannot read key file {}", path.display()))?;
+        let raw = phantom_core::fs::read_regular_file(path)?
+            .ok_or_else(|| anyhow::anyhow!("key file disappeared"))?;
+        if raw.len() > 128 {
+            anyhow::bail!("key file exceeds its size bound");
+        }
+        let raw = zeroize::Zeroizing::new(raw);
+        let hex_key = std::str::from_utf8(&raw).context("key file is not UTF-8")?;
         return connector::signing_key_from_hex(&hex_key)
             .map_err(|e| anyhow::anyhow!("key file: {e}"));
     }
-    let hex_key = std::env::var("PHANTOM_CONNECTOR_SIGNING_KEY").map_err(|_| {
+    let hex_key = zeroize::Zeroizing::new(std::env::var("PHANTOM_CONNECTOR_SIGNING_KEY").map_err(|_| {
         anyhow::anyhow!(
             "No signing key: set PHANTOM_CONNECTOR_SIGNING_KEY (hex) or pass --key-file <path>.\n\
              Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
         )
-    })?;
+    })?);
     connector::signing_key_from_hex(&hex_key)
         .map_err(|e| anyhow::anyhow!("PHANTOM_CONNECTOR_SIGNING_KEY: {e}"))
 }
@@ -292,23 +329,6 @@ pub fn run_pack_sign(dir: &Path, key_file: Option<&Path>) -> Result<()> {
         "phantom connector anchor add --key <hex-pubkey>".cyan()
     );
     Ok(())
-}
-
-/// Prompt helper shared by the onboarding wizard: yes/no on an attached TTY.
-pub(crate) fn prompt_yes_no(question: &str, default_yes: bool) -> Result<bool> {
-    if !std::io::stdin().is_terminal() {
-        anyhow::bail!("{question} needs an interactive terminal; rerun from a trusted terminal or pass --yes.");
-    }
-    let hint = if default_yes { "[Y/n]" } else { "[y/N]" };
-    print!("{question} {hint} ");
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    let answer = line.trim().to_lowercase();
-    if answer.is_empty() {
-        return Ok(default_yes);
-    }
-    Ok(matches!(answer.as_str(), "y" | "yes"))
 }
 
 /// Canonicalize a user-supplied directory for pack commands.

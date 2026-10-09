@@ -7,7 +7,11 @@ use tempfile::TempDir;
 
 fn phantom(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("phantom").expect("binary not found");
-    cmd.current_dir(dir.path()).env("HOME", dir.path());
+    cmd.env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path());
     cmd
 }
 
@@ -148,6 +152,7 @@ fn pack_sign_needs_a_key_and_says_so() {
     assert_eq!(sig_hex.len(), 128);
 }
 
+#[cfg(unix)]
 #[test]
 fn pack_sign_refuses_open_key_file_perms() {
     let dir = common::canonical_tempdir();
@@ -172,8 +177,6 @@ fn pack_sign_refuses_open_key_file_perms() {
         stderr.contains("0600"),
         "must refuse open key-file permissions, got: {stderr}"
     );
-    #[cfg(not(unix))]
-    assert!(!stderr.is_empty());
 }
 
 #[test]
@@ -190,6 +193,27 @@ fn pack_init_rejects_bad_name() {
         stderr.contains("pack name"),
         "must explain the name rules, got: {stderr}"
     );
+}
+
+#[test]
+fn pack_sign_accepts_valid_private_key_file() {
+    let dir = common::canonical_tempdir();
+    let pack_dir = scaffold_pack(&dir, "demo");
+    let key_file = dir.path().join("private-seed.hex");
+    fs::write(&key_file, test_seed_hex()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    phantom(&dir)
+        .args(["connector", "pack", "sign"])
+        .arg(&pack_dir)
+        .arg("--key-file")
+        .arg(key_file)
+        .assert()
+        .success();
+    assert!(pack_dir.join("connector.sig").is_file());
 }
 
 #[test]
@@ -239,13 +263,72 @@ fn onboard_plan_is_read_only_and_json_receipt_parses() {
 }
 
 #[test]
-fn onboard_plan_detects_initialized_project() {
+fn onboard_plan_observes_config_presence_without_vault_access() {
     let dir = common::canonical_tempdir();
     fs::write(dir.path().join(".phantom.toml"), "# stub\n").unwrap();
     let out = phantom(&dir).args(["onboard", "--plan"]).assert().success();
     let stdout = String::from_utf8_lossy(&out.get_output().stdout);
     assert!(
-        stdout.contains("already protected"),
-        "initialized project should skip protect, got: {stdout}"
+        stdout.contains("config_present=true") && stdout.contains("vault not inspected"),
+        "plan must report config presence without claiming vault protection, got: {stdout}"
     );
+}
+
+// Windows KnownFolders ignores environment directory overrides; a constructor
+// regression must never touch the host's actual vault directory.
+#[cfg(unix)]
+#[test]
+fn headless_validation_once_and_watch_leave_legacy_storage_unchanged() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = common::canonical_tempdir();
+    let config = phantom_core::config::PhantomConfig::new_with_defaults("headless-fixture".into());
+    config.save(&dir.path().join(".phantom.toml")).unwrap();
+    let mut before = Vec::new();
+    for base in [
+        dir.path().join("data/phantom-secrets"),
+        dir.path()
+            .join("Library/Application Support/ai.phantom.phantom-secrets"),
+        dir.path().join("localappdata/phantom/phantom-secrets/data"),
+    ] {
+        let path = base.join("vaults/headless-fixture.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            br#"{"secrets":{"SYNTHETIC_KEY":"never-a-real-credential"}}"#,
+        )
+        .unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        before.push((
+            path.clone(),
+            fs::read(&path).unwrap(),
+            metadata.modified().unwrap(),
+            metadata.permissions().mode(),
+        ));
+    }
+    for args in [
+        ["validate", "--check-all", "--json"],
+        ["validate", "--watch", "--json"],
+    ] {
+        let out = phantom(&dir)
+            .env("XDG_DATA_HOME", dir.path().join("data"))
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .env("APPDATA", dir.path().join("appdata"))
+            .env("LOCALAPPDATA", dir.path().join("localappdata"))
+            .env("PHANTOM_VAULT_PASSPHRASE", "synthetic-test-only")
+            .args(args)
+            .assert()
+            .failure();
+        assert!(
+            String::from_utf8_lossy(&out.get_output().stderr)
+                .contains("no credential was retrieved")
+        );
+        for (path, bytes, modified, mode) in &before {
+            let metadata = fs::metadata(path).unwrap();
+            assert_eq!(&fs::read(path).unwrap(), bytes);
+            assert_eq!(&metadata.modified().unwrap(), modified);
+            assert_eq!(&metadata.permissions().mode(), mode);
+            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        }
+    }
+    assert!(!dir.path().join(".phantom").exists());
 }

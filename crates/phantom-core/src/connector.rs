@@ -23,7 +23,8 @@
 //!   `sync-target` packs may only push to their declared HTTPS endpoint;
 //!   `import-source` packs only describe how to parse a file the operator
 //!   hands to `phantom import`. The MCP surface stays value-blind: packs can
-//!   never add new ways to exfiltrate values.
+//!   route approved values to explicitly displayed, operator-trusted destinations.
+//!   A valid pack signature does not establish provider endpoint authenticity.
 //!
 //! # Capabilities
 //!
@@ -41,7 +42,7 @@ use std::time::Duration;
 /// Re-exported so CLI commands can name the signing-key type without adding
 /// their own ed25519 dependency.
 pub use ed25519_dalek::SigningKey as ConnectorSigningKey;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -190,13 +191,23 @@ fn valid_pack_name(name: &str) -> bool {
 
 fn valid_version(version: &str) -> bool {
     !version.is_empty()
+        && !matches!(version, "." | "..")
         && version.len() <= 64
-        && !version.contains(['/', '\\', '\0'])
-        && version.chars().all(|c| !c.is_control())
+        && version
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_' | b'+'))
 }
 
 fn valid_https_url(url: &str) -> bool {
-    url.starts_with("https://") && url.len() > "https://".len() && !url.contains(VALUE_PLACEHOLDER)
+    url.len() <= 2048
+        && !url.contains(VALUE_PLACEHOLDER)
+        && reqwest::Url::parse(url).is_ok_and(|u| {
+            u.scheme() == "https"
+                && u.host_str().is_some()
+                && u.username().is_empty()
+                && u.password().is_none()
+                && u.fragment().is_none()
+        })
 }
 
 fn validate_manifest(m: &ConnectorManifest) -> Result<(), PhantomError> {
@@ -362,16 +373,28 @@ pub fn add_anchor(pubkey_hex: &str) -> Result<String, PhantomError> {
             "anchor key must be a 32-byte Ed25519 public key".to_string(),
         )
     })?;
+    if key.is_weak() {
+        return Err(PhantomError::ConfigParseError(
+            "weak trust anchor key is forbidden".into(),
+        ));
+    }
     let dir = anchors_dir()?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| PhantomError::Other(format!("cannot create anchors dir: {e}")))?;
     let key_id = key_id_for_pubkey(&key);
     let path = dir.join(format!("{key_id}.pub"));
-    // Anchor files are public keys — world-readable is fine, but refuse to
-    // silently overwrite a different key under an existing id.
-    if path.exists() {
-        let existing = std::fs::read_to_string(&path)
-            .map_err(|e| PhantomError::Other(format!("cannot read anchor: {e}")))?;
+    let target = store_target(&path, true)
+        .map_err(|e| PhantomError::Other(format!("unsafe anchor destination: {e}")))?;
+    let before = target
+        .read_regular()
+        .map_err(|e| PhantomError::Other(format!("unsafe anchor destination: {e}")))?;
+    // Compare and publish using the same retained before-image, including absence.
+    if let Some(raw) = before.as_ref().map(|raw| raw.bytes()) {
+        if raw.len() > 128 {
+            return Err(PhantomError::ConfigParseError(
+                "anchor exceeds size bound".into(),
+            ));
+        }
+        let existing = std::str::from_utf8(raw)
+            .map_err(|_| PhantomError::ConfigParseError("anchor is not UTF-8".into()))?;
         if existing.trim().to_lowercase() != pubkey_hex.trim().to_lowercase() {
             return Err(PhantomError::ConfigParseError(format!(
                 "anchor id {key_id} already registered with a different key; remove it first"
@@ -379,15 +402,18 @@ pub fn add_anchor(pubkey_hex: &str) -> Result<String, PhantomError> {
         }
         return Ok(key_id);
     }
-    std::fs::write(&path, pubkey_hex.trim().to_lowercase())
-        .map_err(|e| PhantomError::Other(format!("cannot write anchor: {e}")))?;
+    accept_store_effect(
+        target
+            .replace_if_exact(before.as_ref(), pubkey_hex.trim().to_lowercase().as_bytes())
+            .map_err(|e| PhantomError::Other(format!("cannot register anchor: {e}")))?,
+    )?;
     Ok(key_id)
 }
 
 /// List registered trust-anchor key ids.
 pub fn list_anchors() -> Result<Vec<String>, PhantomError> {
     let dir = anchors_dir()?;
-    if !dir.exists() {
+    if !store_directory_exists(&dir)? {
         return Ok(Vec::new());
     }
     let mut ids = Vec::new();
@@ -408,21 +434,32 @@ pub fn list_anchors() -> Result<Vec<String>, PhantomError> {
 /// Remove a trust anchor by key id. Installed packs stay installed; they are
 /// re-verified against remaining anchors on next use.
 pub fn remove_anchor(key_id: &str) -> Result<(), PhantomError> {
-    let path = anchors_dir()?.join(format!("{key_id}.pub"));
-    if !path.exists() {
-        return Err(PhantomError::ConfigParseError(format!(
-            "no trust anchor with id {key_id:?}; see `phantom connector anchor list`"
-        )));
+    if key_id.len() != 8 || !key_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(PhantomError::ConfigParseError(
+            "invalid trust anchor id".to_string(),
+        ));
     }
-    std::fs::remove_file(&path)
-        .map_err(|e| PhantomError::Other(format!("cannot remove anchor: {e}")))?;
+    let path = anchors_dir()?.join(format!("{key_id}.pub"));
+    let target = store_target(&path, false)
+        .map_err(|e| PhantomError::Other(format!("unsafe anchor path: {e}")))?;
+    let before = target
+        .read_regular()
+        .map_err(|e| PhantomError::Other(format!("unsafe anchor file: {e}")))?
+        .ok_or_else(|| {
+            PhantomError::ConfigParseError(format!("no trust anchor with id {key_id:?}"))
+        })?;
+    accept_store_effect(
+        target
+            .unlink_if_exact(&before)
+            .map_err(|e| PhantomError::Other(format!("cannot remove anchor: {e}")))?,
+    )?;
     Ok(())
 }
 
 fn load_anchors() -> Result<Vec<(String, VerifyingKey)>, PhantomError> {
     let dir = anchors_dir()?;
     let mut anchors = Vec::new();
-    if !dir.exists() {
+    if !store_directory_exists(&dir)? {
         return Ok(anchors);
     }
     let entries = std::fs::read_dir(&dir)
@@ -433,8 +470,9 @@ fn load_anchors() -> Result<Vec<(String, VerifyingKey)>, PhantomError> {
         if path.extension().and_then(|e| e.to_str()) != Some("pub") {
             continue;
         }
-        let hex_key = std::fs::read_to_string(&path)
-            .map_err(|e| PhantomError::Other(format!("cannot read anchor: {e}")))?;
+        let raw = read_pack_file(&path, 128)?;
+        let hex_key = std::str::from_utf8(&raw)
+            .map_err(|_| PhantomError::ConfigParseError("anchor is not UTF-8".to_string()))?;
         let bytes = hex::decode(hex_key.trim()).map_err(|_| {
             PhantomError::ConfigParseError(format!("anchor file {} is not hex", path.display()))
         })?;
@@ -444,11 +482,21 @@ fn load_anchors() -> Result<Vec<(String, VerifyingKey)>, PhantomError> {
                 path.display()
             ))
         })?;
+        if key.is_weak() {
+            return Err(PhantomError::ConfigParseError(
+                "weak stored trust anchor key is forbidden".into(),
+            ));
+        }
         let key_id = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
+        if key_id != key_id_for_pubkey(&key) {
+            return Err(PhantomError::ConfigParseError(
+                "anchor id does not match its public key".to_string(),
+            ));
+        }
         anchors.push((key_id, key));
     }
     Ok(anchors)
@@ -467,13 +515,16 @@ pub fn canonical_manifest_bytes(manifest: &ConnectorManifest) -> Result<Vec<u8>,
 /// The seed is secret material: callers must source it from an env var or a
 /// 0600 file, never from argv (argv is observable) and never from the repo.
 pub fn signing_key_from_hex(hex_seed: &str) -> Result<SigningKey, PhantomError> {
-    let bytes = hex::decode(hex_seed.trim())
-        .map_err(|_| PhantomError::ConfigParseError("signing key is not valid hex".to_string()))?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+    let bytes =
+        Zeroizing::new(hex::decode(hex_seed.trim()).map_err(|_| {
+            PhantomError::ConfigParseError("signing key is not valid hex".to_string())
+        })?);
+    let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
         PhantomError::ConfigParseError(
             "signing key must be 32 bytes (64 hex chars), an Ed25519 seed".to_string(),
         )
     })?;
+    let arr = Zeroizing::new(arr);
     Ok(SigningKey::from_bytes(&arr))
 }
 
@@ -494,33 +545,151 @@ pub fn sign_manifest(
 /// against registered trust anchors, and validate manifest semantics.
 /// Returns the manifest on success.
 pub fn verify_pack_dir(dir: &Path) -> Result<ConnectorManifest, PhantomError> {
-    let manifest_path = dir.join("connector.json");
-    let sig_path = dir.join("connector.sig");
-    let meta = std::fs::metadata(&manifest_path).map_err(|_| {
-        PhantomError::ConfigParseError(format!(
-            "pack dir {} has no connector.json; run `phantom connector pack init` to scaffold one",
-            dir.display()
-        ))
-    })?;
-    if meta.len() > MAX_MANIFEST_BYTES {
-        return Err(PhantomError::ConfigParseError(format!(
-            "connector.json exceeds {} bytes — refusing",
-            MAX_MANIFEST_BYTES
-        )));
+    Ok(verify_pack_snapshot(dir)?.manifest)
+}
+
+fn read_pack_file(path: &Path, limit: u64) -> Result<Vec<u8>, PhantomError> {
+    if path.starts_with(connectors_dir()?) {
+        return read_store_file(path, limit)?.ok_or_else(|| {
+            PhantomError::ConfigParseError("connector store file is missing".into())
+        });
     }
-    let raw = std::fs::read(&manifest_path)
-        .map_err(|e| PhantomError::Other(format!("cannot read connector.json: {e}")))?;
+    let meta = std::fs::symlink_metadata(path).map_err(|e| {
+        PhantomError::ConfigParseError(format!("cannot read {}: {e}; packs require connector.json and connector.sig (sign the manifest first)", path.display()))
+    })?;
+    if meta.len() > limit {
+        return Err(PhantomError::ConfigParseError(
+            "connector file exceeds its size bound".to_string(),
+        ));
+    }
+    let raw = crate::fs::read_regular_file(path)
+        .map_err(|e| PhantomError::ConfigParseError(format!("unsafe connector file: {e}")))?
+        .ok_or_else(|| PhantomError::ConfigParseError("connector file disappeared".to_string()))?;
+    if raw.len() as u64 > limit {
+        return Err(PhantomError::ConfigParseError(
+            "connector file exceeds its size bound".to_string(),
+        ));
+    }
+    Ok(raw)
+}
+
+// Resolve every store component beneath the trusted home through retained
+// no-follow handles. Ambient create_dir_all must never precede this boundary.
+fn store_target(path: &Path, create: bool) -> std::io::Result<crate::fs::AnchoredTarget> {
+    let home = crate::home::home_dir()?;
+    let relative = path.strip_prefix(&home).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "connector path outside home",
+        )
+    })?;
+    let anchor = crate::fs::TrustedAnchor::open(&home)?;
+    if create {
+        anchor.target_with_private_parents(relative)
+    } else {
+        anchor.target(relative)
+    }
+}
+
+fn read_store_file(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, PhantomError> {
+    let target = match store_target(path, false) {
+        Ok(target) => target,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(PhantomError::ConfigParseError(format!(
+                "unsafe connector store: {e}"
+            )));
+        }
+    };
+    let raw = target
+        .read_regular()
+        .map_err(|e| PhantomError::ConfigParseError(format!("unsafe connector store file: {e}")))?;
+    raw.map(|raw| {
+        if raw.bytes().len() as u64 > limit {
+            return Err(PhantomError::ConfigParseError(
+                "connector file exceeds its size bound".into(),
+            ));
+        }
+        Ok(raw.bytes().to_vec())
+    })
+    .transpose()
+}
+
+fn store_directory_exists(path: &Path) -> Result<bool, PhantomError> {
+    // A synthetic absent leaf walks and retains all directory ancestors.
+    match store_target(&path.join(".directory-probe"), false) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(PhantomError::ConfigParseError(format!(
+            "unsafe connector directory: {e}"
+        ))),
+    }
+}
+
+fn accept_store_effect<T>(effect: crate::fs::AnchoredEffect<T>) -> Result<(), PhantomError> {
+    match effect {
+        crate::fs::AnchoredEffect::Durable(_) => Ok(()),
+        crate::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
+            eprintln!(
+                "warning: connector store change committed and verified; platform cannot prove directory crash durability"
+            );
+            Ok(())
+        }
+        crate::fs::AnchoredEffect::CommittedButUncertain { error, .. } => {
+            Err(PhantomError::Other(format!(
+                "connector store change committed but verification/durability is uncertain; stop and inspect before retrying: {error}"
+            )))
+        }
+    }
+}
+
+fn write_pack_file(path: &Path, contents: &[u8]) -> Result<(), PhantomError> {
+    let target = store_target(path, true)
+        .map_err(|e| PhantomError::Other(format!("unsafe connector destination: {e}")))?;
+    let before = target
+        .read_regular()
+        .map_err(|e| PhantomError::Other(format!("unsafe connector destination: {e}")))?;
+    let effect = target
+        .replace_if_exact(before.as_ref(), contents)
+        .map_err(|e| PhantomError::Other(format!("cannot write connector file: {e}")))?;
+    accept_store_effect(effect)
+}
+
+/// Exact verified bytes, retained through consent and installation. Fields are
+/// private so callers cannot substitute an unverified manifest or signature.
+pub struct VerifiedPack {
+    manifest: ConnectorManifest,
+    raw: Vec<u8>,
+    signature: Vec<u8>,
+    signer: String,
+}
+
+impl VerifiedPack {
+    pub fn manifest(&self) -> &ConnectorManifest {
+        &self.manifest
+    }
+    pub fn sha256_pin(&self) -> String {
+        hex::encode(Sha256::digest(&self.raw))
+    }
+    pub fn signer(&self) -> &str {
+        &self.signer
+    }
+}
+
+pub fn verify_pack_snapshot(dir: &Path) -> Result<VerifiedPack, PhantomError> {
+    let raw = read_pack_file(&dir.join("connector.json"), MAX_MANIFEST_BYTES)?;
+    let signature = read_pack_file(&dir.join("connector.sig"), 256)?;
+    verify_pack_bytes(raw, signature)
+}
+
+fn verify_pack_bytes(raw: Vec<u8>, signature: Vec<u8>) -> Result<VerifiedPack, PhantomError> {
     let manifest: ConnectorManifest = serde_json::from_slice(&raw).map_err(|e| {
         PhantomError::ConfigParseError(format!("connector.json is not a valid manifest: {e}"))
     })?;
     validate_manifest(&manifest)?;
 
-    let envelope = std::fs::read_to_string(&sig_path).map_err(|_| {
-        PhantomError::ConfigParseError(format!(
-            "pack dir {} has no connector.sig; sign it with `phantom connector pack sign`",
-            dir.display()
-        ))
-    })?;
+    let envelope = std::str::from_utf8(&signature)
+        .map_err(|_| PhantomError::ConfigParseError("connector.sig is not UTF-8".to_string()))?;
     let (key_id, sig_hex) = envelope.trim().split_once(':').ok_or_else(|| {
         PhantomError::ConfigParseError(
             "connector.sig must look like <key-id>:<hex-signature>".to_string(),
@@ -549,18 +718,25 @@ pub fn verify_pack_dir(dir: &Path) -> Result<ConnectorManifest, PhantomError> {
     // Verify against the canonical bytes of the *parsed* manifest so that
     // formatting differences cannot smuggle unsigned content past the check.
     let canonical = canonical_manifest_bytes(&manifest)?;
-    anchor.1.verify(&canonical, &sig).map_err(|_| {
+    anchor.1.verify_strict(&canonical, &sig).map_err(|_| {
         PhantomError::ConfigParseError(
             "pack signature verification FAILED — refusing to install".to_string(),
         )
     })?;
-    Ok(manifest)
+    let signer = key_id.to_string();
+    Ok(VerifiedPack {
+        manifest,
+        raw,
+        signature,
+        signer,
+    })
 }
 
 // ── Installed-pack store ─────────────────────────────────────────────────────
 
 /// Metadata recorded for an installed pack (hash-pinned).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct InstalledPack {
     pub name: String,
     pub version: String,
@@ -571,6 +747,7 @@ pub struct InstalledPack {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct InstalledIndex {
     #[serde(default)]
     packs: BTreeMap<String, InstalledPack>,
@@ -578,11 +755,9 @@ struct InstalledIndex {
 
 fn read_index() -> Result<InstalledIndex, PhantomError> {
     let path = installed_index_path()?;
-    if !path.exists() {
+    let Some(raw) = read_store_file(&path, 1024 * 1024)? else {
         return Ok(InstalledIndex::default());
-    }
-    let raw = std::fs::read(&path)
-        .map_err(|e| PhantomError::Other(format!("cannot read installed.json: {e}")))?;
+    };
     serde_json::from_slice(&raw).map_err(|e| {
         PhantomError::ConfigParseError(format!(
             "installed.json is corrupt: {e}; back it up and remove it to reset"
@@ -590,16 +765,52 @@ fn read_index() -> Result<InstalledIndex, PhantomError> {
     })
 }
 
-fn write_index(index: &InstalledIndex) -> Result<(), PhantomError> {
-    let dir = connectors_dir()?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| PhantomError::Other(format!("cannot create connectors dir: {e}")))?;
-    let path = installed_index_path()?;
+fn index_for_mutation() -> Result<
+    (
+        InstalledIndex,
+        crate::fs::AnchoredTarget,
+        Option<crate::fs::AnchoredRead>,
+    ),
+    PhantomError,
+> {
+    let target = store_target(&installed_index_path()?, true)
+        .map_err(|e| PhantomError::Other(format!("unsafe connector index: {e}")))?;
+    let before = target
+        .read_regular()
+        .map_err(|e| PhantomError::Other(format!("unsafe connector index: {e}")))?;
+    let index = match &before {
+        None => InstalledIndex::default(),
+        Some(raw) if raw.bytes().len() <= 1024 * 1024 => serde_json::from_slice(raw.bytes())
+            .map_err(|e| {
+                PhantomError::ConfigParseError(format!("installed.json is corrupt: {e}"))
+            })?,
+        Some(_) => {
+            return Err(PhantomError::ConfigParseError(
+                "connector index exceeds size bound".into(),
+            ));
+        }
+    };
+    Ok((index, target, before))
+}
+
+fn write_index_snapshot(
+    index: &InstalledIndex,
+    target: &crate::fs::AnchoredTarget,
+    before: Option<&crate::fs::AnchoredRead>,
+) -> Result<(), PhantomError> {
     let raw = serde_json::to_vec_pretty(index)
         .map_err(|e| PhantomError::ConfigParseError(format!("cannot serialize index: {e}")))?;
-    std::fs::write(&path, raw)
-        .map_err(|e| PhantomError::Other(format!("cannot write installed.json: {e}")))?;
-    Ok(())
+    accept_store_effect(target.replace_if_exact(before, &raw).map_err(|e| {
+        PhantomError::Other(format!(
+            "connector index changed; this registry update was refused: {e}"
+        ))
+    })?)
+}
+
+#[cfg(test)]
+fn write_index(index: &InstalledIndex) -> Result<(), PhantomError> {
+    let (_, target, before) = index_for_mutation()?;
+    write_index_snapshot(index, &target, before.as_ref())
 }
 
 fn capability_names(manifest: &ConnectorManifest) -> Vec<String> {
@@ -617,20 +828,25 @@ fn capability_names(manifest: &ConnectorManifest) -> Vec<String> {
 /// Verify and install a pack from `source_dir` (containing `connector.json` +
 /// `connector.sig`). Fails closed on any signature or schema problem.
 pub fn install_pack(source_dir: &Path) -> Result<InstalledPack, PhantomError> {
-    let manifest = verify_pack_dir(source_dir)?;
-    let raw = std::fs::read(source_dir.join("connector.json"))
-        .map_err(|e| PhantomError::Other(format!("cannot re-read connector.json: {e}")))?;
-    let pin = hex::encode(Sha256::digest(&raw));
+    install_verified_pack(verify_pack_snapshot(source_dir)?)
+}
 
+/// Install only the verified immutable snapshot; source paths are never reread.
+/// Recheck current anchors after any caller's consent ceremony.
+pub fn install_verified_pack(snapshot: VerifiedPack) -> Result<InstalledPack, PhantomError> {
+    let snapshot = verify_pack_bytes(snapshot.raw, snapshot.signature)?;
+    let pin = snapshot.sha256_pin();
+    let VerifiedPack {
+        manifest,
+        raw,
+        signature,
+        ..
+    } = snapshot;
+
+    let (mut index, index_target, index_before) = index_for_mutation()?;
     let dest = packs_dir()?.join(&manifest.name).join(&manifest.version);
-    std::fs::create_dir_all(&dest)
-        .map_err(|e| PhantomError::Other(format!("cannot create pack dir: {e}")))?;
-    std::fs::write(dest.join("connector.json"), &raw)
-        .map_err(|e| PhantomError::Other(format!("cannot install connector.json: {e}")))?;
-    let sig = std::fs::read(source_dir.join("connector.sig"))
-        .map_err(|e| PhantomError::Other(format!("cannot re-read connector.sig: {e}")))?;
-    std::fs::write(dest.join("connector.sig"), sig)
-        .map_err(|e| PhantomError::Other(format!("cannot install connector.sig: {e}")))?;
+    write_pack_file(&dest.join("connector.json"), &raw)?;
+    write_pack_file(&dest.join("connector.sig"), &signature)?;
 
     let installed = InstalledPack {
         name: manifest.name.clone(),
@@ -639,9 +855,8 @@ pub fn install_pack(source_dir: &Path) -> Result<InstalledPack, PhantomError> {
         sha256_pin: pin,
         capabilities: capability_names(&manifest),
     };
-    let mut index = read_index()?;
     index.packs.insert(manifest.name.clone(), installed.clone());
-    write_index(&index)?;
+    write_index_snapshot(&index, &index_target, index_before.as_ref())?;
     Ok(installed)
 }
 
@@ -652,46 +867,59 @@ pub fn list_packs() -> Result<Vec<InstalledPack>, PhantomError> {
 
 /// Remove an installed pack. The trust anchor is untouched.
 pub fn remove_pack(name: &str) -> Result<(), PhantomError> {
-    let mut index = read_index()?;
+    if !valid_pack_name(name) {
+        return Err(PhantomError::ConfigParseError(
+            "invalid pack name".to_string(),
+        ));
+    }
+    // Refuse an unsafe cache namespace before changing registry ownership.
+    store_directory_exists(&packs_dir()?.join(name))?;
+    let (mut index, index_target, index_before) = index_for_mutation()?;
     let removed = index.packs.remove(name);
     if removed.is_none() {
         return Err(PhantomError::ConfigParseError(format!(
             "no installed pack named {name:?}; see `phantom connector list`"
         )));
     }
-    write_index(&index)?;
-    let dir = packs_dir()?.join(name);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)
-            .map_err(|e| PhantomError::Other(format!("cannot remove pack dir: {e}")))?;
-    }
+    write_index_snapshot(&index, &index_target, index_before.as_ref())?;
+    // Registry removal disables every capability. Retain inert signed cache
+    // files: recursively deleting an ambient pathname would introduce a
+    // symlink/ancestor-swap deletion boundary unrelated to revocation.
     Ok(())
 }
 
 /// Load an installed pack's manifest, re-verifying its hash pin so on-disk
 /// tampering after install is detected.
 pub fn load_pack_manifest(name: &str) -> Result<ConnectorManifest, PhantomError> {
+    Ok(load_verified_pack(name)?.manifest)
+}
+
+pub fn load_verified_pack(name: &str) -> Result<VerifiedPack, PhantomError> {
     let index = read_index()?;
     let installed = index.packs.get(name).ok_or_else(|| {
         PhantomError::ConfigParseError(format!("no installed pack named {name:?}"))
     })?;
-    let path = packs_dir()?
-        .join(&installed.name)
-        .join(&installed.version)
-        .join("connector.json");
-    let raw = std::fs::read(&path)
-        .map_err(|e| PhantomError::Other(format!("cannot read installed manifest: {e}")))?;
+    if !valid_pack_name(name) || installed.name != name || !valid_version(&installed.version) {
+        return Err(PhantomError::ConfigParseError(
+            "invalid indexed pack identity".to_string(),
+        ));
+    }
+    let dir = packs_dir()?.join(&installed.name).join(&installed.version);
+    let raw = read_pack_file(&dir.join("connector.json"), MAX_MANIFEST_BYTES)?;
     let pin = hex::encode(Sha256::digest(&raw));
     if pin != installed.sha256_pin {
         return Err(PhantomError::ConfigParseError(format!(
             "installed pack {name:?} FAILED its hash-pin check — the manifest changed after install; remove and reinstall it"
         )));
     }
-    let manifest: ConnectorManifest = serde_json::from_slice(&raw).map_err(|e| {
-        PhantomError::ConfigParseError(format!("installed manifest is corrupt: {e}"))
-    })?;
-    validate_manifest(&manifest)?;
-    Ok(manifest)
+    let signature = read_pack_file(&dir.join("connector.sig"), 256)?;
+    let snapshot = verify_pack_bytes(raw, signature)?;
+    if snapshot.manifest.name != installed.name || snapshot.manifest.version != installed.version {
+        return Err(PhantomError::ConfigParseError(
+            "signed manifest does not match indexed pack identity".to_string(),
+        ));
+    }
+    Ok(snapshot)
 }
 
 // ── Pack validators (wired into `phantom validate`) ──────────────────────────
@@ -700,11 +928,17 @@ pub fn load_pack_manifest(name: &str) -> Result<ConnectorManifest, PhantomError>
 pub struct PackValidator {
     pack_name: String,
     spec: HttpValidatorSpec,
+    expected: Option<PackValidationPlan>,
 }
 
 impl PackValidator {
+    #[cfg(test)]
     fn new(pack_name: String, spec: HttpValidatorSpec) -> Self {
-        Self { pack_name, spec }
+        Self {
+            pack_name,
+            spec,
+            expected: None,
+        }
     }
 
     /// Validator display name: `<pack>/<validator>`.
@@ -735,12 +969,20 @@ impl SecretValidator for PackValidator {
         if !self.matches(key) {
             return ValidationResult::NotApplicable;
         }
+        if let Some(expected) = &self.expected {
+            let current = pack_validation_plan();
+            if !current.as_ref().is_ok_and(|plans| plans.contains(expected)) {
+                return ValidationResult::Unreachable {
+                    reason: "connector trust or destination changed; reauthorize".into(),
+                };
+            }
+        }
         let client = match crate::provider_http::blocking_client(timeout) {
             Ok(c) => c,
             Err(e) => {
                 return ValidationResult::Unreachable {
                     reason: format!("pack {}/{}: {e}", self.pack_name, self.spec.name),
-                }
+                };
             }
         };
         let mut req = match self.spec.method {
@@ -765,7 +1007,7 @@ impl SecretValidator for PackValidator {
                         self.spec.name,
                         sanitize_reqwest_error(&e)
                     ),
-                }
+                };
             }
         };
         let status = response.status().as_u16();
@@ -802,29 +1044,60 @@ fn sanitize_reqwest_error(e: &reqwest::Error) -> String {
 
 /// Build one boxed validator per `validate` spec in every installed pack.
 /// Pack validators are appended after the built-in ones by `phantom validate`.
-pub fn pack_validators() -> Vec<Box<dyn SecretValidator>> {
-    let mut out: Vec<Box<dyn SecretValidator>> = Vec::new();
-    let packs = match list_packs() {
-        Ok(p) => p,
-        Err(_) => return out,
-    };
-    for installed in packs {
-        let manifest = match load_pack_manifest(&installed.name) {
-            Ok(m) => m,
-            Err(_) => continue, // fail-closed per pack: skip, never half-load
-        };
-        for cap in &manifest.capabilities {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PackValidationPlan {
+    pub pack: String,
+    pub signer: String,
+    pub sha256_pin: String,
+    pub validator: HttpValidatorSpec,
+}
+
+/// Freeze every installed validator's destination and signed provenance before
+/// consent. Corrupt or revoked packs are errors, never silently omitted.
+pub fn pack_validation_plan() -> Result<Vec<PackValidationPlan>, PhantomError> {
+    let mut out = Vec::new();
+    for installed in list_packs()? {
+        let snapshot = load_verified_pack(&installed.name)?;
+        for cap in &snapshot.manifest.capabilities {
             if let Capability::Validate { validators } = cap {
                 for spec in validators {
-                    out.push(Box::new(PackValidator::new(
-                        installed.name.clone(),
-                        spec.clone(),
-                    )));
+                    out.push(PackValidationPlan {
+                        pack: installed.name.clone(),
+                        signer: snapshot.signer.clone(),
+                        sha256_pin: snapshot.sha256_pin(),
+                        validator: spec.clone(),
+                    });
                 }
             }
         }
     }
-    out
+    Ok(out)
+}
+
+pub fn verify_validation_plan(expected: &[PackValidationPlan]) -> Result<(), PhantomError> {
+    if pack_validation_plan()? != expected {
+        return Err(PhantomError::ConfigParseError(
+            "connector validation plan changed; reauthorize before credential access".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn validators_for_plan(plans: &[PackValidationPlan]) -> Vec<Box<dyn SecretValidator>> {
+    plans
+        .iter()
+        .map(|p| {
+            Box::new(PackValidator {
+                pack_name: p.pack.clone(),
+                spec: p.validator.clone(),
+                expected: Some(p.clone()),
+            }) as Box<dyn SecretValidator>
+        })
+        .collect()
+}
+
+pub fn pack_validators() -> Result<Vec<Box<dyn SecretValidator>>, PhantomError> {
+    Ok(validators_for_plan(&pack_validation_plan()?))
 }
 
 // ── Import sources ───────────────────────────────────────────────────────────
@@ -871,29 +1144,15 @@ pub fn parse_import_source(
     let mut map = BTreeMap::new();
     match spec.format {
         ImportFormat::Dotenv => {
-            for (lineno, line) in text.lines().enumerate() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
+            let document = crate::dotenv::DotenvFile::parse_str(text);
+            document.validate_for_mutation()?;
+            for entry in document.entries() {
+                if !valid_secret_name(&entry.key) {
+                    return Err(PhantomError::ConfigParseError(
+                        "invalid connector import secret name".into(),
+                    ));
                 }
-                // Strip optional `export ` prefix.
-                let line = line.strip_prefix("export ").unwrap_or(line);
-                let (k, v) = line.split_once('=').ok_or_else(|| {
-                    PhantomError::ConfigParseError(format!(
-                        "import source {:?}: line {} is not KEY=value",
-                        spec.name,
-                        lineno + 1
-                    ))
-                })?;
-                let key = k.trim();
-                if !valid_secret_name(key) {
-                    return Err(PhantomError::ConfigParseError(format!(
-                        "import source {:?}: invalid secret name {key:?} on line {}",
-                        spec.name,
-                        lineno + 1
-                    )));
-                }
-                map.insert(key.to_string(), unquote(v.trim()));
+                map.insert(entry.key.clone(), entry.value.clone());
             }
         }
         ImportFormat::JsonMap => {
@@ -939,18 +1198,6 @@ pub fn parse_import_source(
     Ok(map)
 }
 
-fn unquote(s: &str) -> String {
-    // Strip a trailing inline comment first so it cannot break quote pairing.
-    let s = s.split(" #").next().unwrap_or(s).trim();
-    if s.len() >= 2
-        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
-    {
-        s[1..s.len() - 1].to_string()
-    } else {
-        s.to_string()
-    }
-}
-
 // ── Sync targets ─────────────────────────────────────────────────────────────
 
 /// Find an installed pack's sync target by name.
@@ -979,17 +1226,43 @@ pub struct SyncPushReport {
     pub skipped_empty: usize,
 }
 
+#[derive(Serialize)]
+#[serde(transparent)]
+struct SyncBody(BTreeMap<String, String>);
+
+impl Drop for SyncBody {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        for value in self.0.values_mut() {
+            value.zeroize();
+        }
+    }
+}
+
 /// Push secrets to a pack's sync target.
 ///
 /// `credential` is the target's API credential (from the vault, via
 /// `credential_name`); `secrets` are the vault secrets to push. Values are
 /// zeroized after use and never logged.
 pub fn push_sync_target(
-    pack_name: &str,
+    approved: &VerifiedPack,
     spec: &SyncTargetSpec,
     credential: &Zeroizing<String>,
     secrets: &[(String, Zeroizing<String>)],
 ) -> Result<SyncPushReport, PhantomError> {
+    let pack_name = approved.manifest().name.as_str();
+    let current = load_verified_pack(pack_name)?;
+    if current.sha256_pin() != approved.sha256_pin()
+        || current.signer() != approved.signer()
+        || !approved.manifest().capabilities.iter().any(|cap| {
+            matches!(cap,
+            Capability::SyncTarget { targets } if targets.contains(spec))
+        })
+    {
+        return Err(PhantomError::ConfigParseError(
+            "connector trust or approved sync destination changed; reauthorize".into(),
+        ));
+    }
     if secrets.len() > MAX_SYNC_SECRETS {
         return Err(PhantomError::ConfigParseError(format!(
             "sync target {:?}: refusing to push {} secrets (limit {})",
@@ -1001,20 +1274,20 @@ pub fn push_sync_target(
     let timeout = Duration::from_secs(30);
     let client =
         crate::provider_http::blocking_client(timeout).map_err(PhantomError::ConfigParseError)?;
-    let mut body = BTreeMap::new();
+    let mut body = SyncBody(BTreeMap::new());
     let mut skipped_empty = 0;
     for (name, value) in secrets {
         if value.as_str().is_empty() {
             skipped_empty += 1;
             continue;
         }
-        body.insert(name.clone(), value.as_str().to_string());
+        body.0.insert(name.clone(), value.as_str().to_string());
     }
-    let auth_value = if spec.auth_scheme.trim().is_empty() {
+    let auth_value = Zeroizing::new(if spec.auth_scheme.trim().is_empty() {
         credential.as_str().to_string()
     } else {
         format!("{} {}", spec.auth_scheme.trim(), credential.as_str())
-    };
+    });
     let mut req = match spec.method {
         HttpMethod::Post => client.post(&spec.url),
         HttpMethod::Put => client.put(&spec.url),
@@ -1022,10 +1295,10 @@ pub fn push_sync_target(
             return Err(PhantomError::ConfigParseError(format!(
                 "sync target {:?}: unsupported method for sync",
                 spec.name
-            )))
+            )));
         }
     };
-    req = req.header(spec.auth_header.as_str(), auth_value);
+    req = req.header(spec.auth_header.as_str(), auth_value.as_str());
     let response = req.json(&body).send().map_err(|e| {
         PhantomError::ConfigParseError(format!(
             "sync target {:?}: push failed: {}",
@@ -1044,7 +1317,7 @@ pub fn push_sync_target(
     Ok(SyncPushReport {
         pack: pack_name.to_string(),
         target: spec.name.clone(),
-        pushed: body.len(),
+        pushed: body.0.len(),
         skipped_empty,
     })
 }
@@ -1194,7 +1467,7 @@ mod tests {
         assert_eq!(key_id.len(), 8);
         let sig = Signature::try_from(hex::decode(sig_hex).unwrap().as_slice()).unwrap();
         key.verifying_key()
-            .verify(&canonical_manifest_bytes(&manifest).unwrap(), &sig)
+            .verify_strict(&canonical_manifest_bytes(&manifest).unwrap(), &sig)
             .expect("verify");
     }
 
@@ -1207,10 +1480,11 @@ mod tests {
         let sig = Signature::try_from(hex::decode(sig_hex).unwrap().as_slice()).unwrap();
         let mut tampered = manifest.clone();
         tampered.description = "evil".to_string();
-        assert!(key
-            .verifying_key()
-            .verify(&canonical_manifest_bytes(&tampered).unwrap(), &sig)
-            .is_err());
+        assert!(
+            key.verifying_key()
+                .verify_strict(&canonical_manifest_bytes(&tampered).unwrap(), &sig)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1236,6 +1510,22 @@ mod tests {
         };
         assert!(parse_import_source(&spec, b"lowercase=x\n").is_err());
         assert!(parse_import_source(&spec, b"NOEQUALS\n").is_err());
+    }
+
+    #[test]
+    fn dotenv_import_preserves_quoted_hash_and_escapes_and_rejects_ambiguity() {
+        let spec = ImportSourceSpec {
+            name: "fixture".into(),
+            format: ImportFormat::Dotenv,
+            pointer: String::new(),
+        };
+        let raw = b"KEY=\"abc #def\" # comment\nOTHER='keep # this'\nESCAPED=\"quote\\\"value\"\n";
+        let map = parse_import_source(&spec, raw).unwrap();
+        assert_eq!(map["KEY"], "abc #def");
+        assert_eq!(map["OTHER"], "keep # this");
+        assert_eq!(map["ESCAPED"], "quote\"value");
+        assert!(parse_import_source(&spec, b"KEY=first\nKEY=second\n").is_err());
+        assert!(parse_import_source(&spec, b"KEY=\"unterminated\n").is_err());
     }
 
     #[test]
@@ -1431,6 +1721,292 @@ mod tests {
     }
 
     #[test]
+    fn removed_anchor_revokes_installed_capabilities() {
+        let _home = TempHome::new();
+        let key = test_keypair();
+        let id = add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        install_pack(source.path()).unwrap();
+        remove_anchor(&id).unwrap();
+        assert!(load_pack_manifest("acme").is_err());
+        assert!(find_sync_target("acme-deploy").is_err());
+        assert!(find_import_source("acme-export").is_err());
+        assert!(pack_validators().is_err());
+    }
+
+    #[test]
+    fn changed_manifest_and_mutable_pin_still_require_signature() {
+        let _home = TempHome::new();
+        let key = test_keypair();
+        add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        install_pack(source.path()).unwrap();
+        let path = packs_dir().unwrap().join("acme/1.2.3/connector.json");
+        let mut manifest = sample_manifest();
+        manifest.description = "unsigned replacement".into();
+        let raw = serde_json::to_vec(&manifest).unwrap();
+        std::fs::write(path, &raw).unwrap();
+        let mut index = read_index().unwrap();
+        index.packs.get_mut("acme").unwrap().sha256_pin = hex::encode(Sha256::digest(raw));
+        write_index(&index).unwrap();
+        assert!(
+            load_pack_manifest("acme")
+                .unwrap_err()
+                .to_string()
+                .contains("signature")
+        );
+    }
+
+    #[test]
+    fn changed_signature_is_rejected_with_unchanged_manifest_pin() {
+        let _home = TempHome::new();
+        let key = test_keypair();
+        add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        install_pack(source.path()).unwrap();
+        std::fs::write(packs_dir().unwrap().join("acme/1.2.3/connector.sig"), "bad").unwrap();
+        assert!(load_pack_manifest("acme").is_err());
+    }
+
+    #[test]
+    fn frozen_validator_plan_rejects_signed_destination_drift_before_transport() {
+        let _home = TempHome::new();
+        let key = test_keypair();
+        add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        install_pack(source.path()).unwrap();
+        let plan = pack_validation_plan().unwrap();
+        verify_validation_plan(&plan).unwrap();
+        let validators = validators_for_plan(&plan);
+        let mut changed = sample_manifest();
+        if let Capability::Validate { validators } = &mut changed.capabilities[0] {
+            validators[0].url = "https://api.acme.test/different-path?changed=1".into();
+        }
+        std::fs::write(
+            source.path().join("connector.json"),
+            serde_json::to_vec(&changed).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            source.path().join("connector.sig"),
+            sign_manifest(&changed, &key).unwrap(),
+        )
+        .unwrap();
+        install_pack(source.path()).unwrap();
+        assert!(verify_validation_plan(&plan).is_err());
+        let result = validators[0].validate(
+            "ACME_API_KEY",
+            &Zeroizing::new("synthetic".into()),
+            Duration::from_secs(1),
+        );
+        assert!(
+            matches!(result, ValidationResult::Unreachable { reason } if reason.contains("changed"))
+        );
+    }
+
+    #[test]
+    fn revoked_sync_snapshot_fails_before_any_credential_transport() {
+        let _home = TempHome::new();
+        let key = test_keypair();
+        let id = add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        install_pack(source.path()).unwrap();
+        let snapshot = load_verified_pack("acme").unwrap();
+        let Capability::SyncTarget { targets } = &snapshot.manifest().capabilities[1] else {
+            panic!("fixture");
+        };
+        remove_anchor(&id).unwrap();
+        assert!(
+            push_sync_target(
+                &snapshot,
+                &targets[0],
+                &Zeroizing::new("synthetic".into()),
+                &[]
+            )
+            .is_err()
+        );
+        assert!(install_verified_pack(snapshot).is_err());
+    }
+
+    #[test]
+    fn installation_uses_verified_snapshot_after_source_replacement() {
+        let _home = TempHome::new();
+        let key = test_keypair();
+        add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        let snapshot = verify_pack_snapshot(source.path()).unwrap();
+        let original = snapshot.raw.clone();
+        let pin = snapshot.sha256_pin();
+        std::fs::write(source.path().join("connector.json"), b"replacement").unwrap();
+        std::fs::write(source.path().join("connector.sig"), b"replacement").unwrap();
+        let installed = install_verified_pack(snapshot).unwrap();
+        assert_eq!(installed.sha256_pin, pin);
+        assert_eq!(
+            std::fs::read(packs_dir().unwrap().join("acme/1.2.3/connector.json")).unwrap(),
+            original
+        );
+        assert_eq!(load_pack_manifest("acme").unwrap(), sample_manifest());
+    }
+
+    #[test]
+    fn unsafe_versions_and_index_paths_fail_before_store_access() {
+        let _home = TempHome::new();
+        let key = test_keypair();
+        add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        for version in [".", "..", "../escape", "C:foo", "version:stream", "1 2"] {
+            let mut manifest = sample_manifest();
+            manifest.version = version.into();
+            assert!(sign_manifest(&manifest, &key).is_err());
+        }
+        assert!(!packs_dir().unwrap().exists());
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        install_pack(source.path()).unwrap();
+        let mut index = read_index().unwrap();
+        index.packs.get_mut("acme").unwrap().version = "..".into();
+        write_index(&index).unwrap();
+        assert!(
+            load_pack_manifest("acme")
+                .unwrap_err()
+                .to_string()
+                .contains("indexed pack identity")
+        );
+        assert!(remove_anchor("../../escape").is_err());
+    }
+
+    #[test]
+    fn stale_registry_snapshot_cannot_overwrite_concurrent_install() {
+        let _home = TempHome::new();
+        let (stale, target, before) = index_for_mutation().unwrap();
+        let key = test_keypair();
+        add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        install_pack(source.path()).unwrap();
+        let committed = std::fs::read(installed_index_path().unwrap()).unwrap();
+        assert!(write_index_snapshot(&stale, &target, before.as_ref()).is_err());
+        assert_eq!(
+            std::fs::read(installed_index_path().unwrap()).unwrap(),
+            committed
+        );
+        assert_eq!(load_pack_manifest("acme").unwrap().name, "acme");
+    }
+
+    #[test]
+    fn weak_public_keys_are_rejected_when_added_and_loaded() {
+        let _home = TempHome::new();
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let key = VerifyingKey::from_bytes(&identity).unwrap();
+        assert!(key.is_weak());
+        assert!(add_anchor(&hex::encode(identity)).is_err());
+        assert!(!anchors_dir().unwrap().exists());
+        let path = anchors_dir()
+            .unwrap()
+            .join(format!("{}.pub", key_id_for_pubkey(&key)));
+        write_pack_file(&path, hex::encode(identity).as_bytes()).unwrap();
+        assert!(
+            load_anchors()
+                .unwrap_err()
+                .to_string()
+                .contains("weak stored")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_symlinks_never_redirect_anchor_or_pack_writes() {
+        use std::os::unix::fs::symlink;
+        let _home = TempHome::new();
+        let key = test_keypair();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("sentinel"), b"unchanged").unwrap();
+        let root = connectors_dir().unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        symlink(outside.path(), anchors_dir().unwrap()).unwrap();
+        assert!(add_anchor(&hex::encode(key.verifying_key().as_bytes())).is_err());
+        assert!(list_anchors().is_err());
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 1);
+        std::fs::remove_file(anchors_dir().unwrap()).unwrap();
+        add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        std::fs::create_dir_all(packs_dir().unwrap()).unwrap();
+        symlink(outside.path(), packs_dir().unwrap().join("acme")).unwrap();
+        assert!(install_pack(source.path()).is_err());
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 1);
+        assert!(!installed_index_path().unwrap().exists());
+        assert_eq!(
+            std::fs::read(outside.path().join("sentinel")).unwrap(),
+            b"unchanged"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_removal_refuses_symlinked_parent_and_retains_registry() {
+        use std::os::unix::fs::symlink;
+        let _home = TempHome::new();
+        let key = test_keypair();
+        add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        install_pack(source.path()).unwrap();
+        let original_index = std::fs::read(installed_index_path().unwrap()).unwrap();
+        let original_packs = packs_dir().unwrap().with_file_name("original-packs");
+        std::fs::rename(packs_dir().unwrap(), &original_packs).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(outside.path().join("acme")).unwrap();
+        std::fs::write(outside.path().join("acme/sentinel"), b"unchanged").unwrap();
+        symlink(outside.path(), packs_dir().unwrap()).unwrap();
+        assert!(remove_pack("acme").is_err());
+        assert_eq!(
+            std::fs::read(installed_index_path().unwrap()).unwrap(),
+            original_index
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("acme/sentinel")).unwrap(),
+            b"unchanged"
+        );
+        std::fs::remove_file(packs_dir().unwrap()).unwrap();
+        std::fs::rename(original_packs, packs_dir().unwrap()).unwrap();
+        remove_pack("acme").unwrap();
+        assert!(list_packs().unwrap().is_empty());
+        assert!(load_pack_manifest("acme").is_err());
+        assert!(
+            packs_dir()
+                .unwrap()
+                .join("acme/1.2.3/connector.json")
+                .is_file()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_index_is_rejected_before_install_writes() {
+        use std::os::unix::fs::symlink;
+        let _home = TempHome::new();
+        let key = test_keypair();
+        add_anchor(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("index.json");
+        std::fs::write(&victim, b"{}").unwrap();
+        symlink(&victim, installed_index_path().unwrap()).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_signed_pack(source.path(), &key, "acme");
+        assert!(install_pack(source.path()).is_err());
+        assert!(list_packs().is_err());
+        assert!(!packs_dir().unwrap().exists());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"{}");
+    }
+
+    #[test]
     fn find_capabilities_across_packs() {
         let _home = TempHome::new();
         let key = test_keypair();
@@ -1454,7 +2030,7 @@ mod tests {
         assert!(find_import_source("nope").expect("lookup").is_none());
 
         // Pack validators surface for the validate pipeline.
-        let validators = pack_validators();
+        let validators = pack_validators().unwrap();
         assert_eq!(validators.len(), 1);
         assert!(validators[0].matches("ACME_API_KEY"));
     }
