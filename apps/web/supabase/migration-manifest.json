@@ -45,6 +45,10 @@
     {
       "file": "20260902000000_harden_rls_and_function_paths.sql",
       "sha256": "23f766bcb2b50b24f39b69f214c1e447ddb46c1531406eb64406fa2602b49cc0"
+    },
+    {
+      "file": "20261009225441_enforce_personal_vault_quota.sql",
+      "sha256": "bd1ab6cda019fbcdd29d6b7464bbebcb2dafaa3ceefbc8925b45096c7399e104"
     }
   ]
 }
