@@ -14,8 +14,11 @@ local MCP server, and versioned JSON contracts.
   loopback-only proxy (127.0.0.1, ephemeral port, session-scoped bearer).
   Outbound app requests route through it; the proxy injects the matched
   route's vault value into the fixed auth header only. Client headers and
-  bodies never resolve placeholders.
-- **Value-blind MCP tools** (`phantom-mcp`, 54 tools): inventory, status,
+  bodies never resolve placeholders. Only supported, configured provider
+  routes are eligible; this is not an arbitrary authenticated forwarding proxy.
+- **Value-blind MCP tools** (bundled `phantom mcp`, with a verified local
+  standalone `phantom-mcp` fallback): the released 0.7.9 catalog has 54 tools
+  for inventory, status,
   diagnostics, audit, rotation, and governed requests over secret *names* —
   never values.
 - **Machine status contract**: `phantom status --json` (schema v1,
@@ -34,18 +37,24 @@ local MCP server, and versioned JSON contracts.
    installs a pre-commit check. No plaintext project-local backup is kept —
    recovery is from the provider console or password manager.
 2. **Human**: `phantom setup --client <claude|cursor|windsurf|codex>` writes
-   the MCP client config pointing at the local `phantom-mcp` binary.
-   `phantom agent setup --dry-run` previews readiness without changing anything.
+   the MCP client config pointing at the bundled `phantom mcp` entrypoint.
+   A verified local standalone fallback is supported; setup never bootstraps a
+   registry package or downloads a runtime.
+   `phantom agent setup --dry-run` previews setup actions, but its existing
+   readiness probes can reconcile legacy vault storage. Use metadata-only
+   `phantom status --json` for unattended configuration observation.
 3. **Human or orchestrator**: `phantom exec -- <agent-command>` opens a
    session — fresh ephemeral child placeholders plus a separate proxy bearer.
-   The agent's tool calls and the app's API traffic flow through the proxy.
+   Supported app API traffic uses the proxy. MCP remains a local stdio
+   connection; its presence does not activate provider access.
 4. **Agent, value-blind**: the agent sees secret names via MCP
    (`phantom_list_secrets`, `phantom_status`, `phantom_doctor`, `phantom_why`,
    `phantom_check`). Every state-changing or credential-using tool is disabled
    by default and only reachable via `PHANTOM_MCP_EFFECTS=trusted-terminal` +
    `confirm: true` + a one-use `approval_token` minted by `phantom mcp-approve`
    (typed challenge, attached trusted terminal, outside agent authority).
-5. **Rotation / revocation**: `phantom rotate` regenerates every `phm_` mapping
+5. **Local placeholder rotation / revocation**: `phantom rotate` regenerates
+   every `phm_` mapping
    (old ones become invalid); `phantom remove` deletes a vault entry and its
    mapping; expiry policies demote expired entries to read-only.
 
@@ -91,6 +100,10 @@ local proxy 127.0.0.1:<ephemeral>
 7. **Locus.** The contract crate is inactive by design. Any future activation
    needs both sides to reproduce the contract fixture *and* an explicit,
    separately approved activation design — not a silent upgrade.
+
+Live provider issuance, enrollment exchange, credential rotation, and remote
+revocation remain denied before credential or network access. The source and
+MCP catalog do not establish hosted-service commissioning or account access.
 
 ## Opting out
 
