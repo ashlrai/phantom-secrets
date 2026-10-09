@@ -122,6 +122,47 @@ the [copyable policy and task templates](examples/agent-delegation/README.md).
 Teams evaluating a controlled rollout can start with the
 [enterprise adoption guide](docs/enterprise-adoption.md).
 
+### Ten-minute adoption story
+
+New to Phantom? One command walks you through everything — it never mutates
+anything until you confirm each phase:
+
+```bash
+$ phantom onboard --plan     # read-only: see exactly what would happen
+$ phantom onboard            # guided: detect → protect → connect → verify
+```
+
+What each phase does:
+
+1. **Detect** — finds your dotenv files, checks for `.phantom.toml`, and sees
+   which AI clients already have Phantom's MCP server configured. Safe to run
+   anywhere, including inside an agent session.
+2. **Protect** — moves real values into the encrypted vault and rewrites your
+   dotenv files with `phm_` placeholders. Requires a trusted terminal, because
+   real secret values are in play.
+3. **Connect** — writes the MCP client config for Claude Code, Cursor,
+   Windsurf, or Codex (whichever you pick), then applies safe defaults for
+   AI-agent use. Also trusted-terminal only.
+4. **Verify** — runs `phantom doctor`, `phantom check`, and the agent
+   readiness report. "Done" means all three are clean. Rerunning `onboard`
+   resumes from detection, so an interrupted run is never half-applied.
+
+Need a provider Phantom doesn't ship a validator, sync target, or importer
+for? A **connector pack** adds one without changing CLI source — as a signed,
+declarative manifest (no third-party code in the credential path):
+
+```bash
+$ phantom connector anchor add --key <hex-pubkey>   # trust the pack author (once)
+$ phantom connector add ./stripe-pack               # verify signature + install
+$ phantom validate --check-all                     # pack validators join the run
+$ phantom sync --platform stripe-target --dry-run  # pack sync targets work too
+```
+
+Authoring your own pack is two commands: `phantom connector pack init
+--name my-pack` scaffolds the manifest, and `phantom connector pack sign`
+signs it with your Ed25519 key. See [INTEGRATION.md](INTEGRATION.md) for the
+trust model.
+
 ### Windows
 
 The same core command surface is implemented for native Windows, with remaining
@@ -397,6 +438,10 @@ dashboard is designed to show team memberships and member lists.
 | `phantom agent report` | Emit a read-only AI-agent readiness report (`--json` for automation). Reports `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready` |
 | `phantom agent doctor` | Human-readable agent readiness view backed by the same policy engine |
 | `phantom agent setup` | Preview or apply safe defaults for agent use (`--dry-run` first, `--apply` to write changes) |
+| `phantom onboard` | Guided first-run setup in one flow: **detect** (read-only scan of dotenv files, `.phantom.toml`, MCP client configs), **protect** (runs `init` on a trusted terminal), **connect** (writes MCP client configs + agent defaults), **verify** (`doctor`, `check`, agent report must all be clean). `--plan` previews without mutating; `--json` emits a machine-readable receipt for the Phantom workbench. |
+| `phantom connector add <dir>` / `list` / `remove` / `inspect` | Install and manage signed provider connector packs (trusted terminal required for add/remove). Packs are declarative signed manifests — no third-party code runs in the credential path. Capabilities: `validate` (extra live validators in `phantom validate`), `sync-target` (`phantom sync --platform <name>`), `import-source` (`phantom import --from <name>`). |
+| `phantom connector anchor add --key <hex>` / `list` / `remove` | Manage Ed25519 trust anchors that vouch for pack signatures (trust-on-first-use). |
+| `phantom connector pack init --name <n>` / `sign` | Scaffold a new pack manifest and sign it (key from `PHANTOM_CONNECTOR_SIGNING_KEY` or a 0600 `--key-file`). |
 | `phantom workspace plan [--json]` | Build an exact sealed setup plan and create a value-free pending request; does not change the workspace or vault |
 | `phantom workspace apply --request <ID>` | Recompute and claim the exact request in an attached trusted terminal, require typed confirmation, then apply transactionally with rollback on failure |
 | `phantom workspace status --request <ID> [--json]` | Read authenticated, value-free request state |
