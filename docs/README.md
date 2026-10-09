@@ -30,6 +30,7 @@ certification, or customer acceptance.
 | Diagnose an install, vault, proxy, or cloud problem | [Troubleshooting](troubleshooting.md) |
 | Understand the provider-grant design and 0.7.9 universal hard denial | [Provider grants](grants-spec.md) |
 | Understand components, trust boundaries, and activation status | [Architecture](architecture.md) |
+| Plug this repo into the Phantom workbench/orchestrator (delegation model, trust boundaries) | [Integration](../INTEGRATION.md) |
 | Review the Rama-derived network engineering standard and adoption gates | [Rama design standard](rama-design-standard.md) |
 | Understand supported operating systems, architectures, and current validation | [Platform support](platform-support.md) |
 | Prepare or audit a release candidate | [Release and readiness](release-readiness.md) |
