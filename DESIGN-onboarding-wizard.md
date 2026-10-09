@@ -1,6 +1,8 @@
-# DESIGN: Unified onboarding wizard — proposal (not implemented)
+# DESIGN: Unified onboarding wizard — IMPLEMENTED
 
-Status: proposal for Mason's input. Nothing below is built.
+Status: implemented as `phantom onboard` (thin sequencer over the existing
+commands). The design below was the proposal; the implementation notes at the
+end record the decisions taken.
 
 ## Problem
 
@@ -47,3 +49,29 @@ workbench can render progress without parsing prose.
 - Should `phantom agent setup` and `phantom workspace` be refactored onto the
   wizard's phase engine, or left as-is with the wizard as a thin sequencer?
 - What is the "done" definition — `doctor` clean, or a stricter checklist?
+
+## Implementation notes (`phantom onboard`, phase 2)
+
+Decisions taken (defaults; reversible):
+
+- **CLI-first.** The wizard lives in the CLI; the workbench drives it through
+  `--json` receipts. This keeps one implementation and lets headless
+  workbench flows use `--plan` + receipt parsing.
+- **Thin sequencer.** `phantom agent setup --apply` runs as a prompted step
+  inside the Connect phase; `phantom workspace` is left as-is (its
+  trusted-terminal transaction ceremony is deliberately separate). No phase
+  engine refactor.
+- **Done = `doctor` + `check` + `agent report` all clean.** Stricter than
+  doctor-only, still fully local.
+- **Verify steps run as `phantom` subprocesses** of the current executable so
+  their prose can be captured into the JSON receipt instead of interleaved
+  with it. Protect/Connect run in-process because they need the terminal.
+- **Session-lifecycle default:** `phantom exec` sessions stay user-owned —
+  the wizard never starts long-lived processes; it only verifies with
+  read-only commands. (Answers the INTEGRATION.md open question: the
+  *user* owns `phantom exec` lifecycle, not the workbench.)
+
+Remaining for Mason: whether the workbench should auto-detect per-project
+protection status in its UI (the `--json` receipt + `phantom status --json`
+give it everything it needs either way), and whether the workbench needs an
+approval bridge routing MCP nonces to the human's terminal.

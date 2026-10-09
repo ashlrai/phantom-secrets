@@ -6,6 +6,7 @@ pub mod auth;
 pub mod cloud;
 mod cloud_http;
 pub mod config;
+pub mod connector;
 pub mod dotenv;
 pub mod env_scope;
 pub mod error;
