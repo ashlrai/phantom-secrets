@@ -284,7 +284,7 @@ fn resolve_signing_key(key_file: Option<&Path>) -> Result<connector::ConnectorSi
         }
         let raw = zeroize::Zeroizing::new(raw);
         let hex_key = std::str::from_utf8(&raw).context("key file is not UTF-8")?;
-        return connector::signing_key_from_hex(&hex_key)
+        return connector::signing_key_from_hex(hex_key)
             .map_err(|e| anyhow::anyhow!("key file: {e}"));
     }
     let hex_key =
