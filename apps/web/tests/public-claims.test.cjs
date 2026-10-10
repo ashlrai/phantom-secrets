@@ -687,8 +687,8 @@ test("personal backup copy follows server admission and explains recovery limits
   }
 
   assert.match(dashboardLayout, /"unavailable"/);
-  assert.match(dashboardLayout, /Sign-in unavailable/);
-  assert.match(dashboardLayout, /browser-auth configuration/);
+  assert.match(dashboardLayout, /We could not complete GitHub sign-in/);
+  assert.match(dashboardLayout, /Try GitHub sign-in again/);
   assert.match(dashboardLayout, /Team\s+sharing and paid plans are not available/);
   const overview = read("src/app/dashboard/overview-client.tsx");
   const detail = read("src/app/dashboard/projects/[id]/project-client.tsx");

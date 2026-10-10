@@ -16,10 +16,26 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true;
+    const params = new URLSearchParams(window.location.search);
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    const callbackError = [params, fragment].some((values) =>
+      ["error", "error_code", "error_description"].some((key) => values.has(key))
+    );
+    // Also recognize callbacks started before the explicit return marker was added.
+    const isOAuthReturn = params.get("oauth") === "1" || callbackError ||
+      params.has("code") || fragment.has("access_token") || fragment.has("refresh_token");
 
     const loadSession = async () => {
       try {
         const supabase = getBrowserClient();
+        // getSession waits for initialization but discards its error, which can
+        // otherwise let a previous session hide a failed OAuth callback.
+        const { error: initializationError } = await supabase.auth.initialize();
+        if (!active) return;
+        if (initializationError || callbackError) {
+          setStatus("unavailable");
+          return;
+        }
         const { data: { session }, error } = await supabase.auth.getSession();
         if (!active) return;
         if (error) {
@@ -32,6 +48,12 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         }
       } catch {
         if (active) setStatus("unavailable");
+      } finally {
+        // Let the SDK ingest the callback first. Do not let a stale effect
+        // rewrite the URL after navigation or StrictMode cleanup.
+        if (active && isOAuthReturn) {
+          window.history.replaceState(null, "", window.location.pathname);
+        }
       }
     };
 
@@ -48,7 +70,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "github",
         options: {
-          redirectTo: `${window.location.origin}${window.location.pathname}`,
+          redirectTo: `${window.location.origin}${window.location.pathname}?oauth=1`,
         },
       });
       if (error) throw error;
@@ -105,15 +127,24 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         <Nav />
         <main className="mx-auto max-w-[640px] px-7 pb-20 pt-24 text-center">
           <p className="font-mono text-[0.72rem] uppercase tracking-[0.16em] text-blue-b">
-            Sign-in unavailable
+            Sign-in did not complete
           </p>
           <h1 className="mt-4 text-[1.8rem] font-extrabold leading-[1.1] tracking-[-0.035em] text-white sm:text-[2.2rem]">
-            Dashboard sign-in is unavailable.
+            Try signing in again.
           </h1>
-          <p className="mt-4 text-[0.95rem] leading-[1.65] text-t2">
-            This deployment has no usable browser-auth configuration. You can
-            still use Phantom&apos;s local CLI to protect your secrets.
+          <p role="alert" className="mt-4 text-[0.95rem] leading-[1.65] text-t2">
+            We could not complete GitHub sign-in. Please try again. Phantom
+            Secrets&apos; local CLI remains available.
           </p>
+          <button
+            type="button"
+            onClick={signIn}
+            disabled={signingIn}
+            className="mt-7 inline-flex min-h-11 items-center gap-2 rounded-lg bg-blue-action px-5 py-3 text-[0.92rem] font-semibold text-white transition-colors hover:bg-blue-action-d disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-blue-b"
+          >
+            <Github aria-hidden className="h-4 w-4" />
+            {signingIn ? "Redirecting to GitHub…" : "Try GitHub sign-in again"}
+          </button>
           <Link
             href="/"
             className="mt-7 inline-flex min-h-11 items-center justify-center rounded-lg border border-border-l px-5 py-3 text-[0.9rem] font-semibold text-t1 no-underline transition hover:border-t3"
