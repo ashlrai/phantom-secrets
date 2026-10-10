@@ -1116,6 +1116,27 @@ mod tests {
         ApprovalNonce::generate()
     }
 
+    fn tamper_approval_token(token: &str) -> String {
+        assert_eq!(token.len(), 64);
+        assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        // Replacing a suffix with "ff" can leave a random HMAC unchanged.
+        // Flip one hex digit instead, preserving the valid token shape.
+        let first = if token.starts_with('0') { '1' } else { '0' };
+        format!("{first}{}", &token[1..])
+    }
+
+    #[test]
+    fn tampered_token_fixture_always_changes_hex_tokens_ending_in_ff() {
+        for first in ['0', '1', 'f'] {
+            let token = format!("{first}{}ff", "a".repeat(61));
+            let tampered = tamper_approval_token(&token);
+            assert_ne!(tampered, token);
+            assert_eq!(tampered.len(), token.len());
+            assert_eq!(&tampered[1..], &token[1..]);
+            assert!(hex::decode(&tampered).is_ok());
+        }
+    }
+
     #[test]
     fn test_nonce_generation() {
         with_temp_home(|| {
@@ -1574,8 +1595,10 @@ mod tests {
 
             let outcome = approve_nonce(&nonce).unwrap();
 
-            // Tamper with the token.
-            let tampered = format!("{}ff", &outcome.approval_token[..62]);
+            let records_path = approvals_path().unwrap();
+            let approved_records = std::fs::read(&records_path).unwrap();
+            let tampered = tamper_approval_token(&outcome.approval_token);
+            assert_ne!(tampered, outcome.approval_token);
 
             let result = validate_and_consume_approval(
                 &nonce,
@@ -1590,6 +1613,16 @@ mod tests {
                 msg.contains("Invalid approval token"),
                 "expected invalid-token error, got: {msg}"
             );
+            assert_eq!(std::fs::read(&records_path).unwrap(), approved_records);
+            validate_and_consume_approval(
+                &nonce,
+                &outcome.approval_token,
+                "phantom_add_secret",
+                r#"{"name":"MYKEY","confirm":true}"#,
+                "proj-stale",
+            )
+            .unwrap();
+            assert!(load_all_records(&records_path).unwrap().is_empty());
         });
     }
 
