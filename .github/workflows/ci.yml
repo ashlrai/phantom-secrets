@@ -225,6 +225,9 @@ jobs:
     timeout-minutes: 35
     permissions:
       contents: read
+    env:
+      PHANTOM_CI_DB_PORT: 15432
+      PHANTOM_CI_SHADOW_DB_PORT: 15430
     defaults:
       run:
         working-directory: apps/web
@@ -274,6 +277,40 @@ jobs:
           version: 2.116.0
       - name: Confirm exact Supabase CLI version
         run: test "$(supabase --version)" = "2.116.0"
+      - name: Configure isolated CI database ports
+        # The local defaults (54322/54320) overlap Linux's ephemeral source-port
+        # range. Keep developer defaults intact and avoid that collision in CI.
+        run: |
+          python3 - <<'PYPORTS'
+          import os
+          from pathlib import Path
+          import tomllib
+
+          config = Path("supabase/config.toml")
+          source = config.read_text()
+          original = tomllib.loads(source)
+          expected = {"port": 54322, "shadow_port": 54320}
+          ports = {"port": int(os.environ["PHANTOM_CI_DB_PORT"]),
+                   "shadow_port": int(os.environ["PHANTOM_CI_SHADOW_DB_PORT"])}
+          low, high = map(int, Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split())
+          if len(set(ports.values())) != 2:
+              raise SystemExit("CI database and shadow database ports must differ")
+          for key, port in ports.items():
+              if not 1024 <= port <= 65535 or low <= port <= high:
+                  raise SystemExit(f"CI {key} must be outside the runner's ephemeral port range")
+              if original["db"][key] != expected[key]:
+                  raise SystemExit(f"Unexpected local database default for {key}")
+              before = f"{key} = {expected[key]}\n"
+              if source.count(before) != 1:
+                  raise SystemExit(f"Expected one unambiguous database {key} setting")
+              source = source.replace(before, f"{key} = {port}\n", 1)
+          updated = tomllib.loads(source)
+          original["db"].update(ports)
+          if updated != original:
+              raise SystemExit("CI port configuration changed unrelated database settings")
+          config.write_text(source)
+          print(f"CI database ports configured: {ports}")
+          PYPORTS
       - id: start_database
         name: Start isolated local database
         run: supabase db start
@@ -286,8 +323,10 @@ jobs:
           PGPASSWORD: postgres
         run: |
           psql --version
-          psql --host 127.0.0.1 --port 54322 --username postgres --dbname postgres \
+          psql --host 127.0.0.1 --port "$PHANTOM_CI_DB_PORT" --username postgres --dbname postgres \
             --file ../../scripts/supabase/assert-local-authority.sql
+      - name: Assert atomic personal vault quota, concurrency, and isolation
+        run: node ../../scripts/supabase/assert-personal-vault-authority.mjs
       - name: Lint local schema
         run: supabase db lint --local --level warning --fail-on warning
       - name: Run local security and performance advisors

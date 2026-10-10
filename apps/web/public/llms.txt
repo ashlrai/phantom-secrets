@@ -1,8 +1,26 @@
 # Phantom
 
-> Open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. Phantom replaces successfully managed dotenv values with non-provider `phm_` placeholders; an authenticated local proxy injects a matched route's vault value only into that route's fixed authentication header. It does not prevent exposure through unmanaged files, same-user processes, a stolen proxy bearer, or provider-generated content.
+> Phantom by AshlrAI is the engineering workbench for interactive agent sessions, autonomous fleet workflows and connected resources. The main landing page is https://phm.dev. Phantom Secrets has its own product page at https://phm.dev/secrets.
+
+## Phantom workbench
 
 - Site: https://phm.dev
+- GitHub: https://github.com/ashlrai/phantom
+- Package: https://www.npmjs.com/package/@ashlr/phantom
+- CLI: `phm`; the `ashlr` alias remains compatible.
+- Published release metadata and installation instructions: https://phm.dev
+- Full reference (for ingestion): https://phm.dev/llms-full.txt
+
+Your installed tools, account setup and permissions determine what can run.
+Workbench release facts and Secrets release facts are separate. Refer to the
+workbench landing page's verified release record for its current published
+version; the `v0.7.9` evidence below describes Phantom Secrets only.
+
+## Phantom Secrets
+
+Phantom Secrets is the open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces successfully managed dotenv values with non-provider `phm_` placeholders; an authenticated local proxy injects a matched route's vault value only into that route's fixed authentication header. It does not prevent exposure through unmanaged files, same-user processes, a stolen proxy bearer, or provider-generated content. The Secrets executable is `phantom`; the workbench executable is `phm`.
+
+- Site: https://phm.dev/secrets
 - GitHub: https://github.com/ashlrai/phantom-secrets
 - Full reference (for ingestion): https://phm.dev/llms-full.txt
 - Protect API keys from AI coding agents: https://phm.dev/docs/protect-api-keys-from-ai-coding-agents
@@ -13,12 +31,12 @@
 
 ## Install
 
-Release evidence verified on 2026-09-29. The immutable GitHub `v0.7.9` release at
+Release evidence verified on 2026-10-06. The immutable GitHub `v0.7.9` release at
 https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were published
 after all six native acceptance rows and release attestations passed in
 https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
-The separately managed Homebrew formula still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
+The separately managed Homebrew formula publishes reviewed `v0.7.9`.
 
 Homebrew (macOS, third-party tap):
 
@@ -31,11 +49,13 @@ brew install ashlrai/phantom/phantom
 For the current macOS, Linux, or Windows release, select the exact `v0.7.9`
 archive for your architecture from
 the release, download its adjacent `.sha256` sidecar, verify it, and place both
-release executables on PATH. In the exact 2026-09-29 registry snapshot, npm `latest` remains
-`0.6.0`; exact npm `0.7.4` wrappers exist only under the failed
-`release-candidate` track. No MCP Registry `0.7.9` record was found; crates.io
-remains on `0.5.1`. Unpinned npm, npx, and Cargo installs are not the reviewed
-`v0.7.9` GitHub release path.
+release executables on PATH. The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 ## Editor MCP setup
 

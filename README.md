@@ -1,10 +1,12 @@
 <div align="center">
 
-<img src="https://phm.dev/og-image.png" alt="Phantom — Delegate supported API work to AI" width="720" />
+<img src="https://phm.dev/og-image.png" alt="Phantom Secrets — Delegate supported API work to AI" width="720" />
 
-<h1>Phantom</h1>
+<h1>Phantom Secrets</h1>
 
 **Delegate more to AI without putting real keys in agent context.**
+
+Phantom Secrets is the local credential boundary in **Phantom by [AshlrAI](https://ashlr.ai)**. Explore the [engineering workbench](https://phm.dev) for interactive coding sessions and fleet workflows, or its [source repository](https://github.com/ashlrai/phantom). This repository contains the Secrets CLI, MCP server and credential service; its release versions and installation commands remain independent.
 
 Phantom replaces project secrets with scoped `phm_` placeholders. Applications use those placeholders through an authenticated local proxy, while agents use value-blind MCP tools for inventory, diagnostics, and governed requests.
 
@@ -21,7 +23,7 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 [**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex) ·
 [**Docs**](docs/README.md) ·
 [**Contribute**](CONTRIBUTING.md) ·
-[**phm.dev**](https://phm.dev)
+[**Phantom Secrets**](https://phm.dev/secrets)
 
 </div>
 
@@ -35,7 +37,7 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-macOS via Homebrew; installs `phantom` and `phantom-mcp` (reviewed `v0.7.8`). Linux and Windows:
+macOS via Homebrew; installs `phantom` and `phantom-mcp` (reviewed `v0.7.9`). Linux and Windows:
 use the matching [release asset](#exact-v079-github-assets). Then run
 `phantom init` in your project and `phantom setup --client claude` (or
 `cursor`, `windsurf`, `codex`). Full walkthrough: [Quick Start](#quick-start).
@@ -89,8 +91,7 @@ evidence behind those boundaries.
 ## Quick Start
 
 Install both binaries from the reviewed [`v0.7.9` GitHub release](#installation).
-On macOS, the Homebrew formula is the shortest path; it currently installs the
-previous reviewed `v0.7.8` binaries until the tap is bumped to `v0.7.9`:
+On macOS, the separately verified Homebrew formula installs `v0.7.9`:
 
 ```bash
 $ brew tap ashlrai/phantom
@@ -485,7 +486,7 @@ fails closed before vendor execution. No single-provider exception exists.
 
 ## Installation
 
-### Homebrew (macOS; formula currently at v0.7.8)
+### Homebrew (macOS; v0.7.9)
 
 Homebrew 6 requires explicit formula trust for third-party taps:
 
@@ -496,11 +497,7 @@ $ brew install ashlrai/phantom/phantom
 ```
 
 This formula installs both `phantom` and `phantom-mcp` from the immutable
-[`v0.7.8` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8).
-It has not yet been bumped to `v0.7.9`. Until it is, a Homebrew install writes
-Claude Code MCP registration to the legacy location; see the
-[Claude Code guide](docs/claude-code.md) for the manual `.mcp.json` step, or use
-the `v0.7.9` assets below.
+[`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
 
 ### Exact v0.7.9 GitHub assets
 
@@ -532,33 +529,31 @@ $ git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 $ cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-Do not treat unpinned package-manager commands as `v0.7.9`. In the exact
-2026-09-29 registry snapshot, npm `latest` remains `0.6.0`; the immutable npm `0.7.4` wrappers
-exist only under `release-candidate` after failing cross-platform acceptance.
-No npm `0.7.9`, crates.io `0.7.9`, or MCP Registry `0.7.9` publication is
-represented by this GitHub release receipt. Homebrew is separately published
-and verified through its tap, and currently remains at `v0.7.8`.
+Do not treat unpinned package-manager commands as an exact release receipt.
+The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry active at `0.7.9`.
+crates.io remains at `0.5.1`. Matching npm integrity and registry discovery do
+not prove six-host installation acceptance of the published wrappers.
+
 
 ### Release-state snapshot
 
 > [!IMPORTANT]
-> **Release-state snapshot (verified 2026-09-29):** the current release is the
+> **Release-state snapshot (verified 2026-10-06):** the current release is the
 > immutable `v0.7.9` GitHub release at source commit
 > `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19-asset release set,
 > checksums, archive-specific SPDX SBOMs, GitHub provenance and SBOM
 > attestations, and all six native release rows are bound to that immutable
 > release record by tag-bound workflow
 > [34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-> Exact public registry endpoints were requeried on 2026-09-29. The Homebrew
-> formula still installs the previous reviewed `v0.7.8` until its tap is bumped;
-> npm `latest` remains `0.6.0`, and the npm
-> `0.7.4` wrappers remain quarantined under `release-candidate` after failed
-> npm-channel acceptance. The GitHub receipt alone does not prove the separately
-> verified Homebrew formula, an npm or crates.io package, MCP Registry entry, hosted-service
-> commissioning, provider activation, signing/notarization, certification, or
-> customer acceptance. See
-> [release readiness](docs/release-readiness.md) and
-> [platform support](docs/platform-support.md).
+> The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+> packages at `0.7.9`, and the official MCP Registry entry
+> `io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+> at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+> six-host installation acceptance of the published wrappers. The native GitHub
+> release receipt does not prove hosted commissioning, provider activation,
+> certification or customer acceptance.
+> See [release readiness](docs/release-readiness.md) and [platform support](docs/platform-support.md).
 
 ### Connect an MCP client
 
@@ -621,14 +616,11 @@ standard](docs/rama-design-standard.md) for explicit network stacks, modular
 crates, runnable examples, and tiered platform CI. Rama is a benchmark, not a
 dependency, and the comparison is not a feature or platform-parity claim.
 
-**`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
+**`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from live deployment and authenticated acceptance of [Phantom Secrets](https://phm.dev/secrets).
 
-**Registry tracks**: npm `latest` currently resolves
-[`phantom-secrets`](https://www.npmjs.com/package/phantom-secrets) and
-[`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) at
-`0.6.0`. Exact `0.7.4` wrappers remain public only under `release-candidate`
-after failing native npm-channel acceptance; do not use that candidate as the
-reviewed `v0.7.9` GitHub release path.
+**Registry tracks (verified 2026-10-06)**: both npm `latest` packages and the
+active official MCP Registry entry publish `0.7.9`; published-wrapper native
+acceptance remains separate from these metadata and integrity receipts.
 
 CI runs locked, all-target workspace builds and tests on macOS, Linux, and Windows runner environments, plus formatting, Clippy, and npm release-mapping checks. Release builds and native end-to-end acceptance are separate evidence layers; see [Platform support](docs/platform-support.md).
 
@@ -660,7 +652,7 @@ written scope.
 
 ## Links
 
-- [phm.dev](https://phm.dev) -- Hosted site; deployment and authenticated acceptance remain separate from source
+- [Phantom Secrets](https://phm.dev/secrets) -- Product site; deployment and authenticated acceptance remain separate from source
 - [Documentation map](docs/README.md)
 - [Getting Started Guide](docs/getting-started.md)
 - [Safe delegation quickstart](docs/delegation-quickstart.md)

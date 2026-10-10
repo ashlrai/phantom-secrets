@@ -29,11 +29,11 @@ test("the committed migration set matches its ordered digest manifest", async ()
   const result = await verifyMigrationManifest({
     supabaseDirectory: projectSupabaseDirectory,
   });
-  assert.equal(result.count, 11);
+  assert.equal(result.count, 13);
   assert.equal(result.files[0], "001_initial.sql");
   assert.equal(
     result.files.at(-1),
-    "20260902000000_harden_rls_and_function_paths.sql",
+    "20261009231437_clamp_browser_table_authority.sql",
   );
 });
 
@@ -140,7 +140,7 @@ test("workflow remains local-only and supply-chain pinned", async () => {
   assert.match(webJob, /supabase db reset --local --no-seed/);
   assert.match(
     webJob,
-    /psql --host 127\.0\.0\.1 --port 54322[\s\S]*assert-local-authority\.sql/,
+    /psql --host 127\.0\.0\.1 --port "\$PHANTOM_CI_DB_PORT"[\s\S]*assert-local-authority\.sql/,
   );
   assert.match(
     webJob,
@@ -150,6 +150,11 @@ test("workflow remains local-only and supply-chain pinned", async () => {
     webJob,
     /supabase db advisors --local --type all --level warn --fail-on warn/,
   );
+  assert.match(webJob, /PHANTOM_CI_DB_PORT: 15432/);
+  assert.match(webJob, /PHANTOM_CI_SHADOW_DB_PORT: 15430/);
+  assert.match(webJob, /import tomllib/);
+  assert.match(webJob, /ip_local_port_range/);
+  assert.match(webJob, /if updated != original:/);
   assert.match(webJob, /id: start_database/);
   assert.match(
     webJob,

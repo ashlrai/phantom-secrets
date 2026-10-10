@@ -454,6 +454,11 @@ pub enum ExecutionError {
     ReapFailed,
 }
 
+// A fork can inherit another test's writable fixture descriptor until exec.
+// Guard only fixture publication and spawn, never child execution or awaits.
+#[cfg(all(test, unix))]
+static FIXTURE_EXECUTABLE_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(all(test, unix))]
 mod direct {
     use super::*;
@@ -514,9 +519,12 @@ mod direct {
                     .stderr(Stdio::piped())
                     .kill_on_drop(true);
                 configure(&mut command, cwd, r.policy)?;
-                let mut child = command
-                    .spawn()
-                    .map_err(|e| ExecutionError::SpawnFailed(e.kind()))?;
+                let mut child = {
+                    let _gate = FIXTURE_EXECUTABLE_GATE.lock().unwrap();
+                    command
+                        .spawn()
+                        .map_err(|e| ExecutionError::SpawnFailed(e.kind()))?
+                };
                 let pid = child
                     .id()
                     .ok_or(ExecutionError::SpawnFailed(std::io::ErrorKind::Other))?;
@@ -765,6 +773,7 @@ mod tests {
     fn fixture(body: &str) -> (TempDir, PathBuf, EngineeringAction) {
         let w = TempDir::new().unwrap();
         let p = w.path().join("cargo-fixture");
+        let _gate = FIXTURE_EXECUTABLE_GATE.lock().unwrap();
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         let a = action(RelativeCwd::workspace_root());
@@ -810,6 +819,55 @@ mod tests {
             RuntimeBuilder::new(ExecutionPolicy::conservative()).build(),
             Err(ExecutionError::MissingWitness)
         ))
+    }
+    #[test]
+    fn fixture_publication_blocks_spawn_until_the_writer_is_closed() {
+        let (w, p, a) = fixture("exit 0");
+        let gate = FIXTURE_EXECUTABLE_GATE.lock().unwrap();
+        let writer = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let started = Arc::new(Semaphore::new(0));
+        let worker_started = started.clone();
+        let worker = std::thread::spawn(move || {
+            let executor = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let supervised = runtime(w.path(), &p, &a, 2000, 4096, Some(worker_started));
+            entered_tx.send(()).unwrap();
+            let result = executor.block_on(supervised.execute(&a, &CancellationToken::default()));
+            finished_tx.send(result).unwrap();
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        // The test intentionally holds a writable executable. Spawning now
+        // would fail with ETXTBSY on Linux rather than exercise the runtime.
+        assert!(matches!(
+            finished_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(
+            started.available_permits(),
+            0,
+            "spawn must wait for publication"
+        );
+        drop(writer);
+        drop(gate);
+        let result = finished_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result.kind,
+            OutcomeKind::Exited {
+                success: true,
+                code: Some(0)
+            }
+        );
+        worker.join().unwrap();
+        assert_eq!(started.available_permits(), 1);
     }
     #[test]
     fn deny_all_unavailable() {
