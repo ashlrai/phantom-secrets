@@ -33,10 +33,10 @@ function relTime(iso: string) {
 }
 
 export default function DashboardOverviewClient() {
-  const { data: user, error: userError } = useSupabaseQuery<UserRow>((sb) =>
-    sb.from("users").select("github_login, email").single()
+  const { data: user, error: userError, loading: userLoading } = useSupabaseQuery<UserRow>((sb) =>
+    sb.from("users").select("github_login, email").maybeSingle()
   );
-  const { data: vaults, error: vaultsError } = useSupabaseQuery<VaultRow[]>((sb) =>
+  const { data: vaults, error: vaultsError, loading: vaultsLoading } = useSupabaseQuery<VaultRow[]>((sb) =>
     sb
       .from("vault_blobs")
       .select("project_id, version, updated_at, encrypted_blob")
@@ -47,13 +47,37 @@ export default function DashboardOverviewClient() {
   if (error) {
     return (
       <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-5 py-4 text-[0.92rem] text-red-300">
-        {error}
+        <p role="alert">Unable to load your account or backup metadata. Reload this page to try again.</p>
       </div>
     );
   }
 
-  if (!user || vaults === null) {
-    return <div className="text-[0.9rem] text-t3">Loading your data…</div>;
+  if (userLoading || vaultsLoading) {
+    return <div role="status" className="text-[0.9rem] text-t3">Loading your data…</div>;
+  }
+
+  if (!user) {
+    return (
+      <section className="rounded-2xl border border-border bg-s1 p-6 sm:p-8">
+        <h2 className="text-lg font-bold text-t1">Connect Phantom Secrets</h2>
+        <p className="mt-3 text-[0.92rem] leading-relaxed text-t2">
+          In your trusted terminal, run <code className="font-mono text-blue-b">phantom login</code> and complete device approval to connect the CLI to your account.
+          Then run <code className="font-mono text-blue-b">phantom cloud push</code> in the project you want to back up. Reload this dashboard afterward.
+        </p>
+        <p className="mt-4 text-[0.88rem] leading-relaxed text-t3">
+          Backups stay encrypted. Keep the original OS keychain of the machine that creates the backup: it holds the encryption key needed to restore.
+          Signing in on another machine cannot transfer or recover that key.
+        </p>
+      </section>
+    );
+  }
+
+  if (vaults === null) {
+    return (
+      <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 px-5 py-4 text-[0.92rem] text-red-300">
+        Unable to load your account or backup metadata. Reload this page to try again.
+      </div>
+    );
   }
 
   return (

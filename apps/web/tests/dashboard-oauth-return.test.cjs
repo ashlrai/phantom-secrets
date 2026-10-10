@@ -8,12 +8,14 @@ const filename = path.resolve(__dirname, "../src/app/dashboard/layout.tsx");
 const source = fs.readFileSync(filename, "utf8");
 const testToken = "synthetic-dashboard-callback";
 const previousSession = { access_token: "synthetic-old-session", user: { email: "old@example.invalid" } };
+const pendingKey = "phantom_dashboard_oauth_pending";
 
 function harness(options = {}) {
   const states = [];
   const effects = [];
   const events = [];
   const redirects = [];
+  const storage = options.storage ?? new Map();
   let cursor = 0;
   let url = new URL(options.url ?? `https://phm.dev/dashboard?oauth=1#access_token=${testToken}`);
   let session = options.previousSession ?? null;
@@ -27,6 +29,11 @@ function harness(options = {}) {
   const window = {
     location,
     history: { replaceState(_state, _title, next) { events.push("cleanup"); url = new URL(next, url); } },
+  };
+  const sessionStorage = {
+    getItem(key) { if (options.storageReadThrows) throw new Error("private storage detail"); return storage.get(key) ?? null; },
+    setItem(key, value) { if (options.storageWriteThrows) throw new Error("private storage detail"); events.push("pending-intent"); storage.set(key, value); },
+    removeItem(key) { if (options.storageRemoveThrows) throw new Error("private storage detail"); events.push("clear-intent"); storage.delete(key); },
   };
   const jsx = (type, props) => ({ type, props });
   const dependencies = {
@@ -56,7 +63,7 @@ function harness(options = {}) {
           if (options.initializationThrows) throw new Error("private callback detail");
           if (options.initializationError) return { error: { message: "private callback detail" } };
           if (url.hash.includes(testToken)) {
-            session = options.nullSession ? null : { access_token: testToken, user: { email: "current@example.invalid" } };
+            session = options.nullSession ? null : options.restoredSession ?? { access_token: testToken, user: { email: "current@example.invalid" } };
             events.push("sdk-session-restored");
           }
           return { error: null };
@@ -86,9 +93,9 @@ function harness(options = {}) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
     fileName: filename,
   }).outputText;
-  new Function("require", "module", "exports", "window", output)(
+  new Function("require", "module", "exports", "window", "sessionStorage", output)(
     (name) => { assert.ok(name in dependencies, name); return dependencies[name]; },
-    module, module.exports, window,
+    module, module.exports, window, sessionStorage,
   );
   function render() {
     cursor = 0;
@@ -96,7 +103,7 @@ function harness(options = {}) {
   }
   render();
   return {
-    states, events, redirects, render,
+    states, events, redirects, render, storage,
     runEffect: () => effects[0](),
     resume: () => resume(),
     url: () => url,
@@ -123,7 +130,7 @@ async function assertFailedCallback(h) {
   assert.equal(button(h).props.disabled, false);
   assert.ok(find(h.render(), (node) => node.props?.role === "alert"));
   assert.doesNotMatch(JSON.stringify(h.render()), /private callback detail|old@example|private provider detail/);
-  assert.equal(h.url().href, "https://phm.dev/dashboard");
+  assert.equal(h.url().href, "https://phm.dev/dashboard?oauth_retry=1");
 }
 
 test("failed callback cannot present an older stored session as a successful dashboard sign-in", async () => {
@@ -133,7 +140,7 @@ test("failed callback cannot present an older stored session as a successful das
 
   const ignoresInitializationError = source.replace("initializationError || callbackError", "callbackError");
   assert.notEqual(ignoresInitializationError, source);
-  const control = harness({ source: ignoresInitializationError, initializationError: true, previousSession });
+  const control = harness({ source: ignoresInitializationError, initializationError: true, previousSession: { ...previousSession, access_token: testToken } });
   await assert.rejects(() => assertFailedCallback(control), { code: "ERR_ASSERTION" });
   assert.equal(control.states[0], "signed_in");
   assert.ok(privateChild(control));
@@ -218,4 +225,110 @@ test("StrictMode effect replay accepts one initialized session and cleans callba
   assert.equal(h.events.filter((event) => event === "create-client").length, 1);
   assert.equal(h.events.filter((event) => event === "cleanup").length, 1);
   assert.ok(privateChild(h));
+});
+
+test("tokenless OAuth returns and mismatched restored sessions cannot reuse a previous login", async () => {
+  for (const options of [
+    { url: "https://phm.dev/dashboard?oauth=1", previousSession },
+    { restoredSession: previousSession },
+    { nullSession: true },
+  ]) {
+    const h = harness(options);
+    await assertFailedCallback(h);
+    assert.equal(h.storage.get(pendingKey), "1");
+  }
+  const ignoresCallbackBinding = source.replace(
+    'error || (needsFreshOAuth && (!callbackBearer || session?.access_token !== callbackBearer))',
+    'error',
+  );
+  assert.notEqual(ignoresCallbackBinding, source);
+  const control = harness({ source: ignoresCallbackBinding, url: "https://phm.dev/dashboard?oauth=1", previousSession });
+  await assert.rejects(() => assertFailedCallback(control), { code: "ERR_ASSERTION" });
+  assert.equal(control.states[0], "signed_in");
+});
+
+test("failed callback intent survives fresh-module reload even when the retry query is removed", async () => {
+  const storage = new Map();
+  const failed = harness({ initializationError: true, previousSession, storage });
+  await assertFailedCallback(failed);
+  for (const url of [failed.url().href, "https://phm.dev/dashboard"]) {
+    const reload = harness({ url, previousSession, storage });
+    reload.runEffect(); await reload.settle();
+    assert.equal(reload.states[0], "unavailable");
+    assert.equal(privateChild(reload), null);
+    assert.equal(button(reload).props.disabled, false);
+    assert.equal(storage.get(pendingKey), "1");
+  }
+});
+
+test("only a matching verified callback clears intent, then ordinary reload can restore the session", async () => {
+  const storage = new Map([[pendingKey, "1"]]);
+  const successful = harness({ storage });
+  successful.runEffect(); await successful.settle();
+  assert.equal(successful.states[0], "signed_in");
+  assert.equal(storage.has(pendingKey), false);
+  assert.equal(successful.url().href, "https://phm.dev/dashboard");
+  const reload = harness({ storage, url: successful.url().href, previousSession });
+  reload.runEffect(); await reload.settle();
+  assert.equal(reload.states[0], "signed_in");
+  assert.ok(privateChild(reload));
+  assert.equal(reload.events.includes("cleanup"), false);
+});
+
+test("unwritable callback storage leaves only safe retry intent in the URL and blocks stale-session reload", async () => {
+  const storage = new Map();
+  const failed = harness({ url: "https://phm.dev/dashboard?oauth=1&error_description=private-detail#refresh_token=synthetic-private", storage, storageWriteThrows: true, previousSession });
+  await assertFailedCallback(failed);
+  assert.equal(storage.size, 0);
+  assert.equal(failed.url().search, "?oauth_retry=1");
+  assert.equal(failed.url().hash, "");
+  const reload = harness({ url: failed.url().href, storage, previousSession });
+  await assertFailedCallback(reload);
+});
+
+test("unreadable pending storage on an ordinary visit requires an explicit fresh sign-in", async () => {
+  const h = harness({ url: "https://phm.dev/dashboard", storageReadThrows: true, previousSession });
+  h.runEffect(); await h.settle();
+  assert.equal(h.states[0], "unavailable");
+  assert.equal(privateChild(h), null);
+  assert.doesNotMatch(JSON.stringify(h.render()), /private storage detail|old@example/);
+  await button(h).props.onClick();
+  assert.equal(h.redirects.length, 1);
+  assert.equal(h.storage.get(pendingKey), "1");
+});
+
+test("failed intent removal allows this verified callback but blocks a fresh-module reload", async () => {
+  const storage = new Map();
+  const successful = harness({ storage, storageRemoveThrows: true });
+  successful.runEffect(); await successful.settle();
+  assert.equal(successful.states[0], "signed_in");
+  assert.ok(privateChild(successful));
+  assert.equal(storage.get(pendingKey), "1");
+  assert.equal(successful.url().href, "https://phm.dev/dashboard?oauth_retry=1");
+  assert.deepEqual([...storage.values()], ["1"]);
+  const reload = harness({ storage, url: successful.url().href, previousSession });
+  await assertFailedCallback(reload);
+});
+
+test("sign-in start records intent before SDK contact and failed starts cannot restore an old session on reload", async () => {
+  for (const storageWriteThrows of [false, true]) {
+    const storage = new Map();
+    const start = harness({ url: "https://phm.dev/dashboard", storage, storageWriteThrows, startOutcomes: ["error"] });
+    start.runEffect(); await start.settle();
+    assert.equal(start.states[0], "signed_out");
+    await button(start).props.onClick();
+    assert.equal(start.states[0], "unavailable");
+    assert.equal(button(start).props.disabled, false);
+    if (storageWriteThrows) {
+      assert.equal(start.url().search, "?oauth_retry=1");
+      assert.ok(start.events.indexOf("cleanup") < start.events.indexOf("start-oauth"));
+    } else {
+      assert.equal(storage.get(pendingKey), "1");
+      assert.ok(start.events.indexOf("pending-intent") < start.events.indexOf("start-oauth"));
+    }
+    const reload = harness({ url: start.url().href, storage, previousSession });
+    reload.runEffect(); await reload.settle();
+    assert.equal(reload.states[0], "unavailable");
+    assert.equal(privateChild(reload), null);
+  }
 });
