@@ -16,9 +16,12 @@ export function parseWorkbenchRelease(input) {
   }
   if (Date.parse(String(value.publishedAt)) > Date.parse(String(value.observedAt))) return null;
   const release = `https://github.com/ashlrai/phantom/releases/tag/v${value.version}`;
-  const mac = `https://github.com/ashlrai/phantom/releases/download/v${value.version}/Phantom_${value.version}_aarch64.dmg`;
+  const macBase = `https://github.com/ashlrai/phantom/releases/download/v${value.version}/Phantom_${value.version}_aarch64`;
+  // Match only the legacy DMG or current signed app archive; the generated
+  // release facts establish publication separately from this presentation parser.
+  const macDownloads = [`${macBase}.dmg`, `${macBase}.app.tar.gz`];
   if (value.releaseUrl !== release || value.registryUrl !== `https://www.npmjs.com/package/@ashlr/phantom/v/${value.version}` ||
       value.installCommand !== `npm install -g @ashlr/phantom@${value.version}` ||
-      (value.macDownloadUrl !== null && value.macDownloadUrl !== mac)) return null;
+      (value.macDownloadUrl !== null && !macDownloads.some(url => value.macDownloadUrl === url))) return null;
   return /** @type {PublicWorkbenchRelease} */ (input);
 }

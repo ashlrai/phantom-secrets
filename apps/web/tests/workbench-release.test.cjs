@@ -34,3 +34,29 @@ test('candidate-only, foreign, malformed and executable-link records produce no 
   for (const value of invalid) assert.equal(parseWorkbenchRelease(value), null);
   assert.equal(parseWorkbenchRelease({ ...record, macDownloadUrl: null }).macDownloadUrl, null);
 });
+
+test('Mac presentation links accept only exact version-bound official DMG or app archive URLs', async () => {
+  const { parseWorkbenchRelease } = await parser;
+  const base = `https://github.com/ashlrai/phantom/releases/download/v${record.version}/Phantom_${record.version}_aarch64`;
+  for (const macDownloadUrl of [`${base}.dmg`, `${base}.app.tar.gz`]) {
+    const candidate = { ...record, macDownloadUrl };
+    assert.deepEqual(parseWorkbenchRelease(candidate), candidate);
+  }
+
+  const archive = `${base}.app.tar.gz`;
+  const invalid = [
+    `${archive}.sig`, `${archive}?download=1`, `${archive}#download`,
+    `${base}.tar.gz`, `${base}.app.zip`, `${base}.APP.tar.gz`,
+    archive.replace(`Phantom_${record.version}`, 'Phantom_999.0.0'),
+    archive.replace(`/v${record.version}/`, '/v999.0.0/'),
+    archive.replace('_aarch64', '_x86_64'),
+    archive.replace('ashlrai/phantom/', 'ashlrai/phantom-secrets/'),
+    archive.replace('github.com/', 'github.com.example.invalid/'),
+    archive.replace('github.com/', 'user@github.com/'),
+    archive.replace('github.com/', 'github.com:443/'),
+    archive.replace('https:', 'http:'),
+  ];
+  for (const macDownloadUrl of invalid) {
+    assert.equal(parseWorkbenchRelease({ ...record, macDownloadUrl }), null, macDownloadUrl);
+  }
+});
