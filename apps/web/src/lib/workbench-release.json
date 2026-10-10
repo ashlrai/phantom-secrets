@@ -3,13 +3,13 @@
   "product": "workbench",
   "repository": "ashlrai/phantom",
   "packageName": "@ashlr/phantom",
-  "version": "3.29.5",
-  "sourceSha": "c13cdc4c37b425e21d1c5138183196b394ee017e",
-  "publishedAt": "2026-10-09T21:58:25.000Z",
-  "observedAt": "2026-10-09T22:29:45.666Z",
-  "releaseUrl": "https://github.com/ashlrai/phantom/releases/tag/v3.29.5",
-  "registryUrl": "https://www.npmjs.com/package/@ashlr/phantom/v/3.29.5",
-  "installCommand": "npm install -g @ashlr/phantom@3.29.5",
+  "version": "3.29.6",
+  "sourceSha": "6445d268940db132ebb868c751d6b60525533d14",
+  "publishedAt": "2026-10-10T01:28:21.000Z",
+  "observedAt": "2026-10-10T01:29:08.213Z",
+  "releaseUrl": "https://github.com/ashlrai/phantom/releases/tag/v3.29.6",
+  "registryUrl": "https://www.npmjs.com/package/@ashlr/phantom/v/3.29.6",
+  "installCommand": "npm install -g @ashlr/phantom@3.29.6",
   "macDownloadUrl": null,
-  "factsDigest": "896b7f61c015dfa0610cb6354a913448c84ebbb3f4c76b24c11bf93a917d517f"
+  "factsDigest": "17da618c4bb6062e527d4b47a5c3d1e4d691fab86acd2438aaf076eebbb141f6"
 }
