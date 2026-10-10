@@ -90,7 +90,14 @@ export async function POST(req: Request) {
     .limit(1)
     .maybeSingle();
 
-  if (tokenError || !token) {
+  if (tokenError) {
+    return Response.json(
+      { error: "Failed to load device code. Please try again." },
+      { status: 500, headers: { "cache-control": "no-store" } }
+    );
+  }
+
+  if (!token) {
     return Response.json(
       { error: "Invalid or expired code. Please try again." },
       { status: 400 }
@@ -110,7 +117,14 @@ export async function POST(req: Request) {
     .select("id")
     .maybeSingle();
 
-  if (approveError || !approvedToken) {
+  if (approveError) {
+    return Response.json(
+      { error: "Unable to confirm device approval. Check your terminal before trying again." },
+      { status: 500, headers: { "cache-control": "no-store" } }
+    );
+  }
+
+  if (!approvedToken) {
     return Response.json(
       { error: "Code was already approved. Please start a new login." },
       { status: 409 }

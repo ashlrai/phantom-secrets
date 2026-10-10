@@ -8,6 +8,7 @@ import { Nav } from "@/components/landing/Nav";
 import { Github } from "@/components/landing/Icons";
 
 type Status = "loading" | "signed_in" | "signed_out" | "unavailable";
+const OAUTH_PENDING_KEY = "phantom_dashboard_oauth_pending";
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>("loading");
@@ -22,8 +23,25 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       ["error", "error_code", "error_description"].some((key) => values.has(key))
     );
     // Also recognize callbacks started before the explicit return marker was added.
-    const isOAuthReturn = params.get("oauth") === "1" || callbackError ||
+    const isOAuthReturn = params.get("oauth") === "1" || params.get("oauth_retry") === "1" || callbackError ||
       params.has("code") || fragment.has("access_token") || fragment.has("refresh_token");
+    const callbackBearer = fragment.get("access_token");
+    let pendingIntent = false;
+    try {
+      pendingIntent = sessionStorage.getItem(OAUTH_PENDING_KEY) !== null;
+    } catch {
+      // An unreadable tab cannot establish that no new sign-in is pending.
+      pendingIntent = true;
+    }
+    if (isOAuthReturn) {
+      try {
+        sessionStorage.setItem(OAUTH_PENDING_KEY, "1");
+      } catch {
+        // The safe URL retry marker below preserves failures across reloads.
+      }
+    }
+    const needsFreshOAuth = isOAuthReturn || pendingIntent;
+    let pendingCleared = false;
 
     const loadSession = async () => {
       try {
@@ -38,11 +56,19 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         }
         const { data: { session }, error } = await supabase.auth.getSession();
         if (!active) return;
-        if (error) {
+        if (error || (needsFreshOAuth && (!callbackBearer || session?.access_token !== callbackBearer))) {
           setStatus("unavailable");
         } else if (!session) {
           setStatus("signed_out");
         } else {
+          if (needsFreshOAuth) {
+            try {
+              sessionStorage.removeItem(OAUTH_PENDING_KEY);
+              pendingCleared = true;
+            } catch {
+              // This verified callback may proceed; reload remains conservative.
+            }
+          }
           setEmail(session.user.email ?? null);
           setStatus("signed_in");
         }
@@ -52,7 +78,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         // Let the SDK ingest the callback first. Do not let a stale effect
         // rewrite the URL after navigation or StrictMode cleanup.
         if (active && isOAuthReturn) {
-          window.history.replaceState(null, "", window.location.pathname);
+          window.history.replaceState(null, "", `${window.location.pathname}${pendingCleared ? "" : "?oauth_retry=1"}`);
         }
       }
     };
@@ -66,6 +92,12 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   const signIn = async () => {
     setSigningIn(true);
     try {
+      try {
+        sessionStorage.setItem(OAUTH_PENDING_KEY, "1");
+      } catch {
+        // Persist only non-sensitive intent when tab storage cannot be written.
+        window.history.replaceState(null, "", `${window.location.pathname}?oauth_retry=1`);
+      }
       const supabase = getBrowserClient();
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "github",

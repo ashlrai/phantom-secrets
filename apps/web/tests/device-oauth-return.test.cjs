@@ -18,7 +18,7 @@ function harness(options = {}) {
   let cursor = 0;
   let refCursor = 0;
   let url = new URL(options.url ?? `https://phm.dev/device?oauth=1#access_token=${testToken}`);
-  const storage = new Map(options.storedCode === null ? [] : [["phantom_device_code", options.storedCode ?? testCode]]);
+  const storage = options.storage ?? new Map(options.storedCode === null ? [] : [["phantom_device_code", options.storedCode ?? testCode]]);
   let resume;
   const initializationBarrier = options.deferInitialization
     ? new Promise((resolve) => { resume = resolve; }) : Promise.resolve();
@@ -34,7 +34,7 @@ function harness(options = {}) {
   const sessionStorage = {
     getItem: (key) => { if (options.storageReadThrows) throw new Error("storage denied"); return storage.get(key) ?? null; },
     setItem: (key, value) => { if (options.storageWriteThrows) throw new Error("storage denied"); storage.set(key, value); },
-    removeItem: (key) => { if (options.storageRemoveThrows) throw new Error("storage denied"); events.push("remove-code"); storage.delete(key); },
+    removeItem: (key) => { if (options.storageRemoveThrows) throw new Error("storage denied"); if (key === "phantom_device_code") events.push("remove-code"); storage.delete(key); },
   };
   const jsx = (type, props) => ({ type, props });
   const dependencies = {
@@ -66,7 +66,7 @@ function harness(options = {}) {
           events.push("sdk-url-read");
           if (options.initializationThrows) throw new Error("private callback detail");
           if (options.initializationError) return { error: { message: "private callback detail" } };
-          if (url.hash.includes(`access_token=${testToken}`)) {
+          if (url.hash.includes(`access_token=${testToken}`) && !options.ignoreCallback) {
             session = options.nullSession ? null : { access_token: testToken };
             events.push("sdk-session-restored");
           }
@@ -189,6 +189,135 @@ test("callback error presence rejects even a restored session without reflecting
     assert.equal(h.url().href, "https://phm.dev/device");
     assert.equal(h.storage.get("phantom_device_code"), testCode);
   }
+});
+
+test("explicit retry after a failed new callback restarts OAuth instead of approving an older account", async () => {
+  for (const failure of [
+    { initializationError: true },
+    { initializationThrows: true },
+    { url: "https://phm.dev/device?oauth=1#error=access_denied" },
+    { sessionError: true },
+  ]) {
+    const h = harness({ ...failure, previousSession: { access_token: "synthetic-prior-account" } });
+    h.runEffect(); await h.settle();
+    assert.equal(h.requests.length, 0);
+    const readsBeforeRetry = h.events.filter((event) => event === "get-session").length;
+    await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+    assert.equal(h.requests.length, 0);
+    assert.ok(h.events.includes("start-oauth"));
+    assert.equal(h.events.filter((event) => event === "get-session").length, readsBeforeRetry);
+    assert.equal(h.storage.get("phantom_device_code"), testCode);
+  }
+});
+
+test("repeated failed OAuth starts never fall back to a previous account session", async () => {
+  for (const failure of [{ startError: true }, { startThrows: true }, { storageWriteThrows: true }]) {
+    const h = harness({ initializationError: true, previousSession: { access_token: "synthetic-prior-account" }, ...failure });
+    h.runEffect(); await h.settle();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+      assert.equal(h.requests.length, 0);
+      assert.equal(h.states[1], "input");
+      assert.doesNotMatch(h.states[2], /private|synthetic-|storage denied/);
+    }
+  }
+});
+
+test("ordinary existing-session submission still approves without starting OAuth", async () => {
+  const h = harness({ url: "https://phm.dev/device", previousSession: { access_token: "synthetic-existing-account" } });
+  find(h.render(), "input").props.onChange({ target: { value: testCode } });
+  await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].headers.Authorization, "Bearer synthetic-existing-account");
+  assert.equal(h.events.includes("start-oauth"), false);
+  assert.equal(h.states[1], "done");
+});
+
+test("causal control reproduces prior-account approval when the failed-callback retry guard is removed", async () => {
+  const unguardedSource = source.replace("= needsFreshOAuth\n        ?", "= false\n        ?");
+  assert.notEqual(unguardedSource, source);
+  const h = harness({ source: unguardedSource, initializationError: true, previousSession: { access_token: "synthetic-prior-account" } });
+  h.runEffect(); await h.settle();
+  assert.equal(h.requests.length, 0);
+  await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].headers.Authorization, "Bearer synthetic-prior-account");
+  assert.equal(h.events.includes("start-oauth"), false);
+});
+
+test("failed callback intent survives URL cleanup and a full page reload", async () => {
+  for (const failure of [
+    { initializationError: true },
+    { url: "https://phm.dev/device?oauth=1#error=access_denied", storedCode: null },
+  ]) {
+    const previousSession = { access_token: "synthetic-prior-account" };
+    const failed = harness({ ...failure, previousSession });
+    failed.runEffect(); await failed.settle();
+    assert.equal(failed.requests.length, 0);
+    assert.equal(failed.storage.get("phantom_device_oauth_pending"), "1");
+    const reloaded = harness({ url: failed.url().href, storage: failed.storage, previousSession });
+    find(reloaded.render(), "input").props.onChange({ target: { value: testCode } });
+    await find(reloaded.render(), "form").props.onSubmit({ preventDefault() {} });
+    assert.equal(reloaded.requests.length, 0);
+    assert.ok(reloaded.events.includes("start-oauth"));
+    assert.equal(reloaded.events.includes("get-session"), false);
+  }
+});
+
+test("tokenless or unconsumed callback cannot clear retry intent or approve an older session", async () => {
+  for (const failure of [
+    { url: "https://phm.dev/device?oauth=1" },
+    { ignoreCallback: true },
+  ]) {
+    const h = harness({ ...failure, previousSession: { access_token: "synthetic-prior-account" } });
+    h.runEffect(); await h.settle();
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.storage.get("phantom_device_oauth_pending"), "1");
+    assert.equal(h.states[1], "input");
+    assert.match(h.states[2], /GitHub sign-in did not complete/);
+    await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+    assert.equal(h.requests.length, 0);
+    assert.ok(h.events.includes("start-oauth"));
+  }
+});
+
+test("unreadable retry intent cannot approve a stored older session", async () => {
+  const h = harness({ url: "https://phm.dev/device", storedCode: null, storageReadThrows: true, previousSession: { access_token: "synthetic-prior-account" } });
+  find(h.render(), "input").props.onChange({ target: { value: testCode } });
+  await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(h.requests.length, 0);
+  assert.ok(h.events.includes("start-oauth"));
+});
+
+test("unwritable callback storage retains only a safe retry flag across reload", async () => {
+  const previousSession = { access_token: "synthetic-prior-account" };
+  const failed = harness({ initializationError: true, storageWriteThrows: true, previousSession });
+  failed.runEffect(); await failed.settle();
+  assert.equal(failed.requests.length, 0);
+  assert.equal(failed.url().href, "https://phm.dev/device?oauth_retry=1");
+  assert.equal(failed.url().hash, "");
+  const reloaded = harness({ url: failed.url().href, storage: failed.storage, previousSession, storageWriteThrows: true });
+  find(reloaded.render(), "input").props.onChange({ target: { value: testCode } });
+  await find(reloaded.render(), "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(reloaded.requests.length, 0);
+  assert.equal(reloaded.events.includes("get-session"), false);
+  assert.equal(reloaded.states[1], "input");
+  assert.doesNotMatch(reloaded.states[2], /private|synthetic-|storage denied/);
+});
+
+test("only successful callback verification clears persisted retry intent", async () => {
+  const h = harness();
+  h.runEffect(); await h.settle();
+  assert.equal(h.states[1], "done");
+  assert.equal(h.storage.has("phantom_device_oauth_pending"), false);
+  const retained = harness({ storedCode: null, storageRemoveThrows: true, storageReadThrows: true });
+  retained.runEffect(); await retained.settle();
+  assert.equal(retained.storage.get("phantom_device_oauth_pending"), "1");
+  find(retained.render(), "input").props.onChange({ target: { value: testCode } });
+  await find(retained.render(), "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(retained.requests.length, 1);
+  assert.equal(retained.requests[0].headers.Authorization, `Bearer ${testToken}`);
+  assert.equal(retained.events.includes("start-oauth"), false);
 });
 
 test("missing or invalid pending code still consumes callback and enables manual code entry", async () => {

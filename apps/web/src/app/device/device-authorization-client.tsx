@@ -28,6 +28,7 @@ export default function DeviceAuthorizationClient() {
     "input" | "authenticating" | "approving" | "done"
   >("input");
   const [error, setError] = useState("");
+  const forceFreshOAuth = useRef<boolean | null>(null);
 
   const approveDevice = async (userCode: string, accessToken: string) => {
     setStatus("approving");
@@ -68,7 +69,21 @@ export default function DeviceAuthorizationClient() {
     setError("");
 
     try {
-      const { data: { session }, error: sessionError } = await getSupabase().auth.getSession();
+      // A failed new callback may leave an older account in SDK storage.
+      // Persist that intent across reloads after callback URL cleanup. Only
+      // this component's verified callback may override an unreadable marker.
+      let needsFreshOAuth = forceFreshOAuth.current;
+      if (needsFreshOAuth === null) {
+        try {
+          needsFreshOAuth = new URLSearchParams(window.location.search).get("oauth_retry") === "1"
+            || sessionStorage.getItem("phantom_device_oauth_pending") === "1";
+        } catch {
+          needsFreshOAuth = true;
+        }
+      }
+      const { data: { session }, error: sessionError } = needsFreshOAuth
+        ? { data: { session: null }, error: null }
+        : await getSupabase().auth.getSession();
       if (sessionError) {
         setError("Unable to read your sign-in session. Please try again.");
         setStatus("input");
@@ -76,6 +91,8 @@ export default function DeviceAuthorizationClient() {
       }
 
       if (!session) {
+        forceFreshOAuth.current = true;
+        sessionStorage.setItem("phantom_device_oauth_pending", "1");
         sessionStorage.setItem("phantom_device_code", code);
         const { error: authError } = await getSupabase().auth.signInWithOAuth({
           provider: "github",
@@ -115,11 +132,22 @@ export default function DeviceAuthorizationClient() {
     // Guard before awaiting: development StrictMode must not approve twice.
     redirectHandled.current = true;
     if (storedCode) setCode(formatDeviceUserCode(storedCode));
-    const callbackError = [params, new URLSearchParams(window.location.hash.slice(1))]
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    // This client uses implicit OAuth. Initialization can succeed by restoring
+    // an older stored session, so bind completion to the actual callback bearer.
+    const callbackAccessToken = fragment.get("access_token");
+    const callbackError = [params, fragment]
       .some((values) => ["error", "error_code", "error_description"].some((key) => values.has(key)));
 
     const completeOAuthReturn = async () => {
       setStatus("authenticating");
+      forceFreshOAuth.current = true;
+      let retryIntentPersisted = true;
+      try {
+        sessionStorage.setItem("phantom_device_oauth_pending", "1");
+      } catch {
+        retryIntentPersisted = false;
+      }
       let accessToken: string;
       try {
         const auth = getSupabase().auth;
@@ -127,25 +155,36 @@ export default function DeviceAuthorizationClient() {
         // consume it before our cleanup, and getSession alone hides errors
         // from initialization (potentially returning an older session).
         const { error: initializationError } = await auth.initialize();
-        if (initializationError || callbackError) {
+        if (initializationError || callbackError || !callbackAccessToken) {
           setError("GitHub sign-in did not complete. Please try again.");
           setStatus("input");
           return;
         }
         const { data: { session }, error: sessionError } = await auth.getSession();
-        if (sessionError || !session?.access_token) {
+        if (sessionError || !session?.access_token || session.access_token !== callbackAccessToken) {
           setError("GitHub sign-in did not complete. Please try again.");
           setStatus("input");
           return;
         }
         accessToken = session.access_token;
+        forceFreshOAuth.current = false;
+        try {
+          sessionStorage.removeItem("phantom_device_oauth_pending");
+        } catch {
+          // This callback verified the current session. An uncleared marker
+          // conservatively requires fresh OAuth on a later page reload.
+        }
       } catch {
         setError("Unable to complete sign-in. Please try again.");
         setStatus("input");
         return;
       } finally {
         // Clear callback data on success or failure, after SDK ingestion settles.
-        window.history.replaceState(null, "", "/device");
+        // If storage is unwritable, retain only a non-sensitive retry flag so
+        // reloading a failed callback still cannot authorize an older session.
+        const destination = forceFreshOAuth.current && !retryIntentPersisted
+          ? "/device?oauth_retry=1" : "/device";
+        window.history.replaceState(null, "", destination);
       }
 
       if (!storedCode || !isValidDeviceUserCode(storedCode)) {
