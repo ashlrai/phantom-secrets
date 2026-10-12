@@ -53,6 +53,10 @@
     {
       "file": "20261009231437_clamp_browser_table_authority.sql",
       "sha256": "70c739e163e76e89c77d6f8d3fe0283fc9f7b40bef8ccc60982d6053ffde12fb"
+    },
+    {
+      "file": "20261012164943_enforce_device_claim_deadline.sql",
+      "sha256": "463c6638acaca3c762e5eb1fe9326dc0f8dc7c566a168cbf724835484d8b71f2"
     }
   ]
 }
