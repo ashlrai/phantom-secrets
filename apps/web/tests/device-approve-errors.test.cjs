@@ -38,6 +38,7 @@ function fixture(options = {}) {
         select() { return this; },
         eq(key, value) { filters.push(["eq", key, value]); return this; },
         gte(key, value) { filters.push(["gte", key, value]); return this; },
+        gt(key, value) { filters.push(["gt", key, value]); return this; },
         order(key, value) { assert.deepEqual([key, value], ["created_at", { ascending: false }]); return this; },
         limit(value) { assert.equal(value, 1); return this; },
         upsert(update, config) { assert.equal(table, "users"); assert.deepEqual(config, { onConflict: "id" }); values = update; return this; },
@@ -52,7 +53,10 @@ function fixture(options = {}) {
             state.claims++;
             state.filters.push(filters);
             state.updates.push(values);
-            assert.deepEqual(filters, [["eq", "id", "synthetic-device"], ["eq", "status", "pending"]]);
+            assert.deepEqual(filters.slice(0, 2), [["eq", "id", "synthetic-device"], ["eq", "status", "pending"]]);
+            assert.deepEqual(filters[2].slice(0, 2), ["gt", "device_expires_at"]);
+            assert.ok(Number.isFinite(Date.parse(filters[2][2])));
+            assert.equal(filters.length, 3);
             assert.equal(values.status, "approved");
             assert.ok(Number.isFinite(Date.parse(values.approved_at)));
             if (state.approveError) {
@@ -61,7 +65,9 @@ function fixture(options = {}) {
               if (state.commitThenError) Object.assign(state.token, values);
               return { data: state.dataWithError ? { id: state.token.id } : null, error: state.approveError };
             }
-            if (state.token.status !== "pending" || state.loseCas) return { data: null, error: null };
+            if (state.token.status !== "pending" || state.token.device_expires_at <= filters[2][2] || state.loseCas) {
+              return { data: null, error: null };
+            }
             Object.assign(state.token, values);
             return { data: { id: state.token.id }, error: null };
           }
@@ -71,6 +77,7 @@ function fixture(options = {}) {
           assert.equal(filters[2][1], "device_expires_at");
           const token = state.token && state.token.status === "pending" && state.token.device_expires_at >= filters[2][2]
             ? { ...state.token } : null;
+          if (token && state.afterLookup) await state.afterLookup(state);
           if (lookupsReady) {
             if (state.lookups === 2) releaseLookups();
             await lookupsReady;
@@ -168,6 +175,21 @@ test("only an error-free zero-row compare-and-swap returns conflict", async () =
   assert.equal(response.status, 409);
   assert.deepEqual(await response.json(), { error: "Code was already approved. Please start a new login." });
   assert.equal(state.claims, 1);
+});
+
+test("a code expiring or leaving pending after lookup cannot be approved", async () => {
+  for (const transition of ["expiry", "status"]) {
+    const { state, approve } = fixture({ afterLookup: async (live) => {
+      if (transition === "expiry") live.token.device_expires_at = "2000-01-01T00:00:00.000Z";
+      else live.token.status = "expired";
+    } });
+    const response = await approve();
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: "Code was already approved. Please start a new login." });
+    assert.equal(state.token.user_id, null);
+    assert.notEqual(state.token.status, "approved");
+    assert.equal(state.claims, 1);
+  }
 });
 
 test("concurrent owners both read pending but only one may approve or own the code", async () => {

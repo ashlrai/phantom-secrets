@@ -114,6 +114,8 @@ export async function POST(req: Request) {
     })
     .eq("id", token.id)
     .eq("status", "pending")
+    // The code can expire after the lookup but before this update executes.
+    .gt("device_expires_at", new Date().toISOString())
     .select("id")
     .maybeSingle();
 

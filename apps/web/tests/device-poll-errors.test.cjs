@@ -37,6 +37,7 @@ function fixture(options = {}) {
       const query = {
         select() { return this; },
         eq(key, value) { filters.push(["eq", key, value]); return this; },
+        gt(key, value) { filters.push(["gt", key, value]); return this; },
         is(key, value) { filters.push(["is", key, value]); return this; },
         update(update) { values = update; return this; },
         async result() {
@@ -46,10 +47,18 @@ function fixture(options = {}) {
             state.claims++;
             state.filters.push(filters);
             if (state.claimError) return { data: null, error: state.claimError };
-            assert.deepEqual(filters, [["eq", "id", "synthetic-device"], ["is", "token_hash", null]]);
+            assert.deepEqual(filters.slice(0, 3), [
+              ["eq", "id", "synthetic-device"], ["eq", "status", "approved"], ["eq", "user_id", "synthetic-user"],
+            ]);
+            assert.deepEqual(filters[3].slice(0, 2), ["gt", "device_expires_at"]);
+            assert.ok(Number.isFinite(Date.parse(filters[3][2])));
+            assert.deepEqual(filters[4], ["is", "token_hash", null]);
+            assert.equal(filters.length, 5);
             // A shared compare-and-swap model: both requests may read the
             // unclaimed snapshot, but only one can install its hash.
-            if (state.token.token_hash) return { data: null, error: null };
+            if (state.token.token_hash || state.token.status !== "approved" ||
+                state.token.user_id !== "synthetic-user" ||
+                state.token.device_expires_at <= filters[3][2]) return { data: null, error: null };
             state.token.token_hash = values.token_hash;
             return { data: { id: state.token.id }, error: null };
           }
@@ -160,6 +169,20 @@ test("concurrent polls both read the approved snapshot but only one claims", asy
   assert.equal(state.token.token_hash, crypto.createHash("sha256").update(approved[0].access_token).digest("hex"));
   assert.deepEqual(await (await poll()).json(), { status: "already_claimed" });
   assert.equal(state.claims, 2);
+});
+
+test("an expiry, revocation, or owner change after lookup cannot mint a CLI token", async () => {
+  for (const transition of ["expiry", "status", "owner"]) {
+    const { state, poll } = fixture({ profileBarrier: async () => {
+      if (transition === "expiry") state.token.device_expires_at = "2000-01-01T00:00:00.000Z";
+      else if (transition === "status") state.token.status = "expired";
+      else state.token.user_id = "different-user";
+    } });
+    const response = await poll();
+    assert.deepEqual(await response.json(), { status: "already_claimed" });
+    assert.equal(state.token.token_hash, null);
+    assert.equal(state.claims, 1);
+  }
 });
 
 for (const status of ["pending", "expired"]) {

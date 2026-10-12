@@ -91,6 +91,10 @@ export async function POST(req: Request) {
         claimed_at: new Date().toISOString(),
       })
       .eq("id", token.id)
+      .eq("status", "approved")
+      .eq("user_id", token.user_id)
+      // Bind the one-use claim to the live device deadline, not its earlier read.
+      .gt("device_expires_at", new Date().toISOString())
       .is("token_hash", null)
       .select("id")
       .maybeSingle();
