@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// `phantom env` subcommands for environment scoping.
 ///
 /// This module handles `use`, `list`, `new`, and `copy` — the environment
@@ -348,7 +347,7 @@ pub fn run_list() -> Result<()> {
 }
 
 /// `phantom env new <name>` — declare a new environment (no-op if it already exists).
-/// Secrets are added per-key via `phantom add --env <name>`.
+/// Secrets are populated with `phantom env copy --from <src> --to <name>`.
 pub fn run_new(name: &str) -> Result<()> {
     validate_env_name(name).map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -387,7 +386,7 @@ pub fn run_new(name: &str) -> Result<()> {
     println!(
         "{} Add secrets with: {}",
         "->".blue().bold(),
-        format!("phantom add --env {name} KEY").cyan()
+        format!("phantom env copy --from default --to {name}").cyan()
     );
     println!(
         "{} Switch to it with: {}",
@@ -629,7 +628,7 @@ fn prepare_environment_copy(
         anyhow::bail!(
             "No secrets found in environment '{}'. Add some with: {}",
             from,
-            format!("phantom add --env {from} KEY").cyan()
+            "phantom add <NAME> --stdin (default environment)".cyan()
         );
     }
 
@@ -680,24 +679,6 @@ fn prepare_environment_copy(
         mutations,
         copied_names,
     })
-}
-
-/// `phantom env` with no subcommand — show help hint.
-pub fn run_default(current: &str) -> Result<()> {
-    println!(
-        "{} Active environment: {}",
-        "->".blue().bold(),
-        current.cyan().bold()
-    );
-    println!(
-        "{}",
-        "Use a subcommand: use <name> | list | new <name> | copy --from <src> --to <dst>".dimmed()
-    );
-    println!(
-        "  {} — generate .env.example for team onboarding",
-        "phantom env example".cyan()
-    );
-    Ok(())
 }
 
 /// Resolve env from flag or persisted file, used by vault call sites.

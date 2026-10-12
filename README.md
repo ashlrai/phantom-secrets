@@ -405,7 +405,9 @@ dashboard is designed to show team memberships and member lists.
 | `phantom sync` | Push secrets to Vercel / Railway (`--dry-run --json` previews safely; `--only PATTERN` filters by glob, repeatable) |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
 | `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, or `codex`. Add `--print` to emit the config snippet to stdout |
-| `phantom env` | Generate `.env.example` for team onboarding |
+| `phantom env` / `phantom env example` | Generate `.env.example` for team onboarding |
+| `phantom env list\|new <name>\|use <name>` | List, declare, or switch environment scopes (e.g. `dev`, `staging`, `prod`) |
+| `phantom env copy --from <src> --to <dst>` | Copy all secrets between environment scopes (trusted terminal) |
 | `phantom export` | From an attached trusted terminal, review an exact value-blind plan, type its fresh challenge, and enter a dedicated passphrase through the hidden prompt. Export `--passphrase-file`, plaintext export, argv passphrases, existing targets, symlinks, and paths outside the project fail closed. |
 | `phantom import` | From an attached trusted terminal, review and type the exact source/target/name/overwrite challenge before restoring a backup or importing Doppler, Infisical, dotenvx, 1Password, or env data. `--force` selects the reviewed overwrite set but never bypasses consent. A bounded private passphrase file is accepted only on non-Windows platforms and still requires the terminal ceremony. |
 | `phantom audit show` | Print recent audit events (`--last N`, `--op OP`, `--name NAME`, `--json`). Requires `PHANTOM_AUDIT=1` |
