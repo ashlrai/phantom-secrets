@@ -66,6 +66,9 @@ function createServiceClient(user) {
         eq() {
           return this;
         },
+        gt() {
+          return this;
+        },
         is() {
           return this;
         },
