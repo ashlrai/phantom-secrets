@@ -45,7 +45,9 @@ export async function POST(req: Request) {
     await supabase
       .from("device_tokens")
       .update({ status: "expired" })
-      .eq("id", token.id);
+      .eq("id", token.id)
+      // The device code can expire without revoking its already-issued CLI token.
+      .is("token_hash", null);
     return Response.json({ status: "expired" });
   }
 

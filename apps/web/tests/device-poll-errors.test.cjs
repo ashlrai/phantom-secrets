@@ -43,7 +43,13 @@ function fixture(options = {}) {
         async result() {
           if (values) {
             state.writes.push(values);
-            if (!values.token_hash) return { error: null };
+            if (!values.token_hash) {
+              assert.deepEqual(filters, [
+                ["eq", "id", "synthetic-device"], ["is", "token_hash", null],
+              ]);
+              if (state.token.token_hash === null) state.token.status = values.status;
+              return { error: null };
+            }
             state.claims++;
             state.filters.push(filters);
             if (state.claimError) return { data: null, error: state.claimError };
@@ -214,5 +220,17 @@ test("an approved row past its device deadline cannot be claimed", async () => {
   assert.equal(state.profiles, 0);
   assert.equal(state.mints, 0);
   assert.equal(state.claims, 0);
+  assert.deepEqual(state.writes, [{ status: "expired" }]);
+});
+
+test("an expired device code cannot revoke an already-issued CLI token", async () => {
+  const { state, poll } = fixture({ token: {
+    id: "synthetic-device", status: "approved",
+    device_expires_at: "2000-01-01T00:00:00.000Z", token_hash: "issued-hash",
+  } });
+  assert.deepEqual(await (await poll()).json(), { status: "expired" });
+  assert.equal(state.token.status, "approved");
+  assert.equal(state.token.token_hash, "issued-hash");
+  assert.equal(state.mints, 0);
   assert.deepEqual(state.writes, [{ status: "expired" }]);
 });
