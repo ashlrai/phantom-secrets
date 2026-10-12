@@ -196,17 +196,20 @@ support requires an explicit reviewed trust design and is not supported in this 
 ### An older registry-based install command fails
 
 The reviewed `v0.7.9` binaries ship through the immutable GitHub Release. The
-trusted Homebrew formula still publishes the previous reviewed `v0.7.8`; Homebrew publication is
-independent of the GitHub release. In the exact 2026-09-29 registry snapshot,
-npm `latest` remains `0.6.0`; exact npm
-`0.7.4` wrappers are failed release candidates. crates.io remains on the older
-`0.5.1` distribution track, and MCP Registry does not publish `0.7.9`.
+trusted Homebrew formula publishes reviewed `v0.7.9`; Homebrew publication is
+independent of the GitHub release. The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 1. Verify the immutable release exists: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9
 2. Use the exact `v0.7.9` asset and `.sha256` sidecar documented in
    [getting started](./getting-started.md#install)
 3. On macOS, use the direct GitHub asset for `v0.7.9`, or use the tap, trust,
-   and fully qualified formula commands for the separately reviewed `v0.7.8`
+   and fully qualified formula commands for the separately reviewed `v0.7.9`
    Homebrew distribution.
 
 ## CI/CD Usage
@@ -467,7 +470,7 @@ An npm-owned binary is also not replaced in place because the wrapper would over
 Older shared-root installs may have no receipt. Phantom recognizes a structurally valid legacy npm manifest, but otherwise reports an ambiguous legacy install and fails closed. Re-running a checksum-verified direct installer establishes the receipt without relying on a path guess.
 
 For Homebrew installs, use the reviewed tap and fully qualified formula. The
-formula currently publishes `v0.7.8`; direct GitHub assets remain available for
+formula currently publishes `v0.7.9`; direct GitHub assets remain available for
 explicit checksum verification:
 
 ```bash

@@ -2,18 +2,19 @@
 
 This is the canonical map for Phantom's repository documentation. Start with the shortest guide that matches your task, then use the security and architecture material when evaluating trust boundaries.
 
-Release-state snapshot verified on 2026-09-29: the immutable GitHub release
+Release-state snapshot verified on 2026-10-06: the immutable GitHub release
 `v0.7.9` resolves to source commit
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its exact 19-asset set, all six
 native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
 provenance and SPDX attestations are bound to that immutable release by
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-Exact public registry endpoints were requeried on 2026-09-29. Homebrew
-independently publishes the previous reviewed `v0.7.8` (bump to `v0.7.9` pending); npm `latest` remains `0.6.0`, and both npm
-`0.7.4` wrappers remain only under the failed `release-candidate` track. The
-GitHub receipt alone does not establish `0.7.9` publication on npm, crates.io,
-or MCP Registry, or any hosted-service commissioning, provider activation,
-certification, or customer acceptance.
+The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 ## Start here
 

@@ -25,11 +25,15 @@ export async function POST(req: Request) {
 
   const supabase = createServiceClient();
 
-  const { data: token } = await supabase
+  const { data: token, error: lookupError } = await supabase
     .from("device_tokens")
     .select("id, user_id, status, expires_at, device_expires_at, token_hash")
     .eq("device_code", device_code)
-    .single();
+    .maybeSingle();
+
+  if (lookupError) {
+    return Response.json({ error: "Failed to load device authorization" }, { status: 500 });
+  }
 
   if (!token) {
     return Response.json({ error: "invalid device_code" }, { status: 400 });
@@ -41,7 +45,9 @@ export async function POST(req: Request) {
     await supabase
       .from("device_tokens")
       .update({ status: "expired" })
-      .eq("id", token.id);
+      .eq("id", token.id)
+      // The device code can expire without revoking its already-issued CLI token.
+      .is("token_hash", null);
     return Response.json({ status: "expired" });
   }
 
@@ -57,6 +63,18 @@ export async function POST(req: Request) {
     // If token already issued, don't reissue
     if (token.token_hash) {
       return Response.json({ status: "already_claimed" });
+    }
+
+    // Establish the response profile before consuming the one-time claim. A
+    // transient profile failure must leave the code available for a later poll.
+    const { data: user, error: userError } = await supabase
+      .from("users")
+      .select("github_login, email, plan, plan_expires_at")
+      .eq("id", token.user_id)
+      .maybeSingle();
+
+    if (userError || !user) {
+      return Response.json({ error: "Failed to load user" }, { status: 500 });
     }
 
     // Generate access token
@@ -75,31 +93,30 @@ export async function POST(req: Request) {
         claimed_at: new Date().toISOString(),
       })
       .eq("id", token.id)
+      .eq("status", "approved")
+      .eq("user_id", token.user_id)
+      // Bind the one-use claim to the live device deadline, not its earlier read.
+      .gt("device_expires_at", new Date().toISOString())
       .is("token_hash", null)
       .select("id")
       .maybeSingle();
 
-    if (updateError || !claimedToken) {
-      return Response.json({ status: "already_claimed" });
+    if (updateError) {
+      return Response.json({ error: "Failed to claim device authorization" }, { status: 500 });
     }
 
-    // Get user info
-    const { data: user } = await supabase
-      .from("users")
-      .select("github_login, email, plan, plan_expires_at")
-      .eq("id", token.user_id)
-      .single();
+    if (!claimedToken) {
+      return Response.json({ status: "already_claimed" });
+    }
 
     return Response.json({
       status: "approved",
       access_token: accessToken,
-      user: user
-        ? {
-            github_login: user.github_login,
-            email: user.email,
-            plan: effectivePlan(user),
-          }
-        : null,
+      user: {
+        github_login: user.github_login,
+        email: user.email,
+        plan: effectivePlan(user),
+      },
     });
   }
 

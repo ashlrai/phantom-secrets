@@ -4,12 +4,12 @@
 
 ## Install
 
-Release evidence verified on 2026-09-29. The immutable GitHub `v0.7.9` release at
+Release evidence verified on 2026-10-06. The immutable GitHub `v0.7.9` release at
 https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were published
 after all six native acceptance rows and release attestations passed in
 https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
-The separately managed Homebrew formula still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
+The separately managed Homebrew formula publishes reviewed `v0.7.9`.
 
 macOS:
 ```
@@ -21,10 +21,13 @@ brew install ashlrai/phantom/phantom
 For the current macOS, Linux, or Windows release, select the exact `v0.7.9`
 archive for your architecture from
 the release, download its adjacent `.sha256` sidecar, verify it, and put both
-release executables on PATH. In the exact 2026-09-29 registry snapshot, npm `latest`
-remains `0.6.0`; exact npm `0.7.4` wrappers exist only under the failed
-`release-candidate` track. No MCP Registry `0.7.9` record was found; crates.io
-remains on `0.5.1`.
+release executables on PATH. The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 ## MCP Server
 

@@ -9,7 +9,7 @@ const read = (relativePath) =>
 
 test("landing restores credential proof without claiming universal proxy support", () => {
   const hero = read("src/components/landing/Hero.tsx");
-  const page = read("src/app/page.tsx");
+  const page = read("src/app/secrets/page.tsx");
   const ecosystem = read("src/components/landing/Ecosystem.tsx");
 
   assert.match(page, /<Transformation \/>/);
@@ -61,7 +61,7 @@ test("platform chooser links every reviewed release target with bounded evidence
 });
 
 test("activation orders installation before client connection and previews config writes", () => {
-  const page = read("src/app/page.tsx");
+  const page = read("src/app/secrets/page.tsx");
   const connection = read("src/components/landing/Install.tsx");
 
   assert.ok(page.indexOf("<QuickStart />") < page.indexOf("<Install />"));
@@ -135,8 +135,8 @@ test("on-site docs hub and machine-readable discovery are indexed", () => {
     read("src/components/landing/DocumentationGateway.tsx"),
     /\/docs#connect-an-agent/,
   );
-  assert.match(layout, /"@type": "SoftwareSourceCode"/);
-  assert.match(layout, /codeRepository: "https:\/\/github\.com\/ashlrai\/phantom-secrets"/);
+  assert.match(read("src/components/landing/LandingStructuredData.tsx"), /"@type": "SoftwareSourceCode"/);
+  assert.match(read("src/components/landing/LandingStructuredData.tsx"), /codeRepository: "https:\/\/github\.com\/ashlrai\/phantom-secrets"/);
   assert.doesNotMatch(layout, /"@type": "FAQPage"|"@type": "HowTo"/);
   assert.match(read("src/components/landing/LandingStructuredData.tsx"), /QUESTIONS\.map/);
   assert.match(sitemap, /path: "\/docs"/);
@@ -191,10 +191,111 @@ test("site links to GitHub neutrally and never asks visitors to star or upvote",
 
   for (const file of [
     "src/components/landing/Hero.tsx",
-    "src/components/landing/Nav.tsx",
     "src/components/landing/SocialProof.tsx",
   ]) {
     assert.match(read(file), /href="https:\/\/github\.com\/ashlrai\/phantom-secrets"/, file);
     assert.match(read(file), /View (?:the source )?on GitHub/, file);
   }
+  // Nav chooses the product per route; landing-interactions tests its rendered
+  // desktop and mobile links instead of requiring a hardcoded Secrets href.
+});
+
+// The replay has a real lifecycle: client navigation must leave no listener,
+// observer or playback timer behind, and returning home must re-enable it.
+function replayFixture() {
+  const vm = require("node:vm");
+  const timers = new Map();
+  const observers = [];
+  let sequence = 0;
+  class Element {
+    constructor(dataset = {}) { this.dataset = dataset; this.disabled = false; this.attributes = new Map(); this.textContent = ""; }
+    closest() { return this; }
+    setAttribute(name, value) { this.attributes.set(name, value); }
+    removeAttribute(name) { this.attributes.delete(name); }
+  }
+  function events(target) {
+    target.listeners = new Map();
+    target.addEventListener = (name, callback, options) => {
+      const set = target.listeners.get(name) ?? new Set();
+      set.add(callback); target.listeners.set(name, set);
+      options?.signal?.addEventListener("abort", () => set.delete(callback), { once: true });
+    };
+    target.fire = (name, event = {}) => target.listeners.get(name)?.forEach(callback => callback(event));
+    return target;
+  }
+  const root = events(new Element());
+  const groups = {
+    "[data-resource]": ["subscription", "api", "local", "tools"].map(resource => new Element({ resource })),
+    "[data-provider-kind]": ["subscription api", "api", "local", "tools"].map(providerKind => new Element({ providerKind })),
+    "[data-mode]": ["with", "for"].map(mode => new Element({ mode })),
+    "[data-agent]": ["scout", "builder", "reviewer"].map(agent => new Element({ agent })),
+    "[data-step]": [0, 1, 2, 3, 4].map(step => new Element({ step: String(step) })),
+  };
+  const leaves = new Map();
+  for (const action of ["play", "next", "restart"]) leaves.set(`[data-action="${action}"]`, new Element({ action }));
+  root.querySelector = selector => {
+    if (!leaves.has(selector)) leaves.set(selector, new Element());
+    return leaves.get(selector);
+  };
+  const buttons = [...groups["[data-resource]"], ...groups["[data-mode]"], ...groups["[data-agent]"], ...groups["[data-step]"], ...leaves.values()];
+  root.querySelectorAll = selector => selector === "button" ? buttons : groups[selector] ?? [];
+  root.contains = element => buttons.includes(element);
+  const classes = new Set(); root.classList = { add: value => classes.add(value), remove: value => classes.delete(value) };
+  const document = events({ hidden: false });
+  const window = {
+    Element, AbortController,
+    setTimeout(callback) { const id = ++sequence; timers.set(id, callback); return id; },
+    clearTimeout(id) { timers.delete(id); },
+    IntersectionObserver: class {
+      constructor(callback) { this.callback = callback; this.disconnected = false; observers.push(this); }
+      observe() {}
+      disconnect() { this.disconnected = true; }
+    },
+  };
+  const context = { window, document };
+  vm.runInNewContext(read("src/components/landing/phantom-world.js").replace("export function", "function") + "\nglobalThis.initialize = initializePhantomWorld;", context);
+  const click = button => root.fire("click", { target: button });
+  const advance = () => { const [id, callback] = timers.entries().next().value; timers.delete(id); callback(); };
+  return { root, timers, observers, document, initialize: context.initialize, click, advance, play: leaves.get('[data-action="play"]') };
+}
+
+test("illustrative replay cleans up and reinitializes after client navigation", () => {
+  const fixture = replayFixture();
+  const cleanup = fixture.initialize(fixture.root);
+  fixture.click(fixture.play);
+  assert.equal(fixture.timers.size, 1);
+  cleanup();
+  assert.equal(fixture.timers.size, 0);
+  assert.equal(fixture.root.listeners.get("click").size, 0);
+  assert.equal(fixture.document.listeners.get("visibilitychange").size, 0);
+  assert.equal(fixture.observers[0].disconnected, true);
+  assert.equal(fixture.root.dataset.initialized, "false");
+  const nextCleanup = fixture.initialize(fixture.root);
+  assert.equal(fixture.play.disabled, false);
+  assert.equal(fixture.root.listeners.get("click").size, 1);
+  fixture.click(fixture.play);
+  assert.equal(fixture.timers.size, 1);
+  nextCleanup();
+  assert.equal(fixture.timers.size, 0);
+  assert.equal(fixture.observers[1].disconnected, true);
+});
+
+test("illustrative replay is finite and pauses offscreen or in a background tab", () => {
+  const fixture = replayFixture();
+  const cleanup = fixture.initialize(fixture.root);
+  fixture.click(fixture.play);
+  for (let step = 0; step < 4; step += 1) fixture.advance();
+  assert.equal(fixture.root.dataset.stage, "4");
+  assert.equal(fixture.root.dataset.playing, "false");
+  assert.equal(fixture.timers.size, 0);
+  fixture.click(fixture.play);
+  fixture.observers[0].callback([{ isIntersecting: false }]);
+  assert.equal(fixture.timers.size, 0);
+  fixture.observers[0].callback([{ isIntersecting: true }]);
+  fixture.click(fixture.play);
+  fixture.document.hidden = true;
+  fixture.document.fire("visibilitychange");
+  assert.equal(fixture.root.dataset.playing, "false");
+  assert.equal(fixture.timers.size, 0);
+  cleanup();
 });

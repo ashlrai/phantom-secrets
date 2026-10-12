@@ -15,29 +15,26 @@ unchanged credential. Team invites accept only the hosted API's `member` and
 
 ## Publication status
 
-This directory is MCP Registry publication source, not an MCP Registry
-publication receipt. The exact 2026-09-29 registry snapshot is:
+Independent public readback on 2026-10-06 finds the official entry
+`io.github.ashlrai/phantom-secrets-mcp` active at version `0.7.9`, published
+2026-10-05. Its package mapping is `phantom-secrets-mcp@0.7.9` on npm.
+The local `server.json` stages version `0.7.9` and its 54-tool source catalog;
+the public registry record is metadata and does not publish that tool schema.
 
-- the immutable GitHub `v0.7.9` release provides verified CLI and MCP binaries
-  for six native targets from exact source
-  `7a51ce512ec4aee12cc29ff859036af63fbe93db`; its 19 assets were published
-  after all native rows and release attestations passed;
-- the separately managed trusted Homebrew formula still publishes the previous reviewed `v0.7.8`;
-- both npm `0.7.4` wrappers are public only under `release-candidate`, while
-  `latest` remains `0.6.0`, and no `0.7.9` MCP Registry record was found; and
-- local `server.json` stages version `0.7.9` and points at a `0.7.9` npm wrapper,
-  but neither that file nor its README proves the package or registry entry was
-  published.
-
-Do not publish this manifest until the exact npm wrapper is published and
-independently verified against the matching native release archives. Do not use
-an unpinned npm or package-runner command to configure the current runtime.
+The immutable GitHub `v0.7.9` release binds 19 assets to source
+`7a51ce512ec4aee12cc29ff859036af63fbe93db` after all six native rows and
+release attestations passed. Homebrew independently publishes `v0.7.9` and
+both npm `latest` packages publish `0.7.9`; crates.io remains at `0.5.1`.
+Registry discovery and matching npm tarball integrity do not prove six-host
+installation acceptance of the published wrappers, client approval, or an
+authorized effectful MCP operation. Do not use an unpinned package-runner
+command to configure the current runtime.
 
 ## Verified local runtime
 
 Install both current binaries from the
 [`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
-The macOS trusted formula is the separately reviewed path (still `v0.7.8` until bumped):
+The macOS trusted formula independently publishes reviewed `v0.7.9`:
 
 ```bash
 brew tap ashlrai/phantom

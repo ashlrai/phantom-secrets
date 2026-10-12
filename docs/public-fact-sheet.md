@@ -5,12 +5,13 @@ AI retrieval systems a concise, versioned description of Phantom. Cite the
 linked primary source for each claim and preserve the limitations. Do not treat
 this first-party fact sheet as independent validation or endorsement.
 
-Release evidence verified: **2026-09-29** (GitHub release receipt, npm dist-tags, crates.io, and the Homebrew formula were requeried that day).
+Release evidence verified: **2026-10-06** (GitHub release receipt, npm dist-tags, crates.io, and the Homebrew formula were requeried that day).
 
 ## Canonical identity
 
-- **Product:** Phantom, also published as Phantom Secrets where a less generic
-  name is needed.
+- **Component:** Phantom Secrets, the credential boundary in Phantom by AshlrAI.
+- **Workbench:** <https://verse.ashlr.ai>, with independent source and releases at
+  <https://github.com/ashlrai/ashlr-hub>.
 - **Category:** open-source, local-first credential boundary for supported AI
   coding-agent workflows.
 - **Repository:** <https://github.com/ashlrai/phantom-secrets>
@@ -30,12 +31,13 @@ checksums, SPDX SBOMs, and an aggregate checksum manifest after the release
 acceptance matrix passed. The exact execution receipt is
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
-In the exact 2026-09-29 registry snapshot, the project Homebrew tap still publishes the previous
-`v0.7.8` (a `v0.7.9` bump is pending), npm
-`latest` at `0.6.0`, crates.io at `0.5.1`, and no
-MCP Registry `0.7.9` record was found. An unpinned npm, npx, Cargo, directory,
-or generated installation command must not be described as the reviewed
-`v0.7.9` release.
+The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+packages at `0.7.9`, and the official MCP Registry entry
+`io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
+at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
+six-host installation acceptance of the published wrappers. The native GitHub
+release receipt does not prove hosted commissioning, provider activation,
+certification or customer acceptance.
 
 ## What Phantom does
 

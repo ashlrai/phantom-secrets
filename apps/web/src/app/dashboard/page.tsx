@@ -1,6 +1,9 @@
 import { isHostedServiceCommissioned } from "@/lib/commissioning";
 import DashboardOverviewClient from "./overview-client";
 
+// Commissioning is runtime configuration, including for credential-free builds.
+export const dynamic = "force-dynamic";
+
 export default function DashboardOverview() {
   if (!isHostedServiceCommissioned("personal_vaults")) {
     return (

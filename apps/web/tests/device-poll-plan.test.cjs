@@ -66,6 +66,9 @@ function createServiceClient(user) {
         eq() {
           return this;
         },
+        gt() {
+          return this;
+        },
         is() {
           return this;
         },
@@ -73,7 +76,10 @@ function createServiceClient(user) {
           return { data: table === "device_tokens" ? token : user };
         },
         async maybeSingle() {
-          return { data: { id: token.id }, error: null };
+          return {
+            data: query.update ? { id: token.id } : table === "device_tokens" ? token : user,
+            error: null,
+          };
         },
       };
       return builder;

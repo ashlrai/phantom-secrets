@@ -1,5 +1,11 @@
 # npm publication
 
+Current readback (2026-10-06): both npm `latest` packages and the active official
+MCP Registry listing are `0.7.9`. See [platform support](platform-support.md)
+for the separate native/archive and published-wrapper acceptance boundaries.
+The version-specific procedure below is the historical `0.7.8` runbook; it is
+not a current publication-status receipt.
+
 This runbook stages, reviews, approves, accepts, and promotes Phantom's two thin
 native-binary wrappers on the public npm registry. It does not use the direct
 publication path or make `latest` point at unaccepted bytes.

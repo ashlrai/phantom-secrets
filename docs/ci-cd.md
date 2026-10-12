@@ -40,8 +40,9 @@ The repository action at `integrations/github-actions/action.yml` is a fail-fast
 The example downloads immutable `v0.7.9`, whose tag resolves to source commit
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`, and verifies its published
 checksum before executing it; do not replace it with an unpinned registry
-command. In the exact 2026-09-29 registry snapshot, Homebrew independently
-publishes the previous reviewed `v0.7.8` binaries while npm and crates.io do not.
+command. In the exact 2026-10-06 registry snapshot, Homebrew independently
+publishes reviewed `v0.7.9`. Both npm packages publish `0.7.9`; crates.io
+remains at `0.5.1`. Each installation channel needs its own acceptance receipt.
 Select the matching asset for ARM64 or a non-Linux runner.
 
 ## Vercel
