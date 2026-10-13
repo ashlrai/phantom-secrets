@@ -479,6 +479,27 @@ test('publish verifies hosted artifact digests and both attestation predicates b
   assert.doesNotMatch(readFileSync(badSpdxAttestation.cargoLog, 'utf8'), /^publish /m);
 });
 
+test('verify-only --skip-source-gates packages every crate without re-running fmt, clippy, or test', () => {
+  const harness = makeHarness();
+  const result = harness.run(['--verify-only', '--skip-source-gates', '--version', version, '--allow-dirty']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Verified 12 local crate packages/);
+  const log = readFileSync(harness.cargoLog, 'utf8');
+  assert.doesNotMatch(log, /^(fmt|clippy|test) /m);
+  assert.equal(log.match(/^package --registry crates-io /gm)?.length, 12);
+  assert.doesNotMatch(log, /^publish /m);
+});
+
+for (const mode of ['--dry-run', '--publish']) {
+  test(`--skip-source-gates is refused with ${mode}`, () => {
+    const harness = makeHarness();
+    const result = harness.run([mode, '--skip-source-gates', '--version', version]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /only accepted with --verify-only/);
+    assert.throws(() => readFileSync(harness.cargoLog));
+  });
+}
+
 test('metadata drift aborts before source gates or packaging', () => {
   const harness = makeHarness({ omitLast: true });
   const result = harness.run(['--verify-only', '--allow-dirty']);
