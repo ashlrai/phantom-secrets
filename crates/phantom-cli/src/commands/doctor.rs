@@ -199,7 +199,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     if let Some(bytes) = gitignore_before.as_deref() {
         let content = String::from_utf8(bytes.to_vec())
             .map_err(|_| anyhow::anyhow!("Refusing to rewrite non-UTF-8 .gitignore"))?;
-        if content.lines().any(|l| l.trim() == ".env") {
+        if env_is_gitignored(&project_dir, &content) {
             check_pass(".env is in .gitignore");
         } else {
             check_warn(".env is NOT in .gitignore — secrets could be committed!");
@@ -766,6 +766,45 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
     }
 }
 
+/// Returns `true` if `.env` (relative to `project_dir`) would be ignored by git.
+///
+/// Prefers `git check-ignore` when a git repo is present (handles wildcards like
+/// `*.env`, `.env*`, `**/.env` natively). Falls back to a text scan of the
+/// supplied `.gitignore` content covering the common patterns Phantom users
+/// reach for: `.env`, `.env*`, `*.env`, `**/.env`.
+fn env_is_gitignored(project_dir: &std::path::Path, gitignore_content: &str) -> bool {
+    if project_dir.join(".git").exists() {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(project_dir)
+            .args(["check-ignore", "-q", ".env"])
+            .output();
+        if let Ok(out) = output {
+            // Exit 0 = ignored, 1 = not ignored, 128 = git unavailable / not a repo.
+            // Trust git only on the unambiguous 0/1 answers.
+            if let Some(code) = out.status.code() {
+                if code == 0 {
+                    return true;
+                }
+                if code == 1 {
+                    return false;
+                }
+            }
+        }
+    }
+    // Fallback: scan .gitignore text for patterns that match `.env`.
+    gitignore_content.lines().any(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+            return false;
+        }
+        matches!(
+            trimmed,
+            ".env" | ".env*" | "*.env" | "**/.env" | "/.env" | "**/.env*"
+        )
+    })
+}
+
 fn check_pass(msg: &str) {
     println!("  {} {}", "pass".green(), msg);
 }
@@ -950,5 +989,57 @@ mod tests {
         assert!(helper.contains("authorize_external_install_from_terminal"));
         assert!(helper.contains("commit_prepared_install"));
         assert!(!helper.contains("acquire_project_transaction_lock"));
+    }
+
+    fn init_git_repo(dir: &Path) {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["init", "-q"])
+            .output()
+            .expect("git init failed");
+    }
+
+    #[test]
+    fn env_exact_match_in_gitignore_is_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let content = ".env\nnode_modules/\n";
+        std::fs::write(tmp.path().join(".gitignore"), content).unwrap();
+        assert!(super::env_is_gitignored(tmp.path(), content));
+    }
+
+    #[test]
+    fn env_missing_from_gitignore_is_not_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let content = "node_modules/\ntarget/\n";
+        std::fs::write(tmp.path().join(".gitignore"), content).unwrap();
+        assert!(!super::env_is_gitignored(tmp.path(), content));
+    }
+
+    #[test]
+    fn env_covered_by_wildcard_glob_is_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let content = "*.env\n";
+        std::fs::write(tmp.path().join(".gitignore"), content).unwrap();
+        assert!(super::env_is_gitignored(tmp.path(), content));
+    }
+
+    #[test]
+    fn env_covered_by_double_star_glob_is_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let content = "**/.env\n";
+        std::fs::write(tmp.path().join(".gitignore"), content).unwrap();
+        assert!(super::env_is_gitignored(tmp.path(), content));
+    }
+
+    #[test]
+    fn comment_lines_do_not_count_as_a_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = "# .env\nnode_modules/\n";
+        assert!(!super::env_is_gitignored(tmp.path(), content));
     }
 }
