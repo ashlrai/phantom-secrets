@@ -29,9 +29,11 @@ const REQUIRED_SECURITY_HEADERS = [
   "x-content-type-options",
   "x-frame-options",
 ];
+// Product guidance schema may live on the homepage or, since phm.dev became the
+// Phantom umbrella homepage, on the Secrets product page.
+const REQUIRED_PRODUCT_GUIDE_SCHEMA = ["FAQPage", "HowTo"];
+const PRODUCT_GUIDE_ROUTES = new Set(["/", "/secrets"]);
 const REQUIRED_HOME_SCHEMA = [
-  "FAQPage",
-  "HowTo",
   "Organization",
   "SoftwareApplication",
   "SoftwareSourceCode",
@@ -783,6 +785,7 @@ export async function observeProduction(options = {}) {
     addFinding(findings, "fail", "robots_blocks_site", "robots.txt blocks the public site");
   }
 
+  const productGuideTypes = new Set();
   const routeResults = await mapWithConcurrency(sitemapPaths, 5, async (route) => {
     try {
       const response = await requestWithinBoundary(new URL(route, siteOrigin), requestOptions);
@@ -831,6 +834,9 @@ export async function observeProduction(options = {}) {
       if (inspected.structured_data_errors.length) {
         addFinding(findings, "fail", "structured_data_invalid", "Page contains invalid JSON-LD", route);
       }
+      if (PRODUCT_GUIDE_ROUTES.has(route)) {
+        for (const type of inspected.structured_data_types) productGuideTypes.add(type);
+      }
       if (route === "/") {
         for (const type of REQUIRED_HOME_SCHEMA) {
           if (!inspected.structured_data_types.includes(type)) {
@@ -875,6 +881,18 @@ export async function observeProduction(options = {}) {
       return { route, status: null, error: "request_failed" };
     }
   });
+
+  for (const type of REQUIRED_PRODUCT_GUIDE_SCHEMA) {
+    if (!productGuideTypes.has(type)) {
+      addFinding(
+        findings,
+        "fail",
+        "home_schema_missing",
+        `Neither the homepage nor /secrets has ${type} JSON-LD`,
+        "/",
+      );
+    }
+  }
 
   const titles = new Map();
   for (const route of routeResults) {
