@@ -265,6 +265,86 @@ test("runtime source variables cannot repair missing or conflicting frozen sourc
   }
 });
 
+test("source binding diagnostics distinguish absence, invalidity, equality and conflict", () => {
+  const observability = loadObservability();
+  for (const [platformSource, category, identified] of [
+    [undefined, "absent", true],
+    ["", "invalid", false],
+    ["unexpected-platform-marker", "invalid", false],
+    [sourceRevision, "matching", true],
+    ["f".repeat(40), "conflicting", false],
+  ]) {
+    const env = validEnvironment();
+    if (platformSource === undefined) delete env.VERCEL_GIT_COMMIT_SHA;
+    else env.VERCEL_GIT_COMMIT_SHA = platformSource;
+    assert.deepEqual(observability.sourceBindingDiagnostic(env), {
+      build_observation: "valid",
+      platform_source: category,
+    });
+    assert.equal(observability.readBuildIdentity(env).identified, identified);
+  }
+  for (const witness of [null, "unidentified", "invalid-build-observation"]) {
+    const missing = loadObservability("0.7.5", witness);
+    const env = validEnvironment();
+    assert.deepEqual(missing.sourceBindingDiagnostic(env), {
+      build_observation: "missing_or_invalid",
+      platform_source: "conflicting",
+    });
+    assert.equal(missing.readBuildIdentity(env).identified, false);
+    delete env.VERCEL_GIT_COMMIT_SHA;
+    assert.deepEqual(missing.sourceBindingDiagnostic(env), {
+      build_observation: "missing_or_invalid",
+      platform_source: "absent",
+    });
+    assert.equal(missing.readBuildIdentity(env).identified, false);
+  }
+});
+
+test("held source diagnostics log only fixed categories and preserve the public response", async () => {
+  const observability = loadObservability();
+  const route = loadRoute("src/app/api/v1/ready/route.ts", observability);
+  for (const [platformSource, category] of [
+    [undefined, "absent"], ["", "invalid"],
+    ["unexpected-platform-marker", "invalid"],
+    [sourceRevision, "matching"], ["f".repeat(40), "conflicting"],
+  ]) {
+    const env = validEnvironment();
+    delete env.VERCEL_DEPLOYMENT_ID; // Hold another axis to inspect every source category.
+    if (platformSource === undefined) delete env.VERCEL_GIT_COMMIT_SHA;
+    else env.VERCEL_GIT_COMMIT_SHA = platformSource;
+    const calls = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => calls.push(args);
+    try {
+      await withEnvironment(env, async () => {
+        const response = route.GET();
+        assert.equal(response.status, 503);
+        assert.deepEqual(await response.json(), {
+          status: "not_ready", service: "phantom-web", release_version: "0.7.5",
+        });
+        assert.equal(calls.length, 1);
+        const [marker, text] = calls[0];
+        assert.equal(marker, "phantom-readiness-held");
+        const diagnostic = JSON.parse(text);
+        assert.deepEqual(Object.keys(diagnostic).sort(), [
+          "build_identity_reasons", "checks", "hosted_services", "source_binding",
+        ]);
+        assert.deepEqual(diagnostic.source_binding, {
+          build_observation: "valid", platform_source: category,
+        });
+        for (const value of [sourceRevision, "f".repeat(40), "unexpected-platform-marker",
+          ...["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+            "SUPABASE_SERVICE_ROLE_KEY", "STRIPE_SECRET_KEY", "STRIPE_PRO_PRICE_ID",
+            "STRIPE_WEBHOOK_SECRET"].map((name) => env[name])]) {
+          assert.equal(text.includes(value), false, value);
+        }
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+  }
+});
+
 test("health is provider-free route/runtime liveness with no-store responses", async () => {
   const observability = loadObservability();
   const route = loadRoute("src/app/api/v1/health/route.ts", observability);

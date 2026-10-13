@@ -121,13 +121,15 @@ function billingConfigurationReady(env: NodeJS.ProcessEnv): boolean {
   );
 }
 
-export function readBuildIdentity(
-  env: NodeJS.ProcessEnv = process.env,
-): BuildIdentity {
-  const releaseVersion = validatedValue(
-    packageMetadata.version,
-    RELEASE_VERSION_PATTERN,
-  );
+export type SourceBindingDiagnostic = {
+  build_observation: "valid" | "missing_or_invalid";
+  platform_source: "absent" | "invalid" | "matching" | "conflicting";
+};
+
+function readSourceBinding(env: NodeJS.ProcessEnv): {
+  revision: string | null;
+  diagnostic: SourceBindingDiagnostic;
+} {
   const buildSourceRevision = validatedValue(
     BUILD_SOURCE_REVISION,
     SOURCE_REVISION_PATTERN,
@@ -144,6 +146,38 @@ export function readBuildIdentity(
       platformSourceRevision === buildSourceRevision)
       ? buildSourceRevision
       : null;
+  return {
+    revision: sourceRevision,
+    diagnostic: {
+      build_observation: buildSourceRevision ? "valid" : "missing_or_invalid",
+      // A valid platform value with no valid build observation is unbound and
+      // therefore conflicting. Matching requires both canonical values equal.
+      platform_source:
+        env.VERCEL_GIT_COMMIT_SHA === undefined
+          ? "absent"
+          : !platformSourceRevision
+            ? "invalid"
+            : buildSourceRevision === platformSourceRevision
+              ? "matching"
+              : "conflicting",
+    },
+  };
+}
+
+export function sourceBindingDiagnostic(
+  env: NodeJS.ProcessEnv = process.env,
+): SourceBindingDiagnostic {
+  return readSourceBinding(env).diagnostic;
+}
+
+export function readBuildIdentity(
+  env: NodeJS.ProcessEnv = process.env,
+): BuildIdentity {
+  const releaseVersion = validatedValue(
+    packageMetadata.version,
+    RELEASE_VERSION_PATTERN,
+  );
+  const sourceRevision = readSourceBinding(env).revision;
   const deploymentId = validatedValue(
     env.VERCEL_DEPLOYMENT_ID,
     DEPLOYMENT_ID_PATTERN,

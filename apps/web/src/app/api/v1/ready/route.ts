@@ -2,6 +2,7 @@ import {
   noStoreJson,
   publicReadinessSnapshot,
   readinessSnapshot,
+  sourceBindingDiagnostic,
 } from "@/lib/hosted-observability";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,7 @@ export function GET() {
       JSON.stringify({
         checks: detail.checks,
         build_identity_reasons: detail.build.unavailable_reasons,
+        source_binding: sourceBindingDiagnostic(),
         hosted_services: detail.hosted_services,
       }),
     );
