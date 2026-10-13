@@ -12,6 +12,9 @@ import {
 
 const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const SOURCE_REVISION_PATTERN = /^[0-9a-f]{40}$/;
+// Next config replaces this direct reference with the observed build literal.
+// Runtime variables cannot repair a missing or dirty source observation.
+const BUILD_SOURCE_REVISION = process.env.PHANTOM_BUILD_SOURCE_REVISION;
 const DEPLOYMENT_ID_PATTERN = /^dpl_[0-9A-Za-z]{16,96}$/;
 const DEPLOYMENT_ENVIRONMENTS = new Set([
   "production",
@@ -125,10 +128,22 @@ export function readBuildIdentity(
     packageMetadata.version,
     RELEASE_VERSION_PATTERN,
   );
-  const sourceRevision = validatedValue(
+  const buildSourceRevision = validatedValue(
+    BUILD_SOURCE_REVISION,
+    SOURCE_REVISION_PATTERN,
+  );
+  const platformSourceRevision = validatedValue(
     env.VERCEL_GIT_COMMIT_SHA,
     SOURCE_REVISION_PATTERN,
   );
+  // Only genuine absence may use the build observation. A present invalid or
+  // conflicting platform revision remains a failed source identity.
+  const sourceRevision =
+    buildSourceRevision &&
+    (env.VERCEL_GIT_COMMIT_SHA === undefined ||
+      platformSourceRevision === buildSourceRevision)
+      ? buildSourceRevision
+      : null;
   const deploymentId = validatedValue(
     env.VERCEL_DEPLOYMENT_ID,
     DEPLOYMENT_ID_PATTERN,

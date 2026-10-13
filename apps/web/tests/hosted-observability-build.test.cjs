@@ -17,7 +17,6 @@ const PUBLIC_CONFIGURATION = {
   NEXT_PUBLIC_SUPABASE_ANON_KEY: `anon_${"a".repeat(32)}`,
 };
 const RUNTIME_CONFIGURATION = {
-  VERCEL_GIT_COMMIT_SHA: "b".repeat(40),
   VERCEL_DEPLOYMENT_ID: `dpl_${"C".repeat(24)}`,
   VERCEL_ENV: "production",
   SUPABASE_SERVICE_ROLE_KEY: `service_${"d".repeat(32)}`,
@@ -29,6 +28,8 @@ const RELEVANT_ENV_NAMES = [
   "PHANTOM_CLOUD_VAULTS_ENABLED",
   "PHANTOM_TEAMS_ENABLED",
   "PHANTOM_PUBLIC_AUTH_CONFIGURATION_FINGERPRINT",
+  "PHANTOM_BUILD_SOURCE_REVISION",
+  "VERCEL_GIT_COMMIT_SHA",
 ];
 
 // This test runs two full `next build`s plus two `next start`s. Each build
@@ -66,6 +67,22 @@ function copyApplication(destination) {
     path.join(destination, "node_modules"),
     process.platform === "win32" ? "junction" : "dir",
   );
+}
+
+function initializeSource(directory) {
+  const root = path.resolve(directory, "../..");
+  fs.cpSync(path.join(repositoryDir, "docs"), path.join(root, "docs"), { recursive: true });
+  function git(...args) {
+    const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  }
+  git("init", "--quiet");
+  git("add", ".");
+  git("-c", "user.name=Phantom fixture", "-c", "user.email=fixture@example.invalid",
+    "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+    "commit", "--quiet", "-m", "Owned build source");
+  return { revision: git("rev-parse", "HEAD"), git };
 }
 
 function buildApplication(directory, publicConfiguration) {
@@ -164,25 +181,22 @@ test(
     const temporaryRoot = fs.mkdtempSync(
       path.join(os.tmpdir(), "phantom-web-readiness-"),
     );
-    const temporaryRepository = path.join(temporaryRoot, "repository");
     const withoutPublicConfig = path.join(
-      temporaryRepository,
-      "apps",
+      temporaryRoot,
       "without-public",
+      "apps",
+      "web",
     );
     const withPublicConfig = path.join(
-      temporaryRepository,
-      "apps",
+      temporaryRoot,
       "with-public",
+      "apps",
+      "web",
     );
 
     try {
-      fs.cpSync(
-        path.join(repositoryDir, "docs"),
-        path.join(temporaryRepository, "docs"),
-        { recursive: true },
-      );
       copyApplication(withoutPublicConfig);
+      initializeSource(withoutPublicConfig);
       buildApplication(withoutPublicConfig, {});
       const runtimeInjection = await readProductionReadiness(
         withoutPublicConfig,
@@ -201,7 +215,11 @@ test(
       });
 
       copyApplication(withPublicConfig);
-      buildApplication(withPublicConfig, PUBLIC_CONFIGURATION);
+      const builtSource = initializeSource(withPublicConfig);
+      buildApplication(withPublicConfig, {
+        ...PUBLIC_CONFIGURATION,
+        PHANTOM_BUILD_SOURCE_REVISION: "f".repeat(40),
+      });
       const builtConfiguration = await readProductionReadiness(
         withPublicConfig,
         { ...RUNTIME_CONFIGURATION, ...PUBLIC_CONFIGURATION },
@@ -213,6 +231,29 @@ test(
         service: "phantom-web",
         release_version: releaseVersion,
       });
+
+      // A new checkout/runtime cannot rewrite the old compiled source witness.
+      fs.writeFileSync(path.join(withPublicConfig, "source-change.txt"), "next source\n");
+      builtSource.git("add", ".");
+      builtSource.git("-c", "user.name=Phantom fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+        "commit", "--quiet", "-m", "Later source");
+      const laterRevision = builtSource.git("rev-parse", "HEAD");
+      assert.notEqual(laterRevision, builtSource.revision);
+      for (const [platformSource, expectedStatus] of [
+        [undefined, 200],
+        [builtSource.revision, 200],
+        [laterRevision, 503],
+        ["", 503],
+        ["bad", 503],
+      ]) {
+        const runtime = { ...RUNTIME_CONFIGURATION, ...PUBLIC_CONFIGURATION,
+          PHANTOM_BUILD_SOURCE_REVISION: laterRevision };
+        if (platformSource !== undefined) runtime.VERCEL_GIT_COMMIT_SHA = platformSource;
+        const result = await readProductionReadiness(withPublicConfig, runtime);
+        assert.equal(result.response.status, expectedStatus, String(platformSource));
+        assert.deepEqual(Object.keys(result.body).sort(), ["release_version", "service", "status"]);
+      }
     } finally {
       fs.rmSync(temporaryRoot, { force: true, recursive: true });
     }
