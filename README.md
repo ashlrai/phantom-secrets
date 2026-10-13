@@ -421,7 +421,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom unwrap` | Restore original package.json scripts |
 | `phantom watch` | Watch managed dotenv files and report new unprotected secrets. `--auto` hard-denies before mutation in 0.7.9; use transactional `phantom init`. |
 | `phantom why <KEY>` | Explain why a key is or is not protected |
-| `phantom copy <KEY>` | Copy a secret to an initialized target after exact trusted-terminal confirmation; refuses existing target vault, config, or managed-dotenv ownership rather than overwriting |
+| `phantom copy <KEY>` | Copy a secret to an initialized target after exact trusted-terminal confirmation; refuses existing target vault, config, or managed-dotenv ownership rather than overwriting. If both projects set `owner` in `.phantom.toml` (`personal`, `company[:name]`, `client:name`) and they differ, the copy is refused unless `--allow-cross-owner` is passed |
 | `phantom team list/members` | Authenticated, value-blind provider reads. CLI requires attached trusted terminals and an exact challenge before bearer/network access; MCP requires `confirm` plus out-of-band approval. |
 | `phantom team create/invite/key-publish/vault-push/vault-pull/rotate-vault` | Run CLI team effects only from an attached trusted terminal and complete the exact challenge before credential, keypair, vault-value, or network access. Invites assign only `member` or `admin`. |
 | `phantom validate` / `--watch` | Send selected credentials to configured validators only after exact trusted-terminal consent; watch authorization ends when config or the vault name set changes |

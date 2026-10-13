@@ -260,6 +260,9 @@ enum Commands {
         /// Rename the secret in the target project
         #[arg(long, alias = "as")]
         rename: Option<String>,
+        /// Allow copying between projects whose `owner` labels differ
+        #[arg(long)]
+        allow_cross_owner: bool,
     },
 
     /// Generate .env.example for team onboarding
@@ -1055,7 +1058,12 @@ fn run() -> anyhow::Result<()> {
         Commands::Why { key } => commands::why::run(&key),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
         Commands::Unwrap => commands::unwrap::run(),
-        Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
+        Commands::Copy {
+            name,
+            to,
+            rename,
+            allow_cross_owner,
+        } => commands::copy::run(&name, &to, &rename, allow_cross_owner),
         Commands::Audit { action } => match action {
             AuditAction::Show {
                 last,
