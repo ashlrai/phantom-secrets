@@ -28,6 +28,7 @@ const publicPaths = new Set([
   "/docs",
   "/docs/guide",
   "/security",
+  "/secrets",
   "/llms.txt",
   "/llms-full.txt",
 ]);
@@ -91,14 +92,17 @@ test("machine-readable links require exact canonical URLs", () => {
 });
 
 function html(origin, route, options = {}) {
+  const guide = options.guideSchema ?? route === "/";
   const schema = route === "/"
     ? [
         jsonLd("SoftwareApplication", { softwareVersion: "9.8.7" }),
         jsonLd("SoftwareSourceCode"),
         jsonLd("Organization"),
-        jsonLd("HowTo"),
-        jsonLd("FAQPage"),
+        guide ? jsonLd("HowTo") : "",
+        guide ? jsonLd("FAQPage") : "",
       ].join("")
+    : guide
+      ? `${jsonLd("HowTo")}${jsonLd("FAQPage")}`
     : route.startsWith("/docs/")
       ? `${jsonLd("TechArticle")}${jsonLd("BreadcrumbList")}`
       : "";
@@ -377,6 +381,39 @@ test("canonical, structured-data, and off-origin redirect failures stay visible"
         response.end();
       },
     },
+  );
+});
+
+test("product guide schema may move from the umbrella homepage to /secrets", async () => {
+  const serve = (route, guideSchema) => (response, origin) => {
+    response.setHeader("content-type", "text/html");
+    for (const [name, value] of [
+      ["content-security-policy", "default-src 'self'"],
+      ["permissions-policy", "camera=()"],
+      ["referrer-policy", "strict-origin-when-cross-origin"],
+      ["strict-transport-security", "max-age=63072000"],
+      ["x-content-type-options", "nosniff"],
+      ["x-frame-options", "DENY"],
+    ]) {
+      response.setHeader(name, value);
+    }
+    response.end(html(origin, route, { guideSchema }));
+  };
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.ok(!report.findings.some((finding) => finding.code === "home_schema_missing"));
+    },
+    { "/": serve("/", false), "/secrets": serve("/secrets", true) },
+  );
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const missing = report.findings.filter((finding) => finding.code === "home_schema_missing");
+      assert.equal(missing.length, 2);
+      assert.equal(report.verdict, "FAIL");
+    },
+    { "/": serve("/", false) },
   );
 });
 
