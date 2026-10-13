@@ -76,3 +76,12 @@ opt-level = 3
 
 [profile.dev.package.rsa]
 opt-level = 3
+
+# Test fixtures exercise the real hardened Argon2id parameters repeatedly.
+# Optimize only their CPU-heavy dependencies in the test profile; production
+# profiles, memory/time costs, salts and vault behavior remain unchanged.
+[profile.test.package.argon2]
+opt-level = 3
+
+[profile.test.package.blake2]
+opt-level = 3
