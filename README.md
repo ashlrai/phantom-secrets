@@ -35,15 +35,18 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-macOS via Homebrew; the tap formula inspected on 2026-10-09 installs `phantom` and `phantom-mcp` from `v0.7.9`. Linux and Windows:
-use the matching [release asset](#exact-v079-github-assets). Then run
-`phantom init` in your project and `phantom setup --client claude` (or
-`cursor`, `windsurf`, `codex`). Full walkthrough: [Quick Start](#quick-start).
+Then, in any project with a `.env`:
 
-> **▶ [Historical v0.4 demo — current behavior differs](https://github.com/ashlrai/phantom-secrets/releases/download/v0.4.0/phantom-demo.mp4)** &nbsp;·&nbsp;
-> **🛡 [Security model](SECURITY.md)** &nbsp;·&nbsp;
-> **📋 [Threat model](THREAT_MODEL.md)** &nbsp;·&nbsp;
-> **💬 [Discussions](https://github.com/ashlrai/phantom-secrets/discussions)**
+```bash
+phantom init                     # move keys into the vault, leave phm_ placeholders
+phantom setup --client claude    # or cursor, windsurf, codex
+phantom exec -- npm run dev      # real keys injected only via the local proxy
+```
+
+Linux and Windows: use the matching [release asset](#exact-v079-github-assets).
+Full walkthrough: [Quick Start](#quick-start) ·
+[Security model](SECURITY.md) · [Threat model](THREAT_MODEL.md) ·
+[Discussions](https://github.com/ashlrai/phantom-secrets/discussions)
 
 ## Start here
 
