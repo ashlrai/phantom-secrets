@@ -4,7 +4,51 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No additional unreleased changes are recorded after the `0.7.9` release.
+No additional unreleased changes are recorded after the `0.8.0` candidate.
+
+## [0.8.0] - 2026-10-13
+
+Source candidate. Until a `v0.8.0` tag and its tag-bound release workflow
+exist, the immutable `v0.7.9` GitHub release remains the current published
+receipt; nothing here claims npm, crates.io, Homebrew or MCP Registry
+publication.
+
+### Added
+
+- `phantom env use|list|new|copy` to switch and manage per-project
+  environments (#162).
+- A per-project owner scope label (personal, company or client) with a guard
+  against copying secrets across owners (#163).
+
+### Changed
+
+- Upgraded the MCP server to rmcp 3.5 (#132).
+- `--help` now opens with a quick start and lists every command by task (#126).
+- The README leads with install and a three-command quick start (#116, #164);
+  docs explain separating personal, company and client keys across projects
+  (#159) and include tested Claude Code, Cursor and GitHub Actions recipes (#133).
+
+### Fixed
+
+- `phantom exec` keeps the child's stdout clean and honors `--quiet` (#130).
+- `phantom init` no longer duplicates `DATABASE_URL`, explains the
+  connection-string block, and warns about volatile Linux keyutils (#124, #125).
+- The pre-commit hook accepts the `.env.example` that `phantom init` writes (#119).
+- The SEO observer accepts the product guide schema on `/secrets` (#161).
+
+### Security
+
+- Web dependency audit fixes for brace-expansion, DOMPurify and Next.js
+  advisories (#160); rustls 0.23.45 for RUSTSEC-2026-0285 (#120).
+
+### Breaking changes and migration
+
+- `phantom copy` refuses copying between projects whose `.phantom.toml`
+  `owner` labels differ. Pass `--allow-cross-owner` to copy intentionally.
+  Projects without an `owner` label behave as before (#163).
+- The MCP server is built on rmcp 3.5. The tool names and schemas are unchanged.
+  Re-register only if your client pinned an older `phantom-secrets-mcp` binary
+  path (#132).
 
 ## [0.7.9] - 2026-09-06
 
