@@ -49,6 +49,7 @@ deny = [
     { crate = "openssl-sys", reason = "Phantom uses rustls to avoid a platform TLS backend and native OpenSSL linkage" },
 ]
 skip = [
+    { crate = "base64@0.22.1", reason = "rmcp 3 (MCP SDK security upgrade) uses base64 0.23 while the workspace and hyper-util still use base64 0.22" },
     { crate = "bitflags@1.3.2", reason = "Existing notify platform backends require bitflags 1 while the rest of the graph uses bitflags 2" },
     { crate = "block-buffer@0.12.1", reason = "self_update 1.2 checksum enforcement uses the current sha2 0.11 digest stack while core cryptography remains on the sha2 0.10 stack" },
     { crate = "const-oid@0.10.2", reason = "self_update 1.2 checksum enforcement uses the current sha2 0.11 digest stack while RSA test dependencies retain const-oid 0.9" },
@@ -63,6 +64,7 @@ skip = [
     { crate = "rustix@0.38.44", reason = "Existing which dependency has not converged on the rustix 1 dependency family" },
     { crate = "security-framework@2.11.1", reason = "Existing keyring and HTTP dependencies span two macOS Security Framework bindings generations" },
     { crate = "sha2@0.11.0", reason = "self_update 1.2 requires sha2 0.11 to verify release SHA256SUMS; workspace cryptography currently uses sha2 0.10" },
+    { crate = "syn@2.0.117", reason = "rmcp-macros 3 derives through darling 0.24 on syn 3 while the rest of the proc-macro graph remains on syn 2" },
     { crate = "thiserror@1.0.69", reason = "Existing transitive dependencies still span the thiserror 1 and 2 APIs" },
     { crate = "thiserror-impl@1.0.69", reason = "Existing transitive dependencies still span the thiserror 1 and 2 APIs" },
     { crate = "untrusted@0.7.1", reason = "jsonwebtoken 10.3 requires an explicit aws-lc backend that still uses untrusted 0.7 while rustls ring uses untrusted 0.9" },

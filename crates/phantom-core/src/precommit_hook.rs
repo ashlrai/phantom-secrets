@@ -1117,6 +1117,35 @@ fn is_owned_legacy_line(line: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Wait out ETXTBSY on a freshly written fake executable.
+    ///
+    /// Other tests in this process spawn children concurrently. A child forked
+    /// while `std::fs::write` still held the script open for writing inherits
+    /// that descriptor until it execs, and during that window `execve` of the
+    /// script fails with ETXTBSY ("Text file busy"). The code under test then
+    /// reports `GitUnavailable` instead of the error the test asserts. Once one
+    /// exec succeeds no writable descriptor can remain (the parent's is closed
+    /// and new forks cannot inherit it), so a single successful probe makes the
+    /// real call deterministic. The probe runs the script once with no arguments
+    /// and ignores its exit status.
+    #[cfg(unix)]
+    fn wait_until_executable(path: &std::path::Path) {
+        for _ in 0..200 {
+            match std::process::Command::new(path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+            {
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("fake executable {} cannot run: {error}", path.display()),
+                Ok(_) => return,
+            }
+        }
+        panic!("fake executable {} stayed busy", path.display());
+    }
+
     fn git(project: &Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
@@ -1274,6 +1303,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&clean_git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        wait_until_executable(&clean_git);
 
         let resolved = resolve_path_with_git(&linked, clean_git.as_os_str())
             .unwrap()
@@ -1457,6 +1487,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        wait_until_executable(&fake_git);
 
         assert!(matches!(
             install_with_git(&project, fake_git.as_os_str(), None).unwrap_err(),
@@ -1598,6 +1629,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        wait_until_executable(&fake_git);
 
         let error = resolve_path_with_git(project.path(), fake_git.as_os_str()).unwrap_err();
         assert!(matches!(error, HookError::InvalidPath { .. }));
@@ -1638,6 +1670,7 @@ mod tests {
         let phantom = directory.path().join("phantom");
         std::fs::write(&phantom, "#!/bin/sh\nexit 7\n").unwrap();
         std::fs::set_permissions(&phantom, std::fs::Permissions::from_mode(0o755)).unwrap();
+        wait_until_executable(&phantom);
         let hook = directory.path().join("pre-commit");
         std::fs::write(&hook, ensure("").content).unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();

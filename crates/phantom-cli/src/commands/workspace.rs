@@ -1335,6 +1335,10 @@ mod tests {
         );
     }
 
+    /// Upper bound for the contender in
+    /// `participant_resolves_vault_authority_before_project_transaction_lock`.
+    const VAULT_AUTHORITY_CONTENDER_BOUND: Duration = Duration::from_secs(120);
+
     #[test]
     fn participant_resolves_vault_authority_before_project_transaction_lock() {
         let workspace = TempDir::new().unwrap();
@@ -1357,7 +1361,20 @@ mod tests {
                     let _ = acquired_tx.send(());
                 });
 
-                if acquired_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+                // The bound only matters when the regression is present (the
+                // constructor holding the project lock while it resolves the
+                // vault would block the contender forever). In a healthy run
+                // the contender returns as soon as it acquires the lock. That
+                // acquisition shares PROCESS_ENV_LOCK and the 64-way process
+                // lock shards with other tests in this binary, so under
+                // a loaded full-workspace run it can legitimately wait on
+                // unrelated tests for well over 10 s. A generous bound keeps
+                // the regression detectable without turning contention into
+                // a false failure.
+                if acquired_rx
+                    .recv_timeout(VAULT_AUTHORITY_CONTENDER_BOUND)
+                    .is_err()
+                {
                     *delayed_contender_from_factory.lock().unwrap() = Some(contender);
                     return Err(PhantomError::VaultError(
                         "vault construction ran while the project transaction lock was held"

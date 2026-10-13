@@ -99,7 +99,7 @@ export function SiteFooter() {
                 href="https://github.com/ashlrai/phantom-secrets"
                 className={linkClass}
               >
-                Star on GitHub
+                View on GitHub
               </a>
             </li>
             <li>

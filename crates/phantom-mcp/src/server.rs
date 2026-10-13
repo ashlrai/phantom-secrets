@@ -6004,8 +6004,8 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 #[tool_handler]
 impl ServerHandler for PhantomMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Phantom is a safe execution substrate for AI coding agents. Start with \
                  phantom_capability to learn the exact allowed verbs and hard denials. Use \
                  phantom_do to canonicalize a closed engineering action without executing it, then \
@@ -8890,12 +8890,12 @@ mod tests {
 
     /// Extract the raw text string from the first Content item in a CallToolResult.
     fn extract_content_text(result: &CallToolResult) -> String {
-        use rmcp::model::RawContent;
+        use rmcp::model::ContentBlock;
         result
             .content
             .iter()
             .find_map(|c| {
-                if let RawContent::Text(t) = &c.raw {
+                if let ContentBlock::Text(t) = c {
                     Some(t.text.clone())
                 } else {
                     None
@@ -9692,12 +9692,12 @@ mod tests {
             }))
             .unwrap();
 
-        use rmcp::model::RawContent;
+        use rmcp::model::ContentBlock;
         let text = result
             .content
             .iter()
             .find_map(|c| {
-                if let RawContent::Text(t) = &c.raw {
+                if let ContentBlock::Text(t) = c {
                     Some(t.text.clone())
                 } else {
                     None

@@ -17,14 +17,13 @@ const publicPowershellInstaller = readFileSync(
   "utf8",
 );
 
-// The candidate assets target v0.7.9, while the checked-in web reference
-// copies remain byte-bound to the last immutable public release (v0.7.8).
-// Those reference bytes are independently checked against public-release.ts
-// in apps/web/tests/public-claims.test.cjs.
-assert.match(publicShellInstaller, /CANDIDATE_TAG="v0\.7\.8"/);
-assert.match(publicPowershellInstaller, /\$CandidateTag = 'v0\.7\.8'/);
-assert.doesNotMatch(publicShellInstaller, /v0\.7\.9/);
-assert.doesNotMatch(publicPowershellInstaller, /v0\.7\.9/);
+// The checked-in web reference copies are byte-bound to the last immutable
+// public release (v0.7.9). Those reference bytes are independently checked
+// against public-release.ts in apps/web/tests/public-claims.test.cjs.
+assert.match(publicShellInstaller, /CANDIDATE_TAG="v0\.7\.9"/);
+assert.match(publicPowershellInstaller, /\$CandidateTag = 'v0\.7\.9'/);
+assert.doesNotMatch(publicShellInstaller, /v0\.7\.8/);
+assert.doesNotMatch(publicPowershellInstaller, /v0\.7\.8/);
 
 function requires(source, pattern, label) {
   assert.match(source, pattern, label);

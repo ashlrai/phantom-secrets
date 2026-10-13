@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs of the same PR so agents pushing fixups do not queue
+# behind stale builds. Pushes to main are never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   PHANTOM_NPM_AUDIT_VERSION: 11.15.0
@@ -43,7 +49,7 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --locked --no-fail-fast --verbose
       - name: Verify examples
-        run: node --test scripts/examples-first-five-minutes.test.mjs scripts/agent-first-five-minutes.test.mjs
+        run: node --test scripts/examples-first-five-minutes.test.mjs scripts/agent-first-five-minutes.test.mjs scripts/examples-client-recipes.test.mjs
       - name: Verify installed CLI and MCP onboarding
         shell: bash
         run: |
@@ -77,8 +83,8 @@ jobs:
           if (-not (Select-String -LiteralPath scripts/install.ps1 -Pattern '\$CandidateTag = ''v0.7.9''' -Quiet)) {
             throw 'candidate PowerShell installer is not pinned to v0.7.9'
           }
-          if (-not (Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\$CandidateTag = ''v0.7.8''' -Quiet)) {
-            throw 'public-reference PowerShell installer is not pinned to evidenced v0.7.8'
+          if (-not (Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\$CandidateTag = ''v0.7.9''' -Quiet)) {
+            throw 'public-reference PowerShell installer is not pinned to evidenced v0.7.9'
           }
       - name: Exercise the Windows installer with the existing debug binaries
         if: runner.os == 'Windows'

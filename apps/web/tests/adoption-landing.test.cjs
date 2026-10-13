@@ -108,14 +108,14 @@ test("logo rails expose the full catalog with motion controls and hidden duplica
   assert.doesNotMatch(styles, /ecosystem-marquee \[aria-hidden="true"\]/);
 });
 
-test("GitHub starring is a named action across the primary adoption surfaces", () => {
+test("GitHub is a neutral, named link across the primary adoption surfaces", () => {
   for (const relativePath of [
     "src/components/landing/Hero.tsx",
     "src/components/landing/Nav.tsx",
     "src/app/docs/page.tsx",
   ]) {
     const source = read(relativePath);
-    assert.match(source, /Star (?:Phantom )?(?:on|the source on) GitHub/i, relativePath);
+    assert.match(source, /View (?:the source )?on GitHub/i, relativePath);
     assert.match(source, /https:\/\/github\.com\/ashlrai\/phantom-secrets/, relativePath);
   }
 });
@@ -166,4 +166,35 @@ test("dotenv transformation uses only explicit synthetic examples", () => {
   assert.match(transformation, /Unsupported routes fail closed/);
   assert.doesNotMatch(transformation, /DATABASE_URL|MONGODB_URI/);
   assert.doesNotMatch(transformation, /sk-(?:live|proj|ant)-/i);
+});
+
+test("site links to GitHub neutrally and never asks visitors to star or upvote", () => {
+  const sourceFiles = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(path.join(webRoot, dir), { withFileTypes: true })) {
+      const relative = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(relative);
+      else if (/\.(?:tsx?|mdx?)$/.test(entry.name)) sourceFiles.push(relative);
+    }
+  };
+  walk("src");
+  assert.ok(sourceFiles.length > 20, "expected to scan the site source tree");
+
+  for (const file of sourceFiles) {
+    const source = read(file);
+    assert.doesNotMatch(
+      source,
+      /\b(?:give\s+(?:us\s+)?a\s+)?star(?:\s+or\s+fork)?\s+(?:Phantom|us|the\s+(?:repo|repository|source|project)|on\s+GitHub)\b|\band\s+star\s+Phantom\b|\bupvote\b/i,
+      file,
+    );
+  }
+
+  for (const file of [
+    "src/components/landing/Hero.tsx",
+    "src/components/landing/Nav.tsx",
+    "src/components/landing/SocialProof.tsx",
+  ]) {
+    assert.match(read(file), /href="https:\/\/github\.com\/ashlrai\/phantom-secrets"/, file);
+    assert.match(read(file), /View (?:the source )?on GitHub/, file);
+  }
 });

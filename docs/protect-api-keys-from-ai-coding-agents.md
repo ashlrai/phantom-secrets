@@ -10,7 +10,7 @@ into a local vault, leaves non-provider `phm_` placeholders in the project, and
 injects a route-owned credential only when an authenticated request matches an
 explicitly supported HTTP route. The agent does not receive the real value.
 
-This guide uses the reviewed public `v0.7.8` release. Source may be newer than
+This guide uses the reviewed public `v0.7.9` release. Source may be newer than
 that release; verify the release-state notice before choosing an install path.
 
 ## The short workflow
@@ -23,9 +23,9 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-For Linux, Windows, or direct verification, download the matching `v0.7.8`
+For Linux, Windows, or direct verification, download the matching `v0.7.9`
 archive and adjacent checksum from the
-[`v0.7.8` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8).
+[`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
 The [getting-started guide](./getting-started.md#install) lists all six native
 targets and verification commands.
 
@@ -124,7 +124,7 @@ or mint production credentials.
 - [Codex](./codex.md)
 - [Value-blind MCP secrets manager](./mcp-secrets-manager.md)
 
-If the workflow matches your environment, inspect and star the
-[Phantom source repository](https://github.com/ashlrai/phantom-secrets). A star
-helps other developers discover the project; it is not evidence that a local
-security boundary passed.
+If the workflow matches your environment, inspect the
+[Phantom source repository](https://github.com/ashlrai/phantom-secrets) and its
+[threat model](https://github.com/ashlrai/phantom-secrets/blob/main/THREAT_MODEL.md)
+before relying on the boundary.

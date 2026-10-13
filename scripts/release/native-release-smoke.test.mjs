@@ -418,15 +418,15 @@ test("platform documentation binds the immutable release receipt to every native
 
   assert.match(
     platformSupport,
-    /immutable `v0\.7\.8` GitHub[\s\S]*f065b13462f9eaf27e0443f8911f021575b7c409[\s\S]*2026-09-05/i,
+    /immutable `v0\.7\.9` GitHub[\s\S]*7a51ce512ec4aee12cc29ff859036af63fbe93db[\s\S]*2026-09-29/i,
   );
-  assert.match(platformSupport, /19 assets[\s\S]*workflow 33952398697/i);
+  assert.match(platformSupport, /19 assets[\s\S]*workflow 34153902556/i);
   assert.equal(
-    platformSupport.match(/`v0\.7\.8` release-native acceptance passed/g)?.length,
+    platformSupport.match(/`v0\.7\.9` release-native acceptance passed/g)?.length,
     6,
-    "every native row must name the exact v0.7.8 release receipt",
+    "every native row must name the exact v0.7.9 release receipt",
   );
-  assert.match(platformSupport, /no exact npm `0\.7\.8` acceptance receipt is claimed/i);
+  assert.match(platformSupport, /no exact npm `0\.7\.9` acceptance receipt is claimed/i);
   assert.match(
     platformSupport,
     /Attestation cannot begin\s+until all six jobs succeed/,

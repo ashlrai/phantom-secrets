@@ -16,7 +16,7 @@ catalog for value-free secret workflows. The current release contract enforces
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.8` binary using the platform-specific, checksum-
+Install the reviewed `v0.7.9` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -26,20 +26,21 @@ verified path in [getting started](./getting-started.md#install), then run
 phantom setup --client claude
 ```
 
-In the corrected source implementation, this merges the `phantom` MCP server
+In `v0.7.9`, this merges the `phantom` MCP server
 into the project's `.mcp.json`. Separately, it removes only the legacy Phantom
 MCP entry and Phantom-managed dotenv read grants from
 `.claude/settings.local.json`, preserving unrelated servers and permission
 rules. Dotenv denies remain a defense-in-depth boundary.
 
-**Release compatibility:** the published `v0.7.8` binaries wrote MCP registration
-into `.claude/settings.local.json`. That is not Claude Code's supported MCP
-registration location. Until you install a release containing this correction,
-run `phantom setup --client claude --print` and manually merge only its
-`mcpServers.phantom` entry into `.mcp.json`. Keep permission settings in
-`.claude/settings.local.json`; do not copy them into `.mcp.json` or overwrite
-unrelated server entries. The corrected writer migrates the legacy Phantom
-entry when run from a source build containing this fix.
+**Release compatibility:** `v0.7.9` is the first release with this correction.
+`v0.7.8` and earlier binaries (including the Homebrew formula until it is bumped
+to `v0.7.9`) wrote MCP registration into `.claude/settings.local.json`, which is
+not Claude Code's supported MCP registration location. After upgrading to
+`v0.7.9`, rerun `phantom setup --client claude` to migrate the legacy entry. If
+you must stay on `v0.7.8`, run `phantom setup --client claude --print` and
+manually merge only its `mcpServers.phantom` entry into `.mcp.json`. Keep
+permission settings in `.claude/settings.local.json`; do not copy them into
+`.mcp.json` or overwrite unrelated server entries.
 
 The corrected setup validates both files before writing and uses exact
 before-images to avoid overwriting concurrent edits. It attempts rollback after
@@ -55,7 +56,7 @@ configuration before starting automated sessions. See the
 The generated command is a machine-local executable path; review it before
 sharing `.mcp.json` with teammates, whose installed paths may differ.
 
-Install both `v0.7.8` release binaries before setup. Version `0.7.8` records the
+Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
 running `phantom` executable with `mcp serve` when it can resolve that runtime,
 otherwise it looks for a local `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is
@@ -255,7 +256,7 @@ never kills a process or deletes the record.
 
 ## Reference
 
-- MCP setup: `phantom setup --client claude` after installing both `v0.7.8` binaries
+- MCP setup: `phantom setup --client claude` after installing both `v0.7.9` binaries
 - Full command list: [getting-started.md](./getting-started.md)
 - Troubleshooting: [troubleshooting.md](./troubleshooting.md)
 - GitHub: [https://github.com/ashlrai/phantom-secrets](https://github.com/ashlrai/phantom-secrets)

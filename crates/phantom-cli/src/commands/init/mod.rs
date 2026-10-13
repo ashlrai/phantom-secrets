@@ -312,6 +312,8 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     )?;
     phantom_config.phantom.dotenv_path = Some(dotenv_basename);
     config::apply_detected_services(&mut phantom_config, &real_entries);
+    let connection_string_keys =
+        config::protected_connection_string_keys(&phantom_config, &real_entries);
 
     // Persist public key classifications
     if !public_entries.is_empty() {
@@ -436,6 +438,23 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         "done".green().bold(),
         real_entries.len()
     );
+    if !connection_string_keys.is_empty() {
+        // Say this now rather than letting the first `phantom exec` be the
+        // surprise: connection strings are vaulted but not proxied.
+        println!(
+            "{} {} {} a connection string. It is vaulted, but {} will not start in this project while it is protected (no database broker yet). See https://phm.dev/docs/getting-started before relying on it.",
+            "note".yellow().bold(),
+            connection_string_keys.join(", ").bold(),
+            if connection_string_keys.len() == 1 { "is" } else { "are each" },
+            "phantom exec".cyan()
+        );
+    }
+
+    if let Some([headline, desktop, headless]) = volatile_backend_notice(&backend_name) {
+        println!("{} {}", "warn".yellow().bold(), headline);
+        println!("{}", desktop.dimmed());
+        println!("{}", headless.dimmed());
+    }
 
     if let Some(prepared) = &claude_setup {
         prompts::finish_auto_setup_claude_code(prepared);
@@ -450,10 +469,42 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     Ok(())
 }
 
-/// Print a contextual "what's next?" block. Items are conditional on
-/// state — e.g., we don't suggest `phantom login` if the user is already
-/// authenticated, and we promote `phantom cloud push` instead if they
-/// have credentials but no cloud version yet.
+/// Printed right after the backend line when init landed on Linux keyutils.
+/// The kernel keyring is cleared on reboot, and init has just replaced the
+/// dotenv values with tokens, so this is the moment the user must decide.
+fn volatile_backend_notice(backend_name: &str) -> Option<[&'static str; 3]> {
+    backend_name.contains("keyutils").then_some([
+        "The Linux kernel keyring does not survive a reboot. Keep your provider or password-manager copy of these secrets until you switch to a persistent backend:",
+        "  desktop with an unlocked Secret Service:  phantom vault migrate-linux",
+        "  headless, WSL, or CI:  export PHANTOM_VAULT_PASSPHRASE before `phantom init` to use the encrypted-file vault (https://phm.dev/docs/troubleshooting)",
+    ])
+}
+
+/// First-run next steps. Ordered by what a new user needs first: verify the
+/// boundary, connect an AI client, then run work through the proxy. Cloud
+/// backup is suggested only to users who already chose to sign in.
+fn next_steps(logged_in: bool, has_cloud_version: bool) -> Vec<(&'static str, &'static str)> {
+    let mut steps = vec![
+        (
+            "Check that this repo is ready for AI agents:",
+            "phantom agent doctor",
+        ),
+        (
+            "Connect your AI client (writes its MCP config):",
+            "phantom setup --client claude|cursor|windsurf|codex   # --print to stdout",
+        ),
+        (
+            "Run your app or agent with secret injection:",
+            "phantom exec -- <your-command>",
+        ),
+    ];
+    if logged_in && !has_cloud_version {
+        steps.push(("Back up this vault to Phantom Cloud:", "phantom cloud push"));
+    }
+    steps
+}
+
+/// Print a contextual "what's next?" block.
 fn print_next_steps(config_path: &Path) {
     use phantom_core::auth;
     use phantom_core::config::PhantomConfig;
@@ -465,49 +516,70 @@ fn print_next_steps(config_path: &Path) {
         .is_some();
 
     println!("\n{}", "What's next?".bold());
-
-    let mut step = 1;
-    let mut item = |label: &str, command: &str| {
+    for (index, (label, command)) in next_steps(logged_in, has_cloud_version)
+        .into_iter()
+        .enumerate()
+    {
         println!(
             "  {}. {}\n     {}",
-            step.to_string().bold(),
+            (index + 1).to_string().bold(),
             label,
             command.cyan().bold()
         );
-        step += 1;
-    };
-
-    item(
-        "Run code with secret injection:",
-        "phantom exec -- <your-command>",
-    );
-    item("Verify everything looks healthy:", "phantom doctor");
-
-    if !logged_in {
-        item(
-            "Sign in to Phantom Cloud (optional, for E2E-encrypted backups):",
-            "phantom login",
-        );
-    } else if !has_cloud_version {
-        item("Back up this vault to Phantom Cloud:", "phantom cloud push");
     }
-
-    item("Open your dashboard:", "phantom open");
-    item(
-        "Block raw-secret commits (recommended for teams):",
-        "pre-commit install   # uses .pre-commit-hooks.yaml shipped with phantom",
-    );
-    item(
-        "Other AI tools (Cursor, Windsurf, Codex):",
-        "phantom setup --client cursor|windsurf|codex|claude   # --print to stdout",
-    );
-
     println!();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_run_next_steps_lead_with_local_checks_not_hosted_surfaces() {
+        let steps = next_steps(false, false);
+        let commands: Vec<&str> = steps.iter().map(|(_, command)| *command).collect();
+        assert_eq!(commands[0], "phantom agent doctor");
+        assert!(commands[1].starts_with("phantom setup --client "));
+        assert_eq!(commands[2], "phantom exec -- <your-command>");
+        for command in &commands {
+            // Init already installed the native hook; the dashboard and
+            // cloud sign-in are hosted surfaces a first run cannot rely on.
+            assert!(!command.contains("pre-commit install"), "{command}");
+            assert!(!command.contains("phantom open"), "{command}");
+            assert!(!command.contains("phantom login"), "{command}");
+        }
+    }
+
+    #[test]
+    fn cloud_push_is_suggested_only_to_signed_in_users_without_a_cloud_copy() {
+        let has_push = |logged_in, has_cloud| {
+            next_steps(logged_in, has_cloud)
+                .iter()
+                .any(|(_, command)| *command == "phantom cloud push")
+        };
+        assert!(!has_push(false, false));
+        assert!(has_push(true, false));
+        assert!(!has_push(true, true));
+    }
+
+    #[test]
+    fn volatile_keyutils_backend_gets_a_persistence_warning() {
+        let notice = volatile_backend_notice("linux-keyutils (volatile across reboot)")
+            .expect("keyutils must warn");
+        assert!(notice[0].contains("does not survive a reboot"));
+        assert!(notice[1].contains("phantom vault migrate-linux"));
+        assert!(notice[2].contains("PHANTOM_VAULT_PASSPHRASE"));
+        for persistent in [
+            "os-keychain",
+            "encrypted-file",
+            "linux-secret-service (persistent)",
+        ] {
+            assert!(
+                volatile_backend_notice(persistent).is_none(),
+                "{persistent}"
+            );
+        }
+    }
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use phantom_vault::file::FileVault;
     use std::sync::atomic::{AtomicUsize, Ordering};
