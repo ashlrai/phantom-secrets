@@ -32,6 +32,7 @@ jobs:
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
       web: ${{ steps.classify.outputs.web }}
+      filterset: ${{ steps.affected.outputs.filterset }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,6 +59,19 @@ jobs:
           if printf '%s\n' "$files" | grep -Eq "$web"; then webc=true; fi
           echo "rust=$rust" >> "$GITHUB_OUTPUT"; echo "web=$webc" >> "$GITHUB_OUTPUT"
           echo "rust=$rust web=$webc"
+      - id: affected
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            fs="$(bash scripts/ci/affected-filterset.sh "$BASE" "$HEAD" || echo 'all()')"
+          else
+            fs='all()'
+          fi
+          echo "filterset=$fs" >> "$GITHUB_OUTPUT"
+          echo "nextest filterset: $fs"
 
   test:
     name: Test (${{ matrix.os }})
@@ -91,8 +105,16 @@ jobs:
       # nextest runs every test in its own process, in parallel across all
       # test binaries. Same targets as `cargo test --all-targets` (which never
       # ran doctests); ignored tests stay ignored.
+      # PRs test only the crates the diff touches plus every crate depending on
+      # them (nextest rdeps filterset); workspace-wide changes (manifests,
+      # lockfile, toolchain, CI) select all(). Pushes to main always run the
+      # complete suite on every OS.
       - name: Run tests
-        run: cargo nextest run --workspace --all-targets --locked --no-fail-fast
+        # PRs test only crates the diff touches plus their reverse deps
+        # (computed in `changes`); main pushes always run all().
+        if: needs.changes.outputs.filterset != 'none()'
+        shell: bash
+        run: cargo nextest run --workspace --all-targets --locked --no-fail-fast -E "${{ needs.changes.outputs.filterset }}"
       - name: Verify examples
         run: node --test scripts/examples-first-five-minutes.test.mjs scripts/agent-first-five-minutes.test.mjs scripts/examples-client-recipes.test.mjs
       - name: Verify installed CLI and MCP onboarding
