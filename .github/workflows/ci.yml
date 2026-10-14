@@ -269,6 +269,11 @@ jobs:
         run: node --test ../../scripts/seo/observe.test.mjs
       - name: Build the production application
         run: npm run build
+      - name: Verify public routes, links and shipped output
+        # Serves the build on 127.0.0.1 only; checks the website publisher's
+        # route contract for / and /secrets, sitemap pages, internal links and
+        # anchors, and scans output for credential material. Never deploys.
+        run: npm run preview:verify
       - name: Install pinned Supabase CLI
         # This exact CLI release fixes the local service-image compatibility set;
         # config.toml separately pins the Postgres image major version.
