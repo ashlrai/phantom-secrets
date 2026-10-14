@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "repository": "ashlrai/phantom",
+  "sourceSha": "37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05",
+  "files": [
+    {
+      "path": "desktop/README.md",
+      "gitBlob": "dedec82fd91cb015351de8a54256474a155a36d0"
+    },
+    {
+      "path": "docs/ASHLR-UNIVERSE.md",
+      "gitBlob": "5934eb55c90e5911c24c9f3aeeb26332903ed6cb"
+    },
+    {
+      "path": "docs/AUTONOMY-SETUP.md",
+      "gitBlob": "38b3ee6dc3914bac880de70925387086f0dc86cf"
+    },
+    {
+      "path": "docs/IMPROVEMENT-BACKLOG.md",
+      "gitBlob": "c3900788b5739ec57e4597672fe56b2664efed3a"
+    },
+    {
+      "path": "docs/QUICKSTART.md",
+      "gitBlob": "a2d740dbac14ac8234d67d178f00547dfacded46"
+    },
+    {
+      "path": "docs/README.md",
+      "gitBlob": "13d3eb8d558d0a9ec1da4c448aeaf91465fd669b"
+    },
+    {
+      "path": "docs/REMOTE-PHONE.md",
+      "gitBlob": "2688c5c6a302e04fb3aa3699f2fdc6fdabe06af9"
+    },
+    {
+      "path": "docs/RESOURCE-POOLS.md",
+      "gitBlob": "9f89394c02cfeb1cea6f66b7f3430e3294d9a9d1"
+    },
+    {
+      "path": "docs/STANDING-AUTHORITY.md",
+      "gitBlob": "0a77711e7c572f9c45b6713cf8336c55f3329117"
+    },
+    {
+      "path": "docs/VERSE.md",
+      "gitBlob": "653b57f6f3c09b2fcae5204d1f41258391e655f8"
+    },
+    {
+      "path": "src/cli/authority.ts",
+      "gitBlob": "d70a0b15e443fcec60be8cac7bf2dd866b01e504"
+    },
+    {
+      "path": "src/cli/desktop.ts",
+      "gitBlob": "9a5e84f3f7f3d6c7443855b142ee11a18d549b18"
+    },
+    {
+      "path": "src/cli/help.ts",
+      "gitBlob": "4077e6cd16ededef3521d448b2c0d66fcb5ba1a0"
+    },
+    {
+      "path": "src/cli/index.ts",
+      "gitBlob": "a4f9ff2a7e6c02db3bd94c63a24f396ea75e34f2"
+    },
+    {
+      "path": "src/cli/verse.ts",
+      "gitBlob": "3338bfa91cac299caaabac1da7bf0882396f0b94"
+    }
+  ]
+}

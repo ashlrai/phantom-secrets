@@ -35,6 +35,24 @@ test('workbench articles have immutable evidence and resolvable internal links',
   assert.match(fs.readFileSync(path.join(repository, 'docs/workbench-agents.md'), 'utf8'), /must not imitate Touch ID/);
 });
 
+test('every immutable upstream target belongs to the verified pinned source tree', () => {
+  const evidence = JSON.parse(read('tests/fixtures/workbench-upstream-source.json'));
+  assert.equal(evidence.sourceSha, '37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05');
+  const files = new Set(evidence.files.map(({ path, gitBlob }) => {
+    assert.match(gitBlob, /^[a-f0-9]{40}$/);
+    return path;
+  }));
+  for (const body of [
+    ...workbench.map(({ file }) => fs.readFileSync(path.join(repository, 'docs', file), 'utf8')),
+    read('public/workbench/llms-full.txt'),
+  ]) {
+    for (const [, revision, target] of body.matchAll(/https:\/\/github\.com\/ashlrai\/phantom\/blob\/([^/]+)\/([^\s)]+)/g)) {
+      assert.equal(revision, evidence.sourceSha);
+      assert.ok(files.has(target.split('#')[0]), `unverified upstream target: ${target}`);
+    }
+  }
+});
+
 test('workbench source links use the observed build instead of an unpublished main path', () => {
   const previous = process.env.PHANTOM_BUILD_SOURCE_REVISION;
   try {
