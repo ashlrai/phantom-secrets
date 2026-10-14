@@ -147,3 +147,42 @@ fn doctor_finds_the_supported_claude_project_registration() {
     assert!(stdout.contains(".mcp.json"), "{stdout}");
     assert!(!stdout.contains("legacy settings; move it"), "{stdout}");
 }
+
+#[test]
+fn doctor_json_reports_checks_hints_and_mcp_clients() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".mcp.json"),
+        r#"{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}"#,
+    )
+    .unwrap();
+
+    for args in [vec!["doctor", "--json"], vec!["--json", "doctor"]] {
+        let output = phantom(&dir).args(&args).assert().success();
+        let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+        let report: serde_json::Value =
+            serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{args:?}: {e}: {stdout}"));
+
+        assert_eq!(report["ok"], false, "{stdout}");
+        assert!(report["issues"].as_u64().unwrap() >= 2, "{stdout}");
+        let checks = report["checks"].as_array().unwrap();
+        let missing_config = checks
+            .iter()
+            .find(|check| check["message"] == "No .phantom.toml found")
+            .unwrap_or_else(|| panic!("{stdout}"));
+        assert_eq!(missing_config["status"], "warn");
+        assert_eq!(missing_config["fix"], "Run: phantom init");
+
+        let claude = report["mcp_clients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|client| client["client"] == "claude")
+            .unwrap_or_else(|| panic!("{stdout}"));
+        assert_eq!(claude["state"], "stale");
+        assert!(
+            !stdout.contains("Phantom Doctor"),
+            "no human header: {stdout}"
+        );
+    }
+}

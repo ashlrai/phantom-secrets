@@ -110,6 +110,9 @@ enum Commands {
         /// soon-to-expire secrets
         #[arg(long)]
         expiry: bool,
+        /// Emit one JSON report on stdout instead of the human checklist
+        #[arg(long)]
+        json: bool,
     },
 
     /// Print a shell-completion script to stdout.
@@ -979,7 +982,9 @@ fn run() -> anyhow::Result<()> {
                 }
             }
         },
-        Commands::Doctor { fix, expiry } => commands::doctor::run_doctor(fix, expiry),
+        Commands::Doctor { fix, expiry, json } => {
+            commands::doctor::run_doctor(fix, expiry, json || global_json)
+        }
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
             AgentAction::Doctor => commands::agent::doctor(),

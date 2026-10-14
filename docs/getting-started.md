@@ -341,6 +341,13 @@ phantom doctor
 phantom doctor --fix    # auto-fix safe issues
 ```
 
+`phantom doctor --json` (or `phantom --json doctor`) prints one report on stdout
+for agents and CI: `ok`, `issues`, `fixed`, a `checks` list of
+`{status, message, fix?, fixed?}` with status `pass`, `fail`, `warn` or `info`,
+and `mcp_clients` with each client's config path and state (`local_runtime`,
+`stale`, `unreadable`, `not_phantom` or `not_configured`). Messages are the same
+value-blind text as the human checklist, and the exit status is unchanged.
+
 ```
 $ phantom doctor
 pass: .phantom.toml found
