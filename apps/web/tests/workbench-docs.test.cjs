@@ -35,6 +35,23 @@ test('workbench articles have immutable evidence and resolvable internal links',
   assert.match(fs.readFileSync(path.join(repository, 'docs/workbench-agents.md'), 'utf8'), /must not imitate Touch ID/);
 });
 
+test('workbench source links use the observed build instead of an unpublished main path', () => {
+  const previous = process.env.PHANTOM_BUILD_SOURCE_REVISION;
+  try {
+    process.env.PHANTOM_BUILD_SOURCE_REVISION = 'a'.repeat(40);
+    assert.equal(docs.getPublicDoc('workbench-agents').sourceUrl,
+      `https://github.com/ashlrai/phantom-secrets/blob/${'a'.repeat(40)}/docs/workbench-agents.md`);
+    assert.equal(docs.getPublicDoc('codex').sourceUrl,
+      'https://github.com/ashlrai/phantom-secrets/blob/main/docs/codex.md');
+    process.env.PHANTOM_BUILD_SOURCE_REVISION = 'unidentified';
+    assert.equal(docs.getPublicDoc('workbench-agents').sourceUrl,
+      'https://phm.dev/docs/workbench-agents/markdown');
+  } finally {
+    if (previous === undefined) delete process.env.PHANTOM_BUILD_SOURCE_REVISION;
+    else process.env.PHANTOM_BUILD_SOURCE_REVISION = previous;
+  }
+});
+
 test('raw handlers return exact allowed Markdown and reject arbitrary files', async () => {
   for (const { slug, file } of catalog) {
     const response = await raw.GET(new Request(`https://phm.dev/docs/${slug}/markdown`), { params: Promise.resolve({ slug }) });
