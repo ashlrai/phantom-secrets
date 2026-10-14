@@ -62,7 +62,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_setup_workspace` | Propose setup, persist a trusted-terminal request, or read request status; first-time seal-key provisioning and every request creation activate both gates | phase, plan_id (conditional), pre_state_id (conditional), request_id (conditional), confirm (conditional), approval_token (conditional) |
 | `phantom_init` | Exact-before transaction: store detected values, persist config, then rewrite a safe project-local dotenv last; concurrent drift aborts | env_path (default `.env`), confirm, approval_token |
 | `phantom_list_secrets` | List all protected secret names (never shows values) | — |
-| `phantom_status` | Show project status, vault backend, secret count, service mappings | — |
+| `phantom_status` | Show project ID, dotenv protection counts and service mappings (does not open the vault) | — |
 | `phantom_doctor` | Diagnose configuration and vault health; `fix=true` mutates files and activates both gates | fix, confirm, approval_token |
 | `phantom_why` | Explain why a key is or is not protected (detection heuristics) | key |
 | `phantom_check` | Scan supported dotenv files, or selected process variables with `runtime=true` | runtime |

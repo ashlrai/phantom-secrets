@@ -81,7 +81,7 @@ for the canonical catalog.
 
 Frequently used tools in Windsurf sessions:
 
-- `phantom_status` — verify vault backend, secret count, and `.env` protection state
+- `phantom_status` — check project ID, `.env` protection counts and service mappings (does not open the vault; use `phantom_list_secrets` for stored names)
 - `phantom_list_secrets` — list secret names (values never returned)
 - `phantom_add_secret_interactive` — returns the terminal command to enter a new secret out-of-band
 - `phantom_doctor` — run all health checks; pass `fix=true` to auto-repair safe issues
