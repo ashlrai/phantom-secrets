@@ -222,9 +222,9 @@ Use this read-only path before exploring the full tool catalog:
    replacing `codex` with `claude`, `cursor`, or `windsurf` when appropriate.
 3. Restart the AI client so it loads the generated MCP configuration.
 4. Ask the client: “Call `phantom_capability`, then `phantom_status`. Report the
-   value-blind authority, hard denials, vault backend, secret count, and service
-   mappings. Do not request or reveal secret values.”
-5. Ask the client: “Call `phantom_check` with `staged: false`. Report findings
+   value-blind authority, hard denials, project ID, dotenv protection counts, and
+   service mappings. Do not request or reveal secret values.”
+5. Ask the client: “Call `phantom_check` with no arguments. Report findings
    without changing files or credentials.”
 
 These calls inspect the configured local surface. They do not prove that cloud,

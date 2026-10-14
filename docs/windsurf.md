@@ -32,8 +32,8 @@ This writes `~/.codeium/windsurf/mcp_config.json` with the `phantom` MCP server 
 {
   "mcpServers": {
     "phantom": {
-      "command": "phantom-mcp",
-      "args": []
+      "command": "/absolute/path/to/phantom",
+      "args": ["mcp", "serve"]
     }
   }
 }
@@ -74,7 +74,7 @@ migration guidance and never kills a process or deletes the record.
 
 ## MCP tools Windsurf can use
 
-Once `phantom-secrets-mcp` is registered, Cascade can call the same runtime
+Once the `phantom` server is registered, Cascade can call the same runtime
 catalog as other MCP clients. See the [core tool examples in the Claude Code
 guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
 for the canonical catalog.
