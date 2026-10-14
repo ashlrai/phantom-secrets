@@ -896,10 +896,25 @@ fn check_info(msg: &str) {
 }
 
 fn check_fix(msg: &str) {
-    annotate(
-        |check| check.fix = Some(msg.to_string()),
-        || println!("       {} {}", "Fix:".dimmed(), msg.dimmed()),
-    );
+    REPORT.with(|report| match report.borrow_mut().as_mut() {
+        // One hint can follow a run of findings (each risky service route is
+        // its own warning), so it explains every trailing finding without one.
+        Some(report) => {
+            let mut trailing = report.checks.iter_mut().rev();
+            let Some(last) = trailing.next() else { return };
+            let finding = matches!(last.status, "warn" | "fail");
+            last.fix = Some(msg.to_string());
+            if finding {
+                for check in trailing {
+                    if check.fix.is_some() || !matches!(check.status, "warn" | "fail") {
+                        break;
+                    }
+                    check.fix = Some(msg.to_string());
+                }
+            }
+        }
+        None => println!("       {} {}", "Fix:".dimmed(), msg.dimmed()),
+    });
 }
 
 fn check_fixed(msg: &str) {

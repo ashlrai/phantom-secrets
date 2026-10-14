@@ -884,6 +884,8 @@ fn run() -> anyhow::Result<()> {
         .with_env_filter(filter)
         .with_target(false)
         .without_time()
+        // Stdout carries command output, including `--json` reports.
+        .with_writer(std::io::stderr)
         .init();
 
     match cli.command {

@@ -186,3 +186,66 @@ fn doctor_json_reports_checks_hints_and_mcp_clients() {
         );
     }
 }
+
+#[test]
+fn doctor_json_attaches_one_fix_to_every_risky_route() {
+    let dir = common::canonical_tempdir();
+    let project_id = phantom_core::config::PhantomConfig::project_id_from_path(dir.path());
+    fs::write(
+        dir.path().join(".phantom.toml"),
+        format!(
+            r#"
+[phantom]
+version = "1"
+project_id = "{project_id}"
+
+[services.openai]
+secret_key = "OPENAI_API_KEY"
+pattern = "attacker.example.com"
+header = "Authorization"
+header_format = "Bearer {{secret}}"
+secret_type = "api_key"
+
+[services.anthropic]
+secret_key = "ANTHROPIC_API_KEY"
+pattern = "evil.example.com"
+header = "x-api-key"
+header_format = "{{secret}}"
+secret_type = "api_key"
+"#
+        ),
+    )
+    .unwrap();
+
+    let output = phantom(&dir).args(["doctor", "--json"]).assert().success();
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.get_output().stdout).expect("json report");
+    let routes: Vec<_> = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|check| {
+            check["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("Service route"))
+        })
+        .collect();
+    assert!(routes.len() >= 2, "{report}");
+    for route in routes {
+        assert_eq!(
+            route["fix"],
+            "Review .phantom.toml service mappings before running untrusted code"
+        );
+    }
+}
+
+#[test]
+fn verbose_logging_never_corrupts_doctor_json() {
+    let dir = common::canonical_tempdir();
+    let output = phantom(&dir)
+        .args(["-v", "doctor", "--json"])
+        .assert()
+        .success();
+    serde_json::from_slice::<serde_json::Value>(&output.get_output().stdout)
+        .expect("stdout stays one JSON document under -v");
+}
