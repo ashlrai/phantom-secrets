@@ -3,13 +3,13 @@
   "product": "workbench",
   "repository": "ashlrai/phantom",
   "packageName": "@ashlr/phantom",
-  "version": "3.29.14",
-  "sourceSha": "98236944660f114007058b658374b1cffa7f9698",
-  "publishedAt": "2026-10-13T17:14:15.000Z",
-  "observedAt": "2026-10-13T19:24:04.672Z",
-  "releaseUrl": "https://github.com/ashlrai/phantom/releases/tag/v3.29.14",
-  "registryUrl": "https://www.npmjs.com/package/@ashlr/phantom/v/3.29.14",
-  "installCommand": "npm install -g @ashlr/phantom@3.29.14",
-  "macDownloadUrl": "https://github.com/ashlrai/phantom/releases/download/v3.29.14/Phantom_3.29.14_aarch64.app.tar.gz",
-  "factsDigest": "a02f31172386a626fef9a8101c3151a7a34f67324753440954d9b3b063b22233"
+  "version": "3.29.15",
+  "sourceSha": "37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05",
+  "publishedAt": "2026-10-14T00:10:55.000Z",
+  "observedAt": "2026-10-14T00:14:18.051Z",
+  "releaseUrl": "https://github.com/ashlrai/phantom/releases/tag/v3.29.15",
+  "registryUrl": "https://www.npmjs.com/package/@ashlr/phantom/v/3.29.15",
+  "installCommand": "npm install -g @ashlr/phantom@3.29.15",
+  "macDownloadUrl": "https://github.com/ashlrai/phantom/releases/download/v3.29.15/Phantom_3.29.15_aarch64.app.tar.gz",
+  "factsDigest": "e2c78bb4eb78122ca1a65821a4d9bc11662c6a77a3a8599d2d50ae9e5e25875f"
 }
