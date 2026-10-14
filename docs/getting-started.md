@@ -314,6 +314,24 @@ phantom check
 
 Exit code 0 = clean. Exit code 1 = unprotected secrets found.
 
+Agents and CI can add `--json` (or the global `phantom --json check`) to get one
+report on stdout instead of the human text. It lists names, paths and pattern
+labels only, never values or phantom tokens, and keeps the same exit codes. A
+scan whose result is indeterminate is still an error with no report.
+
+```json
+{
+  "mode": "worktree",
+  "clean": false,
+  "findings": [{ "kind": "dotenv", "path": "/repo/.env", "name": "OPENAI_API_KEY" }],
+  "warnings": []
+}
+```
+
+`mode` is `worktree`, `staged` or `runtime`. Each finding's `kind` is `dotenv`,
+`staged_dotenv`, `staged_code` (with `label` and `pattern`) or `runtime_env`.
+`warnings` lists risky `.phantom.toml` routes found in staged config.
+
 ### `phantom doctor`
 
 Health check for your setup: config validity, vault access, `.env` protection, `.gitignore` coverage, `.env.example`, pre-commit hook.

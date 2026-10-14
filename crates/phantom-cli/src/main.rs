@@ -199,6 +199,9 @@ enum Commands {
         /// Check if phantom tokens are in environment without proxy running
         #[arg(long)]
         runtime: bool,
+        /// Emit a names-only JSON report on stdout (exit status unchanged)
+        #[arg(long)]
+        json: bool,
     },
 
     /// List stored secret names (never shows values)
@@ -985,7 +988,11 @@ fn run() -> anyhow::Result<()> {
         Commands::Exec { cmd } => commands::exec::run(&cmd, None, cli.quiet),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
-        Commands::Check { staged, runtime } => commands::check::run(staged, runtime),
+        Commands::Check {
+            staged,
+            runtime,
+            json,
+        } => commands::check::run(staged, runtime, json || global_json),
         Commands::Pull {
             from,
             project,
