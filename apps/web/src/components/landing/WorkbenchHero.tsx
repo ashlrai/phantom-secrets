@@ -1,3 +1,4 @@
+import Link from "next/link";
 import Image from "next/image";
 import { WORKBENCH_RELEASE } from "@/lib/workbench-release";
 
@@ -19,9 +20,10 @@ export function WorkbenchHero() {
           into one workbench for chats, projects, traces and review.
         </p>
         <div className="phantom-workbench__actions">
-          <a className="phantom-workbench__primary" href="https://verse.ashlr.ai">
-            Explore the workbench
-          </a>
+          <Link className="phantom-workbench__primary" href="/docs/workbench-setup">
+            Get started with Phantom
+          </Link>
+          <Link className="phantom-workbench__secondary" href="/docs/workbench">Read the documentation</Link>
           <a className="phantom-workbench__secondary" href="/secrets">
             Protect credentials with Phantom Secrets
           </a>

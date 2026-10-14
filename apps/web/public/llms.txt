@@ -4,6 +4,12 @@
 
 ## Phantom workbench
 
+First-party setup and fleet guides: https://phm.dev/docs/workbench
+Agent setup contract: https://phm.dev/docs/workbench-agents
+Workbench compact reference: https://phm.dev/workbench/llms.txt
+Workbench full reference: https://phm.dev/workbench/llms-full.txt
+Machine-readable catalog and publication record: https://phm.dev/docs/manifest.json
+
 - Site: https://phm.dev
 - GitHub: https://github.com/ashlrai/phantom
 - Package: https://www.npmjs.com/package/@ashlr/phantom

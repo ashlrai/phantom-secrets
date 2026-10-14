@@ -38,6 +38,7 @@ export function SiteFooter() {
           </h2>
           <ul className="mt-4 space-y-3">
             <li><Link href="/" className={linkClass}>Phantom workbench</Link></li>
+            <li><Link href="/docs/workbench" className={linkClass}>Workbench documentation</Link></li>
             <li><Link href="/secrets" className={linkClass}>Phantom Secrets</Link></li>
             <li>
               <Link href="/secrets#features" className={linkClass}>
