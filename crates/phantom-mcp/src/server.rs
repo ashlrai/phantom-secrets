@@ -6002,10 +6002,21 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     difference == 0
 }
 
+/// The identity clients display and log for this server. rmcp's default is
+/// its own crate name and version, which made every Phantom session report
+/// `rmcp 3.5.0` instead of the Phantom release actually serving the tools.
+fn server_identity() -> Implementation {
+    Implementation::new("phantom-secrets-mcp", env!("CARGO_PKG_VERSION"))
+        .with_title("Phantom Secrets")
+        .with_website_url("https://phm.dev/secrets")
+}
+
 #[tool_handler]
 impl ServerHandler for PhantomMcpServer {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(server_identity())
+            .with_instructions(
             "Phantom is a safe execution substrate for AI coding agents. Start with \
                  phantom_capability to learn the exact allowed verbs and hard denials. Use \
                  phantom_do to canonicalize a closed engineering action without executing it, then \
@@ -6023,6 +6034,14 @@ impl ServerHandler for PhantomMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initialize_reports_phantom_identity_not_the_sdk() {
+        let info = PhantomMcpServer::new().expect("server").get_info();
+        assert_eq!(info.server_info.name, "phantom-secrets-mcp");
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
+        assert_ne!(info.server_info.name, "rmcp");
+    }
     use phantom_vault::VaultBackend;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
