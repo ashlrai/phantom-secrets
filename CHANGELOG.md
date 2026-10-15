@@ -4,7 +4,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No additional unreleased changes are recorded after the `0.7.9` release.
+### Fixed
+
+- **OpenAI SDKs under `phantom exec` reach the versioned API.** `phantom exec`
+  exports `OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/`, but
+  the official OpenAI SDKs and Codex treat `OPENAI_BASE_URL` as the `/v1` root
+  and request `<base>/models`, `<base>/chat/completions`. The proxy forwarded
+  those to `https://api.openai.com/models` (404). For the OpenAI upstream only,
+  unversioned paths now get the `/v1` prefix; callers already sending `/v1/...`
+  are unchanged. Every route also collapses the leading `//` produced when a
+  caller appends `/v1/...` to the slash-terminated base URL.
 
 ## [0.7.9] - 2026-09-06
 

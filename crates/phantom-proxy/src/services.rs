@@ -1,4 +1,5 @@
 use phantom_core::config::ServiceConfig;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Registry of service routes for the proxy.
@@ -22,6 +23,38 @@ pub struct ServiceRoute {
     pub header: String,
     /// Format string for the header value ("{secret}" placeholder)
     pub header_format: String,
+}
+
+/// OpenAI's REST API lives entirely under `/v1`.
+const OPENAI_TARGET_BASE: &str = "https://api.openai.com";
+
+impl ServiceRoute {
+    /// Path to request upstream for the remainder after `/<service>`.
+    ///
+    /// `phantom exec` exports `OPENAI_BASE_URL=http://127.0.0.1:P/openai/...`,
+    /// but the official OpenAI SDKs (and Codex) treat `OPENAI_BASE_URL` as the
+    /// versioned root (default `https://api.openai.com/v1`) and request
+    /// `<base>/models`, `<base>/chat/completions`, ... Forwarding those
+    /// verbatim reached `https://api.openai.com/models`, which OpenAI answers
+    /// with 404. For the OpenAI upstream only, an unversioned path gets the
+    /// `/v1` prefix; callers that already send `/v1/...` are unchanged. Every
+    /// route also collapses the leading `//` produced when a caller appends
+    /// `/v1/...` to the slash-terminated SDK base URL.
+    pub fn upstream_path<'a>(&self, remainder: &'a str) -> Cow<'a, str> {
+        let trimmed = remainder.trim_start_matches('/');
+        let collapsed: Cow<'a, str> = if remainder.len() - trimmed.len() > 1 {
+            Cow::Owned(format!("/{trimmed}"))
+        } else {
+            Cow::Borrowed(remainder)
+        };
+        if self.target_base != OPENAI_TARGET_BASE || trimmed.is_empty() {
+            return collapsed;
+        }
+        if trimmed == "v1" || trimmed.starts_with("v1/") || trimmed.starts_with("v1?") {
+            return collapsed;
+        }
+        Cow::Owned(format!("/v1/{trimmed}"))
+    }
 }
 
 impl ServiceRegistry {
@@ -208,6 +241,48 @@ mod tests {
     fn test_match_route_unknown() {
         let registry = test_registry();
         assert!(registry.match_route("/unknown/path").is_none());
+    }
+
+    #[test]
+    fn openai_sdk_paths_reach_the_versioned_api() {
+        let registry = test_registry();
+        let path_for = |local: &str| {
+            let (route, remainder) = registry.match_route(local).unwrap();
+            format!("{}{}", route.target_base, route.upstream_path(remainder))
+        };
+        // OpenAI SDKs append unversioned paths to OPENAI_BASE_URL.
+        assert_eq!(
+            path_for("/openai/models"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            path_for("/openai/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        // Callers that already send /v1 are unchanged.
+        assert_eq!(
+            path_for("/openai/v1/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        // `$OPENAI_BASE_URL/v1/models` on the slash-terminated base URL.
+        assert_eq!(
+            path_for("/openai//v1/models"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(path_for("/openai"), "https://api.openai.com");
+        // Other upstreams keep their own paths (only `//` is collapsed).
+        assert_eq!(
+            path_for("/anthropic/v1/messages"),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            path_for("/anthropic//v1/messages"),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            path_for("/anthropic/models"),
+            "https://api.anthropic.com/models"
+        );
     }
 
     #[test]
