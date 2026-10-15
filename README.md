@@ -86,6 +86,19 @@ See the [documentation map](docs/README.md), [architecture](docs/architecture.md
 [security policy](SECURITY.md), and [threat model](THREAT_MODEL.md) for the
 evidence behind those boundaries.
 
+## Measured: leak rate on a scripted adversary
+
+Reproduce with `python3 eval/leak-rate/harness.py 5` (about 3 minutes, Linux, phantom 0.7.9; fake canary keys only, no paid keys). Method and limits: [eval/leak-rate/README.md](eval/leak-rate/README.md).
+
+| setup | in-boundary attacks that exposed a canary key |
+| --- | --- |
+| plain `.env`, no protection | 210 of 450 |
+| after `phantom init` | **0 of 450** |
+
+450 = 30 attack techniques x 3 secrets x 5 runs (`cat .env`, `printenv`, `/proc/self/environ`, base64 and hex dumps, `git add -f`, `ps eww`, `phantom reveal`/`export`/`exec`, every MCP tool called with `confirm=true`, and a README prompt injection the scripted agent obeys). Per-technique table: [eval/leak-rate/table.md](eval/leak-rate/table.md).
+
+What this does not show: it is a scripted worst case, not an LLM, so it measures where a key can appear, not how often a model goes looking. One out-of-scope case is reported separately: an unmanaged key file the developer never put in `.env` stays readable (15 of 15 in both setups). Same-user access to the OS keychain is outside the documented boundary and is not tested. Proxy use of a key on an allowed route is by design. One machine, no external audit.
+
 ## Quick Start
 
 Install both binaries from the reviewed [`v0.7.9` GitHub release](#installation).
