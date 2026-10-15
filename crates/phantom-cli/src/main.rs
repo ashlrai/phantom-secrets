@@ -856,17 +856,47 @@ enum CloudAction {
 /// of relying on the OS default.
 const MAIN_STACK_SIZE: usize = 16 * 1024 * 1024;
 
-fn main() -> anyhow::Result<()> {
-    let handle = std::thread::Builder::new()
+fn main() -> std::process::ExitCode {
+    let handle = match std::thread::Builder::new()
         .name("phantom-main".into())
         .stack_size(MAIN_STACK_SIZE)
-        .spawn(run)?;
+        .spawn(run)
+    {
+        Ok(handle) => handle,
+        Err(error) => return report_error(&anyhow::Error::from(error)),
+    };
     match handle.join() {
-        Ok(result) => result,
+        Ok(Ok(())) => std::process::ExitCode::SUCCESS,
+        Ok(Err(error)) => report_error(&error),
         // Propagate a panic on the worker thread as if it happened here so
         // the process still dies with the standard panic exit status.
         Err(panic) => std::panic::resume_unwind(panic),
     }
+}
+
+/// Print a command failure to stderr and return exit code 1.
+///
+/// Returning `anyhow::Result` from `main` prints the error with `{:?}`, which
+/// appends a full stack backtrace whenever `RUST_BACKTRACE` or
+/// `RUST_LIB_BACKTRACE` is set. Agent and CI shells commonly export
+/// `RUST_BACKTRACE=1`, which buried actionable messages such as the non-TTY
+/// `phantom add` refusal under dozens of frames. Keep the same
+/// `Error:`/`Caused by:` layout without the backtrace.
+fn report_error(error: &anyhow::Error) -> std::process::ExitCode {
+    eprintln!("{}", format_error(error));
+    std::process::ExitCode::FAILURE
+}
+
+fn format_error(error: &anyhow::Error) -> String {
+    let mut message = format!("Error: {error}");
+    let mut causes = error.chain().skip(1).peekable();
+    if causes.peek().is_some() {
+        message.push_str("\n\nCaused by:");
+        for cause in causes {
+            message.push_str(&format!("\n    {cause}"));
+        }
+    }
+    message
 }
 
 fn run() -> anyhow::Result<()> {
