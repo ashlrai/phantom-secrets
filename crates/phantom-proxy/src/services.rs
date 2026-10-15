@@ -23,23 +23,64 @@ pub struct ServiceRoute {
     pub header: String,
     /// Format string for the header value ("{secret}" placeholder)
     pub header_format: String,
+    /// Version path the provider's official SDK keeps in its default base
+    /// URL (e.g. `/v1` for `https://api.openai.com/v1`), or `None` when the
+    /// SDK appends the full versioned path itself. See [`sdk_base_path_for`].
+    pub sdk_base_path: Option<String>,
 }
 
-/// OpenAI's REST API lives entirely under `/v1`.
-const OPENAI_TARGET_BASE: &str = "https://api.openai.com";
+/// Upstream hosts whose official SDK default base URL carries a version path.
+///
+/// `phantom exec` exports `<SERVICE>_BASE_URL=http://127.0.0.1:P/<service>/...`
+/// without that version segment, so an SDK that treats the base URL as the
+/// versioned root requests `<base>/chat/completions` and would otherwise reach
+/// `https://<host>/chat/completions` (404). Each entry is listed only when
+/// every documented endpoint on the host lives under the path, so prefixing an
+/// unversioned request can never redirect a valid call.
+///
+/// Hosts left out on purpose:
+/// - `api.anthropic.com`: the Anthropic SDK appends `/v1/messages` itself.
+/// - `api.perplexity.ai`: the OpenAI-compatible root is unversioned
+///   (`https://api.perplexity.ai/chat/completions`).
+/// - `api.cohere.com`: the SDK appends `/v1` or `/v2` per endpoint.
+/// - `generativelanguage.googleapis.com`: the Gemini SDK appends `/v1beta`
+///   (or `/v1`) itself and the OpenAI-compatible root is `/v1beta/openai`.
+/// - `api-inference.huggingface.co`, `api.stripe.com`, `supabase.co`,
+///   `api.resend.com`, `api.sendgrid.com`, `api.twilio.com`,
+///   `api.cloudflare.com`, `api.github.com`, `pinecone.io`: their SDKs send
+///   full paths from an unversioned host root.
+const SDK_BASE_PATHS: &[(&str, &str)] = &[
+    // OpenAI SDKs and Codex: default `https://api.openai.com/v1`.
+    ("api.openai.com", "/v1"),
+    // xAI documents `https://api.x.ai/v1` as the OpenAI SDK base URL.
+    ("api.x.ai", "/v1"),
+    // OpenAI SDK base `https://api.mistral.ai/v1`; the native `mistralai`
+    // SDK uses the host root and sends `/v1/...`, which is left unchanged.
+    ("api.mistral.ai", "/v1"),
+    // replicate-javascript defaults to `https://api.replicate.com/v1`; the
+    // Python SDK uses the host root and sends `/v1/...`, left unchanged.
+    ("api.replicate.com", "/v1"),
+];
+
+/// The SDK base path for an upstream host (no scheme), if it has one.
+pub fn sdk_base_path_for(host: &str) -> Option<&'static str> {
+    SDK_BASE_PATHS
+        .iter()
+        .find(|(known, _)| *known == host)
+        .map(|(_, path)| *path)
+}
 
 impl ServiceRoute {
     /// Path to request upstream for the remainder after `/<service>`.
     ///
-    /// `phantom exec` exports `OPENAI_BASE_URL=http://127.0.0.1:P/openai/...`,
-    /// but the official OpenAI SDKs (and Codex) treat `OPENAI_BASE_URL` as the
-    /// versioned root (default `https://api.openai.com/v1`) and request
-    /// `<base>/models`, `<base>/chat/completions`, ... Forwarding those
-    /// verbatim reached `https://api.openai.com/models`, which OpenAI answers
-    /// with 404. For the OpenAI upstream only, an unversioned path gets the
-    /// `/v1` prefix; callers that already send `/v1/...` are unchanged. Every
-    /// route also collapses the leading `//` produced when a caller appends
-    /// `/v1/...` to the slash-terminated SDK base URL.
+    /// When the route has an [`sdk_base_path`](Self::sdk_base_path), an
+    /// unversioned remainder gets that prefix so SDKs that treat the base URL
+    /// as the versioned root reach the real endpoint. A remainder that already
+    /// starts with the prefix is unchanged, so clients sending `/v1/...`
+    /// explicitly never get `/v1/v1`. Every route also collapses the leading
+    /// `//` produced when a caller appends `/v1/...` to the slash-terminated
+    /// SDK base URL. The remainder never carries the query string; the caller
+    /// splits it off first.
     pub fn upstream_path<'a>(&self, remainder: &'a str) -> Cow<'a, str> {
         let trimmed = remainder.trim_start_matches('/');
         let collapsed: Cow<'a, str> = if remainder.len() - trimmed.len() > 1 {
@@ -47,14 +88,24 @@ impl ServiceRoute {
         } else {
             Cow::Borrowed(remainder)
         };
-        if self.target_base != OPENAI_TARGET_BASE || trimmed.is_empty() {
+        let Some(base) = self
+            .sdk_base_path
+            .as_deref()
+            .map(|path| path.trim_matches('/'))
+            .filter(|path| !path.is_empty())
+        else {
+            return collapsed;
+        };
+        if trimmed.is_empty() {
             return collapsed;
         }
-        // The remainder never carries the query string; the caller splits it off first.
-        if trimmed == "v1" || trimmed.starts_with("v1/") {
+        let already_prefixed = trimmed
+            .strip_prefix(base)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+        if already_prefixed {
             return collapsed;
         }
-        Cow::Owned(format!("/v1/{trimmed}"))
+        Cow::Owned(format!("/{base}/{trimmed}"))
     }
 }
 
@@ -83,6 +134,7 @@ impl ServiceRegistry {
                             .header_format
                             .clone()
                             .unwrap_or_else(|| "Bearer {secret}".to_string()),
+                        sdk_base_path: sdk_base_path_for(pattern).map(str::to_string),
                     });
                 }
             }
@@ -211,6 +263,7 @@ mod tests {
             secret_key: "OPENAI_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: Some("/v1".to_string()),
         });
         registry.add_route(ServiceRoute {
             name: "anthropic".to_string(),
@@ -218,6 +271,7 @@ mod tests {
             secret_key: "ANTHROPIC_API_KEY".to_string(),
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
+            sdk_base_path: None,
         });
         registry
     }
@@ -244,46 +298,171 @@ mod tests {
         assert!(registry.match_route("/unknown/path").is_none());
     }
 
+    /// Every trusted built-in route, built the same way `phantom exec` does.
+    fn builtin_registry() -> ServiceRegistry {
+        let services = [
+            "openai",
+            "anthropic",
+            "stripe",
+            "stripe_pub",
+            "supabase",
+            "supabase_anon",
+            "resend",
+            "sendgrid",
+            "twilio",
+            "cloudflare",
+            "github_api",
+            "pinecone",
+            "replicate",
+            "xai",
+            "mistral",
+            "perplexity",
+            "cohere",
+            "huggingface",
+            "google_ai",
+        ]
+        .into_iter()
+        .map(|name| {
+            let config = phantom_core::config::PhantomConfig::trusted_builtin_proxy_service(name)
+                .unwrap_or_else(|| panic!("{name} is a trusted built-in"));
+            (name.to_string(), config)
+        })
+        .collect();
+        ServiceRegistry::from_config(&services)
+    }
+
     #[test]
-    fn openai_sdk_paths_reach_the_versioned_api() {
-        let registry = test_registry();
-        let path_for = |local: &str| {
+    fn builtin_routes_carry_their_sdk_base_path() {
+        let registry = builtin_registry();
+        let expected: &[(&str, Option<&str>)] = &[
+            ("openai", Some("/v1")),
+            ("xai", Some("/v1")),
+            ("mistral", Some("/v1")),
+            ("replicate", Some("/v1")),
+            ("anthropic", None),
+            ("perplexity", None),
+            ("cohere", None),
+            ("google_ai", None),
+            ("huggingface", None),
+            ("stripe", None),
+            ("stripe_pub", None),
+            ("supabase", None),
+            ("supabase_anon", None),
+            ("resend", None),
+            ("sendgrid", None),
+            ("twilio", None),
+            ("cloudflare", None),
+            ("github_api", None),
+            ("pinecone", None),
+        ];
+        assert_eq!(expected.len(), registry.services().len());
+        for (name, path) in expected {
+            let local = format!("/{name}");
+            let (route, _) = registry.match_route(&local).unwrap();
+            assert_eq!(route.sdk_base_path.as_deref(), *path, "route {name}");
+        }
+    }
+
+    #[test]
+    fn builtin_routes_map_sdk_paths_to_upstream() {
+        let registry = builtin_registry();
+        let cases: &[(&str, &str)] = &[
+            // OpenAI-shaped SDKs append unversioned paths to the base URL.
+            ("/openai/models", "https://api.openai.com/v1/models"),
+            (
+                "/openai/chat/completions",
+                "https://api.openai.com/v1/chat/completions",
+            ),
+            (
+                "/xai/chat/completions",
+                "https://api.x.ai/v1/chat/completions",
+            ),
+            (
+                "/mistral/chat/completions",
+                "https://api.mistral.ai/v1/chat/completions",
+            ),
+            (
+                "/replicate/predictions",
+                "https://api.replicate.com/v1/predictions",
+            ),
+            // Callers that already send the version path are unchanged.
+            (
+                "/openai/v1/chat/completions",
+                "https://api.openai.com/v1/chat/completions",
+            ),
+            ("/openai/v1", "https://api.openai.com/v1"),
+            ("/xai/v1/models", "https://api.x.ai/v1/models"),
+            (
+                "/mistral/v1/chat/completions",
+                "https://api.mistral.ai/v1/chat/completions",
+            ),
+            (
+                "/replicate/v1/predictions",
+                "https://api.replicate.com/v1/predictions",
+            ),
+            // `$BASE_URL/v1/...` on the slash-terminated base URL.
+            ("/openai//v1/models", "https://api.openai.com/v1/models"),
+            (
+                "/xai//chat/completions",
+                "https://api.x.ai/v1/chat/completions",
+            ),
+            // A segment that merely starts with `v1` is not the version path.
+            (
+                "/openai/v1beta/models",
+                "https://api.openai.com/v1/v1beta/models",
+            ),
+            // The bare route is left alone.
+            ("/openai", "https://api.openai.com"),
+            ("/openai/", "https://api.openai.com/"),
+            // SDKs that send full paths keep them (only `//` is collapsed).
+            (
+                "/anthropic/v1/messages",
+                "https://api.anthropic.com/v1/messages",
+            ),
+            (
+                "/anthropic//v1/messages",
+                "https://api.anthropic.com/v1/messages",
+            ),
+            ("/anthropic/models", "https://api.anthropic.com/models"),
+            (
+                "/perplexity/chat/completions",
+                "https://api.perplexity.ai/chat/completions",
+            ),
+            ("/cohere/v2/chat", "https://api.cohere.com/v2/chat"),
+            (
+                "/google_ai/v1beta/models",
+                "https://generativelanguage.googleapis.com/v1beta/models",
+            ),
+            (
+                "/google_ai/v1beta/openai/chat/completions",
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            ),
+            ("/stripe/v1/charges", "https://api.stripe.com/v1/charges"),
+            ("/github_api/user", "https://api.github.com/user"),
+        ];
+        for (local, upstream) in cases {
             let (route, remainder) = registry.match_route(local).unwrap();
-            format!("{}{}", route.target_base, route.upstream_path(remainder))
+            assert_eq!(
+                format!("{}{}", route.target_base, route.upstream_path(remainder)),
+                *upstream,
+                "local path {local}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_sdk_base_path_is_trimmed_and_matched_by_segment() {
+        let route = ServiceRoute {
+            name: "custom".to_string(),
+            target_base: "https://example.test".to_string(),
+            secret_key: "CUSTOM_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: Some("/openai/v1/".to_string()),
         };
-        // OpenAI SDKs append unversioned paths to OPENAI_BASE_URL.
-        assert_eq!(
-            path_for("/openai/models"),
-            "https://api.openai.com/v1/models"
-        );
-        assert_eq!(
-            path_for("/openai/chat/completions"),
-            "https://api.openai.com/v1/chat/completions"
-        );
-        // Callers that already send /v1 are unchanged.
-        assert_eq!(
-            path_for("/openai/v1/chat/completions"),
-            "https://api.openai.com/v1/chat/completions"
-        );
-        // `$OPENAI_BASE_URL/v1/models` on the slash-terminated base URL.
-        assert_eq!(
-            path_for("/openai//v1/models"),
-            "https://api.openai.com/v1/models"
-        );
-        assert_eq!(path_for("/openai"), "https://api.openai.com");
-        // Other upstreams keep their own paths (only `//` is collapsed).
-        assert_eq!(
-            path_for("/anthropic/v1/messages"),
-            "https://api.anthropic.com/v1/messages"
-        );
-        assert_eq!(
-            path_for("/anthropic//v1/messages"),
-            "https://api.anthropic.com/v1/messages"
-        );
-        assert_eq!(
-            path_for("/anthropic/models"),
-            "https://api.anthropic.com/models"
-        );
+        assert_eq!(route.upstream_path("/chat"), "/openai/v1/chat");
+        assert_eq!(route.upstream_path("/openai/v1/chat"), "/openai/v1/chat");
+        assert_eq!(route.upstream_path("/openai/v10"), "/openai/v1/openai/v10");
     }
 
     #[test]

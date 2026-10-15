@@ -14,6 +14,12 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   unversioned paths now get the `/v1` prefix; callers already sending `/v1/...`
   are unchanged. Every route also collapses the leading `//` produced when a
   caller appends `/v1/...` to the slash-terminated base URL.
+- **OpenAI-compatible routes get the same version-path fix.** Each built-in
+  route now carries the version path its official SDK keeps in the default base
+  URL: `/v1` for OpenAI, xAI, Mistral, and Replicate. Unversioned requests on
+  those routes get the prefix; requests already starting with it are unchanged.
+  Anthropic, Perplexity, Cohere, Gemini, Hugging Face, and the non-LLM routes
+  keep their paths as sent, because their SDKs send full paths.
 
 ## [0.7.9] - 2026-09-06
 

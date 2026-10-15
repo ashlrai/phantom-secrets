@@ -839,6 +839,7 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1010,6 +1011,7 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
         let mut named = HashMap::new();
         named.insert("TEST_API_KEY".to_string(), "real-secret-value".to_string());
@@ -1133,6 +1135,7 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1201,6 +1204,7 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1269,6 +1273,7 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
         let interceptor = Interceptor::new_scoped(
             HashMap::new(),
@@ -1324,6 +1329,7 @@ mod tests {
             secret_key: "OPENAI_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
         let mappings = HashMap::from([
             (
@@ -1415,6 +1421,7 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1490,6 +1497,7 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1567,6 +1575,7 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let mut named = HashMap::new();
@@ -1622,6 +1631,7 @@ mod tests {
             secret_key: "MISSING_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let proxy = ProxyServer::start(
@@ -1666,6 +1676,7 @@ mod tests {
             secret_key: "KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let interceptor = Interceptor::new_with_named(
@@ -1715,6 +1726,7 @@ mod tests {
             secret_key: "KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let interceptor = Interceptor::new_with_named(
@@ -1806,6 +1818,7 @@ mod tests {
             secret_key: "REDIRECT_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
         let mut named = HashMap::new();
         named.insert(
@@ -1873,6 +1886,7 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -2003,6 +2017,7 @@ mod tests {
             secret_key: "SSE_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -2090,6 +2105,7 @@ mod tests {
             secret_key: "RESPONSE_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
         let mut mappings = HashMap::new();
         mappings.insert(phantom_token.to_string(), real_secret.to_string());
@@ -2142,6 +2158,7 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
