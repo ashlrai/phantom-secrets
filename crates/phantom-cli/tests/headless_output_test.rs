@@ -183,3 +183,28 @@ fn json_before_the_subcommand_reaches_its_own_json_flag() {
         .unwrap_or_else(|e| panic!("`phantom --json list` is not JSON: {e}\n{stdout}"));
     assert_eq!(names[0]["name"], "OPENAI_API_KEY");
 }
+
+#[test]
+fn quiet_wrap_and_unwrap_print_only_warnings() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join("package.json"),
+        "{\"name\":\"demo\",\"scripts\":{\"dev\":\"node index.js\"}}\n",
+    )
+    .expect("write package.json");
+
+    let output = phantom(&dir).args(["-q", "wrap"]).assert().success();
+    assert!(output.get_output().stdout.is_empty(), "wrap -q printed");
+    let pkg = fs::read_to_string(dir.path().join("package.json")).unwrap();
+    assert!(pkg.contains("phantom exec -- node index.js"), "{pkg}");
+
+    // Nothing left to wrap: the warning still prints under --quiet.
+    let output = phantom(&dir).args(["wrap", "--quiet"]).assert().success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(stdout.contains("No scripts to wrap"), "{stdout}");
+
+    let output = phantom(&dir).args(["-q", "unwrap"]).assert().success();
+    assert!(output.get_output().stdout.is_empty(), "unwrap -q printed");
+    let pkg = fs::read_to_string(dir.path().join("package.json")).unwrap();
+    assert!(!pkg.contains("phantom exec"), "{pkg}");
+}

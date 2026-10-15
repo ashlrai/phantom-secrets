@@ -44,7 +44,7 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
-    /// Suppress all output except errors
+    /// Suppress progress output from exec, wrap, and unwrap (errors and warnings still print; other commands ignore it)
     #[arg(short, long, global = true)]
     quiet: bool,
 
@@ -1286,8 +1286,8 @@ fn run() -> anyhow::Result<()> {
             commands::watch::run_with_rotate(auto, auto_rotate)
         }
         Commands::Why { key } => commands::why::run(&key),
-        Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
-        Commands::Unwrap => commands::unwrap::run(),
+        Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip, cli.quiet),
+        Commands::Unwrap => commands::unwrap::run(cli.quiet),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
         Commands::Audit { action } => match action {
             AuditAction::Show {
