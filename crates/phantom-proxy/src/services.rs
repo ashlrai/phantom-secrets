@@ -50,7 +50,8 @@ impl ServiceRoute {
         if self.target_base != OPENAI_TARGET_BASE || trimmed.is_empty() {
             return collapsed;
         }
-        if trimmed == "v1" || trimmed.starts_with("v1/") || trimmed.starts_with("v1?") {
+        // The remainder never carries the query string; the caller splits it off first.
+        if trimmed == "v1" || trimmed.starts_with("v1/") {
             return collapsed;
         }
         Cow::Owned(format!("/v1/{trimmed}"))
