@@ -1,0 +1,74 @@
+/// Integration tests for headless (no TTY, piped) CLI behavior.
+///
+/// Agents and CI shells read Phantom's stderr and exit code, and parse stdout
+/// in `--json` modes. These tests pin that a failure is reported once, that
+/// exit codes match the outcome, and that `--json` output stays JSON on the
+/// empty paths too.
+mod common;
+
+use assert_cmd::Command;
+use serde_json::Value;
+use std::fs;
+use tempfile::TempDir;
+
+const VAULT_PASS: &str = "placeholder-headless-output-passphrase";
+
+fn phantom(dir: &TempDir) -> Command {
+    let mut cmd = Command::cargo_bin("phantom").expect("binary not found");
+    cmd.current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .env("NO_COLOR", "1")
+        .env_remove("PHANTOM_AUDIT")
+        .env_remove("RUST_BACKTRACE")
+        .env_remove("RUST_LIB_BACKTRACE");
+    cmd
+}
+
+fn init_project(dir: &TempDir) {
+    fs::write(
+        dir.path().join(".env"),
+        "OPENAI_API_KEY=placeholder-value-for-tests\nNODE_ENV=development\n",
+    )
+    .expect("write seed .env");
+    phantom(dir)
+        .args(["init", "--from", ".env"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn sync_without_targets_reports_the_failure_once() {
+    let dir = common::canonical_tempdir();
+    init_project(&dir);
+
+    let output = phantom(&dir).arg("sync").assert().failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+
+    assert_eq!(
+        stderr.matches("No sync targets configured").count(),
+        1,
+        "the failure should be stated once, got:\n{stderr}"
+    );
+    assert!(stderr.starts_with("Error: No sync targets configured."));
+    assert!(stderr.contains("[[sync]]"), "guidance missing:\n{stderr}");
+    assert!(stderr.contains("phantom sync --platform vercel"));
+}
+
+#[test]
+fn sync_dry_run_json_without_targets_emits_a_report() {
+    let dir = common::canonical_tempdir();
+    init_project(&dir);
+
+    let output = phantom(&dir)
+        .args(["sync", "--dry-run", "--json"])
+        .assert()
+        .failure();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let report: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not JSON: {e}\n{stdout}"));
+    assert_eq!(report["mode"], "dry-run");
+    assert_eq!(report["target_count"], 0);
+    assert_eq!(report["exit_code"], 1);
+    assert_eq!(report["would_call_platform_api"], false);
+}
