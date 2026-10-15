@@ -131,6 +131,25 @@ pub fn text_result(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
     )]))
 }
 
+/// A diagnostic result for agents: the existing human summary stays the first
+/// text block, the value-blind report follows as serialized JSON text, and the
+/// same report is attached as MCP `structuredContent`.
+pub fn report_result(
+    summary: impl Into<String>,
+    report: &impl serde::Serialize,
+) -> Result<CallToolResult, McpError> {
+    let value = serde_json::to_value(report)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let mut result = CallToolResult::success(vec![
+        ContentBlock::text(summary.into()),
+        ContentBlock::text(json),
+    ]);
+    result.structured_content = Some(value);
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{effect_execution_enabled, extract_nonce, extract_token};

@@ -4,7 +4,7 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::precommit_hook::{self, HookChange};
-use serde::Serialize;
+use phantom_core::report::{DoctorMcpClient as McpClientState, DoctorReport};
 use std::cell::RefCell;
 use zeroize::Zeroizing;
 
@@ -804,36 +804,6 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
     }
 }
 
-/// One doctor line in `--json` mode. Messages are the same value-blind text
-/// the human report prints; a following `Fix:`/`Fixed:` hint attaches to the
-/// check it explains.
-#[derive(Debug, Serialize)]
-struct DoctorCheck {
-    status: &'static str,
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fix: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fixed: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct McpClientState {
-    client: String,
-    path: String,
-    /// `local_runtime`, `stale`, `unreadable`, `not_phantom`, or `not_configured`.
-    state: &'static str,
-}
-
-#[derive(Debug, Default, Serialize)]
-struct DoctorReport {
-    ok: bool,
-    issues: usize,
-    fixed: usize,
-    checks: Vec<DoctorCheck>,
-    mcp_clients: Vec<McpClientState>,
-}
-
 thread_local! {
     /// `Some` while `phantom doctor --json` collects lines instead of printing.
     static REPORT: RefCell<Option<DoctorReport>> = const { RefCell::new(None) };
@@ -848,12 +818,7 @@ fn human(print: impl FnOnce()) {
 
 fn record(status: &'static str, msg: &str, print: impl FnOnce()) {
     REPORT.with(|report| match report.borrow_mut().as_mut() {
-        Some(report) => report.checks.push(DoctorCheck {
-            status,
-            message: msg.to_string(),
-            fix: None,
-            fixed: None,
-        }),
+        Some(report) => report.push(status, msg),
         None => print(),
     });
 }
@@ -865,18 +830,6 @@ fn mcp_client(name: &str, location: &str, state: &'static str, print: impl FnOnc
             path: location.to_string(),
             state,
         }),
-        None => print(),
-    });
-}
-
-/// Attach a hint to the most recent check, or print it under that check.
-fn annotate(attach: impl FnOnce(&mut DoctorCheck), print: impl FnOnce()) {
-    REPORT.with(|report| match report.borrow_mut().as_mut() {
-        Some(report) => {
-            if let Some(last) = report.checks.last_mut() {
-                attach(last);
-            }
-        }
         None => print(),
     });
 }
@@ -901,31 +854,16 @@ fn check_info(msg: &str) {
 
 fn check_fix(msg: &str) {
     REPORT.with(|report| match report.borrow_mut().as_mut() {
-        // One hint can follow a run of findings (each risky service route is
-        // its own warning), so it explains every trailing finding without one.
-        Some(report) => {
-            let mut trailing = report.checks.iter_mut().rev();
-            let Some(last) = trailing.next() else { return };
-            let finding = matches!(last.status, "warn" | "fail");
-            last.fix = Some(msg.to_string());
-            if finding {
-                for check in trailing {
-                    if check.fix.is_some() || !matches!(check.status, "warn" | "fail") {
-                        break;
-                    }
-                    check.fix = Some(msg.to_string());
-                }
-            }
-        }
+        Some(report) => report.attach_fix(msg),
         None => println!("       {} {}", "Fix:".dimmed(), msg.dimmed()),
     });
 }
 
 fn check_fixed(msg: &str) {
-    annotate(
-        |check| check.fixed = Some(msg.to_string()),
-        || println!("       {} {}", "Fixed:".green(), msg),
-    );
+    REPORT.with(|report| match report.borrow_mut().as_mut() {
+        Some(report) => report.attach_fixed(msg),
+        None => println!("       {} {}", "Fixed:".green(), msg),
+    });
 }
 
 #[cfg(test)]
