@@ -126,7 +126,7 @@ pub enum AuditAction {
         #[arg(long)]
         json: bool,
     },
-    /// Show correlated leak incidents derived from proxy.response_leak audit events.
+    /// Show correlated leak incidents derived from proxy.response_leak audit events
     ///
     /// Incidents are grouped by (secret, location) within 24-hour windows.
     /// High-confidence incidents (≥ 0.95) indicate the same secret leaked more
@@ -135,7 +135,8 @@ pub enum AuditAction {
     /// Examples:
     ///   phantom audit incidents
     ///   phantom audit incidents --min-confidence 0.5
-    ///   phantom audit incidents
+    ///   phantom audit incidents --json
+    #[command(verbatim_doc_comment)]
     Incidents {
         /// Only show incidents with confidence ≥ this value (default: 0.5)
         #[arg(long, default_value_t = 0.5, value_name = "SCORE")]
@@ -150,11 +151,12 @@ pub enum AuditAction {
         auto_rotate_on_high: bool,
     },
 
-    /// Export raw audit log rows filtered by date range, secret, or operation.
+    /// Export raw audit log rows filtered by date range, secret, or operation
     ///
     /// Examples:
     ///   phantom audit export-range --format csv --from 2026-01-01 --to 2026-06-29 > audit.csv
     ///   phantom audit export-range --format json --name OPENAI_API_KEY
+    #[command(verbatim_doc_comment)]
     ExportRange {
         /// Output format: csv or json (default: json)
         #[arg(long, default_value = "json")]
@@ -176,7 +178,7 @@ pub enum AuditAction {
         pid: Option<u64>,
     },
 
-    /// Show persisted leak-incident alert records from ~/.phantom/leak-alerts.jsonl.
+    /// Show persisted leak-incident alert records from ~/.phantom/leak-alerts.jsonl
     ///
     /// Alerts are emitted at most once per incident per 1-hour window. Use
     /// `--backfill` to re-run the correlation engine and emit any pending alerts
@@ -187,6 +189,7 @@ pub enum AuditAction {
     ///   phantom audit alerts --last 20
     ///   phantom audit alerts --json
     ///   phantom audit alerts --backfill
+    #[command(verbatim_doc_comment)]
     Alerts {
         /// Maximum number of recent alerts to return (default: 50)
         #[arg(long, default_value_t = 50)]
@@ -199,7 +202,7 @@ pub enum AuditAction {
         json: bool,
     },
 
-    /// Generate a structured compliance report and save to ~/.phantom/reports/.
+    /// Generate a structured compliance report and save to ~/.phantom/reports/
     ///
     /// The report includes:
     ///   - Access-frequency heatmap per secret per day
@@ -210,6 +213,7 @@ pub enum AuditAction {
     /// Examples:
     ///   phantom audit report
     ///   phantom audit report --from 2026-01-01 --to 2026-06-29 --save
+    #[command(verbatim_doc_comment)]
     Report {
         /// Report type: compliance (default)
         #[arg(long, default_value = "compliance", value_name = "TYPE")]
@@ -243,11 +247,18 @@ pub fn run_show(
     let path = resolve_path()?;
 
     if !path.exists() {
-        println!(
+        // `--json` emits JSON Lines, so "no events" is empty stdout; keep the
+        // hint on stderr where it cannot corrupt a parser.
+        let hint = format!(
             "{}  No audit events yet — set {} to start logging.",
             "->".blue().bold(),
             "PHANTOM_AUDIT=1".cyan()
         );
+        if json {
+            eprintln!("{hint}");
+        } else {
+            println!("{hint}");
+        }
         return Ok(());
     }
 
@@ -261,7 +272,12 @@ pub fn run_show(
     let lines = read_matching_lines(&path, effective_op, name);
 
     if lines.is_empty() {
-        println!("{}  No matching audit events.", "->".blue().bold());
+        let hint = format!("{}  No matching audit events.", "->".blue().bold());
+        if json {
+            eprintln!("{hint}");
+        } else {
+            println!("{hint}");
+        }
         return Ok(());
     }
 
@@ -561,7 +577,7 @@ pub fn run_stats(
     let stats = phantom_core::audit::audit_stats()
         .map_err(|e| anyhow::anyhow!("Failed to read audit log: {e}"))?;
 
-    if stats.total_events == 0 {
+    if stats.total_events == 0 && !json {
         println!(
             "{}  No audit events yet — set {} to start logging.",
             "->".blue().bold(),
@@ -677,7 +693,7 @@ fn run_stats_analytics(json: bool, top: usize, min_anomaly_score: Option<f64>) -
     let report = phantom_core::analytics::compute_analytics(phantom_core::analytics::Period::All)
         .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
 
-    if report.secrets.is_empty() {
+    if report.secrets.is_empty() && !json {
         println!(
             "{}  No audit events yet — set {} to start logging.",
             "->".blue().bold(),
@@ -1182,7 +1198,13 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
 
     if incidents.is_empty() {
         if json {
-            println!("[]");
+            // Same object shape as the non-empty report so consumers can
+            // always read `.incidents`.
+            let out = serde_json::json!({
+                "incidents": [],
+                "provider_credentials_rotated": [],
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
         } else {
             println!(
                 "{}  No active leak incidents (min_confidence={:.2}). \

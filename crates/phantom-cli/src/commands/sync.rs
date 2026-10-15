@@ -9,6 +9,22 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, IsTerminal, Write};
 use zeroize::{Zeroize, Zeroizing};
 
+fn no_sync_targets_message() -> String {
+    format!(
+        "No sync targets configured.\n\n\
+         Add sync targets to .phantom.toml:\n\n  \
+         {}\n  {}\n  {}\n  {}\n\n\
+         Or run: {} {} {}",
+        r#"[[sync]]"#.dimmed(),
+        r#"platform = "vercel""#.dimmed(),
+        r#"token_env = "VERCEL_TOKEN""#.dimmed(),
+        r#"project_id = "prj_your_project_id""#.dimmed(),
+        "phantom sync".cyan().bold(),
+        "--platform vercel".cyan(),
+        "--project <project-id>".cyan()
+    )
+}
+
 struct SyncTargetSpec {
     platform: Platform,
     token: Zeroizing<String>,
@@ -116,7 +132,9 @@ async fn run_async(
     let targets: Vec<_> = if config.sync.is_empty() {
         // No sync targets configured — try to infer from platform arg
         if let Some(platform_str) = &platform_filter {
-            let platform: Platform = platform_str.parse().context("Invalid platform")?;
+            let platform: Platform = platform_str.parse().map_err(|_| {
+                anyhow::anyhow!("Unknown --platform '{platform_str}'. Supported: vercel, railway")
+            })?;
 
             let token_env = match platform {
                 Platform::Vercel => "VERCEL_TOKEN",
@@ -140,22 +158,23 @@ async fn run_async(
                 only: Vec::new(),
             }]
         } else {
-            eprintln!("{} No sync targets configured.", "!".yellow().bold());
-            eprintln!();
-            eprintln!("Add sync targets to .phantom.toml:");
-            eprintln!();
-            eprintln!("  {}", r#"[[sync]]"#.dimmed());
-            eprintln!("  {}", r#"platform = "vercel""#.dimmed());
-            eprintln!("  {}", r#"token_env = "VERCEL_TOKEN""#.dimmed());
-            eprintln!("  {}", r#"project_id = "prj_your_project_id""#.dimmed());
-            eprintln!();
-            eprintln!(
-                "Or run: {} {} {}",
-                "phantom sync".cyan().bold(),
-                "--platform vercel".cyan(),
-                "--project <project-id>".cyan()
-            );
-            anyhow::bail!("No sync targets configured.");
+            if dry_run && json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&SyncDryRunReport {
+                        mode: "dry-run",
+                        secret_count: secret_names.len(),
+                        target_count: 0,
+                        would_call_platform_api: false,
+                        targets: Vec::new(),
+                        exit_code: 1,
+                    })?
+                );
+            }
+            // One message, printed once by main's error reporter. Printing the
+            // guidance here and then bailing repeated the headline as
+            // `Error: No sync targets configured.` after the guidance.
+            anyhow::bail!("{}", no_sync_targets_message());
         }
     } else {
         // Use configured sync targets
