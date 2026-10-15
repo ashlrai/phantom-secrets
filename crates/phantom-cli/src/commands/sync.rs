@@ -132,7 +132,9 @@ async fn run_async(
     let targets: Vec<_> = if config.sync.is_empty() {
         // No sync targets configured — try to infer from platform arg
         if let Some(platform_str) = &platform_filter {
-            let platform: Platform = platform_str.parse().context("Invalid platform")?;
+            let platform: Platform = platform_str.parse().map_err(|_| {
+                anyhow::anyhow!("Unknown --platform '{platform_str}'. Supported: vercel, railway")
+            })?;
 
             let token_env = match platform {
                 Platform::Vercel => "VERCEL_TOKEN",

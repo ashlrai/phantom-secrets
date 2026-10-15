@@ -122,3 +122,30 @@ fn audit_incidents_json_keeps_its_object_shape_when_empty() {
         serde_json::json!([])
     );
 }
+
+#[test]
+fn unknown_platform_flag_is_not_reported_as_a_config_parse_error() {
+    let dir = common::canonical_tempdir();
+    init_project(&dir);
+
+    for (args, flag) in [
+        (
+            vec!["sync", "--platform", "nope", "--project", "x"],
+            "--platform",
+        ),
+        (vec!["pull", "--from", "nope", "--project", "x"], "--from"),
+    ] {
+        let output = phantom(&dir).args(&args).assert().failure();
+        let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+        assert!(
+            stderr.contains(&format!(
+                "Unknown {flag} 'nope'. Supported: vercel, railway"
+            )),
+            "{args:?}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("Failed to parse config"),
+            "{args:?}: {stderr}"
+        );
+    }
+}
