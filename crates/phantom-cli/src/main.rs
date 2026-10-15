@@ -115,14 +115,14 @@ enum Commands {
         json: bool,
     },
 
-    /// Print a shell-completion script to stdout.
+    /// Print a shell-completion script to stdout
     ///
     /// Source the output from your shell rc, e.g.
     ///   bash:       phantom completion bash > ~/.local/share/bash-completion/completions/phantom
     ///   zsh:        phantom completion zsh > "${fpath[1]}/_phantom"
     ///   fish:       phantom completion fish > ~/.config/fish/completions/phantom.fish
     ///   powershell: phantom completion powershell | Out-String | Invoke-Expression
-    #[command(next_help_heading = "Setup")]
+    #[command(next_help_heading = "Setup", verbatim_doc_comment)]
     Completion {
         /// Shell to generate completions for
         #[arg(value_enum)]
@@ -136,7 +136,7 @@ enum Commands {
         action: McpAction,
     },
 
-    /// Approve a pending MCP nonce for a mutating vault operation.
+    /// Approve a pending MCP nonce for a mutating vault operation
     ///
     /// Run this in a trusted terminal after the MCP server prints a nonce to
     /// stderr. The returned approval_token must be passed as `approval_token`
@@ -144,7 +144,11 @@ enum Commands {
     ///
     /// Example:
     ///   phantom mcp-approve d3a9f2...
-    #[command(name = "mcp-approve", next_help_heading = "Setup")]
+    #[command(
+        name = "mcp-approve",
+        next_help_heading = "Setup",
+        verbatim_doc_comment
+    )]
     McpApprove {
         /// The nonce printed by the MCP server to stderr
         nonce: String,
@@ -380,7 +384,7 @@ enum Commands {
     ///
     /// Note: dotenvx encrypted .env.vault files are not supported — run
     ///   `dotenvx decrypt --stdout > .env` first, then import the plain .env.
-    #[command(next_help_heading = "Sync & teams")]
+    #[command(next_help_heading = "Sync & teams", verbatim_doc_comment)]
     Import {
         /// Path to the encrypted Phantom backup
         #[arg(required_unless_present = "from")]
@@ -558,7 +562,7 @@ enum Commands {
     ///   phantom expiry set <KEY> <DAYS>      — mark a secret expiring in N days
     ///   phantom expiry enforce [--fail-closed] — exit 1 if any secret has expired
     ///   phantom expiry rotate <KEY>          — deprecated local phm_ token remap only
-    #[command(next_help_heading = "Maintenance")]
+    #[command(next_help_heading = "Maintenance", verbatim_doc_comment)]
     Expiry {
         #[command(subcommand)]
         action: ExpiryAction,
@@ -606,7 +610,7 @@ enum ExpiryAction {
 
 #[derive(Subcommand)]
 enum ValidateAction {
-    /// Show or configure validation scheduling; writes require exact terminal consent.
+    /// Show or configure validation scheduling; writes require exact terminal consent
     ///
     /// Examples:
     ///   phantom validate schedule hourly
@@ -615,6 +619,7 @@ enum ValidateAction {
     ///   phantom validate schedule weekly
     ///   phantom validate schedule --disable
     ///   phantom validate schedule --status
+    #[command(verbatim_doc_comment)]
     Schedule {
         /// Schedule interval: hourly, 6h, daily, daily@2am, weekly, disabled
         #[arg(value_name = "INTERVAL")]
@@ -1341,6 +1346,46 @@ mod help_tests {
                     "unknown command `{word}` in --help"
                 );
             }
+        }
+    }
+
+    /// Example blocks in doc comments are indented one-per-line. Without
+    /// `verbatim_doc_comment`, clap reflows them into one paragraph, so
+    /// `phantom import --help` printed every example on a single line.
+    #[test]
+    fn help_example_blocks_keep_one_example_per_line() {
+        fn walk(command: &mut clap::Command, path: &str) {
+            let rendered = command.render_long_help().to_string();
+            for line in rendered.lines() {
+                assert!(
+                    line.matches(path).count() <= 1,
+                    "`{path} --help` reflowed several examples into one line: {line}"
+                );
+            }
+            let names: Vec<String> = command
+                .get_subcommands()
+                .filter(|sub| !sub.is_hide_set())
+                .map(|sub| sub.get_name().to_string())
+                .collect();
+            for name in names {
+                let sub = command
+                    .find_subcommand_mut(&name)
+                    .expect("listed subcommand");
+                walk(sub, &format!("{path} {name}"));
+            }
+        }
+        let mut command = Cli::command();
+        command.build();
+        let names: Vec<String> = command
+            .get_subcommands()
+            .filter(|sub| !sub.is_hide_set())
+            .map(|sub| sub.get_name().to_string())
+            .collect();
+        for name in names {
+            let sub = command
+                .find_subcommand_mut(&name)
+                .expect("listed subcommand");
+            walk(sub, &format!("phantom {name}"));
         }
     }
 
