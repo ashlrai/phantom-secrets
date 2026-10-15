@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use crate::tools::helpers::{
-    internal_err, invalid_params_err, report_result, require_approval_token, require_confirm,
-    text_result,
+    internal_err, invalid_params_err, json_object_result, report_result, require_approval_token,
+    require_confirm, text_result, vault_init_err,
 };
 use crate::tools::params::{
     AddSecretInteractiveParams, AddSecretParams, ApplyExpiryPolicyParams, ApprovalParams,
@@ -29,6 +29,28 @@ use crate::tools::params::{
     ValidateAllParams, ValidateSecretParams, ValidationHistoryParams, ValidationScheduleParams,
     WhyParams, WrapParams,
 };
+
+/// Echo a configured env var *name* only when it looks like one, so a token
+/// pasted into `.phantom.toml` in place of a name is never reflected back.
+fn display_env_name(name: &str) -> &str {
+    let mut chars = name.chars();
+    let valid = matches!(chars.next(), Some(c) if c.is_ascii_uppercase() || c == '_')
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    if valid {
+        name
+    } else {
+        "<invalid env var name>"
+    }
+}
+
+/// Name of the proxy service mapped to `secret_name`, if any (value-blind).
+fn service_for(config: &PhantomConfig, secret_name: &str) -> Option<String> {
+    config
+        .services
+        .iter()
+        .find(|(_, c)| c.secret_key == secret_name)
+        .map(|(svc_name, _)| svc_name.clone())
+}
 
 fn commit_mcp_precommit_repair(project_dir: &Path) -> Result<Option<HookChange>, McpError> {
     let Some(plan) = precommit_hook::prepare_install_plan(project_dir).map_err(|error| {
@@ -65,13 +87,17 @@ pub struct PhantomMcpServer {
 
 /// Empty-inventory text that stays honest when the secrets live in an
 /// encrypted-file vault this process cannot open (no passphrase in its env).
-fn empty_vault_message(vault: &dyn phantom_vault::VaultBackend, config: &PhantomConfig) -> String {
+fn empty_vault_message(
+    vault: &dyn phantom_vault::VaultBackend,
+    config: &PhantomConfig,
+    default: &str,
+) -> String {
     if vault.backend_name() != "encrypted-file" {
         if let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id()) {
             return format!("Vault locked, not empty. {notice}");
         }
     }
-    "No secrets stored in vault.".to_string()
+    default.to_string()
 }
 
 impl PhantomMcpServer {
@@ -90,6 +116,15 @@ impl PhantomMcpServer {
             tool_router: Self::tool_router(),
             project_dir,
         }
+    }
+
+    /// Project-relative display path for value-blind reports; falls back to
+    /// the full path when the file lives outside the project root.
+    fn display_relative(&self, path: &Path) -> String {
+        path.strip_prefix(&self.project_dir)
+            .unwrap_or(path)
+            .display()
+            .to_string()
     }
 
     fn config_path(&self) -> PathBuf {
@@ -119,7 +154,12 @@ impl PhantomMcpServer {
         if !path.exists() {
             return Err("Not initialized. Run `phantom init` first.".to_string());
         }
-        PhantomConfig::load(&path).map_err(|e| format!("Failed to load config: {e}"))
+        PhantomConfig::load(&path).map_err(|e| {
+            format!(
+                "Failed to load config: {e}. Next step: run phantom_doctor (it does not open \
+                 the vault) to see the failing check, then fix .phantom.toml and retry."
+            )
+        })
     }
 
     /// Reject a malformed managed dotenv before approval consumption, vault
@@ -146,8 +186,8 @@ impl PhantomMcpServer {
         &self,
     ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
         let config = self.load_config().map_err(internal_err)?;
-        let vault = phantom_vault::try_create_vault(config.local_project_id())
-            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let vault =
+            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
         Ok((config, vault))
     }
 
@@ -200,8 +240,8 @@ impl PhantomMcpServer {
                 "Reviewed config did not bind to the canonical local project identity; no project payload was used.",
             ));
         }
-        let vault = phantom_vault::try_create_vault(&reviewed_local_project_id)
-            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let vault =
+            phantom_vault::try_create_vault(&reviewed_local_project_id).map_err(vault_init_err)?;
 
         before_project_lock();
         let transaction_lock = phantom_vault::acquire_project_transaction_lock(
@@ -356,10 +396,7 @@ impl PhantomMcpServer {
                 "Review this exact value-free action proposal. Execution remains unavailable and no approval request was created."
             }
         });
-        text_result(
-            serde_json::to_string_pretty(&output)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&output)
     }
 
     /// Propose setup, request trusted-terminal application, or read request status.
@@ -533,10 +570,7 @@ impl PhantomMcpServer {
                 })
             }
         };
-        text_result(
-            serde_json::to_string_pretty(&output)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&output)
     }
 
     /// Describe the exact authority available through the conversation facade.
@@ -547,15 +581,12 @@ impl PhantomMcpServer {
         let inspection = phantom_workspace::inspect_workspace(&self.project_dir)
             .map_err(|e| internal_err(format!("Workspace inspection failed: {e}")))?;
         let card = phantom_workspace::build_capability_card(&inspection);
-        text_result(
-            serde_json::to_string_pretty(&card)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&card)
     }
 
     /// List all secret names stored in the vault. Never returns secret values.
     #[tool(
-        description = "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured."
+        description = "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured. Returns a summary plus JSON {count, secrets: [{name, service}]} (also as structuredContent)."
     )]
     fn phantom_list_secrets(&self) -> Result<CallToolResult, McpError> {
         let (config, vault) = self.load_config_and_vault()?;
@@ -563,33 +594,49 @@ impl PhantomMcpServer {
             .list()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
+        let secrets: Vec<serde_json::Value> = names
+            .iter()
+            .map(|name| serde_json::json!({ "name": name, "service": service_for(&config, name) }))
+            .collect();
+        let report = serde_json::json!({ "count": names.len(), "secrets": secrets });
+
         if names.is_empty() {
-            return text_result(empty_vault_message(vault.as_ref(), &config));
+            let message = empty_vault_message(
+                vault.as_ref(),
+                &config,
+                "No secrets stored in vault. Next step: ask the user to run \
+                 `phantom add <NAME>` in a trusted terminal, or protect an existing .env \
+                 with `phantom init`.",
+            );
+            return report_result(message, &report);
         }
 
         let mut output = format!("{} secret(s) in vault:\n", names.len());
         for name in &names {
-            // Check for service mapping
-            let service = config
-                .services
-                .iter()
-                .find(|(_, c)| c.secret_key == *name)
-                .map(|(svc_name, _)| format!(" (service: {svc_name})"));
-
+            let service =
+                service_for(&config, name).map(|svc_name| format!(" (service: {svc_name})"));
             output.push_str(&format!("  - {}{}\n", name, service.unwrap_or_default()));
         }
 
-        text_result(output)
+        report_result(output, &report)
     }
 
     /// Show the current status of Phantom in this project.
     #[tool(
-        description = "Read repository-local Phantom status without opening or provisioning a vault: project ID, managed dotenv protection counts, and configured service mappings. Vault backend and stored-secret inventory are deliberately not inspected; use phantom_list_secrets for the latter."
+        description = "Read repository-local Phantom status without opening or provisioning a vault: project ID, managed dotenv protection counts, and configured service mappings. Vault backend and stored-secret inventory are deliberately not inspected; use phantom_list_secrets for the latter. Returns a summary plus JSON {initialized, project_id, vault_inspected, dotenv: {path, entries, phantom_tokens, unprotected} | null, services, next_step} (also as structuredContent)."
     )]
     fn phantom_status(&self) -> Result<CallToolResult, McpError> {
         if !self.config_path().exists() {
-            return text_result(
+            return report_result(
                 "Phantom is not initialized in this directory.\nRun `phantom init` to get started.",
+                &serde_json::json!({
+                    "initialized": false,
+                    "project_id": null,
+                    "vault_inspected": false,
+                    "dotenv": null,
+                    "services": [],
+                    "next_step": "Run `phantom init` in the project (or phantom_init with confirm plus approval) to protect the .env.",
+                }),
             );
         }
 
@@ -611,6 +658,7 @@ impl PhantomMcpServer {
                     internal_err(format!("Failed to resolve managed dotenv: {error}"))
                 })?
                 .path;
+        let mut dotenv_report = serde_json::Value::Null;
         if env_path.exists() {
             let dotenv = DotenvFile::parse_file(&env_path)
                 .map_err(|error| internal_err(format!("Failed to read managed dotenv: {error}")))?;
@@ -629,10 +677,41 @@ impl PhantomMcpServer {
                 phantom_count,
                 real.len()
             ));
+            dotenv_report = serde_json::json!({
+                "path": self.display_relative(&env_path),
+                "entries": total,
+                "phantom_tokens": phantom_count,
+                "unprotected": real.len(),
+            });
         }
 
         // Service mappings
         let proxy_services = config.proxy_services();
+        let services: Vec<serde_json::Value> = proxy_services
+            .iter()
+            .map(|(name, svc)| {
+                serde_json::json!({
+                    "name": name,
+                    "secret_key": svc.secret_key,
+                    "pattern": svc.pattern,
+                })
+            })
+            .collect();
+        let unprotected = dotenv_report["unprotected"].as_u64().unwrap_or(0);
+        let report = serde_json::json!({
+            "initialized": true,
+            "project_id": config.portable_project_id(),
+            "vault_inspected": false,
+            "dotenv": dotenv_report,
+            "services": services,
+            "next_step": if unprotected > 0 {
+                serde_json::Value::from(
+                    "Unprotected secrets remain in the managed dotenv; run `phantom init` to protect them.",
+                )
+            } else {
+                serde_json::Value::Null
+            },
+        });
         if !proxy_services.is_empty() {
             output.push_str("\nService mappings:\n");
             for (name, svc) in &proxy_services {
@@ -645,7 +724,7 @@ impl PhantomMcpServer {
             }
         }
 
-        text_result(output)
+        report_result(output, &report)
     }
 
     /// Initialize Phantom in the current directory.
@@ -740,8 +819,8 @@ impl PhantomMcpServer {
                     .into_bytes(),
             ),
         ];
-        let vault = phantom_vault::try_create_vault(config.local_project_id())
-            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let vault =
+            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
         let secrets = real_entries
             .iter()
             .map(|entry| {
@@ -1014,7 +1093,7 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Failed to check secret existence: {e}")))?
         {
             return Err(invalid_params_err(format!(
-                "Secret '{}' not found in vault. Add it with phantom_add_secret first.",
+                "Secret '{}' not found in vault. Call phantom_list_secrets for exact names, or add it with phantom_add_secret_interactive first.",
                 params.name
             )));
         }
@@ -1268,8 +1347,8 @@ impl PhantomMcpServer {
 
         let config_path = self.config_path();
         let (config, config_before) = load_mcp_config_exact(&config_path)?;
-        let vault = phantom_vault::try_create_vault(config.local_project_id())
-            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let vault =
+            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
         ensure_cloud_push_allowed_mcp(&config)?;
         let mut names = vault
             .list()
@@ -1372,8 +1451,8 @@ impl PhantomMcpServer {
         require_confirm("phantom_cloud_pull", params.confirm)?;
         let config_path = self.config_path();
         let (config, config_before) = load_mcp_config_exact(&config_path)?;
-        let vault = phantom_vault::try_create_vault(config.local_project_id())
-            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let vault =
+            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
         let params_json = serde_json::to_string(&serde_json::json!({
             "force": params.force,
             "confirm": params.confirm,
@@ -1970,18 +2049,34 @@ impl PhantomMcpServer {
 
     /// Explain why a key is or isn't protected by Phantom.
     #[tool(
-        description = "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched."
+        description = "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, next_step} (also as structuredContent)."
     )]
     fn phantom_why(
         &self,
         Parameters(params): Parameters<WhyParams>,
     ) -> Result<CallToolResult, McpError> {
         let env_path = self.env_path()?;
+        let mut report = serde_json::json!({
+            "key": params.key,
+            "dotenv_exists": env_path.exists(),
+            "found": false,
+            "classification": null,
+            "protected": false,
+            "reason": null,
+            "matched_pattern": null,
+            "service": null,
+            "next_step": null,
+        });
         if !env_path.exists() {
-            return text_result(format!(
-                "No .env file found. '{}' cannot be classified without an .env file.",
-                params.key
-            ));
+            report["next_step"] =
+                "Create the managed .env (or set dotenv_path in .phantom.toml), then retry.".into();
+            return report_result(
+                format!(
+                    "No .env file found. '{}' cannot be classified without an .env file.",
+                    params.key
+                ),
+                &report,
+            );
         }
         let dotenv = DotenvFile::parse_file(&env_path)
             .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
@@ -1996,15 +2091,21 @@ impl PhantomMcpServer {
         let entry = match entry {
             Some(e) => e,
             None => {
-                return text_result(format!("'{}' was not found in .env.", params.key));
+                report["next_step"] =
+                    "Check the exact key spelling (case-sensitive); phantom_status lists dotenv counts.".into();
+                return report_result(format!("'{}' was not found in .env.", params.key), &report);
             }
         };
+        report["found"] = true.into();
 
         let config = self.load_config().ok();
 
         let mut output = String::new();
 
         if entry.is_phantom {
+            report["classification"] = "protected".into();
+            report["protected"] = true.into();
+            report["reason"] = "phantom_token".into();
             // Already protected with a phantom token
             output.push_str(&format!(
                 "PROTECTED: '{}' has a phantom token.\n",
@@ -2021,6 +2122,10 @@ impl PhantomMcpServer {
                     .iter()
                     .find(|(_, c)| c.secret_key == params.key)
                 {
+                    report["service"] = serde_json::json!({
+                        "name": svc_name,
+                        "pattern": svc.pattern,
+                    });
                     output.push_str(&format!(
                         "Service mapping: {} -> {} ({})\n",
                         params.key,
@@ -2046,6 +2151,9 @@ impl PhantomMcpServer {
                         .iter()
                         .find(|p| params.key.starts_with(*p))
                         .unwrap_or(&"unknown");
+                    report["classification"] = "public_key".into();
+                    report["reason"] = "public_prefix".into();
+                    report["matched_pattern"] = (*matched_prefix).into();
                     output.push_str(&format!(
                         "PUBLIC KEY: '{}' matches the framework prefix '{}'.\n",
                         params.key, matched_prefix
@@ -2056,6 +2164,9 @@ impl PhantomMcpServer {
                     );
                 }
                 SecretClassification::Secret => {
+                    report["classification"] = "secret_unprotected".into();
+                    report["next_step"] =
+                        "Run `phantom init` to protect it with a phantom token.".into();
                     output.push_str(&format!(
                         "UNPROTECTED: '{}' is classified as a secret but does NOT have a phantom token.\n",
                         params.key
@@ -2089,6 +2200,8 @@ impl PhantomMcpServer {
                     ];
 
                     if let Some(pat) = secret_key_patterns.iter().find(|p| key_upper.contains(*p)) {
+                        report["reason"] = "key_name".into();
+                        report["matched_pattern"] = (*pat).into();
                         output.push_str(&format!(
                             "Reason: key name contains '{}', which indicates a secret.\n",
                             pat
@@ -2096,15 +2209,19 @@ impl PhantomMcpServer {
                     } else if let Some(pat) =
                         connection_patterns.iter().find(|p| key_upper.contains(*p))
                     {
+                        report["reason"] = "connection_pattern".into();
+                        report["matched_pattern"] = (*pat).into();
                         output.push_str(&format!(
                             "Reason: key name matches connection pattern '{}'.\n",
                             pat
                         ));
                     } else if is_public_key(&params.key) {
+                        report["reason"] = "public_prefix_with_secret_value".into();
                         output.push_str(
                             "Reason: has a public-key prefix, but the value matches a known secret pattern.\n",
                         );
                     } else {
+                        report["reason"] = "value_pattern".into();
                         output.push_str(
                             "Reason: the value matches known secret patterns (prefix, connection string, or high-entropy string).\n",
                         );
@@ -2112,6 +2229,8 @@ impl PhantomMcpServer {
                     output.push_str("Run `phantom init` to protect it with a phantom token.\n");
                 }
                 SecretClassification::NotSecret => {
+                    report["classification"] = "not_secret".into();
+                    report["reason"] = "no_secret_pattern".into();
                     output.push_str(&format!(
                         "NOT SECRET: '{}' is classified as non-secret configuration.\n",
                         params.key
@@ -2125,7 +2244,7 @@ impl PhantomMcpServer {
             }
         }
 
-        text_result(output.trim_end().to_string())
+        report_result(output.trim_end().to_string(), &report)
     }
 
     /// Wrap package.json scripts with the installed local `phantom` binary.
@@ -2449,7 +2568,7 @@ impl PhantomMcpServer {
 
     /// Show what would be synced to deployment platforms and the current sync configuration.
     #[tool(
-        description = "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool — actual sync requires platform API tokens. Use it to understand and explain the sync setup."
+        description = "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool — actual sync requires platform API tokens. Use it to understand and explain the sync setup. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, next_step} (also as structuredContent)."
     )]
     fn phantom_sync(
         &self,
@@ -2490,20 +2609,62 @@ impl PhantomMcpServer {
                     secret_names.len()
                 ));
             }
-            return text_result(output);
+            return report_result(
+                output,
+                &serde_json::json!({
+                    "configured": false,
+                    "platform_filter": params.platform,
+                    "configured_platforms": [],
+                    "vault_secret_count": secret_names.len(),
+                    "targets": [],
+                    "next_step": "Add a [[sync]] section to .phantom.toml (see summary), then run `phantom sync` in a terminal.",
+                }),
+            );
         }
 
+        let configured_platforms: Vec<String> =
+            config.sync.iter().map(|t| t.platform.to_string()).collect();
+        let target_reports: Vec<serde_json::Value> = targets
+            .iter()
+            .map(|target| {
+                serde_json::json!({
+                    "platform": target.platform.to_string(),
+                    "project_id": params.project_id.as_deref().unwrap_or(&target.project_id),
+                    "token_env": display_env_name(&target.token_env),
+                    "environments": target.targets,
+                    "service_id": target.service_id,
+                    "environment_id": target.environment_id,
+                    "secrets": secret_names,
+                })
+            })
+            .collect();
+        let report = serde_json::json!({
+            "configured": true,
+            "platform_filter": params.platform,
+            "configured_platforms": configured_platforms,
+            "vault_secret_count": secret_names.len(),
+            "targets": target_reports,
+            "next_step": if targets.is_empty() {
+                "Retry with one of configured_platforms, or omit platform."
+            } else {
+                "Run `phantom sync` in a terminal with the platform token env set; this tool never pushes."
+            },
+        });
+
         if targets.is_empty() {
-            return text_result(format!(
-                "No sync targets match platform '{}'. Configured platforms: {}",
-                params.platform.as_deref().unwrap_or(""),
-                config
-                    .sync
-                    .iter()
-                    .map(|t| t.platform.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+            return report_result(
+                format!(
+                    "No sync targets match platform '{}'. Configured platforms: {}",
+                    params.platform.as_deref().unwrap_or(""),
+                    config
+                        .sync
+                        .iter()
+                        .map(|t| t.platform.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                &report,
+            );
         }
 
         let mut output = format!(
@@ -2517,7 +2678,10 @@ impl PhantomMcpServer {
 
             output.push_str(&format!("Platform: {}\n", target.platform));
             output.push_str(&format!("  Project ID: {}\n", project_id));
-            output.push_str(&format!("  Token env var: {}\n", target.token_env));
+            output.push_str(&format!(
+                "  Token env var: {}\n",
+                display_env_name(&target.token_env)
+            ));
             output.push_str(&format!(
                 "  Target environments: {}\n",
                 target.targets.join(", ")
@@ -2545,7 +2709,7 @@ impl PhantomMcpServer {
             "Note: Actual sync requires platform API tokens. Run `phantom sync` in the CLI to execute.",
         );
 
-        text_result(output)
+        report_result(output, &report)
     }
 
     /// Check cloud auth and sync status.
@@ -2792,8 +2956,8 @@ impl PhantomMcpServer {
         }
         let config_path = self.config_path();
         let (config, config_before) = load_mcp_config_exact(&config_path)?;
-        let vault = phantom_vault::try_create_vault(config.local_project_id())
-            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let vault =
+            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
         let project_id = config.portable_project_id().to_string();
         let mut names = vault
             .list()
@@ -2924,7 +3088,9 @@ impl PhantomMcpServer {
     #[tool(description = "List all secret names with their TTL/expiry status. \
             Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. \
             Never returns secret values. Use it to audit which credentials need an \
-            explicit provider rotation or local expiry-policy review.")]
+            explicit provider rotation or local expiry-policy review. Returns a summary plus JSON \
+            {count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, \
+            expires_at?, days_remaining?}]} (also as structuredContent).")]
     fn phantom_list_with_expiry(
         &self,
         Parameters(params): Parameters<ListWithExpiryParams>,
@@ -2935,20 +3101,29 @@ impl PhantomMcpServer {
             .list_with_metadata()
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
-        if entries.is_empty() {
-            return text_result(empty_vault_message(vault.as_ref(), &config));
-        }
-
         let mut output = format!("{} secret(s) in vault:\n", entries.len());
         let mut expired_count = 0usize;
         let mut expiring_soon_count = 0usize;
+        let mut secret_reports = Vec::with_capacity(entries.len());
 
         for (name, meta) in &entries {
-            let service = config
-                .services
-                .iter()
-                .find(|(_, c)| c.secret_key == *name)
-                .map(|(svc_name, _)| format!(" (service: {svc_name})"));
+            let service_name = service_for(&config, name);
+            let mut secret_report = serde_json::json!({ "name": name, "service": service_name });
+            if params.show_expiry {
+                let (status, expires_at, days) = match meta {
+                    Some(m) if m.is_expired() => ("expired", m.expires_at, m.days_remaining()),
+                    Some(m) if m.is_expiring_soon(7) => {
+                        ("expiring_soon", m.expires_at, m.days_remaining())
+                    }
+                    Some(m) if m.expires_at.is_some() => ("ok", m.expires_at, m.days_remaining()),
+                    _ => ("no_expiry", None, None),
+                };
+                secret_report["status"] = status.into();
+                secret_report["expires_at"] = expires_at.into();
+                secret_report["days_remaining"] = days.into();
+            }
+            secret_reports.push(secret_report);
+            let service = service_name.map(|svc_name| format!(" (service: {svc_name})"));
 
             let ttl_info = if params.show_expiry {
                 match meta {
@@ -2994,7 +3169,20 @@ impl PhantomMcpServer {
             );
         }
 
-        text_result(output)
+        let report = serde_json::json!({
+            "count": entries.len(),
+            "show_expiry": params.show_expiry,
+            // Not computed without show_expiry: null, never a misleading 0.
+            "expired": params.show_expiry.then_some(expired_count),
+            "expiring_soon": params.show_expiry.then_some(expiring_soon_count),
+            "secrets": secret_reports,
+        });
+        if entries.is_empty() {
+            let message =
+                empty_vault_message(vault.as_ref(), &config, "No secrets stored in vault.");
+            return report_result(message, &report);
+        }
+        report_result(output, &report)
     }
 
     /// Aggregate access statistics and anomaly scores from the HMAC-chained audit log.
@@ -3037,11 +3225,7 @@ impl PhantomMcpServer {
             "secrets": secrets,
         });
 
-        let json_str = serde_json::to_string_pretty(&out).map_err(|e| {
-            crate::tools::helpers::internal_err(format!("Serialization error: {e}"))
-        })?;
-
-        crate::tools::helpers::text_result(json_str)
+        json_object_result(&out)
     }
 
     // ── Audit & Compliance tools ───────────────────────────────────────
@@ -3071,10 +3255,7 @@ impl PhantomMcpServer {
                 "total_returned": 0,
                 "note": "Audit log does not exist. Set PHANTOM_AUDIT=1 to enable logging."
             });
-            return text_result(
-                serde_json::to_string_pretty(&out)
-                    .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-            );
+            return json_object_result(&out);
         }
 
         let content = std::fs::read_to_string(&log_path)
@@ -3149,10 +3330,7 @@ impl PhantomMcpServer {
             "total_in_log": total_in_log,
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     /// Query for suspicious access patterns in the audit log.
@@ -3233,10 +3411,7 @@ impl PhantomMcpServer {
             "total_findings": findings.len(),
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     /// Real-time windowed anomaly check — safe for AI agent polling.
@@ -3306,10 +3481,7 @@ impl PhantomMcpServer {
             "total_findings": findings.len(),
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     /// Hotspot alert inspection and acknowledgement tool.
@@ -3413,10 +3585,7 @@ impl PhantomMcpServer {
             "alerts": alert_records,
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     /// Full audit analytics export for external dashboards (Datadog, Grafana, CloudWatch).
@@ -3500,9 +3669,7 @@ impl PhantomMcpServer {
             "time_series": time_series,
         });
 
-        let json_str = serde_json::to_string_pretty(&out)
-            .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
-        text_result(json_str)
+        json_object_result(&out)
     }
 
     /// Read correlated leak incidents without exposing secret values.
@@ -3543,9 +3710,7 @@ impl PhantomMcpServer {
             "incidents": incidents,
         });
 
-        let json_str = serde_json::to_string_pretty(&out)
-            .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
-        text_result(json_str)
+        json_object_result(&out)
     }
 
     /// Real-time leak incident dashboard for AI agents and users.
@@ -3620,9 +3785,7 @@ impl PhantomMcpServer {
             "incidents": summaries,
         });
 
-        let json_str = serde_json::to_string_pretty(&out)
-            .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
-        text_result(json_str)
+        json_object_result(&out)
     }
 
     /// Retrieve recent leak-incident alert records for Claude Code dashboards.
@@ -3761,9 +3924,7 @@ impl PhantomMcpServer {
             "alerts": alerts,
         });
 
-        let json_str = serde_json::to_string_pretty(&out)
-            .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
-        text_result(json_str)
+        json_object_result(&out)
     }
 
     /// Export raw audit rows or generate a full compliance report.
@@ -3859,20 +4020,17 @@ impl PhantomMcpServer {
                     None
                 };
 
-                let json = serde_json::to_string_pretty(&report)
-                    .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
-
                 if let Some(path) = saved_path {
-                    // Prepend a one-line note so the agent sees where it was saved.
-                    let output = format!("// saved to: {path}\n{json}");
-                    text_result(output)
+                    // Summary first so the agent sees where it was saved; the
+                    // report follows as JSON text and structuredContent.
+                    report_result(format!("Compliance report saved to: {path}"), &report)
                 } else {
-                    text_result(json)
+                    json_object_result(&report)
                 }
             }
 
-            other => Err(internal_err(format!(
-                "Unknown action '{other}'. Use 'export' or 'report'."
+            other => Err(invalid_params_err(format!(
+                "Unknown action '{other}'. Retry with action 'export' or 'report'."
             ))),
         }
     }
@@ -4046,10 +4204,7 @@ impl PhantomMcpServer {
             "checks": checks,
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     /// Query which secrets are due for rotation (TTL approaching or exceeded).
@@ -4142,10 +4297,7 @@ impl PhantomMcpServer {
             }
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     /// Pull a team vault into the current project's local vault.
@@ -4168,8 +4320,8 @@ impl PhantomMcpServer {
         }
         let config_path = self.config_path();
         let (config, config_before) = load_mcp_config_exact(&config_path)?;
-        let vault = phantom_vault::try_create_vault(config.local_project_id())
-            .map_err(|error| internal_err(format!("Failed to initialize vault: {error}")))?;
+        let vault =
+            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
         let project_id = config.portable_project_id().to_string();
         let params_json = serde_json::to_string(&serde_json::json!({
             "team_id": &params.team_id,
@@ -4250,7 +4402,7 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Vault access failed: {e}")))?;
         if !exists {
             return Err(crate::tools::helpers::invalid_params_err(format!(
-                "Secret '{}' not found in vault.",
+                "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
                 params.name
             )));
         }
@@ -4272,10 +4424,7 @@ impl PhantomMcpServer {
             "never_checked": meta.never_checked(),
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     /// Run live validation checks for all vault secrets and return a compliance report.
@@ -4352,10 +4501,7 @@ impl PhantomMcpServer {
                 "entries": [],
                 "note": "Vault is empty."
             });
-            return text_result(
-                serde_json::to_string_pretty(&out)
-                    .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-            );
+            return json_object_result(&out);
         }
 
         // Retrieve all secrets for validation (zeroized after use).
@@ -4423,10 +4569,7 @@ impl PhantomMcpServer {
             ));
         }
 
-        let out = serde_json::to_string_pretty(&report)
-            .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
-
-        text_result(out)
+        json_object_result(&report)
     }
 
     // ── Validation scheduler tools ────────────────────────────────────────
@@ -4504,10 +4647,7 @@ impl PhantomMcpServer {
             "last_run": state.last_run,
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     /// Retrieve past validation run history.
@@ -4546,10 +4686,7 @@ impl PhantomMcpServer {
             "entries": entries,
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     // ── Expiry check & auto-rotate tools ─────────────────────────────────
@@ -4606,10 +4743,7 @@ impl PhantomMcpServer {
             "secrets": expiring,
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     /// Deprecated compatibility tool that remaps one local Phantom token.
@@ -4649,7 +4783,7 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Vault access error: {e}")))?
         {
             return Err(invalid_params_err(format!(
-                "Secret '{}' not found in vault.",
+                "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
                 params.name
             )));
         }
@@ -4747,10 +4881,7 @@ impl PhantomMcpServer {
             "pass": pass,
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     // ── Rotation schedule next ────────────────────────────────────────────
@@ -4779,7 +4910,7 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Vault access failed: {e}")))?;
         if !exists {
             return Err(crate::tools::helpers::invalid_params_err(format!(
-                "Secret '{}' not found in vault.",
+                "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
                 params.name
             )));
         }
@@ -4810,10 +4941,7 @@ impl PhantomMcpServer {
             "overdue": overdue,
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 
     // ── Apply expiry policy (demotion / promotion) ────────────────────────
@@ -4959,10 +5087,7 @@ impl PhantomMcpServer {
             "total_scanned": total_scanned,
         });
 
-        text_result(
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| internal_err(format!("Serialization error: {e}")))?,
-        )
+        json_object_result(&out)
     }
 }
 
@@ -7734,6 +7859,181 @@ mod tests {
         for value in forbidden {
             assert!(!rendered.contains(value), "{value} leaked: {rendered}");
         }
+    }
+
+    #[test]
+    fn status_tools_return_value_blind_structured_reports() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let leaks = ["sk-test-key", "user:pass", "phm_"];
+
+        let list = server.phantom_list_secrets().unwrap();
+        let report = structured_report(&list);
+        assert_eq!(report["count"], 2);
+        let names: Vec<&str> = report["secrets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"OPENAI_API_KEY") && names.contains(&"DATABASE_URL"));
+        assert_no_value_leak(&list, &leaks);
+
+        let status = server.phantom_status().unwrap();
+        let report = structured_report(&status);
+        assert_eq!(report["initialized"], true);
+        assert_eq!(report["vault_inspected"], false);
+        assert_eq!(report["dotenv"]["path"], ".env");
+        assert_eq!(report["dotenv"]["phantom_tokens"], 2);
+        assert_eq!(report["dotenv"]["unprotected"], 0);
+        assert!(report["next_step"].is_null());
+        assert_no_value_leak(&status, &leaks);
+
+        let expiry = server
+            .phantom_list_with_expiry(Parameters(ListWithExpiryParams { show_expiry: true }))
+            .unwrap();
+        let report = structured_report(&expiry);
+        assert_eq!(report["count"], 2);
+        assert_eq!(report["expired"], 0);
+        assert_eq!(report["secrets"][0]["status"], "no_expiry");
+        assert!(report["secrets"][0]["days_remaining"].is_null());
+        assert_no_value_leak(&expiry, &leaks);
+
+        let sync = server
+            .phantom_sync(Parameters(SyncParams {
+                platform: None,
+                project_id: None,
+            }))
+            .unwrap();
+        let report = structured_report(&sync);
+        assert_eq!(report["configured"], false);
+        assert_eq!(report["vault_secret_count"], 2);
+        assert!(report["next_step"].is_string());
+        assert_no_value_leak(&sync, &leaks);
+    }
+
+    #[test]
+    fn list_with_expiry_without_show_expiry_reports_null_counts() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let report = structured_report(
+            &server
+                .phantom_list_with_expiry(Parameters(ListWithExpiryParams { show_expiry: false }))
+                .unwrap(),
+        );
+        assert!(report["expired"].is_null());
+        assert!(report["expiring_soon"].is_null());
+        assert!(report["secrets"][0].get("status").is_none());
+    }
+
+    #[test]
+    fn sync_redacts_token_env_that_is_not_an_env_var_name() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let pasted = concat!("vercel", "_tok", "en_", "AbCdEf0123456789xyz");
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        for (platform, token_env) in [("vercel", pasted), ("railway", "RAILWAY_TOKEN")] {
+            config.sync.push(
+                toml::from_str(&format!(
+                    "platform = \"{platform}\"\ntoken_env = \"{token_env}\"\nproject_id = \"demo\"\n"
+                ))
+                .unwrap(),
+            );
+        }
+        config.save(&config_path).unwrap();
+        let result = server
+            .phantom_sync(Parameters(SyncParams {
+                platform: None,
+                project_id: None,
+            }))
+            .unwrap();
+        let report = structured_report(&result);
+        assert_eq!(report["configured"], true);
+        assert_eq!(report["targets"][0]["token_env"], "<invalid env var name>");
+        assert_eq!(report["targets"][1]["token_env"], "RAILWAY_TOKEN");
+        assert_no_value_leak(&result, &[pasted, "sk-test-key"]);
+        assert_eq!(display_env_name("_A1"), "_A1");
+        assert_eq!(display_env_name("1A"), "<invalid env var name>");
+        assert_eq!(display_env_name(""), "<invalid env var name>");
+    }
+
+    #[test]
+    fn status_before_init_reports_next_step() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_test_project();
+        let report = structured_report(&server.phantom_status().unwrap());
+        assert_eq!(report["initialized"], false);
+        assert!(report["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("phantom init"));
+    }
+
+    #[test]
+    fn why_returns_classification_without_values() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let leaks = ["sk-test-key", "user:pass", "phm_"];
+        let why = |key: &str| {
+            server
+                .phantom_why(Parameters(WhyParams {
+                    key: key.to_string(),
+                }))
+                .unwrap()
+        };
+
+        let protected = why("OPENAI_API_KEY");
+        let report = structured_report(&protected);
+        assert_eq!(report["classification"], "protected");
+        assert_eq!(report["protected"], true);
+        assert_no_value_leak(&protected, &leaks);
+
+        let not_secret = structured_report(&why("NODE_ENV"));
+        assert_eq!(not_secret["classification"], "not_secret");
+
+        let missing = structured_report(&why("NOPE"));
+        assert_eq!(missing["found"], false);
+        assert!(missing["next_step"].is_string());
+
+        let mut env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+        env.push_str(concat!("STRIPE_SECRET_KEY=", "rk", "_placeholder_value\n"));
+        std::fs::write(dir.path().join(".env"), env).unwrap();
+        let unprotected = why("STRIPE_SECRET_KEY");
+        let report = structured_report(&unprotected);
+        assert_eq!(report["classification"], "secret_unprotected");
+        assert_eq!(report["reason"], "key_name");
+        assert_eq!(report["matched_pattern"], "KEY");
+        assert!(report["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("phantom init"));
+        assert_no_value_leak(&unprotected, &["_placeholder_value"]);
+    }
+
+    #[test]
+    fn capability_attaches_structured_content_and_keeps_json_text() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_test_project();
+        let result = server.phantom_capability().unwrap();
+        let text: serde_json::Value = serde_json::from_str(&extract_content_text(&result)).unwrap();
+        assert_eq!(Some(text), result.structured_content);
+    }
+
+    #[test]
+    fn config_and_vault_errors_name_a_next_step() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        std::fs::write(dir.path().join(".phantom.toml"), "not = [valid").unwrap();
+        let error = server.phantom_list_secrets().unwrap_err();
+        assert!(
+            error.message.contains("phantom_doctor"),
+            "{}",
+            error.message
+        );
+        let vault = crate::tools::helpers::vault_init_err("backend unavailable");
+        assert!(vault.message.contains("phantom doctor"));
+        assert!(vault.message.contains("PHANTOM_VAULT_PASSPHRASE"));
     }
 
     #[test]
