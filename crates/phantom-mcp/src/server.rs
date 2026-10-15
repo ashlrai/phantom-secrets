@@ -61,6 +61,17 @@ pub struct PhantomMcpServer {
     project_dir: PathBuf,
 }
 
+/// Empty-inventory text that stays honest when the secrets live in an
+/// encrypted-file vault this process cannot open (no passphrase in its env).
+fn empty_vault_message(vault: &dyn phantom_vault::VaultBackend, config: &PhantomConfig) -> String {
+    if vault.backend_name() != "encrypted-file" {
+        if let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id()) {
+            return format!("Vault locked, not empty. {notice}");
+        }
+    }
+    "No secrets stored in vault.".to_string()
+}
+
 impl PhantomMcpServer {
     pub fn new() -> anyhow::Result<Self> {
         let project_dir = std::env::current_dir()?;
@@ -551,7 +562,7 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
         if names.is_empty() {
-            return text_result("No secrets stored in vault.");
+            return text_result(empty_vault_message(vault.as_ref(), &config));
         }
 
         let mut output = format!("{} secret(s) in vault:\n", names.len());
@@ -586,6 +597,9 @@ impl PhantomMcpServer {
         output.push_str(&format!("Project ID: {}\n", config.portable_project_id()));
         output.push_str("Vault backend: not inspected (read-only status)\n");
         output.push_str("Secrets stored: not inspected (use phantom_list_secrets)\n");
+        if let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id()) {
+            output.push_str(&format!("Warning: {notice}\n"));
+        }
 
         // Resolve only repository-local state. Passing no vault names avoids
         // opening/provisioning any credential backend from this status tool.
@@ -2888,7 +2902,7 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
 
         if entries.is_empty() {
-            return text_result("No secrets stored in vault.");
+            return text_result(empty_vault_message(vault.as_ref(), &config));
         }
 
         let mut output = format!("{} secret(s) in vault:\n", entries.len());

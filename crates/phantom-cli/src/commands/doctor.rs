@@ -144,6 +144,18 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
                     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
                     check_pass(&format!("Vault backend: {}", vault.backend_name()));
                     match vault.list() {
+                        Ok(names)
+                            if names.is_empty() && vault.backend_name() != "encrypted-file" =>
+                        {
+                            match phantom_vault::locked_file_vault_notice(config.local_project_id())
+                            {
+                                Some(notice) => {
+                                    check_warn(&notice);
+                                    issues += 1;
+                                }
+                                None => check_pass("0 secret(s) in vault"),
+                            }
+                        }
                         Ok(names) => check_pass(&format!("{} secret(s) in vault", names.len())),
                         Err(e) => {
                             check_fail(&format!("Vault access failed: {e}"));
@@ -152,6 +164,12 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
                     }
                 } else {
                     check_info("Vault backend and inventory not opened in read-only doctor mode");
+                    if let Some(notice) =
+                        phantom_vault::locked_file_vault_notice(config.local_project_id())
+                    {
+                        check_warn(&notice);
+                        issues += 1;
+                    }
                 }
 
                 // Check sync targets
