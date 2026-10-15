@@ -249,3 +249,126 @@ fn verbose_logging_never_corrupts_doctor_json() {
     serde_json::from_slice::<serde_json::Value>(&output.get_output().stdout)
         .expect("stdout stays one JSON document under -v");
 }
+fn doctor_json(dir: &TempDir, args: &[&str]) -> serde_json::Value {
+    let output = phantom(dir).args(args).assert().success();
+    serde_json::from_slice(&output.get_output().stdout).expect("json report")
+}
+
+#[test]
+fn doctor_fix_applies_one_isolated_repair_per_run_and_converges() {
+    let dir = common::canonical_tempdir();
+    assert!(std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap()
+        .success());
+    let config = phantom_core::config::PhantomConfig::new_with_defaults(
+        phantom_core::config::PhantomConfig::project_id_from_path(dir.path()),
+    );
+    fs::write(
+        dir.path().join(".phantom.toml"),
+        toml::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
+    let dotenv = "OPENAI_API_KEY=phm_placeholder_token\n";
+    fs::write(dir.path().join(".env"), dotenv).unwrap();
+    let gitignore = dir.path().join(".gitignore");
+    let example = dir.path().join(".env.example");
+    let hook = dir.path().join(".git/hooks/pre-commit");
+    assert!(!gitignore.exists() && !example.exists() && !hook.exists());
+
+    // Three independent repairs are needed; each --fix run publishes one.
+    let expected = [
+        (
+            "Created .gitignore with .env patterns",
+            2,
+            [true, false, false],
+        ),
+        ("Generated .env.example", 1, [true, true, false]),
+        ("Installed pre-commit hook", 0, [true, true, true]),
+    ];
+    for (fixed_note, remaining, present) in expected {
+        let report = doctor_json(&dir, &["doctor", "--fix", "--json"]);
+        assert_eq!(report["fixed"], 1, "{report}");
+        assert_eq!(report["issues"], remaining, "{report}");
+        assert_eq!(report["ok"], remaining == 0, "{report}");
+        let applied: Vec<_> = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|check| check["fixed"].as_str())
+            .collect();
+        assert_eq!(applied, [fixed_note], "{report}");
+        assert_eq!(
+            [gitignore.exists(), example.exists(), hook.exists()],
+            present,
+            "{report}"
+        );
+    }
+
+    let example_text = fs::read_to_string(&example).unwrap();
+    assert!(example_text.contains("OPENAI_API_KEY"), "{example_text}");
+    assert!(!example_text.contains("phm_placeholder_token"));
+    assert_eq!(fs::read_to_string(dir.path().join(".env")).unwrap(), dotenv);
+
+    let report = doctor_json(&dir, &["doctor", "--fix", "--json"]);
+    assert_eq!(report["fixed"], 0, "{report}");
+    assert_eq!(report["issues"], 0, "{report}");
+    assert_eq!(report["ok"], true, "{report}");
+}
+
+#[test]
+fn doctor_json_missing_gitignore_carries_its_own_fix_hint() {
+    let dir = common::canonical_tempdir();
+    let report = doctor_json(&dir, &["doctor", "--json"]);
+    let checks = report["checks"].as_array().unwrap();
+    let find = |message: &str| {
+        checks
+            .iter()
+            .find(|check| check["message"] == message)
+            .unwrap_or_else(|| panic!("{message}: {report}"))
+    };
+    let gitignore = find("No .gitignore — consider adding one");
+    assert_eq!(gitignore["status"], "warn");
+    assert_eq!(
+        gitignore["fix"],
+        "Run: phantom doctor --fix (creates .gitignore with .env patterns)"
+    );
+    let example = find("No .env.example — team onboarding may be difficult");
+    assert_eq!(example["fix"], "Run: phantom env");
+}
+
+#[test]
+fn doctor_counts_missing_example_when_dotenv_is_unparseable() {
+    let dir = common::canonical_tempdir();
+    fs::write(dir.path().join(".gitignore"), ".env\n").unwrap();
+    fs::write(dir.path().join(".env"), b"OPENAI_API_KEY=\xff\xfe\n").unwrap();
+
+    let without_example = doctor_json(&dir, &["doctor", "--json"]);
+    let example_check = without_example["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["message"] == "No .env.example — team onboarding may be difficult")
+        .unwrap_or_else(|| panic!("{without_example}"));
+    assert_eq!(example_check["status"], "warn");
+    assert!(example_check["fixed"].is_null(), "{without_example}");
+
+    // --fix cannot generate an example from an unparseable dotenv; it fails
+    // closed before any repair and writes nothing.
+    phantom(&dir)
+        .args(["doctor", "--fix", "--json"])
+        .assert()
+        .failure();
+    assert!(!dir.path().join(".env.example").exists());
+    assert_eq!(fs::read(dir.path().join(".gitignore")).unwrap(), b".env\n");
+
+    fs::write(dir.path().join(".env.example"), "OPENAI_API_KEY=\n").unwrap();
+    let with_example = doctor_json(&dir, &["doctor", "--json"]);
+    assert_eq!(
+        without_example["issues"].as_u64().unwrap(),
+        with_example["issues"].as_u64().unwrap() + 1,
+        "missing .env.example must count as one issue: {without_example} vs {with_example}"
+    );
+}
