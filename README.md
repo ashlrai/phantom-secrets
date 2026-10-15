@@ -35,7 +35,7 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-macOS via Homebrew; installs `phantom` and `phantom-mcp` (reviewed `v0.7.8`). Linux and Windows:
+macOS via Homebrew; installs `phantom` and `phantom-mcp` (reviewed `v0.7.9`). Linux and Windows:
 use the matching [release asset](#exact-v079-github-assets). Then run
 `phantom init` in your project and `phantom setup --client claude` (or
 `cursor`, `windsurf`, `codex`). Full walkthrough: [Quick Start](#quick-start).
@@ -89,8 +89,8 @@ evidence behind those boundaries.
 ## Quick Start
 
 Install both binaries from the reviewed [`v0.7.9` GitHub release](#installation).
-On macOS, the Homebrew formula is the shortest path; it currently installs the
-previous reviewed `v0.7.8` binaries until the tap is bumped to `v0.7.9`:
+On macOS, the Homebrew formula is the shortest path; its tap currently pins the
+reviewed `v0.7.9` binaries:
 
 ```bash
 $ brew tap ashlrai/phantom
@@ -532,12 +532,13 @@ $ git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 $ cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-Do not treat unpinned package-manager commands as `v0.7.9`. In the exact
-2026-09-29 registry snapshot, npm `latest` remains `0.6.0`; the immutable npm `0.7.4` wrappers
-exist only under `release-candidate` after failing cross-platform acceptance.
-No npm `0.7.9`, crates.io `0.7.9`, or MCP Registry `0.7.9` publication is
-represented by this GitHub release receipt. Homebrew is separately published
-and verified through its tap, and currently remains at `v0.7.8`.
+Do not treat unpinned package-manager commands as `v0.7.9`. As of
+2026-10-15, npm `latest` is `0.7.9` for both `phantom-secrets` and
+`phantom-secrets-mcp` (published 2026-10-05); the immutable npm `0.7.4` wrappers
+remain under `release-candidate`. crates.io still lists `0.5.1` for the
+`phantom-secrets*` crates, not `0.7.9`. This GitHub release receipt does not
+itself represent any npm, crates.io, or MCP Registry publication. The Homebrew
+tap formula pins `v0.7.9`.
 
 ### Release-state snapshot
 
@@ -550,9 +551,9 @@ and verified through its tap, and currently remains at `v0.7.8`.
 > release record by tag-bound workflow
 > [34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 > Exact public registry endpoints were requeried on 2026-09-29. The Homebrew
-> formula still installs the previous reviewed `v0.7.8` until its tap is bumped;
-> npm `latest` remains `0.6.0`, and the npm
-> `0.7.4` wrappers remain quarantined under `release-candidate` after failed
+> tap formula pins `v0.7.9`; npm `latest` is `0.7.9` for both packages
+> (requeried 2026-10-15), crates.io still lists `0.5.1`, and the npm
+> `0.7.4` wrappers remain under `release-candidate` after failed
 > npm-channel acceptance. The GitHub receipt alone does not prove the separately
 > verified Homebrew formula, an npm or crates.io package, MCP Registry entry, hosted-service
 > commissioning, provider activation, signing/notarization, certification, or
