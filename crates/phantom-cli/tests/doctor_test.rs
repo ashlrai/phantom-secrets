@@ -249,3 +249,34 @@ fn verbose_logging_never_corrupts_doctor_json() {
     serde_json::from_slice::<serde_json::Value>(&output.get_output().stdout)
         .expect("stdout stays one JSON document under -v");
 }
+
+#[test]
+fn doctor_json_config_parse_error_never_echoes_config_values() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".phantom.toml"),
+        format!(
+            "[phantom]\nproject_id = \"p\"\ntoken = \"{}\" oops\n",
+            concat!("sk", "-live-", "MUSTNOTLEAK0123456789")
+        ),
+    )
+    .unwrap();
+    let output = phantom(&dir).args(["doctor", "--json"]).assert().success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
+    assert!(!stdout.contains("MUSTNOTLEAK"), "{stdout}");
+    assert!(!stderr.contains("MUSTNOTLEAK"), "{stderr}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("json report");
+    let parse_error = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["status"] == "fail")
+        .expect("config parse failure is reported");
+    let message = parse_error["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("Config parse error:")
+            && message.contains("TOML parse error at line 3, column"),
+        "{message}"
+    );
+}
