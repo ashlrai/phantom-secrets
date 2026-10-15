@@ -8,26 +8,32 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 - The built-in `twilio` route now sends valid HTTP Basic credentials. It
   previously injected `Authorization: Basic <raw auth token>`, which Twilio
-  rejects on every request. A route configured as `Authorization` +
-  `Basic {secret}` now keeps the username from the client's own Basic header
-  (the Account SID, a non-secret identifier) and replaces the password with
-  the vault value. The client's password is always discarded. Usernames that
-  contain a `phm_` token, exceed 128 bytes, or use characters outside
-  `[A-Za-z0-9._@+-]` are refused and the route falls back to its old fixed
-  value. No config change is needed; the trusted route definition is
-  unchanged.
+  rejects on every request. The route now keeps the username from the
+  client's first `Authorization: Basic` header (the Account SID, a non-secret
+  identifier) and replaces the password with the vault value; the client's
+  password is always discarded. A request with no usable username (missing,
+  non-Basic, containing a `phm_` token, over 128 bytes, or outside
+  `[A-Za-z0-9._@+-]`) now gets a local `400` from the proxy naming the fix
+  (`Authorization: Basic base64(<ACCOUNT_SID>:<anything>)`) and never
+  reaches Twilio. This handling applies only to the exact trusted `twilio`
+  route definition, not to custom routes with the same header shape. No
+  config change is needed.
 - The built-in `google_ai` (Gemini) route now owns every slot where Google
-  accepts an API key. The client's `key` query parameter (matched
-  case-insensitively after percent-decoding) and `Authorization` header are
-  dropped, so `curl ...?key=$GEMINI_API_KEY` and the OpenAI-compatible
-  endpoint (`Authorization: Bearer $GEMINI_API_KEY`) reach Gemini with the
-  injected `x-goog-api-key` instead of failing on the session's `phm_`
-  token. Other routes forward `key` query parameters unchanged.
-- `phantom init` no longer protects a Twilio Account SID (`AC` plus 32 hex
-  characters under a key ending in `ACCOUNT_SID`). It is a public
-  identifier that appears in every Twilio REST path, so replacing it with a
-  `phm_` token broke `/Accounts/{sid}/...` requests. Projects initialized
-  earlier keep the SID protected until it is restored in `.env`.
+  accepts an API key. The client's `key` and `api_key` query parameters
+  (matched case-insensitively after percent-decoding) are dropped, and an
+  `Authorization` header carrying a `phm_` token is dropped, so
+  `curl ...?key=$GEMINI_API_KEY` and the OpenAI-compatible endpoint
+  (`Authorization: Bearer $GEMINI_API_KEY`) reach Gemini with the injected
+  `x-goog-api-key`. A client's own OAuth bearer (no `phm_` token) is still
+  forwarded. Other routes forward `key` query parameters unchanged.
+- The `phantom_token` query parameter is now stripped with the same
+  percent-decoded, case-insensitive name match.
+- `phantom init` no longer protects a Twilio Account SID (`AC` plus 32
+  lowercase hex characters under a key ending in `ACCOUNT_SID`). It is a
+  public identifier that appears in every Twilio REST path, so replacing it
+  with a `phm_` token broke `/Accounts/{sid}/...` requests. Projects
+  initialized earlier keep the SID protected until it is written back to
+  `.env` as its plain value.
 
 ### Changed (MCP, agent-visible)
 

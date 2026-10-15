@@ -481,13 +481,19 @@ impl Interceptor {
         pair.push_str(username);
         pair.push(':');
         pair.push_str(secret.as_str());
-        // Reserve the exact encoded length so encoding never reallocates and
-        // leaves an unzeroized copy behind.
-        let mut value = zeroize::Zeroizing::new(String::with_capacity(
-            "Basic ".len() + pair.len().div_ceil(3) * 4,
-        ));
+        // Encode straight into a zeroizing buffer of the exact length.
+        // `encode_slice` writes into the caller's buffer with no internal
+        // staging copy, unlike `encode_string`'s chunked stack buffer.
+        let encoded_len = base64::encoded_len(pair.len(), true)?;
+        let mut encoded = zeroize::Zeroizing::new(vec![0u8; encoded_len]);
+        let written = base64::engine::general_purpose::STANDARD
+            .encode_slice(pair.as_bytes(), encoded.as_mut_slice())
+            .ok()?;
+        let encoded = encoded.get(..written)?;
+        let mut value =
+            zeroize::Zeroizing::new(String::with_capacity("Basic ".len() + encoded.len()));
         value.push_str("Basic ");
-        base64::engine::general_purpose::STANDARD.encode_string(pair.as_bytes(), &mut value);
+        value.push_str(std::str::from_utf8(encoded).ok()?);
         Some(value)
     }
 
@@ -717,6 +723,21 @@ mod tests {
             .unwrap();
         let expected = base64::engine::general_purpose::STANDARD.encode(format!("acct:{secret}"));
         assert_eq!(value.as_str(), format!("Basic {expected}"));
+        // Every padding length round-trips and no reallocation is needed.
+        for password_len in 0..6 {
+            let password = "p".repeat(password_len);
+            let interceptor = Interceptor::new_scoped(
+                HashMap::new(),
+                HashMap::from([("BASIC_SECRET".to_string(), password.clone())]),
+            );
+            let value = interceptor
+                .format_basic_auth_for_secret_key("u", "BASIC_SECRET")
+                .unwrap();
+            let expected =
+                base64::engine::general_purpose::STANDARD.encode(format!("u:{password}"));
+            assert_eq!(value.as_str(), format!("Basic {expected}"));
+            assert_eq!(value.capacity(), value.len());
+        }
         assert!(interceptor
             .format_basic_auth_for_secret_key("a:b", "BASIC_SECRET")
             .is_none());
