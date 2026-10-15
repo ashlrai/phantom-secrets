@@ -99,13 +99,24 @@ catalog. The following table highlights the core workflows; use MCP
 
 ### Read-only (safe to call any time)
 
+Status tools return three forms: a short human summary text block, the same
+value-blind report as JSON text, and that report as MCP `structuredContent`.
+Reports carry names, counts, and states only, never secret values or phantom
+tokens, and include `next_step` where the agent has something to do next.
+Tools whose whole answer was already JSON (`phantom_capability`, `phantom_do`,
+`phantom_setup_workspace`, the audit, leak-incident,
+compliance, validation, expiry, and rotation-schedule tools)
+keep that JSON as their only text block and now also attach it as
+`structuredContent`.
+
 | Tool | What it does |
 |------|-------------|
-| `phantom_list_secrets` | List secret names in the vault. Never returns values. |
-| `phantom_status` | Show project ID, vault backend, secret count, service mappings, and `.env` protection state. |
-| `phantom_why` | Explain why a specific `.env` key is or isn't classified as a secret (shows the matching heuristic). |
+| `phantom_list_secrets` | List secret names in the vault. Never returns values. JSON: `{count, secrets: [{name, service}]}`. |
+| `phantom_list_with_expiry` | List secret names with TTL state. JSON: `{count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, expires_at?, days_remaining?}]}`; `status` is `expired`, `expiring_soon`, `ok`, or `no_expiry`. |
+| `phantom_status` | Show project ID, managed `.env` protection counts, and service mappings without opening the vault. JSON: `{initialized, project_id, vault_inspected: false, dotenv: {path, entries, phantom_tokens, unprotected} \| null, services: [{name, secret_key, pattern}], next_step}`. |
+| `phantom_why` | Explain why a specific `.env` key is or isn't classified as a secret (shows the matching heuristic). JSON: `{key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, next_step}`; `classification` is `protected`, `public_key`, `secret_unprotected`, or `not_secret`. |
 | `phantom_check` | Scan `.env` files for unprotected real secrets, or scan the runtime environment for phantom tokens without an active proxy. Returns a short summary plus the value-blind `phantom check --json` report (`mode`, `clean`, `findings`, `warnings`) as JSON text and MCP `structuredContent`. |
-| `phantom_sync` | Show sync configuration and which secrets would be pushed to Vercel or Railway. Informational only — does not execute the sync. |
+| `phantom_sync` | Show sync configuration and which secrets would be pushed to Vercel or Railway. Informational only — does not execute the sync. JSON: `{configured, platform_filter, configured_platforms, vault_secret_count, targets: [{platform, project_id, token_env, environments, service_id, environment_id, secrets}], next_step}`. |
 | `phantom_doctor` | Run all health checks: config validity, vault access, `.gitignore`, `.env.example`, pre-commit hook. Pass `fix=true` to auto-fix safe issues. Returns a short summary plus the value-blind `phantom doctor --json` report (`ok`, `issues`, `fixed`, `checks`, `mcp_clients`) as JSON text and MCP `structuredContent`. |
 
 ### Initialization

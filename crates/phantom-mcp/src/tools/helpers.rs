@@ -150,9 +150,48 @@ pub fn report_result(
     Ok(result)
 }
 
+/// A tool whose whole answer is already a JSON object: keep the pretty JSON
+/// as the only text block (existing clients parse it) and attach the same
+/// object as MCP `structuredContent`.
+pub fn json_object_result(report: &impl serde::Serialize) -> Result<CallToolResult, McpError> {
+    let value = serde_json::to_value(report)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let mut result = CallToolResult::success(vec![ContentBlock::text(json)]);
+    if value.is_object() {
+        result.structured_content = Some(value);
+    }
+    Ok(result)
+}
+
+/// Vault construction failed. Tell the agent what to do next instead of
+/// surfacing a bare backend error.
+pub fn vault_init_err(error: impl std::fmt::Display) -> McpError {
+    internal_err(format!(
+        "Failed to initialize vault: {error}. Next step: ask the user to run \
+         `phantom doctor` in a trusted terminal. If no OS keychain is available \
+         (headless Linux, CI), the operator can set PHANTOM_VAULT_PASSPHRASE in the \
+         MCP server environment to use the encrypted-file vault. Repository-only \
+         tools (phantom_status, phantom_doctor, phantom_check) still work."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{effect_execution_enabled, extract_nonce, extract_token};
+    use super::{effect_execution_enabled, extract_nonce, extract_token, json_object_result};
+
+    #[test]
+    fn json_object_result_attaches_objects_only() {
+        let object = json_object_result(&serde_json::json!({ "count": 1 })).unwrap();
+        assert_eq!(object.content.len(), 1);
+        assert_eq!(
+            object.structured_content,
+            Some(serde_json::json!({ "count": 1 }))
+        );
+        let array = json_object_result(&serde_json::json!([1, 2])).unwrap();
+        assert!(array.structured_content.is_none());
+    }
 
     #[test]
     fn effect_execution_requires_exact_operator_mode() {
