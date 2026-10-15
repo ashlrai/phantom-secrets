@@ -72,3 +72,53 @@ fn sync_dry_run_json_without_targets_emits_a_report() {
     assert_eq!(report["exit_code"], 1);
     assert_eq!(report["would_call_platform_api"], false);
 }
+
+#[test]
+fn audit_json_modes_stay_parseable_without_a_log() {
+    let dir = common::canonical_tempdir();
+
+    // `audit show --json` is JSON Lines: no events means empty stdout.
+    let output = phantom(&dir)
+        .args(["audit", "show", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(stdout.trim().is_empty(), "expected no JSONL rows: {stdout}");
+
+    let output = phantom(&dir)
+        .args(["audit", "stats", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let stats: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stats stdout is not JSON: {e}\n{stdout}"));
+    assert_eq!(stats["total_events"], 0);
+    assert_eq!(stats["secrets"], serde_json::json!([]));
+
+    let output = phantom(&dir)
+        .args(["audit", "stats", "--json", "--analytics"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let analytics: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("analytics stdout is not JSON: {e}\n{stdout}"));
+    assert_eq!(analytics["secrets"], serde_json::json!([]));
+}
+
+#[test]
+fn audit_incidents_json_keeps_its_object_shape_when_empty() {
+    let dir = common::canonical_tempdir();
+
+    let output = phantom(&dir)
+        .args(["audit", "incidents", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let report: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("incidents stdout is not JSON: {e}\n{stdout}"));
+    assert_eq!(report["incidents"], serde_json::json!([]));
+    assert_eq!(
+        report["provider_credentials_rotated"],
+        serde_json::json!([])
+    );
+}

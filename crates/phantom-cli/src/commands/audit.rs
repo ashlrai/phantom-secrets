@@ -243,11 +243,18 @@ pub fn run_show(
     let path = resolve_path()?;
 
     if !path.exists() {
-        println!(
+        // `--json` emits JSON Lines, so "no events" is empty stdout; keep the
+        // hint on stderr where it cannot corrupt a parser.
+        let hint = format!(
             "{}  No audit events yet — set {} to start logging.",
             "->".blue().bold(),
             "PHANTOM_AUDIT=1".cyan()
         );
+        if json {
+            eprintln!("{hint}");
+        } else {
+            println!("{hint}");
+        }
         return Ok(());
     }
 
@@ -261,7 +268,12 @@ pub fn run_show(
     let lines = read_matching_lines(&path, effective_op, name);
 
     if lines.is_empty() {
-        println!("{}  No matching audit events.", "->".blue().bold());
+        let hint = format!("{}  No matching audit events.", "->".blue().bold());
+        if json {
+            eprintln!("{hint}");
+        } else {
+            println!("{hint}");
+        }
         return Ok(());
     }
 
@@ -561,7 +573,7 @@ pub fn run_stats(
     let stats = phantom_core::audit::audit_stats()
         .map_err(|e| anyhow::anyhow!("Failed to read audit log: {e}"))?;
 
-    if stats.total_events == 0 {
+    if stats.total_events == 0 && !json {
         println!(
             "{}  No audit events yet — set {} to start logging.",
             "->".blue().bold(),
@@ -677,7 +689,7 @@ fn run_stats_analytics(json: bool, top: usize, min_anomaly_score: Option<f64>) -
     let report = phantom_core::analytics::compute_analytics(phantom_core::analytics::Period::All)
         .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
 
-    if report.secrets.is_empty() {
+    if report.secrets.is_empty() && !json {
         println!(
             "{}  No audit events yet — set {} to start logging.",
             "->".blue().bold(),
@@ -1182,7 +1194,13 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
 
     if incidents.is_empty() {
         if json {
-            println!("[]");
+            // Same object shape as the non-empty report so consumers can
+            // always read `.incidents`.
+            let out = serde_json::json!({
+                "incidents": [],
+                "provider_credentials_rotated": [],
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
         } else {
             println!(
                 "{}  No active leak incidents (min_confidence={:.2}). \
