@@ -77,7 +77,9 @@ the upstream receives no truncated prefix. Accepted bodies are forwarded
 byte-for-byte; no client header or body resolves a `phm_` token. Only the
 matched route's fixed authentication header receives its route-owned value.
 
-Split larger requests. The body-limit configuration is not currently exposed
+All in-flight requests also share a 320 MiB buffer budget; when many large
+requests overlap, the proxy answers 503 with `retry-after: 1` instead of
+buffering more. Split larger requests. The body-limit configuration is not currently exposed
 through `.phantom.toml`; track the repository issues for future configuration.
 
 ### Claude Code can't read my .env file

@@ -164,7 +164,6 @@ impl ServiceRegistry {
             "GEMINI_BASE_URL",
             "GOOGLE_GEMINI_BASE_URL",
             "CO_API_URL",
-            "REPLICATE_BASE_URL",
         ]
     }
 }
@@ -176,12 +175,15 @@ impl ServiceRegistry {
 ///
 /// - `google-genai` (Python and JS, Gemini CLI): `GOOGLE_GEMINI_BASE_URL`
 /// - `cohere` (Python v5+): `CO_API_URL`
-/// - `replicate` (Python): `REPLICATE_BASE_URL`
+///
+/// `REPLICATE_BASE_URL` is deliberately absent: replicate-python 1.x treats it
+/// as the host root (`/v1/...` paths) while the 2.x SDK defaults it to
+/// `https://api.replicate.com/v1` (unversioned paths), so no single value
+/// serves both.
 fn sdk_base_url_env_aliases(target_base: &str) -> &'static [&'static str] {
     match target_base {
         "https://generativelanguage.googleapis.com" => &["GOOGLE_GEMINI_BASE_URL"],
         "https://api.cohere.com" => &["CO_API_URL"],
-        "https://api.replicate.com" => &["REPLICATE_BASE_URL"],
         _ => &[],
     }
 }
@@ -274,11 +276,13 @@ mod tests {
         for (alias, conventional) in [
             ("GOOGLE_GEMINI_BASE_URL", "GEMINI_BASE_URL"),
             ("CO_API_URL", "COHERE_BASE_URL"),
-            ("REPLICATE_BASE_URL", "REPLICATE_API_TOKEN_BASE_URL"),
         ] {
             assert!(url_for(alias).is_some(), "{alias} missing");
             assert_eq!(url_for(alias), url_for(conventional), "{alias}");
         }
+        // Replicate's SDKs disagree on whether this variable includes /v1.
+        assert!(url_for("REPLICATE_API_TOKEN_BASE_URL").is_some());
+        assert!(url_for("REPLICATE_BASE_URL").is_none());
         for (name, _) in &overrides {
             assert!(
                 ServiceRegistry::known_override_env_names().contains(&name.as_str()),
