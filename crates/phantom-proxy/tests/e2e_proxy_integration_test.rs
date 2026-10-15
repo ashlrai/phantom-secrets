@@ -277,6 +277,7 @@ async fn test_multi_secret_routing_no_cross_contamination() {
         secret_key: "OPENAI_API_KEY".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        sdk_base_path: None,
     });
     registry.add_route(ServiceRoute {
         name: "anthropic".to_string(),
@@ -284,6 +285,7 @@ async fn test_multi_secret_routing_no_cross_contamination() {
         secret_key: "ANTHROPIC_API_KEY".to_string(),
         header: "x-api-key".to_string(),
         header_format: "{secret}".to_string(),
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
@@ -497,6 +499,7 @@ async fn test_concurrent_sse_and_json_streaming_secrets_scrubbed() {
         secret_key: "SSE_KEY".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        sdk_base_path: None,
     });
     registry.add_route(ServiceRoute {
         name: "jsonapi".to_string(),
@@ -504,6 +507,7 @@ async fn test_concurrent_sse_and_json_streaming_secrets_scrubbed() {
         secret_key: "JSON_KEY".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
@@ -653,6 +657,7 @@ async fn test_proxy_forces_identity_and_rejects_encoded_upstream_responses() {
         secret_key: "ENCODING_KEY".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
@@ -796,6 +801,7 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
         secret_key: "API_KEY".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
@@ -1258,6 +1264,7 @@ async fn test_rate_limiter_429_response_headers_and_body() {
         secret_key: "RATE_KEY".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
@@ -1355,6 +1362,7 @@ async fn test_buffered_upstream_response_is_bounded_before_scrubbing() {
         secret_key: "API_KEY".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
