@@ -32,6 +32,7 @@ async fn test_proxy_with_limits(
         secret_key: "TEST_API_KEY".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        sdk_base_path: None,
     });
 
     let interceptor = Interceptor::new_with_named(
@@ -123,6 +124,7 @@ async fn test_multi_secret_concurrent_load_independent() {
         secret_key: "KEY_A".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        sdk_base_path: None,
     });
     registry.add_route(ServiceRoute {
         name: "service_b".to_string(),
@@ -130,6 +132,7 @@ async fn test_multi_secret_concurrent_load_independent() {
         secret_key: "KEY_B".to_string(),
         header: "x-api-key".to_string(),
         header_format: "{secret}".to_string(),
+        sdk_base_path: None,
     });
 
     let interceptor = Interceptor::new_with_named(
@@ -353,7 +356,7 @@ fn test_rate_limiter_env_config_defaults() {
     // Without env vars set, should use default values
     let config = RateLimitConfig::from_vars(None, None);
     assert_eq!(config.per_secret_rps, 5);
-    assert_eq!(config.burst_total_10s, 20);
+    assert_eq!(config.burst_total_10s, 100);
 }
 
 #[test]
@@ -367,7 +370,7 @@ fn test_rate_limiter_env_config_custom() {
 fn test_rate_limiter_env_config_unparseable_falls_back() {
     let config = RateLimitConfig::from_vars(Some("not-a-number".into()), Some("-3".into()));
     assert_eq!(config.per_secret_rps, 5);
-    assert_eq!(config.burst_total_10s, 20);
+    assert_eq!(config.burst_total_10s, 100);
 }
 
 #[test]

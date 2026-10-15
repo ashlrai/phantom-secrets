@@ -314,3 +314,58 @@ fn check_staged_placeholder_allowance_does_not_apply_to_dotenv() {
     git_repo_with_staged(&dir, ".env", "OPENAI_API_KEY=your_openai_here\n");
     phantom(&dir).args(["check", "--staged"]).assert().failure();
 }
+
+#[test]
+fn check_json_reports_names_only_and_keeps_failure_status() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".env"),
+        "OPENAI_API_KEY=sk-json-value-must-not-leak-0123456789\nPORT=3000\n",
+    )
+    .unwrap();
+
+    for args in [vec!["check", "--json"], vec!["--json", "check"]] {
+        let output = phantom(&dir).args(&args).assert().failure();
+        let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+        let report: serde_json::Value =
+            serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{args:?}: {e}: {stdout}"));
+        assert_eq!(report["mode"], "worktree");
+        assert_eq!(report["clean"], false);
+        let findings = report["findings"].as_array().unwrap();
+        assert_eq!(findings.len(), 1, "{stdout}");
+        assert_eq!(findings[0]["kind"], "dotenv");
+        assert_eq!(findings[0]["name"], "OPENAI_API_KEY");
+        assert!(!stdout.contains("must-not-leak"), "{stdout}");
+        assert!(
+            !String::from_utf8_lossy(&output.get_output().stderr).contains("BLOCKED"),
+            "JSON mode must not mix human output"
+        );
+    }
+}
+
+#[test]
+fn check_json_clean_project_succeeds() {
+    let dir = common::canonical_tempdir();
+    fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+    let output = phantom(&dir).args(["check", "--json"]).assert().success();
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.get_output().stdout).expect("json report");
+    assert_eq!(report["clean"], true);
+    assert_eq!(report["findings"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn check_runtime_json_names_variable_without_token() {
+    let dir = common::canonical_tempdir();
+    let token = format!("phm_{}", "ab".repeat(32));
+    let output = phantom(&dir)
+        .args(["check", "--runtime", "--json"])
+        .env("OPENAI_API_KEY", &token)
+        .assert()
+        .failure();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("json report");
+    assert_eq!(report["mode"], "runtime");
+    assert_eq!(report["findings"][0]["name"], "OPENAI_API_KEY");
+    assert!(!stdout.contains(&token), "{stdout}");
+}
