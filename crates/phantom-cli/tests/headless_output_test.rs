@@ -208,3 +208,27 @@ fn quiet_wrap_and_unwrap_print_only_warnings() {
     let pkg = fs::read_to_string(dir.path().join("package.json")).unwrap();
     assert!(!pkg.contains("phantom exec"), "{pkg}");
 }
+
+/// `cloud status --json` and `team list --json` have JSON output, so headless
+/// they fail at the same trusted-terminal gate as their text form (exit 1),
+/// not with the exit-2 "no --json output" usage error. Nothing is printed on
+/// stdout and no credential or network access happens.
+#[test]
+fn cloud_and_team_json_keep_the_trusted_terminal_gate() {
+    let dir = common::canonical_tempdir();
+
+    for args in [
+        vec!["cloud", "status", "--json"],
+        vec!["--json", "team", "list"],
+    ] {
+        let output = phantom(&dir).args(&args).assert().code(1);
+        let out = output.get_output();
+        assert!(out.stdout.is_empty(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("trusted terminal"), "{args:?}: {stderr}");
+        assert!(
+            !stderr.contains("has no --json output"),
+            "{args:?}: {stderr}"
+        );
+    }
+}

@@ -1041,22 +1041,28 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         Commands::Why { .. } => Err("phantom why"),
         Commands::Login => Err("phantom login"),
         Commands::Logout => Err("phantom logout"),
-        Commands::Cloud { action } => Err(match action {
-            CloudAction::Push => "phantom cloud push",
-            CloudAction::Pull { .. } => "phantom cloud pull",
-            CloudAction::Status => "phantom cloud status",
-        }),
-        Commands::Team { action } => Err(match action {
-            TeamAction::List => "phantom team list",
-            TeamAction::Create { .. } => "phantom team create",
-            TeamAction::Members { .. } => "phantom team members",
-            TeamAction::Invite { .. } => "phantom team invite",
-            TeamAction::KeyPublish { .. } => "phantom team key-publish",
-            TeamAction::VaultPush { .. } => "phantom team vault-push",
-            TeamAction::VaultPull { .. } => "phantom team vault-pull",
-            TeamAction::Revoke { .. } => "phantom team revoke",
-            TeamAction::RotateVault { .. } => "phantom team rotate-vault",
-        }),
+        // Read the global flag themselves (still behind the trusted-terminal
+        // consent gate, like their text output).
+        Commands::Cloud {
+            action: CloudAction::Status,
+        } => Ok(()),
+        Commands::Cloud {
+            action: CloudAction::Push,
+        } => Err("phantom cloud push"),
+        Commands::Cloud {
+            action: CloudAction::Pull { .. },
+        } => Err("phantom cloud pull"),
+        Commands::Team { action } => match action {
+            TeamAction::List => Ok(()),
+            TeamAction::Create { .. } => Err("phantom team create"),
+            TeamAction::Members { .. } => Err("phantom team members"),
+            TeamAction::Invite { .. } => Err("phantom team invite"),
+            TeamAction::KeyPublish { .. } => Err("phantom team key-publish"),
+            TeamAction::VaultPush { .. } => Err("phantom team vault-push"),
+            TeamAction::VaultPull { .. } => Err("phantom team vault-pull"),
+            TeamAction::Revoke { .. } => Err("phantom team revoke"),
+            TeamAction::RotateVault { .. } => Err("phantom team rotate-vault"),
+        },
         Commands::Pull { .. } => Err("phantom pull"),
         // `export --json` is a hidden legacy plaintext flag kept only to fail
         // closed with its own message; never turn it on from here.
@@ -1280,7 +1286,7 @@ fn run() -> anyhow::Result<()> {
         Commands::Cloud { action } => match action {
             CloudAction::Push => commands::cloud::run_push(),
             CloudAction::Pull { force } => commands::cloud::run_pull(force),
-            CloudAction::Status => commands::cloud::run_status(),
+            CloudAction::Status => commands::cloud::run_status(cli.json),
         },
         Commands::Watch { auto, auto_rotate } => {
             commands::watch::run_with_rotate(auto, auto_rotate)
@@ -1412,7 +1418,7 @@ fn run() -> anyhow::Result<()> {
         },
         Commands::ClearClipboardAfter { secs } => commands::reveal::run_clear_after(secs),
         Commands::Team { action } => match action {
-            TeamAction::List => commands::team::run_list(),
+            TeamAction::List => commands::team::run_list(cli.json),
             TeamAction::Create { name } => commands::team::run_create(&name),
             TeamAction::Members { team_id } => commands::team::run_members(&team_id),
             TeamAction::Invite {
@@ -1643,6 +1649,7 @@ mod help_tests {
             "audit show",
             "audit stats",
             "check",
+            "cloud status",
             "doctor",
             "expiry enforce",
             // Not JSON output: its hidden legacy `--json` fails closed with
@@ -1656,6 +1663,7 @@ mod help_tests {
             "secrets-expiring-soon",
             "status",
             "sync",
+            "team list",
             "validate",
             "validate history",
             "validate schedule",
