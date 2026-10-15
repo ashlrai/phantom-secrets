@@ -4,7 +4,30 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No additional unreleased changes are recorded after the `0.7.9` release.
+### Changed (MCP, agent-visible)
+
+- `phantom_list_secrets`, `phantom_status`, `phantom_why`, `phantom_sync`, and
+  `phantom_list_with_expiry` now return a human summary, a value-blind JSON
+  report as a second text block, and the same report as MCP
+  `structuredContent`. Agents that read only the first text block see the
+  same summary as before. `phantom_list_with_expiry` reports `expired` and
+  `expiring_soon` as `null` when `show_expiry=false`. `phantom_sync` echoes
+  `token_env` only when it is a valid env var name and otherwise reports
+  `<invalid env var name>`.
+- Tools that already returned a JSON object (`phantom_capability`,
+  `phantom_do`, `phantom_setup_workspace`, and the audit, leak-incident,
+  compliance, validation, expiry, and rotation-schedule tools) keep their
+  JSON text unchanged and now also attach it as `structuredContent`.
+- The compliance export tool's `report` action with `save=true` no longer
+  prefixes the JSON with a `// saved to: <path>` line. It now returns
+  `Compliance report saved to: <path>` as its own first text block, followed
+  by the JSON report as a separate text block and as `structuredContent`.
+- An unknown compliance export `action` now fails with `INVALID_PARAMS`
+  (previously `INTERNAL_ERROR`) and tells the agent to retry with `export` or
+  `report`.
+- Config-load, vault-initialization, and missing-secret errors now name the
+  next step (`phantom_doctor`, `phantom doctor` or `PHANTOM_VAULT_PASSPHRASE`,
+  `phantom_list_secrets`).
 
 ## [0.7.9] - 2026-09-06
 

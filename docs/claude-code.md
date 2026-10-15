@@ -103,8 +103,9 @@ Status tools return three forms: a short human summary text block, the same
 value-blind report as JSON text, and that report as MCP `structuredContent`.
 Reports carry names, counts, and states only, never secret values or phantom
 tokens, and include `next_step` where the agent has something to do next.
-Tools whose whole answer was already JSON (`phantom_capability`, the audit,
-leak-incident, compliance, validation, expiry, and rotation-schedule tools)
+Tools whose whole answer was already JSON (`phantom_capability`, `phantom_do`,
+`phantom_setup_workspace`, the audit, leak-incident,
+compliance, validation, expiry, and rotation-schedule tools)
 keep that JSON as their only text block and now also attach it as
 `structuredContent`.
 

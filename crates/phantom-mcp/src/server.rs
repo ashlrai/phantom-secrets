@@ -30,6 +30,19 @@ use crate::tools::params::{
     WhyParams, WrapParams,
 };
 
+/// Echo a configured env var *name* only when it looks like one, so a token
+/// pasted into `.phantom.toml` in place of a name is never reflected back.
+fn display_env_name(name: &str) -> &str {
+    let mut chars = name.chars();
+    let valid = matches!(chars.next(), Some(c) if c.is_ascii_uppercase() || c == '_')
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    if valid {
+        name
+    } else {
+        "<invalid env var name>"
+    }
+}
+
 /// Name of the proxy service mapped to `secret_name`, if any (value-blind).
 fn service_for(config: &PhantomConfig, secret_name: &str) -> Option<String> {
     config
@@ -2597,7 +2610,7 @@ impl PhantomMcpServer {
                 serde_json::json!({
                     "platform": target.platform.to_string(),
                     "project_id": params.project_id.as_deref().unwrap_or(&target.project_id),
-                    "token_env": target.token_env,
+                    "token_env": display_env_name(&target.token_env),
                     "environments": target.targets,
                     "service_id": target.service_id,
                     "environment_id": target.environment_id,
@@ -2645,7 +2658,10 @@ impl PhantomMcpServer {
 
             output.push_str(&format!("Platform: {}\n", target.platform));
             output.push_str(&format!("  Project ID: {}\n", project_id));
-            output.push_str(&format!("  Token env var: {}\n", target.token_env));
+            output.push_str(&format!(
+                "  Token env var: {}\n",
+                display_env_name(&target.token_env)
+            ));
             output.push_str(&format!(
                 "  Target environments: {}\n",
                 target.targets.join(", ")
@@ -3136,8 +3152,9 @@ impl PhantomMcpServer {
         let report = serde_json::json!({
             "count": entries.len(),
             "show_expiry": params.show_expiry,
-            "expired": expired_count,
-            "expiring_soon": expiring_soon_count,
+            // Not computed without show_expiry: null, never a misleading 0.
+            "expired": params.show_expiry.then_some(expired_count),
+            "expiring_soon": params.show_expiry.then_some(expiring_soon_count),
             "secrets": secret_reports,
         });
         if entries.is_empty() {
@@ -7871,6 +7888,52 @@ mod tests {
         assert_eq!(report["vault_secret_count"], 2);
         assert!(report["next_step"].is_string());
         assert_no_value_leak(&sync, &leaks);
+    }
+
+    #[test]
+    fn list_with_expiry_without_show_expiry_reports_null_counts() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let report = structured_report(
+            &server
+                .phantom_list_with_expiry(Parameters(ListWithExpiryParams { show_expiry: false }))
+                .unwrap(),
+        );
+        assert!(report["expired"].is_null());
+        assert!(report["expiring_soon"].is_null());
+        assert!(report["secrets"][0].get("status").is_none());
+    }
+
+    #[test]
+    fn sync_redacts_token_env_that_is_not_an_env_var_name() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let pasted = concat!("vercel", "_tok", "en_", "AbCdEf0123456789xyz");
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        for (platform, token_env) in [("vercel", pasted), ("railway", "RAILWAY_TOKEN")] {
+            config.sync.push(
+                toml::from_str(&format!(
+                    "platform = \"{platform}\"\ntoken_env = \"{token_env}\"\nproject_id = \"demo\"\n"
+                ))
+                .unwrap(),
+            );
+        }
+        config.save(&config_path).unwrap();
+        let result = server
+            .phantom_sync(Parameters(SyncParams {
+                platform: None,
+                project_id: None,
+            }))
+            .unwrap();
+        let report = structured_report(&result);
+        assert_eq!(report["configured"], true);
+        assert_eq!(report["targets"][0]["token_env"], "<invalid env var name>");
+        assert_eq!(report["targets"][1]["token_env"], "RAILWAY_TOKEN");
+        assert_no_value_leak(&result, &[pasted, "sk-test-key"]);
+        assert_eq!(display_env_name("_A1"), "_A1");
+        assert_eq!(display_env_name("1A"), "<invalid env var name>");
+        assert_eq!(display_env_name(""), "<invalid env var name>");
     }
 
     #[test]
