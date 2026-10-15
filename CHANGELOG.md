@@ -62,6 +62,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ### Fixed
 
+- **SDKs under `phantom exec` reach the versioned API.** `phantom exec`
+  exports `OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/`, but
+  the official OpenAI SDKs and Codex treat `OPENAI_BASE_URL` as the `/v1` root
+  and request `<base>/models`, `<base>/chat/completions`. The proxy forwarded
+  those to `https://api.openai.com/models` (404). Each built-in route now
+  carries the version path its official SDK keeps in the default base URL:
+  `/v1` for OpenAI, xAI, Mistral, and Replicate. Unversioned requests on those
+  routes get the prefix; requests already starting with a version segment are
+  unchanged. Anthropic, Perplexity, Cohere, Gemini, Hugging Face, and the
+  non-LLM routes keep their paths as sent. Every route also collapses the
+  leading `//` produced when a caller appends `/v1/...` to the slash-terminated
+  base URL.
 - `phantom exec` / `phantom start` proxy: the upstream timeout is now a 600 s
   idle (per-read) timeout instead of a 30 s total deadline. Previously any SSE
   stream or slow non-streaming reasoning call longer than 30 s (routine for

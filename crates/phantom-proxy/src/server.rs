@@ -440,7 +440,12 @@ async fn handle_request(
     // example Gemini's `?key=`) before forwarding to the upstream.
     let owned_slots = route.owned_alternate_slots();
     let query = filter_query(req.uri().query(), owned_slots.query_params);
-    let target_url = format!("{}{}{}", route.target_base, remainder, query);
+    let target_url = format!(
+        "{}{}{}",
+        route.target_base,
+        route.upstream_path(remainder),
+        query
+    );
     debug!("Proxying reviewed route for service {}", route.name);
 
     let Ok(_request_permit) = state.request_slots.clone().try_acquire_owned() else {
@@ -1144,6 +1149,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1316,6 +1322,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mut named = HashMap::new();
         named.insert("TEST_API_KEY".to_string(), "real-secret-value".to_string());
@@ -1440,6 +1447,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1509,6 +1517,7 @@ mod tests {
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1566,6 +1575,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sdk_base_url_with_appended_version_reaches_upstream_without_double_slash() {
+        // `phantom exec` exports a slash-terminated base URL with the session
+        // token in the path; callers appending `/v1/...` produce `T//v1/...`.
+        let mock = crate::test_server::MockServer::start().await;
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("TEST_API_KEY".to_string(), "sk-route-owned".to_string())]),
+        );
+        let token = "session-token-for-path-auth";
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.to_string(),
+                allow_query_token_auth: true,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let base = format!(
+            "http://127.0.0.1:{}/testapi/_phantom/{token}/",
+            proxy.port()
+        );
+        let resp = reqwest::Client::new()
+            .get(format!("{base}/v1/models"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/v1/models");
+        assert_eq!(
+            requests[0].headers.get("authorization"),
+            Some(&"Bearer sk-route-owned".to_string())
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn cross_route_token_never_reaches_upstream_as_a_secret() {
         let mock = crate::test_server::MockServer::start().await;
         let openai_token = "phm_1111111122222222333333334444444455555555666666667777777788888888";
@@ -1580,6 +1644,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mappings = HashMap::from([
             (
@@ -1672,6 +1737,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1748,6 +1814,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1826,6 +1893,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut named = HashMap::new();
@@ -1882,6 +1950,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let proxy = ProxyServer::start(
@@ -1927,6 +1996,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let interceptor = Interceptor::new_with_named(
@@ -1977,6 +2047,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let interceptor = Interceptor::new_with_named(
@@ -2069,6 +2140,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mut named = HashMap::new();
         named.insert(
@@ -2137,6 +2209,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -2268,6 +2341,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -2356,6 +2430,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mut mappings = HashMap::new();
         mappings.insert(phantom_token.to_string(), real_secret.to_string());
@@ -2409,6 +2484,7 @@ mod tests {
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -2501,6 +2577,7 @@ mod tests {
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         // Mirror `phantom exec`: the session token map and the named map
         // carry the same value (the response scrubber reads the former).
@@ -2650,6 +2727,7 @@ mod tests {
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -2819,6 +2897,7 @@ mod tests {
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -2893,6 +2972,7 @@ mod tests {
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -2929,6 +3009,7 @@ mod tests {
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
             credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -2993,6 +3074,7 @@ mod tests {
             header: header.to_string(),
             header_format: header_format.to_string(),
             credential_profile,
+            sdk_base_path: None,
         });
         let interceptor = Interceptor::new_scoped(
             HashMap::new(),

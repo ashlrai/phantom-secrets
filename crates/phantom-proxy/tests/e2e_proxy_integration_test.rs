@@ -278,6 +278,7 @@ async fn test_multi_secret_routing_no_cross_contamination() {
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
         credential_profile: phantom_proxy::services::CredentialProfile::Standard,
+        sdk_base_path: None,
     });
     registry.add_route(ServiceRoute {
         name: "anthropic".to_string(),
@@ -286,6 +287,7 @@ async fn test_multi_secret_routing_no_cross_contamination() {
         header: "x-api-key".to_string(),
         header_format: "{secret}".to_string(),
         credential_profile: phantom_proxy::services::CredentialProfile::Standard,
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
@@ -500,6 +502,7 @@ async fn test_concurrent_sse_and_json_streaming_secrets_scrubbed() {
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
         credential_profile: phantom_proxy::services::CredentialProfile::Standard,
+        sdk_base_path: None,
     });
     registry.add_route(ServiceRoute {
         name: "jsonapi".to_string(),
@@ -508,6 +511,7 @@ async fn test_concurrent_sse_and_json_streaming_secrets_scrubbed() {
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
         credential_profile: phantom_proxy::services::CredentialProfile::Standard,
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
@@ -658,6 +662,7 @@ async fn test_proxy_forces_identity_and_rejects_encoded_upstream_responses() {
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
         credential_profile: phantom_proxy::services::CredentialProfile::Standard,
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
@@ -802,6 +807,7 @@ async fn test_malformed_partial_bodies_mixed_content_types() {
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
         credential_profile: phantom_proxy::services::CredentialProfile::Standard,
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
@@ -1265,6 +1271,7 @@ async fn test_rate_limiter_429_response_headers_and_body() {
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
         credential_profile: phantom_proxy::services::CredentialProfile::Standard,
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
@@ -1363,6 +1370,7 @@ async fn test_buffered_upstream_response_is_bounded_before_scrubbing() {
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
         credential_profile: phantom_proxy::services::CredentialProfile::Standard,
+        sdk_base_path: None,
     });
 
     let proxy = ProxyServer::start(
