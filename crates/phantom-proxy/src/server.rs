@@ -22,6 +22,8 @@ const REQUEST_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 const REQUEST_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_HTTP1_BUFFER_BYTES: usize = 64 * 1024;
+/// Default hard cap for buffered bodies: 32 MiB.
+pub const DEFAULT_MAX_BODY_SIZE: usize = 32 * 1024 * 1024;
 
 /// Configuration for the proxy server.
 #[derive(Clone)]
@@ -30,7 +32,10 @@ pub struct ProxyConfig {
     pub port: u16,
     /// Session token for proxy authentication (defense-in-depth)
     pub proxy_token: String,
-    /// Maximum request body size in bytes (default: 10MB)
+    /// Hard cap in bytes for a buffered request body and for a buffered
+    /// (content-length-framed) upstream response (default: 32 MiB, the
+    /// Anthropic Messages API request limit; long agent sessions with images
+    /// or PDFs exceed 10 MiB).
     pub max_body_size: usize,
     /// Upstream idle timeout in seconds (default: 600).
     ///
@@ -56,7 +61,7 @@ impl Default for ProxyConfig {
         Self {
             port: 0,
             proxy_token: String::new(),
-            max_body_size: 10 * 1024 * 1024, // 10MB
+            max_body_size: DEFAULT_MAX_BODY_SIZE,
             upstream_timeout_secs: 600,
             connect_timeout_secs: 5,
             allow_query_token_auth: false,
@@ -620,6 +625,22 @@ async fn handle_request(
         .map(|s| s.to_string());
 
     // Copy response headers (skip hop-by-hop and content-length since we stream)
+    //
+    // Any body-bearing response without a declared length is streamed:
+    // HTTP/2 upstreams (which is how reqwest reaches api.openai.com and
+    // api.anthropic.com) never send `transfer-encoding`, and NDJSON or
+    // JSON-array streams are not `text/event-stream`. Buffering those would
+    // stall the client until the upstream finished and cap them at
+    // `max_body_size`. The streaming scrubber is byte-oriented and holds the
+    // same exact-value and credential-format guarantees across every chunk
+    // boundary for every content type.
+    let has_declared_length = response
+        .headers()
+        .contains_key(reqwest::header::CONTENT_LENGTH);
+    let may_have_body = method != hyper::Method::HEAD
+        && !status.is_informational()
+        && status != StatusCode::NO_CONTENT
+        && status != StatusCode::NOT_MODIFIED;
     let is_streaming = response
         .headers()
         .get("transfer-encoding")
@@ -629,7 +650,8 @@ async fn handle_request(
         || response_content_type
             .as_deref()
             .map(|v| v.contains("text/event-stream"))
-            .unwrap_or(false);
+            .unwrap_or(false)
+        || (may_have_body && !has_declared_length);
 
     let resp_scrubber = state.interceptor.to_response_scrubber();
     for (name, value) in response.headers() {
@@ -2200,8 +2222,16 @@ mod tests {
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
         });
+        // Mirror `phantom exec`: the session token map and the named map
+        // carry the same value (the response scrubber reads the former).
         let interceptor = Interceptor::new_scoped(
-            HashMap::new(),
+            HashMap::from([(
+                "phm_session_token_for_stream_tests".to_string(),
+                (
+                    "ANTHROPIC_API_KEY".to_string(),
+                    "route-owned-anthropic-value".to_string(),
+                ),
+            )]),
             HashMap::from([(
                 "ANTHROPIC_API_KEY".to_string(),
                 "route-owned-anthropic-value".to_string(),
@@ -2367,5 +2397,112 @@ mod tests {
         assert_eq!(body["service"], "anthropic");
         assert_eq!(body["secret_key"], "ANTHROPIC_API_KEY");
         proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unframed_ndjson_stream_is_streamed_and_scrubbed_across_chunks() {
+        // No content-length and no chunked framing: the shape an HTTP/2
+        // upstream or a close-delimited NDJSON stream presents. The first
+        // line must reach the client before the upstream finishes, and a
+        // managed value split across writes must still be redacted.
+        let upstream = scripted_upstream(vec![
+            (
+                0,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n",
+            ),
+            (0, "{\"delta\":\"first\"}\n"),
+            (1_500, "{\"leak\":\"route-owned-"),
+            (50, "anthropic-value\"}\n"),
+        ])
+        .await;
+        let proxy = proxy_to(upstream, 5).await;
+        let started = std::time::Instant::now();
+        let mut resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/anthropic/v1/stream",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let mut body = Vec::new();
+        while !body.ends_with(b"\n") {
+            body.extend_from_slice(&resp.chunk().await.unwrap().expect("first line"));
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(1_200),
+            "first NDJSON line was held until the upstream finished"
+        );
+        assert_eq!(body, b"{\"delta\":\"first\"}\n");
+        while let Some(chunk) = resp.chunk().await.unwrap() {
+            body.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8(body).unwrap();
+        assert!(!text.contains("route-owned-anthropic-value"), "{text}");
+        assert!(!text.contains("anthropic-value"), "{text}");
+        assert!(text.contains("[REDACTED"), "{text}");
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn request_bodies_up_to_32_mib_are_forwarded_and_larger_ones_rejected() {
+        assert_eq!(ProxyConfig::default().max_body_size, 32 * 1024 * 1024);
+        let mock = crate::test_server::MockServer::start().await;
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "anthropic".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "ANTHROPIC_API_KEY".to_string(),
+            header: "x-api-key".to_string(),
+            header_format: "{secret}".to_string(),
+        });
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: "t".to_string(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_scoped(
+                HashMap::new(),
+                HashMap::from([("ANTHROPIC_API_KEY".to_string(), "v".to_string())]),
+            ),
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/anthropic/v1/messages", proxy.port());
+
+        // 12 MiB: an image-heavy agent turn that the old 10 MiB cap rejected.
+        let ok = client
+            .post(&url)
+            .header("x-phantom-proxy-token", "t")
+            .body(vec![b'a'; 12 * 1024 * 1024])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), 200);
+        assert_eq!(mock.get_requests()[0].body.len(), 12 * 1024 * 1024);
+
+        let too_big = client
+            .post(&url)
+            .header("x-phantom-proxy-token", "t")
+            .body(vec![b'a'; 32 * 1024 * 1024 + 1])
+            .send()
+            .await;
+        // The proxy may answer 413 before the client finishes writing.
+        if let Ok(resp) = too_big {
+            assert_eq!(resp.status(), 413);
+        }
+        assert_eq!(
+            mock.get_requests().len(),
+            1,
+            "oversized body reached upstream"
+        );
+        proxy.shutdown().await;
+        mock.shutdown().await;
     }
 }

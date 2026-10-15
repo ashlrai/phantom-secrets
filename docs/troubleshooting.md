@@ -69,10 +69,10 @@ The request reached a proxy route whose key is not protected in this session.
 key is loaded, so this usually means a client hardcoded the proxy URL. Protect
 the key (`phantom add` or `phantom init`) and restart `phantom exec`.
 
-### Request body larger than 10 MB returns HTTP 413
+### Request body larger than 32 MiB returns HTTP 413
 
 The proxy buffers each request body under a strict size limit before contacting
-the upstream. Bodies over the default 10 MB limit fail closed with HTTP 413, so
+the upstream. Bodies over the default 32 MiB limit (Anthropic's request limit) fail closed with HTTP 413, so
 the upstream receives no truncated prefix. Accepted bodies are forwarded
 byte-for-byte; no client header or body resolves a `phm_` token. Only the
 matched route's fixed authentication header receives its route-owned value.

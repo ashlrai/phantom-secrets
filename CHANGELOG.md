@@ -24,6 +24,12 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 - The default global burst guard (`PHANTOM_RATE_LIMIT_BURST`) is now 100
   requests per 10 s. It was 20, below the 50-per-secret limit, so a single
   agent session hit proxy 429s before the per-secret limit could ever apply.
+- Upstream responses without a declared `content-length` (HTTP/2 upstreams,
+  NDJSON and JSON-array streams) are now streamed through the byte-level
+  scrubber instead of buffered until completion and capped at the body limit.
+- The default request (and buffered response) body cap is now 32 MiB,
+  matching Anthropic's request limit; it was 10 MiB, which image-heavy agent
+  turns exceeded.
 - Proxy-generated 429 and 503 bodies now carry `"source":"phantom-proxy"`,
   the service or secret name, and a fix hint, so agents can tell them apart
   from provider errors.
