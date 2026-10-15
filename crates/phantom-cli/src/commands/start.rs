@@ -201,6 +201,11 @@ async fn run_async() -> Result<()> {
     }
 
     let registry = ServiceRegistry::from_config(&config.services);
+    // Export base-URL overrides only for routes this session can serve. An
+    // SDK pointed at a route without a loaded credential would receive a
+    // proxy 503 for every call instead of reaching its provider.
+    let mut exported_routes = registry.clone();
+    exported_routes.retain_routes(|route| secret_name_to_value.contains_key(&route.secret_key));
     let interceptor = Interceptor::new_scoped(token_to_secret.clone(), secret_name_to_value);
     let proxy_token = ProxyServer::generate_proxy_token();
 
@@ -238,9 +243,9 @@ async fn run_async() -> Result<()> {
     let syntax = detect_shell_syntax();
     let header_auth_only = header_auth_only();
     let overrides = if header_auth_only {
-        registry.base_url_overrides(port)
+        exported_routes.base_url_overrides(port)
     } else {
-        registry.base_url_overrides_with_token(port, Some(&proxy_token))
+        exported_routes.base_url_overrides_with_token(port, Some(&proxy_token))
     };
     for (env_var, url) in &overrides {
         println!("{}", format_export(syntax, env_var, url));

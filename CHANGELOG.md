@@ -4,7 +4,29 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No additional unreleased changes are recorded after the `0.7.9` release.
+### Fixed
+
+- `phantom exec` / `phantom start` proxy: the upstream timeout is now a 600 s
+  idle (per-read) timeout instead of a 30 s total deadline. Previously any SSE
+  stream or slow non-streaming reasoning call longer than 30 s (routine for
+  Claude Code, Codex and the OpenAI/Anthropic SDKs, which allow 600 s) was cut
+  off mid-response.
+- A streaming response that the upstream drops midway now aborts the client
+  connection instead of ending cleanly, so SDKs see a transport error instead
+  of silently accepting a truncated stream.
+- Base-URL overrides are exported only for routes whose credential is loaded
+  in the session. Previously the default config pointed every supported SDK
+  at the proxy, so for example `phantom exec -- claude` with only an OpenAI
+  key protected sent every Claude Code request to a proxy 503.
+- Also export the base-URL variables the official SDKs actually read:
+  `GOOGLE_GEMINI_BASE_URL` (google-genai, Gemini CLI), `CO_API_URL` (Cohere)
+  and `REPLICATE_BASE_URL` (Replicate), alongside the existing names.
+- The default global burst guard (`PHANTOM_RATE_LIMIT_BURST`) is now 100
+  requests per 10 s. It was 20, below the 50-per-secret limit, so a single
+  agent session hit proxy 429s before the per-secret limit could ever apply.
+- Proxy-generated 429 and 503 bodies now carry `"source":"phantom-proxy"`,
+  the service or secret name, and a fix hint, so agents can tell them apart
+  from provider errors.
 
 ## [0.7.9] - 2026-09-06
 

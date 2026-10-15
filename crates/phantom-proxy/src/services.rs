@@ -62,6 +62,17 @@ impl ServiceRegistry {
         self.routes.insert(route.name.clone(), route);
     }
 
+    /// Keep only the routes for which `keep` returns true.
+    ///
+    /// `phantom exec` and `phantom start` use this to export base-URL
+    /// overrides only for routes whose credential is loaded in the current
+    /// session. Pointing an SDK at a route with no vault value would turn
+    /// every request into a proxy-generated 503 (for example Claude Code
+    /// signed in with its own subscription while only OpenAI is protected).
+    pub fn retain_routes(&mut self, mut keep: impl FnMut(&ServiceRoute) -> bool) {
+        self.routes.retain(|_, route| keep(route));
+    }
+
     /// Look up a service route by path prefix.
     /// Path format: /<service_name>/rest/of/path
     pub fn match_route<'a>(&'a self, path: &'a str) -> Option<(&'a ServiceRoute, &'a str)> {
@@ -106,10 +117,6 @@ impl ServiceRegistry {
         let mut overrides = Vec::new();
 
         for (name, route) in &self.routes {
-            // Convention: SERVICE_NAME_BASE_URL or SERVICE_NAME_API_BASE
-            // We support the most common patterns
-            let env_var = route_override_env_name(name, &route.secret_key);
-
             let local_url = match proxy_token {
                 Some(token) => format!(
                     "http://127.0.0.1:{}/{}/_phantom/{}/",
@@ -117,7 +124,15 @@ impl ServiceRegistry {
                 ),
                 None => format!("http://127.0.0.1:{}/{}", proxy_port, name),
             };
-            overrides.push((env_var, local_url));
+            // Convention: SERVICE_NAME_BASE_URL, plus the variable the
+            // official SDK for this upstream actually reads when it differs.
+            overrides.push((
+                route_override_env_name(name, &route.secret_key),
+                local_url.clone(),
+            ));
+            for alias in sdk_base_url_env_aliases(&route.target_base) {
+                overrides.push(((*alias).to_string(), local_url.clone()));
+            }
         }
 
         overrides
@@ -147,7 +162,27 @@ impl ServiceRegistry {
             "COHERE_BASE_URL",
             "HUGGINGFACE_BASE_URL",
             "GEMINI_BASE_URL",
+            "GOOGLE_GEMINI_BASE_URL",
+            "CO_API_URL",
+            "REPLICATE_BASE_URL",
         ]
+    }
+}
+
+/// Base-URL variables read by official SDKs whose name does not follow the
+/// `<SECRET_STEM>_BASE_URL` convention. Only upstreams whose SDK treats the
+/// variable as the host root (so `/<service>/` maps onto it exactly) belong
+/// here; SDKs that expect a versioned path such as `/client/v4` do not.
+///
+/// - `google-genai` (Python and JS, Gemini CLI): `GOOGLE_GEMINI_BASE_URL`
+/// - `cohere` (Python v5+): `CO_API_URL`
+/// - `replicate` (Python): `REPLICATE_BASE_URL`
+fn sdk_base_url_env_aliases(target_base: &str) -> &'static [&'static str] {
+    match target_base {
+        "https://generativelanguage.googleapis.com" => &["GOOGLE_GEMINI_BASE_URL"],
+        "https://api.cohere.com" => &["CO_API_URL"],
+        "https://api.replicate.com" => &["REPLICATE_BASE_URL"],
+        _ => &[],
     }
 }
 
@@ -220,6 +255,49 @@ mod tests {
         assert!(overrides
             .iter()
             .any(|(k, v)| k == "ANTHROPIC_BASE_URL" && v == "http://127.0.0.1:54321/anthropic"));
+    }
+
+    #[test]
+    fn sdk_specific_base_url_variables_point_at_the_same_route() {
+        let config = phantom_core::config::PhantomConfig::new_with_defaults("p".to_string());
+        let registry = ServiceRegistry::from_config(&config.services);
+        let overrides = registry.base_url_overrides(54321);
+        let url_for = |var: &str| {
+            overrides
+                .iter()
+                .find(|(k, _)| k == var)
+                .map(|(_, v)| v.as_str())
+        };
+        // Each SDK-specific name must carry the same URL as the route's
+        // conventional variable, and every exported name must be in the
+        // inherited-value scrub list.
+        for (alias, conventional) in [
+            ("GOOGLE_GEMINI_BASE_URL", "GEMINI_BASE_URL"),
+            ("CO_API_URL", "COHERE_BASE_URL"),
+            ("REPLICATE_BASE_URL", "REPLICATE_API_TOKEN_BASE_URL"),
+        ] {
+            assert!(url_for(alias).is_some(), "{alias} missing");
+            assert_eq!(url_for(alias), url_for(conventional), "{alias}");
+        }
+        for (name, _) in &overrides {
+            assert!(
+                ServiceRegistry::known_override_env_names().contains(&name.as_str()),
+                "{name} is exported but not scrubbed from inherited env"
+            );
+        }
+    }
+
+    #[test]
+    fn retain_routes_drops_uncredentialed_overrides() {
+        let mut registry = test_registry();
+        registry.retain_routes(|route| route.secret_key == "OPENAI_API_KEY");
+        let names: Vec<String> = registry
+            .base_url_overrides(1)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(names, vec!["OPENAI_BASE_URL".to_string()]);
+        assert!(registry.match_route("/anthropic/v1/messages").is_none());
     }
 
     #[test]

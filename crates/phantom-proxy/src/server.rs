@@ -32,7 +32,12 @@ pub struct ProxyConfig {
     pub proxy_token: String,
     /// Maximum request body size in bytes (default: 10MB)
     pub max_body_size: usize,
-    /// Upstream request timeout in seconds (default: 30)
+    /// Upstream idle timeout in seconds (default: 600).
+    ///
+    /// This bounds each wait for upstream bytes (response headers or the next
+    /// body chunk), not the whole exchange. A total deadline would cut off
+    /// long LLM streams and slow non-streaming reasoning calls that the
+    /// official OpenAI and Anthropic SDKs allow for up to 600 seconds.
     pub upstream_timeout_secs: u64,
     /// Connection timeout in seconds (default: 5)
     pub connect_timeout_secs: u64,
@@ -52,7 +57,7 @@ impl Default for ProxyConfig {
             port: 0,
             proxy_token: String::new(),
             max_body_size: 10 * 1024 * 1024, // 10MB
-            upstream_timeout_secs: 30,
+            upstream_timeout_secs: 600,
             connect_timeout_secs: 5,
             allow_query_token_auth: false,
             rate_limit: RateLimitConfig::from_env(),
@@ -100,7 +105,10 @@ impl ProxyServer {
                 // redirects in some HTTP stacks. Never follow upstream
                 // redirects inside the secret-injecting proxy.
                 .redirect(reqwest::redirect::Policy::none())
-                .timeout(std::time::Duration::from_secs(config.upstream_timeout_secs))
+                // Idle (per-read) deadline, never a total one: a stalled
+                // upstream is still cut off, but a healthy SSE stream or a
+                // slow reasoning response is not truncated mid-flight.
+                .read_timeout(std::time::Duration::from_secs(config.upstream_timeout_secs))
                 .connect_timeout(std::time::Duration::from_secs(config.connect_timeout_secs))
                 .build()?,
         });
@@ -411,7 +419,7 @@ async fn handle_request(
                 let mut resp = error_response(
                     StatusCode::TOO_MANY_REQUESTS,
                     format!(
-                        r#"{{"error":"rate limit exceeded","secret_key":"{}","anomaly_class":"alert","per_secret_10s":{},"total_10s":{},"anomaly_score":{}}}"#,
+                        r#"{{"error":"rate limit exceeded","source":"phantom-proxy","secret_key":"{}","anomaly_class":"alert","per_secret_10s":{},"total_10s":{},"anomaly_score":{},"hint":"Phantom's local burst guard rejected this request, not the provider. Retry after the retry-after delay, or raise PHANTOM_RATE_LIMIT_PER_SECRET / PHANTOM_RATE_LIMIT_BURST before phantom exec."}}"#,
                         route.secret_key,
                         decision.per_secret_10s,
                         decision.total_10s,
@@ -480,7 +488,10 @@ async fn handle_request(
         warn!("Route credential unavailable for service {}", route.name);
         return Ok(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            r#"{"error":"route credential unavailable"}"#,
+            format!(
+                r#"{{"error":"route credential unavailable","source":"phantom-proxy","service":"{}","secret_key":"{}","hint":"Phantom has no vault value for this route in this session. Protect the key with phantom init or phantom add, then restart phantom exec."}}"#,
+                route.name, route.secret_key
+            ),
         ));
     };
 
@@ -658,6 +669,7 @@ async fn handle_request(
         tokio::spawn(async move {
             tokio::pin!(byte_stream);
             let mut scrub_state = crate::response_scrubber::StreamingScrubState::new();
+            let mut upstream_failed = false;
 
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
@@ -686,6 +698,7 @@ async fn handle_request(
                     }
                     Err(e) => {
                         debug!("Upstream stream error: {}", e);
+                        upstream_failed = true;
                         break;
                     }
                 }
@@ -694,6 +707,17 @@ async fn handle_request(
             let (scrubbed, _) = resp_scrubber.finish_stream(resp_ct.as_deref(), scrub_state);
             if !scrubbed.is_empty() {
                 let _ = tx.send(Ok(Frame::data(Bytes::from(scrubbed)))).await;
+            }
+            if upstream_failed {
+                // Abort the client body instead of ending it cleanly. A
+                // clean end would make a truncated SSE stream (or a cut
+                // chunked JSON body) look like a complete response, so SDKs
+                // and agents would silently act on partial output.
+                let _ = tx
+                    .send(Err(std::io::Error::other(
+                        "upstream response body ended before completion",
+                    )))
+                    .await;
             }
         });
 
@@ -2136,5 +2160,212 @@ mod tests {
 
         proxy.shutdown().await;
         mock.shutdown().await;
+    }
+
+    /// One-connection upstream that replays `script` as raw HTTP/1.1 bytes
+    /// (each part after its delay) and then closes the socket. Lets tests
+    /// model slow streams and mid-body disconnects the hyper mock cannot.
+    async fn scripted_upstream(script: Vec<(u64, &'static str)>) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                head.extend_from_slice(&buf[..n]);
+            }
+            for (delay_ms, part) in script {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                if stream.write_all(part.as_bytes()).await.is_err() {
+                    return;
+                }
+                let _ = stream.flush().await;
+            }
+        });
+        port
+    }
+
+    async fn proxy_to(upstream_port: u16, upstream_timeout_secs: u64) -> ProxyServer {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "anthropic".to_string(),
+            target_base: format!("http://127.0.0.1:{upstream_port}"),
+            secret_key: "ANTHROPIC_API_KEY".to_string(),
+            header: "x-api-key".to_string(),
+            header_format: "{secret}".to_string(),
+        });
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([(
+                "ANTHROPIC_API_KEY".to_string(),
+                "route-owned-anthropic-value".to_string(),
+            )]),
+        );
+        ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: "stream-test-token".to_string(),
+                upstream_timeout_secs,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap()
+    }
+
+    const SSE_HEAD: &str =
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
+
+    #[tokio::test]
+    async fn sse_stream_longer_than_upstream_timeout_is_not_cut_off() {
+        // Claude Code / OpenAI SDK streams routinely run for minutes. The
+        // upstream timeout must bound idle gaps, not the whole response.
+        let upstream = scripted_upstream(vec![
+            (0, SSE_HEAD),
+            (0, "f\r\ndata: event-1\n\n\r\n"),
+            (600, "f\r\ndata: event-2\n\n\r\n"),
+            (600, "f\r\ndata: event-3\n\n\r\n"),
+            (600, "f\r\ndata: event-4\n\n\r\n"),
+            (0, "0\r\n\r\n"),
+        ])
+        .await;
+        let proxy = proxy_to(upstream, 1).await;
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/anthropic/v1/messages?beta=true",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .body(r#"{"stream":true}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.expect("complete stream");
+        for n in 1..=4 {
+            assert!(body.contains(&format!("data: event-{n}\n\n")), "{body:?}");
+        }
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn slow_buffered_body_longer_than_upstream_timeout_is_delivered() {
+        let upstream = scripted_upstream(vec![
+            (
+                0,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 12\r\n\r\n",
+            ),
+            (0, "{\"ok\":"),
+            (700, "true"),
+            (700, "}\n"),
+        ])
+        .await;
+        let proxy = proxy_to(upstream, 1).await;
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/anthropic/v1/models",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), "{\"ok\":true}\n");
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stalled_upstream_still_times_out() {
+        let upstream = scripted_upstream(vec![(2_500, SSE_HEAD)]).await;
+        let proxy = proxy_to(upstream, 1).await;
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/anthropic/v1/models",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 502);
+        assert!(resp.text().await.unwrap().contains("timed out"));
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn upstream_disconnect_mid_stream_is_not_reported_as_complete() {
+        // A cut SSE stream must surface as a transport error so the SDK
+        // retries or fails, instead of a clean but truncated response.
+        let upstream = scripted_upstream(vec![
+            (0, SSE_HEAD),
+            (0, "15\r\ndata: partial-delta\n\n\r\n"),
+            (50, "40\r\ndata: this chunk never fin"),
+        ])
+        .await;
+        let proxy = proxy_to(upstream, 5).await;
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/anthropic/v1/messages",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert!(
+            resp.bytes().await.is_err(),
+            "truncated upstream stream was delivered as a complete body"
+        );
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn uncredentialed_route_error_names_service_and_fix() {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "anthropic".to_string(),
+            target_base: "http://127.0.0.1:9".to_string(),
+            secret_key: "ANTHROPIC_API_KEY".to_string(),
+            header: "x-api-key".to_string(),
+            header_format: "{secret}".to_string(),
+        });
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: "t".to_string(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_scoped(HashMap::new(), HashMap::new()),
+        )
+        .await
+        .unwrap();
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/anthropic/v1/messages",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "t")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 503);
+        let body: serde_json::Value = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+        assert_eq!(body["error"], "route credential unavailable");
+        assert_eq!(body["source"], "phantom-proxy");
+        assert_eq!(body["service"], "anthropic");
+        assert_eq!(body["secret_key"], "ANTHROPIC_API_KEY");
+        proxy.shutdown().await;
     }
 }

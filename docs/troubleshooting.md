@@ -40,12 +40,34 @@ If your API calls fail with authentication errors after setting up Phantom:
 
 ### Proxy hangs or times out
 
-The default upstream timeout is 30 seconds. For long-running API calls:
+The proxy's upstream timeout is an idle timeout of 600 seconds (matching the
+OpenAI and Anthropic SDK defaults): it applies to each wait for upstream bytes,
+not to the whole request, so long SSE streams and slow reasoning calls are not
+cut off. If an upstream drops a streaming response midway, the proxy aborts the
+client connection instead of ending the body cleanly, so SDKs report the
+truncation rather than acting on partial output. If a request still hangs:
 
 - Check your network connection
 - Verify the upstream service is accessible
 - The proxy deliberately does not follow upstream redirects. Inspect a returned
   3xx response and use the reviewed canonical service endpoint instead.
+
+### HTTP 429 with `"source":"phantom-proxy"`
+
+This 429 comes from Phantom's local burst guard, not from the provider. By
+default it trips above 50 requests per secret or 100 requests in total within
+10 seconds. Busy multi-agent sessions can raise the limits before launching:
+
+```bash
+PHANTOM_RATE_LIMIT_PER_SECRET=20 PHANTOM_RATE_LIMIT_BURST=400 phantom exec -- claude
+```
+
+### HTTP 503 `route credential unavailable`
+
+The request reached a proxy route whose key is not protected in this session.
+`phantom exec` only exports a service's base-URL variable when that service's
+key is loaded, so this usually means a client hardcoded the proxy URL. Protect
+the key (`phantom add` or `phantom init`) and restart `phantom exec`.
 
 ### Request body larger than 10 MB returns HTTP 413
 
