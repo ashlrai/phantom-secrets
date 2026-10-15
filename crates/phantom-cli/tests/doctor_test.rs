@@ -172,6 +172,15 @@ fn doctor_json_reports_checks_hints_and_mcp_clients() {
             .unwrap_or_else(|| panic!("{stdout}"));
         assert_eq!(missing_config["status"], "warn");
         assert_eq!(missing_config["fix"], "Run: phantom init");
+        let missing_gitignore = checks
+            .iter()
+            .find(|check| check["message"] == "No .gitignore — consider adding one")
+            .unwrap_or_else(|| panic!("{stdout}"));
+        assert_eq!(
+            missing_gitignore["fix"],
+            "Run: phantom doctor --fix (creates .gitignore with .env patterns)",
+            "the .env.example hint must not attach to the .gitignore warning"
+        );
 
         let claude = report["mcp_clients"]
             .as_array()

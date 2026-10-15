@@ -246,6 +246,9 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         }
     } else {
         check_warn("No .gitignore — consider adding one");
+        // Give this warning its own hint. Without one, `--json` attached the
+        // next warning's `.env.example` fix ("Run: phantom env") to it.
+        check_fix("Run: phantom doctor --fix (creates .gitignore with .env patterns)");
         if fix && !mutation_applied {
             ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
             write_project_file_exact(
