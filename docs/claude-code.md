@@ -104,9 +104,9 @@ catalog. The following table highlights the core workflows; use MCP
 | `phantom_list_secrets` | List secret names in the vault. Never returns values. |
 | `phantom_status` | Show project ID, vault backend, secret count, service mappings, and `.env` protection state. |
 | `phantom_why` | Explain why a specific `.env` key is or isn't classified as a secret (shows the matching heuristic). |
-| `phantom_check` | Scan `.env` files for unprotected real secrets, or scan the runtime environment for phantom tokens without an active proxy. |
+| `phantom_check` | Scan `.env` files for unprotected real secrets, or scan the runtime environment for phantom tokens without an active proxy. Returns a short summary plus the value-blind `phantom check --json` report (`mode`, `clean`, `findings`, `warnings`) as JSON text and MCP `structuredContent`. |
 | `phantom_sync` | Show sync configuration and which secrets would be pushed to Vercel or Railway. Informational only — does not execute the sync. |
-| `phantom_doctor` | Run all health checks: config validity, vault access, `.gitignore`, `.env.example`, pre-commit hook. Pass `fix=true` to auto-fix safe issues. |
+| `phantom_doctor` | Run all health checks: config validity, vault access, `.gitignore`, `.env.example`, pre-commit hook. Pass `fix=true` to auto-fix safe issues. Returns a short summary plus the value-blind `phantom doctor --json` report (`ok`, `issues`, `fixed`, `checks`, `mcp_clients`) as JSON text and MCP `structuredContent`. |
 
 ### Initialization
 
