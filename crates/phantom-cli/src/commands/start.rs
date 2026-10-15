@@ -68,6 +68,32 @@ pub(super) fn format_export(syntax: ShellSyntax, var: &str, value: &str) -> Stri
     }
 }
 
+/// Line that clears `var` in the selected shell.
+pub(super) fn format_unset(syntax: ShellSyntax, var: &str) -> String {
+    match syntax {
+        ShellSyntax::Bash => format!("  unset {var}"),
+        ShellSyntax::Fish => format!("  set -e {var}"),
+        ShellSyntax::PowerShell => {
+            format!("  Remove-Item Env:{var} -ErrorAction SilentlyContinue")
+        }
+        ShellSyntax::Cmd => format!("  set {var}="),
+    }
+}
+
+/// Override names a full registry would export that this session does not:
+/// the shell must clear them, or a stale value from an earlier session keeps
+/// pointing that SDK at a dead (or uncredentialed) proxy route.
+fn dropped_override_names(all: &[(String, String)], exported: &[(String, String)]) -> Vec<String> {
+    let mut names: Vec<String> = all
+        .iter()
+        .map(|(name, _)| name.clone())
+        .filter(|name| !exported.iter().any(|(kept, _)| kept == name))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn quote_posix_single(value: &str) -> String {
     value.replace('\'', "'\\''")
 }
@@ -201,6 +227,11 @@ async fn run_async() -> Result<()> {
     }
 
     let registry = ServiceRegistry::from_config(&config.services);
+    // Export base-URL overrides only for routes this session can serve. An
+    // SDK pointed at a route without a loaded credential would receive a
+    // proxy 503 for every call instead of reaching its provider.
+    let mut exported_routes = registry.clone();
+    exported_routes.retain_routes(|route| secret_name_to_value.contains_key(&route.secret_key));
     let interceptor = Interceptor::new_scoped(token_to_secret.clone(), secret_name_to_value);
     let proxy_token = ProxyServer::generate_proxy_token();
 
@@ -238,12 +269,15 @@ async fn run_async() -> Result<()> {
     let syntax = detect_shell_syntax();
     let header_auth_only = header_auth_only();
     let overrides = if header_auth_only {
-        registry.base_url_overrides(port)
+        exported_routes.base_url_overrides(port)
     } else {
-        registry.base_url_overrides_with_token(port, Some(&proxy_token))
+        exported_routes.base_url_overrides_with_token(port, Some(&proxy_token))
     };
     for (env_var, url) in &overrides {
         println!("{}", format_export(syntax, env_var, url));
+    }
+    for name in dropped_override_names(&registry.base_url_overrides(port), &overrides) {
+        println!("{}", format_unset(syntax, &name));
     }
     println!(
         "{}",
@@ -364,6 +398,26 @@ mod shell_tests {
             format_export(ShellSyntax::PowerShell, "X", "a'b"),
             "  $env:X = 'a''b'"
         );
+    }
+
+    #[test]
+    fn uncredentialed_routes_are_unset_in_every_shell() {
+        let all = vec![
+            ("OPENAI_BASE_URL".to_string(), "u".to_string()),
+            ("ANTHROPIC_BASE_URL".to_string(), "u".to_string()),
+        ];
+        let exported = vec![("OPENAI_BASE_URL".to_string(), "u".to_string())];
+        assert_eq!(
+            dropped_override_names(&all, &exported),
+            vec!["ANTHROPIC_BASE_URL".to_string()]
+        );
+        assert_eq!(format_unset(ShellSyntax::Bash, "X"), "  unset X");
+        assert_eq!(format_unset(ShellSyntax::Fish, "X"), "  set -e X");
+        assert_eq!(
+            format_unset(ShellSyntax::PowerShell, "X"),
+            "  Remove-Item Env:X -ErrorAction SilentlyContinue"
+        );
+        assert_eq!(format_unset(ShellSyntax::Cmd, "X"), "  set X=");
     }
 
     #[test]
