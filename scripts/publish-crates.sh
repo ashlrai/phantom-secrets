@@ -97,6 +97,8 @@ Publishing additionally requires:
   * cargo credentials or CARGO_REGISTRY_TOKEN (never pass a token on argv).
 
 --allow-dirty is accepted only by non-publishing modes.
+--skip-source-gates is accepted only with --verify-only, for CI callers whose
+separate required jobs already run the identical fmt, clippy, and test gates.
 USAGE
 }
 
@@ -112,6 +114,7 @@ require_command() {
 MODE=""
 EXPECTED_VERSION=""
 ALLOW_DIRTY=0
+SKIP_SOURCE_GATES=0
 
 while (($# > 0)); do
   case "$1" in
@@ -129,6 +132,10 @@ while (($# > 0)); do
       ALLOW_DIRTY=1
       shift
       ;;
+    --skip-source-gates)
+      SKIP_SOURCE_GATES=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -144,6 +151,9 @@ done
 if [[ -n "$EXPECTED_VERSION" ]]; then
   [[ "$EXPECTED_VERSION" =~ ^(0|[1-9][0-9]*)\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] ||
     die "--version is not valid SemVer: $EXPECTED_VERSION"
+fi
+if [[ "$SKIP_SOURCE_GATES" -eq 1 && "$MODE" != "verify-only" ]]; then
+  die "--skip-source-gates is only accepted with --verify-only"
 fi
 if [[ "$MODE" == "publish" ]]; then
   [[ "$ALLOW_DIRTY" -eq 0 ]] || die "--allow-dirty is forbidden with --publish"
@@ -404,10 +414,14 @@ elif [[ "$ALLOW_DIRTY" -eq 0 && -n "$($GIT_BIN status --porcelain --untracked-fi
   die "verification requires a clean worktree (or explicit --allow-dirty)"
 fi
 
-printf 'Running locked source gates for Phantom %s...\n' "$WORKSPACE_VERSION"
-"$CARGO_BIN" fmt --all -- --check
-"$CARGO_BIN" clippy --workspace --all-targets --locked -- -D warnings
-"$CARGO_BIN" test --workspace --all-targets --locked --no-fail-fast
+if [[ "$SKIP_SOURCE_GATES" -eq 1 ]]; then
+  printf 'Skipping source gates (verify-only; CI Lint and Test jobs run them)...\n'
+else
+  printf 'Running locked source gates for Phantom %s...\n' "$WORKSPACE_VERSION"
+  "$CARGO_BIN" fmt --all -- --check
+  "$CARGO_BIN" clippy --workspace --all-targets --locked -- -D warnings
+  "$CARGO_BIN" test --workspace --all-targets --locked --no-fail-fast
+fi
 
 readonly PACKAGE_DIR="$TMP_DIR/target/package"
 mkdir -p -- "$PACKAGE_DIR"

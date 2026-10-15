@@ -4,6 +4,8 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::precommit_hook::{self, HookChange};
+use phantom_core::report::{DoctorMcpClient as McpClientState, DoctorReport};
+use std::cell::RefCell;
 use zeroize::Zeroizing;
 
 fn doctor_can_open_vault(_fix: bool) -> bool {
@@ -66,7 +68,23 @@ fn ensure_dotenv_repair_guard(guard: Option<&DotenvRepairGuard>) -> Result<()> {
 
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
-pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
+pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
+    if json {
+        REPORT.with(|report| *report.borrow_mut() = Some(DoctorReport::default()));
+    }
+    let outcome = run_checks(fix, check_expiry);
+    let Some(mut report) = REPORT.with(|report| report.borrow_mut().take()) else {
+        return outcome.map(|_| ());
+    };
+    let (issues, fixed) = outcome?;
+    report.ok = issues == 0;
+    report.issues = issues;
+    report.fixed = fixed;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let env_path = match PhantomConfig::load(&config_path).ok() {
@@ -85,8 +103,10 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     // a cross-file rollback contract. Re-running --fix advances the next item.
     let mut mutation_applied = false;
 
-    println!("{}", "Phantom Doctor".bold().underline());
-    println!();
+    human(|| {
+        println!("{}", "Phantom Doctor".bold().underline());
+        println!();
+    });
 
     // Check 1: .phantom.toml exists
     if config_path.exists() {
@@ -226,6 +246,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         }
     } else {
         check_warn("No .gitignore — consider adding one");
+        check_fix("Run: phantom doctor --fix (creates .gitignore with .env patterns)");
         if fix && !mutation_applied {
             ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
             write_project_file_exact(
@@ -267,6 +288,8 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 check_fixed("Generated .env.example");
                 fixed += 1;
                 mutation_applied = true;
+            } else {
+                issues += 1;
             }
         } else if fix {
             issues += 1; // Can't fix without .env
@@ -326,7 +349,8 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         }
     }
 
-    // Check 8: Pre-commit hook
+    // Check 8: Pre-commit hook. This is the last gated repair, so its branches
+    // need not set `mutation_applied`; a repair added after it must do so.
     match precommit_hook::inspect(&project_dir)? {
         precommit_hook::HookState::Present {
             content,
@@ -592,8 +616,10 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 14: MCP setup status per known client
     {
-        println!();
-        println!("  {} MCP client wiring:", "info".blue());
+        human(|| {
+            println!();
+            println!("  {} MCP client wiring:", "info".blue());
+        });
 
         // Claude Code — supported project-scoped MCP registration
         let claude_path = project_dir.join(".mcp.json");
@@ -621,32 +647,34 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         }
     }
 
-    println!();
-    if fix && fixed > 0 {
-        println!("{} Auto-fixed {} issue(s)", "ok".green().bold(), fixed);
-        if issues > 0 {
+    human(|| {
+        println!();
+        if fix && fixed > 0 {
+            println!("{} Auto-fixed {} issue(s)", "ok".green().bold(), fixed);
+            if issues > 0 {
+                println!(
+                    "{} Re-run `phantom doctor --fix` to apply the next isolated repair",
+                    "next".blue().bold()
+                );
+            }
+        }
+        if issues == 0 {
+            println!("{} All checks passed!", "ok".green().bold());
+        } else {
             println!(
-                "{} Re-run `phantom doctor --fix` to apply the next isolated repair",
-                "next".blue().bold()
+                "{} {} issue(s) found{}",
+                "!".yellow().bold(),
+                issues,
+                if !fix {
+                    " — run `phantom doctor --fix` to auto-fix"
+                } else {
+                    ""
+                }
             );
         }
-    }
-    if issues == 0 {
-        println!("{} All checks passed!", "ok".green().bold());
-    } else {
-        println!(
-            "{} {} issue(s) found{}",
-            "!".yellow().bold(),
-            issues,
-            if !fix {
-                " — run `phantom doctor --fix` to auto-fix"
-            } else {
-                ""
-            }
-        );
-    }
+    });
 
-    Ok(())
+    Ok((issues, fixed))
 }
 
 fn write_project_file_exact(
@@ -715,79 +743,127 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
         let content = match std::fs::read_to_string(path) {
             Ok(content) => content,
             Err(error) => {
-                println!(
-                    "       {} {} config cannot be read safely: {} ({})",
-                    "FAIL".red().bold(),
-                    name,
-                    error,
-                    location.dimmed()
-                );
+                mcp_client(name, &location, "unreadable", || {
+                    println!(
+                        "       {} {} config cannot be read safely: {} ({})",
+                        "FAIL".red().bold(),
+                        name,
+                        error,
+                        location.dimmed()
+                    )
+                });
                 return true;
             }
         };
         if phantom_core::agent::mcp_config_has_local_runtime(path) {
-            println!(
-                "       {} {} uses a local Phantom executable ({})",
-                "ok".green(),
-                name,
-                location.dimmed()
-            );
+            mcp_client(name, &location, "local_runtime", || {
+                println!(
+                    "       {} {} uses a local Phantom executable ({})",
+                    "ok".green(),
+                    name,
+                    location.dimmed()
+                )
+            });
             false
         } else if content.contains("phantom") {
-            println!(
-                "       {} {} Phantom entry is stale or network-capable ({})",
-                "warn".yellow(),
-                name,
-                location.dimmed()
-            );
-            println!(
-                "          {} phantom setup --client {}",
-                "Fix:".dimmed(),
-                name
-            );
+            mcp_client(name, &location, "stale", || {
+                println!(
+                    "       {} {} Phantom entry is stale or network-capable ({})",
+                    "warn".yellow(),
+                    name,
+                    location.dimmed()
+                );
+                println!(
+                    "          {} phantom setup --client {}",
+                    "Fix:".dimmed(),
+                    name
+                )
+            });
             true
         } else {
-            println!(
-                "       {} {} config exists but no phantom MCP ({})",
-                "--".dimmed(),
-                name,
-                location.dimmed()
-            );
+            mcp_client(name, &location, "not_phantom", || {
+                println!(
+                    "       {} {} config exists but no phantom MCP ({})",
+                    "--".dimmed(),
+                    name,
+                    location.dimmed()
+                )
+            });
             false
         }
     } else {
-        println!(
-            "       {} {} not configured ({})",
-            "--".dimmed(),
-            name,
-            location.dimmed()
-        );
+        mcp_client(name, &location, "not_configured", || {
+            println!(
+                "       {} {} not configured ({})",
+                "--".dimmed(),
+                name,
+                location.dimmed()
+            )
+        });
         false
     }
 }
 
+thread_local! {
+    /// `Some` while `phantom doctor --json` collects lines instead of printing.
+    static REPORT: RefCell<Option<DoctorReport>> = const { RefCell::new(None) };
+}
+
+/// Run `print` only for the human report.
+fn human(print: impl FnOnce()) {
+    if REPORT.with(|report| report.borrow().is_none()) {
+        print();
+    }
+}
+
+fn record(status: &'static str, msg: &str, print: impl FnOnce()) {
+    REPORT.with(|report| match report.borrow_mut().as_mut() {
+        Some(report) => report.push(status, msg),
+        None => print(),
+    });
+}
+
+fn mcp_client(name: &str, location: &str, state: &'static str, print: impl FnOnce()) {
+    REPORT.with(|report| match report.borrow_mut().as_mut() {
+        Some(report) => report.mcp_clients.push(McpClientState {
+            client: name.to_string(),
+            path: location.to_string(),
+            state,
+        }),
+        None => print(),
+    });
+}
+
 fn check_pass(msg: &str) {
-    println!("  {} {}", "pass".green(), msg);
+    record("pass", msg, || println!("  {} {}", "pass".green(), msg));
 }
 
 fn check_fail(msg: &str) {
-    println!("  {} {}", "FAIL".red().bold(), msg);
+    record("fail", msg, || {
+        println!("  {} {}", "FAIL".red().bold(), msg)
+    });
 }
 
 fn check_warn(msg: &str) {
-    println!("  {} {}", "warn".yellow(), msg);
+    record("warn", msg, || println!("  {} {}", "warn".yellow(), msg));
 }
 
 fn check_info(msg: &str) {
-    println!("  {} {}", "info".blue(), msg);
+    record("info", msg, || println!("  {} {}", "info".blue(), msg));
 }
 
 fn check_fix(msg: &str) {
-    println!("       {} {}", "Fix:".dimmed(), msg.dimmed());
+    REPORT.with(|report| match report.borrow_mut().as_mut() {
+        Some(report) => report.attach_fix(msg),
+        None => println!("       {} {}", "Fix:".dimmed(), msg.dimmed()),
+    });
 }
 
 fn check_fixed(msg: &str) {
-    println!("       {} {}", "Fixed:".green(), msg);
+    REPORT.with(|report| match report.borrow_mut().as_mut() {
+        Some(report) => report.attach_fixed(msg),
+        None => println!("       {} {}", "Fixed:".green(), msg),
+    });
 }
 
 #[cfg(test)]
