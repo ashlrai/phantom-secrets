@@ -4,7 +4,83 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No additional unreleased changes are recorded after the `0.7.9` release.
+### Changed (MCP, agent-visible)
+
+- `phantom_list_secrets`, `phantom_status`, `phantom_why`, `phantom_sync`, and
+  `phantom_list_with_expiry` now return a human summary, a value-blind JSON
+  report as a second text block, and the same report as MCP
+  `structuredContent`. Agents that read only the first text block see the
+  same summary as before. `phantom_list_with_expiry` reports `expired` and
+  `expiring_soon` as `null` when `show_expiry=false`. `phantom_sync` echoes
+  `token_env` only when it is a valid env var name and otherwise reports
+  `<invalid env var name>`.
+- Tools that already returned a JSON object (`phantom_capability`,
+  `phantom_do`, `phantom_setup_workspace`, and the audit, leak-incident,
+  compliance, validation, expiry, and rotation-schedule tools) keep their
+  JSON text unchanged and now also attach it as `structuredContent`.
+- The compliance export tool's `report` action with `save=true` no longer
+  prefixes the JSON with a `// saved to: <path>` line. It now returns
+  `Compliance report saved to: <path>` as its own first text block, followed
+  by the JSON report as a separate text block and as `structuredContent`.
+- An unknown compliance export `action` now fails with `INVALID_PARAMS`
+  (previously `INTERNAL_ERROR`) and tells the agent to retry with `export` or
+  `report`.
+- Config-load, vault-initialization, and missing-secret errors now name the
+  next step (`phantom_doctor`, `phantom doctor` or `PHANTOM_VAULT_PASSPHRASE`,
+  `phantom_list_secrets`).
+
+### Fixed
+
+- **SDKs under `phantom exec` reach the versioned API.** `phantom exec`
+  exports `OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/`, but
+  the official OpenAI SDKs and Codex treat `OPENAI_BASE_URL` as the `/v1` root
+  and request `<base>/models`, `<base>/chat/completions`. The proxy forwarded
+  those to `https://api.openai.com/models` (404). Each built-in route now
+  carries the version path its official SDK keeps in the default base URL:
+  `/v1` for OpenAI, xAI, Mistral, and Replicate. Unversioned requests on those
+  routes get the prefix; requests already starting with a version segment are
+  unchanged. Anthropic, Perplexity, Cohere, Gemini, Hugging Face, and the
+  non-LLM routes keep their paths as sent. Every route also collapses the
+  leading `//` produced when a caller appends `/v1/...` to the slash-terminated
+  base URL.
+- `phantom exec` / `phantom start` proxy: the upstream timeout is now a 600 s
+  idle (per-read) timeout instead of a 30 s total deadline. Previously any SSE
+  stream or slow non-streaming reasoning call longer than 30 s (routine for
+  Claude Code, Codex and the OpenAI/Anthropic SDKs, which allow 600 s) was cut
+  off mid-response.
+- A streaming response that the upstream drops midway now aborts the client
+  connection instead of ending cleanly, so SDKs see a transport error instead
+  of silently accepting a truncated stream.
+- Base-URL overrides are exported only for routes whose credential is loaded
+  in the session. Previously the default config pointed every supported SDK
+  at the proxy, so for example `phantom exec -- claude` with only an OpenAI
+  key protected sent every Claude Code request to a proxy 503.
+- Also export the base-URL variables the official SDKs actually read:
+  `GOOGLE_GEMINI_BASE_URL` (google-genai, Gemini CLI) and `CO_API_URL`
+  (Cohere), alongside the existing names. `REPLICATE_BASE_URL` is not
+  exported: replicate-python 1.x reads it as the host root while 2.x expects
+  it to include `/v1`.
+- `phantom start` prints shell `unset` lines for base-URL variables it no
+  longer exports, so a stale value from an earlier session is cleared.
+- The default global burst guard (`PHANTOM_RATE_LIMIT_BURST`) is now 100
+  requests per 10 s. It was 20, below the 50-per-secret limit, so a single
+  agent session hit proxy 429s before the per-secret limit could ever apply.
+- Upstream responses without a declared `content-length` (close-delimited or
+  otherwise unframed bodies such as NDJSON and JSON-array streams) are now
+  streamed through the byte-level scrubber instead of buffered until the
+  upstream closes and capped at the body limit.
+- When the client disconnects mid-stream, the proxy now closes the upstream
+  connection immediately instead of holding it until the next upstream byte
+  or the idle timeout.
+- The default request (and buffered response) body cap is now 32 MiB,
+  matching Anthropic's request limit; it was 10 MiB, which image-heavy agent
+  turns exceeded. A shared 320 MiB budget (the old 10 MiB x 32-slot worst
+  case) bounds bytes buffered across all in-flight requests; a request that
+  would exceed it gets a 503 with `retry-after`.
+- Proxy-generated error bodies are built with a JSON encoder, and the 429 and
+  503 bodies now carry `"source":"phantom-proxy"`,
+  the service or secret name, and a fix hint, so agents can tell them apart
+  from provider errors.
 
 ## [0.7.9] - 2026-09-06
 
