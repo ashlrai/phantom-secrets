@@ -854,6 +854,15 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
         return true;
     }
 
+    // A Twilio Account SID is a public account identifier, not a credential:
+    // it appears in every REST URL path and as the Basic-auth username. If it
+    // were replaced by a phantom token, `/Accounts/{sid}/...` requests through
+    // the proxy could never reach the right resource. Only the exact SID shape
+    // under an `*ACCOUNT_SID` key is exempt from the entropy heuristic.
+    if is_twilio_account_sid(&key, value) {
+        return false;
+    }
+
     // High-entropy long strings are likely secrets (32+ chars of hex/base64)
     if value.len() >= 32
         && value.chars().all(|c| {
@@ -864,6 +873,13 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
     }
 
     false
+}
+
+fn is_twilio_account_sid(upper_key: &str, value: &str) -> bool {
+    upper_key.ends_with("ACCOUNT_SID")
+        && value.len() == 34
+        && value.starts_with("AC")
+        && value[2..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Detect auth-like parameters in the query string of a URL-shaped value.
@@ -1236,6 +1252,35 @@ KEY3=unquoted
         assert!(!looks_like_secret(&EnvEntry {
             key: "APP_NAME".into(),
             value: "my-app".into(),
+            is_phantom: false
+        }));
+    }
+
+    #[test]
+    fn twilio_account_sid_is_an_identifier_not_a_secret() {
+        // Built at runtime so no identifier-shaped literal enters history.
+        let sid = format!("AC{}", "0123456789abcdef".repeat(2));
+        assert!(!looks_like_secret(&EnvEntry {
+            key: "TWILIO_ACCOUNT_SID".into(),
+            value: sid.clone(),
+            is_phantom: false
+        }));
+        // The exemption is narrow: same shape under another key, or a
+        // non-SID value under the SID key, still hits the entropy heuristic.
+        assert!(looks_like_secret(&EnvEntry {
+            key: "TWILIO_SOMETHING".into(),
+            value: sid.clone(),
+            is_phantom: false
+        }));
+        assert!(looks_like_secret(&EnvEntry {
+            key: "TWILIO_ACCOUNT_SID".into(),
+            value: format!("SK{}", &sid[2..]),
+            is_phantom: false
+        }));
+        // The auth token stays protected.
+        assert!(looks_like_secret(&EnvEntry {
+            key: "TWILIO_AUTH_TOKEN".into(),
+            value: "0123456789abcdef".repeat(2),
             is_phantom: false
         }));
     }

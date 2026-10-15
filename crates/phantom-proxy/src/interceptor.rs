@@ -461,6 +461,36 @@ impl Interceptor {
             .map(|secret| format.replace("{secret}", &secret.value))
     }
 
+    /// Build an HTTP Basic `Authorization` value whose password is the vault
+    /// value for `secret_key`. `username` must be a non-secret identifier the
+    /// caller has already validated (it must not contain `:`). Intermediate
+    /// buffers holding the secret are zeroized on drop.
+    pub fn format_basic_auth_for_secret_key(
+        &self,
+        username: &str,
+        secret_key: &str,
+    ) -> Option<zeroize::Zeroizing<String>> {
+        use base64::Engine as _;
+        if username.contains(':') {
+            return None;
+        }
+        let secret = self.named_secrets.get(secret_key)?;
+        let mut pair = zeroize::Zeroizing::new(String::with_capacity(
+            username.len() + 1 + secret.value.len(),
+        ));
+        pair.push_str(username);
+        pair.push(':');
+        pair.push_str(secret.as_str());
+        // Reserve the exact encoded length so encoding never reallocates and
+        // leaves an unzeroized copy behind.
+        let mut value = zeroize::Zeroizing::new(String::with_capacity(
+            "Basic ".len() + pair.len().div_ceil(3) * 4,
+        ));
+        value.push_str("Basic ");
+        base64::engine::general_purpose::STANDARD.encode_string(pair.as_bytes(), &mut value);
+        Some(value)
+    }
+
     /// Compatibility API: phantom tokens never resolve to real values.
     pub fn resolve(&self, _phantom_token: &str) -> Option<&str> {
         None
@@ -672,6 +702,27 @@ mod tests {
             interceptor.format_header_for_secret_key("Bearer {secret}", "OPENAI_API_KEY"),
             Some(format!("Bearer {secret}"))
         );
+    }
+
+    #[test]
+    fn basic_auth_value_uses_vault_password_and_rejects_bad_usernames() {
+        use base64::Engine as _;
+        let secret = concat!("vault-", "password");
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("BASIC_SECRET".to_string(), secret.to_string())]),
+        );
+        let value = interceptor
+            .format_basic_auth_for_secret_key("acct", "BASIC_SECRET")
+            .unwrap();
+        let expected = base64::engine::general_purpose::STANDARD.encode(format!("acct:{secret}"));
+        assert_eq!(value.as_str(), format!("Basic {expected}"));
+        assert!(interceptor
+            .format_basic_auth_for_secret_key("a:b", "BASIC_SECRET")
+            .is_none());
+        assert!(interceptor
+            .format_basic_auth_for_secret_key("acct", "MISSING")
+            .is_none());
     }
 
     #[test]

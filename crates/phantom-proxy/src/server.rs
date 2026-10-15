@@ -1,6 +1,6 @@
 use crate::interceptor::Interceptor;
 use crate::rate_limiter::{RateLimitConfig, RateLimiter};
-use crate::services::ServiceRegistry;
+use crate::services::{AuthInjection, ServiceRegistry};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
@@ -15,6 +15,7 @@ use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
+use zeroize::Zeroizing;
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 256;
 const MAX_CONCURRENT_REQUESTS: usize = 32;
@@ -369,24 +370,12 @@ async fn handle_request(
     let method = req.method().clone();
     let original_path = req.uri().path().to_string();
     let (path, path_token) = strip_path_proxy_token(&original_path);
-    // Strip phantom_token from query before forwarding to upstream
-    let query = req
-        .uri()
-        .query()
-        .map(|q| {
-            let filtered: Vec<&str> = q
-                .split('&')
-                .filter(|p| !p.starts_with("phantom_token="))
-                .collect();
-            if filtered.is_empty() {
-                String::new()
-            } else {
-                format!("?{}", filtered.join("&"))
-            }
-        })
-        .unwrap_or_default();
-
-    debug!("{} {} query_present={}", method, path, !query.is_empty());
+    debug!(
+        "{} {} query_present={}",
+        method,
+        path,
+        req.uri().query().is_some_and(|q| !q.is_empty())
+    );
 
     // Verify proxy token (defense-in-depth — prevents other local processes from using the proxy)
     // Token check runs before ALL endpoints, including health check.
@@ -447,6 +436,10 @@ async fn handle_request(
         }
     };
 
+    // Strip phantom_token and any route-owned credential parameters (for
+    // example Gemini's `?key=`) before forwarding to the upstream.
+    let owned_slots = route.owned_alternate_slots();
+    let query = filter_query(req.uri().query(), owned_slots.query_params);
     let target_url = format!("{}{}{}", route.target_base, remainder, query);
     debug!("Proxying reviewed route for service {}", route.name);
 
@@ -549,9 +542,25 @@ async fn handle_request(
     // If the route names a vault secret, inject its formatted auth header
     // server-side. Lets clients skip threading phantom tokens through their
     // own request setup entirely.
-    let configured_auth_header = state
-        .interceptor
-        .format_header_for_secret_key(&route.header_format, &route.secret_key);
+    // Basic routes keep the client's non-secret username (an account
+    // identifier) and replace the password with the vault value. Without a
+    // usable client username the route falls back to its plain template.
+    let basic_username = match route.auth_injection() {
+        AuthInjection::BasicPassword => req
+            .headers()
+            .get(route.header.as_str())
+            .and_then(basic_auth_username),
+        AuthInjection::Template => None,
+    };
+    let configured_auth_header = match basic_username.as_deref() {
+        Some(username) => state
+            .interceptor
+            .format_basic_auth_for_secret_key(username, &route.secret_key),
+        None => state
+            .interceptor
+            .format_header_for_secret_key(&route.header_format, &route.secret_key)
+            .map(Zeroizing::new),
+    };
     let Some(configured_auth_header) = configured_auth_header else {
         warn!("Route credential unavailable for service {}", route.name);
         return Ok(error_response(
@@ -592,6 +601,15 @@ async fn handle_request(
         if name_str.eq_ignore_ascii_case(&route.header) {
             continue;
         }
+        // Alternate slots where the upstream accepts the same credential
+        // are route-owned as well; the client's value is never forwarded.
+        if owned_slots
+            .headers
+            .iter()
+            .any(|owned| name_str.eq_ignore_ascii_case(owned))
+        {
+            continue;
+        }
 
         outgoing = outgoing.header(name, value.clone());
     }
@@ -600,7 +618,8 @@ async fn handle_request(
         "Injected configured auth header '{}' for service {}",
         route.header, route.name
     );
-    outgoing = outgoing.header(route.header.as_str(), configured_auth_header);
+    outgoing = outgoing.header(route.header.as_str(), configured_auth_header.as_str());
+    drop(configured_auth_header);
 
     // Response scrubbing is defined over identity bytes. Never forward the
     // client's compression preferences to the upstream.
@@ -923,6 +942,106 @@ enum BodyReadError {
     Read,
     TooLarge,
     Budget,
+}
+
+/// Rebuild the query string for the upstream, dropping `phantom_token` and
+/// every parameter whose percent-decoded name matches a route-owned
+/// credential parameter (ASCII case-insensitive). Other parameters are
+/// forwarded byte-for-byte in their original order.
+fn filter_query(raw: Option<&str>, owned_params: &[&str]) -> String {
+    let Some(raw) = raw else {
+        return String::new();
+    };
+    let kept: Vec<&str> = raw
+        .split('&')
+        .filter(|pair| !pair.starts_with("phantom_token="))
+        .filter(|pair| {
+            if owned_params.is_empty() {
+                return true;
+            }
+            let name = pair.split_once('=').map_or(*pair, |(name, _)| name);
+            let decoded = percent_decode_query_component(name);
+            !owned_params
+                .iter()
+                .any(|owned| decoded.eq_ignore_ascii_case(owned.as_bytes()))
+        })
+        .collect();
+    if kept.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", kept.join("&"))
+    }
+}
+
+/// Decode `%XX` escapes and `+` in a query component. Malformed escapes are
+/// kept literally, matching how lenient servers treat them.
+fn percent_decode_query_component(component: &str) -> Vec<u8> {
+    fn hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = component.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                match (
+                    bytes.get(i + 1).copied().and_then(hex),
+                    bytes.get(i + 2).copied().and_then(hex),
+                ) {
+                    (Some(high), Some(low)) => {
+                        out.push(high << 4 | low);
+                        i += 3;
+                        continue;
+                    }
+                    _ => out.push(b'%'),
+                }
+            }
+            b'+' => out.push(b' '),
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Extract the username from a client `Authorization: Basic` value when it
+/// is a plausible non-secret account identifier. The client's password is
+/// never read beyond the separator. Usernames that carry a Phantom token,
+/// exceed 128 bytes, or contain characters outside a conservative identifier
+/// set are refused so the route falls back to its fixed template.
+fn basic_auth_username(value: &hyper::header::HeaderValue) -> Option<String> {
+    use base64::Engine as _;
+    let value = value.to_str().ok()?.trim();
+    let (scheme, encoded) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    let decoded = Zeroizing::new(
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .ok()?,
+    );
+    let separator = decoded.iter().position(|byte| *byte == b':')?;
+    let username = &decoded[..separator];
+    if username.is_empty()
+        || username.len() > 128
+        || !username
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'@' | b'+'))
+        || username
+            .windows(4)
+            .any(|window| window.eq_ignore_ascii_case(b"phm_"))
+    {
+        return None;
+    }
+    // Validated ASCII above.
+    Some(String::from_utf8_lossy(username).into_owned())
 }
 
 fn strip_path_proxy_token(path: &str) -> (String, Option<String>) {
@@ -2814,5 +2933,204 @@ mod tests {
         );
         proxy.shutdown().await;
         mock.shutdown().await;
+    }
+
+    /// Start a proxy with one route whose vault value is `secret`.
+    async fn single_route_proxy(
+        upstream_port: u16,
+        header: &str,
+        header_format: &str,
+        secret: &str,
+    ) -> ProxyServer {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "svc".to_string(),
+            target_base: format!("http://127.0.0.1:{upstream_port}"),
+            secret_key: "SVC_SECRET".to_string(),
+            header: header.to_string(),
+            header_format: header_format.to_string(),
+        });
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("SVC_SECRET".to_string(), secret.to_string())]),
+        );
+        ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap()
+    }
+
+    fn basic(user: &str, password: &str) -> String {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"))
+        )
+    }
+
+    fn session_token() -> String {
+        format!("phm_{}", "ab12".repeat(16))
+    }
+
+    #[tokio::test]
+    async fn basic_route_keeps_client_username_and_injects_vault_password() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret = concat!("route-", "basic-", "password");
+        let proxy = single_route_proxy(mock.port, "Authorization", "Basic {secret}", secret).await;
+        let account = format!("AC{}", "0f".repeat(16));
+        let token = session_token();
+
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/svc/2010-04-01/Accounts/{account}/Messages.json",
+                proxy.port()
+            ))
+            .header("Authorization", basic(&account, &token))
+            .body("To=x&From=y&Body=hi")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let requests = mock.get_requests();
+        let auth = requests[0].headers.get("authorization").unwrap();
+        assert_eq!(auth, &basic(&account, secret));
+        assert!(!auth.contains("phm_"));
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn basic_route_refuses_unusable_client_usernames() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret = concat!("route-", "basic-", "password");
+        let proxy = single_route_proxy(mock.port, "Authorization", "Basic {secret}", secret).await;
+        let token = session_token();
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/svc/ping", proxy.port());
+
+        // A phantom token as username, a username with a non-identifier
+        // character, a non-Basic scheme, and no header at all all fall back
+        // to the route's fixed template; the client value is never forwarded.
+        for header in [
+            Some(basic(&token, "x")),
+            Some(basic("acct/../x", "x")),
+            Some(format!("Bearer {token}")),
+            None,
+        ] {
+            let mut request = client.get(&url);
+            if let Some(header) = header {
+                request = request.header("Authorization", header);
+            }
+            assert_eq!(request.send().await.unwrap().status(), 200);
+        }
+        for recorded in mock.get_requests() {
+            let auth = recorded.headers.get("authorization").unwrap();
+            assert_eq!(auth, &format!("Basic {secret}"));
+        }
+        assert_eq!(mock.get_requests().len(), 4);
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn google_api_key_route_owns_query_key_and_authorization() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret = concat!("route-", "google-", "key");
+        let proxy = single_route_proxy(mock.port, "x-goog-api-key", "{secret}", secret).await;
+        let token = session_token();
+
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/svc/v1beta/models/m:streamGenerateContent?alt=sse&key={token}&KEY={token}&k%65y={token}&keyword=ok",
+                proxy.port()
+            ))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("x-goog-api-key", &token)
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let recorded = &mock.get_requests()[0];
+        assert_eq!(
+            recorded.path,
+            "/v1beta/models/m:streamGenerateContent?alt=sse&keyword=ok"
+        );
+        assert_eq!(recorded.headers.get("x-goog-api-key").unwrap(), secret);
+        assert!(!recorded.headers.contains_key("authorization"));
+        assert!(recorded
+            .headers
+            .values()
+            .all(|value| !value.contains("phm_")));
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn non_google_routes_keep_key_query_params() {
+        let mock = crate::test_server::MockServer::start().await;
+        let proxy = single_route_proxy(
+            mock.port,
+            "Authorization",
+            "Bearer {secret}",
+            concat!("route-", "bearer"),
+        )
+        .await;
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/svc/v1/items?key=sort-field",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(mock.get_requests()[0].path, "/v1/items?key=sort-field");
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[test]
+    fn filter_query_drops_owned_params_after_decoding() {
+        assert_eq!(filter_query(None, &["key"]), "");
+        assert_eq!(filter_query(Some("a=1&b=2"), &[]), "?a=1&b=2");
+        assert_eq!(filter_query(Some("phantom_token=t&a=1"), &[]), "?a=1");
+        assert_eq!(
+            filter_query(Some("key=1&Key=2&%6B%45y=3&key&a=key"), &["key"]),
+            "?a=key"
+        );
+        assert_eq!(filter_query(Some("key=1"), &["key"]), "");
+        assert_eq!(filter_query(Some("%zz=1&k%2=2"), &["key"]), "?%zz=1&k%2=2");
+    }
+
+    #[test]
+    fn basic_auth_username_parsing() {
+        use hyper::header::HeaderValue;
+        let parse = |value: &str| basic_auth_username(&HeaderValue::from_str(value).unwrap());
+        assert_eq!(parse(&basic("acct_1", "p")).as_deref(), Some("acct_1"));
+        assert_eq!(parse(&basic("api", "")).as_deref(), Some("api"));
+        assert_eq!(
+            parse(&basic("me@example.com", "p:q")).as_deref(),
+            Some("me@example.com")
+        );
+        assert_eq!(parse(&basic("", "p")), None);
+        assert_eq!(parse(&basic(&"a".repeat(129), "p")), None);
+        assert_eq!(parse(&basic(&session_token(), "p")), None);
+        assert_eq!(parse(&basic("x-PHM_y", "p")), None);
+        assert_eq!(parse(&basic("a b", "p")), None);
+        assert_eq!(parse("Basic not-base64!"), None);
+        assert_eq!(parse("Bearer abc"), None);
+        use base64::Engine as _;
+        let no_colon = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        assert_eq!(parse(&format!("Basic {no_colon}")), None);
     }
 }
