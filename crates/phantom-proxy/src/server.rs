@@ -3033,6 +3033,15 @@ mod tests {
         .await
     }
 
+    /// Random lowercase hex from the OS CSPRNG, so no credential literal
+    /// flows into a test request.
+    fn random_hex(bytes: usize) -> String {
+        use rand::RngCore;
+        let mut buf = vec![0u8; bytes];
+        rand::thread_rng().fill_bytes(&mut buf);
+        hex::encode(buf)
+    }
+
     fn basic(user: &str, password: &str) -> String {
         use base64::Engine as _;
         format!(
@@ -3048,17 +3057,18 @@ mod tests {
     #[tokio::test]
     async fn basic_route_keeps_client_username_and_injects_vault_password() {
         let mock = crate::test_server::MockServer::start().await;
-        let secret = concat!("route-", "basic-", "password");
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
         let proxy = basic_route_proxy(mock.port, secret).await;
-        let account = format!("AC{}", "0f".repeat(16));
+        let path_owner = format!("AC{}", random_hex(16));
         let token = session_token();
 
         let resp = reqwest::Client::new()
             .post(format!(
-                "http://127.0.0.1:{}/svc/2010-04-01/Accounts/{account}/Messages.json",
+                "http://127.0.0.1:{}/svc/2010-04-01/Accounts/{path_owner}/Messages.json",
                 proxy.port()
             ))
-            .header("Authorization", basic(&account, &token))
+            .header("Authorization", basic(&path_owner, &token))
             .body("To=x&From=y&Body=hi")
             .send()
             .await
@@ -3067,7 +3077,7 @@ mod tests {
 
         let requests = mock.get_requests();
         let auth = requests[0].headers.get("authorization").unwrap();
-        assert_eq!(auth, &basic(&account, secret));
+        assert_eq!(auth, &basic(&path_owner, secret));
         assert!(!auth.contains("phm_"));
         proxy.shutdown().await;
         mock.shutdown().await;
@@ -3076,16 +3086,19 @@ mod tests {
     #[tokio::test]
     async fn basic_route_uses_first_authorization_and_forwards_neither() {
         let mock = crate::test_server::MockServer::start().await;
-        let secret = concat!("route-", "basic-", "password");
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
         let proxy = basic_route_proxy(mock.port, secret).await;
         let token = session_token();
+        let first_user = format!("first_{}", random_hex(4));
+        let second_user = format!("second_{}", random_hex(4));
 
         let resp = reqwest::Client::new()
             .get(format!("http://127.0.0.1:{}/svc/ping", proxy.port()))
-            .header("Authorization", basic("first_acct", &token))
+            .header("Authorization", basic(&first_user, &token))
             .header(
                 reqwest::header::AUTHORIZATION,
-                reqwest::header::HeaderValue::from_str(&basic("second_acct", &token)).unwrap(),
+                reqwest::header::HeaderValue::from_str(&basic(&second_user, &token)).unwrap(),
             )
             .send()
             .await
@@ -3094,15 +3107,12 @@ mod tests {
         let recorded = &mock.get_requests()[0];
         assert_eq!(
             recorded.headers.get("authorization").unwrap(),
-            &basic("first_acct", secret)
+            &basic(&first_user, secret)
         );
-        assert!(
-            recorded
-                .headers
-                .values()
-                .all(|value| !value.contains("phm_")
-                    && !value.contains(&basic("second_acct", &token)))
-        );
+        assert!(recorded
+            .headers
+            .values()
+            .all(|value| !value.contains("phm_") && !value.contains(&basic(&second_user, &token))));
         proxy.shutdown().await;
         mock.shutdown().await;
     }
@@ -3110,7 +3120,8 @@ mod tests {
     #[tokio::test]
     async fn basic_route_rejects_unusable_client_usernames_locally() {
         let mock = crate::test_server::MockServer::start().await;
-        let secret = concat!("route-", "basic-", "password");
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
         let proxy = basic_route_proxy(mock.port, secret).await;
         let token = session_token();
         let client = reqwest::Client::new();
@@ -3119,9 +3130,11 @@ mod tests {
         // A phantom token as username, a username with a non-identifier
         // character, a non-Basic scheme, and no header at all are rejected
         // by the proxy; nothing reaches the upstream.
+        let client_password = random_hex(8);
+        let bad_shape_user = format!("acct/../{}", random_hex(2));
         for header in [
-            Some(basic(&token, "x")),
-            Some(basic("acct/../x", "x")),
+            Some(basic(&token, &client_password)),
+            Some(basic(&bad_shape_user, &client_password)),
             Some(format!("Bearer {token}")),
             None,
         ] {
@@ -3147,7 +3160,8 @@ mod tests {
     #[tokio::test]
     async fn google_api_key_route_owns_query_key_and_phantom_authorization() {
         let mock = crate::test_server::MockServer::start().await;
-        let secret = concat!("route-", "google-", "key");
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
         let proxy = google_route_proxy(mock.port, secret).await;
         let token = session_token();
 
@@ -3182,8 +3196,8 @@ mod tests {
     #[tokio::test]
     async fn google_api_key_route_forwards_clients_own_oauth_bearer() {
         let mock = crate::test_server::MockServer::start().await;
-        let proxy = google_route_proxy(mock.port, concat!("route-", "google-", "key")).await;
-        let oauth = format!("Bearer {}", concat!("client-", "oauth-", "access"));
+        let proxy = google_route_proxy(mock.port, &random_hex(16)).await;
+        let oauth = format!("Bearer {}", random_hex(16));
 
         let resp = reqwest::Client::new()
             .get(format!(
@@ -3208,7 +3222,8 @@ mod tests {
         let mock = crate::test_server::MockServer::start().await;
         // Same header shape as the Twilio route, but no trusted profile: the
         // plain template applies and `key=` is forwarded.
-        let secret = concat!("route-", "plain");
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
         let proxy = single_route_proxy(
             mock.port,
             "Authorization",
@@ -3268,17 +3283,27 @@ mod tests {
     fn basic_auth_username_parsing() {
         use hyper::header::HeaderValue;
         let parse = |value: &str| basic_auth_username(&HeaderValue::from_str(value).unwrap());
-        assert_eq!(parse(&basic("acct_1", "p")).as_deref(), Some("acct_1"));
-        assert_eq!(parse(&basic("api", "")).as_deref(), Some("api"));
+        let pw = random_hex(8);
+        let user = format!("acct_{}", random_hex(4));
+        assert_eq!(parse(&basic(&user, &pw)).as_deref(), Some(user.as_str()));
+        let empty_password = String::new();
         assert_eq!(
-            parse(&basic("me@example.com", "p:q")).as_deref(),
-            Some("me@example.com")
+            parse(&basic(&user, &empty_password)).as_deref(),
+            Some(user.as_str())
         );
-        assert_eq!(parse(&basic("", "p")), None);
-        assert_eq!(parse(&basic(&"a".repeat(129), "p")), None);
-        assert_eq!(parse(&basic(&session_token(), "p")), None);
-        assert_eq!(parse(&basic("x-PHM_y", "p")), None);
-        assert_eq!(parse(&basic("a b", "p")), None);
+        let email_user = format!("{}@example.com", random_hex(4));
+        assert_eq!(
+            parse(&basic(&email_user, &format!("{pw}:{pw}"))).as_deref(),
+            Some(email_user.as_str())
+        );
+        assert_eq!(parse(&basic("", &pw)), None);
+        assert_eq!(parse(&basic(&"a".repeat(129), &pw)), None);
+        assert_eq!(parse(&basic(&session_token(), &pw)), None);
+        assert_eq!(
+            parse(&basic(&format!("x-PHM_{}", random_hex(2)), &pw)),
+            None
+        );
+        assert_eq!(parse(&basic(&format!("a {}", random_hex(2)), &pw)), None);
         assert_eq!(parse("Basic not-base64!"), None);
         assert_eq!(parse("Bearer abc"), None);
         use base64::Engine as _;

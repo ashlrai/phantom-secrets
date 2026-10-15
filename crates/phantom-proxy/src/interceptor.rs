@@ -713,7 +713,11 @@ mod tests {
     #[test]
     fn basic_auth_value_uses_vault_password_and_rejects_bad_usernames() {
         use base64::Engine as _;
-        let secret = concat!("vault-", "password");
+        use rand::RngCore;
+        let mut random = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut random);
+        let secret_value = hex::encode(random);
+        let secret = secret_value.as_str();
         let interceptor = Interceptor::new_scoped(
             HashMap::new(),
             HashMap::from([("BASIC_SECRET".to_string(), secret.to_string())]),
@@ -725,7 +729,7 @@ mod tests {
         assert_eq!(value.as_str(), format!("Basic {expected}"));
         // Every padding length round-trips and no reallocation is needed.
         for password_len in 0..6 {
-            let password = "p".repeat(password_len);
+            let password = secret_value[..password_len].to_string();
             let interceptor = Interceptor::new_scoped(
                 HashMap::new(),
                 HashMap::from([("BASIC_SECRET".to_string(), password.clone())]),
