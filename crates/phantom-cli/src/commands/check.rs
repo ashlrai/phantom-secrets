@@ -3,40 +3,11 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, DotenvFile};
 use phantom_core::token::PhantomToken;
-use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// One unprotected-secret finding. Findings carry names, paths and pattern
-/// labels only; secret values and phantom tokens are never recorded.
-#[derive(Debug, Serialize, PartialEq, Eq)]
-struct Finding {
-    /// `dotenv`, `staged_dotenv`, `staged_code`, or `runtime_env`.
-    kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    label: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pattern: Option<&'static str>,
-}
-
-/// A risky `.phantom.toml` service route found in the staged config.
-#[derive(Debug, Serialize)]
-struct ConfigWarning {
-    path: String,
-    service: String,
-    message: String,
-}
-
-#[derive(Serialize)]
-struct Report<'a> {
-    mode: &'a str,
-    clean: bool,
-    findings: &'a [Finding],
-    warnings: &'a [ConfigWarning],
-}
+use phantom_core::report::{
+    CheckConfigWarning as ConfigWarning, CheckFinding as Finding, CheckReport as Report,
+};
 
 /// Check for unprotected secrets in .env files and staged git files.
 /// Returns exit code 1 if found. Designed to be used as a pre-commit hook.
@@ -70,6 +41,7 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
             clean: findings.is_empty(),
             findings: &findings,
             warnings: &warnings,
+            indeterminate: &[],
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -473,6 +445,7 @@ mod tests {
             clean: false,
             findings: &findings,
             warnings: &[],
+            indeterminate: &[],
         };
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"name\":\"OPENAI_API_KEY\""));

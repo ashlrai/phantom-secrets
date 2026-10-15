@@ -2,6 +2,7 @@ use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{classify, is_public_key, DotenvFile, SecretClassification};
 use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget, TrustedAnchor};
 use phantom_core::precommit_hook::{self, HookChange};
+use phantom_core::report::{CheckFinding, CheckIndeterminate, CheckReport, DoctorReport};
 use phantom_core::token::{PhantomToken, TokenMap};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -11,7 +12,8 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use crate::tools::helpers::{
-    internal_err, invalid_params_err, require_approval_token, require_confirm, text_result,
+    internal_err, invalid_params_err, report_result, require_approval_token, require_confirm,
+    text_result,
 };
 use crate::tools::params::{
     AddSecretInteractiveParams, AddSecretParams, ApplyExpiryPolicyParams, ApprovalParams,
@@ -1595,7 +1597,7 @@ impl PhantomMcpServer {
 
     /// Run health checks and optionally auto-fix issues.
     #[tool(
-        description = "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs."
+        description = "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom doctor --json`: {ok, issues, fixed, checks: [{status, message, fix?, fixed?}], mcp_clients}."
     )]
     fn phantom_doctor(
         &self,
@@ -1962,7 +1964,8 @@ impl PhantomMcpServer {
             lines.push(format!("{issues} issue(s) found{suffix}"));
         }
 
-        text_result(lines.join("\n"))
+        let report = doctor_report_from_lines(&lines, issues as usize, fixed as usize);
+        report_result(lines.join("\n"), &report)
     }
 
     /// Explain why a key is or isn't protected by Phantom.
@@ -2212,7 +2215,7 @@ impl PhantomMcpServer {
 
     /// Check for leaked secrets or orphaned phantom tokens.
     #[tool(
-        description = "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans .env files for unprotected real secrets."
+        description = "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans .env files for unprotected real secrets. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?}. Reports names and paths only, never values or phantom tokens."
     )]
     fn phantom_check(
         &self,
@@ -2239,18 +2242,35 @@ impl PhantomMcpServer {
                 "CLOUDFLARE_API_TOKEN",
             ];
 
-            let mut found = Vec::new();
-            for var in &api_vars {
-                if let Ok(val) = std::env::var(var) {
-                    if PhantomToken::is_phantom_token(&val) {
-                        found.push(*var);
-                    }
-                }
-            }
+            let found: Vec<&str> = api_vars
+                .iter()
+                .copied()
+                .filter(|var| {
+                    std::env::var(var).is_ok_and(|val| PhantomToken::is_phantom_token(&val))
+                })
+                .collect();
+            let findings: Vec<CheckFinding> = found
+                .iter()
+                .map(|var| CheckFinding {
+                    kind: "runtime_env",
+                    path: None,
+                    name: Some(var.to_string()),
+                    label: None,
+                    pattern: None,
+                })
+                .collect();
+            let report = CheckReport {
+                mode: "runtime",
+                clean: findings.is_empty(),
+                findings: &findings,
+                warnings: &[],
+                indeterminate: &[],
+            };
 
             if found.is_empty() {
-                return text_result(
+                return report_result(
                     "No issues found. No phantom tokens detected in environment variables.",
+                    &report,
                 );
             }
 
@@ -2265,12 +2285,12 @@ impl PhantomMcpServer {
                 "\nClient-supplied headers and bodies never resolve phantom placeholders, even while the proxy is running.\n\
                  `phantom exec -- <command>` can start an authenticated session whose exact configured routes inject only route-owned authentication; review the route mapping before use.",
             );
-            text_result(output)
+            report_result(output, &report)
         } else {
             // Scan .env files for unprotected secrets
             let env_files = [".env", ".env.local", ".env.development", ".env.production"];
-            let mut total_issues = 0;
-            let mut malformed_files = 0;
+            let mut findings: Vec<CheckFinding> = Vec::new();
+            let mut indeterminate: Vec<CheckIndeterminate> = Vec::new();
             let mut output = String::new();
 
             for filename in &env_files {
@@ -2286,7 +2306,10 @@ impl PhantomMcpServer {
                                 "{}: malformed; clean status is indeterminate ({})\n",
                                 filename, error
                             ));
-                            malformed_files += 1;
+                            indeterminate.push(CheckIndeterminate {
+                                path: filename.to_string(),
+                                reason: format!("malformed: {error}"),
+                            });
                             continue;
                         }
                         let real = dotenv.real_secret_entries();
@@ -2298,31 +2321,56 @@ impl PhantomMcpServer {
                             ));
                             for entry in &real {
                                 output.push_str(&format!("  - {}\n", entry.key));
+                                findings.push(CheckFinding {
+                                    kind: "dotenv",
+                                    path: Some(filename.to_string()),
+                                    name: Some(entry.key.clone()),
+                                    label: None,
+                                    pattern: None,
+                                });
                             }
-                            total_issues += real.len();
                         }
                     }
                     Err(e) => {
                         output.push_str(&format!("{}: failed to parse ({})\n", filename, e));
-                        malformed_files += 1;
+                        indeterminate.push(CheckIndeterminate {
+                            path: filename.to_string(),
+                            reason: format!("failed to parse: {e}"),
+                        });
                     }
                 }
             }
 
+            let total_issues = findings.len();
+            let malformed_files = indeterminate.len();
+            let report = CheckReport {
+                mode: "worktree",
+                clean: findings.is_empty() && indeterminate.is_empty(),
+                findings: &findings,
+                warnings: &[],
+                indeterminate: &indeterminate,
+            };
+
             if total_issues == 0 && malformed_files == 0 {
-                text_result("No issues found. All .env files are clean.")
+                report_result("No issues found. All .env files are clean.", &report)
             } else if total_issues == 0 {
-                text_result(format!(
-                    "Found {} malformed .env file(s); clean status is indeterminate:\n\n{}",
-                    malformed_files, output
-                ))
+                report_result(
+                    format!(
+                        "Found {} malformed .env file(s); clean status is indeterminate:\n\n{}",
+                        malformed_files, output
+                    ),
+                    &report,
+                )
             } else {
                 output
                     .push_str("\nRun `phantom init` to protect these secrets with phantom tokens.");
-                text_result(format!(
-                    "Found {} unprotected secret(s) and {} malformed .env file(s):\n\n{}",
-                    total_issues, malformed_files, output
-                ))
+                report_result(
+                    format!(
+                        "Found {} unprotected secret(s) and {} malformed .env file(s):\n\n{}",
+                        total_issues, malformed_files, output
+                    ),
+                    &report,
+                )
             }
         }
     }
@@ -6031,6 +6079,42 @@ impl ServerHandler for PhantomMcpServer {
     }
 }
 
+/// Build the `phantom doctor --json` report shape from the MCP doctor's
+/// value-blind text lines. Each check line carries a `pass:`/`FAIL:`/`warn:`/
+/// `info:` prefix and repair hints are indented `Fix:`/`Fixed:` lines; the
+/// trailing summary (after the blank separator) is reflected in `ok`,
+/// `issues`, and `fixed` instead. The MCP doctor does not inspect global MCP
+/// client configs, so `mcp_clients` stays empty.
+fn doctor_report_from_lines(lines: &[String], issues: usize, fixed: usize) -> DoctorReport {
+    let mut report = DoctorReport {
+        ok: issues == 0,
+        issues,
+        fixed,
+        ..DoctorReport::default()
+    };
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some(msg) = line.strip_prefix("  Fixed: ") {
+            report.attach_fixed(msg);
+        } else if let Some(msg) = line.strip_prefix("  Fix: ") {
+            report.attach_fix(msg);
+        } else if let Some(msg) = line.strip_prefix("pass: ") {
+            report.push("pass", msg);
+        } else if let Some(msg) = line.strip_prefix("FAIL: ") {
+            report.push("fail", msg);
+        } else if let Some(msg) = line.strip_prefix("warn: ") {
+            report.push("warn", msg);
+        } else if let Some(msg) = line.strip_prefix("info: ") {
+            report.push("info", msg);
+        } else {
+            report.push("info", line.trim());
+        }
+    }
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7604,6 +7688,190 @@ mod tests {
         let text = extract_content_text(&result);
         assert!(text.contains("No .phantom.toml found"), "{text}");
         assert!(text.contains("unprotected secret"), "{text}");
+    }
+
+    fn structured_report(result: &CallToolResult) -> serde_json::Value {
+        use rmcp::model::ContentBlock;
+        let structured = result
+            .structured_content
+            .clone()
+            .expect("diagnostic tools attach structuredContent");
+        let texts: Vec<&str> = result
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                ContentBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 2, "human summary then JSON text");
+        let from_text: serde_json::Value = serde_json::from_str(texts[1]).unwrap();
+        assert_eq!(from_text, structured);
+        structured
+    }
+
+    fn assert_no_value_leak(result: &CallToolResult, forbidden: &[&str]) {
+        let rendered = serde_json::to_string(result).unwrap();
+        for value in forbidden {
+            assert!(!rendered.contains(value), "{value} leaked: {rendered}");
+        }
+    }
+
+    #[test]
+    fn check_worktree_returns_value_blind_structured_report() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        std::fs::write(
+            dir.path().join(".env.local"),
+            "BROKEN LINE WITHOUT EQUALS\n",
+        )
+        .unwrap();
+        let result = server
+            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .unwrap();
+        let text = extract_content_text(&result);
+        assert!(text.starts_with("Found 2 unprotected secret(s)"), "{text}");
+
+        let report = structured_report(&result);
+        assert_eq!(report["mode"], "worktree");
+        assert_eq!(report["clean"], false);
+        assert_eq!(report["warnings"], serde_json::json!([]));
+        let names: Vec<&str> = report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                assert_eq!(f["kind"], "dotenv");
+                assert_eq!(f["path"], ".env");
+                f["name"].as_str().unwrap()
+            })
+            .collect();
+        assert_eq!(names, vec!["OPENAI_API_KEY", "DATABASE_URL"]);
+        assert_eq!(report["indeterminate"][0]["path"], ".env.local");
+        assert_no_value_leak(&result, &["sk-test-key", "user:pass", "production"]);
+    }
+
+    #[test]
+    fn check_clean_worktree_matches_cli_shape() {
+        let _environment = TestEnvironment::new();
+        let dir = TempDir::new().unwrap();
+        let token = PhantomToken::generate();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("OPENAI_API_KEY={}\n", token.as_str()),
+        )
+        .unwrap();
+        let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+        let result = server
+            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .unwrap();
+        assert_eq!(
+            structured_report(&result),
+            serde_json::json!({"mode":"worktree","clean":true,"findings":[],"warnings":[]})
+        );
+        assert_no_value_leak(&result, &[token.as_str()]);
+    }
+
+    #[test]
+    fn check_runtime_reports_names_never_tokens() {
+        let _environment = TestEnvironment::new();
+        let var = "FIREBASE_API_KEY";
+        let previous = std::env::var_os(var);
+        let token = PhantomToken::generate();
+        // SAFETY: serialized by TestEnvironment's process env lock; restored below.
+        unsafe { std::env::set_var(var, token.as_str()) };
+        let server = PhantomMcpServer::with_dir(TempDir::new().unwrap().path().to_path_buf());
+        let result = server.phantom_check(Parameters(CheckParams { runtime: true }));
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(var, value),
+                None => std::env::remove_var(var),
+            }
+        }
+        let result = result.unwrap();
+        let report = structured_report(&result);
+        assert_eq!(report["mode"], "runtime");
+        assert_eq!(report["clean"], false);
+        assert!(report["findings"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!({"kind":"runtime_env","name":var})));
+        assert_no_value_leak(&result, &[token.as_str()]);
+    }
+
+    #[test]
+    fn doctor_returns_value_blind_structured_report() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_test_project();
+        let result = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: false,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap();
+        let report = structured_report(&result);
+        assert_eq!(report["ok"], false);
+        assert_eq!(report["fixed"], 0);
+        assert_eq!(report["mcp_clients"], serde_json::json!([]));
+        let checks = report["checks"].as_array().unwrap();
+        assert_eq!(
+            report["issues"].as_u64().unwrap() as usize,
+            checks
+                .iter()
+                .filter(|c| matches!(c["status"].as_str(), Some("warn" | "fail")))
+                .count()
+        );
+        assert_eq!(
+            checks[0],
+            serde_json::json!({
+                "status": "warn",
+                "message": "No .phantom.toml found",
+                "fix": "Run `phantom init`"
+            })
+        );
+        assert!(checks.iter().all(|c| matches!(
+            c["status"].as_str(),
+            Some("pass" | "fail" | "warn" | "info")
+        )));
+        assert!(checks.iter().any(|c| c["message"]
+            .as_str()
+            .unwrap()
+            .contains("unprotected secret(s): OPENAI_API_KEY, DATABASE_URL")));
+        assert_no_value_leak(&result, &["sk-test-key", "user:pass"]);
+    }
+
+    #[test]
+    fn doctor_report_attaches_fixed_and_drops_summary() {
+        let lines: Vec<String> = [
+            "pass: .phantom.toml found",
+            "warn: No .gitignore — consider adding one",
+            "  Fixed: Created .gitignore with .env patterns",
+            "",
+            "Auto-fixed 1 issue(s).",
+            "All checks passed!",
+        ]
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+        let report = serde_json::to_value(doctor_report_from_lines(&lines, 0, 1)).unwrap();
+        assert_eq!(
+            report,
+            serde_json::json!({
+                "ok": true,
+                "issues": 0,
+                "fixed": 1,
+                "checks": [
+                    {"status": "pass", "message": ".phantom.toml found"},
+                    {
+                        "status": "warn",
+                        "message": "No .gitignore — consider adding one",
+                        "fixed": "Created .gitignore with .env patterns"
+                    }
+                ],
+                "mcp_clients": []
+            })
+        );
     }
 
     #[test]
