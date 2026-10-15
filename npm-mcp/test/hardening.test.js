@@ -574,12 +574,28 @@ async function assertPreviousVersionCachePreserved(stage) {
         execFileSyncImpl: (executable, args, options) => {
           extractionCalls += 1;
           assert.ok(options.timeout > 0 && options.timeout < 120_000);
+          // Root extraction must not restore the release builder's uid.
+          if (args[0] === "xzf") assert.ok(args.includes("--no-same-owner"));
           return execFileSync(executable, args, options);
         },
       });
       assert.strictEqual(extractionCalls, 2);
       assert.strictEqual(readFileSync(output, "utf8"), "mcp");
       assert.strictEqual(lstatSync(output).mode & 0o777, 0o700);
+      // Release archives carry the CI builder's uid. GNU tar running as root
+      // restores it unless told not to, which failed the owned-path check
+      // in every root container (Docker, cloud agent sandboxes).
+      const gnuTar = execFileSync("tar", ["--version"], { encoding: "utf8" }).includes("GNU tar");
+      if (gnuTar && typeof process.getuid === "function" && process.getuid() === 0) {
+        const foreignArchive = join(fixtureDir, "foreign-owner.tar.gz");
+        execFileSync("tar", [
+          "czf", foreignArchive, "--owner=4242", "--group=4242", "-C", source, "phantom", "phantom-mcp",
+        ]);
+        chmodSync(foreignArchive, 0o600);
+        const foreignOutput = join(fixtureDir, "extracted-foreign-owner");
+        extractBinaryFromArchive(foreignArchive, foreignOutput, { cacheDir: fixtureDir });
+        assert.strictEqual(lstatSync(foreignOutput).uid, 0);
+      }
       const archiveSymlink = join(fixtureDir, "archive-link.tar.gz");
       symlinkSync(archive, archiveSymlink);
       assert.throws(

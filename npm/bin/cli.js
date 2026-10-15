@@ -607,7 +607,7 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
         "archive extraction",
         execFileSyncImpl,
         "tar",
-        ["xzf", archivePath, "-C", stagingDir, binaryFilename],
+        ["xzf", archivePath, "--no-same-owner", "-C", stagingDir, binaryFilename],
         { stdio: "pipe" },
         { timeoutMs: execTimeoutMs, heartbeat }
       );
