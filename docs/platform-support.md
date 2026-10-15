@@ -18,7 +18,7 @@ documentation tranche. The immutable `v0.7.9` GitHub release resolves to
 native-release rows and release attestations passed in
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556). That
 does not validate the npm wrapper installation path. In the exact 2026-09-29
-registry snapshot, the `0.7.4` candidate failed on all six targets, npm `latest` remains `0.6.0`,
+registry snapshot, the `0.7.4` candidate failed on all six targets, npm `latest` was `0.6.0` at that historical snapshot,
 and no exact npm `0.7.9` acceptance receipt is claimed.
 
 ## Current matrix
@@ -155,15 +155,16 @@ acceptance and never place provider client secrets on the command line.
 
 - The reviewed `v0.7.9` source build checks out
   `7a51ce512ec4aee12cc29ff859036af63fbe93db` and runs
-  `cargo build --release --locked --bin phantom --bin phantom-mcp`. An unpinned
-  crates.io install currently resolves the older `0.5.1` track.
-- The npm packages' `latest` tags currently resolve `0.6.0`. Exact `0.7.4`
+  `cargo build --release --locked --bin phantom --bin phantom-mcp`. The historical
+  2026-09-29 crates.io snapshot resolved `0.5.1`; crates.io was not reverified
+  in the 2026-10-09 channel update.
+- Public npm metadata requeried on 2026-10-09 lists both packages' `latest` tags at `0.7.9`. Historical `0.7.4`
   wrappers exist only under `release-candidate` and failed the six-target npm
   acceptance gate; they are not the reviewed `v0.7.9` GitHub release path.
 - `scripts/install.sh` supports macOS and GNU Linux targets. Native Windows uses
   `scripts/install.ps1`; both scripts verify bounded HTTPS downloads, strict
   sidecar checksums, archive shape, and binary identity before promotion.
-- The Homebrew formula still publishes the previous reviewed `v0.7.8` as a separately managed
+- The canonical Homebrew formula inspected on 2026-10-09 selects `v0.7.9` as a separately managed
   distribution surface. The repository's release workflow does not
   automatically update a tap.
 

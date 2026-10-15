@@ -1574,8 +1574,14 @@ mod tests {
 
             let outcome = approve_nonce(&nonce).unwrap();
 
-            // Tamper with the token.
-            let tampered = format!("{}ff", &outcome.approval_token[..62]);
+            // Change one hex digit: a fixed suffix can match the random token.
+            let replacement = if outcome.approval_token.ends_with('0') {
+                '1'
+            } else {
+                '0'
+            };
+            let tampered = format!("{}{replacement}", &outcome.approval_token[..63]);
+            assert_ne!(tampered, outcome.approval_token);
 
             let result = validate_and_consume_approval(
                 &nonce,

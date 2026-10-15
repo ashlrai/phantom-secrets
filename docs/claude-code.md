@@ -33,8 +33,8 @@ MCP entry and Phantom-managed dotenv read grants from
 rules. Dotenv denies remain a defense-in-depth boundary.
 
 **Release compatibility:** `v0.7.9` is the first release with this correction.
-`v0.7.8` and earlier binaries (including the Homebrew formula until it is bumped
-to `v0.7.9`) wrote MCP registration into `.claude/settings.local.json`, which is
+`v0.7.8` and earlier binaries wrote MCP registration into
+`.claude/settings.local.json`, which is
 not Claude Code's supported MCP registration location. After upgrading to
 `v0.7.9`, rerun `phantom setup --client claude` to migrate the legacy entry. If
 you must stay on `v0.7.8`, run `phantom setup --client claude --print` and

@@ -18,7 +18,9 @@ https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were published
 after all six native acceptance rows and release attestations passed in
 https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
-The separately managed Homebrew formula still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
+The separately managed Homebrew tap formula inspected on 2026-10-09 selects
+`v0.7.9`; its four platform SHA256 pins match the published release sidecars.
+Canonical formula: https://github.com/ashlrai/homebrew-phantom/blob/c1e8bac4f2bafdbacb86439df0842e19512a463a/Formula/phantom.rb
 
 Homebrew (macOS, third-party tap):
 
@@ -31,11 +33,13 @@ brew install ashlrai/phantom/phantom
 For the current macOS, Linux, or Windows release, select the exact `v0.7.9`
 archive for your architecture from
 the release, download its adjacent `.sha256` sidecar, verify it, and place both
-release executables on PATH. In the exact 2026-09-29 registry snapshot, npm `latest` remains
-`0.6.0`; exact npm `0.7.4` wrappers exist only under the failed
-`release-candidate` track. No MCP Registry `0.7.9` record was found; crates.io
-remains on `0.5.1`. Unpinned npm, npx, and Cargo installs are not the reviewed
-`v0.7.9` GitHub release path.
+release executables on PATH. Public npm metadata requeried on 2026-10-09 lists `phantom-secrets` and
+`phantom-secrets-mcp` at `0.7.9` under `latest`; the historical
+`release-candidate` tag remains `0.7.4`. The MCP Registry identity
+`io.github.ashlrai/phantom-secrets-mcp` has an active `0.7.9` listing:
+https://registry.modelcontextprotocol.io/v0.1/servers/io.github.ashlrai%2Fphantom-secrets-mcp/versions/0.7.9
+Channel listings are not local installation, MCP handshake, vault/provider
+access or hosted-service acceptance. crates.io was not reverified here.
 
 ## Editor MCP setup
 
@@ -43,7 +47,7 @@ One command per AI client — Phantom writes the right config file for each:
 
 | Editor | Command | Writes to |
 |---|---|---|
-| Claude Code | `phantom setup --client claude` | `.claude/settings.local.json` (project) |
+| Claude Code | `phantom setup --client claude` | `.mcp.json` (project MCP; legacy Phantom settings migrated separately) |
 | Cursor | `phantom setup --client cursor` | `~/.cursor/mcp.json` |
 | Windsurf | `phantom setup --client windsurf` | `~/.codeium/windsurf/mcp_config.json` |
 | Codex | `phantom setup --client codex` | `~/.codex/config.toml` |

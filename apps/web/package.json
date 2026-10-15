@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",
-    "next": "^15",
+    "next": "^15.5.27",
     "posthog-js": "^1.364.2",
     "react": "^19",
     "react-dom": "^19",

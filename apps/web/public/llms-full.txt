@@ -7,7 +7,7 @@ GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
 Release evidence was verified on 2026-09-29. The immutable GitHub `v0.7.9` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
-Install: use the exact checksum-verified `v0.7.9` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
+Install: use the exact checksum-verified `v0.7.9` GitHub assets below on macOS, Linux, and Windows. The canonical Homebrew tap formula inspected on 2026-10-09 selects `v0.7.9`; four platform SHA256 pins match published sidecars.
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`
 
 
@@ -36,7 +36,7 @@ https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/
 
 ## Install
 
-### Homebrew (macOS, formula still at reviewed v0.7.8)
+### Homebrew (macOS, formula inspected at v0.7.9 on 2026-10-09)
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
@@ -60,10 +60,13 @@ git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-In the exact 2026-09-29 registry snapshot, npm `latest` remains 0.6.0; exact npm
-0.7.4 wrappers exist only under the failed `release-candidate` track. No MCP
-Registry 0.7.9 record was found; crates.io remains on 0.5.1. Unpinned npm, npx,
-and `cargo install` commands are not the reviewed v0.7.9 GitHub release path.
+Public npm metadata requeried on 2026-10-09 lists `phantom-secrets` and
+`phantom-secrets-mcp` at `0.7.9` under `latest`; historical `release-candidate`
+remains `0.7.4`. The MCP Registry identity
+`io.github.ashlrai/phantom-secrets-mcp` has an active `0.7.9` listing. These
+listings and Homebrew formula pins do not prove installed/native npm acceptance,
+MCP handshake, vault/provider readiness or hosted commissioning. crates.io
+was not reverified in this update.
 
 ### Verify
 ```
@@ -168,7 +171,9 @@ Options: --output <filename>
 
 ### phantom setup
 Configure Claude Code MCP server and permissions automatically.
-Writes to .claude/settings.local.json.
+Writes project MCP registration to .mcp.json. Separately migrates only legacy
+Phantom entries and managed dotenv read grants in .claude/settings.local.json;
+unrelated servers and permission rules are preserved.
 
 ### phantom login
 After a hosted deployment and account entitlement are independently
