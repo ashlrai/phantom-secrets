@@ -184,8 +184,11 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         }
     }
 
-    // Build service registry from config
-    let registry = ServiceRegistry::from_config(&config.services);
+    // Route only services whose credential this session actually holds. A
+    // base-URL override for an unvaulted service would point the child's SDK
+    // (for example Claude Code via ANTHROPIC_BASE_URL) at a route that can
+    // only answer 503 "route credential unavailable".
+    let registry = ServiceRegistry::from_config(&routed_services(&config, &secret_name_to_value));
     let interceptor = Interceptor::new_scoped(session_token_to_secret, secret_name_to_value);
 
     progress!(
@@ -362,6 +365,19 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
 
     progress!(quiet, "{} Done.", "ok".green().bold());
     Ok(())
+}
+
+/// Configured services whose credential is held by this exec session.
+fn routed_services(
+    config: &PhantomConfig,
+    session_secrets: &HashMap<String, String>,
+) -> std::collections::BTreeMap<String, phantom_core::config::ServiceConfig> {
+    config
+        .services
+        .iter()
+        .filter(|(_, service)| session_secrets.contains_key(&service.secret_key))
+        .map(|(name, service)| (name.clone(), service.clone()))
+        .collect()
 }
 
 fn retrieve_required_secret(
@@ -559,6 +575,21 @@ mod tests {
         assert!(error
             .to_string()
             .contains("injected session credential read failure"));
+    }
+
+    #[test]
+    fn exec_routes_only_services_with_a_session_credential() {
+        let config = PhantomConfig::new_with_defaults("a".repeat(64));
+        assert!(config.services.contains_key("anthropic"));
+        let session = HashMap::from([("OPENAI_API_KEY".to_string(), "value".to_string())]);
+
+        let routed = routed_services(&config, &session);
+        assert_eq!(routed.keys().collect::<Vec<_>>(), vec!["openai"]);
+
+        let overrides = ServiceRegistry::from_config(&routed).base_url_overrides(1);
+        let names: Vec<&str> = overrides.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["OPENAI_BASE_URL"]);
+        assert!(routed_services(&config, &HashMap::new()).is_empty());
     }
 
     #[test]
