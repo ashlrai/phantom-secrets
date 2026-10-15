@@ -872,6 +872,10 @@ fn main() -> std::process::ExitCode {
     };
     match handle.join() {
         Ok(Ok(())) => std::process::ExitCode::SUCCESS,
+        Ok(Err(error)) if error.downcast_ref::<UsageError>().is_some() => {
+            report_error(&error);
+            std::process::ExitCode::from(2)
+        }
         Ok(Err(error)) => report_error(&error),
         // Propagate a panic on the worker thread as if it happened here so
         // the process still dies with the standard panic exit status.
@@ -904,9 +908,189 @@ fn format_error(error: &anyhow::Error) -> String {
     message
 }
 
+/// A command-line usage error found after clap parsing. `main` reports it
+/// like any error but exits 2, the status clap uses for usage errors.
+#[derive(Debug)]
+struct UsageError(String);
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UsageError {}
+
+/// Route the global `--json` flag to the command that runs.
+///
+/// `--json` is a global flag, so clap accepts it on every command. Commands
+/// with no JSON output used to ignore it and print human text with exit 0,
+/// which a script then fails to parse. This returns the command path when the
+/// command has no JSON output, and otherwise makes sure the command's own
+/// `--json` flag is set.
+///
+/// The match is exhaustive on purpose: a new command must decide here.
+fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
+    use commands::audit::AuditAction as A;
+    match command {
+        // Commands that read the global flag themselves.
+        Commands::Status { .. }
+        | Commands::Sync { .. }
+        | Commands::Doctor { .. }
+        | Commands::Check { .. }
+        | Commands::Agent {
+            action: AgentAction::Report { .. },
+        }
+        | Commands::Grant { .. }
+        | Commands::Vault {
+            action: VaultAction::MigrateLinux,
+        } => Ok(()),
+        Commands::Rotate {
+            batch,
+            shadow,
+            provider,
+            name,
+            ..
+        } => {
+            if *batch || (!*shadow && (provider.is_some() || name.is_some())) {
+                Ok(())
+            } else {
+                Err("phantom rotate (without --batch or --name)")
+            }
+        }
+        Commands::Validate {
+            action, promote, ..
+        } => {
+            if action.is_none() && promote.is_some() {
+                Err("phantom validate --promote")
+            } else {
+                Ok(())
+            }
+        }
+        // Commands with their own `--json` flag.
+        Commands::List { json, .. }
+        | Commands::SecretsExpiringSoon { json, .. }
+        | Commands::Expiry {
+            action: ExpiryAction::Enforce { json, .. },
+        }
+        | Commands::Workspace {
+            action: WorkspaceCliAction::Plan { json } | WorkspaceCliAction::Status { json, .. },
+        }
+        | Commands::Audit {
+            action:
+                A::Show { json, .. }
+                | A::Stats { json, .. }
+                | A::Anomalies { json, .. }
+                | A::Incidents { json, .. }
+                | A::Alerts { json, .. },
+        } => {
+            *json = true;
+            Ok(())
+        }
+        // Audit exports whose output is JSON unless another format is chosen.
+        Commands::Audit {
+            action: A::Export { format, .. },
+        } => json_format(format, "phantom audit export --format csv"),
+        Commands::Audit {
+            action: A::Analytics { format, .. },
+        } => json_format(format, "phantom audit analytics --format csv"),
+        Commands::Audit {
+            action: A::ExportRange { format, .. },
+        } => json_format(format, "phantom audit export-range --format csv"),
+        Commands::Audit {
+            action: A::Report { .. },
+        } => Ok(()),
+        // Commands with no JSON output.
+        Commands::Audit {
+            action: A::Tail { .. },
+        } => Err("phantom audit tail"),
+        Commands::Audit { action: A::Path } => Err("phantom audit path"),
+        Commands::Audit {
+            action: A::Verify { .. },
+        } => Err("phantom audit verify"),
+        Commands::Agent {
+            action: AgentAction::Doctor,
+        } => Err("phantom agent doctor"),
+        Commands::Agent {
+            action: AgentAction::Setup { .. },
+        } => Err("phantom agent setup"),
+        Commands::Expiry {
+            action: ExpiryAction::Set { .. },
+        } => Err("phantom expiry set"),
+        Commands::Expiry {
+            action: ExpiryAction::Rotate { .. },
+        } => Err("phantom expiry rotate"),
+        Commands::Workspace {
+            action: WorkspaceCliAction::Apply { .. },
+        } => Err("phantom workspace apply"),
+        Commands::Init { .. } => Err("phantom init"),
+        Commands::Setup { .. } => Err("phantom setup"),
+        Commands::Completion { .. } => Err("phantom completion"),
+        Commands::Mcp {
+            action: McpAction::Serve,
+        } => Err("phantom mcp serve"),
+        Commands::McpApprove { .. } => Err("phantom mcp-approve"),
+        Commands::Exec { .. } => Err("phantom exec"),
+        Commands::Start { .. } => Err("phantom start"),
+        Commands::Stop => Err("phantom stop"),
+        Commands::Add { .. } => Err("phantom add"),
+        Commands::Remove { .. } => Err("phantom remove"),
+        Commands::Reveal { .. } => Err("phantom reveal"),
+        Commands::Copy { .. } => Err("phantom copy"),
+        Commands::Env { .. } => Err("phantom env"),
+        Commands::Why { .. } => Err("phantom why"),
+        Commands::Login => Err("phantom login"),
+        Commands::Logout => Err("phantom logout"),
+        Commands::Cloud { action } => Err(match action {
+            CloudAction::Push => "phantom cloud push",
+            CloudAction::Pull { .. } => "phantom cloud pull",
+            CloudAction::Status => "phantom cloud status",
+        }),
+        Commands::Team { action } => Err(match action {
+            TeamAction::List => "phantom team list",
+            TeamAction::Create { .. } => "phantom team create",
+            TeamAction::Members { .. } => "phantom team members",
+            TeamAction::Invite { .. } => "phantom team invite",
+            TeamAction::KeyPublish { .. } => "phantom team key-publish",
+            TeamAction::VaultPush { .. } => "phantom team vault-push",
+            TeamAction::VaultPull { .. } => "phantom team vault-pull",
+            TeamAction::Revoke { .. } => "phantom team revoke",
+            TeamAction::RotateVault { .. } => "phantom team rotate-vault",
+        }),
+        Commands::Pull { .. } => Err("phantom pull"),
+        // `export --json` is a hidden legacy plaintext flag kept only to fail
+        // closed with its own message; never turn it on from here.
+        Commands::Export { json: true, .. } => Ok(()),
+        Commands::Export { .. } => Err("phantom export"),
+        Commands::Import { .. } => Err("phantom import"),
+        Commands::Wrap { .. } => Err("phantom wrap"),
+        Commands::Unwrap => Err("phantom unwrap"),
+        Commands::Upgrade { .. } => Err("phantom upgrade"),
+        Commands::Watch { .. } => Err("phantom watch"),
+        Commands::Open { .. } => Err("phantom open"),
+        Commands::ClearClipboardAfter { .. } => Err("phantom __clear-clipboard-after"),
+    }
+}
+
+fn json_format(format: &str, otherwise: &'static str) -> Result<(), &'static str> {
+    if format == "json" {
+        Ok(())
+    } else {
+        Err(otherwise)
+    }
+}
+
 fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let global_json = cli.json;
+    if global_json {
+        if let Err(command) = apply_global_json(&mut cli.command) {
+            return Err(UsageError(format!(
+                "'{command}' has no --json output; run it without --json"
+            ))
+            .into());
+        }
+    }
 
     // Initialize logging — only show tracing output in verbose mode
     let filter = if cli.verbose {
@@ -1288,7 +1472,7 @@ fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod help_tests {
     use super::Cli;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     fn grouped_section(about: &str) -> &str {
         about
@@ -1387,6 +1571,139 @@ mod help_tests {
                 .expect("listed subcommand");
             walk(sub, &format!("phantom {name}"));
         }
+    }
+
+    /// Every visible command path, with placeholder values for its required
+    /// arguments, so `--json` routing can be checked command by command.
+    fn command_paths() -> Vec<(String, Vec<String>)> {
+        fn required_args(command: &clap::Command) -> Vec<String> {
+            let mut argv = Vec::new();
+            for arg in command.get_arguments() {
+                if !arg.is_required_set() || arg.is_global_set() {
+                    continue;
+                }
+                let value = arg
+                    .get_possible_values()
+                    .first()
+                    .map(|value| value.get_name().to_string())
+                    // "1" parses as both a string and a number.
+                    .unwrap_or_else(|| "1".to_string());
+                if let Some(long) = arg.get_long() {
+                    argv.push(format!("--{long}"));
+                }
+                argv.push(value);
+            }
+            argv
+        }
+        fn walk(
+            command: &clap::Command,
+            prefix: Vec<String>,
+            out: &mut Vec<(String, Vec<String>)>,
+        ) {
+            let subs: Vec<&clap::Command> = command
+                .get_subcommands()
+                .filter(|sub| !sub.is_hide_set() && sub.get_name() != "help")
+                .collect();
+            if subs.is_empty() || !command.is_subcommand_required_set() {
+                let mut argv = prefix.clone();
+                argv.extend(required_args(command));
+                out.push((prefix.join(" "), argv));
+            }
+            for sub in subs {
+                let mut next = prefix.clone();
+                next.push(sub.get_name().to_string());
+                walk(sub, next, out);
+            }
+        }
+        let mut command = Cli::command();
+        command.build();
+        let mut out = Vec::new();
+        for sub in command.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+            if sub.get_name() == "help" {
+                continue;
+            }
+            walk(sub, vec![sub.get_name().to_string()], &mut out);
+        }
+        out
+    }
+
+    /// Classify every command for the global `--json` flag. A new command, or
+    /// one that gains or loses JSON output, must update this list on purpose.
+    #[test]
+    fn global_json_is_routed_or_rejected_for_every_command() {
+        let supported: &[&str] = &[
+            "agent report",
+            "audit alerts",
+            "audit analytics",
+            "audit anomalies",
+            "audit export",
+            "audit export-range",
+            "audit incidents",
+            "audit report",
+            "audit show",
+            "audit stats",
+            "check",
+            "doctor",
+            "expiry enforce",
+            // Not JSON output: its hidden legacy `--json` fails closed with
+            // "Plaintext JSON export is disabled".
+            "export",
+            "grant add",
+            "grant list",
+            "grant revoke",
+            "grant status",
+            "list",
+            "secrets-expiring-soon",
+            "status",
+            "sync",
+            "validate",
+            "validate history",
+            "validate schedule",
+            "vault migrate-linux",
+            "workspace plan",
+            "workspace status",
+        ];
+        let mut seen = Vec::new();
+        for (name, path) in command_paths() {
+            let mut argv = vec!["phantom".to_string(), "--json".to_string()];
+            argv.extend(path.iter().cloned());
+            // Conditionally required positionals (`import <FILE>`) are not
+            // marked required; supply one when the bare form does not parse.
+            let mut cli = super::Cli::try_parse_from(&argv)
+                .or_else(|_| {
+                    argv.push("1".to_string());
+                    super::Cli::try_parse_from(&argv)
+                })
+                .unwrap_or_else(|error| panic!("{argv:?} must parse: {error}"));
+            assert!(cli.json, "{argv:?}");
+            let routed = super::apply_global_json(&mut cli.command);
+            assert_eq!(
+                routed.is_ok(),
+                supported.contains(&name.as_str()),
+                "`phantom {name} --json` classification changed: {routed:?}"
+            );
+            if let Err(message) = routed {
+                assert!(
+                    message.starts_with(&format!("phantom {name}")),
+                    "rejection must name the command: {message}"
+                );
+            }
+            seen.push(name);
+        }
+        for name in supported {
+            assert!(seen.iter().any(|s| s == name), "unknown command `{name}`");
+        }
+        assert!(seen.iter().any(|s| s == "why"), "walk must reach `why`");
+    }
+
+    #[test]
+    fn global_json_sets_a_commands_own_json_flag() {
+        let mut cli = super::Cli::try_parse_from(["phantom", "--json", "list"]).unwrap();
+        super::apply_global_json(&mut cli.command).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::List { json: true, .. }
+        ));
     }
 
     #[test]

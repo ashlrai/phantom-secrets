@@ -149,3 +149,37 @@ fn unknown_platform_flag_is_not_reported_as_a_config_parse_error() {
         );
     }
 }
+
+#[test]
+fn json_on_a_command_without_json_output_is_a_usage_error() {
+    let dir = common::canonical_tempdir();
+    init_project(&dir);
+
+    for args in [
+        vec!["why", "OPENAI_API_KEY", "--json"],
+        vec!["--json", "why", "OPENAI_API_KEY"],
+        vec!["audit", "verify", "--json"],
+    ] {
+        let output = phantom(&dir).args(&args).assert().code(2);
+        let out = output.get_output();
+        assert!(out.stdout.is_empty(), "{args:?}: no human text on stdout");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr.matches("Error:").count(), 1, "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("has no --json output"),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn json_before_the_subcommand_reaches_its_own_json_flag() {
+    let dir = common::canonical_tempdir();
+    init_project(&dir);
+
+    let output = phantom(&dir).args(["--json", "list"]).assert().success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let names: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("`phantom --json list` is not JSON: {e}\n{stdout}"));
+    assert_eq!(names[0]["name"], "OPENAI_API_KEY");
+}
