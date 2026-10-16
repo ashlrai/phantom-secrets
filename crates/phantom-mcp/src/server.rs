@@ -860,7 +860,7 @@ impl PhantomMcpServer {
 
     /// Add a secret to the vault.
     #[tool(
-        description = "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead."
+        description = "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead (no approval needed). Retained for compatibility: still requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), and never stores anything."
     )]
     fn phantom_add_secret(
         &self,
@@ -880,24 +880,24 @@ impl PhantomMcpServer {
         ))
     }
 
-    /// Start an out-of-band flow for adding a secret without exposing the value to MCP.
+    /// Return the out-of-band command for adding a secret without exposing the
+    /// value to MCP.
+    ///
+    /// This tool is deliberately effect-free: it touches no vault, file, or
+    /// network and accepts no value, so it sits outside the
+    /// `PHANTOM_MCP_EFFECTS` gate and the approval ceremony. The effect happens
+    /// only when the user runs `phantom add NAME` in a trusted terminal, which
+    /// reads the value from that terminal's stdin (create-only).
     #[tool(
-        description = "Safely add a secret by name without passing its value through MCP. Requires confirm:true. The returned command prompts for the value directly in the user's terminal, outside agent context."
+        description = "Safely add a secret by name without passing its value through MCP. Effect-free: it never accepts or echoes a value and touches no vault, file, or network, so it needs no approval and works with PHANTOM_MCP_EFFECTS unset. Returns `phantom add NAME`; the user runs it in a trusted terminal and types the value only at that terminal prompt, outside agent context."
     )]
     fn phantom_add_secret_interactive(
         &self,
         Parameters(params): Parameters<AddSecretInteractiveParams>,
     ) -> Result<CallToolResult, McpError> {
-        require_confirm("phantom_add_secret_interactive", params.confirm)?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token(
-            "phantom_add_secret_interactive",
-            params.approval_token.as_deref(),
-            &params_json,
-            &self.project_id(),
-        )?;
+        validate_mcp_secret_name(&params.name)?;
         text_result(format!(
-            "Run this in a trusted terminal from {}:\n\n  phantom add {}\n\nEnter the real value only at the terminal prompt. Do not paste it into chat or MCP tool arguments.",
+            "Run this in a trusted terminal from {}:\n\n  phantom add {}\n\nEnter the real value only at the terminal prompt. Do not paste it into chat or MCP tool arguments. Nothing was stored by this tool.",
             self.project_dir.display(),
             params.name
         ))
@@ -963,7 +963,7 @@ impl PhantomMcpServer {
 
     /// Rotate all phantom tokens.
     #[tool(
-        description = "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true`; the agent must ask the user for explicit consent before calling."
+        description = "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling."
     )]
     fn phantom_rotate(
         &self,
@@ -999,7 +999,7 @@ impl PhantomMcpServer {
 
     /// Deprecated compatibility endpoint for the disabled shadow-candidate path.
     #[tool(
-        description = "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively."
+        description = "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters, including approval_token: no approval can activate it. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively."
     )]
     fn phantom_rotate_with_candidate(
         &self,
@@ -1013,7 +1013,7 @@ impl PhantomMcpServer {
 
     /// Deprecated compatibility endpoint for the disabled shadow promotion path.
     #[tool(
-        description = "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively."
+        description = "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters, including approval_token: no approval can activate it. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively."
     )]
     fn phantom_rotate_promote(
         &self,
@@ -1335,7 +1335,7 @@ impl PhantomMcpServer {
 
     /// Push encrypted vault to Phantom Cloud.
     #[tool(
-        description = "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true`; the agent must ask the user for explicit consent before calling."
+        description = "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling."
     )]
     async fn phantom_cloud_push(
         &self,
@@ -1690,7 +1690,7 @@ impl PhantomMcpServer {
 
     /// Run health checks and optionally auto-fix issues.
     #[tool(
-        description = "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs. Returns a human summary plus a value-blind JSON report (also as structuredContent) in the `phantom doctor --json` shape: {ok, issues, fixed, checks: [{status, message, fix?, fixed?}], mcp_clients}. `fix` is the hint for that check only; with fix=true a repaired check keeps its warn status and gains `fixed`. Check messages and hints are this tool's own and differ from the CLI's; mcp_clients is always [] because this tool does not inspect global client configs."
+        description = "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs; fix=true requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), while fix=false is read-only and ungated. Returns a human summary plus a value-blind JSON report (also as structuredContent) in the `phantom doctor --json` shape: {ok, issues, fixed, checks: [{status, message, fix?, fixed?}], mcp_clients}. `fix` is the hint for that check only; with fix=true a repaired check keeps its warn status and gains `fixed`. Check messages and hints are this tool's own and differ from the CLI's; mcp_clients is always [] because this tool does not inspect global client configs."
     )]
     fn phantom_doctor(
         &self,
@@ -2249,7 +2249,7 @@ impl PhantomMcpServer {
 
     /// Wrap package.json scripts with the installed local `phantom` binary.
     #[tool(
-        description = "Wrap package.json scripts with the installed local `phantom exec --` command so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts."
+        description = "Wrap package.json scripts with the installed local `phantom exec --` command so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts. Writes package.json: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     fn phantom_wrap(
         &self,
@@ -2291,7 +2291,7 @@ impl PhantomMcpServer {
 
     /// Unwrap package.json scripts, restoring originals from `:raw` variants.
     #[tool(
-        description = "Reverse phantom_wrap: restore original package.json scripts from their `:raw` variants and remove the `:raw` entries."
+        description = "Reverse phantom_wrap: restore original package.json scripts from their `:raw` variants and remove the `:raw` entries. Writes package.json: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     fn phantom_unwrap(
         &self,
@@ -2496,7 +2496,7 @@ impl PhantomMcpServer {
 
     /// Generate a .env.example file from the current .env.
     #[tool(
-        description = "Generate a .env.example file from .env. Secrets are replaced with descriptive placeholders; non-secret config values are preserved. Safe to commit to version control."
+        description = "Generate a .env.example file from .env. Secrets are replaced with descriptive placeholders; non-secret config values are preserved. Safe to commit to version control. Writes a file: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     fn phantom_env(
         &self,
@@ -2903,7 +2903,7 @@ impl PhantomMcpServer {
 
     /// Register the user's X25519 public key on a team.
     #[tool(
-        description = "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation."
+        description = "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation. Mutating provider request: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     async fn phantom_team_key_publish(
         &self,
@@ -2938,7 +2938,7 @@ impl PhantomMcpServer {
 
     /// Push the current project's vault to a team.
     #[tool(
-        description = "Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true."
+        description = "Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     async fn phantom_team_vault_push(
         &self,
@@ -3606,6 +3606,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::analytics::{compute_analytics, export_records, records_to_csv, Period};
 
+        let format = crate::tools::helpers::parse_audit_format(&params.format)?;
+
         // Convert window_days to a Period.
         let period = match params.window_days {
             0 => Period::All,
@@ -3630,7 +3632,7 @@ impl PhantomMcpServer {
         let records = export_records(period, params.min_anomaly_score)
             .map_err(|e| internal_err(format!("Failed to export records: {e}")))?;
 
-        if params.format == "csv" {
+        if format == crate::tools::helpers::AuditFormat::Csv {
             let csv = records_to_csv(&records);
             return text_result(csv);
         }
@@ -3951,6 +3953,8 @@ impl PhantomMcpServer {
             parse_date_to_ts, parse_date_to_ts_end, AuditExporter, ExportFilter,
         };
 
+        let format = crate::tools::helpers::parse_audit_format(&params.format)?;
+
         if params.save {
             if params.action == "export" {
                 return Err(invalid_params_err(
@@ -3994,7 +3998,7 @@ impl PhantomMcpServer {
                     );
                 }
 
-                if params.format == "csv" {
+                if format == crate::tools::helpers::AuditFormat::Csv {
                     return text_result(AuditExporter::rows_to_csv(&rows));
                 }
 
@@ -4302,7 +4306,7 @@ impl PhantomMcpServer {
 
     /// Pull a team vault into the current project's local vault.
     #[tool(
-        description = "Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true."
+        description = "Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     async fn phantom_team_vault_pull(
         &self,
@@ -4954,7 +4958,9 @@ impl PhantomMcpServer {
             mapped-secret preflight; it does not recall values already injected or cached. \
             Returns: { demoted: [{ name, expires_at, secs_overdue }], \
             promoted: [{ name }], skipped_count, total_scanned }. \
-            Requires confirm:true because it writes vault metadata."
+            Requires confirm:true \
+            plus a one-use out-of-band `approval_token` \
+            (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal) because it writes vault metadata."
     )]
     fn phantom_apply_expiry_policy(
         &self,
@@ -5419,7 +5425,15 @@ fn retrieve_optional_secret(
     }
 }
 
+/// Longest secret name MCP accepts, in bytes.
+const MAX_MCP_SECRET_NAME_BYTES: usize = 256;
+
 fn validate_mcp_secret_name(name: &str) -> Result<(), McpError> {
+    if name.len() > MAX_MCP_SECRET_NAME_BYTES {
+        return Err(invalid_params_err(format!(
+            "Secret names must be at most {MAX_MCP_SECRET_NAME_BYTES} bytes"
+        )));
+    }
     let mut bytes = name.bytes();
     if !matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
@@ -9308,6 +9322,120 @@ mod tests {
     }
 
     #[test]
+    fn every_approval_gated_tool_says_so_in_its_description() {
+        let tools = PhantomMcpServer::tool_router().list_all();
+        let mut gated = 0;
+        let mut missing = Vec::new();
+        for tool in &tools {
+            let schema = serde_json::to_string(tool.input_schema.as_ref()).unwrap();
+            if !schema.contains("\"approval_token\"") {
+                continue;
+            }
+            gated += 1;
+            let description = tool.description.as_deref().unwrap_or_default();
+            if !description.contains("approval") {
+                missing.push(tool.name.to_string());
+            }
+        }
+        assert!(
+            gated > 10,
+            "expected the approval-gated catalog to be found"
+        );
+        assert!(
+            missing.is_empty(),
+            "tools take approval_token but their descriptions do not mention approval: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn add_secret_interactive_is_effect_free_and_ungated() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_EFFECTS");
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+        }
+        let config_before = std::fs::read(dir.path().join(".phantom.toml")).unwrap();
+
+        for confirm in [true, false] {
+            let result = server
+                .phantom_add_secret_interactive(Parameters(AddSecretInteractiveParams {
+                    name: "FOO".to_string(),
+                    confirm,
+                }))
+                .unwrap();
+            let text = get_result_text(&result);
+            assert!(text.contains("phantom add FOO"));
+        }
+
+        // Legacy callers that still send approval_token are accepted and the
+        // token is ignored; the schema no longer advertises it.
+        let legacy: AddSecretInteractiveParams = serde_json::from_value(serde_json::json!({
+            "name": "FOO",
+            "confirm": true,
+            "approval_token": "ignored"
+        }))
+        .unwrap();
+        assert!(server
+            .phantom_add_secret_interactive(Parameters(legacy))
+            .is_ok());
+        let schema =
+            serde_json::to_string(&schemars::schema_for!(AddSecretInteractiveParams)).unwrap();
+        assert!(!schema.contains("approval_token"));
+        assert!(!schema.contains("\"value\""));
+
+        // Name validation stays: shell metacharacters never reach the command.
+        for bad in ["", "FOO BAR", "FOO;id", "1FOO", "FOO=bar", "$(id)"] {
+            let err = server
+                .phantom_add_secret_interactive(Parameters(AddSecretInteractiveParams {
+                    name: bad.to_string(),
+                    confirm: true,
+                }))
+                .unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        }
+
+        // Length cap: 256 bytes is the longest accepted name.
+        for (len, ok) in [(256, true), (257, false)] {
+            let result =
+                server.phantom_add_secret_interactive(Parameters(AddSecretInteractiveParams {
+                    name: "A".repeat(len),
+                    confirm: true,
+                }));
+            assert_eq!(result.is_ok(), ok, "name length {len}");
+        }
+
+        // No effect: project config untouched and no approval was queued.
+        assert_eq!(
+            std::fs::read(dir.path().join(".phantom.toml")).unwrap(),
+            config_before
+        );
+        assert!(!dir.path().join(".phantom/mcp-approvals.jsonl").exists());
+    }
+
+    #[test]
+    fn effects_disabled_refusal_names_variable_and_approval_step() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_EFFECTS");
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+        }
+        let err = server
+            .phantom_rotate(Parameters(RotateParams {
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("PHANTOM_MCP_EFFECTS=trusted-terminal"));
+        assert!(err.message.contains("own trusted terminal"));
+        assert!(err.message.contains("approval_token"));
+        assert!(err.message.contains("docs/claude-code.md"));
+        assert!(!err.message.contains("<nonce>:<token>"));
+    }
+
+    #[test]
     fn test_add_secret_params_rejects_plaintext_value_field() {
         let _environment = TestEnvironment::new();
         let parsed = serde_json::from_value::<AddSecretParams>(serde_json::json!({
@@ -10392,6 +10520,62 @@ mod tests {
         );
         assert!(text.contains("CSV_KEY"), "CSV must include the secret name");
         assert!(text.contains("vault.retrieve"), "CSV must include the op");
+    }
+
+    #[test]
+    fn test_audit_formats_are_case_insensitive_and_reject_unknown() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now - 100, "vault.retrieve", Some("FMT_KEY"))],
+        );
+
+        let analytics = |format: &str| {
+            server.phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                window_days: 0,
+                min_anomaly_score: None,
+                format: format.to_string(),
+            }))
+        };
+        let export = |format: &str| {
+            server.phantom_audit_export_report(Parameters(AuditExportReportParams {
+                action: "export".to_string(),
+                format: format.to_string(),
+                from: None,
+                to: None,
+                secret_name: None,
+                operation: None,
+                save: false,
+                confirm: false,
+                approval_token: None,
+            }))
+        };
+        let csv_header = "ts,datetime,op,name,process\n";
+
+        let upper_csv = extract_content_text(&analytics("CSV").unwrap());
+        assert!(upper_csv.starts_with(csv_header), "{upper_csv}");
+        let upper_json = parse_result_json(&analytics("Json").unwrap());
+        assert!(upper_json.get("analytics").is_some());
+
+        let rows_csv = extract_content_text(&export("CSV").unwrap());
+        assert!(rows_csv.contains("FMT_KEY"), "{rows_csv}");
+        assert!(!rows_csv.trim_start().starts_with('['), "{rows_csv}");
+        let rows_json: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&export("JSON").unwrap())).unwrap();
+        assert!(rows_json.is_array(), "{rows_json}");
+
+        for format in ["xml", "", "jsonl"] {
+            let err = analytics(format).unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("Invalid format"), "{}", err.message);
+            let err = export(format).unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("Invalid format"), "{}", err.message);
+        }
     }
 
     #[test]
