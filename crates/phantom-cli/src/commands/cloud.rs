@@ -20,6 +20,14 @@ pub fn run_push() -> Result<()> {
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let mut secret_names = vault.list()?;
     secret_names.sort();
+    // The push replaces the cloud copy: never from a keychain-only view of a
+    // project whose encrypted-file vault this process cannot open.
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        config.local_project_id(),
+        secret_names.len(),
+        "push to the cloud vault",
+    )?;
 
     if secret_names.is_empty() {
         println!("{}  No secrets to push", "warn".yellow().bold());

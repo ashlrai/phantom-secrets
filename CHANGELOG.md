@@ -4,6 +4,28 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (CLI commands no longer answer "empty" for a locked vault)
+
+- When the project's secrets are in an encrypted-file vault and
+  `PHANTOM_VAULT_PASSPHRASE` is not set in the shell, Phantom selects the OS
+  keychain instead. With nothing in it, several commands answered as if the
+  project had no secrets, with exit 0: `phantom list --json` printed `[]`,
+  `phantom expiry enforce` passed (even with `--fail-closed`), and
+  `phantom secrets-expiring-soon`, `phantom validate --check-all` and
+  `phantom sync --dry-run --json` reported nothing to do. `phantom agent
+  report`/`doctor` called the vault accessible. Each now exits 1 with
+  "Vault locked: …" and the step to unlock it (set `PHANTOM_VAULT_PASSPHRASE`);
+  `phantom list` does the same instead of a warning with exit 0.
+- When the keychain does hold some secrets beside a locked file vault, read
+  answers are served with a `warn` that they cover only the keychain. Commands
+  that must see every secret refuse instead: `phantom expiry enforce`,
+  `phantom cloud push` and `phantom team vault-push` (a push from that view
+  would replace the remote copy with a partial set).
+- `phantom doctor` stopped with the resolver's error when the managed dotenv
+  was missing (or could not be resolved). It now reports that as a failed check
+  with a fix and finishes the other checks; `phantom doctor --fix` still makes
+  no repairs in that state.
+
 ### Fixed (MCP errors for states the user can fix)
 
 - With the project's secrets in an encrypted-file vault and

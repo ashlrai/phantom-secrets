@@ -49,7 +49,7 @@ fn anomaly_map() -> std::collections::HashMap<String, (u8, AnomalyClass)> {
 }
 
 pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<u8>) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
+    let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -60,11 +60,19 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault = crate::util::open_vault(config.local_project_id())?;
 
     let entries_with_meta = vault
         .list_with_metadata()
         .context("Failed to list secrets")?;
+    // A locked file vault is refused here, for `--json` as well, rather than
+    // listed as empty.
+    let note = crate::util::inventory_guard(
+        vault.as_ref(),
+        config.local_project_id(),
+        entries_with_meta.len(),
+    )?;
+    crate::util::warn_inventory_note(note.as_deref());
 
     let anomalies = if min_anomaly_score.is_some() {
         anomaly_map()
@@ -137,10 +145,7 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
                 "!".yellow().bold()
             );
         } else {
-            match locked_notice_for(vault.as_ref(), config.local_project_id()) {
-                Some(notice) => println!("{} {}", "!".yellow().bold(), notice),
-                None => println!("{} No secrets stored.", "!".yellow().bold()),
-            }
+            println!("{} No secrets stored.", "!".yellow().bold());
         }
         return Ok(());
     }
@@ -221,12 +226,24 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
     Ok(())
 }
 
-/// When the opened backend is empty but an encrypted-file vault for this
-/// project exists and this process has no passphrase, say so instead of
-/// reporting an empty vault.
-fn locked_notice_for(vault: &dyn phantom_vault::VaultBackend, project_id: &str) -> Option<String> {
-    if vault.backend_name() == "encrypted-file" {
-        return None;
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+
+    /// `phantom list --json` printed `[]` (exit 0) for a project whose
+    /// secrets are in an encrypted-file vault this process cannot open.
+    #[test]
+    fn list_refuses_a_locked_file_vault_instead_of_listing_it_empty() {
+        let _project = LockedProject::new(empty_keychain);
+        for json in [true, false] {
+            let error = super::run_with_expiry(json, false, None).unwrap_err();
+            assert!(error.to_string().starts_with("Vault locked:"), "{error:#}");
+        }
     }
-    phantom_vault::locked_file_vault_notice(project_id)
+
+    #[test]
+    fn list_serves_a_keychain_only_answer() {
+        let _project = LockedProject::new(keychain_with_one);
+        super::run_with_expiry(true, false, None).unwrap();
+    }
 }

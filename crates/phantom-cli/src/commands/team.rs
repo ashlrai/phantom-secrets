@@ -151,6 +151,14 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
     // bytes are scrubbed when the helper drops them.
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let secret_names = vault.list()?;
+    // The push overwrites the remote shared vault: never from a keychain-only
+    // view of a project whose encrypted-file vault this process cannot open.
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        config.local_project_id(),
+        secret_names.len(),
+        "push to the team vault",
+    )?;
     if secret_names.is_empty() {
         println!("{}  No secrets to push", "warn".yellow().bold());
         return Ok(());
