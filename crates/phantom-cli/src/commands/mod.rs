@@ -14,6 +14,7 @@ pub mod export_cmd;
 pub mod grant;
 pub mod import_cmd;
 pub mod init;
+pub mod leaks;
 pub(crate) mod legacy_proxy;
 pub mod list;
 pub mod login;
