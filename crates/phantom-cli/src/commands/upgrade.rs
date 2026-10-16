@@ -2,7 +2,7 @@ use colored::Colorize;
 use rand::RngCore;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, IsTerminal, Read, Write};
+use std::io::{BufRead, IsTerminal, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 const INSTALL_SOURCE_RECEIPT: &str = ".phantom-install-source.json";
@@ -831,12 +831,32 @@ fn release_download(
 
 /// Same conservative preflight as self_update's `check_install_path_writable`:
 /// only a definite permission failure stops the upgrade before any download.
+/// The parent directory is probed too: `self_replace` stages the new binary
+/// beside the target, so a read-only directory must fail before any download.
 fn probe_install_path_writable(install_path: &Path) -> self_update::errors::Result<()> {
-    match std::fs::OpenOptions::new().append(true).open(install_path) {
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+    let denied = |error: std::io::Error| {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
             Err(self_update::errors::Error::Io(error))
+        } else {
+            Ok(())
         }
-        _ => Ok(()),
+    };
+    if let Err(error) = std::fs::OpenOptions::new().append(true).open(install_path) {
+        denied(error)?;
+    }
+    let parent = match install_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    match tempfile::Builder::new()
+        .prefix(".phantom-upgrade-writecheck")
+        .tempfile_in(parent)
+    {
+        Ok(probe) => {
+            drop(probe);
+            Ok(())
+        }
+        Err(error) => denied(error),
     }
 }
 
@@ -856,21 +876,26 @@ fn stage_verified_zip_binary(
         release_archive_error(format!("{RELEASE_SUMS_ASSET} is not valid UTF-8 text"))
     })?;
     let expected = self_update::Checksum::from_sums_file(sums, asset_name)?;
-    verify_file_checksum(&expected, archive_path)?;
+    // One handle serves every digest and the extraction, so the bytes that
+    // were verified are the bytes that are extracted; nothing reopens the
+    // archive by path in between.
+    let mut archive = std::fs::File::open(archive_path)?;
+    verify_file_checksum(&expected, &mut archive)?;
     if let Some(digest) = asset_digest {
-        verify_file_checksum(&self_update::Checksum::parse_digest(digest)?, archive_path)?;
+        verify_file_checksum(&self_update::Checksum::parse_digest(digest)?, &mut archive)?;
     }
+    archive.rewind()?;
     let staged = extract_dir.join(binary_name);
-    extract_release_binary(archive_path, binary_name, &staged)?;
+    extract_release_binary(archive, binary_name, &staged)?;
     Ok(staged)
 }
 
 fn verify_file_checksum(
     expected: &self_update::Checksum,
-    path: &Path,
+    file: &mut std::fs::File,
 ) -> self_update::errors::Result<()> {
-    fn hash_file<D: Digest>(path: &Path) -> std::io::Result<String> {
-        let mut file = std::fs::File::open(path)?;
+    fn hash_file<D: Digest>(file: &mut std::fs::File) -> std::io::Result<String> {
+        file.rewind()?;
         let mut hasher = D::new();
         let mut buffer = [0_u8; 64 * 1024];
         loop {
@@ -884,8 +909,8 @@ fn verify_file_checksum(
     }
 
     let (expected, actual) = match expected {
-        self_update::Checksum::Sha256(hex) => (hex, hash_file::<Sha256>(path)?),
-        self_update::Checksum::Sha512(hex) => (hex, hash_file::<sha2::Sha512>(path)?),
+        self_update::Checksum::Sha256(hex) => (hex, hash_file::<Sha256>(file)?),
+        self_update::Checksum::Sha512(hex) => (hex, hash_file::<sha2::Sha512>(file)?),
         _ => {
             return Err(release_archive_error(
                 "Unsupported release checksum algorithm",
@@ -916,15 +941,14 @@ fn archive_entry_name_is_safe(name: &str) -> bool {
 /// root into `dest`. Entry paths are only compared, never used to build a
 /// filesystem path, and any traversal-shaped entry rejects the whole archive.
 fn extract_release_binary(
-    archive_path: &Path,
+    archive: std::fs::File,
     binary_name: &str,
     dest: &Path,
 ) -> self_update::errors::Result<()> {
     let zip_error = |error: zip::result::ZipError| {
         release_archive_error(format!("Release archive is not a readable zip: {error}"))
     };
-    let mut archive =
-        zip::ZipArchive::new(std::fs::File::open(archive_path)?).map_err(zip_error)?;
+    let mut archive = zip::ZipArchive::new(archive).map_err(zip_error)?;
 
     let mut matched = None;
     for index in 0..archive.len() {
@@ -1000,6 +1024,9 @@ fn replace_running_executable(
             "Install target is not the running Phantom executable; refusing replacement",
         ));
     }
+    // self_replace resolves current_exe() again internally. That is harmless:
+    // the check above just proved the validated, canonical install target is
+    // the running executable, which is the only file self_replace replaces.
     self_replace::self_replace(new_exe).map_err(self_update::errors::Error::Io)
 }
 
@@ -1242,6 +1269,33 @@ mod tests {
         .to_string()
         .contains("not a plain regular file"));
         assert!(directory_names(&extract_dir).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writability_probe_rejects_read_only_install_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("phantom");
+        std::fs::write(&binary, b"installed binary").unwrap();
+        probe_install_path_writable(&binary).unwrap();
+
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root bypasses directory permissions; only assert when the
+        // restriction is actually enforced for this user.
+        let enforced = tempfile::tempfile_in(directory.path()).is_err();
+        let result = probe_install_path_writable(&binary);
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        if enforced {
+            match result {
+                Err(self_update::errors::Error::Io(error)) => {
+                    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied)
+                }
+                other => panic!("expected a permission failure, got {other:?}"),
+            }
+        }
+        assert_eq!(directory_names(directory.path()), vec!["phantom"]);
     }
 
     #[test]
