@@ -2704,6 +2704,7 @@ dependencies = [
 name = "phantom-secrets-proxy"
 version = "0.7.9"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "hex",
  "http-body-util",
