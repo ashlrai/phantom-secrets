@@ -4,6 +4,99 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (CLI and MCP JSON output)
+
+- `phantom audit stats --json` with an empty audit log now prints the same
+  JSON object as a populated log (`total_events: 0`, `secrets: []`) instead
+  of a human hint; the hint goes to stderr.
+- `phantom audit export --format json` with no matching records now prints
+  `[]` instead of nothing on stdout.
+- `phantom why <KEY> --json` now honors the global `--json` flag and prints
+  the value-free report the MCP `phantom_why` tool returns (`key`,
+  `dotenv_exists`, `found`, `classification`, `protected`, `reason`,
+  `matched_pattern`, `service`, `next_step`), including `found: false` when
+  the key or the `.env` file is missing. Human output is unchanged.
+- The MCP `phantom_audit_analytics` and `phantom_audit_export_report` tools
+  accept `format` as `json` or `csv` in any letter case and reject any other
+  value with an invalid-params (-32602) error. They previously fell back to
+  JSON for unrecognized values, including `CSV`.
+
+### Fixed (MCP)
+
+- `phantom_add_secret_interactive` works out of the box again. It only returns
+  `phantom add NAME` for the user's trusted terminal (no value accepted, nothing
+  stored, no file or network access), yet it required
+  `PHANTOM_MCP_EFFECTS=trusted-terminal` plus an approval token, so the add flow
+  that `phantom init` documents always failed. It now needs neither gate nor
+  `confirm`, keeps strict `[A-Za-z_][A-Za-z0-9_]*` name validation, and no
+  longer advertises `approval_token` (legacy callers that send it are still
+  accepted). Every tool that performs an effect keeps both gates unchanged.
+- Every MCP tool whose schema takes `approval_token` now says so in its
+  description, including how approval is obtained; a unit test walks the tool
+  catalog to keep it that way.
+- The refusal for effectful tools with effects disabled now also says that the
+  operator must approve each call in their own trusted terminal and supply the
+  `approval_token`, and `docs/claude-code.md` documents how to set
+  `PHANTOM_MCP_EFFECTS` outside agent authority.
+- MCP secret-name validation now also rejects names longer than 256 bytes.
+
+### Fixed (upgrade)
+
+- `phantom upgrade` no longer depends on the `zip` 8 line, which crates.io has
+  yanked in full and which failed the `cargo-deny` dependency policy.
+  `self_update` is now built without its zip backend, and Windows `.zip`
+  release assets go through Phantom's own path on `zip` 9.0.3: the same
+  exact-asset selection, writability probe, and `SHA256SUMS` (plus GitHub
+  asset digest) verification before anything is extracted, then a
+  `self-replace` swap of the running executable. Only the root
+  `phantom.exe` regular-file entry is extracted, to a path Phantom chooses;
+  an archive with any absolute, drive-qualified, or `..` entry name, a
+  duplicate or symlinked `phantom.exe`, or an entry over the 256 MiB binary
+  limit is refused. Linux and macOS `.tar.gz` upgrades are unchanged.
+
+### Fixed (proxy)
+
+- Cloudflare tooling now works under `phantom exec`. The built-in
+  `cloudflare` route exported only `CLOUDFLARE_API_TOKEN_BASE_URL`, which no
+  Cloudflare tool reads, so Wrangler and the official SDKs sent the `phm_`
+  token straight to `api.cloudflare.com` and got `401`. `phantom exec` now
+  also exports `CLOUDFLARE_API_BASE_URL` (Wrangler) and `CLOUDFLARE_BASE_URL`
+  (the `cloudflare` TypeScript and Python SDKs), and the route restores the
+  `/client/v4` path those tools expect in their base URL, so
+  `/accounts/...` reaches `https://api.cloudflare.com/client/v4/accounts/...`.
+  Requests that already send `/client/v4/...` are unchanged. Both variables
+  are scrubbed from the inherited environment like the other route
+  overrides. The route definition and its auth handling are unchanged, so
+  agentic validation is unaffected and no config change is needed.
+- The built-in `twilio` route now sends valid HTTP Basic credentials. It
+  previously injected `Authorization: Basic <raw auth token>`, which Twilio
+  rejects on every request. The route now keeps the username from the
+  client's first `Authorization: Basic` header (the Account SID, a non-secret
+  identifier) and replaces the password with the vault value; the client's
+  password is always discarded. A request with no usable username (missing,
+  non-Basic, containing a `phm_` token, over 128 bytes, or outside
+  `[A-Za-z0-9._@+-]`) now gets a local `400` from the proxy naming the fix
+  (`Authorization: Basic base64(<ACCOUNT_SID>:<anything>)`) and never
+  reaches Twilio. This handling applies only to the exact trusted `twilio`
+  route definition, not to custom routes with the same header shape. No
+  config change is needed.
+- The built-in `google_ai` (Gemini) route now owns every slot where Google
+  accepts an API key. The client's `key` and `api_key` query parameters
+  (matched case-insensitively after percent-decoding) are dropped, and an
+  `Authorization` header carrying a `phm_` token is dropped, so
+  `curl ...?key=$GEMINI_API_KEY` and the OpenAI-compatible endpoint
+  (`Authorization: Bearer $GEMINI_API_KEY`) reach Gemini with the injected
+  `x-goog-api-key`. A client's own OAuth bearer (no `phm_` token) is still
+  forwarded. Other routes forward `key` query parameters unchanged.
+- The `phantom_token` query parameter is now stripped with the same
+  percent-decoded, case-insensitive name match.
+- `phantom init` no longer protects a Twilio Account SID (`AC` plus 32
+  lowercase hex characters under a key ending in `ACCOUNT_SID`). It is a
+  public identifier that appears in every Twilio REST path, so replacing it
+  with a `phm_` token broke `/Accounts/{sid}/...` requests. Projects
+  initialized earlier keep the SID protected until it is written back to
+  `.env` as its plain value.
+
 ### Changed (MCP, agent-visible)
 
 - `phantom_list_secrets`, `phantom_status`, `phantom_why`, `phantom_sync`, and

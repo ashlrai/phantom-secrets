@@ -185,6 +185,23 @@ either a proxied or direct child. Commands launched manually from the same shell
 still inherit the export, so do not launch an agent outside `phantom exec` while
 the variable is set.
 
+### Proxy port conflicts ("address already in use")
+
+Phantom does not use a fixed proxy port. `phantom exec` and `phantom start` both
+ask the OS for a free loopback port (`127.0.0.1`, port 0) every time, so another
+program holding a port such as 8080 cannot collide with them. Read the actual
+port from the startup line (`Proxy started on 127.0.0.1:PORT`) or from the
+`PHANTOM_PROXY_PORT` variable that `phantom exec` sets for the child. Do not
+hardcode a port in your app or `.env`.
+
+If you see `Another foreground Phantom proxy session already owns <dir>`, the
+cause is a second `phantom start` for the same project, not a busy port. Stop
+the first one with Ctrl-C in its terminal, or use `phantom exec`, which starts
+its own child-owned proxy.
+
+If a hardcoded port from an older setup is still referenced and requests fail
+with connection refused, replace it with `PHANTOM_PROXY_PORT`.
+
 ### `phantom start --daemon` or `phantom stop` is refused
 
 This is intentional. Phantom does not persist a live proxy bearer, PID, or port
