@@ -9331,7 +9331,7 @@ mod tests {
                 }))
                 .unwrap();
             let text = get_result_text(&result);
-            assert!(text.contains("phantom add FOO"), "{text}");
+            assert!(text.contains("phantom add FOO"));
         }
 
         // Legacy callers that still send approval_token are accepted and the
