@@ -4,6 +4,28 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (MCP `phantom_why` before init and with a locked vault)
+
+- MCP `phantom_why` failed with an internal error (-32603) in a project where
+  `phantom init` has not run yet, which is exactly when an agent asks why a key
+  is not protected. `phantom why` on the CLI already answered there. It also
+  opened the vault only to list names, so a locked keychain or a wrong
+  `PHANTOM_VAULT_PASSPHRASE` turned a value-free question into an error.
+  - `phantom_why` now reads only `.phantom.toml` and the dotenv, never the
+    vault. Before init it classifies `./.env` as `phantom why` does, says the
+    project is not initialized, and returns `exec: null`; `next_step` for an
+    unprotected secret points at `phantom init`.
+  - Its JSON now comes from the same `why_report` that `phantom why --json`
+    prints, so the two cannot drift. A malformed `.phantom.toml` or dotenv is
+    still an error. Nothing is created or initialized by asking.
+  - Before init, `phantom why` and `phantom_why` refuse a `./.env` that is a
+    symlink or not a regular file, as the managed-dotenv resolver already
+    does after init, so neither reads a file outside the project.
+  - When `.phantom.toml` lists no secrets and the dotenv holds no tokens,
+    the human summary adds that `phantom_why` does not read the vault and
+    points at `phantom_doctor` / `phantom_status` for vault/dotenv drift. The
+    JSON is unchanged.
+
 ### Fixed (protected keys with no proxy route)
 
 - A protected key that no proxy route injects (for example `GROQ_API_KEY`,
