@@ -95,8 +95,10 @@ fn open_regular_file(path: &Path, shown: &str) -> Result<Option<std::fs::File>> 
     {
         use std::os::unix::fs::OpenOptionsExt;
         // O_NONBLOCK: a FIFO swapped in must be refused, not waited on. It has
-        // no effect on reading a regular file.
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        // no effect on reading a regular file. O_NOCTTY: a terminal device
+        // swapped in must not become this process's controlling terminal
+        // before the handle check refuses it.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY);
     }
     #[cfg(windows)]
     {
@@ -119,10 +121,26 @@ fn open_regular_file(path: &Path, shown: &str) -> Result<Option<std::fs::File>> 
     let metadata = file
         .metadata()
         .with_context(|| format!("Failed to inspect {shown}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if metadata.file_type().is_symlink() || !metadata.is_file() || is_reparse_point(&metadata) {
         return Err(refuse_non_regular(shown));
     }
     Ok(Some(file))
+}
+
+/// Any reparse point, not only a symlink. With FILE_FLAG_OPEN_REPARSE_POINT a
+/// non-name-surrogate reparse file (a OneDrive/Cloud Files placeholder, a
+/// deduplicated file, an app execution alias) is opened as its stub and still
+/// reports `is_file()`, so reading it could judge stub data as clean.
+#[cfg(windows)]
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// Read and parse an already-checked handle. The plaintext buffer is zeroized.
@@ -231,16 +249,11 @@ pub fn resolve_dotenv(
     if let Some(configured) = config.phantom.dotenv_path.as_deref() {
         let name = validate_dotenv_basename(configured)?;
         let path = project_dir.join(&name);
-        let file = parse_regular_dotenv(project_dir, &name)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Configured protected dotenv does not exist: {}",
-                path.display()
-            )
-        })?;
+        let file = parse_regular_dotenv(project_dir, &name)?
+            .ok_or_else(|| anyhow::anyhow!("Configured protected dotenv does not exist: {name}"))?;
         if protected_state && !has_tokens(&file) {
             anyhow::bail!(
-                "Protected vault/config state exists, but {} contains no phantom tokens; refusing an unprotected direct launch",
-                path.display()
+                "Protected vault/config state exists, but {name} contains no phantom tokens; refusing an unprotected direct launch"
             );
         }
         return Ok(ResolvedDotenv {
@@ -255,17 +268,19 @@ pub fn resolve_dotenv(
         let path = project_dir.join(name);
         if let Some(file) = parse_regular_dotenv(project_dir, name)? {
             if has_tokens(&file) {
-                token_bearing.push(*name);
+                token_bearing.push(existing.len());
             }
             existing.push((path, file));
         }
     }
     match token_bearing.len() {
         1 => {
-            let name = token_bearing.pop().expect("length checked");
+            // Reuse the copy already read and judged; a second read could see
+            // a different file.
+            let (path, file) = existing.swap_remove(token_bearing[0]);
             return Ok(ResolvedDotenv {
-                file: parse_regular_dotenv(project_dir, name)?,
-                path: project_dir.join(name),
+                path,
+                file: Some(file),
             });
         }
         count if count > 1 => anyhow::bail!(
@@ -426,6 +441,90 @@ mod tests {
         let parsed = read_dotenv_handle(file, ".env").unwrap();
         let keys: Vec<&str> = parsed.entries().iter().map(|e| e.key.as_str()).collect();
         assert_eq!(keys, vec!["CHECKED"]);
+    }
+
+    /// Windows: a reparse point opened as itself is caught by the attribute
+    /// check, not only by `is_symlink()`, and a plain file is not.
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_attribute_is_refused_and_plain_files_are_not() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join(".env.local");
+        std::fs::write(&plain, "A=1\n").unwrap();
+        let plain_meta = std::fs::File::open(&plain).unwrap().metadata().unwrap();
+        assert!(!is_reparse_point(&plain_meta));
+        assert!(parse_regular_dotenv(dir.path(), ".env.local")
+            .unwrap()
+            .is_some());
+
+        std::fs::write(dir.path().join("target"), "A=1\n").unwrap();
+        // File symlinks need the create-symlink privilege (admin or Developer
+        // Mode). CI runners have it; skip rather than fail where it is absent.
+        if std::os::windows::fs::symlink_file("target", dir.path().join(".env")).is_err() {
+            eprintln!("skipping: cannot create a file symlink here");
+            return;
+        }
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        let link_meta = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(dir.path().join(".env"))
+            .unwrap()
+            .metadata()
+            .unwrap();
+        assert!(is_reparse_point(&link_meta));
+        let message = format!(
+            "{:#}",
+            parse_regular_dotenv(dir.path(), ".env").unwrap_err()
+        );
+        assert!(message.contains("non-symlink file: .env"), "{message}");
+    }
+
+    #[test]
+    fn resolve_reuses_the_single_token_bearing_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = PhantomToken::generate();
+        std::fs::write(dir.path().join(".env"), "PORT=1\n").unwrap();
+        std::fs::write(
+            dir.path().join(".env.local"),
+            format!("OPENAI_API_KEY={}\n", token.as_str()),
+        )
+        .unwrap();
+        let config = PhantomConfig::new_with_defaults("resolve-reuse".to_string());
+        let resolved = resolve_dotenv(dir.path(), &config, &[]).unwrap();
+        assert_eq!(resolved.path, dir.path().join(".env.local"));
+        assert_eq!(
+            resolved.protected_keys(),
+            vec!["OPENAI_API_KEY".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_messages_name_the_configured_file_relatively() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = PhantomConfig::new_with_defaults("resolve-rel".to_string());
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        let missing = format!(
+            "{:#}",
+            resolve_dotenv(dir.path(), &config, &[]).unwrap_err()
+        );
+        assert!(missing.ends_with("does not exist: custom.env"), "{missing}");
+
+        std::fs::write(dir.path().join("custom.env"), "PORT=1\n").unwrap();
+        let names = vec!["OPENAI_API_KEY".to_string()];
+        let unprotected = format!(
+            "{:#}",
+            resolve_dotenv(dir.path(), &config, &names).unwrap_err()
+        );
+        assert!(
+            unprotected.contains("but custom.env contains"),
+            "{unprotected}"
+        );
+        assert!(
+            !unprotected.contains(&*dir.path().to_string_lossy()),
+            "{unprotected}"
+        );
     }
 
     #[test]

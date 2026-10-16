@@ -12,8 +12,11 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   a second step, so a file swapped for a symlink in between was followed. The
   file is now opened without following a final symlink (`O_NOFOLLOW` on Unix,
   `FILE_FLAG_OPEN_REPARSE_POINT` on Windows) and judged on the opened handle;
-  a FIFO is refused rather than waited on. Refusals name the file relative to
-  the project instead of by absolute path.
+  a FIFO is refused rather than waited on, and on Windows any reparse point
+  (including a OneDrive/Cloud Files placeholder, whose stub would otherwise
+  read as a clean file) is refused and reported as indeterminate. Refusals
+  and the managed-dotenv "does not exist" / "contains no phantom tokens"
+  errors name the file relative to the project instead of by absolute path.
 
 ### Fixed (`phantom init` no longer replaces an existing `.env.example`)
 

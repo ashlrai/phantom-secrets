@@ -60,8 +60,14 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
 }
 
 fn worktree_findings(project_dir: &Path) -> Result<Vec<Finding>> {
+    findings_in_listed(project_dir, dotenv_scan_paths(project_dir)?)
+}
+
+/// Read the files a listing returned. Split from the listing so a test can
+/// hand it a path that became a symlink after it was listed.
+fn findings_in_listed(project_dir: &Path, listed: Vec<PathBuf>) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
-    for path in dotenv_scan_paths(project_dir)? {
+    for path in listed {
         // The listing's symlink check and this read are separate lookups, so
         // the read re-checks on the opened handle rather than following a
         // file swapped for a symlink in between.
@@ -412,6 +418,35 @@ fn staged_added_lines(file: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file listed as regular and then swapped for a symlink is refused at
+    /// read time, not followed. Fails if the read goes back to
+    /// `DotenvFile::parse_file`, which follows the link and reports the
+    /// target's key.
+    #[cfg(unix)]
+    #[test]
+    fn read_refuses_a_listed_file_swapped_for_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let value = format!("outside-{}", std::process::id());
+        std::fs::write(
+            outside.path().join("target.env"),
+            format!("GITHUB_TOKEN={value}\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+        let listed = dotenv_scan_paths(dir.path()).unwrap();
+        assert_eq!(listed, vec![dir.path().join(".env")]);
+
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("target.env"), dir.path().join(".env"))
+            .unwrap();
+
+        let error = findings_in_listed(dir.path(), listed).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("non-symlink file: .env"), "{message}");
+        assert!(!message.contains(&value), "{message}");
+    }
 
     #[test]
     fn worktree_findings_report_names_without_values() {
