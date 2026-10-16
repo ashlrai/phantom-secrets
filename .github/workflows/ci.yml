@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A merge queue reruns every job on the queued merge commit so CI Gate reports there.
+  merge_group:
   workflow_dispatch:
 
 # Scope GITHUB_TOKEN down — CI only needs to read the repo.
