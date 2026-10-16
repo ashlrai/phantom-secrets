@@ -210,7 +210,12 @@ fn ensure_path_still_names_open_file(path: &Path, opened: &std::fs::File) -> io:
     let original = opened.metadata()?;
     let mut options = std::fs::OpenOptions::new();
     use std::os::unix::fs::OpenOptionsExt;
-    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    // Same flags as the first open: a FIFO swapped in after the read must
+    // fail the identity check, not wait for a writer, and a terminal device
+    // must not become the controlling terminal.
+    options
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY);
     let current = options.open(path)?.metadata()?;
     if original.dev() != current.dev() || original.ino() != current.ino() {
         return Err(io::Error::other(format!(
@@ -466,6 +471,32 @@ mod tests {
             open_regular_nofollow(&dir.path().join(".env")),
             Err(RegularOpenError::NotRegular)
         ));
+    }
+
+    /// A FIFO swapped in after the read fails the post-read check promptly
+    /// instead of blocking that check's reopen until a writer appears.
+    #[cfg(unix)]
+    #[test]
+    fn post_read_check_does_not_hang_on_a_fifo_swapped_in() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, b"A=1\n").unwrap();
+        let opened = std::fs::File::open(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: c_path is a valid NUL-terminated path for the call's duration.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let check_path = path.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(ensure_path_still_names_open_file(&check_path, &opened).is_err());
+        });
+        let refused = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the post-read check blocked on the FIFO");
+        assert!(refused);
     }
 
     /// The shared open refuses a symlink from the open itself.

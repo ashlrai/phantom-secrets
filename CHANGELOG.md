@@ -49,7 +49,9 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   reports it after a change instead of skipping it silently, and agent
   readiness reports it as an `env-parse-error` finding. The `phantom doctor`
   `.env.example` repair and `phantom_status` reuse the copy already read
-  instead of reading the path a second time. The user-named import source was
+  instead of reading the path a second time; `phantom_status` refuses a
+  symlinked or malformed managed dotenv as a state error (-32600) with a next
+  step instead of -32603. The user-named import source was
   already refused when it is a symlink and is unchanged.
 - `phantom_core::fs::read_regular_file`, the read that repairs and
   exact-replace writes take their before-image from (dotenvs, `.gitignore`,
