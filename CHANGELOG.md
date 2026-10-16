@@ -41,6 +41,27 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   that reopen fails. Refusals
   and the managed-dotenv "does not exist" / "contains no phantom tokens"
   errors name the file relative to the project instead of by absolute path.
+- The remaining project dotenv reads read the same way: `phantom doctor`,
+  `phantom watch`, the plaintext hint after `phantom import`, agent readiness,
+  workspace discovery and MCP `phantom_status`. Before, they followed a
+  symlinked dotenv and reported on its target. Now `phantom doctor` fails the
+  `.env` check for a symlink, `phantom watch` refuses it at start-up and
+  reports it after a change instead of skipping it silently, and agent
+  readiness reports it as an `env-parse-error` finding. The `phantom doctor`
+  `.env.example` repair and `phantom_status` reuse the copy already read
+  instead of reading the path a second time; `phantom_status` refuses a
+  symlinked or malformed managed dotenv as a state error (-32600) with a next
+  step instead of -32603. The user-named import source was
+  already refused when it is a symlink and is unchanged.
+- `phantom_core::fs::read_regular_file`, the read that repairs and
+  exact-replace writes take their before-image from (dotenvs, `.gitignore`,
+  `.env.example`, `.phantom.toml` and other local state, across init, doctor,
+  import, export, cloud, team and the MCP server), now shares that open. On Unix it adds `O_NONBLOCK` and `O_NOCTTY`. On Windows a symlink or
+  junction is still refused, but another reparse file (a OneDrive/Cloud Files
+  file) was refused outright and is now re-opened from the same handle and
+  read for its real contents, so `phantom doctor --fix` works on a synced
+  folder. The check that the path still names the file after the read compares
+  identity instead of refusing any reparse attribute.
 
 ### Fixed (`phantom init` no longer replaces an existing `.env.example`)
 

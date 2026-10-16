@@ -802,19 +802,29 @@ impl PhantomMcpServer {
 
         // Resolve only repository-local state. Passing no vault names avoids
         // opening/provisioning any credential backend from this status tool.
-        let env_path =
-            phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &config, &[])
-                .map_err(|error| {
-                    internal_err(format!("Failed to resolve managed dotenv: {error}"))
-                })?
-                .path;
+        // The resolver already read the file it chose, without following a
+        // symlink and judged on the opened handle; report that copy rather
+        // than reading the path a second time.
+        // Both refusals are states the user fixes in the project, not
+        // server faults.
+        let resolved =
+            phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &config, &[]).map_err(
+                |error| {
+                    state_err(format!(
+                        "Failed to resolve managed dotenv: {error}. Next step: ask the user to \
+                         fix the managed dotenv in a trusted terminal (a symlink or special \
+                         file must be replaced with a regular file); phantom_doctor names the \
+                         fix."
+                    ))
+                },
+            )?;
+        let env_path = resolved.path;
         let mut dotenv_report = serde_json::Value::Null;
-        if env_path.exists() {
-            let dotenv = DotenvFile::parse_file(&env_path)
-                .map_err(|error| internal_err(format!("Failed to read managed dotenv: {error}")))?;
+        if let Some(dotenv) = resolved.file {
             dotenv.validate_for_mutation().map_err(|error| {
-                internal_err(format!(
-                    "Managed dotenv is malformed; status is indeterminate: {error}"
+                state_err(format!(
+                    "Managed dotenv is malformed; status is indeterminate: {error}. Next step: \
+                     ask the user to correct the file in a trusted terminal, then retry."
                 ))
             })?;
             let real = dotenv.real_secret_entries();
@@ -8139,6 +8149,50 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("phantom init"));
+    }
+
+    /// Status reports the copy the resolver read on the opened handle; a
+    /// managed dotenv swapped for a symlink is refused, never counted.
+    #[cfg(unix)]
+    #[test]
+    fn status_refuses_a_symlinked_managed_dotenv() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let report = structured_report(&server.phantom_status().unwrap());
+        assert_eq!(report["dotenv"]["unprotected"], 0);
+
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        let protected = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".env")).unwrap();
+
+        let error = server.phantom_status().unwrap_err();
+        // A state the user fixes, with the step to take: not -32603.
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(
+            error.message.contains("not a regular, non-symlink file"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("Next step:"), "{}", error.message);
+        assert!(!error
+            .message
+            .contains(&outside.path().display().to_string()));
+
+        // Malformed (still token-bearing, so it resolves) is the same kind
+        // of state.
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("{protected}BROKEN_RECORD\n"),
+        )
+        .unwrap();
+        let error = server.phantom_status().unwrap_err();
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error.message.contains("malformed"), "{}", error.message);
+        assert!(error.message.contains("Next step:"), "{}", error.message);
     }
 
     #[test]

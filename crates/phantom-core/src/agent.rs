@@ -1,5 +1,4 @@
 use crate::config::PhantomConfig;
-use crate::dotenv::DotenvFile;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -124,8 +123,13 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
     files.extend(env_files.iter().map(|p| rel(project_dir, p)));
     let mut unprotected = Vec::new();
     for path in &env_files {
-        match DotenvFile::parse_file(path) {
-            Ok(dotenv) => {
+        // Listed by a lookup that follows symlinks. The read opens without
+        // following one and judges the opened handle, so a linked file is
+        // reported as a finding instead of having its target read.
+        match crate::managed_dotenv::parse_regular_dotenv(project_dir, &rel(project_dir, path)) {
+            // Removed since it was listed.
+            Ok(None) => {}
+            Ok(Some(dotenv)) => {
                 if let Err(err) = dotenv.validate_for_mutation() {
                     findings.push(ReadinessFinding {
                         id: "env-parse-error".to_string(),
@@ -756,6 +760,36 @@ mod tests {
             .iter()
             .any(|f| f.id == "unprotected-env-secrets"));
         assert!(report.commands.contains(&"phantom init".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_env_is_a_finding_and_its_target_is_not_read() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".env")).unwrap();
+
+        let report = build_report(dir.path(), no_vault());
+
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.id == "unprotected-env-secrets"),
+            "the link target was read: {:?}",
+            report.findings
+        );
+        let refused = report
+            .findings
+            .iter()
+            .find(|f| f.id == "env-parse-error")
+            .expect("the symlink is reported");
+        assert!(refused.message.contains("not a regular, non-symlink file"));
+        assert!(!refused
+            .message
+            .contains(&outside.path().display().to_string()));
     }
 
     #[test]
