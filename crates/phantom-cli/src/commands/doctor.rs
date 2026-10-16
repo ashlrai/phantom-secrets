@@ -66,6 +66,63 @@ fn ensure_dotenv_repair_guard(guard: Option<&DotenvRepairGuard>) -> Result<()> {
     Ok(())
 }
 
+/// The managed dotenv as the repair guard read it (`None` when it was
+/// absent). Repairs derive from these bytes, which
+/// [`ensure_dotenv_repair_guard`] re-compares before any write, never from a
+/// second read of the path that could follow a swapped-in symlink.
+fn guarded_dotenv(guard: Option<&DotenvRepairGuard>) -> Result<Option<DotenvFile>> {
+    let Some(bytes) = guard.and_then(|(_, before)| before.as_deref()) else {
+        return Ok(None);
+    };
+    let text = std::str::from_utf8(bytes).context("Managed dotenv is not valid UTF-8")?;
+    Ok(Some(DotenvFile::parse_str(text)))
+}
+
+/// Report on the managed dotenv (`env_path`, beside `.phantom.toml`) and
+/// return the issues found. It is opened without following a symlink and
+/// judged on the opened handle, so a linked file is reported, not followed.
+fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Path) -> usize {
+    let name = env_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(".env");
+    let dotenv = match phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, name) {
+        Ok(Some(dotenv)) => dotenv,
+        Ok(None) => {
+            check_info("No .env file in current directory");
+            return 0;
+        }
+        Err(error) => {
+            check_fail(&format!(".env could not be read: {error:#}"));
+            return 1;
+        }
+    };
+    let entries = dotenv.entries();
+    let real_secrets = dotenv.real_secret_entries();
+    if let Err(error) = dotenv.validate_for_mutation() {
+        check_fail(&format!(".env parse error: {error}"));
+        1
+    } else if real_secrets.is_empty() {
+        check_pass(&format!(
+            ".env has {} entries, all protected",
+            entries.len()
+        ));
+        0
+    } else {
+        check_warn(&format!(
+            ".env has {} unprotected secret(s): {}",
+            real_secrets.len(),
+            real_secrets
+                .iter()
+                .map(|e| e.key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        check_fix("Run: phantom init");
+        1
+    }
+}
+
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
 pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
@@ -192,43 +249,7 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     }
 
     // Check 3: .env file
-    if env_path.exists() {
-        let dotenv = DotenvFile::parse_file(&env_path);
-        match dotenv {
-            Ok(dotenv) => {
-                let entries = dotenv.entries();
-                let real_secrets = dotenv.real_secret_entries();
-
-                if let Err(error) = dotenv.validate_for_mutation() {
-                    check_fail(&format!(".env parse error: {error}"));
-                    issues += 1;
-                } else if real_secrets.is_empty() {
-                    check_pass(&format!(
-                        ".env has {} entries, all protected",
-                        entries.len()
-                    ));
-                } else {
-                    check_warn(&format!(
-                        ".env has {} unprotected secret(s): {}",
-                        real_secrets.len(),
-                        real_secrets
-                            .iter()
-                            .map(|e| e.key.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                    check_fix("Run: phantom init");
-                    issues += 1;
-                }
-            }
-            Err(e) => {
-                check_fail(&format!(".env parse error: {e}"));
-                issues += 1;
-            }
-        }
-    } else {
-        check_info("No .env file in current directory");
-    }
+    issues += check_managed_dotenv(&project_dir, &env_path);
 
     // Check 4: .gitignore
     let gitignore_path = project_dir.join(".gitignore");
@@ -290,8 +311,8 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     } else {
         check_warn("No .env.example — team onboarding may be difficult");
         check_fix("Run: phantom env");
-        if fix && !mutation_applied && env_path.exists() {
-            if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
+        if fix && !mutation_applied {
+            if let Some(dotenv) = guarded_dotenv(repair_dotenv_guard.as_ref())? {
                 let config = PhantomConfig::load(&config_path).ok();
                 let content = dotenv
                     .generate_example_content(config.as_ref())
@@ -943,6 +964,83 @@ mod tests {
 
         assert!(error.to_string().contains("changed after doctor preflight"));
         assert!(!project.path().join(".gitignore").exists());
+    }
+
+    /// Run `check_managed_dotenv` with the JSON report capturing its lines.
+    fn dotenv_check_lines(project: &Path) -> (usize, Vec<(&'static str, String)>) {
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let issues = super::check_managed_dotenv(project, &project.join(".env"));
+        let report = super::REPORT
+            .with(|report| report.borrow_mut().take())
+            .unwrap();
+        let lines = report
+            .checks
+            .into_iter()
+            .map(|check| (check.status, check.message))
+            .collect();
+        (issues, lines)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotenv_check_reports_a_symlink_without_reading_its_target() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        std::os::unix::fs::symlink(&target, project.path().join(".env")).unwrap();
+
+        let (issues, lines) = dotenv_check_lines(project.path());
+
+        assert_eq!(issues, 1);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0, "fail");
+        assert!(lines[0].1.contains("not a regular, non-symlink file"));
+        assert!(!lines[0].1.contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn dotenv_check_reads_a_regular_file_and_notes_an_absent_one() {
+        let project = tempfile::tempdir().unwrap();
+        let (issues, lines) = dotenv_check_lines(project.path());
+        assert_eq!((issues, lines[0].0), (0, "info"));
+
+        std::fs::write(
+            project.path().join(".env"),
+            format!("OPENAI_API_KEY={}-inside\n", "sk"),
+        )
+        .unwrap();
+        let (issues, lines) = dotenv_check_lines(project.path());
+        assert_eq!((issues, lines[0].0), (1, "warn"));
+        assert!(lines[0].1.contains("OPENAI_API_KEY"));
+    }
+
+    /// The `.env.example` repair derives from the bytes the guard read, not a
+    /// second read of the path: a swap to a symlink afterwards is not followed
+    /// (and the guard's re-check refuses the write).
+    #[cfg(unix)]
+    #[test]
+    fn example_repair_uses_the_guarded_bytes_not_a_reread() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, "OUTSIDE_ONLY=1\n").unwrap();
+        let env_path = project.path().join(".env");
+        std::fs::write(&env_path, b"API_KEY=phm_before\n").unwrap();
+        let guard = super::prepare_dotenv_repair_guard(&env_path).unwrap();
+        std::fs::remove_file(&env_path).unwrap();
+        std::os::unix::fs::symlink(&target, &env_path).unwrap();
+
+        let dotenv = super::guarded_dotenv(Some(&guard)).unwrap().unwrap();
+        let keys: Vec<_> = dotenv.entries().iter().map(|e| e.key.clone()).collect();
+        assert_eq!(keys, ["API_KEY"]);
+        assert!(super::ensure_dotenv_repair_guard(Some(&guard)).is_err());
+
+        let absent = tempfile::tempdir().unwrap();
+        let guard = super::prepare_dotenv_repair_guard(&absent.path().join(".env")).unwrap();
+        assert!(super::guarded_dotenv(Some(&guard)).unwrap().is_none());
     }
 
     #[test]

@@ -41,7 +41,7 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
         );
     }
 
-    validate_watched_dotenvs(&watched)?;
+    validate_watched_dotenvs(&project_dir, &watched)?;
 
     println!(
         "{} Watching for new secrets in: {}",
@@ -89,7 +89,7 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
                 }
 
                 for path in &pending_paths {
-                    handle_env_change(path);
+                    handle_env_change(&project_dir, path);
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -103,10 +103,24 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
     Ok(())
 }
 
-fn validate_watched_dotenvs(watched: &[PathBuf]) -> Result<()> {
+/// Read one path from [`watched_dotenv_paths`]. That listing checks each path
+/// before the watcher starts, and the file can be swapped for a symlink after
+/// it; this read opens without following one and judges the opened handle.
+/// `Ok(None)` when the file is gone.
+fn read_watched(project_dir: &Path, path: &Path) -> Result<Option<DotenvFile>> {
+    let name = path
+        .strip_prefix(project_dir)
+        .ok()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("{} is not a dotenv in the project", path.display()))?;
+    phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, name)
+}
+
+fn validate_watched_dotenvs(project_dir: &Path, watched: &[PathBuf]) -> Result<()> {
     for path in watched {
-        DotenvFile::parse_file(path)
+        read_watched(project_dir, path)
             .with_context(|| format!("Failed to read {} before starting watcher", path.display()))?
+            .with_context(|| format!("{} was removed before the watcher started", path.display()))?
             .validate_for_mutation()
             .with_context(|| {
                 format!(
@@ -161,14 +175,19 @@ fn collect_env_paths(event: &Event, watched: &HashSet<PathBuf>, paths: &mut Hash
     }
 }
 
-fn handle_env_change(env_path: &Path) {
-    match std::fs::symlink_metadata(env_path) {
-        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {}
-        _ => return,
-    }
-    let dotenv = match DotenvFile::parse_file(env_path) {
-        Ok(d) => d,
-        Err(_) => return,
+fn handle_env_change(project_dir: &Path, env_path: &Path) {
+    let dotenv = match read_watched(project_dir, env_path) {
+        Ok(Some(dotenv)) => dotenv,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!(
+                "{} {} was not read; secret detection is indeterminate: {:#}",
+                "BLOCKED".red().bold(),
+                env_path.display(),
+                error
+            );
+            return;
+        }
     };
     if let Err(error) = dotenv.validate_for_mutation() {
         eprintln!(
@@ -268,7 +287,7 @@ mod tests {
         let before = b"API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n";
         std::fs::write(&path, before).unwrap();
 
-        let error = validate_watched_dotenvs(std::slice::from_ref(&path)).unwrap_err();
+        let error = validate_watched_dotenvs(dir.path(), std::slice::from_ref(&path)).unwrap_err();
 
         assert!(error.to_string().contains("malformed"));
         assert!(!error.to_string().contains("plaintext-must-not-escape"));
@@ -286,5 +305,54 @@ mod tests {
         let mut config = PhantomConfig::new_with_defaults("watch-symlink".to_string());
         config.phantom.dotenv_path = Some("custom.env".to_string());
         assert!(watched_dotenv_paths(dir.path(), &config).is_err());
+    }
+
+    /// A watched file swapped for a symlink after it was listed: the start-up
+    /// validation must refuse the link rather than validate its target.
+    #[cfg(unix)]
+    #[test]
+    fn initial_validation_refuses_a_listed_file_swapped_for_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, "NODE_ENV=development\n").unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "NODE_ENV=development\n").unwrap();
+        let config = PhantomConfig::new_with_defaults("watch-swap".to_string());
+        let watched = watched_dotenv_paths(dir.path(), &config).unwrap();
+        assert_eq!(watched, vec![path.clone()]);
+
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        let error = validate_watched_dotenvs(dir.path(), &watched).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("not a regular, non-symlink file"),
+            "{error:#}"
+        );
+    }
+
+    /// The change handler reads through the same handle check: a watched
+    /// file that is now a symlink is refused, not followed.
+    #[cfg(unix)]
+    #[test]
+    fn change_read_refuses_a_watched_file_now_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        let path = dir.path().join(".env");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        let error = read_watched(dir.path(), &path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not a regular, non-symlink file"),
+            "{error:#}"
+        );
+        assert!(read_watched(dir.path(), &dir.path().join(".env.local"))
+            .unwrap()
+            .is_none());
     }
 }

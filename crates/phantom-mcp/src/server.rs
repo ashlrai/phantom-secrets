@@ -731,16 +731,16 @@ impl PhantomMcpServer {
 
         // Resolve only repository-local state. Passing no vault names avoids
         // opening/provisioning any credential backend from this status tool.
-        let env_path =
-            phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &config, &[])
-                .map_err(|error| {
-                    internal_err(format!("Failed to resolve managed dotenv: {error}"))
-                })?
-                .path;
+        // The resolver already read the file it chose, without following a
+        // symlink and judged on the opened handle; report that copy rather
+        // than reading the path a second time.
+        let resolved =
+            phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &config, &[]).map_err(
+                |error| internal_err(format!("Failed to resolve managed dotenv: {error}")),
+            )?;
+        let env_path = resolved.path;
         let mut dotenv_report = serde_json::Value::Null;
-        if env_path.exists() {
-            let dotenv = DotenvFile::parse_file(&env_path)
-                .map_err(|error| internal_err(format!("Failed to read managed dotenv: {error}")))?;
+        if let Some(dotenv) = resolved.file {
             dotenv.validate_for_mutation().map_err(|error| {
                 internal_err(format!(
                     "Managed dotenv is malformed; status is indeterminate: {error}"
@@ -8065,6 +8065,33 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("phantom init"));
+    }
+
+    /// Status reports the copy the resolver read on the opened handle; a
+    /// managed dotenv swapped for a symlink is refused, never counted.
+    #[cfg(unix)]
+    #[test]
+    fn status_refuses_a_symlinked_managed_dotenv() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let report = structured_report(&server.phantom_status().unwrap());
+        assert_eq!(report["dotenv"]["unprotected"], 0);
+
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".env")).unwrap();
+
+        let error = server.phantom_status().unwrap_err();
+        assert!(
+            error.message.contains("not a regular, non-symlink file"),
+            "{}",
+            error.message
+        );
+        assert!(!error
+            .message
+            .contains(&outside.path().display().to_string()));
     }
 
     #[test]

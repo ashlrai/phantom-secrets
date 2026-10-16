@@ -19,6 +19,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   that reopen fails. Refusals
   and the managed-dotenv "does not exist" / "contains no phantom tokens"
   errors name the file relative to the project instead of by absolute path.
+- The remaining project dotenv reads read the same way: `phantom doctor`,
+  `phantom watch`, the plaintext hint after `phantom import`, agent readiness,
+  workspace discovery and MCP `phantom_status`. Before, they followed a
+  symlinked dotenv and reported on its target. Now `phantom doctor` fails the
+  `.env` check for a symlink, `phantom watch` refuses it at start-up and
+  reports it after a change instead of skipping it silently, and agent
+  readiness reports it as an `env-parse-error` finding. The `phantom doctor`
+  `.env.example` repair and `phantom_status` reuse the copy already read
+  instead of reading the path a second time. The user-named import source was
+  already refused when it is a symlink and is unchanged.
 
 ### Fixed (`phantom init` no longer replaces an existing `.env.example`)
 
