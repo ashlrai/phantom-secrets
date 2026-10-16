@@ -59,6 +59,7 @@ skip = [
     { crate = "digest@0.11.3", reason = "self_update 1.2 checksum enforcement uses sha2 0.11 while existing cryptography retains digest 0.10" },
     { crate = "getrandom@0.2.17", reason = "Existing cryptography dependencies use getrandom 0.2 while tempfile uses getrandom 0.4" },
     { crate = "linux-raw-sys@0.4.15", reason = "Existing which/rustix 0.38 path has not converged on the rustix 1 dependency family" },
+    { crate = "nix@0.29.0", reason = "zbus 4 (Linux Secret Service keyring) uses nix 0.29 on Linux while zip 9 (Windows self-update extraction) uses nix 0.31 only on macOS/BSD; the two never build into the same binary" },
     { crate = "redox_syscall@0.5.18", reason = "Existing parking_lot path has not converged on the libredox dependency family" },
     { crate = "reqwest@0.12.28", reason = "Existing workspace HTTP clients use reqwest 0.12 while self_update uses reqwest 0.13" },
     { crate = "rustix@0.38.44", reason = "Existing which dependency has not converged on the rustix 1 dependency family" },
