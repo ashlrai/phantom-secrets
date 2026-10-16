@@ -451,8 +451,7 @@ member_types="$(tar -tvzf "$archive_path" | awk '{ print substr($1, 1, 1) }')" \
   || die "could not inspect release archive member types"
 [ "$member_types" = $'-\n-' ] || die "release archive members must be regular files"
 
-# --no-same-owner: as root, tar would otherwise keep the release runner's uid on the installed binaries.
-tar --no-same-owner -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"
+tar -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"
 [ "$(find "$candidate_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')" = "2" ] \
   || die "candidate contains unexpected files"
 [ -f "$candidate_dir/phantom" ] && [ ! -L "$candidate_dir/phantom" ] \
