@@ -87,6 +87,80 @@ pub fn parse_regular_dotenv(path: &Path) -> Result<Option<DotenvFile>> {
         .map(Some)
 }
 
+/// Every dotenv name a plaintext scan judges, beyond the configured
+/// `dotenv_path`. Wider than [`KNOWN_DOTENV_NAMES`], which is the set
+/// `resolve_dotenv` may select a managed file from: a scan must also see the
+/// files frameworks load for production and test. `phantom check` and the MCP
+/// compliance `env_clean` check both scan exactly this list, so one cannot pass
+/// a file the other fails.
+pub const SCANNED_DOTENV_NAMES: &[&str] = &[
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.development.local",
+    ".env.production",
+    ".env.production.local",
+    ".env.test",
+    ".env.test.local",
+];
+
+/// The names a plaintext scan judges, whether or not they exist: each of
+/// [`SCANNED_DOTENV_NAMES`], then the configured `dotenv_path` when one is set
+/// and is not already among them. An invalid configured name is an error.
+/// For a caller that must report each file on its own; others use
+/// [`scanned_dotenv_paths`].
+pub fn scanned_dotenv_names(configured: Option<&str>) -> Result<Vec<String>> {
+    let mut names: Vec<String> = SCANNED_DOTENV_NAMES.iter().map(|n| n.to_string()).collect();
+    if let Some(configured) = configured {
+        let configured = validate_dotenv_basename(configured)?;
+        if !names.contains(&configured) {
+            names.push(configured);
+        }
+    }
+    Ok(names)
+}
+
+/// The scan targets that exist: each of [`SCANNED_DOTENV_NAMES`], then the
+/// configured `dotenv_path` when one is set and is not already among them. A
+/// symlink, a non-regular file or an invalid configured name is an error,
+/// never "absent".
+pub fn scanned_dotenv_paths(project_dir: &Path, configured: Option<&str>) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for name in scanned_dotenv_names(configured)? {
+        let path = project_dir.join(&name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                anyhow::bail!(
+                    "Refusing dotenv scan target that is not a regular, non-symlink file: {}",
+                    path.display()
+                )
+            }
+            Ok(_) => paths.push(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("Failed to inspect {}", path.display()))
+            }
+        }
+    }
+    Ok(paths)
+}
+
+/// [`scanned_dotenv_paths`], parsed. For checks that must judge every file
+/// plaintext could sit in, not only the one that is managed. Reads no vault.
+pub fn known_regular_dotenvs(
+    project_dir: &Path,
+    configured: Option<&str>,
+) -> Result<Vec<(PathBuf, DotenvFile)>> {
+    let mut found = Vec::new();
+    for path in scanned_dotenv_paths(project_dir, configured)? {
+        // Re-checked at read time: the file may have changed since the scan.
+        if let Some(file) = parse_regular_dotenv(&path)? {
+            found.push((path, file));
+        }
+    }
+    Ok(found)
+}
+
 fn has_tokens(dotenv: &DotenvFile) -> bool {
     dotenv
         .entries()
@@ -191,6 +265,50 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("refusing an unprotected direct launch"));
+    }
+
+    #[test]
+    fn known_regular_dotenvs_lists_every_conventional_and_configured_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            ".env.local",
+            ".env.production",
+            ".env.test.local",
+            "custom.env",
+            ".env.example",
+        ] {
+            std::fs::write(dir.path().join(name), "PORT=3000\n").unwrap();
+        }
+        let names = |configured| {
+            known_regular_dotenvs(dir.path(), configured)
+                .unwrap()
+                .into_iter()
+                .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        // Templates are not dotenvs a process loads; only the configured file
+        // joins the scanned names.
+        let scanned = vec![".env.local", ".env.production", ".env.test.local"];
+        assert_eq!(names(None), scanned);
+        let mut with_custom = scanned.clone();
+        with_custom.push("custom.env");
+        assert_eq!(names(Some("custom.env")), with_custom);
+        assert_eq!(names(Some(".env.local")), scanned);
+        // The scan list is wider than what resolve_dotenv may select from.
+        for name in KNOWN_DOTENV_NAMES {
+            assert!(SCANNED_DOTENV_NAMES.contains(name), "{name}");
+        }
+        assert!(known_regular_dotenvs(dir.path(), Some("../.env")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_regular_dotenvs_refuses_a_symlink_rather_than_skipping_it() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("target"), "A=1\n").unwrap();
+        symlink("target", dir.path().join(".env.development")).unwrap();
+        assert!(known_regular_dotenvs(dir.path(), None).is_err());
     }
 
     #[cfg(unix)]

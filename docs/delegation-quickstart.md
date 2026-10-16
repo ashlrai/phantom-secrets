@@ -48,7 +48,8 @@ check that deliberately avoids those probes, run the
 
 `init` is a local mutation: it stores detected secret values in the selected
 vault backend, atomically rewrites the managed dotenv file with `phm_`
-placeholders, writes Phantom configuration, generates `.env.example`, and
+placeholders, writes Phantom configuration, generates `.env.example` when the
+project has none (an existing one is left byte-for-byte unchanged), and
 attempts to install the repository pre-commit check.
 
 Install the reviewed `v0.7.9` GitHub release using the platform-specific path in

@@ -4,6 +4,47 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom init` no longer replaces an existing `.env.example`)
+
+- `phantom init` replaced an existing, often committed and hand-written,
+  `.env.example` with a generated stub, silently. On one real project that
+  dropped about 600 documented lines. init now leaves an existing
+  `.env.example` byte-for-byte unchanged, says so on an `->` line, and points at
+  `phantom env --output <file>` for a generated example in a new file. It still
+  generates `.env.example` when there is none. The pre-commit check
+  (`phantom check --staged`) still scans a staged `.env.example` for real
+  values, and init now warns, by key name only, when the example it keeps
+  holds values that check would refuse.
+
+### Fixed (MCP listing and compliance tools before init or with a locked vault)
+
+- `phantom_list_secrets` and `phantom_list_with_expiry` returned -32603
+  "Not initialized" before `phantom init`, which a client shows as a server
+  failure. They now return their empty report with `initialized: false` and a
+  `next_step`, and open no vault.
+- `phantom_compliance_status` resolved the dotenv for its `env_clean` check by
+  opening the vault, so before init or with a locked vault the whole report
+  failed with -32603. `env_clean` is now read value-blind, without the vault,
+  and the vault checks report `pass: false` as before. It also judged one file
+  only, so plaintext in `.env.local` passed beside a protected or absent
+  `.env`. It now scans `.env`, `.env.local`, `.env.development`,
+  `.env.development.local`, `.env.production`, `.env.production.local`,
+  `.env.test`, `.env.test.local` and the configured `dotenv_path`, naming each
+  offending key by file; a symlinked or unparseable file is indeterminate and
+  fails the check. `phantom check` scans the same list (it previously skipped
+  `.env.development.local`, `.env.production.local` and the `.env.test` files).
+- MCP `phantom_check` kept its own four-file list, ignored `dotenv_path` and
+  followed symlinks, so an agent's check could pass a repo the CLI failed, or
+  report a file outside the project. It now scans the same list as
+  `phantom check` and `env_clean`; a symlink is not read and is reported as
+  indeterminate, so the result is not clean.
+- The `confirm: true` refusal called every gated tool "a destructive vault
+  operation", including `phantom_cloud_status`, `phantom_team_list`,
+  `phantom_team_members` and `phantom_validate_all`, which read but send a
+  stored credential to a provider. The gate is unchanged (both `confirm` and an
+  approval token are still required, as `docs/claude-code.md` specifies); the
+  message now says what it guards.
+
 ### Fixed (MCP Registry catalog drift)
 
 - `mcp-registry/server.json` still carried the pre-#201 `format` parameter
