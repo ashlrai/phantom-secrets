@@ -268,10 +268,12 @@ enum Commands {
         rename: Option<String>,
     },
 
-    /// Generate .env.example for team onboarding
+    /// Environment scopes (use/list/new/copy) and .env.example generation
     #[command(next_help_heading = "Daily use")]
     Env {
-        /// Output file name (defaults to .env.example)
+        #[command(subcommand)]
+        action: Option<EnvAction>,
+        /// Output file name for the legacy `phantom env` .env.example generation
         #[arg(short, long, default_value = ".env.example")]
         output: String,
     },
@@ -572,6 +574,37 @@ enum Commands {
         /// Seconds to wait before clearing
         #[arg(long, default_value_t = 30)]
         secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum EnvAction {
+    /// Generate .env.example for team onboarding
+    Example {
+        /// Output file name (defaults to .env.example)
+        #[arg(short, long, default_value = ".env.example")]
+        output: String,
+    },
+    /// Switch the active environment for this project (e.g. dev, staging, prod)
+    Use {
+        /// Environment name
+        name: String,
+    },
+    /// List environments known to this project's vault
+    List,
+    /// Declare a new environment
+    New {
+        /// Environment name
+        name: String,
+    },
+    /// Copy every secret from one environment to another (trusted terminal)
+    Copy {
+        /// Source environment
+        #[arg(long)]
+        from: String,
+        /// Destination environment
+        #[arg(long)]
+        to: String,
     },
 }
 
@@ -1018,7 +1051,14 @@ fn run() -> anyhow::Result<()> {
             dry_run,
             only,
         } => commands::sync::run(platform, project, only, dry_run, cli.json),
-        Commands::Env { output } => commands::env::run(&output),
+        Commands::Env { action, output } => match action {
+            None => commands::env::run(&output),
+            Some(EnvAction::Example { output }) => commands::env::run(&output),
+            Some(EnvAction::Use { name }) => commands::env_scope::run_use(&name),
+            Some(EnvAction::List) => commands::env_scope::run_list(),
+            Some(EnvAction::New { name }) => commands::env_scope::run_new(&name),
+            Some(EnvAction::Copy { from, to }) => commands::env_scope::run_copy(&from, &to),
+        },
         Commands::Export {
             output,
             passphrase,
