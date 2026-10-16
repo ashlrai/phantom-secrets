@@ -85,6 +85,21 @@ pub struct PhantomMcpServer {
     project_dir: PathBuf,
 }
 
+/// Empty-inventory text that stays honest when the secrets live in an
+/// encrypted-file vault this process cannot open (no passphrase in its env).
+fn empty_vault_message(
+    vault: &dyn phantom_vault::VaultBackend,
+    config: &PhantomConfig,
+    default: &str,
+) -> String {
+    if vault.backend_name() != "encrypted-file" {
+        if let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id()) {
+            return format!("Vault locked, not empty. {notice}");
+        }
+    }
+    default.to_string()
+}
+
 impl PhantomMcpServer {
     pub fn new() -> anyhow::Result<Self> {
         let project_dir = std::env::current_dir()?;
@@ -586,12 +601,14 @@ impl PhantomMcpServer {
         let report = serde_json::json!({ "count": names.len(), "secrets": secrets });
 
         if names.is_empty() {
-            return report_result(
+            let message = empty_vault_message(
+                vault.as_ref(),
+                &config,
                 "No secrets stored in vault. Next step: ask the user to run \
                  `phantom add <NAME>` in a trusted terminal, or protect an existing .env \
                  with `phantom init`.",
-                &report,
             );
+            return report_result(message, &report);
         }
 
         let mut output = format!("{} secret(s) in vault:\n", names.len());
@@ -629,6 +646,9 @@ impl PhantomMcpServer {
         output.push_str(&format!("Project ID: {}\n", config.portable_project_id()));
         output.push_str("Vault backend: not inspected (read-only status)\n");
         output.push_str("Secrets stored: not inspected (use phantom_list_secrets)\n");
+        if let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id()) {
+            output.push_str(&format!("Warning: {notice}\n"));
+        }
 
         // Resolve only repository-local state. Passing no vault names avoids
         // opening/provisioning any credential backend from this status tool.
@@ -3158,7 +3178,9 @@ impl PhantomMcpServer {
             "secrets": secret_reports,
         });
         if entries.is_empty() {
-            return report_result("No secrets stored in vault.", &report);
+            let message =
+                empty_vault_message(vault.as_ref(), &config, "No secrets stored in vault.");
+            return report_result(message, &report);
         }
         report_result(output, &report)
     }
