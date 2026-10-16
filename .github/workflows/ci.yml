@@ -138,6 +138,13 @@ jobs:
         run: node scripts/check-platform-installers.mjs
       - name: Verify MCP platform mappings
         run: node npm-mcp/test/platform-matrix.test.js
+      # The registry catalog is what MCP Registry publication ships. It was
+      # only compared with the runtime tools/list at release build, so a tool
+      # schema change on main (#201) left it stale until the next tag. Same
+      # smoke and tool count as release-build.yml, against the debug build.
+      - name: Verify MCP registry catalog matches runtime tools/list
+        if: runner.os == 'Linux'
+        run: node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54
       - name: Run direct installer offline tests
         if: runner.os == 'Linux'
         run: node --test scripts/installers.test.js scripts/release/native-installer-acceptance.test.mjs

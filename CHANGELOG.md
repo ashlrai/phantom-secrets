@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (MCP Registry catalog drift)
+
+- `mcp-registry/server.json` still carried the pre-#201 `format` parameter
+  descriptions for `phantom_audit_analytics` and `phantom_audit_export_report`,
+  so it no longer matched the server's `tools/list`. It is regenerated from the
+  runtime catalog, and CI now runs the same registry-parity smoke the release
+  build runs, so a tool schema change cannot leave the catalog stale until a
+  tag.
+
 ### Fixed (MCP `phantom_why` before init and with a locked vault)
 
 - MCP `phantom_why` failed with an internal error (-32603) in a project where
