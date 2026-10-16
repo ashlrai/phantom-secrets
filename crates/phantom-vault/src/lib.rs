@@ -135,7 +135,7 @@ fn locked_file_vault_notice_in(
         .unwrap_or(false);
     is_file.then(|| {
         format!(
-            "An encrypted-file vault for this project exists at {} but is locked in this process: PHANTOM_VAULT_PASSPHRASE is not set here, so Phantom cannot open it and selects the OS keychain instead. Set PHANTOM_VAULT_PASSPHRASE to the passphrase used when the secrets were stored (for an MCP client, in the server's env config) and retry. If this project's secrets now live in the OS keychain instead, that file is stale: remove the vault file at {}.",
+            "An encrypted-file vault for this project exists at {} but is locked in this process: PHANTOM_VAULT_PASSPHRASE is not set here, so Phantom cannot open it and selects the OS keychain instead. Set PHANTOM_VAULT_PASSPHRASE to the passphrase used when the secrets were stored (for an MCP client, in the server's env config) and retry. If this project's secrets now live in the OS keychain instead, that file may be stale: back it up or move it aside (do not delete it until you have confirmed nothing in it is still needed): {}.",
             path.display(),
             path.display()
         )

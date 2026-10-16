@@ -8698,7 +8698,7 @@ mod tests {
             .require_readable_inventory(config, &EmptyKeychain)
             .unwrap_err()
             .message
-            .contains("remove the vault file at")
+            .contains("back it up or move it aside")
     }
 
     /// A keychain holding one secret, beside a locked file vault.

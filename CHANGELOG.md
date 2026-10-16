@@ -12,8 +12,9 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `phantom_validate_secret` and `phantom_rotation_schedule_next` answered from
   the empty OS keychain: nothing expiring, nothing due, or "secret not found".
   They now refuse with "Vault locked" and the unlock step, as
-  `phantom_list_secrets` already reported; the notice also says to remove the
-  vault file if the secrets have since moved to the OS keychain. When the
+  `phantom_list_secrets` already reported; the notice also says to back up or
+  move aside (not delete) the vault file if the secrets have since moved to
+  the OS keychain. When the
   keychain does hold entries beside such a file vault, they answer with a
   `vault_note` saying the answer covers only the keychain.
 - Before `phantom init`, with an unloadable `.phantom.toml`, with a wrong
