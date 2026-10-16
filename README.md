@@ -4,7 +4,9 @@
 
 <h1>Phantom</h1>
 
-**Delegate more to AI without putting real keys in agent context.**
+**Your agent can use the key. It never sees it.**
+
+Delegate more to AI without putting real keys in agent context.
 
 Phantom replaces project secrets with scoped `phm_` placeholders. Applications use those placeholders through an authenticated local proxy, while agents use value-blind MCP tools for inventory, diagnostics, and governed requests.
 
