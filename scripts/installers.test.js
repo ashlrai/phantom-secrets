@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -44,7 +44,8 @@ function makeArchive(root, target = 'x86_64-apple-darwin', options = {}) {
   }
   const archiveName = `phantom-${target}.tar.gz`;
   const archive = join(fixture, archiveName);
-  execFileSync('tar', ['-czf', archive, '-C', payload, ...members]);
+  const owner = options.foreignOwner ? ['--owner=4242', '--group=4242'] : [];
+  execFileSync('tar', [...owner, '-czf', archive, '-C', payload, ...members]);
   const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
   const sidecar = options.sidecar ?? `${digest}  ${archiveName}\n`;
   writeFileSync(`${archive}.sha256`, sidecar);
@@ -275,6 +276,17 @@ test('Unix installer uses bounded HTTPS downloads and promotes both exact binari
   }
   assert.doesNotMatch(curlLog, /http:\/\//);
   assert.equal(readdirSync(dirname(install)).filter((name) => name.includes('.bin.install.')).length, 0);
+});
+
+test('Unix installer extracts without keeping the archive owner', () => {
+  // Release archives carry the CI runner's uid; a root install must not hand the binaries to it.
+  assert.match(readFileSync(shellInstaller, 'utf8'), /tar --no-same-owner -xzf "\$archive_path"/);
+});
+
+test('Unix installer run as root owns the installed binaries', { skip: process.getuid?.() !== 0 }, () => {
+  const { install, result } = runInstaller({ foreignOwner: true });
+  assert.equal(result.status, 0, result.stderr);
+  for (const name of ['phantom', 'phantom-mcp']) assert.equal(lstatSync(join(install, name)).uid, 0);
 });
 
 test('Unix installer rejects unsafe install-directory syntax before download', () => {
