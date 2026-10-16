@@ -94,6 +94,14 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
         }
         Err(error) => {
             check_fail(&format!(".env could not be read: {error:#}"));
+            // Only to choose the hint; the read above already decided.
+            let special = std::fs::symlink_metadata(env_path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_file());
+            if special {
+                check_fix(&format!(
+                    "Replace {name} with a regular file (not a symlink or special file), then rerun phantom doctor"
+                ));
+            }
             return 1;
         }
     };
@@ -967,7 +975,10 @@ mod tests {
     }
 
     /// Run `check_managed_dotenv` with the JSON report capturing its lines.
-    fn dotenv_check_lines(project: &Path) -> (usize, Vec<(&'static str, String)>) {
+    /// One captured doctor line: status, message, fix hint.
+    type CheckLine = (&'static str, String, Option<String>);
+
+    fn dotenv_check_lines(project: &Path) -> (usize, Vec<CheckLine>) {
         super::REPORT.with(|report| {
             *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
         });
@@ -978,7 +989,7 @@ mod tests {
         let lines = report
             .checks
             .into_iter()
-            .map(|check| (check.status, check.message))
+            .map(|check| (check.status, check.message, check.fix))
             .collect();
         (issues, lines)
     }
@@ -999,6 +1010,8 @@ mod tests {
         assert_eq!(lines[0].0, "fail");
         assert!(lines[0].1.contains("not a regular, non-symlink file"));
         assert!(!lines[0].1.contains("OPENAI_API_KEY"));
+        let fix = lines[0].2.as_deref().expect("a symlink gets a fix hint");
+        assert!(fix.contains("Replace .env with a regular file"), "{fix}");
     }
 
     #[test]
@@ -1015,6 +1028,7 @@ mod tests {
         let (issues, lines) = dotenv_check_lines(project.path());
         assert_eq!((issues, lines[0].0), (1, "warn"));
         assert!(lines[0].1.contains("OPENAI_API_KEY"));
+        assert_eq!(lines[0].2.as_deref(), Some("Run: phantom init"));
     }
 
     /// The `.env.example` repair derives from the bytes the guard read, not a

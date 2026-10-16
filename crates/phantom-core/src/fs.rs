@@ -51,35 +51,25 @@ pub fn read_regular_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
         Err(error) => return Err(error),
     }
 
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let mut file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::other(format!(
-            "refusing non-regular file target: {}",
-            path.display()
-        )));
-    }
-    #[cfg(windows)]
-    if windows_file_information(&file)?.dwFileAttributes
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-    {
-        return Err(io::Error::other(format!(
-            "refusing Windows reparse-point file target: {}",
-            path.display()
-        )));
-    }
+    // The lookup above is an early answer only; the open below re-checks on
+    // the handle, which is what decides.
+    let mut file = match open_regular_nofollow(path) {
+        Ok(Some(file)) => file,
+        Ok(None) => return Ok(None),
+        Err(RegularOpenError::NotRegular) => {
+            return Err(io::Error::other(format!(
+                "refusing non-regular or symlink file target: {}",
+                path.display()
+            )))
+        }
+        Err(RegularOpenError::Reopen(detail)) => {
+            return Err(io::Error::other(format!(
+                "refusing Windows reparse-point file target ({detail}): {}",
+                path.display()
+            )))
+        }
+        Err(RegularOpenError::Open(error) | RegularOpenError::Inspect(error)) => return Err(error),
+    };
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
 
@@ -89,6 +79,128 @@ pub fn read_regular_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
     // accepted as the reviewed before-image.
     ensure_path_still_names_open_file(path, &file)?;
     Ok(Some(bytes))
+}
+
+/// Why [`open_regular_nofollow`] gave no handle.
+#[derive(Debug)]
+pub(crate) enum RegularOpenError {
+    /// A symlink, junction, directory, FIFO, device or other non-regular file.
+    NotRegular,
+    /// Windows: a reparse file that is not a link (a OneDrive/Cloud Files
+    /// file, a deduplicated file) whose contents could not be reopened from
+    /// the same handle. The text says why.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Reopen(String),
+    /// The open itself failed for another reason.
+    Open(io::Error),
+    /// The opened handle could not be inspected.
+    Inspect(io::Error),
+}
+
+/// Open `path` read-only without following a final symlink, then confirm on
+/// the opened handle (fstat, not a second path lookup) that it is a regular
+/// file. `Ok(None)` when nothing is there.
+///
+/// On Unix the open uses `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY`: a FIFO swapped
+/// in is refused rather than waited on, and a terminal device cannot become
+/// the controlling terminal before it is refused. On Windows it uses
+/// `FILE_FLAG_OPEN_REPARSE_POINT`; a symlink or junction is refused, and any
+/// other reparse file is reopened from the same handle for its real contents
+/// (see [`windows_reopen_contents`]).
+pub(crate) fn open_regular_nofollow(
+    path: &Path,
+) -> Result<Option<std::fs::File>, RegularOpenError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        // O_NOFOLLOW on a symlink: ELOOP on Linux and macOS, EMLINK on FreeBSD.
+        #[cfg(unix)]
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ELOOP) | Some(libc::EMLINK)) => {
+            return Err(RegularOpenError::NotRegular)
+        }
+        Err(error) => return Err(RegularOpenError::Open(error)),
+    };
+    let metadata = file.metadata().map_err(RegularOpenError::Inspect)?;
+    // On Windows `is_symlink()` covers every name-surrogate reparse point:
+    // symlinks and junctions.
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(RegularOpenError::NotRegular);
+    }
+    #[cfg(windows)]
+    if is_reparse_point(&metadata) {
+        return windows_reopen_contents(&file).map(Some);
+    }
+    Ok(Some(file))
+}
+
+#[cfg(windows)]
+pub(crate) fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+/// A non-name-surrogate reparse file: a OneDrive/Cloud Files file (hydrated
+/// files keep the tag, so a project under a synced folder is full of them), a
+/// deduplicated file, an app execution alias. Opened with
+/// FILE_FLAG_OPEN_REPARSE_POINT it reads as its stub. ReOpenFile without that
+/// flag re-opens the same file object, with no new path lookup, so the filter
+/// serves the real contents. The reopen must be the same file object and
+/// still a regular file; a failed reopen is a refusal.
+#[cfg(windows)]
+pub(crate) fn windows_reopen_contents(
+    file: &std::fs::File,
+) -> Result<std::fs::File, RegularOpenError> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        ReOpenFile, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let before = anchored::std_file_identity(file).map_err(RegularOpenError::Inspect)?;
+    // SAFETY: the handle is owned by `file` and valid for the call; the
+    // returned handle, when valid, is owned by the File built from it.
+    let handle = unsafe {
+        ReOpenFile(
+            file.as_raw_handle(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            0,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        return Err(RegularOpenError::Reopen(format!(
+            "Windows could not reopen the reparse point for its contents: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: `handle` is a valid handle that nothing else owns.
+    let reopened = unsafe { std::fs::File::from_raw_handle(handle) };
+    // The reopen must be the same file object the checks judged, as
+    // fs/anchored.rs requires of its own reopens.
+    let after = anchored::std_file_identity(&reopened).map_err(RegularOpenError::Inspect)?;
+    if after != before {
+        return Err(RegularOpenError::Reopen(
+            "Windows reopened a different file object".to_string(),
+        ));
+    }
+    let metadata = reopened.metadata().map_err(RegularOpenError::Inspect)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(RegularOpenError::NotRegular);
+    }
+    Ok(reopened)
 }
 
 #[cfg(unix)]
@@ -119,10 +231,12 @@ fn ensure_path_still_names_open_file(path: &Path, opened: &std::fs::File) -> io:
         .read(true)
         .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     let current = options.open(path)?;
+    // A link now at the path is a swap. Any other reparse file (a OneDrive
+    // file) is the same object as long as its identity matches.
+    let current_type = current.metadata()?.file_type();
     let current = windows_file_information(&current)?;
-    if current.dwFileAttributes
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
+    if current_type.is_symlink()
+        || !current_type.is_file()
         || original.dwVolumeSerialNumber != current.dwVolumeSerialNumber
         || original.nFileIndexHigh != current.nFileIndexHigh
         || original.nFileIndexLow != current.nFileIndexLow
@@ -326,6 +440,58 @@ pub fn sync_parent_dir(_dir: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Windows: `read_regular_file` shares the dotenv open. A plain file reads
+    /// through the post-read identity check, and a file symlink is refused.
+    /// The reparse reopen itself is driven in `managed_dotenv`'s tests (a
+    /// Cloud Files placeholder needs a sync provider a CI runner lacks).
+    #[cfg(windows)]
+    #[test]
+    fn windows_read_regular_file_reads_plain_and_refuses_a_symlink() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("target"), b"A=1\n").unwrap();
+        assert_eq!(
+            read_regular_file(&dir.path().join("target"))
+                .unwrap()
+                .unwrap(),
+            b"A=1\n"
+        );
+        if std::os::windows::fs::symlink_file("target", dir.path().join(".env")).is_err() {
+            eprintln!("skipping: cannot create a file symlink here");
+            return;
+        }
+        let error = read_regular_file(&dir.path().join(".env")).unwrap_err();
+        assert!(error.to_string().contains("symlink"), "{error}");
+        assert!(matches!(
+            open_regular_nofollow(&dir.path().join(".env")),
+            Err(RegularOpenError::NotRegular)
+        ));
+    }
+
+    /// The shared open refuses a symlink from the open itself.
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_nofollow_refuses_a_symlink_and_a_fifo() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("target"), b"A=1\n").unwrap();
+        std::os::unix::fs::symlink("target", dir.path().join("link")).unwrap();
+        assert!(matches!(
+            open_regular_nofollow(&dir.path().join("link")),
+            Err(RegularOpenError::NotRegular)
+        ));
+        let fifo = dir.path().join("fifo");
+        let c_path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: c_path is a valid NUL-terminated path for the call's duration.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        assert!(matches!(
+            open_regular_nofollow(&fifo),
+            Err(RegularOpenError::NotRegular)
+        ));
+        assert!(open_regular_nofollow(&dir.path().join("absent"))
+            .unwrap()
+            .is_none());
+    }
 
     fn list_dir(dir: &Path) -> Vec<String> {
         std::fs::read_dir(dir)

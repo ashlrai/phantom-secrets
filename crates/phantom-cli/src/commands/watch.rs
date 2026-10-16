@@ -89,7 +89,7 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
                 }
 
                 for path in &pending_paths {
-                    handle_env_change(&project_dir, path);
+                    let _ = handle_env_change(&project_dir, path);
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -175,10 +175,25 @@ fn collect_env_paths(event: &Event, watched: &HashSet<PathBuf>, paths: &mut Hash
     }
 }
 
-fn handle_env_change(project_dir: &Path, env_path: &Path) {
+/// What one change event led to; the watcher loop only prints it.
+#[derive(Debug, PartialEq, Eq)]
+enum ChangeOutcome {
+    /// The file is gone.
+    Gone,
+    /// The file was not read (a symlink or other refusal): BLOCKED.
+    Unreadable,
+    /// The file was read but is malformed: BLOCKED.
+    Malformed,
+    /// No unprotected secrets.
+    Clean,
+    /// This many unprotected secrets were reported.
+    Secrets(usize),
+}
+
+fn handle_env_change(project_dir: &Path, env_path: &Path) -> ChangeOutcome {
     let dotenv = match read_watched(project_dir, env_path) {
         Ok(Some(dotenv)) => dotenv,
-        Ok(None) => return,
+        Ok(None) => return ChangeOutcome::Gone,
         Err(error) => {
             eprintln!(
                 "{} {} was not read; secret detection is indeterminate: {:#}",
@@ -186,7 +201,7 @@ fn handle_env_change(project_dir: &Path, env_path: &Path) {
                 env_path.display(),
                 error
             );
-            return;
+            return ChangeOutcome::Unreadable;
         }
     };
     if let Err(error) = dotenv.validate_for_mutation() {
@@ -196,7 +211,7 @@ fn handle_env_change(project_dir: &Path, env_path: &Path) {
             env_path.display(),
             error
         );
-        return;
+        return ChangeOutcome::Malformed;
     }
 
     let classified = dotenv.classified_entries();
@@ -207,7 +222,7 @@ fn handle_env_change(project_dir: &Path, env_path: &Path) {
         .collect();
 
     if new_secrets.is_empty() {
-        return;
+        return ChangeOutcome::Clean;
     }
 
     let file_name = env_path
@@ -230,6 +245,7 @@ fn handle_env_change(project_dir: &Path, env_path: &Path) {
         "->".blue().bold(),
         "phantom init".cyan().bold()
     );
+    ChangeOutcome::Secrets(new_secrets.len())
 }
 
 #[cfg(test)]
@@ -354,5 +370,39 @@ mod tests {
         assert!(read_watched(dir.path(), &dir.path().join(".env.local"))
             .unwrap()
             .is_none());
+    }
+
+    /// A watched file that is a symlink when it changes is reported as
+    /// BLOCKED, not skipped silently and not followed.
+    #[cfg(unix)]
+    #[test]
+    fn change_to_a_symlink_is_blocked_not_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, format!("OPENAI_API_KEY={}-inside\n", "sk")).unwrap();
+        assert_eq!(
+            handle_env_change(dir.path(), &path),
+            ChangeOutcome::Secrets(1)
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert_eq!(
+            handle_env_change(dir.path(), &path),
+            ChangeOutcome::Unreadable
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(handle_env_change(dir.path(), &path), ChangeOutcome::Gone);
+        std::fs::write(&path, "NODE_ENV=development\n").unwrap();
+        assert_eq!(handle_env_change(dir.path(), &path), ChangeOutcome::Clean);
+        std::fs::write(&path, "BROKEN_RECORD\n").unwrap();
+        assert_eq!(
+            handle_env_change(dir.path(), &path),
+            ChangeOutcome::Malformed
+        );
     }
 }
