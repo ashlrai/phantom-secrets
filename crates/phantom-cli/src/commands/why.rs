@@ -70,6 +70,20 @@ pub fn run(key: &str, json: bool) -> Result<()> {
                             break;
                         }
                     }
+                    let delivery = cfg.exec_delivery_for_secret(key);
+                    match delivery.upstream() {
+                        Some(upstream) => println!(
+                            "   Exec:   {} (real value injected for {})",
+                            "proxied".green(),
+                            upstream.cyan()
+                        ),
+                        None => {
+                            println!("   Exec:   {}", delivery.label().replace('_', " ").yellow())
+                        }
+                    }
+                    if let Some(step) = phantom_core::why::exec_next_step(key, &delivery) {
+                        println!("   {} {}", "!".yellow().bold(), step);
+                    }
                     println!(
                         "   Vault:  {}",
                         phantom_vault::try_create_vault(cfg.local_project_id())?

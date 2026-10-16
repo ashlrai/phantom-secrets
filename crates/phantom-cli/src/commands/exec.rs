@@ -300,15 +300,33 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         }
     }
 
-    // Summary: proxied secrets vs injected env vars
+    // Summary: proxied secrets vs injected env vars. A protected key with
+    // no route reaches the child only as a session token that no provider
+    // accepts, so it is not counted as proxied and is named in a warning.
+    let unrouted = unrouted_session_keys(&registry, env_key_to_session_token.keys());
+    // `exported_routes` holds only routes whose credential is loaded.
+    let proxied_count = exported_routes
+        .services()
+        .into_iter()
+        .map(|(_, route)| route.secret_key.as_str())
+        .collect::<HashSet<_>>()
+        .len();
     let injected_count = framework_env_vars.len();
     progress!(
         quiet,
         "\n{} {} secret(s) proxied, {} env var(s) injected directly",
         "->".blue().bold(),
-        secret_count,
+        proxied_count,
         injected_count,
     );
+    if !unrouted.is_empty() {
+        eprintln!(
+            "{} No proxy route for {}: the child gets only a session token for {}, which no provider accepts, so calls that send it will fail. Run `phantom why <KEY>` for details.",
+            "warn".yellow(),
+            unrouted.join(", ").bold(),
+            if unrouted.len() == 1 { "it" } else { "each" },
+        );
+    }
 
     progress!(
         quiet,
@@ -367,6 +385,26 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
 
     progress!(quiet, "{} Done.", "ok".green().bold());
     Ok(())
+}
+
+/// Protected keys the child receives as session tokens that no proxy route
+/// injects, sorted. Value-free: compares names only.
+fn unrouted_session_keys<'a>(
+    registry: &ServiceRegistry,
+    session_keys: impl IntoIterator<Item = &'a String>,
+) -> Vec<String> {
+    let routed: HashSet<&str> = registry
+        .services()
+        .into_iter()
+        .map(|(_, route)| route.secret_key.as_str())
+        .collect();
+    let mut unrouted: Vec<String> = session_keys
+        .into_iter()
+        .filter(|key| !routed.contains(key.as_str()))
+        .cloned()
+        .collect();
+    unrouted.sort();
+    unrouted
 }
 
 fn retrieve_required_secret(
@@ -564,6 +602,31 @@ mod tests {
         assert!(error
             .to_string()
             .contains("injected session credential read failure"));
+    }
+
+    #[test]
+    fn exec_names_protected_keys_that_no_route_delivers() {
+        let config = PhantomConfig::new_with_defaults("a".repeat(64));
+        let registry = ServiceRegistry::from_config(&config.services);
+        let session_keys = [
+            "OPENAI_API_KEY".to_string(),
+            "NEXTAUTH_SECRET".to_string(),
+            "GROQ_API_KEY".to_string(),
+            "ANTHROPIC_API_KEY".to_string(),
+        ];
+        assert_eq!(
+            unrouted_session_keys(&registry, session_keys.iter()),
+            vec!["GROQ_API_KEY".to_string(), "NEXTAUTH_SECRET".to_string()]
+        );
+        // Every key the shared helper calls unrouted is one exec warns about.
+        for key in &session_keys {
+            let warned = unrouted_session_keys(&registry, [key]).len() == 1;
+            assert_eq!(
+                warned,
+                config.exec_delivery_for_secret(key) == phantom_core::config::ExecDelivery::NoRoute,
+                "{key}"
+            );
+        }
     }
 
     #[test]

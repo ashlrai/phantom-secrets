@@ -390,6 +390,54 @@ pub struct ServiceConfig {
     pub secret_type: String,
 }
 
+/// How `phantom exec` hands a protected dotenv key to the child process.
+/// See [`PhantomConfig::exec_delivery_for_secret`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecDelivery<'a> {
+    /// A trusted built-in route injects the real value into requests the
+    /// child sends through the proxy to `upstream`.
+    Proxied { service: &'a str, upstream: &'a str },
+    /// No route injects this key. The child gets a session token that no
+    /// provider accepts.
+    NoRoute,
+    /// A connection string: `phantom exec` refuses to launch while it is
+    /// protected, because it needs a protocol-aware broker.
+    ConnectionStringRefused { service: &'a str },
+    /// A repository-authored route that is not Phantom's exact built-in
+    /// definition: `phantom exec` refuses to launch with it configured.
+    CustomRouteRefused { service: &'a str },
+}
+
+impl ExecDelivery<'_> {
+    /// Stable machine-readable label used in value-free reports.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Proxied { .. } => "proxied",
+            Self::NoRoute => "no_route",
+            Self::ConnectionStringRefused { .. } => "connection_string_refused",
+            Self::CustomRouteRefused { .. } => "custom_route_refused",
+        }
+    }
+
+    /// The service name owning this key, when one does.
+    pub fn service(&self) -> Option<&str> {
+        match self {
+            Self::Proxied { service, .. }
+            | Self::ConnectionStringRefused { service }
+            | Self::CustomRouteRefused { service } => Some(service),
+            Self::NoRoute => None,
+        }
+    }
+
+    /// The upstream host the proxy injects into, for a proxied key.
+    pub fn upstream(&self) -> Option<&str> {
+        match self {
+            Self::Proxied { upstream, .. } => Some(upstream),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigRisk {
     pub service: String,
@@ -774,6 +822,41 @@ impl PhantomConfig {
             .filter(|(_, c)| c.secret_type == "connection_string")
             .map(|(name, config)| (name.as_str(), config))
             .collect()
+    }
+
+    /// How `phantom exec` delivers the protected dotenv key `secret_key`.
+    ///
+    /// The child process only ever receives a per-session `phm_` token for a
+    /// protected key. That token works only where a proxy route injects the
+    /// real value, so a key with no route reaches no provider. Value-free:
+    /// this reads the configuration only.
+    pub fn exec_delivery_for_secret(&self, secret_key: &str) -> ExecDelivery<'_> {
+        let mapped = || {
+            self.services
+                .iter()
+                .filter(move |(_, service)| service.secret_key == secret_key)
+        };
+        // Exec checks connection strings first and stops before any proxy
+        // route is considered, so that answer wins.
+        if let Some((name, _)) =
+            mapped().find(|(_, service)| service.secret_type == "connection_string")
+        {
+            return ExecDelivery::ConnectionStringRefused { service: name };
+        }
+        // Same filter as `ServiceRegistry::from_config`: only an api_key
+        // service with a host pattern becomes a proxy route.
+        let Some((name, service)) = mapped()
+            .find(|(_, service)| service.secret_type == "api_key" && service.pattern.is_some())
+        else {
+            return ExecDelivery::NoRoute;
+        };
+        if Self::trusted_builtin_proxy_service(name).as_ref() != Some(service) {
+            return ExecDelivery::CustomRouteRefused { service: name };
+        }
+        ExecDelivery::Proxied {
+            service: name,
+            upstream: service.pattern.as_deref().unwrap_or_default(),
+        }
     }
 
     /// Reject repository-authored proxy destinations that have not passed a
@@ -1398,6 +1481,66 @@ header = "Authorization"
             .service_risks()
             .iter()
             .all(|risk| risk.service != "gateway"));
+    }
+
+    #[test]
+    fn exec_delivery_names_the_route_or_its_absence() {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        assert_eq!(
+            config.exec_delivery_for_secret("OPENAI_API_KEY"),
+            ExecDelivery::Proxied {
+                service: "openai",
+                upstream: "api.openai.com",
+            }
+        );
+        // A key nothing routes: exec hands the child a session token only.
+        let unrouted = config.exec_delivery_for_secret("GROQ_API_KEY");
+        assert_eq!(unrouted, ExecDelivery::NoRoute);
+        assert_eq!(unrouted.label(), "no_route");
+        assert_eq!(unrouted.service(), None);
+        assert_eq!(
+            config.exec_delivery_for_secret("DATABASE_URL"),
+            ExecDelivery::ConnectionStringRefused {
+                service: "database"
+            }
+        );
+
+        // An api_key service without a host pattern is not a route.
+        config.services.insert(
+            "signing".to_string(),
+            ServiceConfig {
+                secret_key: "SIGNING_SECRET".to_string(),
+                pattern: None,
+                header: None,
+                header_format: None,
+                secret_type: "api_key".to_string(),
+            },
+        );
+        assert_eq!(
+            config.exec_delivery_for_secret("SIGNING_SECRET"),
+            ExecDelivery::NoRoute
+        );
+
+        // A custom route, or an altered built-in, is refused by exec.
+        config.services.insert(
+            "gateway".to_string(),
+            ServiceConfig {
+                secret_key: "GATEWAY_API_KEY".to_string(),
+                pattern: Some("gateway.example.com".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+        assert_eq!(
+            config.exec_delivery_for_secret("GATEWAY_API_KEY"),
+            ExecDelivery::CustomRouteRefused { service: "gateway" }
+        );
+        config.services.get_mut("openai").unwrap().header = Some("x-api-key".to_string());
+        assert_eq!(
+            config.exec_delivery_for_secret("OPENAI_API_KEY"),
+            ExecDelivery::CustomRouteRefused { service: "openai" }
+        );
     }
 
     // ── Rotation policy config tests ──────────────────────────────────────────

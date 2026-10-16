@@ -1606,7 +1606,7 @@
     },
     {
       "name": "phantom_why",
-      "description": "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, next_step} (also as structuredContent).",
+      "description": "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. For a protected key it also says how `phantom exec` delivers it: exec.delivery is `proxied` (a built-in route injects the real value for exec.upstream), `no_route` (the child gets only a session token that no provider accepts, so calls with it fail), `connection_string_refused` or `custom_route_refused` (exec will not start); next_step explains anything but `proxied`. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec: {delivery, service, upstream} | null, next_step} (also as structuredContent).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
