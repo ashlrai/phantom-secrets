@@ -12,8 +12,9 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use crate::tools::helpers::{
-    internal_err, invalid_params_err, json_object_result, report_result, require_approval_token,
-    require_confirm, text_result, vault_init_err,
+    config_invalid_err, internal_err, invalid_params_err, json_object_result, not_initialized_err,
+    report_result, require_approval_token, require_confirm, state_err, text_result, vault_init_err,
+    vault_read_err, NOT_INITIALIZED_NEXT_STEP,
 };
 use crate::tools::params::{
     AddSecretInteractiveParams, AddSecretParams, ApplyExpiryPolicyParams, ApprovalParams,
@@ -143,9 +144,7 @@ impl PhantomMcpServer {
         if self.config_path().exists() {
             return None;
         }
-        let next_step = "Phantom is not initialized in this project. Ask the user to run \
-                         `phantom init` in a trusted terminal (or call phantom_init with \
-                         confirm plus approval); phantom_why shows what init would protect.";
+        let next_step = NOT_INITIALIZED_NEXT_STEP;
         empty["initialized"] = false.into();
         empty["next_step"] = next_step.into();
         Some(report_result(format!("No secrets: {next_step}"), &empty))
@@ -236,12 +235,52 @@ impl PhantomMcpServer {
         })
     }
 
+    /// [`Self::load_config`] for a tool reply: before init, or with a config
+    /// that will not load, the error is a state the user can fix and names the
+    /// next step, not an internal error.
+    fn require_config(&self) -> Result<PhantomConfig, McpError> {
+        let path = self.config_path();
+        if !path.exists() {
+            return Err(not_initialized_err());
+        }
+        PhantomConfig::load(&path).map_err(config_invalid_err)
+    }
+
+    /// A tool that reports on the vault's inventory must not answer from an
+    /// empty backend when the project's secrets are in an encrypted-file vault
+    /// this process cannot open (PHANTOM_VAULT_PASSPHRASE unset here). That
+    /// answer would read as "nothing expires", "nothing is due" or "no such
+    /// secret". Refuses with the unlock step instead.
+    fn require_readable_inventory(
+        &self,
+        config: &PhantomConfig,
+        vault: &dyn phantom_vault::VaultBackend,
+    ) -> Result<(), McpError> {
+        if vault.backend_name() == "encrypted-file" {
+            return Ok(());
+        }
+        let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id())
+        else {
+            return Ok(());
+        };
+        let names = vault
+            .list()
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
+        if names.is_empty() {
+            return Err(state_err(format!(
+                "Vault locked: this project's secrets are in an encrypted-file vault this \
+                 process cannot open, so an empty answer here would be wrong. {notice}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Reject a malformed managed dotenv before approval consumption, vault
     /// construction, or any other effectful compatibility-tool preflight.
     /// Effectful callers still re-read under their transaction lock before
     /// committing, closing drift between this value-blind check and mutation.
     fn preflight_managed_dotenv_strict(&self) -> Result<(), McpError> {
-        let config = self.load_config().map_err(internal_err)?;
+        let config = self.require_config()?;
         let resolved =
             phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &config, &[]).map_err(
                 |error| invalid_params_err(format!("Failed to resolve managed dotenv: {error}")),
@@ -259,7 +298,7 @@ impl PhantomMcpServer {
     fn load_config_and_vault(
         &self,
     ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
-        let config = self.load_config().map_err(internal_err)?;
+        let config = self.require_config()?;
         let vault =
             phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
         Ok((config, vault))
@@ -306,9 +345,9 @@ impl PhantomMcpServer {
         let reviewed_config = reviewed_config_target
             .read_regular()
             .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?
-            .ok_or_else(|| internal_err("Not initialized. Run `phantom init` first."))?;
+            .ok_or_else(not_initialized_err)?;
         let config = PhantomConfig::load_from_bytes(&config_path, reviewed_config.bytes())
-            .map_err(|error| internal_err(format!("Failed to load config: {error}")))?;
+            .map_err(config_invalid_err)?;
         if config.local_project_id() != reviewed_local_project_id {
             return Err(internal_err(
                 "Reviewed config did not bind to the canonical local project identity; no project payload was used.",
@@ -339,7 +378,7 @@ impl PhantomMcpServer {
         let retained_config = config_target
             .read_regular()
             .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?
-            .ok_or_else(|| internal_err("Not initialized. Run `phantom init` first."))?;
+            .ok_or_else(not_initialized_err)?;
         if retained_config.identity() != reviewed_config.identity()
             || retained_config.bytes() != reviewed_config.bytes()
             || retained_config.permissions() != reviewed_config.permissions()
@@ -671,7 +710,7 @@ impl PhantomMcpServer {
         let (config, vault) = self.load_config_and_vault()?;
         let names = vault
             .list()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
 
         let secrets: Vec<serde_json::Value> = names
             .iter()
@@ -719,7 +758,7 @@ impl PhantomMcpServer {
             );
         }
 
-        let config = self.load_config().map_err(internal_err)?;
+        let config = self.require_config()?;
 
         let mut output = String::new();
         output.push_str(&format!("Project ID: {}\n", config.portable_project_id()));
@@ -998,9 +1037,9 @@ impl PhantomMcpServer {
         let config_path = canonical_project.join(".phantom.toml");
         let config_before = phantom_core::fs::read_regular_file(&config_path)
             .map_err(|error| internal_err(format!("Failed to read config safely: {error}")))?
-            .ok_or_else(|| internal_err("Project is not initialized"))?;
+            .ok_or_else(not_initialized_err)?;
         let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
-            .map_err(|error| internal_err(format!("Failed to parse exact config: {error}")))?;
+            .map_err(config_invalid_err)?;
         let vault = phantom_vault::try_create_vault(config.local_project_id())
             .map_err(|error| internal_err(format!("Failed to open vault: {error}")))?;
         let plan = phantom_vault::ManagedRemovePlan::prepare(
@@ -1060,7 +1099,7 @@ impl PhantomMcpServer {
         let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
         let names = vault
             .list()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
 
         if names.is_empty() {
             return text_result("No secrets to rotate.");
@@ -1125,7 +1164,7 @@ impl PhantomMcpServer {
                 "Automated live provider issuance is disabled before approval consumption, vault access, credential access, or network I/O. Phantom requires a durable value-free provider recovery handle and verified abort path before it can safely persist a successor locally. Rotate at the provider, then store the replacement interactively. Unit-test mock providers are not production capability evidence. Do not retry automatically.",
             ));
         }
-        let preflight_config = self.load_config().map_err(internal_err)?;
+        let preflight_config = self.require_config()?;
         let preflight_env =
             phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &preflight_config, &[])
                 .map_err(|error| invalid_params_err(error.to_string()))?;
@@ -1431,7 +1470,7 @@ impl PhantomMcpServer {
         ensure_cloud_push_allowed_mcp(&config)?;
         let mut names = vault
             .list()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
         names.sort();
 
         if names.is_empty() {
@@ -1465,7 +1504,7 @@ impl PhantomMcpServer {
         )?;
 
         let token = phantom_core::auth::load_token()
-            .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
+            .ok_or_else(|| state_err("Not logged in. Next step: ask the user to run `phantom login` in a trusted terminal, then retry."))?;
         require_exact_config_before_effect(&config_path, &config_before)?;
 
         let mut secrets = BTreeMap::new();
@@ -1554,7 +1593,7 @@ impl PhantomMcpServer {
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
         let token = phantom_core::auth::load_token()
-            .ok_or_else(|| internal_err("Not logged in. Run `phantom login` first."))?;
+            .ok_or_else(|| state_err("Not logged in. Next step: ask the user to run `phantom login` in a trusted terminal, then retry."))?;
         require_exact_config_before_effect(&config_path, &config_before)?;
 
         let api_base = phantom_core::auth::api_base_url()
@@ -2139,7 +2178,7 @@ impl PhantomMcpServer {
         // config, so classify the project's `.env` exactly as `phantom why`
         // does; that is when an agent most needs to know what init would do.
         let config = if self.config_path().exists() {
-            Some(self.load_config().map_err(internal_err)?)
+            Some(self.require_config()?)
         } else {
             None
         };
@@ -2661,7 +2700,7 @@ impl PhantomMcpServer {
         let (config, vault) = self.load_config_and_vault()?;
         let secret_names = vault
             .list()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
 
         // Filter sync targets by platform if specified
         let targets: Vec<_> = if let Some(ref platform_filter) = params.platform {
@@ -3149,7 +3188,7 @@ impl PhantomMcpServer {
         let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
         let names = vault
             .list()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
 
         if names.is_empty() {
             return text_result("No Phantom tokens to remap.");
@@ -3192,7 +3231,7 @@ impl PhantomMcpServer {
 
         let entries = vault
             .list_with_metadata()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
 
         let mut output = format!("{} secret(s) in vault:\n", entries.len());
         let mut expired_count = 0usize;
@@ -3918,7 +3957,7 @@ impl PhantomMcpServer {
             let alerting_config = match config_before.as_deref() {
                 Some(bytes) => {
                     PhantomConfig::load_from_bytes(&config_path, bytes)
-                        .map_err(|error| internal_err(format!("Failed to load config: {error}")))?
+                        .map_err(config_invalid_err)?
                         .alerting
                 }
                 None => AlertingConfig::default(),
@@ -4293,11 +4332,12 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<RotationDueParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (_config, vault) = self.load_config_and_vault()?;
+        let (config, vault) = self.load_config_and_vault()?;
+        self.require_readable_inventory(&config, vault.as_ref())?;
 
         let entries = vault
             .list_with_metadata()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
 
         let mut due: Vec<serde_json::Value> = Vec::new();
         let mut warning: Vec<serde_json::Value> = Vec::new();
@@ -4465,12 +4505,13 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<ValidateSecretParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (_config, vault) = self.load_config_and_vault()?;
+        let (config, vault) = self.load_config_and_vault()?;
+        self.require_readable_inventory(&config, vault.as_ref())?;
 
         // Confirm the secret exists.
         let exists = vault
             .exists(&params.name)
-            .map_err(|e| internal_err(format!("Vault access failed: {e}")))?;
+            .map_err(|e| vault_read_err("Vault access failed", e))?;
         if !exists {
             return Err(crate::tools::helpers::invalid_params_err(format!(
                 "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
@@ -4520,14 +4561,14 @@ impl PhantomMcpServer {
         let config_path = canonical_project.join(".phantom.toml");
         let config_before = phantom_core::fs::read_regular_file(&config_path)
             .map_err(|error| internal_err(format!("Failed to read config safely: {error}")))?
-            .ok_or_else(|| internal_err("Project is not initialized"))?;
+            .ok_or_else(not_initialized_err)?;
         let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
-            .map_err(|error| internal_err(format!("Failed to parse exact config: {error}")))?;
+            .map_err(config_invalid_err)?;
         let vault = phantom_vault::try_create_vault(config.local_project_id())
             .map_err(|error| internal_err(format!("Failed to open vault: {error}")))?;
         let mut names = vault
             .list()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
         names.sort();
         let (names_digest, names_sample) = bounded_validation_name_plan(&names)?;
         let mut metadata_before = std::collections::BTreeMap::new();
@@ -4666,9 +4707,9 @@ impl PhantomMcpServer {
         let config_path = canonical_project.join(".phantom.toml");
         let config_before = phantom_core::fs::read_regular_file(&config_path)
             .map_err(|error| internal_err(format!("Failed to read config safely: {error}")))?
-            .ok_or_else(|| internal_err("Project is not initialized"))?;
+            .ok_or_else(not_initialized_err)?;
         let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
-            .map_err(|error| internal_err(format!("Failed to parse exact config: {error}")))?;
+            .map_err(config_invalid_err)?;
         let state_path = state_file_path(config.local_project_id());
         let (mut state, before) = SchedulerState::load_exact(&state_path)
             .map_err(|e| internal_err(format!("Failed to read scheduler state safely: {e}")))?;
@@ -4741,9 +4782,9 @@ impl PhantomMcpServer {
         let config_path = canonical_project.join(".phantom.toml");
         let config_before = phantom_core::fs::read_regular_file(&config_path)
             .map_err(|error| internal_err(format!("Failed to read config safely: {error}")))?
-            .ok_or_else(|| internal_err("Project is not initialized"))?;
+            .ok_or_else(not_initialized_err)?;
         let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
-            .map_err(|error| internal_err(format!("Failed to parse exact config: {error}")))?;
+            .map_err(config_invalid_err)?;
         let state_path = state_file_path(config.local_project_id());
         let state = SchedulerState::load(&state_path)
             .map_err(|error| internal_err(format!("Failed to read scheduler state: {error}")))?;
@@ -4776,11 +4817,12 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<ExpiryCheckParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (_config, vault) = self.load_config_and_vault()?;
+        let (config, vault) = self.load_config_and_vault()?;
+        self.require_readable_inventory(&config, vault.as_ref())?;
 
         let entries = vault
             .list_with_metadata()
-            .map_err(|e| internal_err(format!("Failed to list vault metadata: {e}")))?;
+            .map_err(|e| vault_read_err("Failed to list vault metadata", e))?;
 
         let mut expiring: Vec<serde_json::Value> = entries
             .iter()
@@ -4899,7 +4941,7 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::rotation_strategy::{check_expiry, ExpiryStatus};
 
-        let config = self.load_config().map_err(internal_err)?;
+        let config = self.require_config()?;
         let now = phantom_vault::metadata::now_secs();
 
         let mut expired: Vec<serde_json::Value> = Vec::new();
@@ -4974,11 +5016,12 @@ impl PhantomMcpServer {
         use phantom_core::rotation_strategy::next_rotation_after;
 
         let (config, vault) = self.load_config_and_vault()?;
+        self.require_readable_inventory(&config, vault.as_ref())?;
 
         // Confirm secret exists.
         let exists = vault
             .exists(&params.name)
-            .map_err(|e| internal_err(format!("Vault access failed: {e}")))?;
+            .map_err(|e| vault_read_err("Vault access failed", e))?;
         if !exists {
             return Err(crate::tools::helpers::invalid_params_err(format!(
                 "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
@@ -5041,7 +5084,7 @@ impl PhantomMcpServer {
 
         let entries = vault
             .list_with_metadata()
-            .map_err(|e| internal_err(format!("Failed to list secrets: {e}")))?;
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
 
         let mut demoted: Vec<serde_json::Value> = Vec::new();
         let mut promoted: Vec<serde_json::Value> = Vec::new();
@@ -5516,8 +5559,7 @@ fn load_mcp_config_exact(path: &Path) -> Result<(PhantomConfig, Vec<u8>), McpErr
     let before = phantom_core::fs::read_regular_file(path)
         .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?
         .ok_or_else(|| invalid_params_err("Target .phantom.toml does not exist"))?;
-    let config = PhantomConfig::load_from_bytes(path, &before)
-        .map_err(|error| internal_err(format!("Failed to load config: {error}")))?;
+    let config = PhantomConfig::load_from_bytes(path, &before).map_err(config_invalid_err)?;
     Ok((config, before))
 }
 
@@ -8472,6 +8514,150 @@ mod tests {
                 &symlinked_value,
             ],
         );
+    }
+
+    fn params<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Parameters<T> {
+        Parameters(serde_json::from_value(value).unwrap())
+    }
+
+    fn assert_state_error(error: McpError, needle: &str) {
+        assert_eq!(
+            error.code,
+            rmcp::model::ErrorCode::INVALID_REQUEST,
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains(needle), "{}", error.message);
+    }
+
+    /// Before init these returned -32603, which a client shows as a server
+    /// failure. They now return a state error that names `phantom init`.
+    #[test]
+    fn vault_tools_before_init_name_the_init_step() {
+        let _environment = TestEnvironment::new();
+        let dir = TempDir::new().unwrap();
+        let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+        let name = serde_json::json!({ "name": "OPENAI_API_KEY" });
+        let errors = [
+            server
+                .phantom_secrets_expiry_check(params(serde_json::json!({})))
+                .unwrap_err(),
+            server
+                .phantom_secret_rotation_due(params(serde_json::json!({})))
+                .unwrap_err(),
+            server
+                .phantom_validate_secret(params(name.clone()))
+                .unwrap_err(),
+            server
+                .phantom_rotation_schedule_next(params(name))
+                .unwrap_err(),
+            server
+                .phantom_sync(params(serde_json::json!({})))
+                .unwrap_err(),
+            server
+                .phantom_expiry_enforce(params(serde_json::json!({})))
+                .unwrap_err(),
+            server
+                .phantom_validation_history(params(serde_json::json!({})))
+                .unwrap_err(),
+            server
+                .phantom_validation_schedule(params(serde_json::json!({})))
+                .unwrap_err(),
+        ];
+        for error in errors {
+            assert_state_error(error, "phantom init");
+        }
+    }
+
+    /// A wrong PHANTOM_VAULT_PASSPHRASE surfaced as -32603 "Decryption
+    /// failed"; it is a state the user fixes, so the reply names the fix.
+    #[test]
+    fn wrong_vault_passphrase_names_the_passphrase_step() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, dir) = setup_test_project();
+        let project = dir.path().canonicalize().unwrap();
+        let config =
+            PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&project));
+        config.save(&project.join(".phantom.toml")).unwrap();
+        let value = format!("stored-{}", PhantomToken::generate().as_str());
+        phantom_vault::try_create_vault(config.local_project_id())
+            .unwrap()
+            .store("OPENAI_API_KEY", &value)
+            .unwrap();
+        // SAFETY: TestEnvironment holds the env lock and restores the value.
+        unsafe { std::env::set_var("PHANTOM_VAULT_PASSPHRASE", "not-the-stored-passphrase") };
+
+        let error = server
+            .phantom_secret_rotation_due(params(serde_json::json!({})))
+            .unwrap_err();
+        assert_state_error(error, "PHANTOM_VAULT_PASSPHRASE");
+        let error = server.phantom_list_secrets().unwrap_err();
+        assert_state_error(error, "restart the MCP server");
+    }
+
+    /// An empty backend that is not the encrypted-file vault, as the OS
+    /// keychain is when the secrets live in a file vault this process cannot
+    /// open.
+    struct EmptyKeychain;
+
+    impl phantom_vault::VaultBackend for EmptyKeychain {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            Err(phantom_core::error::PhantomError::SecretNotFound(
+                name.to_string(),
+            ))
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn backend_name(&self) -> &str {
+            "keychain"
+        }
+    }
+
+    /// With the passphrase unset, an empty keychain answer would read as "no
+    /// secrets", "nothing due" or "not found" while the real vault is locked.
+    /// The inventory tools refuse with the unlock step. Selecting the keychain
+    /// in-process needs a real OS keychain, so the guard is driven with a stub
+    /// backend.
+    #[test]
+    fn locked_file_vault_is_refused_not_reported_empty() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, dir) = setup_test_project();
+        let project = dir.path().canonicalize().unwrap();
+        let config =
+            PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&project));
+
+        // No file vault yet: an empty keychain is simply empty.
+        unsafe { std::env::remove_var("PHANTOM_VAULT_PASSPHRASE") };
+        server
+            .require_readable_inventory(&config, &EmptyKeychain)
+            .unwrap();
+
+        unsafe {
+            std::env::set_var(
+                "PHANTOM_VAULT_PASSPHRASE",
+                "test-passphrase-do-not-use-in-prod",
+            )
+        };
+        let value = format!("stored-{}", PhantomToken::generate().as_str());
+        phantom_vault::try_create_vault(config.local_project_id())
+            .unwrap()
+            .store("OPENAI_API_KEY", &value)
+            .unwrap();
+        unsafe { std::env::remove_var("PHANTOM_VAULT_PASSPHRASE") };
+
+        let error = server
+            .require_readable_inventory(&config, &EmptyKeychain)
+            .unwrap_err();
+        assert_state_error(error, "Vault locked");
     }
 
     #[test]
