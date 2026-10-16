@@ -18,6 +18,13 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   - Its JSON now comes from the same `why_report` that `phantom why --json`
     prints, so the two cannot drift. A malformed `.phantom.toml` or dotenv is
     still an error. Nothing is created or initialized by asking.
+  - Before init, `phantom why` and `phantom_why` refuse a `./.env` that is a
+    symlink or not a regular file, as the managed-dotenv resolver already
+    does after init, so neither reads a file outside the project.
+  - When `.phantom.toml` lists no secrets and the dotenv holds no tokens,
+    the human summary adds that `phantom_why` does not read the vault and
+    points at `phantom_doctor` / `phantom_status` for vault/dotenv drift. The
+    JSON is unchanged.
 
 ### Fixed (protected keys with no proxy route)
 

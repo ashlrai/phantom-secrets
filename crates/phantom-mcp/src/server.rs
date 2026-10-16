@@ -2064,27 +2064,59 @@ impl PhantomMcpServer {
         } else {
             None
         };
-        let env_path = match config.as_ref() {
-            Some(config) => self.resolve_env_path(config, &[])?,
-            None => self.project_dir.join(".env"),
+        // Both branches refuse a symlinked or non-regular dotenv before reading
+        // it, so `./.env` pointing outside the project is never read.
+        let (env_path, dotenv) = match config.as_ref() {
+            Some(config) => {
+                let resolved =
+                    phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, config, &[])
+                        .map_err(|error| {
+                            internal_err(format!("Failed to resolve managed dotenv: {error}"))
+                        })?;
+                (resolved.path, resolved.file)
+            }
+            None => {
+                let path = self.project_dir.join(".env");
+                let file =
+                    phantom_core::managed_dotenv::parse_regular_dotenv(&path).map_err(|error| {
+                        invalid_params_err(format!(
+                            "{error:#}; protection status is indeterminate. Replace it with a \
+                             regular file in the project directory."
+                        ))
+                    })?;
+                (path, file)
+            }
         };
         let not_initialized = config.is_none().then_some(
             "Phantom is not initialized in this project (no .phantom.toml); this \
              classifies ./.env as `phantom init` would see it.",
         );
-        if !env_path.exists() {
-            let report = phantom_core::why::why_report(&params.key, None, config.as_ref());
-            let mut output = format!(
-                "No .env file found. '{}' cannot be classified without an .env file.",
-                params.key
+        // why never opens the vault, so it cannot see secrets stored there
+        // when neither the config nor the dotenv records any.
+        let token_bearing = dotenv.as_ref().is_some_and(|file| {
+            file.entries()
+                .iter()
+                .any(|entry| PhantomToken::is_phantom_token(&entry.value))
+        });
+        let vault_drift_hint = config
+            .as_ref()
+            .is_some_and(|cfg| cfg.phantom.secrets.is_empty() && !token_bearing)
+            .then_some(
+                "Note: phantom_why does not read the vault, and neither .phantom.toml nor \
+                 the dotenv records a protected secret here. If you expected some, run \
+                 phantom_doctor or phantom_status to check for vault/dotenv drift.",
             );
-            if let Some(line) = not_initialized {
-                output = format!("{line}\n{output}");
-            }
-            return report_result(output, &report);
-        }
-        let dotenv = DotenvFile::parse_file(&env_path)
-            .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
+        let Some(dotenv) = dotenv else {
+            let report = phantom_core::why::why_report(&params.key, None, config.as_ref());
+            let mut lines: Vec<String> = not_initialized.iter().map(|l| l.to_string()).collect();
+            lines.push(format!(
+                "No .env file found ({}). '{}' cannot be classified without an .env file.",
+                env_path.display(),
+                params.key
+            ));
+            lines.extend(vault_drift_hint.map(str::to_string));
+            return report_result(lines.join("\n"), &report);
+        };
         dotenv.validate_for_mutation().map_err(|error| {
             invalid_params_err(format!(
                 "Managed dotenv is malformed; protection status is indeterminate: {error}"
@@ -2100,6 +2132,10 @@ impl PhantomMcpServer {
         }
         let Some(entry) = dotenv.entries().into_iter().find(|e| e.key == params.key) else {
             output.push_str(&format!("'{}' was not found in .env.", params.key));
+            if let Some(hint) = vault_drift_hint {
+                output.push('\n');
+                output.push_str(hint);
+            }
             return report_result(output, &report);
         };
 
@@ -2180,6 +2216,9 @@ impl PhantomMcpServer {
                     output.push_str("Phantom leaves non-secret config values untouched in .env.\n");
                 }
             }
+        }
+        if let Some(hint) = vault_drift_hint {
+            output.push_str(hint);
         }
 
         report_result(output.trim_end().to_string(), &report)
@@ -8099,6 +8138,72 @@ mod tests {
         assert_eq!(report["classification"], "protected");
         assert_eq!(report["exec"]["delivery"], "proxied");
         assert_no_value_leak(&result, &[other.as_str()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn why_before_init_refuses_a_symlinked_env() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        // A dotenv outside the project, reached through a `.env` symlink.
+        let outside = TempDir::new().unwrap();
+        let generated = phantom_core::token::PhantomToken::generate();
+        let value = generated.as_str().trim_start_matches("phm_");
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("STRIPE_SECRET_KEY={value}\n")).unwrap();
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".env")).unwrap();
+
+        let error = server
+            .phantom_why(Parameters(WhyParams {
+                key: "STRIPE_SECRET_KEY".to_string(),
+            }))
+            .expect_err("a symlinked .env must be refused, not classified");
+        assert!(
+            error.message.contains("not a regular, non-symlink file"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains(value));
+        assert!(!dir.path().join(".phantom.toml").exists());
+    }
+
+    #[test]
+    fn why_hints_at_vault_drift_when_nothing_records_a_secret() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let why = |key: &str| {
+            server
+                .phantom_why(Parameters(WhyParams {
+                    key: key.to_string(),
+                }))
+                .unwrap()
+        };
+        // Normal initialized project: the config and dotenv record secrets.
+        assert!(!extract_content_text(&why("NODE_ENV")).contains("drift"));
+
+        // The config lists no secrets and the dotenv holds no tokens, but the
+        // vault may still: why cannot tell, so it says where to look.
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.phantom.secrets.clear();
+        config.save(&config_path).unwrap();
+        std::fs::write(dir.path().join(".env"), "NODE_ENV=production\n").unwrap();
+
+        for key in ["NODE_ENV", "NOPE"] {
+            let result = why(key);
+            let text = extract_content_text(&result);
+            assert!(text.contains("vault/dotenv drift"), "{text}");
+            assert!(text.contains("phantom_doctor"), "{text}");
+            // The JSON shape is unchanged.
+            let dotenv = DotenvFile::parse_file(&dir.path().join(".env")).unwrap();
+            let config = PhantomConfig::load(&config_path).unwrap();
+            assert_eq!(
+                structured_report(&result),
+                phantom_core::why::why_report(key, Some(&dotenv), Some(&config)),
+                "{key}"
+            );
+        }
     }
 
     #[test]

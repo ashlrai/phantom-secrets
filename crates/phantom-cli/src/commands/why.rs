@@ -46,6 +46,22 @@ fn print_exec_verdict(verdict: &phantom_core::why::ExecVerdict<'_>) {
     );
 }
 
+/// The dotenv `why` classifies: the managed dotenv when the project has a
+/// config, else `./.env`, matching MCP `phantom_why`. Either way a symlinked
+/// or non-regular file is refused before it is read; `None` when it is absent.
+fn read_dotenv(
+    project_dir: &std::path::Path,
+    config: Option<&PhantomConfig>,
+) -> Result<Option<DotenvFile>> {
+    match config {
+        Some(config) => {
+            Ok(phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])?.file)
+        }
+        None => phantom_core::managed_dotenv::parse_regular_dotenv(&project_dir.join(".env"))
+            .context("Refusing to classify ./.env; protection status is indeterminate"),
+    }
+}
+
 /// Explain why a specific key is or isn't protected by Phantom.
 ///
 /// With `json`, prints the value-free report shared with the MCP `phantom_why`
@@ -54,27 +70,21 @@ pub fn run(key: &str, json: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let config = PhantomConfig::load(&config_path).ok();
-    let env_path = match config.as_ref() {
-        Some(config) => {
-            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, config, &[])?.path
-        }
-        None => project_dir.join(".env"),
-    };
+    let dotenv = read_dotenv(&project_dir, config.as_ref())?;
 
-    if json && !env_path.exists() {
+    if json && dotenv.is_none() {
         let report = phantom_core::why::why_report(key, None, config.as_ref());
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
 
-    if !env_path.exists() {
+    let Some(dotenv) = dotenv else {
         anyhow::bail!(
             "No .env file found in current directory.\n  {}",
             crate::util::docs_url("getting-started")
         );
-    }
+    };
 
-    let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env")?;
     dotenv
         .validate_for_mutation()
         .context("Managed dotenv is malformed; protection status is indeterminate")?;
@@ -248,5 +258,33 @@ fn explain_why_secret(entry: &EnvEntry) {
             "   Reason: Value is a high-entropy string ({} chars)",
             value.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn read_dotenv_refuses_a_symlinked_env_before_init() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, "NODE_ENV=production\n").unwrap();
+        std::os::unix::fs::symlink(&target, project.path().join(".env")).unwrap();
+
+        let error = read_dotenv(project.path(), None).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("not a regular, non-symlink file"),
+            "{error:#}"
+        );
+
+        // A regular ./.env is still read, and a missing one is None.
+        std::fs::remove_file(project.path().join(".env")).unwrap();
+        assert!(read_dotenv(project.path(), None).unwrap().is_none());
+        std::fs::write(project.path().join(".env"), "NODE_ENV=production\n").unwrap();
+        let dotenv = read_dotenv(project.path(), None).unwrap().unwrap();
+        assert_eq!(dotenv.entries().len(), 1);
     }
 }
