@@ -121,32 +121,74 @@ fn open_regular_file(path: &Path, shown: &str) -> Result<Option<std::fs::File>> 
     let metadata = file
         .metadata()
         .with_context(|| format!("Failed to inspect {shown}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || is_reparse_point(&metadata) {
+    // On Windows `is_symlink()` covers every name-surrogate reparse point:
+    // symlinks and junctions.
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(refuse_non_regular(shown));
+    }
+    #[cfg(windows)]
+    if is_reparse_point(&metadata) {
+        return windows_reopen_contents(&file, shown).map(Some);
     }
     Ok(Some(file))
 }
 
-/// Any reparse point, not only a symlink. With FILE_FLAG_OPEN_REPARSE_POINT a
-/// non-name-surrogate reparse file (a OneDrive/Cloud Files placeholder, a
-/// deduplicated file, an app execution alias) is opened as its stub and still
-/// reports `is_file()`, so reading it could judge stub data as clean.
 #[cfg(windows)]
 fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
     metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
-#[cfg(not(windows))]
-fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
-    false
+/// A non-name-surrogate reparse file: a OneDrive/Cloud Files file (hydrated
+/// files keep the tag, so a project under a synced folder is full of them), a
+/// deduplicated file, an app execution alias. Opened with
+/// FILE_FLAG_OPEN_REPARSE_POINT it reads as its stub, which could judge stub
+/// data as clean. ReOpenFile without that flag re-opens the same file object,
+/// with no new path lookup, so the filter serves the real contents. That
+/// handle must still be a regular file; a failed reopen is a refusal.
+#[cfg(windows)]
+fn windows_reopen_contents(file: &std::fs::File, shown: &str) -> Result<std::fs::File> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        ReOpenFile, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    // SAFETY: the handle is owned by `file` and valid for the call; the
+    // returned handle, when valid, is owned by the File built from it.
+    let handle = unsafe {
+        ReOpenFile(
+            file.as_raw_handle(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            0,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        return Err(refuse_non_regular(shown)).with_context(|| {
+            format!(
+                "Windows could not reopen the reparse point {shown} for its contents: {}",
+                std::io::Error::last_os_error()
+            )
+        });
+    }
+    let reopened = unsafe { std::fs::File::from_raw_handle(handle) };
+    let metadata = reopened
+        .metadata()
+        .with_context(|| format!("Failed to inspect {shown}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(refuse_non_regular(shown));
+    }
+    Ok(reopened)
 }
 
 /// Read and parse an already-checked handle. The plaintext buffer is zeroized.
 fn read_dotenv_handle(mut file: std::fs::File, shown: &str) -> Result<DotenvFile> {
     use std::io::Read;
     use zeroize::Zeroize;
+    #[cfg(test)]
+    tests::DOTENV_READS.with(|reads| reads.set(reads.get() + 1));
     let mut content = String::new();
     let read = file.read_to_string(&mut content);
     let parsed = read
@@ -305,6 +347,11 @@ pub fn resolve_dotenv(
 mod tests {
     use super::*;
 
+    thread_local! {
+        /// Dotenv handles read on this thread; tests count reads with it.
+        pub(super) static DOTENV_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     #[test]
     fn rejects_repository_controlled_path_traversal() {
         for bad in [
@@ -448,6 +495,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_reparse_attribute_is_refused_and_plain_files_are_not() {
+        use std::io::Read;
         use std::os::windows::fs::OpenOptionsExt;
         let dir = tempfile::tempdir().unwrap();
         let plain = dir.path().join(".env.local");
@@ -457,6 +505,21 @@ mod tests {
         assert!(parse_regular_dotenv(dir.path(), ".env.local")
             .unwrap()
             .is_some());
+
+        // The reopen path: ReOpenFile on a handle opened with
+        // FILE_FLAG_OPEN_REPARSE_POINT gives a regular-file handle that reads
+        // the real contents. A non-name-surrogate reparse file (a Cloud Files
+        // placeholder) cannot be created on a CI runner without a sync
+        // provider, so the reopen itself is driven on a plain file here.
+        let flagged = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(0x0020_0000)
+            .open(&plain)
+            .unwrap();
+        let mut reopened = windows_reopen_contents(&flagged, ".env.local").unwrap();
+        let mut content = String::new();
+        reopened.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "A=1\n");
 
         std::fs::write(dir.path().join("target"), "A=1\n").unwrap();
         // File symlinks need the create-symlink privilege (admin or Developer
@@ -492,7 +555,11 @@ mod tests {
         )
         .unwrap();
         let config = PhantomConfig::new_with_defaults("resolve-reuse".to_string());
+        DOTENV_READS.with(|reads| reads.set(0));
         let resolved = resolve_dotenv(dir.path(), &config, &[]).unwrap();
+        // One read per existing file; a second read of the token-bearing
+        // file would make this 3.
+        assert_eq!(DOTENV_READS.with(|reads| reads.get()), 2);
         assert_eq!(resolved.path, dir.path().join(".env.local"));
         assert_eq!(
             resolved.protected_keys(),
