@@ -91,6 +91,10 @@ enum Commands {
         /// Configure audit encryption: none/local; cloud-signed is reserved and refused
         #[arg(long, value_enum, value_name = "MODE")]
         audit_mode: Option<commands::setup::AuditMode>,
+        /// Read-only: list which clients (Claude Code, Cursor, Windsurf, Codex,
+        /// Gemini CLI) have Phantom wired. Use the global --json for JSON.
+        #[arg(long, conflicts_with_all = ["client", "print", "audit_mode"])]
+        status: bool,
     },
 
     /// Agent readiness report, doctor, and setup workflows
@@ -1032,7 +1036,14 @@ fn run() -> anyhow::Result<()> {
             client,
             print,
             audit_mode,
-        } => commands::setup::run(client, print, audit_mode),
+            status,
+        } => {
+            if status {
+                commands::setup_status::run(cli.json)
+            } else {
+                commands::setup::run(client, print, audit_mode)
+            }
+        }
         Commands::Sync {
             platform,
             project,
