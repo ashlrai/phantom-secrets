@@ -4,6 +4,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (upgrade)
+
+- `phantom upgrade` no longer depends on the `zip` 8 line, which crates.io has
+  yanked in full and which failed the `cargo-deny` dependency policy.
+  `self_update` is now built without its zip backend, and Windows `.zip`
+  release assets go through Phantom's own path on `zip` 9.0.3: the same
+  exact-asset selection, writability probe, and `SHA256SUMS` (plus GitHub
+  asset digest) verification before anything is extracted, then a
+  `self-replace` swap of the running executable. Only the root
+  `phantom.exe` regular-file entry is extracted, to a path Phantom chooses;
+  an archive with any absolute, drive-qualified, or `..` entry name, a
+  duplicate or symlinked `phantom.exe`, or an entry over the 256 MiB binary
+  limit is refused. Linux and macOS `.tar.gz` upgrades are unchanged.
+
 ### Fixed (proxy)
 
 - The built-in `twilio` route now sends valid HTTP Basic credentials. It
