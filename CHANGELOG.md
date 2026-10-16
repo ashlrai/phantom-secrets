@@ -33,6 +33,11 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   offending key by file; a symlinked or unparseable file is indeterminate and
   fails the check. `phantom check` scans the same list (it previously skipped
   `.env.development.local`, `.env.production.local` and the `.env.test` files).
+- MCP `phantom_check` kept its own four-file list, ignored `dotenv_path` and
+  followed symlinks, so an agent's check could pass a repo the CLI failed, or
+  report a file outside the project. It now scans the same list as
+  `phantom check` and `env_clean`; a symlink is not read and is reported as
+  indeterminate, so the result is not clean.
 - The `confirm: true` refusal called every gated tool "a destructive vault
   operation", including `phantom_cloud_status`, `phantom_team_list`,
   `phantom_team_members` and `phantom_validate_all`, which read but send a

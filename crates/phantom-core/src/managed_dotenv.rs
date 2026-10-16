@@ -104,11 +104,12 @@ pub const SCANNED_DOTENV_NAMES: &[&str] = &[
     ".env.test.local",
 ];
 
-/// The scan targets that exist: each of [`SCANNED_DOTENV_NAMES`], then the
-/// configured `dotenv_path` when one is set and is not already among them. A
-/// symlink, a non-regular file or an invalid configured name is an error,
-/// never "absent".
-pub fn scanned_dotenv_paths(project_dir: &Path, configured: Option<&str>) -> Result<Vec<PathBuf>> {
+/// The names a plaintext scan judges, whether or not they exist: each of
+/// [`SCANNED_DOTENV_NAMES`], then the configured `dotenv_path` when one is set
+/// and is not already among them. An invalid configured name is an error.
+/// For a caller that must report each file on its own; others use
+/// [`scanned_dotenv_paths`].
+pub fn scanned_dotenv_names(configured: Option<&str>) -> Result<Vec<String>> {
     let mut names: Vec<String> = SCANNED_DOTENV_NAMES.iter().map(|n| n.to_string()).collect();
     if let Some(configured) = configured {
         let configured = validate_dotenv_basename(configured)?;
@@ -116,8 +117,16 @@ pub fn scanned_dotenv_paths(project_dir: &Path, configured: Option<&str>) -> Res
             names.push(configured);
         }
     }
+    Ok(names)
+}
+
+/// The scan targets that exist: each of [`SCANNED_DOTENV_NAMES`], then the
+/// configured `dotenv_path` when one is set and is not already among them. A
+/// symlink, a non-regular file or an invalid configured name is an error,
+/// never "absent".
+pub fn scanned_dotenv_paths(project_dir: &Path, configured: Option<&str>) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
-    for name in names {
+    for name in scanned_dotenv_names(configured)? {
         let path = project_dir.join(&name);
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {

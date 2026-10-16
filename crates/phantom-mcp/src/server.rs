@@ -2390,7 +2390,7 @@ impl PhantomMcpServer {
 
     /// Check for leaked secrets or orphaned phantom tokens.
     #[tool(
-        description = "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans .env files for unprotected real secrets. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?}. Reports names and paths only, never values or phantom tokens."
+        description = "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?}. Reports names and paths only, never values or phantom tokens."
     )]
     fn phantom_check(
         &self,
@@ -2462,20 +2462,45 @@ impl PhantomMcpServer {
             );
             report_result(output, &report)
         } else {
-            // Scan .env files for unprotected secrets
-            let env_files = [".env", ".env.local", ".env.development", ".env.production"];
+            // Scan the same files as `phantom check` and compliance `env_clean`:
+            // SCANNED_DOTENV_NAMES plus the configured `dotenv_path`. A symlink
+            // or other non-regular file is never followed; it is reported as
+            // indeterminate, which keeps the result from being clean.
             let mut findings: Vec<CheckFinding> = Vec::new();
             let mut indeterminate: Vec<CheckIndeterminate> = Vec::new();
             let mut output = String::new();
 
+            let configured = if self.config_path().exists() {
+                match self.load_config() {
+                    Ok(config) => Ok(config.phantom.dotenv_path.clone()),
+                    Err(error) => Err(format!("config could not be read: {error}")),
+                }
+            } else {
+                Ok(None)
+            };
+            let env_files = configured.and_then(|configured| {
+                phantom_core::managed_dotenv::scanned_dotenv_names(configured.as_deref())
+                    .map_err(|error| format!("{error:#}"))
+            });
+            let env_files = match env_files {
+                Ok(names) => names,
+                Err(reason) => {
+                    output.push_str(&format!(
+                        ".phantom.toml: {reason}; clean status is indeterminate\n"
+                    ));
+                    indeterminate.push(CheckIndeterminate {
+                        path: ".phantom.toml".to_string(),
+                        reason,
+                    });
+                    Vec::new()
+                }
+            };
+
             for filename in &env_files {
                 let path = self.project_dir.join(filename);
-                if !path.exists() {
-                    continue;
-                }
-
-                match DotenvFile::parse_file(&path) {
-                    Ok(dotenv) => {
+                match phantom_core::managed_dotenv::parse_regular_dotenv(&path) {
+                    Ok(None) => {}
+                    Ok(Some(dotenv)) => {
                         if let Err(error) = dotenv.validate_for_mutation() {
                             output.push_str(&format!(
                                 "{}: malformed; clean status is indeterminate ({})\n",
@@ -2507,10 +2532,13 @@ impl PhantomMcpServer {
                         }
                     }
                     Err(e) => {
-                        output.push_str(&format!("{}: failed to parse ({})\n", filename, e));
+                        output.push_str(&format!(
+                            "{}: could not be read safely ({:#})\n",
+                            filename, e
+                        ));
                         indeterminate.push(CheckIndeterminate {
                             path: filename.to_string(),
-                            reason: format!("failed to parse: {e}"),
+                            reason: format!("could not be read safely: {e:#}"),
                         });
                     }
                 }
@@ -8359,6 +8387,91 @@ mod tests {
             serde_json::json!({"mode":"worktree","clean":true,"findings":[],"warnings":[]})
         );
         assert_no_value_leak(&result, &[token.as_str()]);
+    }
+
+    /// MCP `phantom_check` must judge the same files as `phantom check`: every
+    /// SCANNED_DOTENV_NAMES entry plus the configured `dotenv_path`, with a
+    /// symlink refused rather than followed.
+    #[cfg(unix)]
+    #[test]
+    fn check_worktree_scans_what_the_cli_scans_and_refuses_symlinks() {
+        let _environment = TestEnvironment::new();
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let mut config =
+            PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&project));
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        config.save(&project.join(".phantom.toml")).unwrap();
+        let token = PhantomToken::generate();
+        // Plaintext values are built at runtime, never written as credential
+        // shapes in source: the key names alone make them real secrets.
+        let plaintext = |label: &str| format!("{label}-{}", &token.as_str()[4..]);
+        let configured_value = plaintext("configured");
+        let test_local_value = plaintext("test-local");
+        let symlinked_value = plaintext("symlinked");
+        std::fs::write(
+            project.join("custom.env"),
+            format!(
+                "OPENAI_API_KEY={}\nSTRIPE_SECRET_KEY={configured_value}\n",
+                token.as_str()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            project.join(".env.test.local"),
+            format!("ANTHROPIC_API_KEY={test_local_value}\n"),
+        )
+        .unwrap();
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("GITHUB_TOKEN={symlinked_value}\n")).unwrap();
+        std::os::unix::fs::symlink(&target, project.join(".env.production")).unwrap();
+        let server = PhantomMcpServer::with_dir(project.clone());
+
+        let result = server
+            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .unwrap();
+
+        let report = structured_report(&result);
+        assert_eq!(report["clean"], false);
+        let mut found: Vec<(String, String)> = report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                (
+                    f["path"].as_str().unwrap().to_string(),
+                    f["name"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    ".env.test.local".to_string(),
+                    "ANTHROPIC_API_KEY".to_string()
+                ),
+                ("custom.env".to_string(), "STRIPE_SECRET_KEY".to_string()),
+            ]
+        );
+        let indeterminate = report["indeterminate"].as_array().unwrap();
+        assert_eq!(indeterminate.len(), 1, "{report}");
+        assert_eq!(indeterminate[0]["path"], ".env.production");
+        assert!(indeterminate[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("not a regular, non-symlink file"));
+        assert_no_value_leak(
+            &result,
+            &[
+                token.as_str(),
+                &configured_value,
+                &test_local_value,
+                &symlinked_value,
+            ],
+        );
     }
 
     #[test]
