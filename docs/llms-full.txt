@@ -151,7 +151,14 @@ the value-blind effect and exact parameters, and requires a fresh typed
 challenge. A same-user shell or controllable PTY can defeat this ceremony, so
 leave effects disabled unless the approval command and approval storage are
 outside agent authority. The token is never a substitute for explicit user
-consent. Advanced audit, validation, rotation, and expiry tools have
+consent. Approval flow once enabled: the first call without `approval_token`
+prints a nonce on the server's stderr; the operator runs
+`phantom mcp-approve <NONCE>` in a trusted terminal; the agent retries the
+identical call with `approval_token: "<nonce>:<token>"`. Set the variable in the
+environment that launches the server (for example
+`claude mcp add --scope user -e PHANTOM_MCP_EFFECTS=trusted-terminal ...`), not
+in a file the agent can edit. Every tool whose schema takes `approval_token`
+says so in its description. Advanced audit, validation, rotation, and expiry tools have
 distinct schemas and conditional gates; inspect `tools/list` rather than
 extrapolating this selected catalog.
 
@@ -172,7 +179,7 @@ cached by a running process.
 - `phantom_list_secrets` — List secret names with service mappings (never values). Output: summary text, then `{count, secrets: [{name, service}]}` as JSON text and `structuredContent`.
 - `phantom_list_with_expiry` — List secret names with TTL state. Params: show_expiry. Output: summary text, then `{count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, expires_at?, days_remaining?}]}` as JSON text and `structuredContent`; `status` is `expired`, `expiring_soon`, `ok`, or `no_expiry`.
 - `phantom_status` — Show repository-local status without opening the vault. Output: summary text, then `{initialized, project_id, vault_inspected: false, dotenv: {path, entries, phantom_tokens, unprotected} | null, services: [{name, secret_key, pattern}], next_step}` as JSON text and `structuredContent`.
-- `phantom_add_secret_interactive` — Return a command that prompts for a new value in a trusted terminal, outside MCP. Params: name, confirm, approval_token.
+- `phantom_add_secret_interactive` — Return `phantom add NAME`, which prompts for a new value in a trusted terminal, outside MCP. Effect-free: no value, no storage, no approval; works with `PHANTOM_MCP_EFFECTS` unset. Params: name (`[A-Za-z_][A-Za-z0-9_]*`), confirm (optional, ignored).
 - `phantom_add_secret` — Deprecated compatibility tool; refuses plaintext values passed through MCP. Params: name, confirm, approval_token.
 - `phantom_remove_secret` — Transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping. Params: name, confirm, approval_token.
 - `phantom_rotate` — Regenerate all phantom tokens in .env. Params: confirm, approval_token.
