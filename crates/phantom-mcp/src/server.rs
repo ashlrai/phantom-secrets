@@ -1,5 +1,5 @@
 use phantom_core::config::PhantomConfig;
-use phantom_core::dotenv::{classify, is_public_key, DotenvFile, SecretClassification};
+use phantom_core::dotenv::{classify, DotenvFile, SecretClassification};
 use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget, TrustedAnchor};
 use phantom_core::precommit_hook::{self, HookChange};
 use phantom_core::report::{CheckFinding, CheckIndeterminate, CheckReport, DoctorReport};
@@ -2049,65 +2049,97 @@ impl PhantomMcpServer {
 
     /// Explain why a key is or isn't protected by Phantom.
     #[tool(
-        description = "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. For a protected key it also says how `phantom exec` treats it. exec.delivery judges the key alone: `proxied` (a built-in route injects the real value for exec.upstream), `no_route` (the child gets only a session token that no provider accepts, so calls with it fail), `withheld` (exec never hands the child this provider-management or sync credential), `connection_string_refused` or `custom_route_refused` (exec will not start). exec.blocked_by is non-null when the config stops exec from starting for every key: {service, reason: `custom_route`, `altered_builtin_route` or `connection_string`, key}. next_step explains anything but an unblocked `proxied`. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec: {delivery, service, upstream, blocked_by} | null, next_step} (also as structuredContent)."
+        description = "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. Value-blind: it reads .phantom.toml and the dotenv, never the vault, so it answers while the vault is locked and before `phantom init` (it then classifies ./.env, and exec is null). For a protected key it also says how `phantom exec` treats it. exec.delivery judges the key alone: `proxied` (a built-in route injects the real value for exec.upstream), `no_route` (the child gets only a session token that no provider accepts, so calls with it fail), `withheld` (exec never hands the child this provider-management or sync credential), `connection_string_refused` or `custom_route_refused` (exec will not start). exec.blocked_by is non-null when the config stops exec from starting for every key: {service, reason: `custom_route`, `altered_builtin_route` or `connection_string`, key}. next_step explains anything but an unblocked `proxied`. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec: {delivery, service, upstream, blocked_by} | null, next_step} (also as structuredContent)."
     )]
     fn phantom_why(
         &self,
         Parameters(params): Parameters<WhyParams>,
     ) -> Result<CallToolResult, McpError> {
-        let env_path = self.env_path()?;
-        let mut report = serde_json::json!({
-            "key": params.key,
-            "dotenv_exists": env_path.exists(),
-            "found": false,
-            "classification": null,
-            "protected": false,
-            "reason": null,
-            "matched_pattern": null,
-            "service": null,
-            "exec": null,
-            "next_step": null,
+        // Value-blind: read .phantom.toml and the dotenv's key names and token
+        // shapes only, never the vault. Before `phantom init` there is no
+        // config, so classify the project's `.env` exactly as `phantom why`
+        // does; that is when an agent most needs to know what init would do.
+        let config = if self.config_path().exists() {
+            Some(self.load_config().map_err(internal_err)?)
+        } else {
+            None
+        };
+        // Both branches refuse a symlinked or non-regular dotenv before reading
+        // it, so `./.env` pointing outside the project is never read.
+        let (env_path, dotenv) = match config.as_ref() {
+            Some(config) => {
+                let resolved =
+                    phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, config, &[])
+                        .map_err(|error| {
+                            internal_err(format!("Failed to resolve managed dotenv: {error}"))
+                        })?;
+                (resolved.path, resolved.file)
+            }
+            None => {
+                let path = self.project_dir.join(".env");
+                let file =
+                    phantom_core::managed_dotenv::parse_regular_dotenv(&path).map_err(|error| {
+                        invalid_params_err(format!(
+                            "{error:#}; protection status is indeterminate. Replace it with a \
+                             regular file in the project directory."
+                        ))
+                    })?;
+                (path, file)
+            }
+        };
+        let not_initialized = config.is_none().then_some(
+            "Phantom is not initialized in this project (no .phantom.toml); this \
+             classifies ./.env as `phantom init` would see it.",
+        );
+        // why never opens the vault, so it cannot see secrets stored there
+        // when neither the config nor the dotenv records any.
+        let token_bearing = dotenv.as_ref().is_some_and(|file| {
+            file.entries()
+                .iter()
+                .any(|entry| PhantomToken::is_phantom_token(&entry.value))
         });
-        if !env_path.exists() {
-            report["next_step"] =
-                "Create the managed .env (or set dotenv_path in .phantom.toml), then retry.".into();
-            return report_result(
-                format!(
-                    "No .env file found. '{}' cannot be classified without an .env file.",
-                    params.key
-                ),
-                &report,
+        let vault_drift_hint = config
+            .as_ref()
+            .is_some_and(|cfg| cfg.phantom.secrets.is_empty() && !token_bearing)
+            .then_some(
+                "Note: phantom_why does not read the vault, and neither .phantom.toml nor \
+                 the dotenv records a protected secret here. If you expected some, run \
+                 phantom_doctor or phantom_status to check for vault/dotenv drift.",
             );
-        }
-        let dotenv = DotenvFile::parse_file(&env_path)
-            .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
+        let Some(dotenv) = dotenv else {
+            let report = phantom_core::why::why_report(&params.key, None, config.as_ref());
+            let mut lines: Vec<String> = not_initialized.iter().map(|l| l.to_string()).collect();
+            lines.push(format!(
+                "No .env file found ({}). '{}' cannot be classified without an .env file.",
+                env_path.display(),
+                params.key
+            ));
+            lines.extend(vault_drift_hint.map(str::to_string));
+            return report_result(lines.join("\n"), &report);
+        };
         dotenv.validate_for_mutation().map_err(|error| {
             invalid_params_err(format!(
                 "Managed dotenv is malformed; protection status is indeterminate: {error}"
             ))
         })?;
-
-        let entry = dotenv.entries().into_iter().find(|e| e.key == params.key);
-
-        let entry = match entry {
-            Some(e) => e,
-            None => {
-                report["next_step"] =
-                    "Check the exact key spelling (case-sensitive); phantom_status lists dotenv counts.".into();
-                return report_result(format!("'{}' was not found in .env.", params.key), &report);
-            }
-        };
-        report["found"] = true.into();
-
-        let config = self.load_config().ok();
+        // The same value-free report `phantom why --json` prints.
+        let report = phantom_core::why::why_report(&params.key, Some(&dotenv), config.as_ref());
 
         let mut output = String::new();
+        if let Some(line) = not_initialized {
+            output.push_str(line);
+            output.push('\n');
+        }
+        let Some(entry) = dotenv.entries().into_iter().find(|e| e.key == params.key) else {
+            output.push_str(&format!("'{}' was not found in .env.", params.key));
+            if let Some(hint) = vault_drift_hint {
+                output.push('\n');
+                output.push_str(hint);
+            }
+            return report_result(output, &report);
+        };
 
         if entry.is_phantom {
-            report["classification"] = "protected".into();
-            report["protected"] = true.into();
-            report["reason"] = "phantom_token".into();
-            // Already protected with a phantom token
             output.push_str(&format!(
                 "PROTECTED: '{}' has a phantom token.\n",
                 params.key
@@ -2116,17 +2148,12 @@ impl PhantomMcpServer {
                 "The real secret is stored in the vault; only the phantom token appears in .env.\n",
             );
 
-            // Check for service mapping
             if let Some(cfg) = &config {
                 if let Some((svc_name, svc)) = cfg
                     .services
                     .iter()
                     .find(|(_, c)| c.secret_key == params.key)
                 {
-                    report["service"] = serde_json::json!({
-                        "name": svc_name,
-                        "pattern": svc.pattern,
-                    });
                     output.push_str(&format!(
                         "Service mapping: {} -> {} ({})\n",
                         params.key,
@@ -2137,33 +2164,15 @@ impl PhantomMcpServer {
                 // A protected key works under `phantom exec` only through a
                 // proxy route; say so when there is none.
                 let verdict = phantom_core::why::ExecVerdict::new(&params.key, &dotenv, cfg);
-                report["exec"] = verdict.to_json();
                 output.push_str(&format!("Under phantom exec: {}.\n", verdict.summary()));
                 if let Some(step) = verdict.next_step() {
                     output.push_str(&format!("Next step: {step}\n"));
-                    report["next_step"] = step.into();
                 }
             }
         } else {
-            let classification = classify(entry);
-            match classification {
+            match classify(entry) {
                 SecretClassification::PublicKey => {
-                    // Determine which prefix matched
-                    let public_prefixes = [
-                        "NEXT_PUBLIC_",
-                        "EXPO_PUBLIC_",
-                        "VITE_",
-                        "REACT_APP_",
-                        "NUXT_PUBLIC_",
-                        "GATSBY_",
-                    ];
-                    let matched_prefix = public_prefixes
-                        .iter()
-                        .find(|p| params.key.starts_with(*p))
-                        .unwrap_or(&"unknown");
-                    report["classification"] = "public_key".into();
-                    report["reason"] = "public_prefix".into();
-                    report["matched_pattern"] = (*matched_prefix).into();
+                    let matched_prefix = report["matched_pattern"].as_str().unwrap_or("unknown");
                     output.push_str(&format!(
                         "PUBLIC KEY: '{}' matches the framework prefix '{}'.\n",
                         params.key, matched_prefix
@@ -2174,73 +2183,28 @@ impl PhantomMcpServer {
                     );
                 }
                 SecretClassification::Secret => {
-                    report["classification"] = "secret_unprotected".into();
-                    report["next_step"] =
-                        "Run `phantom init` to protect it with a phantom token.".into();
                     output.push_str(&format!(
                         "UNPROTECTED: '{}' is classified as a secret but does NOT have a phantom token.\n",
                         params.key
                     ));
-                    // Explain why it was detected
-                    let key_upper = params.key.to_uppercase();
-                    let secret_key_patterns = [
-                        "KEY",
-                        "SECRET",
-                        "TOKEN",
-                        "PASSWORD",
-                        "PASSWD",
-                        "CREDENTIAL",
-                        "AUTH",
-                        "PRIVATE",
-                        "API_KEY",
-                        "ACCESS_KEY",
-                        "SIGNING",
-                    ];
-                    let connection_patterns = [
-                        "DATABASE_URL",
-                        "REDIS_URL",
-                        "MONGO_URL",
-                        "POSTGRES_URL",
-                        "MYSQL_URL",
-                        "AMQP_URL",
-                        "RABBITMQ_URL",
-                        "ELASTICSEARCH_URL",
-                        "CONNECTION_STRING",
-                        "DSN",
-                    ];
-
-                    if let Some(pat) = secret_key_patterns.iter().find(|p| key_upper.contains(*p)) {
-                        report["reason"] = "key_name".into();
-                        report["matched_pattern"] = (*pat).into();
-                        output.push_str(&format!(
-                            "Reason: key name contains '{}', which indicates a secret.\n",
-                            pat
-                        ));
-                    } else if let Some(pat) =
-                        connection_patterns.iter().find(|p| key_upper.contains(*p))
-                    {
-                        report["reason"] = "connection_pattern".into();
-                        report["matched_pattern"] = (*pat).into();
-                        output.push_str(&format!(
-                            "Reason: key name matches connection pattern '{}'.\n",
-                            pat
-                        ));
-                    } else if is_public_key(&params.key) {
-                        report["reason"] = "public_prefix_with_secret_value".into();
-                        output.push_str(
+                    let pattern = report["matched_pattern"].as_str().unwrap_or_default();
+                    match report["reason"].as_str() {
+                        Some("key_name") => output.push_str(&format!(
+                            "Reason: key name contains '{pattern}', which indicates a secret.\n"
+                        )),
+                        Some("connection_pattern") => output.push_str(&format!(
+                            "Reason: key name matches connection pattern '{pattern}'.\n"
+                        )),
+                        Some("public_prefix_with_secret_value") => output.push_str(
                             "Reason: has a public-key prefix, but the value matches a known secret pattern.\n",
-                        );
-                    } else {
-                        report["reason"] = "value_pattern".into();
-                        output.push_str(
+                        ),
+                        _ => output.push_str(
                             "Reason: the value matches known secret patterns (prefix, connection string, or high-entropy string).\n",
-                        );
+                        ),
                     }
                     output.push_str("Run `phantom init` to protect it with a phantom token.\n");
                 }
                 SecretClassification::NotSecret => {
-                    report["classification"] = "not_secret".into();
-                    report["reason"] = "no_secret_pattern".into();
                     output.push_str(&format!(
                         "NOT SECRET: '{}' is classified as non-secret configuration.\n",
                         params.key
@@ -2252,6 +2216,9 @@ impl PhantomMcpServer {
                     output.push_str("Phantom leaves non-secret config values untouched in .env.\n");
                 }
             }
+        }
+        if let Some(hint) = vault_drift_hint {
+            output.push_str(hint);
         }
 
         report_result(output.trim_end().to_string(), &report)
@@ -8096,6 +8063,143 @@ mod tests {
         for key in ["OPENAI_API_KEY", "GROQ_API_KEY", "NODE_ENV", "NOPE"] {
             assert_eq!(
                 structured_report(&why(key)),
+                phantom_core::why::why_report(key, Some(&dotenv), Some(&config)),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn why_before_init_classifies_the_project_env() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        // A random, non-token value generated at run time.
+        let generated = phantom_core::token::PhantomToken::generate();
+        let value = generated.as_str().trim_start_matches("phm_");
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("STRIPE_SECRET_KEY={value}\nNODE_ENV=production\n"),
+        )
+        .unwrap();
+        let why = |key: &str| {
+            server.phantom_why(Parameters(WhyParams {
+                key: key.to_string(),
+            }))
+        };
+
+        // The first question an agent asks, before anyone has run init.
+        let unprotected = why("STRIPE_SECRET_KEY").expect("why must answer before init");
+        let report = structured_report(&unprotected);
+        assert_eq!(report["classification"], "secret_unprotected");
+        assert_eq!(report["reason"], "key_name");
+        assert!(report["exec"].is_null());
+        assert!(report["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("phantom init"));
+        assert!(extract_content_text(&unprotected).contains("not initialized"));
+        assert_no_value_leak(&unprotected, &[value]);
+
+        // Same report as `phantom why --json` in an uninitialized project.
+        let dotenv = DotenvFile::parse_file(&dir.path().join(".env")).unwrap();
+        for key in ["STRIPE_SECRET_KEY", "NODE_ENV", "NOPE"] {
+            assert_eq!(
+                structured_report(&why(key).unwrap()),
+                phantom_core::why::why_report(key, Some(&dotenv), None),
+                "{key}"
+            );
+        }
+
+        // No .env yet: a next step, not an error.
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        let empty = structured_report(&why("STRIPE_SECRET_KEY").unwrap());
+        assert_eq!(empty["dotenv_exists"], false);
+        assert!(empty["next_step"].is_string());
+
+        // Asking is read-only: nothing was initialized on the agent's behalf.
+        assert!(!dir.path().join(".phantom.toml").exists());
+    }
+
+    #[test]
+    fn why_answers_without_opening_the_vault() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        // A locked or unavailable vault must not hide a value-free answer:
+        // why reads only .phantom.toml and the dotenv's names and token shapes.
+        let other = phantom_core::token::PhantomToken::generate();
+        // SAFETY: TestEnvironment holds the process env lock and restores it.
+        unsafe { std::env::set_var("PHANTOM_VAULT_PASSPHRASE", other.as_str()) };
+        let result = server
+            .phantom_why(Parameters(WhyParams {
+                key: "OPENAI_API_KEY".to_string(),
+            }))
+            .expect("why must not need the vault");
+        let report = structured_report(&result);
+        assert_eq!(report["classification"], "protected");
+        assert_eq!(report["exec"]["delivery"], "proxied");
+        assert_no_value_leak(&result, &[other.as_str()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn why_before_init_refuses_a_symlinked_env() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        // A dotenv outside the project, reached through a `.env` symlink.
+        let outside = TempDir::new().unwrap();
+        let generated = phantom_core::token::PhantomToken::generate();
+        let value = generated.as_str().trim_start_matches("phm_");
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("STRIPE_SECRET_KEY={value}\n")).unwrap();
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".env")).unwrap();
+
+        let error = server
+            .phantom_why(Parameters(WhyParams {
+                key: "STRIPE_SECRET_KEY".to_string(),
+            }))
+            .expect_err("a symlinked .env must be refused, not classified");
+        assert!(
+            error.message.contains("not a regular, non-symlink file"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains(value));
+        assert!(!dir.path().join(".phantom.toml").exists());
+    }
+
+    #[test]
+    fn why_hints_at_vault_drift_when_nothing_records_a_secret() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let why = |key: &str| {
+            server
+                .phantom_why(Parameters(WhyParams {
+                    key: key.to_string(),
+                }))
+                .unwrap()
+        };
+        // Normal initialized project: the config and dotenv record secrets.
+        assert!(!extract_content_text(&why("NODE_ENV")).contains("drift"));
+
+        // The config lists no secrets and the dotenv holds no tokens, but the
+        // vault may still: why cannot tell, so it says where to look.
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.phantom.secrets.clear();
+        config.save(&config_path).unwrap();
+        std::fs::write(dir.path().join(".env"), "NODE_ENV=production\n").unwrap();
+
+        for key in ["NODE_ENV", "NOPE"] {
+            let result = why(key);
+            let text = extract_content_text(&result);
+            assert!(text.contains("vault/dotenv drift"), "{text}");
+            assert!(text.contains("phantom_doctor"), "{text}");
+            // The JSON shape is unchanged.
+            let dotenv = DotenvFile::parse_file(&dir.path().join(".env")).unwrap();
+            let config = PhantomConfig::load(&config_path).unwrap();
+            assert_eq!(
+                structured_report(&result),
                 phantom_core::why::why_report(key, Some(&dotenv), Some(&config)),
                 "{key}"
             );
