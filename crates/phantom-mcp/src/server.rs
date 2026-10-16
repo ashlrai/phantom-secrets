@@ -3584,6 +3584,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::analytics::{compute_analytics, export_records, records_to_csv, Period};
 
+        let format = crate::tools::helpers::parse_audit_format(&params.format)?;
+
         // Convert window_days to a Period.
         let period = match params.window_days {
             0 => Period::All,
@@ -3608,7 +3610,7 @@ impl PhantomMcpServer {
         let records = export_records(period, params.min_anomaly_score)
             .map_err(|e| internal_err(format!("Failed to export records: {e}")))?;
 
-        if params.format == "csv" {
+        if format == crate::tools::helpers::AuditFormat::Csv {
             let csv = records_to_csv(&records);
             return text_result(csv);
         }
@@ -3929,6 +3931,8 @@ impl PhantomMcpServer {
             parse_date_to_ts, parse_date_to_ts_end, AuditExporter, ExportFilter,
         };
 
+        let format = crate::tools::helpers::parse_audit_format(&params.format)?;
+
         if params.save {
             if params.action == "export" {
                 return Err(invalid_params_err(
@@ -3972,7 +3976,7 @@ impl PhantomMcpServer {
                     );
                 }
 
-                if params.format == "csv" {
+                if format == crate::tools::helpers::AuditFormat::Csv {
                     return text_result(AuditExporter::rows_to_csv(&rows));
                 }
 
@@ -10370,6 +10374,62 @@ mod tests {
         );
         assert!(text.contains("CSV_KEY"), "CSV must include the secret name");
         assert!(text.contains("vault.retrieve"), "CSV must include the op");
+    }
+
+    #[test]
+    fn test_audit_formats_are_case_insensitive_and_reject_unknown() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now - 100, "vault.retrieve", Some("FMT_KEY"))],
+        );
+
+        let analytics = |format: &str| {
+            server.phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                window_days: 0,
+                min_anomaly_score: None,
+                format: format.to_string(),
+            }))
+        };
+        let export = |format: &str| {
+            server.phantom_audit_export_report(Parameters(AuditExportReportParams {
+                action: "export".to_string(),
+                format: format.to_string(),
+                from: None,
+                to: None,
+                secret_name: None,
+                operation: None,
+                save: false,
+                confirm: false,
+                approval_token: None,
+            }))
+        };
+        let csv_header = "ts,datetime,op,name,process\n";
+
+        let upper_csv = extract_content_text(&analytics("CSV").unwrap());
+        assert!(upper_csv.starts_with(csv_header), "{upper_csv}");
+        let upper_json = parse_result_json(&analytics("Json").unwrap());
+        assert!(upper_json.get("analytics").is_some());
+
+        let rows_csv = extract_content_text(&export("CSV").unwrap());
+        assert!(rows_csv.contains("FMT_KEY"), "{rows_csv}");
+        assert!(!rows_csv.trim_start().starts_with('['), "{rows_csv}");
+        let rows_json: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&export("JSON").unwrap())).unwrap();
+        assert!(rows_json.is_array(), "{rows_json}");
+
+        for format in ["xml", "", "jsonl"] {
+            let err = analytics(format).unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("Invalid format"), "{}", err.message);
+            let err = export(format).unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("Invalid format"), "{}", err.message);
+        }
     }
 
     #[test]

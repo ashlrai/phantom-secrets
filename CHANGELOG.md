@@ -4,6 +4,23 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (CLI and MCP JSON output)
+
+- `phantom audit stats --json` with an empty audit log now prints the same
+  JSON object as a populated log (`total_events: 0`, `secrets: []`) instead
+  of a human hint; the hint goes to stderr.
+- `phantom audit export --format json` with no matching records now prints
+  `[]` instead of nothing on stdout.
+- `phantom why <KEY> --json` now honors the global `--json` flag and prints
+  the value-free report the MCP `phantom_why` tool returns (`key`,
+  `dotenv_exists`, `found`, `classification`, `protected`, `reason`,
+  `matched_pattern`, `service`, `next_step`), including `found: false` when
+  the key or the `.env` file is missing. Human output is unchanged.
+- The MCP `phantom_audit_analytics` and `phantom_audit_export_report` tools
+  accept `format` as `json` or `csv` in any letter case and reject any other
+  value with an invalid-params (-32602) error. They previously fell back to
+  JSON for unrecognized values, including `CSV`.
+
 ### Fixed (proxy)
 
 - The built-in `twilio` route now sends valid HTTP Basic credentials. It
