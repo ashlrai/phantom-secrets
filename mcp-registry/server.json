@@ -136,7 +136,7 @@
         "properties": {
           "format": {
             "default": "json",
-            "description": "Output format: \"json\" (default) or \"csv\".",
+            "description": "Output format: \"json\" (default) or \"csv\", case-insensitive. Other\nvalues are rejected with an invalid-params error.",
             "type": "string"
           },
           "min_anomaly_score": {
@@ -251,7 +251,7 @@
           },
           "format": {
             "default": "json",
-            "description": "Output format: \"csv\" or \"json\". Default: \"json\".",
+            "description": "Output format: \"csv\" or \"json\", case-insensitive. Default: \"json\".\nOther values are rejected with an invalid-params error.",
             "type": "string"
           },
           "from": {
