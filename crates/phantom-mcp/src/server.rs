@@ -2157,7 +2157,8 @@ impl PhantomMcpServer {
             None => {
                 let path = self.project_dir.join(".env");
                 let file =
-                    phantom_core::managed_dotenv::parse_regular_dotenv(&path).map_err(|error| {
+                    phantom_core::managed_dotenv::parse_regular_dotenv(&self.project_dir, ".env")
+                        .map_err(|error| {
                         invalid_params_err(format!(
                             "{error:#}; protection status is indeterminate. Replace it with a \
                              regular file in the project directory."
@@ -2497,8 +2498,10 @@ impl PhantomMcpServer {
             };
 
             for filename in &env_files {
-                let path = self.project_dir.join(filename);
-                match phantom_core::managed_dotenv::parse_regular_dotenv(&path) {
+                match phantom_core::managed_dotenv::parse_regular_dotenv(
+                    &self.project_dir,
+                    filename,
+                ) {
                     Ok(None) => {}
                     Ok(Some(dotenv)) => {
                         if let Err(error) = dotenv.validate_for_mutation() {

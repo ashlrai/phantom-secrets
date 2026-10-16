@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, DotenvFile};
@@ -62,7 +62,17 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
 fn worktree_findings(project_dir: &Path) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
     for path in dotenv_scan_paths(project_dir)? {
-        let dotenv = DotenvFile::parse_file(&path)?;
+        // The listing's symlink check and this read are separate lookups, so
+        // the read re-checks on the opened handle rather than following a
+        // file swapped for a symlink in between.
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("dotenv scan target has no file name")?;
+        let Some(dotenv) = phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, name)?
+        else {
+            continue;
+        };
         dotenv.validate_for_mutation()?;
         for entry in dotenv.real_secret_entries() {
             findings.push(Finding {
