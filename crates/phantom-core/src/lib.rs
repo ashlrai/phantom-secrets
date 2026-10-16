@@ -28,6 +28,7 @@ pub mod teams_vault;
 pub mod token;
 pub mod validation_scheduler;
 pub mod validator;
+pub mod why;
 pub mod workspace_request;
 
 thread_local! {

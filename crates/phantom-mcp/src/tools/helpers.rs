@@ -17,6 +17,27 @@ pub fn invalid_params_err(msg: impl Into<String>) -> McpError {
     McpError::new(rmcp::model::ErrorCode::INVALID_PARAMS, msg.into(), None)
 }
 
+/// Output format accepted by the audit export tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditFormat {
+    Json,
+    Csv,
+}
+
+/// Parse an audit export `format` parameter: "json" or "csv", ignoring ASCII
+/// case. Anything else is an invalid-params error naming the accepted values.
+pub fn parse_audit_format(format: &str) -> Result<AuditFormat, McpError> {
+    if format.eq_ignore_ascii_case("json") {
+        Ok(AuditFormat::Json)
+    } else if format.eq_ignore_ascii_case("csv") {
+        Ok(AuditFormat::Csv)
+    } else {
+        Err(invalid_params_err(format!(
+            "Invalid format '{format}'. Use: json or csv"
+        )))
+    }
+}
+
 pub fn require_confirm(tool: &str, confirm: bool) -> Result<(), McpError> {
     if confirm {
         return Ok(());
@@ -62,7 +83,10 @@ pub fn require_approval_token(
              the requesting agent cannot modify, and `phantom mcp-approve` plus \
              ~/.phantom/mcp-approvals.jsonl are outside that agent's command and file \
              authority. A same-user shell or agent-controlled PTY can defeat the terminal \
-             ceremony; leave effects disabled when that separation cannot be guaranteed."
+             ceremony; leave effects disabled when that separation cannot be guaranteed. \
+             Once enabled, each call also needs out-of-band approval: the operator must \
+             approve it in their own trusted terminal and supply the resulting \
+             `approval_token`. See docs/claude-code.md (Effectful tools)."
         )));
     }
 
