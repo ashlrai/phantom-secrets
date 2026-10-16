@@ -11,6 +11,7 @@ import { Github } from "./Icons";
 const navigation = [
   { label: "Workbench", href: "/" },
   { label: "Phantom Secrets", href: "/secrets" },
+  { label: "Ecosystem", href: "/ecosystem" },
   { label: "How it works", section: "how" },
   { label: "Pricing", href: "/pricing" },
   { label: "Enterprise", href: "/enterprise" },
