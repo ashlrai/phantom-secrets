@@ -561,7 +561,13 @@ pub fn run_stats(
     let stats = phantom_core::audit::audit_stats()
         .map_err(|e| anyhow::anyhow!("Failed to read audit log: {e}"))?;
 
-    if stats.total_events == 0 {
+    let secrets = if top > 0 && top < stats.secrets.len() {
+        &stats.secrets[..top]
+    } else {
+        &stats.secrets[..]
+    };
+
+    if stats.total_events == 0 && !json {
         println!(
             "{}  No audit events yet — set {} to start logging.",
             "->".blue().bold(),
@@ -570,13 +576,14 @@ pub fn run_stats(
         return Ok(());
     }
 
-    let secrets = if top > 0 && top < stats.secrets.len() {
-        &stats.secrets[..top]
-    } else {
-        &stats.secrets[..]
-    };
-
     if json {
+        if stats.total_events == 0 {
+            eprintln!(
+                "{}  No audit events yet — set {} to start logging.",
+                "->".blue().bold(),
+                "PHANTOM_AUDIT=1".cyan()
+            );
+        }
         // Emit a JSON object with the full stats, limited secrets slice.
         let out = serde_json::json!({
             "total_events": stats.total_events,
@@ -777,6 +784,11 @@ pub fn run_export(format: &str, period: &str, min_anomaly_score: Option<f64>) ->
             "{}  No access records found for the requested period/filter.",
             "->".blue().bold()
         );
+        // Keep stdout machine-readable: an empty JSON array for json; csv
+        // keeps its previous empty-stdout behavior.
+        if format == "json" {
+            println!("[]");
+        }
         return Ok(());
     }
 
