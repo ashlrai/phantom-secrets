@@ -33,7 +33,7 @@ use tracing_subscriber::EnvFilter;
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
                     Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
-                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit",
+                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks",
     version
 )]
 struct Cli {
