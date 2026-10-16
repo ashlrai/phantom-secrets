@@ -4110,7 +4110,7 @@ impl PhantomMcpServer {
             structured JSON badge. Checks: vault_accessible (vault can be read), \
             audit_enabled (PHANTOM_AUDIT env var is set), \
             precommit_installed (git pre-commit hook contains the current local-only phantom check), \
-            env_clean (no unprotected real secrets in any dotenv a process could load: .env, .env.local, .env.development, .env.development.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), \
+            env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), \
             secrets_have_ttl (all vault secrets have a rotation policy set). \
             Each check is true/false with an optional detail string. \
             Overall 'compliant' is true only when all checks pass. Read-only."
@@ -11003,6 +11003,31 @@ mod tests {
             "{detail}"
         );
         assert!(!detail.contains(&value), "{detail}");
+    }
+
+    /// `phantom check` scans `.env.production`; env_clean used to skip it, so
+    /// compliance could report clean while `phantom check` failed.
+    #[test]
+    fn compliance_env_clean_scans_what_phantom_check_scans() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        for name in [".env.production", ".env.test.local"] {
+            let value = plaintext_value();
+            std::fs::write(
+                dir.path().join(name),
+                format!("STRIPE_SECRET_KEY={value}\n"),
+            )
+            .unwrap();
+            let (pass, detail) = env_clean(&server);
+            assert!(!pass, "{name}: {detail}");
+            assert!(
+                detail.contains(&format!("{name}: STRIPE_SECRET_KEY")),
+                "{detail}"
+            );
+            assert!(!detail.contains(&value), "{detail}");
+            std::fs::remove_file(dir.path().join(name)).unwrap();
+        }
+        assert!(env_clean(&server).0);
     }
 
     #[test]

@@ -488,9 +488,6 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     Ok(())
 }
 
-/// Printed right after the backend line when init landed on Linux keyutils.
-/// The kernel keyring is cleared on reboot, and init has just replaced the
-/// dotenv values with tokens, so this is the moment the user must decide.
 /// init keeps an existing `.env.example`, so it must not keep it quietly when
 /// it holds what `phantom check --staged` would refuse to commit. Same rule as
 /// that check: a real-looking value that is not an empty or `your_<name>_here`
@@ -525,6 +522,9 @@ fn kept_example_warning(content: &[u8]) -> Option<String> {
     ))
 }
 
+/// Printed right after the backend line when init landed on Linux keyutils.
+/// The kernel keyring is cleared on reboot, and init has just replaced the
+/// dotenv values with tokens, so this is the moment the user must decide.
 fn volatile_backend_notice(backend_name: &str) -> Option<[&'static str; 3]> {
     backend_name.contains("keyutils").then_some([
         "The Linux kernel keyring does not survive a reboot. Keep your provider or password-manager copy of these secrets until you switch to a persistent backend:",

@@ -211,40 +211,17 @@ fn print_findings(findings: &[Finding]) {
     );
 }
 
+/// The same scan list as the MCP compliance `env_clean` check
+/// ([`phantom_core::managed_dotenv::SCANNED_DOTENV_NAMES`] plus the configured
+/// `dotenv_path`), so the two cannot disagree about which files exist.
 fn dotenv_scan_paths(project_dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut candidates = vec![
-        project_dir.join(".env"),
-        project_dir.join(".env.local"),
-        project_dir.join(".env.development"),
-        project_dir.join(".env.production"),
-    ];
     let config_path = project_dir.join(".phantom.toml");
-    if config_path.exists() {
-        let config = PhantomConfig::load(&config_path)?;
-        if let Some(configured) = config.phantom.dotenv_path.as_deref() {
-            let configured = phantom_core::managed_dotenv::validate_dotenv_basename(configured)?;
-            candidates.push(project_dir.join(configured));
-        }
-    }
-
-    let mut paths = Vec::new();
-    for path in candidates {
-        if paths.contains(&path) {
-            continue;
-        }
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                anyhow::bail!(
-                    "Refusing dotenv scan target that is not a regular, non-symlink file: {}",
-                    path.display()
-                )
-            }
-            Ok(_) => paths.push(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(paths)
+    let configured = if config_path.exists() {
+        PhantomConfig::load(&config_path)?.phantom.dotenv_path
+    } else {
+        None
+    };
+    phantom_core::managed_dotenv::scanned_dotenv_paths(project_dir, configured.as_deref())
 }
 
 fn config_risks(file: &str, content: &str) -> Vec<ConfigWarning> {
@@ -493,6 +470,31 @@ mod tests {
             .map(|entry| entry.key.as_str())
             .collect();
         assert_eq!(names, vec!["OPENAI_API_KEY"]);
+    }
+
+    #[test]
+    fn scans_production_and_test_dotenvs() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            ".env.production.local",
+            ".env.test",
+            ".env.development.local",
+        ] {
+            std::fs::write(dir.path().join(name), "PORT=3000\n").unwrap();
+        }
+        let names: Vec<_> = dotenv_scan_paths(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ".env.development.local",
+                ".env.production.local",
+                ".env.test"
+            ]
+        );
     }
 
     #[test]
