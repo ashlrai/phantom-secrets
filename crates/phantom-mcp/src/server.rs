@@ -151,6 +151,78 @@ impl PhantomMcpServer {
         Some(report_result(format!("No secrets: {next_step}"), &empty))
     }
 
+    /// Compliance `env_clean`: `(pass, detail)` over every regular dotenv the
+    /// project holds (the conventional names, plus `dotenv_path` once
+    /// configured). Names only, never values, and the vault is not opened. A
+    /// file that cannot be read safely (a symlink, a parse error) makes the
+    /// result indeterminate, which fails the check rather than passing it.
+    fn env_clean_check(&self) -> (bool, String) {
+        let configured = if self.config_path().exists() {
+            match self.load_config() {
+                Ok(config) => config.phantom.dotenv_path.clone(),
+                Err(error) => {
+                    return (
+                        false,
+                        format!("Config could not be read; clean status is indeterminate: {error}"),
+                    )
+                }
+            }
+        } else {
+            None
+        };
+        let files = match phantom_core::managed_dotenv::known_regular_dotenvs(
+            &self.project_dir,
+            configured.as_deref(),
+        ) {
+            Ok(files) => files,
+            Err(error) => {
+                return (
+                    false,
+                    format!("A dotenv file could not be read safely; clean status is indeterminate: {error:#}"),
+                )
+            }
+        };
+        if files.is_empty() {
+            return (true, "No dotenv file present.".to_string());
+        }
+        let mut scanned = Vec::new();
+        let mut findings = Vec::new();
+        let mut total = 0;
+        for (path, dotenv) in &files {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if let Err(error) = dotenv.validate_for_mutation() {
+                return (
+                    false,
+                    format!("{name} parse error; clean status is indeterminate: {error}"),
+                );
+            }
+            let real = dotenv.real_secret_entries();
+            if !real.is_empty() {
+                total += real.len();
+                let keys: Vec<&str> = real.iter().map(|e| e.key.as_str()).collect();
+                findings.push(format!("{name}: {}", keys.join(", ")));
+            }
+            scanned.push(name);
+        }
+        if findings.is_empty() {
+            (
+                true,
+                format!(
+                    "No unprotected secrets in {}. Dotenv files only; the vault is not read.",
+                    scanned.join(", ")
+                ),
+            )
+        } else {
+            (
+                false,
+                format!("{total} unprotected secret(s): {}", findings.join("; ")),
+            )
+        }
+    }
+
     fn load_config(&self) -> Result<PhantomConfig, String> {
         let path = self.config_path();
         if !path.exists() {
@@ -4038,7 +4110,7 @@ impl PhantomMcpServer {
             structured JSON badge. Checks: vault_accessible (vault can be read), \
             audit_enabled (PHANTOM_AUDIT env var is set), \
             precommit_installed (git pre-commit hook contains the current local-only phantom check), \
-            env_clean (no unprotected real secrets in the managed .env; read without opening the vault, so it is reported before init and with a locked vault), \
+            env_clean (no unprotected real secrets in any dotenv a process could load: .env, .env.local, .env.development, .env.development.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), \
             secrets_have_ttl (all vault secrets have a rotation policy set). \
             Each check is true/false with an optional detail string. \
             Overall 'compliant' is true only when all checks pass. Read-only."
@@ -4102,49 +4174,12 @@ impl PhantomMcpServer {
             "detail": if precommit_ok { "Pre-commit hook includes phantom check." } else { "Run phantom doctor --fix to install the pre-commit hook." },
         }));
 
-        // Check 4: no real secrets in .env. Value-blind and vault-free, like
-        // phantom_why: this used to resolve the dotenv through env_path(),
-        // which opens the vault, so before init or with a locked vault the
-        // whole report failed with -32603 instead of reporting this check.
-        let dotenv = match self.config_path().exists() {
-            true => self.load_config().and_then(|config| {
-                phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &config, &[])
-                    .map(|resolved| resolved.file)
-                    .map_err(|error| format!("{error:#}"))
-            }),
-            false => {
-                phantom_core::managed_dotenv::parse_regular_dotenv(&self.project_dir.join(".env"))
-                    .map_err(|error| format!("{error:#}"))
-            }
-        };
-        let (env_clean, env_detail) = match dotenv {
-            Err(error) => (
-                false,
-                format!(
-                    "Managed dotenv could not be resolved; clean status is indeterminate: {error}"
-                ),
-            ),
-            Ok(None) => (true, "No .env file present.".to_string()),
-            Ok(Some(dotenv)) => {
-                if let Err(error) = dotenv.validate_for_mutation() {
-                    (
-                        false,
-                        format!(".env parse error; clean status is indeterminate: {error}"),
-                    )
-                } else {
-                    let real = dotenv.real_secret_entries();
-                    if real.is_empty() {
-                        (true, "No unprotected secrets in .env.".to_string())
-                    } else {
-                        let names: Vec<&str> = real.iter().map(|e| e.key.as_str()).collect();
-                        (
-                            false,
-                            format!("{} unprotected secret(s): {}", real.len(), names.join(", ")),
-                        )
-                    }
-                }
-            }
-        };
+        // Check 4: no real secrets in any dotenv a process could load. Every
+        // conventional name plus the configured dotenv_path, not only the
+        // managed file: plaintext in `.env.local` beside a protected `.env`
+        // is still plaintext on disk. Value-blind and vault-free, like
+        // phantom_why, so it reports before init and with a locked vault.
+        let (env_clean, env_detail) = self.env_clean_check();
         if !env_clean {
             all_pass = false;
         }
@@ -10902,6 +10937,108 @@ mod tests {
         );
         assert_eq!(json["checks"]["vault_accessible"]["pass"], false);
         assert_eq!(json["checks"]["env_clean"]["pass"], true);
+    }
+
+    /// A runtime-generated, high-entropy value with no `phm_` prefix, so the
+    /// dotenv heuristics treat it as a real secret without a literal in source.
+    fn plaintext_value() -> String {
+        let token = phantom_core::token::PhantomToken::generate();
+        token.as_str().trim_start_matches("phm_").to_string()
+    }
+
+    fn env_clean(server: &PhantomMcpServer) -> (bool, String) {
+        let json = parse_result_json(
+            &server
+                .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+                .expect("compliance must report"),
+        );
+        let check = &json["checks"]["env_clean"];
+        (
+            check["pass"].as_bool().unwrap(),
+            check["detail"].as_str().unwrap().to_string(),
+        )
+    }
+
+    #[test]
+    fn compliance_env_clean_scans_every_known_dotenv_before_init() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        let value = plaintext_value();
+        std::fs::write(
+            dir.path().join(".env.local"),
+            format!("STRIPE_SECRET_KEY={value}\n"),
+        )
+        .unwrap();
+
+        let (pass, detail) = env_clean(&server);
+        assert!(!pass, "{detail}");
+        assert!(detail.contains(".env.local: STRIPE_SECRET_KEY"), "{detail}");
+        assert!(!detail.contains(&value), "{detail}");
+        assert!(!dir.path().join(".phantom.toml").exists());
+
+        // With nothing left to judge, the check passes and says so.
+        std::fs::remove_file(dir.path().join(".env.local")).unwrap();
+        let (pass, detail) = env_clean(&server);
+        assert!(pass, "{detail}");
+        assert!(detail.contains("No dotenv file present"), "{detail}");
+    }
+
+    #[test]
+    fn compliance_env_clean_flags_plaintext_beside_the_managed_dotenv() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        assert!(env_clean(&server).0, "a freshly protected .env is clean");
+
+        let value = plaintext_value();
+        std::fs::write(
+            dir.path().join(".env.development.local"),
+            format!("STRIPE_SECRET_KEY={value}\n"),
+        )
+        .unwrap();
+        let (pass, detail) = env_clean(&server);
+        assert!(!pass, "{detail}");
+        assert!(
+            detail.contains(".env.development.local: STRIPE_SECRET_KEY"),
+            "{detail}"
+        );
+        assert!(!detail.contains(&value), "{detail}");
+    }
+
+    #[test]
+    fn compliance_env_clean_scans_the_configured_dotenv_path() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        config.save(&config_path).unwrap();
+        // The protected file is now custom.env; .env stays protected too.
+        std::fs::copy(dir.path().join(".env"), dir.path().join("custom.env")).unwrap();
+        assert!(env_clean(&server).0);
+
+        let value = plaintext_value();
+        std::fs::write(
+            dir.path().join("custom.env"),
+            format!("STRIPE_SECRET_KEY={value}\n"),
+        )
+        .unwrap();
+        let (pass, detail) = env_clean(&server);
+        assert!(!pass, "{detail}");
+        assert!(detail.contains("custom.env: STRIPE_SECRET_KEY"), "{detail}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compliance_env_clean_is_indeterminate_for_a_symlinked_dotenv() {
+        use std::os::unix::fs::symlink;
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        std::fs::write(dir.path().join("elsewhere"), "PORT=3000\n").unwrap();
+        symlink("elsewhere", dir.path().join(".env.local")).unwrap();
+        let (pass, detail) = env_clean(&server);
+        assert!(!pass, "{detail}");
+        assert!(detail.contains("indeterminate"), "{detail}");
     }
 
     // ── phantom_compliance_status ─────────────────────────────────────

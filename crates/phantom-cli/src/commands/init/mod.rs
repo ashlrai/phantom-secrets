@@ -436,6 +436,9 @@ pub fn run(env_path_arg: &str) -> Result<()> {
             "->".blue().bold(),
             ".env.example".cyan()
         );
+        if let Some(warning) = example_before.as_deref().and_then(kept_example_warning) {
+            println!("{} {}", "warn".yellow().bold(), warning);
+        }
     } else {
         println!(
             "{} Generated {} (commit this for team onboarding)",
@@ -488,6 +491,40 @@ pub fn run(env_path_arg: &str) -> Result<()> {
 /// Printed right after the backend line when init landed on Linux keyutils.
 /// The kernel keyring is cleared on reboot, and init has just replaced the
 /// dotenv values with tokens, so this is the moment the user must decide.
+/// init keeps an existing `.env.example`, so it must not keep it quietly when
+/// it holds what `phantom check --staged` would refuse to commit. Same rule as
+/// that check: a real-looking value that is not an empty or `your_<name>_here`
+/// placeholder. Names only; the values are never printed.
+fn kept_example_warning(content: &[u8]) -> Option<String> {
+    let Ok(text) = std::str::from_utf8(content) else {
+        return Some(format!(
+            "The kept {} is not UTF-8 text, so it could not be scanned for real values; check it before committing (`phantom check --staged` refuses it)",
+            ".env.example".cyan()
+        ));
+    };
+    let example = DotenvFile::parse_str(text);
+    if example.validate_for_mutation().is_err() {
+        return Some(format!(
+            "The kept {} could not be parsed, so it could not be scanned for real values; check it before committing (`phantom check --staged` refuses it)",
+            ".env.example".cyan()
+        ));
+    }
+    let names: Vec<&str> = example
+        .real_secret_entries()
+        .into_iter()
+        .filter(|entry| !phantom_core::dotenv::is_example_placeholder(&entry.value))
+        .map(|entry| entry.key.as_str())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "The kept {} has values that look like real secrets: {}. Replace them with placeholders; `phantom check --staged` refuses to commit them",
+        ".env.example".cyan(),
+        names.join(", ")
+    ))
+}
+
 fn volatile_backend_notice(backend_name: &str) -> Option<[&'static str; 3]> {
     backend_name.contains("keyutils").then_some([
         "The Linux kernel keyring does not survive a reboot. Keep your provider or password-manager copy of these secrets until you switch to a persistent backend:",

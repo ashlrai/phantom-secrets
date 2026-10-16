@@ -13,7 +13,8 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `phantom env --output <file>` for a generated example in a new file. It still
   generates `.env.example` when there is none. The pre-commit check
   (`phantom check --staged`) still scans a staged `.env.example` for real
-  values.
+  values, and init now warns, by key name only, when the example it keeps
+  holds values that check would refuse.
 
 ### Fixed (MCP listing and compliance tools before init or with a locked vault)
 
@@ -24,7 +25,12 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 - `phantom_compliance_status` resolved the dotenv for its `env_clean` check by
   opening the vault, so before init or with a locked vault the whole report
   failed with -32603. `env_clean` is now read value-blind, without the vault,
-  and the vault checks report `pass: false` as before.
+  and the vault checks report `pass: false` as before. It also judged one file
+  only, so plaintext in `.env.local` passed beside a protected or absent
+  `.env`. It now scans `.env`, `.env.local`, `.env.development`,
+  `.env.development.local` and the configured `dotenv_path`, naming each
+  offending key by file; a symlinked or unparseable file is indeterminate and
+  fails the check.
 - The `confirm: true` refusal called every gated tool "a destructive vault
   operation", including `phantom_cloud_status`, `phantom_team_list`,
   `phantom_team_members` and `phantom_validate_all`, which read but send a

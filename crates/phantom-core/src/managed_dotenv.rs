@@ -87,6 +87,33 @@ pub fn parse_regular_dotenv(path: &Path) -> Result<Option<DotenvFile>> {
         .map(Some)
 }
 
+/// Every regular dotenv the project holds: each conventional name, then the
+/// configured `dotenv_path` when one is set and is not already among them.
+///
+/// For checks that must judge every file plaintext could sit in, not only the
+/// one that is managed. Reads no vault. A symlink, a non-regular file, an
+/// invalid configured name or a read failure is an error, never "absent".
+pub fn known_regular_dotenvs(
+    project_dir: &Path,
+    configured: Option<&str>,
+) -> Result<Vec<(PathBuf, DotenvFile)>> {
+    let mut names: Vec<String> = KNOWN_DOTENV_NAMES.iter().map(|n| n.to_string()).collect();
+    if let Some(configured) = configured {
+        let configured = validate_dotenv_basename(configured)?;
+        if !names.contains(&configured) {
+            names.push(configured);
+        }
+    }
+    let mut found = Vec::new();
+    for name in names {
+        let path = project_dir.join(&name);
+        if let Some(file) = parse_regular_dotenv(&path)? {
+            found.push((path, file));
+        }
+    }
+    Ok(found)
+}
+
 fn has_tokens(dotenv: &DotenvFile) -> bool {
     dotenv
         .entries()
@@ -191,6 +218,37 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("refusing an unprotected direct launch"));
+    }
+
+    #[test]
+    fn known_regular_dotenvs_lists_every_conventional_and_configured_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [".env.local", "custom.env", ".env.example"] {
+            std::fs::write(dir.path().join(name), "PORT=3000\n").unwrap();
+        }
+        let names = |configured| {
+            known_regular_dotenvs(dir.path(), configured)
+                .unwrap()
+                .into_iter()
+                .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        // Templates are not dotenvs a process loads; only the configured file
+        // joins the conventional names.
+        assert_eq!(names(None), vec![".env.local"]);
+        assert_eq!(names(Some("custom.env")), vec![".env.local", "custom.env"]);
+        assert_eq!(names(Some(".env.local")), vec![".env.local"]);
+        assert!(known_regular_dotenvs(dir.path(), Some("../.env")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_regular_dotenvs_refuses_a_symlink_rather_than_skipping_it() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("target"), "A=1\n").unwrap();
+        symlink("target", dir.path().join(".env.development")).unwrap();
+        assert!(known_regular_dotenvs(dir.path(), None).is_err());
     }
 
     #[cfg(unix)]
