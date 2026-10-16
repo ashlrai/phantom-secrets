@@ -24,6 +24,8 @@ pub mod rotation_provider;
 pub mod rotation_strategy;
 pub mod sync;
 pub mod team_crypto;
+#[cfg(feature = "pq-hybrid")]
+pub mod team_crypto_pq;
 pub mod teams;
 pub mod teams_vault;
 pub mod token;
