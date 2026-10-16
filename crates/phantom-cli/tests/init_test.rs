@@ -424,3 +424,74 @@ fn init_handles_all_public_keys_no_secrets() {
         "VITE_ value must be preserved"
     );
 }
+
+/// A secret-looking value made at run time, so no credential-shaped literal
+/// sits in the source.
+fn generated_value() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    format!("generated{nanos:x}{:x}", std::process::id())
+}
+
+fn init_with_key(dir: &TempDir) -> std::process::Output {
+    fs::write(
+        dir.path().join(".env"),
+        format!(
+            "OPENAI_API_KEY={}\nNODE_ENV=development\n",
+            generated_value()
+        ),
+    )
+    .expect("write .env");
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["init", "--from", ".env"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .output()
+        .expect("run phantom init")
+}
+
+#[test]
+fn init_leaves_an_existing_env_example_byte_for_byte() {
+    // A project's own, hand-written example: comments, documented keys that
+    // are not in .env, and no trailing newline. init used to replace it with a
+    // generated stub.
+    let dir = common::canonical_tempdir();
+    let existing: &[u8] = b"# Every variable the code reads.\n# DATABASE_URL: the runtime login.\nDATABASE_URL=\nOPENAI_API_KEY=\nNODE_ENV=development\nFEATURE_FLAG=off";
+    fs::write(dir.path().join(".env.example"), existing).expect("write .env.example");
+
+    let output = init_with_key(&dir);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read(dir.path().join(".env.example")).expect("read .env.example"),
+        existing,
+        ".env.example must not be rewritten"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Left the existing") && !stdout.contains("Generated"),
+        "{stdout}"
+    );
+    // The secret itself is still protected.
+    let env = fs::read_to_string(dir.path().join(".env")).expect("read .env");
+    assert!(env.contains("OPENAI_API_KEY=phm_"), "{env}");
+}
+
+#[test]
+fn init_still_generates_env_example_when_absent() {
+    let dir = common::canonical_tempdir();
+    let output = init_with_key(&dir);
+    assert!(output.status.success(), "{output:?}");
+    let example = fs::read_to_string(dir.path().join(".env.example")).expect("read .env.example");
+    assert!(example.contains("OPENAI_API_KEY="), "{example}");
+    assert!(!example.contains("generated"), "{example}");
+    assert!(!example.contains("phm_"), "{example}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Generated") && !stdout.contains("Left the existing"),
+        "{stdout}"
+    );
+}

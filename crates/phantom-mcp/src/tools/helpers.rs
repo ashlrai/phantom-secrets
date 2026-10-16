@@ -43,7 +43,8 @@ pub fn require_confirm(tool: &str, confirm: bool) -> Result<(), McpError> {
         return Ok(());
     }
     Err(invalid_params_err(format!(
-        "{tool} is a destructive vault operation. Ask the user for explicit \
+        "{tool} is effectful: it changes the vault or project files, or sends a \
+         stored credential to a provider (even to read). Ask the user for explicit \
          confirmation, then retry the call with `confirm: true`. This gate \
          exists to prevent prompt-injected content (READMEs, issue comments, \
          dependency docs) from silently mutating or exfiltrating secrets."
@@ -203,7 +204,9 @@ pub fn vault_init_err(error: impl std::fmt::Display) -> McpError {
 
 #[cfg(test)]
 mod tests {
-    use super::{effect_execution_enabled, extract_nonce, extract_token, json_object_result};
+    use super::{
+        effect_execution_enabled, extract_nonce, extract_token, json_object_result, require_confirm,
+    };
 
     #[test]
     fn json_object_result_attaches_objects_only() {
@@ -240,5 +243,24 @@ mod tests {
 
         assert_eq!(extract_nonce(token), "tokenhex");
         assert_eq!(extract_token(token), "tokenhex");
+    }
+
+    #[test]
+    fn confirm_refusal_does_not_call_a_provider_read_destructive() {
+        // The gate also guards reads that send a stored credential to a
+        // provider (phantom_cloud_status, phantom_team_list, ...). Calling
+        // those "a destructive vault operation" sent agents the wrong signal.
+        assert!(require_confirm("phantom_team_list", true).is_ok());
+        let message = require_confirm("phantom_team_list", false)
+            .unwrap_err()
+            .message
+            .to_string();
+        assert!(message.contains("phantom_team_list"), "{message}");
+        assert!(!message.contains("destructive"), "{message}");
+        assert!(
+            message.contains("sends a stored credential to a provider"),
+            "{message}"
+        );
+        assert!(message.contains("`confirm: true`"), "{message}");
     }
 }

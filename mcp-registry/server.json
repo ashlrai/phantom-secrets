@@ -517,7 +517,7 @@
     },
     {
       "name": "phantom_compliance_status",
-      "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (vault can be read), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in .env), secrets_have_ttl (all vault secrets have a rotation policy set). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
+      "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (vault can be read), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in the managed .env; read without opening the vault, so it is reported before init and with a locked vault), secrets_have_ttl (all vault secrets have a rotation policy set). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object"
@@ -851,7 +851,7 @@
     },
     {
       "name": "phantom_list_secrets",
-      "description": "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured. Returns a summary plus JSON {count, secrets: [{name, service}]} (also as structuredContent).",
+      "description": "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured. Returns a summary plus JSON {count, secrets: [{name, service}]} (also as structuredContent). Before `phantom init` it opens no vault and returns {count: 0, secrets: [], initialized: false, next_step} instead of an error.",
       "inputSchema": {
         "properties": {},
         "type": "object"
@@ -859,7 +859,7 @@
     },
     {
       "name": "phantom_list_with_expiry",
-      "description": "List all secret names with their TTL/expiry status. Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. Never returns secret values. Use it to audit which credentials need an explicit provider rotation or local expiry-policy review. Returns a summary plus JSON {count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, expires_at?, days_remaining?}]} (also as structuredContent).",
+      "description": "List all secret names with their TTL/expiry status. Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. Never returns secret values. Use it to audit which credentials need an explicit provider rotation or local expiry-policy review. Returns a summary plus JSON {count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, expires_at?, days_remaining?}]} (also as structuredContent). Before `phantom init` it opens no vault and returns an empty report with initialized: false and next_step instead of an error.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {

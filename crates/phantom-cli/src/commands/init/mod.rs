@@ -356,11 +356,19 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         .context("Managed dotenv cannot be used to generate a plaintext-safe example")?;
     let example_before = phantom_core::fs::read_regular_file(&example_path)
         .with_context(|| format!("Failed to safely inspect {}", example_path.display()))?;
-    files.push(InitFile::replace_if_unchanged(
-        &example_path,
-        example_before,
-        example_content.into_bytes(),
-    ));
+    // An existing .env.example belongs to the project, is often hand-written
+    // and committed, and replacing it with a generated stub silently destroys
+    // it. Only create one where none exists; the absent snapshot makes the
+    // transaction refuse if one appears before commit. `phantom check --staged`
+    // still scans an existing example for real values before it is committed.
+    let example_kept = example_before.is_some();
+    if !example_kept {
+        files.push(InitFile::replace_if_unchanged(
+            &example_path,
+            None::<Vec<u8>>,
+            example_content.into_bytes(),
+        ));
+    }
 
     let mut prepared_hook = hooks::prepare_precommit_hook(&project_dir)?;
     if let Some(prepared) = &claude_setup {
@@ -422,11 +430,19 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         env_path.display()
     );
     println!("{} Saved .phantom.toml", "ok".green().bold());
-    println!(
-        "{} Generated {} (commit this for team onboarding)",
-        "ok".green().bold(),
-        ".env.example".cyan()
-    );
+    if example_kept {
+        println!(
+            "{} Left the existing {} unchanged; `phantom env --output <file>` writes a generated example to a new file",
+            "->".blue().bold(),
+            ".env.example".cyan()
+        );
+    } else {
+        println!(
+            "{} Generated {} (commit this for team onboarding)",
+            "ok".green().bold(),
+            ".env.example".cyan()
+        );
+    }
 
     prepared_hook.commit().with_context(|| {
         "Project files and vault entries were committed, but the separate Git pre-commit hook transaction is incomplete; project changes were not rolled back"

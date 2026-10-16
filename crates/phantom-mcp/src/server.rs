@@ -131,22 +131,24 @@ impl PhantomMcpServer {
         self.project_dir.join(".phantom.toml")
     }
 
-    fn env_path(&self) -> Result<PathBuf, McpError> {
-        let (config, vault) = self.load_config_and_vault()?;
-        let vault_names = vault
-            .list()
-            .map_err(|error| internal_err(format!("Failed to list vault secrets: {error}")))?;
-        self.resolve_env_path(&config, &vault_names)
-    }
-
-    fn resolve_env_path(
+    /// Before `phantom init` there is no project vault to list, which is a
+    /// state with a next step, not a server failure: the listing tools used to
+    /// return -32603 "Not initialized". Returns `None` once `.phantom.toml`
+    /// exists. `empty` is the tool's own empty report; `initialized: false` and
+    /// `next_step` are added to it, and no vault is opened or created.
+    fn not_initialized_listing(
         &self,
-        config: &PhantomConfig,
-        vault_names: &[String],
-    ) -> Result<PathBuf, McpError> {
-        phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, config, vault_names)
-            .map(|resolved| resolved.path)
-            .map_err(|error| internal_err(format!("Failed to resolve managed dotenv: {error}")))
+        mut empty: serde_json::Value,
+    ) -> Option<Result<CallToolResult, McpError>> {
+        if self.config_path().exists() {
+            return None;
+        }
+        let next_step = "Phantom is not initialized in this project. Ask the user to run \
+                         `phantom init` in a trusted terminal (or call phantom_init with \
+                         confirm plus approval); phantom_why shows what init would protect.";
+        empty["initialized"] = false.into();
+        empty["next_step"] = next_step.into();
+        Some(report_result(format!("No secrets: {next_step}"), &empty))
     }
 
     fn load_config(&self) -> Result<PhantomConfig, String> {
@@ -586,9 +588,14 @@ impl PhantomMcpServer {
 
     /// List all secret names stored in the vault. Never returns secret values.
     #[tool(
-        description = "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured. Returns a summary plus JSON {count, secrets: [{name, service}]} (also as structuredContent)."
+        description = "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured. Returns a summary plus JSON {count, secrets: [{name, service}]} (also as structuredContent). Before `phantom init` it opens no vault and returns {count: 0, secrets: [], initialized: false, next_step} instead of an error."
     )]
     fn phantom_list_secrets(&self) -> Result<CallToolResult, McpError> {
+        if let Some(result) =
+            self.not_initialized_listing(serde_json::json!({ "count": 0, "secrets": [] }))
+        {
+            return result;
+        }
         let (config, vault) = self.load_config_and_vault()?;
         let names = vault
             .list()
@@ -3067,11 +3074,20 @@ impl PhantomMcpServer {
             Never returns secret values. Use it to audit which credentials need an \
             explicit provider rotation or local expiry-policy review. Returns a summary plus JSON \
             {count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, \
-            expires_at?, days_remaining?}]} (also as structuredContent).")]
+            expires_at?, days_remaining?}]} (also as structuredContent). Before `phantom init` it opens no vault and returns an empty report with initialized: false and next_step instead of an error.")]
     fn phantom_list_with_expiry(
         &self,
         Parameters(params): Parameters<ListWithExpiryParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(result) = self.not_initialized_listing(serde_json::json!({
+            "count": 0,
+            "show_expiry": params.show_expiry,
+            "expired": params.show_expiry.then_some(0),
+            "expiring_soon": params.show_expiry.then_some(0),
+            "secrets": [],
+        })) {
+            return result;
+        }
         let (config, vault) = self.load_config_and_vault()?;
 
         let entries = vault
@@ -4022,7 +4038,7 @@ impl PhantomMcpServer {
             structured JSON badge. Checks: vault_accessible (vault can be read), \
             audit_enabled (PHANTOM_AUDIT env var is set), \
             precommit_installed (git pre-commit hook contains the current local-only phantom check), \
-            env_clean (no unprotected real secrets in .env), \
+            env_clean (no unprotected real secrets in the managed .env; read without opening the vault, so it is reported before init and with a locked vault), \
             secrets_have_ttl (all vault secrets have a rotation policy set). \
             Each check is true/false with an optional detail string. \
             Overall 'compliant' is true only when all checks pass. Read-only."
@@ -4086,37 +4102,48 @@ impl PhantomMcpServer {
             "detail": if precommit_ok { "Pre-commit hook includes phantom check." } else { "Run phantom doctor --fix to install the pre-commit hook." },
         }));
 
-        // Check 4: no real secrets in .env
-        let env_path = self.env_path()?;
-        let (env_clean, env_detail) = if env_path.exists() {
-            match phantom_core::dotenv::DotenvFile::parse_file(&env_path) {
-                Ok(dotenv) => {
-                    if let Err(error) = dotenv.validate_for_mutation() {
+        // Check 4: no real secrets in .env. Value-blind and vault-free, like
+        // phantom_why: this used to resolve the dotenv through env_path(),
+        // which opens the vault, so before init or with a locked vault the
+        // whole report failed with -32603 instead of reporting this check.
+        let dotenv = match self.config_path().exists() {
+            true => self.load_config().and_then(|config| {
+                phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, &config, &[])
+                    .map(|resolved| resolved.file)
+                    .map_err(|error| format!("{error:#}"))
+            }),
+            false => {
+                phantom_core::managed_dotenv::parse_regular_dotenv(&self.project_dir.join(".env"))
+                    .map_err(|error| format!("{error:#}"))
+            }
+        };
+        let (env_clean, env_detail) = match dotenv {
+            Err(error) => (
+                false,
+                format!(
+                    "Managed dotenv could not be resolved; clean status is indeterminate: {error}"
+                ),
+            ),
+            Ok(None) => (true, "No .env file present.".to_string()),
+            Ok(Some(dotenv)) => {
+                if let Err(error) = dotenv.validate_for_mutation() {
+                    (
+                        false,
+                        format!(".env parse error; clean status is indeterminate: {error}"),
+                    )
+                } else {
+                    let real = dotenv.real_secret_entries();
+                    if real.is_empty() {
+                        (true, "No unprotected secrets in .env.".to_string())
+                    } else {
+                        let names: Vec<&str> = real.iter().map(|e| e.key.as_str()).collect();
                         (
                             false,
-                            format!(".env parse error; clean status is indeterminate: {error}"),
+                            format!("{} unprotected secret(s): {}", real.len(), names.join(", ")),
                         )
-                    } else {
-                        let real = dotenv.real_secret_entries();
-                        if real.is_empty() {
-                            (true, "No unprotected secrets in .env.".to_string())
-                        } else {
-                            let names: Vec<&str> = real.iter().map(|e| e.key.as_str()).collect();
-                            (
-                                false,
-                                format!(
-                                    "{} unprotected secret(s): {}",
-                                    real.len(),
-                                    names.join(", ")
-                                ),
-                            )
-                        }
                     }
                 }
-                Err(e) => (false, format!(".env parse error: {e}")),
             }
-        } else {
-            (true, "No .env file present.".to_string())
         };
         if !env_clean {
             all_pass = false;
@@ -7806,7 +7833,20 @@ mod tests {
         config.phantom.dotenv_path = Some("custom.env".to_string());
         config.save(&config_path).unwrap();
 
-        assert_eq!(server.env_path().unwrap(), custom_path);
+        // The value-blind readers resolve the configured file, not `.env`.
+        let why = server
+            .phantom_why(Parameters(WhyParams {
+                key: "OPENAI_API_KEY".to_string(),
+            }))
+            .unwrap();
+        assert_eq!(structured_report(&why)["classification"], "protected");
+        let compliance = parse_result_json(
+            &server
+                .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+                .unwrap(),
+        );
+        assert_eq!(compliance["checks"]["env_clean"]["pass"], true);
+        assert!(!dir.path().join(".env").exists());
     }
 
     #[test]
@@ -10786,6 +10826,82 @@ mod tests {
             0,
             "empty records when no log"
         );
+    }
+
+    #[test]
+    fn listing_tools_before_init_return_a_next_step() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+
+        // Both used to fail with -32603 "Not initialized", which a client
+        // shows as a server error.
+        let listed = server
+            .phantom_list_secrets()
+            .expect("a result, not an error");
+        let report = structured_report(&listed);
+        assert_eq!(report["count"], 0);
+        assert_eq!(report["secrets"], serde_json::json!([]));
+        assert_eq!(report["initialized"], false);
+        assert!(report["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("phantom init"));
+
+        for show_expiry in [true, false] {
+            let expiring = server
+                .phantom_list_with_expiry(Parameters(ListWithExpiryParams { show_expiry }))
+                .expect("a result, not an error");
+            let report = structured_report(&expiring);
+            assert_eq!(report["count"], 0);
+            assert_eq!(report["show_expiry"], show_expiry);
+            assert_eq!(report["initialized"], false);
+            assert!(report["next_step"].is_string());
+            // Not computed without show_expiry: null, as after init.
+            assert_eq!(report["expired"].is_null(), !show_expiry);
+        }
+
+        // Asking initializes nothing.
+        assert!(!dir.path().join(".phantom.toml").exists());
+
+        // After init the listing reports the vault, without the pre-init fields.
+        let (initialized, _dir) = setup_initialized_project();
+        let report = structured_report(&initialized.phantom_list_secrets().unwrap());
+        assert!(report["count"].as_u64().unwrap() > 0);
+        assert!(report.get("initialized").is_none());
+    }
+
+    #[test]
+    fn compliance_status_reports_env_clean_without_the_vault() {
+        let _environment = TestEnvironment::new();
+
+        // Before init: a report, with the plaintext .env flagged by name.
+        let (server, dir) = setup_test_project();
+        let json = parse_result_json(
+            &server
+                .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+                .expect("compliance must report before init"),
+        );
+        assert_eq!(json["compliant"], false);
+        assert_eq!(json["checks"]["vault_accessible"]["pass"], false);
+        assert_eq!(json["checks"]["env_clean"]["pass"], false);
+        let detail = json["checks"]["env_clean"]["detail"].as_str().unwrap();
+        assert!(detail.contains("OPENAI_API_KEY"), "{detail}");
+        assert!(!detail.contains("sk-test-key"), "{detail}");
+        assert!(!dir.path().join(".phantom.toml").exists());
+
+        // Initialized, but the vault cannot be opened: the vault checks fail
+        // and the dotenv check still answers, instead of the whole tool.
+        let (server, _dir) = setup_initialized_project();
+        let other = phantom_core::token::PhantomToken::generate();
+        // SAFETY: TestEnvironment holds the process env lock and restores it.
+        unsafe { std::env::set_var("PHANTOM_VAULT_PASSPHRASE", other.as_str()) };
+        let json = parse_result_json(
+            &server
+                .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+                .expect("compliance must report with a locked vault"),
+        );
+        assert_eq!(json["checks"]["vault_accessible"]["pass"], false);
+        assert_eq!(json["checks"]["env_clean"]["pass"], true);
     }
 
     // ── phantom_compliance_status ─────────────────────────────────────
