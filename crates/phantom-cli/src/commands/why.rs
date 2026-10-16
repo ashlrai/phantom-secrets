@@ -57,7 +57,7 @@ fn read_dotenv(
         Some(config) => {
             Ok(phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])?.file)
         }
-        None => phantom_core::managed_dotenv::parse_regular_dotenv(&project_dir.join(".env"))
+        None => phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, ".env")
             .context("Refusing to classify ./.env; protection status is indeterminate"),
     }
 }
