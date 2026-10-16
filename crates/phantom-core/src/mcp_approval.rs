@@ -1574,8 +1574,15 @@ mod tests {
 
             let outcome = approve_nonce(&nonce).unwrap();
 
-            // Tamper with the token.
-            let tampered = format!("{}ff", &outcome.approval_token[..62]);
+            // Tamper with the token: flip the last character so the result
+            // always differs from the original.
+            let token = &outcome.approval_token;
+            let last = token.chars().last().unwrap();
+            let tampered = format!(
+                "{}{}",
+                &token[..token.len() - last.len_utf8()],
+                if last == 'f' { '0' } else { 'f' }
+            );
 
             let result = validate_and_consume_approval(
                 &nonce,

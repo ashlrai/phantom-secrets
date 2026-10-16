@@ -1,6 +1,6 @@
 use crate::interceptor::Interceptor;
 use crate::rate_limiter::{RateLimitConfig, RateLimiter};
-use crate::services::ServiceRegistry;
+use crate::services::{AuthInjection, ServiceRegistry};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
@@ -15,6 +15,7 @@ use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
+use zeroize::Zeroizing;
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 256;
 const MAX_CONCURRENT_REQUESTS: usize = 32;
@@ -369,24 +370,12 @@ async fn handle_request(
     let method = req.method().clone();
     let original_path = req.uri().path().to_string();
     let (path, path_token) = strip_path_proxy_token(&original_path);
-    // Strip phantom_token from query before forwarding to upstream
-    let query = req
-        .uri()
-        .query()
-        .map(|q| {
-            let filtered: Vec<&str> = q
-                .split('&')
-                .filter(|p| !p.starts_with("phantom_token="))
-                .collect();
-            if filtered.is_empty() {
-                String::new()
-            } else {
-                format!("?{}", filtered.join("&"))
-            }
-        })
-        .unwrap_or_default();
-
-    debug!("{} {} query_present={}", method, path, !query.is_empty());
+    debug!(
+        "{} {} query_present={}",
+        method,
+        path,
+        req.uri().query().is_some_and(|q| !q.is_empty())
+    );
 
     // Verify proxy token (defense-in-depth — prevents other local processes from using the proxy)
     // Token check runs before ALL endpoints, including health check.
@@ -447,7 +436,16 @@ async fn handle_request(
         }
     };
 
-    let target_url = format!("{}{}{}", route.target_base, remainder, query);
+    // Strip phantom_token and any route-owned credential parameters (for
+    // example Gemini's `?key=`) before forwarding to the upstream.
+    let owned_slots = route.owned_alternate_slots();
+    let query = filter_query(req.uri().query(), owned_slots.query_params);
+    let target_url = format!(
+        "{}{}{}",
+        route.target_base,
+        route.upstream_path(remainder),
+        query
+    );
     debug!("Proxying reviewed route for service {}", route.name);
 
     let Ok(_request_permit) = state.request_slots.clone().try_acquire_owned() else {
@@ -549,9 +547,41 @@ async fn handle_request(
     // If the route names a vault secret, inject its formatted auth header
     // server-side. Lets clients skip threading phantom tokens through their
     // own request setup entirely.
-    let configured_auth_header = state
-        .interceptor
-        .format_header_for_secret_key(&route.header_format, &route.secret_key);
+    // Basic routes keep the client's non-secret username (an account
+    // identifier, from the first Authorization header) and replace the
+    // password with the vault value. Without a usable username the request
+    // is rejected locally: a password-only Basic value is never valid.
+    let configured_auth_header = match route.auth_injection() {
+        AuthInjection::BasicPassword => {
+            let Some(username) = req
+                .headers()
+                .get(route.header.as_str())
+                .and_then(basic_auth_username)
+            else {
+                warn!(
+                    "Rejected Basic-auth request without a usable username for service {}",
+                    route.name
+                );
+                return Ok(error_response(
+                    StatusCode::BAD_REQUEST,
+                    serde_json::json!({
+                        "error": "basic auth username required",
+                        "source": "phantom-proxy",
+                        "service": route.name,
+                        "hint": "This route injects only the password. Send Authorization: Basic base64(<ACCOUNT_SID>:<anything>) with your plain account identifier as the username; Phantom replaces the password with the protected value.",
+                    })
+                    .to_string(),
+                ));
+            };
+            state
+                .interceptor
+                .format_basic_auth_for_secret_key(&username, &route.secret_key)
+        }
+        AuthInjection::Template => state
+            .interceptor
+            .format_header_for_secret_key(&route.header_format, &route.secret_key)
+            .map(Zeroizing::new),
+    };
     let Some(configured_auth_header) = configured_auth_header else {
         warn!("Route credential unavailable for service {}", route.name);
         return Ok(error_response(
@@ -592,6 +622,18 @@ async fn handle_request(
         if name_str.eq_ignore_ascii_case(&route.header) {
             continue;
         }
+        // Alternate slots where the upstream accepts the same credential
+        // are route-owned as well.
+        // A client's own credential there (for example an OAuth bearer) is
+        // forwarded; only values carrying a phantom token are dropped.
+        if owned_slots
+            .headers_carrying_phantom_token
+            .iter()
+            .any(|owned| name_str.eq_ignore_ascii_case(owned))
+            && carries_phantom_token(value.as_bytes())
+        {
+            continue;
+        }
 
         outgoing = outgoing.header(name, value.clone());
     }
@@ -600,7 +642,8 @@ async fn handle_request(
         "Injected configured auth header '{}' for service {}",
         route.header, route.name
     );
-    outgoing = outgoing.header(route.header.as_str(), configured_auth_header);
+    outgoing = outgoing.header(route.header.as_str(), configured_auth_header.as_str());
+    drop(configured_auth_header);
 
     // Response scrubbing is defined over identity bytes. Never forward the
     // client's compression preferences to the upstream.
@@ -925,6 +968,108 @@ enum BodyReadError {
     Budget,
 }
 
+/// Rebuild the query string for the upstream, dropping `phantom_token` and
+/// every route-owned credential parameter. Names are compared ASCII
+/// case-insensitively after percent-decoding. Other parameters are forwarded
+/// byte-for-byte in their original order; only `&` separates pairs.
+fn filter_query(raw: Option<&str>, owned_params: &[&str]) -> String {
+    let Some(raw) = raw else {
+        return String::new();
+    };
+    let kept: Vec<&str> = raw
+        .split('&')
+        .filter(|pair| {
+            let name = pair.split_once('=').map_or(*pair, |(name, _)| name);
+            let decoded = percent_decode_query_component(name);
+            !std::iter::once("phantom_token")
+                .chain(owned_params.iter().copied())
+                .any(|owned| decoded.eq_ignore_ascii_case(owned.as_bytes()))
+        })
+        .collect();
+    if kept.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", kept.join("&"))
+    }
+}
+
+/// Whether a header value contains a `phm_` token marker (ASCII
+/// case-insensitive). Used only to decide whether to drop the value.
+fn carries_phantom_token(value: &[u8]) -> bool {
+    value
+        .windows(4)
+        .any(|window| window.eq_ignore_ascii_case(b"phm_"))
+}
+
+/// Decode `%XX` escapes and `+` in a query component. Malformed escapes are
+/// kept literally, matching how lenient servers treat them.
+fn percent_decode_query_component(component: &str) -> Vec<u8> {
+    fn hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = component.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                match (
+                    bytes.get(i + 1).copied().and_then(hex),
+                    bytes.get(i + 2).copied().and_then(hex),
+                ) {
+                    (Some(high), Some(low)) => {
+                        out.push(high << 4 | low);
+                        i += 3;
+                        continue;
+                    }
+                    _ => out.push(b'%'),
+                }
+            }
+            b'+' => out.push(b' '),
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Extract the username from a client `Authorization: Basic` value when it
+/// is a plausible non-secret account identifier. The client's password is
+/// never read beyond the separator. Usernames that carry a Phantom token,
+/// exceed 128 bytes, or contain characters outside a conservative identifier
+/// set are refused and the request is rejected locally.
+fn basic_auth_username(value: &hyper::header::HeaderValue) -> Option<String> {
+    use base64::Engine as _;
+    let value = value.to_str().ok()?.trim();
+    let (scheme, encoded) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    let decoded = Zeroizing::new(
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .ok()?,
+    );
+    let separator = decoded.iter().position(|byte| *byte == b':')?;
+    let username = &decoded[..separator];
+    if username.is_empty()
+        || username.len() > 128
+        || !username
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'@' | b'+'))
+        || carries_phantom_token(username)
+    {
+        return None;
+    }
+    // Validated ASCII above.
+    Some(String::from_utf8_lossy(username).into_owned())
+}
+
 fn strip_path_proxy_token(path: &str) -> (String, Option<String>) {
     let mut parts: Vec<&str> = path.split('/').collect();
     if let Some(idx) = parts.iter().position(|part| *part == "_phantom") {
@@ -1003,6 +1148,8 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1174,6 +1321,8 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mut named = HashMap::new();
         named.insert("TEST_API_KEY".to_string(), "real-secret-value".to_string());
@@ -1297,6 +1446,8 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1365,6 +1516,8 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1422,6 +1575,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sdk_base_url_with_appended_version_reaches_upstream_without_double_slash() {
+        // `phantom exec` exports a slash-terminated base URL with the session
+        // token in the path; callers appending `/v1/...` produce `T//v1/...`.
+        let mock = crate::test_server::MockServer::start().await;
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("TEST_API_KEY".to_string(), "sk-route-owned".to_string())]),
+        );
+        let token = "session-token-for-path-auth";
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.to_string(),
+                allow_query_token_auth: true,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let base = format!(
+            "http://127.0.0.1:{}/testapi/_phantom/{token}/",
+            proxy.port()
+        );
+        let resp = reqwest::Client::new()
+            .get(format!("{base}/v1/models"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/v1/models");
+        assert_eq!(
+            requests[0].headers.get("authorization"),
+            Some(&"Bearer sk-route-owned".to_string())
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn cross_route_token_never_reaches_upstream_as_a_secret() {
         let mock = crate::test_server::MockServer::start().await;
         let openai_token = "phm_1111111122222222333333334444444455555555666666667777777788888888";
@@ -1435,6 +1643,8 @@ mod tests {
             secret_key: "OPENAI_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mappings = HashMap::from([
             (
@@ -1526,6 +1736,8 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1601,6 +1813,8 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1678,6 +1892,8 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut named = HashMap::new();
@@ -1733,6 +1949,8 @@ mod tests {
             secret_key: "MISSING_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let proxy = ProxyServer::start(
@@ -1777,6 +1995,8 @@ mod tests {
             secret_key: "KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let interceptor = Interceptor::new_with_named(
@@ -1826,6 +2046,8 @@ mod tests {
             secret_key: "KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let interceptor = Interceptor::new_with_named(
@@ -1917,6 +2139,8 @@ mod tests {
             secret_key: "REDIRECT_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mut named = HashMap::new();
         named.insert(
@@ -1984,6 +2208,8 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -2114,6 +2340,8 @@ mod tests {
             secret_key: "SSE_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -2201,6 +2429,8 @@ mod tests {
             secret_key: "RESPONSE_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mut mappings = HashMap::new();
         mappings.insert(phantom_token.to_string(), real_secret.to_string());
@@ -2253,6 +2483,8 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -2344,6 +2576,8 @@ mod tests {
             secret_key: "ANTHROPIC_API_KEY".to_string(),
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         // Mirror `phantom exec`: the session token map and the named map
         // carry the same value (the response scrubber reads the former).
@@ -2492,6 +2726,8 @@ mod tests {
             secret_key: "ANTHROPIC_API_KEY".to_string(),
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -2660,6 +2896,8 @@ mod tests {
             secret_key: "ANTHROPIC_API_KEY".to_string(),
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -2733,6 +2971,8 @@ mod tests {
             secret_key: "KEY\"\\".to_string(),
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -2768,6 +3008,8 @@ mod tests {
             secret_key: "ANTHROPIC_API_KEY".to_string(),
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let proxy = ProxyServer::start(
             ProxyConfig {
@@ -2814,5 +3056,340 @@ mod tests {
         );
         proxy.shutdown().await;
         mock.shutdown().await;
+    }
+
+    /// Start a proxy with one route whose vault value is `secret`.
+    async fn single_route_proxy(
+        upstream_port: u16,
+        header: &str,
+        header_format: &str,
+        credential_profile: crate::services::CredentialProfile,
+        secret: &str,
+    ) -> ProxyServer {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "svc".to_string(),
+            target_base: format!("http://127.0.0.1:{upstream_port}"),
+            secret_key: "SVC_SECRET".to_string(),
+            header: header.to_string(),
+            header_format: header_format.to_string(),
+            credential_profile,
+            sdk_base_path: None,
+        });
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("SVC_SECRET".to_string(), secret.to_string())]),
+        );
+        ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn basic_route_proxy(upstream_port: u16, secret: &str) -> ProxyServer {
+        single_route_proxy(
+            upstream_port,
+            "Authorization",
+            "Basic {secret}",
+            crate::services::CredentialProfile::BasicPassword,
+            secret,
+        )
+        .await
+    }
+
+    async fn google_route_proxy(upstream_port: u16, secret: &str) -> ProxyServer {
+        single_route_proxy(
+            upstream_port,
+            "x-goog-api-key",
+            "{secret}",
+            crate::services::CredentialProfile::GoogleApiKey,
+            secret,
+        )
+        .await
+    }
+
+    /// Random lowercase hex from the OS CSPRNG, so no credential literal
+    /// flows into a test request.
+    fn random_hex(bytes: usize) -> String {
+        use rand::RngCore;
+        let mut buf = vec![0u8; bytes];
+        rand::thread_rng().fill_bytes(&mut buf);
+        hex::encode(buf)
+    }
+
+    fn basic(user: &str, password: &str) -> String {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"))
+        )
+    }
+
+    fn session_token() -> String {
+        format!("phm_{}", "ab12".repeat(16))
+    }
+
+    #[tokio::test]
+    async fn basic_route_keeps_client_username_and_injects_vault_password() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
+        let proxy = basic_route_proxy(mock.port, secret).await;
+        let path_owner = format!("AC{}", random_hex(16));
+        let token = session_token();
+
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/svc/2010-04-01/Accounts/{path_owner}/Messages.json",
+                proxy.port()
+            ))
+            .header("Authorization", basic(&path_owner, &token))
+            .body("To=x&From=y&Body=hi")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let requests = mock.get_requests();
+        let auth = requests[0].headers.get("authorization").unwrap();
+        assert_eq!(auth, &basic(&path_owner, secret));
+        assert!(!auth.contains("phm_"));
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn basic_route_uses_first_authorization_and_forwards_neither() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
+        let proxy = basic_route_proxy(mock.port, secret).await;
+        let token = session_token();
+        let first_user = format!("first_{}", random_hex(4));
+        let second_user = format!("second_{}", random_hex(4));
+
+        let resp = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/svc/ping", proxy.port()))
+            .header("Authorization", basic(&first_user, &token))
+            .header(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&basic(&second_user, &token)).unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let recorded = &mock.get_requests()[0];
+        assert_eq!(
+            recorded.headers.get("authorization").unwrap(),
+            &basic(&first_user, secret)
+        );
+        assert!(recorded
+            .headers
+            .values()
+            .all(|value| !value.contains("phm_") && !value.contains(&basic(&second_user, &token))));
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn basic_route_rejects_unusable_client_usernames_locally() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
+        let proxy = basic_route_proxy(mock.port, secret).await;
+        let token = session_token();
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/svc/ping", proxy.port());
+
+        // A phantom token as username, a username with a non-identifier
+        // character, a non-Basic scheme, and no header at all are rejected
+        // by the proxy; nothing reaches the upstream.
+        let client_password = random_hex(8);
+        let bad_shape_user = format!("acct/../{}", random_hex(2));
+        for header in [
+            Some(basic(&token, &client_password)),
+            Some(basic(&bad_shape_user, &client_password)),
+            Some(format!("Bearer {token}")),
+            None,
+        ] {
+            let mut request = client.get(&url);
+            if let Some(header) = header {
+                request = request.header("Authorization", header);
+            }
+            let resp = request.send().await.unwrap();
+            assert_eq!(resp.status(), 400);
+            let body: serde_json::Value = resp.json().await.unwrap();
+            assert_eq!(body["source"], "phantom-proxy");
+            assert_eq!(body["service"], "svc");
+            let text = body.to_string();
+            assert!(!text.contains(secret));
+            assert!(!text.contains("phm_"));
+            assert!(text.contains("Authorization: Basic base64(<ACCOUNT_SID>:<anything>)"));
+        }
+        assert!(mock.get_requests().is_empty());
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn google_api_key_route_owns_query_key_and_phantom_authorization() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
+        let proxy = google_route_proxy(mock.port, secret).await;
+        let token = session_token();
+
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/svc/v1beta/models/m:streamGenerateContent?alt=sse&key={token}&KEY={token}&k%65y={token}&api_key={token}&keyword=ok&a=1;key=kept",
+                proxy.port()
+            ))
+            .header("Authorization", format!("Bearer {}", token.to_uppercase()))
+            .header("x-goog-api-key", &token)
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let recorded = &mock.get_requests()[0];
+        assert_eq!(
+            recorded.path,
+            "/v1beta/models/m:streamGenerateContent?alt=sse&keyword=ok&a=1;key=kept"
+        );
+        assert_eq!(recorded.headers.get("x-goog-api-key").unwrap(), secret);
+        assert!(!recorded.headers.contains_key("authorization"));
+        assert!(recorded
+            .headers
+            .values()
+            .all(|value| !value.to_ascii_lowercase().contains("phm_")));
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn google_api_key_route_forwards_clients_own_oauth_bearer() {
+        let mock = crate::test_server::MockServer::start().await;
+        let proxy = google_route_proxy(mock.port, &random_hex(16)).await;
+        let oauth = format!("Bearer {}", random_hex(16));
+
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/svc/v1beta/models",
+                proxy.port()
+            ))
+            .header("Authorization", &oauth)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            mock.get_requests()[0].headers.get("authorization"),
+            Some(&oauth)
+        );
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn standard_routes_keep_key_query_params_and_ignore_basic_shape() {
+        let mock = crate::test_server::MockServer::start().await;
+        // Same header shape as the Twilio route, but no trusted profile: the
+        // plain template applies and `key=` is forwarded.
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
+        let proxy = single_route_proxy(
+            mock.port,
+            "Authorization",
+            "Basic {secret}",
+            crate::services::CredentialProfile::Standard,
+            secret,
+        )
+        .await;
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/svc/v1/items?key=sort-field",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let recorded = &mock.get_requests()[0];
+        assert_eq!(recorded.path, "/v1/items?key=sort-field");
+        assert_eq!(
+            recorded.headers.get("authorization").unwrap(),
+            &format!("Basic {secret}")
+        );
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[test]
+    fn filter_query_drops_owned_params_after_decoding() {
+        assert_eq!(filter_query(None, &["key"]), "");
+        assert_eq!(filter_query(Some("a=1&b=2"), &[]), "?a=1&b=2");
+        assert_eq!(filter_query(Some("phantom_token=t&a=1"), &[]), "?a=1");
+        assert_eq!(
+            filter_query(Some("Phantom_Token=t&phantom%5Ftoken=u&a=1"), &[]),
+            "?a=1"
+        );
+        assert_eq!(
+            filter_query(
+                Some("key=1&Key=2&%6B%45y=3&key&a=key&api_key=4"),
+                &["key", "api_key"]
+            ),
+            "?a=key"
+        );
+        assert_eq!(filter_query(Some("key=1"), &["key"]), "");
+        assert_eq!(filter_query(Some("a=1;key=2"), &["key"]), "?a=1;key=2");
+        assert_eq!(filter_query(Some("%zz=1&k%2=2"), &["key"]), "?%zz=1&k%2=2");
+    }
+
+    #[test]
+    fn phantom_token_detection_is_case_insensitive() {
+        assert!(carries_phantom_token(b"Bearer phm_abc"));
+        assert!(carries_phantom_token(b"Bearer PHM_ABC"));
+        assert!(!carries_phantom_token(b"Bearer ya29.token"));
+    }
+
+    #[test]
+    fn basic_auth_username_parsing() {
+        use hyper::header::HeaderValue;
+        let parse = |value: &str| basic_auth_username(&HeaderValue::from_str(value).unwrap());
+        let pw = random_hex(8);
+        let user = format!("acct_{}", random_hex(4));
+        assert_eq!(parse(&basic(&user, &pw)).as_deref(), Some(user.as_str()));
+        let empty_password = String::new();
+        assert_eq!(
+            parse(&basic(&user, &empty_password)).as_deref(),
+            Some(user.as_str())
+        );
+        let email_user = format!("{}@example.com", random_hex(4));
+        assert_eq!(
+            parse(&basic(&email_user, &format!("{pw}:{pw}"))).as_deref(),
+            Some(email_user.as_str())
+        );
+        assert_eq!(parse(&basic("", &pw)), None);
+        assert_eq!(parse(&basic(&"a".repeat(129), &pw)), None);
+        assert_eq!(parse(&basic(&session_token(), &pw)), None);
+        assert_eq!(
+            parse(&basic(&format!("x-PHM_{}", random_hex(2)), &pw)),
+            None
+        );
+        assert_eq!(parse(&basic(&format!("a {}", random_hex(2)), &pw)), None);
+        assert_eq!(parse("Basic not-base64!"), None);
+        assert_eq!(parse("Bearer abc"), None);
+        use base64::Engine as _;
+        let no_colon = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        assert_eq!(parse(&format!("Basic {no_colon}")), None);
     }
 }
