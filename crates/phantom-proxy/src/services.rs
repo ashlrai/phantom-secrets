@@ -23,6 +23,10 @@ pub struct ServiceRoute {
     pub header: String,
     /// Format string for the header value ("{secret}" placeholder)
     pub header_format: String,
+    /// Provider-specific credential handling. Only [`ServiceRegistry::from_config`]
+    /// selects a non-standard profile, and only for an exact trusted
+    /// built-in route (name and full definition), never from header shape.
+    pub credential_profile: CredentialProfile,
     /// Version path the provider's official SDK keeps in its default base
     /// URL (e.g. `/v1` for `https://api.openai.com/v1`), or `None` when the
     /// SDK appends the full versioned path itself. See [`sdk_base_path_for`].
@@ -109,6 +113,98 @@ impl ServiceRoute {
     }
 }
 
+/// Explicit, route-identity-bound credential handling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CredentialProfile {
+    /// `header_format` with `{secret}` replaced by the vault value.
+    #[default]
+    Standard,
+    /// HTTP Basic (RFC 7617) where the vault value is the password (the
+    /// trusted `twilio` route). See [`AuthInjection::BasicPassword`].
+    BasicPassword,
+    /// Google API key (the trusted `google_ai` route): also owns the
+    /// alternate slots Google reads an API key from.
+    GoogleApiKey,
+}
+
+impl CredentialProfile {
+    /// The profile for a configured route. Non-standard profiles require the
+    /// route to equal Phantom's trusted built-in definition for that exact
+    /// name; any custom or altered route is [`CredentialProfile::Standard`].
+    pub fn for_configured_route(name: &str, config: &ServiceConfig) -> Self {
+        let trusted = phantom_core::config::PhantomConfig::trusted_builtin_proxy_service(name);
+        if trusted.as_ref() != Some(config) {
+            return Self::Standard;
+        }
+        match name {
+            "twilio" => Self::BasicPassword,
+            "google_ai" => Self::GoogleApiKey,
+            _ => Self::Standard,
+        }
+    }
+}
+
+/// How a route writes its vault value into the route-owned auth header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthInjection {
+    /// `header_format` with `{secret}` replaced by the vault value.
+    Template,
+    /// HTTP Basic (RFC 7617) where the vault value is the password. The
+    /// username is a non-secret account identifier (for Twilio, the Account
+    /// SID) taken from the first client `Authorization: Basic` header; the
+    /// client's password is always discarded. Without a usable username the
+    /// proxy rejects the request instead of forwarding a malformed credential.
+    ///
+    /// Response scrubbing matches the literal vault value only, not the
+    /// injected `base64(username:secret)` pair. Upstreams do not echo the
+    /// request's Authorization header, and the pair is only ever sent to the
+    /// route's fixed upstream.
+    BasicPassword,
+}
+
+impl ServiceRoute {
+    /// The injection mode selected by this route's credential profile.
+    pub fn auth_injection(&self) -> AuthInjection {
+        match self.credential_profile {
+            CredentialProfile::BasicPassword => AuthInjection::BasicPassword,
+            CredentialProfile::Standard | CredentialProfile::GoogleApiKey => {
+                AuthInjection::Template
+            }
+        }
+    }
+
+    /// Other request slots where the upstream accepts the same credential.
+    /// The route owns them too, so a client's `phm_` token there can neither
+    /// override nor conflict with the injected credential.
+    ///
+    /// Google APIs (Gemini) read an API key from `x-goog-api-key`, from the
+    /// `key` (or `api_key`) query parameter, or, on the OpenAI-compatible
+    /// endpoint, from `Authorization: Bearer`. A client holding only a `phm_`
+    /// token would send it in whichever slot its code uses, and Google
+    /// rejects the request even though the header carries the real key. A
+    /// client's own OAuth bearer (no `phm_` token) is still forwarded.
+    pub fn owned_alternate_slots(&self) -> OwnedSlots {
+        match self.credential_profile {
+            CredentialProfile::GoogleApiKey => OwnedSlots {
+                query_params: &["key", "api_key"],
+                headers_carrying_phantom_token: &["authorization"],
+            },
+            CredentialProfile::Standard | CredentialProfile::BasicPassword => OwnedSlots::default(),
+        }
+    }
+}
+
+/// Alternate credential slots a route owns besides its injected header.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OwnedSlots {
+    /// Query parameter names, always dropped; compared case-insensitively
+    /// after percent-decoding.
+    pub query_params: &'static [&'static str],
+    /// Lowercase header names dropped when their value carries a `phm_`
+    /// token (ASCII case-insensitive); otherwise forwarded unchanged.
+    pub headers_carrying_phantom_token: &'static [&'static str],
+}
+
 impl ServiceRegistry {
     pub fn new() -> Self {
         Self::default()
@@ -134,6 +230,7 @@ impl ServiceRegistry {
                             .header_format
                             .clone()
                             .unwrap_or_else(|| "Bearer {secret}".to_string()),
+                        credential_profile: CredentialProfile::for_configured_route(name, config),
                         sdk_base_path: sdk_base_path_for(pattern).map(str::to_string),
                     });
                 }
@@ -300,6 +397,7 @@ mod tests {
             secret_key: "OPENAI_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: CredentialProfile::Standard,
             sdk_base_path: Some("/v1".to_string()),
         });
         registry.add_route(ServiceRoute {
@@ -308,6 +406,7 @@ mod tests {
             secret_key: "ANTHROPIC_API_KEY".to_string(),
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
+            credential_profile: CredentialProfile::Standard,
             sdk_base_path: None,
         });
         registry
@@ -495,6 +594,7 @@ mod tests {
             secret_key: "CUSTOM_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: CredentialProfile::Standard,
             sdk_base_path: Some("/openai/v1/".to_string()),
         };
         assert_eq!(route.upstream_path("/chat"), "/openai/v1/chat");
@@ -567,5 +667,57 @@ mod tests {
             && v == "http://127.0.0.1:54321/openai/_phantom/proxy-token/"));
         assert!(overrides.iter().any(|(k, v)| k == "ANTHROPIC_BASE_URL"
             && v == "http://127.0.0.1:54321/anthropic/_phantom/proxy-token/"));
+    }
+
+    #[test]
+    fn credential_profiles_bind_to_exact_trusted_route_identity() {
+        use phantom_core::config::PhantomConfig;
+        let mut services = std::collections::BTreeMap::new();
+        for name in ["twilio", "google_ai", "openai", "anthropic"] {
+            services.insert(
+                name.to_string(),
+                PhantomConfig::trusted_builtin_proxy_service(name).unwrap(),
+            );
+        }
+        // Same definitions under other names, and an altered twilio, get no
+        // special handling.
+        services.insert(
+            "my_twilio".to_string(),
+            PhantomConfig::trusted_builtin_proxy_service("twilio").unwrap(),
+        );
+        services.insert(
+            "my_gemini".to_string(),
+            PhantomConfig::trusted_builtin_proxy_service("google_ai").unwrap(),
+        );
+        let registry = ServiceRegistry::from_config(&services);
+        let route = |name: &str| {
+            registry
+                .match_route(&format!("/{name}/x"))
+                .unwrap()
+                .0
+                .clone()
+        };
+
+        assert_eq!(
+            route("twilio").auth_injection(),
+            AuthInjection::BasicPassword
+        );
+        for name in ["google_ai", "openai", "anthropic", "my_twilio", "my_gemini"] {
+            assert_eq!(route(name).auth_injection(), AuthInjection::Template);
+        }
+
+        let google = route("google_ai").owned_alternate_slots();
+        assert_eq!(google.query_params, &["key", "api_key"]);
+        assert_eq!(google.headers_carrying_phantom_token, &["authorization"]);
+        for name in ["twilio", "openai", "anthropic", "my_twilio", "my_gemini"] {
+            assert_eq!(route(name).owned_alternate_slots(), OwnedSlots::default());
+        }
+
+        let mut altered = PhantomConfig::trusted_builtin_proxy_service("twilio").unwrap();
+        altered.pattern = Some("example.com".to_string());
+        assert_eq!(
+            CredentialProfile::for_configured_route("twilio", &altered),
+            CredentialProfile::Standard
+        );
     }
 }

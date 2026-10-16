@@ -32,6 +32,7 @@ async fn test_proxy_with_limits(
         secret_key: "TEST_API_KEY".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        credential_profile: phantom_proxy::services::CredentialProfile::Standard,
         sdk_base_path: None,
     });
 
@@ -124,6 +125,7 @@ async fn test_multi_secret_concurrent_load_independent() {
         secret_key: "KEY_A".to_string(),
         header: "Authorization".to_string(),
         header_format: "Bearer {secret}".to_string(),
+        credential_profile: phantom_proxy::services::CredentialProfile::Standard,
         sdk_base_path: None,
     });
     registry.add_route(ServiceRoute {
@@ -132,6 +134,7 @@ async fn test_multi_secret_concurrent_load_independent() {
         secret_key: "KEY_B".to_string(),
         header: "x-api-key".to_string(),
         header_format: "{secret}".to_string(),
+        credential_profile: phantom_proxy::services::CredentialProfile::Standard,
         sdk_base_path: None,
     });
 
