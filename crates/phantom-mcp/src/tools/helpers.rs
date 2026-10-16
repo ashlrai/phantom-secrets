@@ -83,7 +83,10 @@ pub fn require_approval_token(
              the requesting agent cannot modify, and `phantom mcp-approve` plus \
              ~/.phantom/mcp-approvals.jsonl are outside that agent's command and file \
              authority. A same-user shell or agent-controlled PTY can defeat the terminal \
-             ceremony; leave effects disabled when that separation cannot be guaranteed."
+             ceremony; leave effects disabled when that separation cannot be guaranteed. \
+             Once enabled, each call also needs out-of-band approval: the operator must \
+             approve it in their own trusted terminal and supply the resulting \
+             `approval_token`. See docs/claude-code.md (Effectful tools)."
         )));
     }
 
